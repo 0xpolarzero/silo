@@ -90,19 +90,18 @@ describe("status bar preview", () => {
   })
 
   it("opens the requested application section with its sandbox filter and changed state", async () => {
-    window.history.replaceState(null, "", "?view=status-bar&scenario=running")
+    window.history.replaceState(null, "", "?view=status-bar&scenario=running&repository-push=failed")
     const user = userEvent.setup()
     render(<App />)
     await user.click(screen.getByRole("button", { name: "Start playgrounds" }))
-    await user.click(screen.getByRole("button", { name: "Actions for playgrounds" }))
-    await user.click(screen.getByRole("menuitem", { name: "Files" }))
+    await user.click(screen.getByRole("button", { name: "Review push failure for dev, acme/silo" }))
 
     const navigation = within(screen.getByRole("navigation", { name: "Silo navigation" }))
     expect(navigation.getByRole("button", { name: "Files" })).toHaveAttribute("aria-current", "page")
-    expect(screen.getByRole("button", { name: "Remove playgrounds" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Remove dev" })).toBeVisible()
     const repositories = within(screen.getByRole("list", { name: "Repositories" }))
-    expect(repositories.getByText("acme/platform-tools")).toBeVisible()
-    expect(repositories.queryByText("acme/silo")).not.toBeInTheDocument()
+    expect(repositories.getByText("acme/silo")).toBeVisible()
+    expect(repositories.queryByText("acme/platform-tools")).not.toBeInTheDocument()
     await user.click(navigation.getByRole("button", { name: "Overview" }))
     const playgrounds = within(screen.getByRole("list", { name: "Configured sandboxes" })).getByText("playgrounds").closest("li")!
     expect(within(playgrounds).getByText("Running", { exact: true })).toBeVisible()

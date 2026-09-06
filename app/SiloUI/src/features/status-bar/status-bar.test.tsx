@@ -119,13 +119,15 @@ describe("status bar", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
-  it("supports keyboard menus and routes Files to the selected sandbox", async () => {
-    const { user, actions } = setup()
+  it("supports keyboard navigation to the editor picker", async () => {
+    const { user } = setup()
     screen.getByRole("button", { name: "Actions for dev" }).focus()
     await user.keyboard("{Enter}")
+    expect(screen.queryByRole("menuitem", { name: "Files" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("menuitem", { name: "Open Silo…" })).not.toBeInTheDocument()
     await user.keyboard("{End}{ArrowUp}{Enter}")
-    expect(actions.openSilo).toHaveBeenCalledWith({ workspace: "dev", workspaceSection: "files" })
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "dev folders" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Back to sandboxes" })).toHaveFocus()
   })
 
   it("offers only listening sites in numeric order and opens the selected port", async () => {

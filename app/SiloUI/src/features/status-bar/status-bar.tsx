@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react"
-import { ChevronRight, CircleAlert, Code, ExternalLink, Folder, Globe, Loader2, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronRight, CircleAlert, Code, ExternalLink, Globe, Loader2, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
 import { CopyButton } from "@/components/copy-button"
@@ -69,9 +69,6 @@ function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: {
               </DropdownMenu.SubContent>
             </DropdownMenu.Portal>
           </DropdownMenu.Sub>
-          <DropdownMenu.Separator className="my-1 border-t" />
-          <MenuItem icon={<Folder />} onSelect={() => actions.openSilo({ workspace: machine.name, workspaceSection: "files" })}>Files</MenuItem>
-          <MenuItem icon={<PanelTop />} onSelect={() => actions.openSilo({ workspace: machine.name })}>Open Silo…</MenuItem>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
