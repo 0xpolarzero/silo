@@ -229,7 +229,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
         </div>}
       </div>
       <footer className="flex shrink-0 items-center justify-between border-t px-2 py-2">
-        <Button variant="ghost" size="sm" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
+        <Button variant="ghost" size="sm" className="gap-2" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
         <SandboxAction label="Quit Silo" onClick={actions.quit}><Power /></SandboxAction>
       </footer>
     </>
