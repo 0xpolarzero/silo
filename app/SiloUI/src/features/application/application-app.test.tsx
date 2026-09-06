@@ -189,6 +189,21 @@ describe("application", () => {
     expect(screen.queryByRole("dialog", { name: "Commands" })).not.toBeInTheDocument()
   })
 
+  it.each(["Activity", "Files", "Logs", "Network"])("clears the sandbox filter when the general %s command follows a scoped command", async (section) => {
+    const { user } = renderApplication()
+    await user.click(screen.getByRole("button", { name: "Search or jump to" }))
+    await user.click(screen.getByRole("option", { name: `Open dev ${section.toLowerCase()}` }))
+    expect(screen.getByRole("button", { name: "Remove dev" })).toBeVisible()
+    if (section === "Activity") expect(screen.queryByText("Stop verified")).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "Search or jump to" }))
+    await user.click(screen.getByRole("option", { name: section }))
+    const filters = within(screen.getByRole("group", { name: "Sandbox filters" }))
+    expect(filters.queryByRole("button", { name: /^Remove / })).not.toBeInTheDocument()
+    expect(filters.getByRole("button", { name: "Clear" })).toBeDisabled()
+    if (section === "Activity") expect(screen.getByText("Stop verified")).toBeVisible()
+  })
+
   it("dispatches available sandbox commands and removes them when status becomes stale", async () => {
     const application = renderApplication()
     await application.user.keyboard("{Meta>}k{/Meta}")

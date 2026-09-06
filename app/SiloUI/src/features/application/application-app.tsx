@@ -186,7 +186,9 @@ export function ApplicationApp({ source, actions, backup, initialRoute }: { sour
   }, [])
 
   function navigateCommand(route: ApplicationInitialRoute) {
-    if (route.workspace) setSelectedWorkspaceIds(new Set([route.workspace]))
+    if (route.workspaceSection && route.workspaceSection !== "overview") {
+      setSelectedWorkspaceIds(new Set(route.workspace ? [route.workspace] : []))
+    }
     if (route.workspaceSection) navigation.selectWorkspaceSection(route.workspaceSection)
     else if (route.settingsSection) navigation.selectSettingsSection(route.settingsSection)
     else if (route.tab) navigation.selectTab(route.tab)
