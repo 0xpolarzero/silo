@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "preview",
-  "description": "The fixture preview has no native command permissions.",
+  "description": "The main window can drag, resize, minimize, and close itself.",
   "windows": ["main"],
-  "permissions": []
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize"
+  ]
 }

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { isTauri } from "@tauri-apps/api/core"
 
 import { Button } from "@/components/ui/button"
+import { WindowTitleBar } from "@/components/window-toolbar"
 import type { ApplicationSource, RepositoryPushOperation } from "@/features/application/model/application-source"
 import { StatusBar } from "@/features/status-bar/status-bar"
 import { statusWorkspaceAvailability } from "@/features/status-bar/status-bar-model"
@@ -177,6 +179,7 @@ function StatusBarPreviewSession({ source, mode, onOpenSilo }: StatusBarPreviewP
 
   return (
     <main className="relative min-h-dvh bg-muted/50" aria-label="Status bar preview">
+      {isTauri() && <WindowTitleBar title="Menu bar preview" />}
       <header className="flex h-9 items-center justify-between border-b border-border bg-background/80 px-4 backdrop-blur-sm">
         <span className="text-xs font-medium text-muted-foreground">Silo</span>
         <div className="flex h-full items-center">
