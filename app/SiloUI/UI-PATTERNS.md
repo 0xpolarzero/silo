@@ -43,8 +43,8 @@ Onboarding uses the same compact account and application preference rows.
 
 Open `?view=status-bar` or choose **status-bar** in the development View selector.
 State and System fixtures use the app's existing snapshots. The Preview selector
-adds stale status, an empty list, and a long list. The header, repair and error
-notices, and footer remain visible while only the sandbox list scrolls.
+adds stale status, an empty list, and a long list. Repair and error notices and
+the footer remain visible while only the sandbox list scrolls.
 
 The content reference is `../Silo/Sources/MonitorView.swift`: aggregate health,
 one runtime-repair action, sandbox shortcuts and overflow actions, folder and site
