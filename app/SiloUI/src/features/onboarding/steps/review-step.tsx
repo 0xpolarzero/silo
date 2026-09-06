@@ -73,7 +73,7 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, identityS
 
       <section aria-labelledby="review-preferences-heading">
         <h3 id="review-preferences-heading" className="mb-2 text-xs font-medium">GitHub and Git identity</h3>
-        <ListCard>
+        <ListCard divided>
           {[
             { title: "GitHub access", detail: githubSummary, Icon: GitBranch },
             { title: "Git author", detail: identitySummary, Icon: UserRound },

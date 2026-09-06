@@ -38,7 +38,7 @@ export function NotificationsPage() {
       </ListCard>
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Alert categories</h3>
-        <ListCard>
+        <ListCard divided>
           {categories.map(({ id, label, detail, icon: Icon }) => (
             <ListRow
               key={id}

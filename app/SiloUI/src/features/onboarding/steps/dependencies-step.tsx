@@ -23,7 +23,7 @@ export function DependenciesStep({
       </div>
       <section aria-labelledby="onboarding-applications-title" className="mt-5 grid gap-2">
         <h3 id="onboarding-applications-title" className="text-xs font-medium">Applications</h3>
-        <ListCard>
+        <ListCard divided>
           <ApplicationPreferenceFields compact value={applicationPreferences} onChange={onApplicationPreferencesChange} />
         </ListCard>
       </section>

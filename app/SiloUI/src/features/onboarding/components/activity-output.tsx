@@ -16,7 +16,7 @@ export function ActivityOutput({ events, embedded = false }: { events: SiloProgr
   const output = useMemo(() => events.map(eventLine).join("\n"), [events])
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className={cn("activity-output-collapsible collapsible-motion group", !embedded && "rounded-md border border-border")}>
+    <Collapsible open={open} onOpenChange={setOpen} className={cn("activity-output-collapsible collapsible-motion group", embedded ? "border-t border-border" : "rounded-md border border-border")}>
       <div className="grid grid-cols-[1.25rem_minmax(0,1fr)_1.5rem_1.5rem] items-center gap-1 px-2 py-1.5 text-muted-foreground" role="group" aria-label="Live activity controls">
         <TerminalSquare className="size-3.5" aria-hidden="true" />
         <span className="text-[11px] font-medium">Live activity</span>

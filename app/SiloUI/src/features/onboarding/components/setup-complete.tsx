@@ -9,7 +9,7 @@ export function SetupComplete({ machines, githubSummary }: {
 }) {
   return (
     <section aria-labelledby="setup-complete-title" className="mx-auto grid w-full max-w-3xl gap-3">
-      <ListCard>
+      <ListCard divided>
         <ListRow
           role="status"
           icon={<ListRowIcon className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" aria-hidden="true"><Check className="size-3.5" /></ListRowIcon>}

@@ -218,7 +218,7 @@ function Files({
           <CollapsibleContent className="file-pane-content-motion min-h-0 flex-1" data-files-pane-content="repositories">
             <div className="h-full overflow-y-auto overscroll-contain px-2 pt-2" data-files-pane-scroll="repositories">
               {repositories.length > 0 ? (
-                <ListCard role="list" aria-label="Repositories">
+                <ListCard divided role="list" aria-label="Repositories">
                   {repositories.map(({ workspace, repository }) => {
                     const operation = pushOperations.get(`${workspace.machine.name}:${repository.path}`)
                     const push = () => onPushRepository(workspace.machine.name, repository.path, operation?.commitCount ?? repository.ahead)
@@ -481,7 +481,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
       />
 
       {activities.length > 0 ? (
-        <ListCard className="max-h-full min-h-0 overflow-y-auto overscroll-contain" role="list" aria-label="Recent activity">
+        <ListCard divided className="max-h-full min-h-0 overflow-y-auto overscroll-contain" role="list" aria-label="Recent activity">
           {activities.map((item) => {
             const category = activityCategoryPresentation[item.category]
             const CategoryIcon = category.icon

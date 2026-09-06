@@ -2,8 +2,9 @@ import type { ComponentProps, ReactNode } from "react"
 
 import { cn } from "@/lib/utils"
 
-export function ListCard({ className, ...props }: ComponentProps<"div">) {
-  return <div className={cn("divide-y divide-border overflow-hidden rounded-md border border-border", className)} {...props} />
+export function ListCard({ divided = false, className, ...props }: ComponentProps<"div"> & { divided?: boolean }) {
+  // Divide peer rows only; expanded details provide their own inset border.
+  return <div className={cn("overflow-hidden rounded-md border border-border", divided && "divide-y divide-border", className)} {...props} />
 }
 
 export function ListRowDetails({ label, className, ...props }: { label: string } & ComponentProps<"div">) {

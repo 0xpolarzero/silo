@@ -55,7 +55,7 @@ export function GeneralPage({
       <h2 className="text-xs font-medium">General</h2>
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Startup</h3>
-        <ListCard>
+        <ListCard divided>
           <SettingRow icon={Power} title="Launch Silo at login" description="Keep workspace status and notifications available." control={<Switch checked={launchAtLogin} onCheckedChange={setLaunchAtLogin} aria-label="Launch Silo at login" />} />
           <div>
             <SettingRow icon={Power} title="Start sandboxes at launch" description="Start selected sandboxes when Silo opens." control={<Switch checked={startAtLaunch} onCheckedChange={setStartAtLaunch} aria-label="Start sandboxes at launch" />} />
@@ -71,7 +71,7 @@ export function GeneralPage({
       </section>
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Applications</h3>
-        <ListCard>
+        <ListCard divided>
           <ApplicationPreferenceFields compact value={applicationPreferences} onChange={onApplicationPreferencesChange} />
         </ListCard>
       </section>
