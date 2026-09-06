@@ -73,7 +73,9 @@ mod platform {
 
     pub async fn update(app: &AppHandle, tone: Tone, label: String) -> Result<(), String> {
         let tray = app.tray_by_id("silo").ok_or("Status item is unavailable")?;
-        tray.set_icon(Some(icon(tone))).map_err(|e| e.to_string())?;
+        // Replacing the image must preserve native appearance tinting in one redraw.
+        tray.set_icon_with_as_template(Some(icon(tone)), true)
+            .map_err(|e| e.to_string())?;
         tray.set_tooltip(Some(format!("Silo · {label}")))
             .map_err(|e| e.to_string())
     }

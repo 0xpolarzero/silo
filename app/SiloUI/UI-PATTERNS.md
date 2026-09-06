@@ -69,6 +69,12 @@ errors use red and a circled alert; warnings use amber and a triangle. An empty
 or stopped list uses a muted mark. Errors take precedence over warnings and
 loading, and the spinner respects reduced motion.
 
+On macOS, native tray images use template rendering in every state so AppKit
+keeps them readable against the menu bar. Each image replacement uses
+[Tauri’s atomic image-and-template update](https://docs.rs/tauri/2.11.5/tauri/tray/struct.TrayIcon.html#method.set_icon_with_as_template);
+the plain image setter clears template rendering, and restoring it in a separate
+call introduces a redraw flash.
+
 The content reference is `../Silo/Sources/MonitorView.swift`: aggregate health,
 one runtime-repair action, sandbox shortcuts and overflow actions, folder and site
 selection, Open Silo, and Quit. TypeScript components and tokens own the design.
