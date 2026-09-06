@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react"
-import { ChevronRight, CircleAlert, Code, ExternalLink, FileText, Folder, Globe, Loader2, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronRight, CircleAlert, Code, ExternalLink, Folder, Globe, Loader2, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
@@ -68,15 +68,27 @@ function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: {
   )
 }
 
+function OperationIssue({ title, detail, actionLabel, onReview }: { title: string; detail: string; actionLabel: string; onReview: () => void }) {
+  return (
+    <ListCard className="mb-2" role="alert" aria-label={title}>
+      <ListRow
+        icon={<ListRowIcon className="bg-destructive/10 text-destructive"><CircleAlert className="size-3.5" aria-hidden="true" /></ListRowIcon>}
+        title={title}
+        detail={detail}
+        detailClassName="whitespace-normal break-words"
+        actions={<Button variant="outline" size="xs" aria-label={actionLabel} onClick={onReview}>Details</Button>}
+      />
+    </ListCard>
+  )
+}
+
 function StatusBarContent({ source, actions, focusContent }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void }) {
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<{ workspace: string; action: "stop" | "restart" } | null>(null)
   const repair = source.runtimeRepair && source.runtimeRepair.status !== "succeeded" ? source.runtimeRepair : null
   const folders = source.workspaces.find(({ machine }) => machine.id === folderWorkspace)
-  const failedPush = source.repositoryPushOperations.findLast(({ status }) => status === "failed")
-  const failedWorkspace = source.workspaces.find((workspace) => workspace.state === "failed" || workspace.attention?.level === "error")
-  const issueWorkspace = failedPush?.workspace ?? failedWorkspace?.machine.name ?? (source.sandboxConfigurationOperation?.status === "failed" ? source.sandboxConfigurationOperation.error.workspace ?? undefined : undefined)
-  const hasFailure = Boolean(failedPush || failedWorkspace || source.sandboxConfigurationOperation?.status === "failed")
+  const failedPushes = source.repositoryPushOperations.filter((operation) => operation.status === "failed")
+  const failedConfiguration = source.sandboxConfigurationOperation?.status === "failed" ? source.sandboxConfigurationOperation : null
   const stale = source.workspaces.some(({ freshness }) => freshness === "stale")
 
   if (folders && statusWorkspaceAvailability(folders, source).canOpen) {
@@ -88,8 +100,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
       <header className="flex h-11 shrink-0 items-center gap-2 px-3">
         <SiloMark className="size-4" />
         <h1 className="flex-1 text-sm font-semibold">Silo</h1>
-        {hasFailure ? <SandboxAction label="View error details" onClick={() => actions.openSilo({ workspace: issueWorkspace, workspaceSection: issueWorkspace ? "logs" : "overview" })}><FileText /></SandboxAction>
-          : stale && <SandboxAction label="Retry sandbox status" onClick={actions.refresh}><RotateCw /></SandboxAction>}
+        {stale && <SandboxAction label="Retry sandbox status" onClick={actions.refresh}><RotateCw /></SandboxAction>}
       </header>
       <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">
         {repair && <ListCard className="mb-2">
@@ -100,6 +111,19 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
             actions={<Button variant="outline" size="xs" onClick={() => actions.openSilo({ tab: "system" })}>{repair.status === "repairing" ? "View" : "Repair…"}</Button>}
           />
         </ListCard>}
+        {failedConfiguration && <OperationIssue
+          title="Sandbox changes failed"
+          detail={failedConfiguration.error.message}
+          actionLabel="Review sandbox changes"
+          onReview={() => actions.openSilo({ workspaceSection: "overview" })}
+        />}
+        {failedPushes.map((operation) => <OperationIssue
+          key={`${operation.workspace}:${operation.repositoryPath}`}
+          title={`Push failed · ${operation.workspace}`}
+          detail={`${operation.repositoryPath} · ${operation.message}`}
+          actionLabel={`Review push failure for ${operation.workspace}, ${operation.repositoryPath}`}
+          onReview={() => actions.openSilo({ workspace: operation.workspace, workspaceSection: "files" })}
+        />)}
         {source.workspaces.length ? <ListCard>
           <ol aria-label="Sandboxes" className="divide-y">
             {source.workspaces.map((workspace) => {
@@ -109,7 +133,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
               const pendingSecrets = machine.kind === "vm" ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
               const activity = source.activities.find((item) => item.category === "sandbox" && item.workspace === machine.name && item.status === "running")
               const review = workspace.state === "failed" || workspace.attention?.level === "error"
-              const detail = workspace.freshness === "stale" ? "Last known status" : workspace.attention?.message
+              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? "Last known status" : undefined)
               return <SandboxListItem key={machine.id} aria-label={machine.name} aria-busy={availability.busy || undefined}>
                 <SandboxListRow
                   name={machine.name}

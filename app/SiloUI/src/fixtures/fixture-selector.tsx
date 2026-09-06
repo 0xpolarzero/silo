@@ -67,7 +67,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
               {workspaceFixtureModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
             </select>
           </label>
-          {surface === "app" && <label className="flex items-center gap-2">
+          <label className="flex items-center gap-2">
             Change
             <select
               aria-label="Sandbox change fixture"
@@ -78,7 +78,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
               <option value="source">source</option>
               {sandboxConfigurationFixtureModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
             </select>
-          </label>}
+          </label>
           <label className="flex items-center gap-2">
             System
             <select
@@ -91,7 +91,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
               {systemIssueFixtureModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
             </select>
           </label>
-          {surface === "app" && <><label className="flex items-center gap-2">
+          <label className="flex items-center gap-2">
             Push
             <select
               aria-label="Repository push fixture"
@@ -103,7 +103,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
               {repositoryPushFixtureModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
             </select>
           </label>
-          <label className="flex items-center gap-2">
+          {surface === "app" && <><label className="flex items-center gap-2">
             Activity
             <select
               aria-label="Activity fixture"

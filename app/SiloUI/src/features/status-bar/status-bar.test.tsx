@@ -23,6 +23,7 @@ describe("status bar", () => {
     expect(screen.getByRole("dialog", { name: "Silo" })).toBeInTheDocument()
     expect(screen.getByRole("dialog", { name: "Silo" })).toHaveFocus()
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "View error details" })).not.toBeInTheDocument()
     expect(screen.getByRole("note", { name: "Restart required for dev" })).toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Open dev in Terminal" }))
     expect(actions.openTerminal).toHaveBeenCalledWith("dev")
@@ -68,6 +69,30 @@ describe("status bar", () => {
     await user.click(screen.getByRole("button", { name: "Repair…" }))
     expect(actions.openSilo).toHaveBeenCalledWith({ tab: "system" })
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("explains a failed configuration for a sandbox that is not in the committed list", async () => {
+    const fixture = applicationSourceForScenario("running", undefined, undefined, "workspace-error")
+    const { user, actions } = setup({ sandboxConfigurationOperation: fixture.sandboxConfigurationOperation })
+    expect(screen.queryByRole("listitem", { name: "scratch" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "View error details" })).not.toBeInTheDocument()
+    const issue = screen.getByRole("alert", { name: "Sandbox changes failed" })
+    expect(issue).toHaveTextContent("Networking failed for 'scratch'.")
+    await user.click(within(issue).getByRole("button", { name: "Review sandbox changes" }))
+    expect(actions.openSilo).toHaveBeenCalledWith({ workspaceSection: "overview" })
+  })
+
+  it("shows a failed push beside its details action and clears it when the source resolves", async () => {
+    const operation = { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "failed" as const, message: "The remote branch changed." }
+    const { user, actions, source, rerender } = setup({ repositoryPushOperations: [operation] })
+    const issue = screen.getByRole("alert", { name: "Push failed · dev" })
+    expect(issue).toHaveTextContent("acme/silo · The remote branch changed.")
+    expect(screen.queryByRole("button", { name: "View error details" })).not.toBeInTheDocument()
+    await user.click(within(issue).getByRole("button", { name: "Review push failure for dev, acme/silo" }))
+    expect(actions.openSilo).toHaveBeenCalledWith({ workspace: "dev", workspaceSection: "files" })
+    rerender(<StatusBar source={{ ...source, repositoryPushOperations: [{ ...operation, status: "succeeded" }] }} actions={actions} defaultOpen />)
+    await user.click(screen.getByRole("button", { name: "Silo status bar" }))
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 
   it("keeps the machine icon during progress and blocks repeated actions", () => {
