@@ -8,13 +8,13 @@ type CopyStatus = "idle" | "copied" | "failed"
 
 type CopyLabels = Record<CopyStatus, string>
 
-interface CopyButtonProps extends Omit<ComponentProps<typeof Button>, "aria-label" | "children" | "onClick"> {
+interface CopyButtonProps extends Omit<ComponentProps<typeof Button>, "aria-label" | "children"> {
   value: string
   labels: CopyLabels
   text?: CopyLabels
 }
 
-export function CopyButton({ value, labels, text, type = "button", ...props }: CopyButtonProps) {
+export function CopyButton({ value, labels, text, type = "button", onClick, ...props }: CopyButtonProps) {
   const [status, setStatus] = useState<CopyStatus>("idle")
   const resetTimer = useRef<number | undefined>(undefined)
 
@@ -37,7 +37,10 @@ export function CopyButton({ value, labels, text, type = "button", ...props }: C
     <Button
       {...props}
       type={type}
-      onClick={() => void copy()}
+      onClick={(event) => {
+        onClick?.(event)
+        if (!event.defaultPrevented) void copy()
+      }}
       aria-label={labels[status]}
       aria-live="polite"
       aria-atomic="true"

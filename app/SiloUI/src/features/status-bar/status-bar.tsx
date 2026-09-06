@@ -2,6 +2,7 @@ import { useRef, useState, type ReactNode } from "react"
 import { ChevronRight, CircleAlert, Code, ExternalLink, Folder, Globe, Loader2, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
+import { CopyButton } from "@/components/copy-button"
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { SiloMark } from "@/components/silo-mark"
 import { Button } from "@/components/ui/button"
@@ -55,7 +56,16 @@ function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: {
               <DropdownMenu.SubContent className={menuClass} data-reduce-motion={source.preferences.reduceMotion} sideOffset={4} collisionPadding={10}>
                 {sites.length ? sites.map(({ port }) => <MenuItem key={port} icon={<ExternalLink />} onSelect={() => actions.openSite(machine.name, port)}>Port {port}</MenuItem>) : <DropdownMenu.Item disabled className={menuItemClass}>No active sites</DropdownMenu.Item>}
                 <DropdownMenu.Separator className="my-1 border-t" />
-                <MenuItem icon={<Globe />} onSelect={() => actions.openSilo({ workspace: machine.name, workspaceSection: "network" })}>Choose port…</MenuItem>
+                <DropdownMenu.Item asChild onSelect={(event) => event.preventDefault()}>
+                  <CopyButton
+                    value={`http://${workspace.host}`}
+                    labels={{ idle: "Copy base URL", copied: "Base URL copied", failed: "Couldn't copy base URL" }}
+                    text={{ idle: "Copy base URL", copied: "Copied", failed: "Copy failed" }}
+                    variant="ghost"
+                    size="sm"
+                    className={cn(menuItemClass, "w-full justify-start font-normal")}
+                  />
+                </DropdownMenu.Item>
               </DropdownMenu.SubContent>
             </DropdownMenu.Portal>
           </DropdownMenu.Sub>

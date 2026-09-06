@@ -141,6 +141,34 @@ describe("status bar", () => {
     expect(actions.openSite).toHaveBeenCalledWith("dev", 8080)
   })
 
+  it("copies the base URL without a port and keeps copy feedback in the site menu", async () => {
+    const { user, actions } = setup()
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)
+    await user.click(screen.getByRole("button", { name: "Actions for dev" }))
+    screen.getByRole("menuitem", { name: "Open site" }).focus()
+    await user.keyboard("{ArrowRight}")
+    expect(screen.queryByRole("menuitem", { name: "Choose port…" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("menuitem", { name: "Copy base URL" }))
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("http://dev.silo.test")
+    expect(screen.getByRole("menuitem", { name: "Base URL copied" })).toHaveTextContent("Copied")
+    expect(actions.openSilo).not.toHaveBeenCalled()
+    expect(actions.openSite).not.toHaveBeenCalled()
+    writeText.mockRestore()
+  })
+
+  it("lets the user retry a failed URL copy with the keyboard", async () => {
+    const { user } = setup()
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new Error("Clipboard unavailable")).mockResolvedValue(undefined)
+    await user.click(screen.getByRole("button", { name: "Actions for dev" }))
+    screen.getByRole("menuitem", { name: "Open site" }).focus()
+    await user.keyboard("{ArrowRight}{End}{Enter}")
+    expect(screen.getByRole("menuitem", { name: "Couldn't copy base URL" })).toHaveTextContent("Copy failed")
+    await user.keyboard("{Enter}")
+    expect(writeText).toHaveBeenNthCalledWith(2, "http://dev.silo.test")
+    expect(screen.getByRole("menuitem", { name: "Base URL copied" })).toHaveFocus()
+    writeText.mockRestore()
+  })
+
   it("supports escape dismissal and an empty sandbox list", async () => {
     const { user, actions } = setup({ workspaces: [] })
     expect(screen.getByText("No sandboxes yet")).toBeInTheDocument()
