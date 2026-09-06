@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { BackupController } from "@/features/application/model/backup-source"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { ApplicationShell, type ApplicationNavigationLoading } from "@/features/application/components/application-shell"
+import { ApplicationCommandMenu } from "@/features/application/components/application-command-menu"
+import { applicationCommands } from "@/features/application/components/application-commands"
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, RuntimeRepairPresentation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { BackupPage } from "@/features/application/pages/backup-page"
@@ -183,6 +185,13 @@ export function ApplicationApp({ source, actions, backup, initialRoute }: { sour
     setRepositoryPushOperations((current) => current.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath))
   }, [])
 
+  function navigateCommand(route: ApplicationInitialRoute) {
+    if (route.workspace) setSelectedWorkspaceIds(new Set([route.workspace]))
+    if (route.workspaceSection) navigation.selectWorkspaceSection(route.workspaceSection)
+    else if (route.settingsSection) navigation.selectSettingsSection(route.settingsSection)
+    else if (route.tab) navigation.selectTab(route.tab)
+  }
+
   return (
     <ApplicationShell
       activeTab={visibleTab}
@@ -199,6 +208,7 @@ export function ApplicationApp({ source, actions, backup, initialRoute }: { sour
       onGoBack={navigation.goBack}
       onGoForward={navigation.goForward}
       reduceMotion={reduceMotion}
+      commandMenu={<ApplicationCommandMenu commands={applicationCommands(applicationSource, actions, navigateCommand)} />}
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (

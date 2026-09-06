@@ -1,4 +1,4 @@
-import type { ApplicationSource, ApplicationWorkspace } from "@/features/application/model/application-source"
+import type { ApplicationSource } from "@/features/application/model/application-source"
 
 export function statusBarHealth(source: ApplicationSource) {
   const repair = source.runtimeRepair
@@ -21,17 +21,4 @@ export function statusBarHealth(source: ApplicationSource) {
   if (source.workspaces.length === 0) return { label: "No sandboxes", tone: "neutral" } as const
   if (source.workspaces.every(({ state }) => state === "stopped")) return { label: "All sandboxes stopped", tone: "neutral" } as const
   return { label: "Ready", tone: "success" } as const
-}
-
-export function statusWorkspaceAvailability(workspace: ApplicationWorkspace, source: ApplicationSource) {
-  const repair = source.runtimeRepair && source.runtimeRepair.status !== "succeeded"
-  const busy = workspace.state === "starting" || source.activities.some((activity) => activity.category === "sandbox" && activity.workspace === workspace.machine.name && activity.status === "running")
-  const blocked = Boolean(repair || source.sandboxConfigurationOperation || busy || workspace.freshness === "stale" || workspace.attention?.level === "error")
-  return {
-    busy,
-    canOpen: !blocked && workspace.state === "running",
-    canStart: !blocked && workspace.state === "stopped",
-    canStop: !blocked && workspace.state === "running",
-    canRestart: !blocked && workspace.state === "running",
-  }
 }

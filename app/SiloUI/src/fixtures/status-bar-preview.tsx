@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { WindowTitleBar } from "@/components/window-toolbar"
 import type { ApplicationSource, RepositoryPushOperation } from "@/features/application/model/application-source"
 import { StatusBar } from "@/features/status-bar/status-bar"
-import { statusWorkspaceAvailability } from "@/features/status-bar/status-bar-model"
+import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 import { statusBarSourceForFixture, type StatusBarFixtureMode } from "@/fixtures/status-bar-scenarios"
 
@@ -132,7 +132,7 @@ function StatusBarPreviewSession({ source, mode, onOpenSilo }: StatusBarPreviewP
     if (pendingPushes.current.has(key)) return
     const workspace = snapshot.workspaces.find(({ machine }) => machine.name === name)
     const repository = workspace?.repositories.find(({ path }) => path === repositoryPath)
-    if (!workspace || !repository || repository.ahead <= 0 || !statusWorkspaceAvailability(workspace, snapshot).canOpen) return
+    if (!workspace || !repository || repository.ahead <= 0 || !workspaceAvailability(workspace, snapshot).canOpen) return
     if (snapshot.repositoryPushOperations.some((operation) => operation.workspace === name && operation.repositoryPath === repositoryPath && operation.status === "pushing")) return
     const operation: RepositoryPushOperation = { workspace: name, repositoryPath, commitCount: repository.ahead, status: "pushing" }
     setSnapshot((current) => ({

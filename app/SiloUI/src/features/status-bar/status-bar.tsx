@@ -16,7 +16,8 @@ import { SandboxAction, SandboxListItem, SandboxListRow } from "@/features/sandb
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
 import { cn } from "@/lib/utils"
-import { statusBarHealth, statusWorkspaceAvailability } from "./status-bar-model"
+import { statusBarHealth } from "./status-bar-model"
+import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import type { StatusBarActions } from "./status-bar-types"
 import { StatusFolderPicker } from "./status-folder-picker"
 
@@ -35,7 +36,7 @@ function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: {
   onConfirm: (action: "stop" | "restart") => void
 }) {
   const { machine } = workspace
-  const { canOpen, canStart, canStop, canRestart } = statusWorkspaceAvailability(workspace, source)
+  const { canOpen, canStart, canStop, canRestart } = workspaceAvailability(workspace, source)
   const sites = workspace.ports.filter(({ listening }) => listening === true).sort((a, b) => a.port - b.port)
   return (
     <DropdownMenu.Root modal={false}>
@@ -100,7 +101,7 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
     return operation?.status !== "failed" && (operation || repository.ahead > 0) ? [{ repository, operation }] : []
   })
   if (!repositories.length) return null
-  const canPush = statusWorkspaceAvailability(workspace, source).canOpen
+  const canPush = workspaceAvailability(workspace, source).canOpen
   return (
     <div className="grid gap-1 pr-2 pb-2 pl-10">
       {repositories.map(({ repository, operation }) => (
@@ -132,7 +133,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
   const failedPushes = source.repositoryPushOperations.filter((operation) => operation.status === "failed")
   const failedConfiguration = source.sandboxConfigurationOperation?.status === "failed" ? source.sandboxConfigurationOperation : null
 
-  if (folders && statusWorkspaceAvailability(folders, source).canOpen) {
+  if (folders && workspaceAvailability(folders, source).canOpen) {
     return <StatusFolderPicker workspace={folders} editor={source.preferences.editor} onBack={() => { setFolderWorkspace(null); focusContent() }} onOpen={(path) => actions.openEditor(folders.machine.name, path)} />
   }
 
@@ -155,7 +156,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
         />}
         {failedPushes.map((operation) => {
           const workspace = source.workspaces.find(({ machine }) => machine.name === operation.workspace)
-          const canRetry = workspace && workspace.repositories.some(({ path, ahead }) => path === operation.repositoryPath && ahead > 0) && statusWorkspaceAvailability(workspace, source).canOpen
+          const canRetry = workspace && workspace.repositories.some(({ path, ahead }) => path === operation.repositoryPath && ahead > 0) && workspaceAvailability(workspace, source).canOpen
           return <OperationIssue
             key={`${operation.workspace}:${operation.repositoryPath}`}
             title={`Push failed · ${operation.workspace}`}
@@ -171,7 +172,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
           <ol aria-label="Sandboxes" className="divide-y">
             {source.workspaces.map((workspace) => {
               const { machine } = workspace
-              const availability = statusWorkspaceAvailability(workspace, source)
+              const availability = workspaceAvailability(workspace, source)
               const pending = confirmation?.workspace === machine.name ? confirmation : null
               const pendingSecrets = machine.kind === "vm" ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
               const activity = source.activities.find((item) => item.category === "sandbox" && item.workspace === machine.name && item.status === "running")
