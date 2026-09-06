@@ -23,7 +23,6 @@ describe("status bar", () => {
     expect(screen.getByRole("dialog", { name: "Silo" })).toBeInTheDocument()
     expect(screen.getByRole("dialog", { name: "Silo" })).toHaveFocus()
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
-    expect(screen.getByRole("status")).toHaveTextContent("Ready")
     expect(screen.getByRole("note", { name: "Restart required for dev" })).toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Open dev in Terminal" }))
     expect(actions.openTerminal).toHaveBeenCalledWith("dev")
@@ -52,7 +51,7 @@ describe("status bar", () => {
   it("blocks terminal and lifecycle actions for stale status and offers retry", async () => {
     const source = applicationSourceForScenario("complete")
     const { user, actions } = setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, freshness: "stale" })) })
-    expect(screen.getByRole("status")).toHaveTextContent("Last known status")
+    expect(screen.getByRole("listitem", { name: "dev" })).toHaveTextContent("Last known status")
     expect(screen.queryByRole("button", { name: "Open dev in Terminal" })).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Retry dev status" }))
     expect(actions.refresh).toHaveBeenCalledOnce()
@@ -63,7 +62,7 @@ describe("status bar", () => {
 
   it("opens repair in the app and prevents actions while repair is pending", async () => {
     const { user, actions } = setup({ runtimeRepair: { status: "needed", reason: "Runtime not verified" } })
-    expect(screen.getByRole("status")).toHaveTextContent("Needs repair")
+    expect(screen.getByText("Silo needs repair")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Open dev in Terminal" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^Review / })).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Repair…" }))

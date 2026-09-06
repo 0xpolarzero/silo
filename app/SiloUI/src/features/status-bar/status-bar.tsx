@@ -4,7 +4,6 @@ import { DropdownMenu } from "radix-ui"
 
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { SiloMark } from "@/components/silo-mark"
-import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -72,7 +71,6 @@ function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: {
 function StatusBarContent({ source, actions, focusContent }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void }) {
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<{ workspace: string; action: "stop" | "restart" } | null>(null)
-  const health = statusBarHealth(source)
   const repair = source.runtimeRepair && source.runtimeRepair.status !== "succeeded" ? source.runtimeRepair : null
   const folders = source.workspaces.find(({ machine }) => machine.id === folderWorkspace)
   const failedPush = source.repositoryPushOperations.findLast(({ status }) => status === "failed")
@@ -90,10 +88,6 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
       <header className="flex h-11 shrink-0 items-center gap-2 px-3">
         <SiloMark className="size-4" />
         <h1 className="flex-1 text-sm font-semibold">Silo</h1>
-        <StatusBadge
-          role="status"
-          indicator={health.tone === "busy" ? <Loader2 className="size-2.5 animate-spin" /> : <span className={cn("size-1.5 rounded-full", health.tone === "success" ? "bg-emerald-500" : health.tone === "error" ? "bg-destructive" : health.tone === "warning" ? "bg-amber-500" : "bg-muted-foreground")} />}
-        >{health.label}</StatusBadge>
         {hasFailure ? <SandboxAction label="View error details" onClick={() => actions.openSilo({ workspace: issueWorkspace, workspaceSection: issueWorkspace ? "logs" : "overview" })}><FileText /></SandboxAction>
           : stale && <SandboxAction label="Retry sandbox status" onClick={actions.refresh}><RotateCw /></SandboxAction>}
       </header>
