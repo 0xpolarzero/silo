@@ -10,7 +10,6 @@ fn main() {
             status_panel::hide_status,
             status_panel::resize_status,
             status_panel::quit_app,
-            status_panel::preview_status,
             tray::update_tray
         ])
         .setup(|app| {

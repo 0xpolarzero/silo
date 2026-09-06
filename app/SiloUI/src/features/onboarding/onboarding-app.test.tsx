@@ -7,10 +7,7 @@ import type { GitHubConnectionState } from "@/features/onboarding/model/onboardi
 import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
 import { githubStateFromSearch, onboardingScenarios, repositoryFixtures } from "@/fixtures/scenarios"
 
-import { FixtureSelector } from "@/fixtures/fixture-selector"
-
 function renderScenario(name: keyof typeof onboardingScenarios = "running", githubState?: GitHubConnectionState) {
-  render(<FixtureSelector surface="onboarding" scenario={name} />)
   return render(<OnboardingPreview source={onboardingScenarios[name]} initialGitHubConnectionState={githubState} repositoryOptions={repositoryFixtures} actions={{
     saveMachineConfiguration: vi.fn(),
     repairRuntime: vi.fn(),
@@ -997,20 +994,4 @@ describe("onboarding", () => {
     expect(within(screen.getByRole("tabpanel")).queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
   })
 
-  it("switches the theme from the fixture controls and persists the choice", async () => {
-    const user = userEvent.setup()
-    localStorage.removeItem("silo-theme")
-    renderScenario()
-
-    expect(document.documentElement.classList.contains("dark")).toBe(false)
-    await user.click(screen.getByRole("button", { name: "Switch to dark theme" }))
-
-    expect(document.documentElement.classList.contains("dark")).toBe(true)
-    expect(localStorage.getItem("silo-theme")).toBe("dark")
-    expect(screen.getByRole("button", { name: "Switch to light theme" })).toBeVisible()
-
-    await user.click(screen.getByRole("button", { name: "Switch to light theme" }))
-    expect(document.documentElement.classList.contains("dark")).toBe(false)
-    expect(localStorage.getItem("silo-theme")).toBe("light")
-  })
 })

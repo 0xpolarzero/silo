@@ -1,4 +1,3 @@
-import { render, screen, within } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
 import {
@@ -14,7 +13,6 @@ import {
   workspaceFixtureModeFromSearch,
   workspaceFixtureModes,
 } from "@/fixtures/application-scenarios"
-import { FixtureSelector } from "@/fixtures/fixture-selector"
 import {
   activityCatalog,
   activityFixtureModeFromSearch,
@@ -33,49 +31,6 @@ describe("application state fixtures", () => {
       expect(source.workspaces.every(({ attention }) => attention?.level === (mode === "warning" ? "warning" : mode === "error" ? "error" : undefined))).toBe(true)
     }
     expect(workspaceFixtureModeFromSearch("?sandbox-state=unknown")).toBeUndefined()
-  })
-
-  it("shows every state mode only for the application fixture", () => {
-    const app = render(<FixtureSelector surface="app" scenario="running" workspaceMode="starting" sandboxConfigurationMode="add-verifying" systemIssueMode="verifying" repositoryPushMode="pushing" githubManagementMode="failed" activityMode="backup-live" />)
-    const controls = screen.getByLabelText("Development fixtures")
-    expect(controls).toHaveClass("max-w-[calc(100vw-1.5rem)]", "flex-wrap")
-    expect(within(screen.getByRole("combobox", { name: "Sandbox state fixture" })).getAllByRole("option").map(({ textContent }) => textContent)).toEqual([
-      "source",
-      "running",
-      "starting",
-      "stopped",
-      "warning",
-      "error",
-    ])
-    expect(within(screen.getByRole("combobox", { name: "Sandbox change fixture" })).getAllByRole("option").map(({ textContent }) => textContent)).toEqual([
-      "source",
-      ...sandboxConfigurationFixtureModes,
-    ])
-    expect(within(screen.getByRole("combobox", { name: "System issue fixture" })).getAllByRole("option").map(({ textContent }) => textContent)).toEqual([
-      "source",
-      ...systemIssueFixtureModes,
-    ])
-    expect(within(screen.getByRole("combobox", { name: "Repository push fixture" })).getAllByRole("option").map(({ textContent }) => textContent)).toEqual([
-      "source",
-      ...repositoryPushFixtureModes,
-    ])
-    expect(within(screen.getByRole("combobox", { name: "Activity fixture" })).getAllByRole("option").map(({ textContent }) => textContent)).toEqual([
-      "source",
-      ...activityFixtureModes,
-    ])
-    expect(within(screen.getByRole("combobox", { name: "GitHub management fixture" })).getAllByRole("option").map(({ textContent }) => textContent)).toEqual([
-      "source",
-      ...githubManagementFixtureModes,
-    ])
-    app.unmount()
-
-    render(<FixtureSelector surface="onboarding" scenario="running" />)
-    expect(screen.queryByRole("combobox", { name: "Sandbox state fixture" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("combobox", { name: "Sandbox change fixture" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("combobox", { name: "System issue fixture" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("combobox", { name: "Repository push fixture" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("combobox", { name: "Activity fixture" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("combobox", { name: "GitHub management fixture" })).not.toBeInTheDocument()
   })
 
   it("parses every sandbox configuration fixture independently from runtime state", () => {

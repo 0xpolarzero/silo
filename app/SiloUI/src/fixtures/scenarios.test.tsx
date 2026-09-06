@@ -1,9 +1,7 @@
-import { render, screen, within } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
 import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
-import { FixtureSelector } from "@/fixtures/fixture-selector"
 import { onboardingScenarios, scenarioFromSearch, scenarioNames } from "@/fixtures/scenarios"
 
 // Fixtures must exercise the UI with the same machines that progress describes.
@@ -57,7 +55,5 @@ describe("onboarding scenario coherence", () => {
       completedOperations: 27, totalOperations: 36, currentWorkspace: "docs-build",
       readyCount: 3, workingCount: 1, waitingCount: 8,
     })
-    render(<FixtureSelector surface="onboarding" scenario="stress-running" />)
-    expect(within(screen.getByRole("combobox", { name: "Fixture scenario" })).getByRole("option", { name: "stress-running" })).toBeInTheDocument()
   })
 })

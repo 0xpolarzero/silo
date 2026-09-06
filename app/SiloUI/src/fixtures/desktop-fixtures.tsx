@@ -26,15 +26,6 @@ export function DesktopStatusFixture() {
     return () => { active = false; void subscription.then((stop) => stop()) }
   }, [])
 
-  useEffect(() => {
-    function syncTheme(event: StorageEvent) {
-      if (event.key === "silo-theme") document.documentElement.classList.toggle("dark", event.newValue === "dark")
-    }
-    document.documentElement.classList.toggle("dark", localStorage.getItem("silo-theme") === "dark")
-    window.addEventListener("storage", syncTheme)
-    return () => window.removeEventListener("storage", syncTheme)
-  }, [])
-
   return fixture && <DesktopStatusFixtureSession key={revision} {...fixture} />
 }
 

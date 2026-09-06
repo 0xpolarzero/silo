@@ -152,29 +152,6 @@ pub fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
-#[tauri::command]
-pub fn preview_status(app: AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    let anchor = {
-        let rect = app
-            .tray_by_id("silo")
-            .ok_or("Status item is unavailable")?
-            .rect()
-            .map_err(|e| e.to_string())?
-            .ok_or("Status item has no position")?;
-        let scale = app
-            .primary_monitor()
-            .map_err(|e| e.to_string())?
-            .map_or(1.0, |monitor| monitor.scale_factor());
-        let origin = rect.position.to_physical::<f64>(scale);
-        let size = rect.size.to_physical::<f64>(scale);
-        PhysicalPosition::new(origin.x + size.width / 2.0, origin.y + size.height)
-    };
-    #[cfg(target_os = "linux")]
-    let anchor = app.cursor_position().map_err(|e| e.to_string())?;
-    toggle(&app, anchor).map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

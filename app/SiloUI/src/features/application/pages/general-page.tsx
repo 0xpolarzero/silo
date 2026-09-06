@@ -1,12 +1,14 @@
 import { useState } from "react"
-import { Accessibility, Power } from "lucide-react"
+import { Accessibility, Paintbrush, Power } from "lucide-react"
 
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { ApplicationPreferenceFields } from "@/features/preferences/components/application-preference-fields"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
+import { useTheme } from "@/features/preferences/theme"
 
 function SettingRow({ icon: Icon, title, description, control }: { icon: typeof Power; title: string; description: string; control: React.ReactNode }) {
   return (
@@ -34,6 +36,7 @@ export function GeneralPage({
   reduceMotion: boolean
   onReduceMotionChange: (enabled: boolean) => void
 }) {
+  const { theme, setTheme } = useTheme()
   const [launchAtLogin, setLaunchAtLogin] = useState(source.preferences.launchAtLogin)
   const [startAtLaunch, setStartAtLaunch] = useState(source.preferences.startWorkspacesAtLaunch)
   const [startupWorkspaces, setStartupWorkspaces] = useState<Set<string>>(() => {
@@ -53,6 +56,23 @@ export function GeneralPage({
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
       <h2 className="text-xs font-medium">General</h2>
+      <section className="grid gap-2">
+        <h3 className="text-xs font-medium">Appearance</h3>
+        <ListCard>
+          <SettingRow icon={Paintbrush} title="Theme" description="Choose an appearance or follow your system." control={
+            <div className="w-40 max-w-[45%] shrink-0">
+              <Select value={theme} onValueChange={setTheme}>
+                <SelectTrigger className="h-7 text-[11px]" aria-label="Theme"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="system">System</SelectItem>
+                  <SelectItem value="dark">Dark</SelectItem>
+                  <SelectItem value="light">Light</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          } />
+        </ListCard>
+      </section>
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Startup</h3>
         <ListCard divided>

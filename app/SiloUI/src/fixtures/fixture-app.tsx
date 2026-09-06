@@ -14,7 +14,6 @@ import {
   workspaceFixtureModeFromSearch,
 } from "@/fixtures/application-scenarios"
 import { backupFixtureModeFromSearch } from "@/fixtures/application-backup"
-import { FixtureSelector } from "@/fixtures/fixture-selector"
 import { activityFixtureModeFromSearch, activityFixtureStepCount } from "@/fixtures/application-activity"
 import { githubStateFromSearch, onboardingScenarios, repositoryFixtures, scenarioFromSearch } from "@/fixtures/scenarios"
 import { surfaceFromSearch } from "@/fixtures/surfaces"
@@ -103,7 +102,6 @@ export function FixtureApp() {
           }}
         />
       )}
-      {<FixtureSelector statusBarMode={statusBarMode} backupMode={backupMode} surface={surface} scenario={scenario} githubState={githubState} workspaceMode={workspaceMode} sandboxConfigurationMode={sandboxConfigurationMode} systemIssueMode={systemIssueMode} repositoryPushMode={repositoryPushMode} githubManagementMode={githubManagementMode} activityMode={activityMode} />}
     </>
   )
 }

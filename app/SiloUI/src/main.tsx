@@ -5,6 +5,10 @@ import { FixtureApp } from './fixtures/fixture-app'
 import { isTauri } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { DesktopStatusFixture } from './fixtures/desktop-fixtures'
+import { initializeTheme } from './features/preferences/theme'
+
+const stopTheme = initializeTheme()
+if (import.meta.hot) import.meta.hot.dispose(stopTheme)
 
 const statusPanel = isTauri() && getCurrentWindow().label === 'status'
 

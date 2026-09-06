@@ -5,7 +5,6 @@ fn main() {
             "hide_status",
             "resize_status",
             "quit_app",
-            "preview_status",
             "update_tray",
         ]),
     ))
