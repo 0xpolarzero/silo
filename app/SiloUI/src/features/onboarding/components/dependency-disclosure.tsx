@@ -1,10 +1,10 @@
 import { AlertCircle, Check, RotateCw } from "lucide-react"
 import { useState } from "react"
 
-import { DisclosureIndicator, disclosureTriggerStateClass } from "@/components/disclosure-indicator"
-import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
+import { DisclosureHeader } from "@/components/disclosure-header"
+import { ListCard, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { SetupNotice } from "@/features/onboarding/components/setup-notice"
 import type { DependencyGroupView } from "@/features/onboarding/model/onboarding-state"
 
@@ -18,8 +18,7 @@ export function DependencyDisclosure({ group, onRepairRuntime }: { group: Depend
   return (
     <Collapsible open={open} onOpenChange={setOpen} asChild>
       <ListCard>
-        <ListRow
-          className="relative pr-8 hover:bg-muted/35 focus-within:bg-muted/35"
+        <DisclosureHeader
           icon={
             <ListRowIcon className={group.status === "failed" ? "bg-destructive/10 text-destructive" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"}>
               {group.status === "failed"
@@ -27,12 +26,8 @@ export function DependencyDisclosure({ group, onRepairRuntime }: { group: Depend
                 : <Check className="size-3.5" aria-label="All checks passed" />}
             </ListRowIcon>
           }
-          title={
-            <CollapsibleTrigger className={`${disclosureTriggerStateClass} text-left outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-ring/60`}>
-              {group.title}
-              <span className="absolute top-1/2 right-2 -translate-y-1/2"><DisclosureIndicator /></span>
-            </CollapsibleTrigger>
-          }
+          title={group.title}
+          label={group.title}
           detail={caption}
         />
         <CollapsibleContent className="collapsible-content-motion">
