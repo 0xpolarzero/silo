@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react"
-import { ChevronRight, CircleAlert, Code, ExternalLink, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronRight, CircleAlert, Code, ExternalLink, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
 import { CopyButton } from "@/components/copy-button"
@@ -162,7 +162,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(machine.name)}><Terminal /></SandboxAction>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} onClick={() => setFolderWorkspace(machine.id)}><Code /></SandboxAction>
                         </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => actions.startWorkspace(machine.name)}><Play /></SandboxAction>
-                          : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: machine.name })}><PanelTop /></SandboxAction>)}
+                          : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: machine.name })}><SiloMark /></SandboxAction>)}
                     <WorkspaceMenu workspace={workspace} source={source} actions={actions} onFolders={() => setFolderWorkspace(machine.id)} onConfirm={(action) => setConfirmation({ workspace: machine.name, action })} />
                   </>}
                 />
@@ -188,7 +188,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
         </div>}
       </div>
       <footer className="flex shrink-0 items-center justify-between border-t px-2 py-2">
-        <Button variant="ghost" size="sm" onClick={() => actions.openSilo()}><PanelTop data-icon="inline-start" /> Open Silo…</Button>
+        <Button variant="ghost" size="sm" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
         <SandboxAction label="Quit Silo" onClick={actions.quit}><Power /></SandboxAction>
       </footer>
     </>
