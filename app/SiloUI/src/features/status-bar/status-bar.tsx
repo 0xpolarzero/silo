@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react"
-import { ChevronRight, CircleAlert, Code, ExternalLink, Globe, Loader2, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal } from "lucide-react"
+import { ChevronRight, CircleAlert, Code, ExternalLink, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
 import { CopyButton } from "@/components/copy-button"
@@ -195,6 +195,21 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
   )
 }
 
+function StatusBarIcon({ tone, reduceMotion }: { tone: ReturnType<typeof statusBarHealth>["tone"]; reduceMotion: boolean }) {
+  const color = tone === "error" ? "text-destructive"
+    : tone === "warning" || tone === "busy" ? "text-amber-700 dark:text-amber-400"
+      : tone === "neutral" ? "text-muted-foreground" : "text-foreground"
+  const Indicator = tone === "busy" ? LoaderCircle : tone === "error" ? CircleAlert : tone === "warning" ? TriangleAlert : null
+  return (
+    <span className={cn("relative size-4", color)} aria-hidden="true">
+      <SiloMark className={cn("size-4", color, tone !== "success" && "[&_path]:stroke-current")} />
+      {Indicator && <span className="absolute -top-1 -right-1 grid size-3 place-items-center rounded-full bg-background ring-1 ring-background">
+        <Indicator strokeWidth={2.5} className={cn("size-2.5", tone === "busy" && !reduceMotion && "animate-spin motion-reduce:animate-none")} />
+      </span>}
+    </span>
+  )
+}
+
 export function StatusBar({ source, actions, defaultOpen = false }: { source: ApplicationSource; actions: StatusBarActions; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
   const content = useRef<HTMLDivElement>(null)
@@ -212,9 +227,8 @@ export function StatusBar({ source, actions, defaultOpen = false }: { source: Ap
     <TooltipProvider delayDuration={150}>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon-sm" className="relative rounded-md" aria-label="Silo status bar" title={`Silo · ${health.label}`}>
-            <SiloMark className="size-4" />
-            {(health.tone === "error" || health.tone === "warning") && <span className={cn("absolute top-0.5 right-0.5 size-1.5 rounded-full ring-2 ring-background", health.tone === "error" ? "bg-destructive" : "bg-amber-500")} aria-hidden="true" />}
+          <Button variant="ghost" size="icon-sm" className="relative rounded-md" aria-label="Silo status bar" aria-description={health.label} title={`Silo · ${health.label}`}>
+            <StatusBarIcon tone={health.tone} reduceMotion={source.preferences.reduceMotion} />
           </Button>
         </PopoverTrigger>
         <PopoverContent

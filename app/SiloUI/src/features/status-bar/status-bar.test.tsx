@@ -18,6 +18,38 @@ function setup(overrides: Partial<ApplicationSource> = {}) {
 }
 
 describe("status bar", () => {
+  it("updates the menu bar icon from loading to warning, error, and ready", () => {
+    const { source, actions, rerender } = setup()
+    const trigger = screen.getByRole("button", { name: "Silo status bar" })
+    const pushing = { ...source, repositoryPushOperations: [{ workspace: "dev", repositoryPath: "acme/silo", commitCount: 1, status: "pushing" as const }] }
+    rerender(<StatusBar source={pushing} actions={actions} />)
+    expect(trigger).toHaveAccessibleDescription("Working…")
+    expect(trigger.querySelector(".animate-spin")).toBeInTheDocument()
+    const warning = { ...pushing, workspaces: source.workspaces.map((workspace) => ({ ...workspace, freshness: "stale" as const })) }
+    rerender(<StatusBar source={warning} actions={actions} />)
+    expect(trigger).toHaveAccessibleDescription("Last known status")
+    expect(trigger.querySelector(".lucide-triangle-alert")).toBeInTheDocument()
+    expect(trigger.querySelector(".animate-spin")).not.toBeInTheDocument()
+    const failed = { ...warning, workspaces: warning.workspaces.map((workspace) => ({ ...workspace, state: "failed" as const })) }
+    rerender(<StatusBar source={failed} actions={actions} />)
+    expect(trigger.querySelector(".lucide-circle-alert")).toBeInTheDocument()
+    expect(trigger.querySelector(".lucide-triangle-alert")).not.toBeInTheDocument()
+    rerender(<StatusBar source={source} actions={actions} />)
+    expect(trigger).toHaveAccessibleDescription("Ready")
+    expect(trigger.querySelectorAll("svg")).toHaveLength(1)
+  })
+
+  it("keeps loading visible without animation when reduced motion is enabled", () => {
+    const fixture = applicationSourceForScenario("running", undefined, undefined, undefined, "installing")
+    const { source, actions, rerender } = setup({ ...fixture, preferences: { ...fixture.preferences, reduceMotion: true } })
+    const trigger = screen.getByRole("button", { name: "Silo status bar" })
+    expect(trigger).toHaveAccessibleDescription("Repairing…")
+    expect(trigger.querySelector(".lucide-loader-circle")).toBeInTheDocument()
+    expect(trigger.querySelector(".animate-spin")).not.toBeInTheDocument()
+    rerender(<StatusBar source={{ ...source, runtimeRepair: null, workspaces: [] }} actions={actions} />)
+    expect(trigger).toHaveAccessibleDescription("No sandboxes")
+  })
+
   it("shows shared sandbox status and opens the configured terminal, dismissing the popover", async () => {
     const { user, actions } = setup()
     expect(screen.getByRole("dialog", { name: "Silo" })).toBeInTheDocument()

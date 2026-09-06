@@ -2,9 +2,7 @@ import type { ApplicationSource, ApplicationWorkspace } from "@/features/applica
 
 export function statusBarHealth(source: ApplicationSource) {
   const repair = source.runtimeRepair
-  if (repair && repair.status !== "succeeded") {
-    return { label: repair.status === "repairing" ? "Repairing…" : "Needs repair", tone: repair.status === "repairing" ? "busy" : "error" } as const
-  }
+  if (repair && repair.status !== "succeeded" && repair.status !== "repairing") return { label: "Needs repair", tone: "error" } as const
   if (source.workspaces.some((workspace) => workspace.state === "failed" || workspace.attention?.level === "error")
     || source.sandboxConfigurationOperation?.status === "failed"
     || source.repositoryPushOperations.some(({ status }) => status === "failed")) {
@@ -12,10 +10,16 @@ export function statusBarHealth(source: ApplicationSource) {
   }
   if (source.workspaces.some(({ freshness }) => freshness === "stale")) return { label: "Last known status", tone: "warning" } as const
   if (source.workspaces.some(({ attention }) => attention?.level === "warning")) return { label: "Needs attention", tone: "warning" } as const
+  if (source.sandboxConfigurationOperation?.status === "awaiting-approval") return { label: "Approval needed", tone: "warning" } as const
+  if (repair?.status === "repairing") return { label: "Repairing…", tone: "busy" } as const
   if (source.workspaces.some(({ state }) => state === "starting")
     || source.sandboxConfigurationOperation?.status === "applying"
+    || source.repositoryPushOperations.some(({ status }) => status === "pushing")
+    || source.github.state === "connecting"
+    || source.github.workspaceOperations?.some(({ status }) => status === "applying")
     || source.activities.some(({ status }) => status === "running")) return { label: "Working…", tone: "busy" } as const
   if (source.workspaces.length === 0) return { label: "No sandboxes", tone: "neutral" } as const
+  if (source.workspaces.every(({ state }) => state === "stopped")) return { label: "All sandboxes stopped", tone: "neutral" } as const
   return { label: "Ready", tone: "success" } as const
 }
 

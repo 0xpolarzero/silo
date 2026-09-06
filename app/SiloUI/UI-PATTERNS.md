@@ -46,6 +46,11 @@ State and System fixtures use the app's existing snapshots. The Preview selector
 adds stale status, an empty list, and a long list. Repair and error notices and
 the footer remain visible while only the sandbox list scrolls.
 
+The menu bar keeps the Silo mark in every state. Loading adds a corner spinner;
+errors use red and a circled alert; warnings use amber and a triangle. An empty
+or stopped list uses a muted mark. Errors take precedence over warnings and
+loading, and the spinner respects reduced motion.
+
 The content reference is `../Silo/Sources/MonitorView.swift`: aggregate health,
 one runtime-repair action, sandbox shortcuts and overflow actions, folder and site
 selection, Open Silo, and Quit. TypeScript components and tokens own the design.
