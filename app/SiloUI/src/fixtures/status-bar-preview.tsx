@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
-import type { ApplicationSource } from "@/features/application/model/application-source"
+import type { ApplicationSource, RepositoryPushOperation } from "@/features/application/model/application-source"
 import { StatusBar } from "@/features/status-bar/status-bar"
+import { statusWorkspaceAvailability } from "@/features/status-bar/status-bar-model"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 import { statusBarSourceForFixture, type StatusBarFixtureMode } from "@/fixtures/status-bar-scenarios"
 
@@ -35,6 +36,22 @@ function completeOperation(source: ApplicationSource, operation: PreviewOperatio
   }
 }
 
+function completePush(source: ApplicationSource, operation: RepositoryPushOperation): ApplicationSource {
+  return {
+    ...source,
+    workspaces: source.workspaces.map((workspace) => workspace.machine.name === operation.workspace ? {
+      ...workspace,
+      repositories: workspace.repositories.map((repository) => repository.path === operation.repositoryPath ? {
+        ...repository,
+        ahead: Math.max(0, repository.ahead - operation.commitCount),
+      } : repository),
+    } : workspace),
+    repositoryPushOperations: source.repositoryPushOperations.map((current) => current.workspace === operation.workspace && current.repositoryPath === operation.repositoryPath
+      ? { ...operation, status: "succeeded" }
+      : current),
+  }
+}
+
 export function StatusBarPreview({ fixtureKey, ...props }: StatusBarPreviewProps) {
   // Every fixture selection starts a new preview, including any simulated quit.
   return <StatusBarPreviewSession key={`${fixtureKey ?? "source"}:${props.mode ?? "source"}`} {...props} />
@@ -44,6 +61,7 @@ function StatusBarPreviewSession({ source, mode, onOpenSilo }: StatusBarPreviewP
   const [settledSnapshot, setSnapshot] = useState(() => statusBarSourceForFixture(source, mode))
   const [pendingOperations, setPendingOperations] = useState<PreviewOperation[]>([])
   const operationTimers = useRef(new Map<string, number>())
+  const pendingPushes = useRef(new Map<string, { operation: RepositoryPushOperation; timer: number }>())
   const [launched, setLaunched] = useState(true)
   const [acknowledgement, setAcknowledgement] = useState("")
   const snapshot: ApplicationSource = {
@@ -70,9 +88,12 @@ function StatusBarPreviewSession({ source, mode, onOpenSilo }: StatusBarPreviewP
 
   useEffect(() => {
     const timers = operationTimers.current
+    const pushes = pendingPushes.current
     return () => {
       timers.forEach((timer) => window.clearTimeout(timer))
       timers.clear()
+      pushes.forEach(({ timer }) => window.clearTimeout(timer))
+      pushes.clear()
     }
   }, [])
 
@@ -91,13 +112,47 @@ function StatusBarPreviewSession({ source, mode, onOpenSilo }: StatusBarPreviewP
   }
 
   function settleOperations() {
-    const next = pendingOperations.reduce(completeOperation, { ...settledSnapshot, activities: source.activities })
+    let next = pendingOperations.reduce(completeOperation, { ...settledSnapshot, activities: source.activities })
+    pendingPushes.current.forEach(({ operation, timer }) => {
+      window.clearTimeout(timer)
+      next = completePush(next, operation)
+    })
+    pendingPushes.current.clear()
     operationTimers.current.forEach((timer) => window.clearTimeout(timer))
     operationTimers.current.clear()
     setPendingOperations([])
     setSnapshot(next)
     return next
   }
+
+  function pushRepository(name: string, repositoryPath: string) {
+    const key = JSON.stringify([name, repositoryPath])
+    if (pendingPushes.current.has(key)) return
+    const workspace = snapshot.workspaces.find(({ machine }) => machine.name === name)
+    const repository = workspace?.repositories.find(({ path }) => path === repositoryPath)
+    if (!workspace || !repository || repository.ahead <= 0 || !statusWorkspaceAvailability(workspace, snapshot).canOpen) return
+    if (snapshot.repositoryPushOperations.some((operation) => operation.workspace === name && operation.repositoryPath === repositoryPath && operation.status === "pushing")) return
+    const operation: RepositoryPushOperation = { workspace: name, repositoryPath, commitCount: repository.ahead, status: "pushing" }
+    setSnapshot((current) => ({
+      ...current,
+      repositoryPushOperations: [
+        ...current.repositoryPushOperations.filter((pending) => pending.workspace !== name || pending.repositoryPath !== repositoryPath),
+        operation,
+      ],
+    }))
+    const timer = window.setTimeout(() => {
+      setSnapshot((current) => completePush(current, operation))
+      pendingPushes.current.delete(key)
+    }, 900)
+    pendingPushes.current.set(key, { operation, timer })
+  }
+
+  const dismissRepositoryPush = useCallback((workspace: string, repositoryPath: string) => {
+    setSnapshot((current) => ({
+      ...current,
+      repositoryPushOperations: current.repositoryPushOperations.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath || operation.status !== "succeeded"),
+    }))
+  }, [])
 
   const actions: StatusBarActions = {
     openSilo: (route) => onOpenSilo(settleOperations(), route),
@@ -116,6 +171,8 @@ function StatusBarPreviewSession({ source, mode, onOpenSilo }: StatusBarPreviewP
     openTerminal: (name) => setAcknowledgement(`Preview: open ${snapshot.preferences.terminal} in ${name}.`),
     openEditor: (name, path) => setAcknowledgement(`Preview: open ${path} in ${snapshot.preferences.editor} on ${name}.`),
     openSite: (name, port) => setAcknowledgement(`Preview: open ${name} port ${port} in ${snapshot.preferences.browser}.`),
+    pushRepository,
+    dismissRepositoryPush,
   }
 
   return (

@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react"
-import { ChevronRight, CircleAlert, Code, ExternalLink, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronRight, CircleAlert, Code, ExternalLink, GitBranch, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
 import { CopyButton } from "@/components/copy-button"
@@ -9,7 +9,9 @@ import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
+import { RepositoryPushFeedback } from "@/features/application/components/repository-push-feedback"
 import type { ApplicationSource, ApplicationWorkspace } from "@/features/application/model/application-source"
+import { commitLabel } from "@/features/application/model/repository-push"
 import { SandboxAction, SandboxListItem, SandboxListRow } from "@/features/sandboxes/components/sandbox-list"
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
@@ -75,7 +77,7 @@ function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: {
   )
 }
 
-function OperationIssue({ title, detail, actionLabel, onReview }: { title: string; detail: string; actionLabel: string; onReview: () => void }) {
+function OperationIssue({ title, detail, actionLabel, onReview, retry }: { title: string; detail: string; actionLabel: string; onReview: () => void; retry?: ReactNode }) {
   return (
     <ListCard className="mb-2" role="alert" aria-label={title}>
       <ListRow
@@ -83,9 +85,42 @@ function OperationIssue({ title, detail, actionLabel, onReview }: { title: strin
         title={title}
         detail={detail}
         detailClassName="whitespace-normal break-words"
-        actions={<Button variant="outline" size="xs" aria-label={actionLabel} onClick={onReview}>Details</Button>}
+        actions={<div className="flex shrink-0 items-center gap-1">
+          <Button variant="outline" size="xs" aria-label={actionLabel} onClick={onReview}>Details</Button>
+          {retry}
+        </div>}
       />
     </ListCard>
+  )
+}
+
+function RepositoryPushes({ workspace, source, actions }: { workspace: ApplicationWorkspace; source: ApplicationSource; actions: StatusBarActions }) {
+  const repositories = workspace.repositories.flatMap((repository) => {
+    const operation = source.repositoryPushOperations.find((push) => push.workspace === workspace.machine.name && push.repositoryPath === repository.path)
+    return operation?.status !== "failed" && (operation || repository.ahead > 0) ? [{ repository, operation }] : []
+  })
+  if (!repositories.length) return null
+  const canPush = statusWorkspaceAvailability(workspace, source).canOpen
+  return (
+    <div className="grid gap-1 pr-2 pb-2 pl-10">
+      {repositories.map(({ repository, operation }) => (
+        <div key={repository.path} className="flex min-h-6 min-w-0 items-center gap-2" role="group" aria-label={`${repository.path} in ${workspace.machine.name}`}>
+          <span className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted-foreground" title={repository.path}>
+            <GitBranch className="size-3 shrink-0" aria-hidden="true" />
+            <span className="truncate">{repository.path}</span>
+          </span>
+          {operation ? <RepositoryPushFeedback
+            operation={operation}
+            workspace={workspace.machine.name}
+            repositoryPath={repository.path}
+            onRetry={() => actions.pushRepository(workspace.machine.name, repository.path)}
+            onDismiss={actions.dismissRepositoryPush}
+          /> : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${workspace.machine.name}`} onClick={() => { if (canPush) actions.pushRepository(workspace.machine.name, repository.path) }}>
+            Push {commitLabel(repository.ahead)}
+          </Button>}
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -118,13 +153,18 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
           actionLabel="Review sandbox changes"
           onReview={() => actions.openSilo({ workspaceSection: "overview" })}
         />}
-        {failedPushes.map((operation) => <OperationIssue
-          key={`${operation.workspace}:${operation.repositoryPath}`}
-          title={`Push failed · ${operation.workspace}`}
-          detail={`${operation.repositoryPath} · ${operation.message}`}
-          actionLabel={`Review push failure for ${operation.workspace}, ${operation.repositoryPath}`}
-          onReview={() => actions.openSilo({ workspace: operation.workspace, workspaceSection: "files" })}
-        />)}
+        {failedPushes.map((operation) => {
+          const workspace = source.workspaces.find(({ machine }) => machine.name === operation.workspace)
+          const canRetry = workspace && workspace.repositories.some(({ path, ahead }) => path === operation.repositoryPath && ahead > 0) && statusWorkspaceAvailability(workspace, source).canOpen
+          return <OperationIssue
+            key={`${operation.workspace}:${operation.repositoryPath}`}
+            title={`Push failed · ${operation.workspace}`}
+            detail={`${operation.repositoryPath} · ${operation.message}`}
+            actionLabel={`Review push failure for ${operation.workspace}, ${operation.repositoryPath}`}
+            onReview={() => actions.openSilo({ workspace: operation.workspace, workspaceSection: "files" })}
+            retry={<Button variant="outline" size="xs" aria-label={`Retry push for ${operation.repositoryPath}`} disabled={!canRetry} onClick={() => { if (canRetry) actions.pushRepository(operation.workspace, operation.repositoryPath) }}><RotateCw />Retry</Button>}
+          />
+        })}
       </div>
       <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">
         {source.workspaces.length ? <ListCard className="border-0">
@@ -166,6 +206,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
                     <WorkspaceMenu workspace={workspace} source={source} actions={actions} onFolders={() => setFolderWorkspace(machine.id)} onConfirm={(action) => setConfirmation({ workspace: machine.name, action })} />
                   </>}
                 />
+                <RepositoryPushes workspace={workspace} source={source} actions={actions} />
                 {pending && <ListRowDetails label={`${pending.action === "stop" ? "Stop" : "Restart"} ${machine.name}?`} className="gap-2 pl-0">
                   <p className="text-[11px] text-muted-foreground">{pending.action === "stop" ? "Stop" : "Restart"} {machine.name}? Running processes will be interrupted.</p>
                   <div className="flex justify-end gap-1.5">

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -53,6 +53,105 @@ describe("status bar preview", () => {
       ]),
     }), undefined)
     expect(source.workspaces[0].stateDetail).toBe("Running for 2h 18m")
+  })
+
+  it("pushes the pending commits, clears success feedback, and hands off the updated repository", () => {
+    vi.useFakeTimers()
+    const source = applicationSourceForScenario("running")
+    const onOpenSilo = vi.fn()
+    const preview = render(<StatusBarPreview source={source} onOpenSilo={onOpenSilo} />)
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev" }))
+      expect(screen.getByText("Pushing 2 commits…")).toBeVisible()
+      expect(screen.queryByRole("button", { name: "Push 2 commits for acme/silo in dev" })).not.toBeInTheDocument()
+      expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
+
+      act(() => vi.advanceTimersByTime(900))
+      expect(screen.getByText("Pushed 2 commits.")).toBeVisible()
+      expect(screen.queryByText("Pushing 2 commits…")).not.toBeInTheDocument()
+      act(() => vi.advanceTimersByTime(4_000))
+      expect(screen.queryByText("Pushed 2 commits.")).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: "Push 2 commits for acme/silo in dev" })).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole("button", { name: "Open Silo…" }))
+      const result = onOpenSilo.mock.calls[0][0]
+      expect(result.workspaces[0].repositories).toEqual([
+        { ...source.workspaces[0].repositories[0], ahead: 0 },
+        source.workspaces[0].repositories[1],
+      ])
+      expect(result.repositoryPushOperations).toEqual([])
+      expect(source.workspaces[0].repositories[0].ahead).toBe(2)
+    } finally {
+      preview.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(["handoff", "quit"])("settles concurrent pushes before an early %s without changing unrelated operations", (action) => {
+    vi.useFakeTimers()
+    const base = applicationSourceForScenario("running")
+    const unrelated = { workspace: "personal", repositoryPath: "taylor/docs-site", commitCount: 1, status: "failed" as const, message: "Remote unavailable." }
+    const source = {
+      ...base,
+      workspaces: base.workspaces.map((workspace) => workspace.machine.name === "dev" ? {
+        ...workspace,
+        repositories: workspace.repositories.map((repository) => repository.path === "acme/design-system" ? { ...repository, ahead: 3 } : repository),
+      } : workspace),
+      repositoryPushOperations: [unrelated],
+    }
+    const onOpenSilo = vi.fn()
+    const preview = render(<StatusBarPreview source={source} onOpenSilo={onOpenSilo} />)
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev" }))
+      fireEvent.click(screen.getByRole("button", { name: "Push 3 commits for acme/design-system in dev" }))
+      fireEvent.click(screen.getByRole("button", { name: "Start playgrounds" }))
+      expect(screen.getByText("Pushing 2 commits…")).toBeVisible()
+      expect(screen.getByText("Pushing 3 commits…")).toBeVisible()
+      if (action === "quit") {
+        fireEvent.click(screen.getByRole("button", { name: "Quit Silo" }))
+        fireEvent.click(screen.getByRole("button", { name: "Relaunch Silo" }))
+        expect(screen.getByText("Pushed 2 commits.")).toBeVisible()
+        expect(screen.getByText("Pushed 3 commits.")).toBeVisible()
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Open Silo…" }))
+      const result = onOpenSilo.mock.calls[0][0]
+      expect(result.workspaces[0].repositories.map(({ ahead }: { ahead: number }) => ahead)).toEqual([0, 0])
+      expect(result.workspaces[1].state).toBe("running")
+      expect(result.workspaces[2]).toEqual(source.workspaces[2])
+      expect(result.repositoryPushOperations).toEqual([
+        unrelated,
+        { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "succeeded" },
+        { workspace: "dev", repositoryPath: "acme/design-system", commitCount: 3, status: "succeeded" },
+      ])
+      act(() => vi.advanceTimersByTime(900))
+      expect(onOpenSilo).toHaveBeenCalledTimes(1)
+    } finally {
+      preview.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it("retries a failed push and replaces the error with progress and success", () => {
+    vi.useFakeTimers()
+    const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "failed")
+    const onOpenSilo = vi.fn()
+    const preview = render(<StatusBarPreview source={source} onOpenSilo={onOpenSilo} />)
+    try {
+      expect(screen.getByText(/Push failed because the remote branch changed\./)).toBeVisible()
+      fireEvent.click(screen.getByRole("button", { name: "Retry push for acme/silo" }))
+      expect(screen.queryByText(/Push failed because the remote branch changed\./)).not.toBeInTheDocument()
+      expect(screen.getByText("Pushing 2 commits…")).toBeVisible()
+      act(() => vi.advanceTimersByTime(900))
+      expect(screen.getByText("Pushed 2 commits.")).toBeVisible()
+      fireEvent.click(screen.getByRole("button", { name: "Open Silo…" }))
+      expect(onOpenSilo.mock.calls[0][0].repositoryPushOperations).toEqual([
+        { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "succeeded" },
+      ])
+      expect(onOpenSilo.mock.calls[0][0].workspaces[0].repositories[0].ahead).toBe(0)
+    } finally {
+      preview.unmount()
+      vi.useRealTimers()
+    }
   })
 
   it("acknowledges host actions outside the popover and keeps quit local to the preview", async () => {

@@ -46,6 +46,12 @@ State and System fixtures use the app's existing snapshots. The Preview selector
 adds stale status, an empty list, and a long list. Repair and error notices and
 the footer remain visible while only the sandbox list scrolls.
 
+Repositories with outgoing commits add one compact line under their sandbox,
+with the repository name and a **Push N commits** action. Progress and the brief
+success message reuse the Files page's push feedback. Failures remain pinned
+above the list with Details and Retry. Push actions require a fresh, running
+sandbox; the preview simulates completion and carries updated counts into Silo.
+
 The menu bar keeps the Silo mark in every state. Loading adds a corner spinner;
 errors use red and a circled alert; warnings use amber and a triangle. An empty
 or stopped list uses a muted mark. Errors take precedence over warnings and

@@ -10,7 +10,7 @@ import type { StatusBarActions } from "./status-bar-types"
 function setup(overrides: Partial<ApplicationSource> = {}) {
   const source = { ...applicationSourceForScenario("complete"), activities: [], ...overrides }
   const actions: StatusBarActions = {
-    openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(),
+    openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
     startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(),
     openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(),
   }
@@ -18,6 +18,52 @@ function setup(overrides: Partial<ApplicationSource> = {}) {
 }
 
 describe("status bar", () => {
+  it("pushes the selected repository and shows source-confirmed progress and success", async () => {
+    const { user, actions, source, rerender } = setup()
+    const row = within(screen.getByRole("listitem", { name: "dev" }))
+    const push = row.getByRole("button", { name: "Push 2 commits for acme/silo in dev" })
+    expect(row.queryByText("acme/design-system")).not.toBeInTheDocument()
+    await user.click(push)
+    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo")
+    expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
+    const operation = { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "pushing" as const }
+    rerender(<StatusBar source={{ ...source, repositoryPushOperations: [operation] }} actions={actions} defaultOpen />)
+    expect(row.getByRole("status")).toHaveTextContent("Pushing 2 commits…")
+    expect(row.queryByRole("button", { name: /^Push / })).not.toBeInTheDocument()
+    rerender(<StatusBar source={{ ...source, workspaces: source.workspaces.map((workspace) => ({ ...workspace, repositories: workspace.repositories.map((repository) => ({ ...repository, ahead: 0 })) })), repositoryPushOperations: [{ ...operation, status: "succeeded" }] }} actions={actions} defaultOpen />)
+    expect(row.getByRole("status")).toHaveTextContent("Pushed 2 commits.")
+    expect(row.queryByRole("button", { name: /^Push / })).not.toBeInTheDocument()
+  })
+
+  it("identifies multiple repositories and dispatches only the selected one", async () => {
+    const source = applicationSourceForScenario("complete")
+    const { user, actions } = setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, repositories: workspace.repositories.map((repository) => ({ ...repository, ahead: 1 })) })) })
+    await user.click(screen.getByRole("button", { name: "Push 1 commit for acme/design-system in dev" }))
+    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/design-system")
+    expect(screen.getByRole("button", { name: "Push 1 commit for acme/silo in dev" })).toBeEnabled()
+  })
+
+  it.each(["stopped", "starting", "failed", "stale", "repair"])("keeps the commit count visible but blocks push when %s", (state) => {
+    const source = applicationSourceForScenario("complete")
+    setup({
+      workspaces: source.workspaces.map((workspace) => ({ ...workspace,
+        state: state === "stopped" || state === "starting" || state === "failed" ? state : workspace.state,
+        freshness: state === "stale" ? "stale" : workspace.freshness,
+      })),
+      runtimeRepair: state === "repair" ? { status: "needed", reason: "Runtime not verified" } : null,
+    })
+    expect(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev" })).toBeDisabled()
+  })
+
+  it("keeps a failed push pinned with a retry action", async () => {
+    const { user, actions } = setup({ repositoryPushOperations: [{ workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "failed", message: "Remote unavailable." }] })
+    const issue = screen.getByRole("alert", { name: "Push failed · dev" })
+    expect(issue).toHaveTextContent("Remote unavailable.")
+    await user.click(within(issue).getByRole("button", { name: "Retry push for acme/silo" }))
+    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo")
+    expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
+  })
+
   it("updates the menu bar icon from loading to warning, error, and ready", () => {
     const { source, actions, rerender } = setup()
     const trigger = screen.getByRole("button", { name: "Silo status bar" })
