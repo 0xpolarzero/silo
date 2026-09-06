@@ -2,7 +2,6 @@ import { CircleAlert, CircleCheck, Loader2, Pause, Play, RotateCw, Square } from
 
 import { ListRowIcon } from "@/components/list-row"
 import { Progress } from "@/components/ui/progress"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { SetupMachineConfiguration, SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import type {
@@ -13,23 +12,15 @@ import type {
   WorkspaceState,
 } from "@/features/application/model/application-source"
 import { MachineList } from "@/features/sandboxes/components/machine-list"
-import { SandboxAction, type SandboxIconState, type SandboxRowTone } from "@/features/sandboxes/components/sandbox-list"
+import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/components/sandbox-list"
+
+import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
+import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
 
 const attentionPriority: Record<SandboxIconState, number> = {
   error: 0,
   warning: 1,
   normal: 2,
-}
-
-function iconState(workspace?: ApplicationWorkspace): SandboxIconState {
-  if (workspace?.state === "failed") return "error"
-  return workspace?.attention?.level ?? "normal"
-}
-
-function rowTone(workspace?: ApplicationWorkspace): SandboxRowTone {
-  if (workspace?.state === "failed" || workspace?.attention?.level === "error") return "error"
-  if (workspace?.attention?.level === "warning") return "warning"
-  return workspace?.state ?? "stopped"
 }
 
 interface ConfigurationRowView {
@@ -208,27 +199,6 @@ function WorkspaceActions({ machine, state, actions, disabled = false }: { machi
   )
 }
 
-function SecretChangesLabel({ workspace, state, secrets }: { workspace: string; state: WorkspaceState; secrets: string[] }) {
-  const stopped = state === "stopped"
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          role="note"
-          tabIndex={0}
-          aria-label={stopped ? `Secret changes apply on next start for ${workspace}` : `Restart required for ${workspace}`}
-          className="shrink-0 cursor-help rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 outline-none focus-visible:ring-2 focus-visible:ring-ring/60 dark:text-amber-400"
-        >
-          {stopped ? "Applies on next start" : "Restart required"}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent className="break-words">
-        {stopped ? "Start" : "Restart"} {workspace} to apply secret changes: {secrets.join(", ")}.
-      </TooltipContent>
-    </Tooltip>
-  )
-}
-
 export function OverviewPage({
   source,
   actions,
@@ -266,7 +236,7 @@ export function OverviewPage({
             const configuration = workspace && configurationOperation
               ? configurationRowView(workspace, committedWorkspaces.get(machine.id), configurationOperation)
               : undefined
-            return attentionPriority[configuration?.status === "failed" ? "error" : iconState(workspace)]
+            return attentionPriority[configuration?.status === "failed" ? "error" : workspaceIconState(workspace)]
           }}
           getRowPresentation={(machine) => {
             const workspace = workspaces.get(machine.id)
@@ -277,7 +247,7 @@ export function OverviewPage({
             const badge = pendingSecrets.length > 0
               ? <SecretChangesLabel workspace={machine.name} state={state} secrets={pendingSecrets} />
               : undefined
-            const visualState = iconState(workspace)
+            const visualState = workspaceIconState(workspace)
             const configuration = workspace && configurationOperation
               ? configurationRowView(workspace, committedWorkspaces.get(machine.id), configurationOperation)
               : undefined
@@ -301,7 +271,7 @@ export function OverviewPage({
             return {
               badge,
               iconState: visualState,
-              tone: rowTone(workspace),
+              tone: workspaceRowTone(workspace),
               detail: (
                 <span title={workspace?.attention?.message}>
                   <WorkspaceStateLabel state={state} />
