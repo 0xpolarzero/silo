@@ -36,6 +36,7 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
   return <ApplicationApp
     source={fixture.source}
     initialRoute={initialRoute}
+    routeRequest={initialRoute}
     backup={backup}
     actions={{
       ...inactiveApplicationActions,

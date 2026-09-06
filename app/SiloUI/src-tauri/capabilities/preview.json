@@ -4,6 +4,7 @@
   "description": "The main window can drag, resize, minimize, and close itself.",
   "windows": ["main"],
   "permissions": [
+    "allow-preview-status",
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "core:window:allow-close",

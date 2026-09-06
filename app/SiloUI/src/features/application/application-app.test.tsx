@@ -44,6 +44,21 @@ function appPanel(name: string) {
 }
 
 describe("application", () => {
+  it("applies repeated status-panel routes without resetting the open application", async () => {
+    const source = applicationSourceForScenario("running")
+    const user = userEvent.setup()
+    const { rerender } = render(<ApplicationPreview source={source} />)
+    await user.click(screen.getByRole("button", { name: "Collapse sidebar" }))
+    rerender(<ApplicationPreview source={source} initialRoute={{ workspace: "dev", workspaceSection: "logs" }} />)
+    expect(within(appPanel("Sandboxes")).getByRole("button", { name: "Remove dev" })).toBeVisible()
+    expect(within(appNavigation()).getByRole("button", { name: "Logs" })).toHaveAttribute("aria-current", "page")
+    rerender(<ApplicationPreview source={source} initialRoute={{ workspace: "playgrounds", workspaceSection: "activity" }} />)
+    expect(within(appPanel("Sandboxes")).getByRole("button", { name: "Remove playgrounds" })).toBeVisible()
+    expect(within(appPanel("Sandboxes")).queryByRole("button", { name: "Remove dev" })).not.toBeInTheDocument()
+    expect(within(appNavigation()).getByRole("button", { name: "Activity" })).toHaveAttribute("aria-current", "page")
+    expect(appNavigation()).toHaveAttribute("data-collapsed", "true")
+  })
+
   it("collapses the sidebar to labelled icons and keeps every destination usable", async () => {
     const { user } = renderApplication()
     const navigation = within(appNavigation())

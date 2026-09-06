@@ -8,4 +8,11 @@ edition = "2021"
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "2.11.3", features = [] }
+tauri = { version = "2.11.3", features = ["image-png"] }
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri = { version = "2.11.3", features = ["tray-icon"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3.6"

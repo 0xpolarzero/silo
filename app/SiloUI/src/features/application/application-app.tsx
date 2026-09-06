@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
 
 import type { BackupController } from "@/features/application/model/backup-source"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
@@ -66,7 +66,7 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
   }
 }
 
-export function ApplicationApp({ source, actions, backup, initialRoute }: { source: ApplicationSource; actions: ApplicationActions; backup: BackupController; initialRoute?: ApplicationInitialRoute }) {
+export function ApplicationApp({ source, actions, backup, initialRoute, routeRequest }: { source: ApplicationSource; actions: ApplicationActions; backup: BackupController; initialRoute?: ApplicationInitialRoute; routeRequest?: ApplicationInitialRoute }) {
   const activeRuntimeRepair = source.runtimeRepair?.status === "succeeded" ? null : source.runtimeRepair
   const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute)
   const { tab: activeTab, workspaceSection, settingsSection } = navigation
@@ -187,12 +187,21 @@ export function ApplicationApp({ source, actions, backup, initialRoute }: { sour
 
   function navigateCommand(route: ApplicationInitialRoute) {
     if (route.workspaceSection && route.workspaceSection !== "overview") {
-      setSelectedWorkspaceIds(new Set(route.workspace ? [route.workspace] : []))
+      setSelectedWorkspaceIds(new Set(source.workspaces
+        .filter(({ machine }) => machine.id === route.workspace || machine.name === route.workspace)
+        .map(({ machine }) => machine.id)))
     }
     if (route.workspaceSection) navigation.selectWorkspaceSection(route.workspaceSection)
     else if (route.settingsSection) navigation.selectSettingsSection(route.settingsSection)
     else if (route.tab) navigation.selectTab(route.tab)
   }
+
+  const navigateRequested = useEffectEvent(navigateCommand)
+  useEffect(() => {
+    // Apply an external status-panel navigation request to the existing window.
+    // oxlint-disable-next-line react/set-state-in-effect
+    if (routeRequest) navigateRequested(routeRequest)
+  }, [routeRequest])
 
   return (
     <ApplicationShell

@@ -1,3 +1,4 @@
+import { invoke, isTauri } from "@tauri-apps/api/core"
 import { backupFixtureModes, type BackupFixtureMode } from "@/fixtures/application-backup"
 import type { GitHubFixtureState, ScenarioName } from "@/fixtures/scenarios"
 import { githubFixtureStates, scenarioNames } from "@/fixtures/scenarios"
@@ -34,6 +35,10 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
   statusBarMode?: StatusBarFixtureMode
 }) {
   function selectFixture(parameter: string, value: string) {
+    if (isTauri() && parameter === "view" && value === "status-bar") {
+      void invoke("preview_status").catch(console.error)
+      return
+    }
     const url = new URL(window.location.href)
     if (value === "source") url.searchParams.delete(parameter)
     else url.searchParams.set(parameter, value)

@@ -22,11 +22,27 @@
         "trafficLightPosition": { "x": 12, "y": 24 },
         "visible": false,
         "label": "main"
+      },
+      {
+        "label": "status",
+        "title": "Silo",
+        "url": "index.html?native-status",
+        "width": 380,
+        "height": 320,
+        "visible": false,
+        "decorations": false,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "shadow": true
       }
     ],
     "security": {
       "capabilities": [
-        "preview"
+        "preview", "status", "fixture-events"
       ],
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost",
       "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420"

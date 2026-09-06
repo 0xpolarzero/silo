@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "fixture-events",
+  "description": "The two local preview windows exchange temporary fixture snapshots and navigation requests.",
+  "windows": ["main", "status"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "core:event:allow-emit-to"]
+}

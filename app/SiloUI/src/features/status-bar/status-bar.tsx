@@ -125,7 +125,7 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
   )
 }
 
-function StatusBarContent({ source, actions, focusContent }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void }) {
+export function StatusBarContent({ source, actions, focusContent }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void }) {
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<{ workspace: string; action: "stop" | "restart" } | null>(null)
   const repair = source.runtimeRepair && source.runtimeRepair.status !== "succeeded" ? source.runtimeRepair : null

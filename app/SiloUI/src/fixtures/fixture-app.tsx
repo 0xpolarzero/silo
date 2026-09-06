@@ -21,6 +21,7 @@ import { surfaceFromSearch } from "@/fixtures/surfaces"
 import { StatusBarPreview } from "@/fixtures/status-bar-preview"
 import { statusBarFixtureModeFromSearch } from "@/fixtures/status-bar-scenarios"
 import type { StatusBarRoute } from "@/features/status-bar/status-bar-types"
+import { useDesktopFixtures } from "./use-desktop-fixtures"
 
 export function FixtureApp() {
   const [surface, setSurface] = useState(() => surfaceFromSearch(window.location.search))
@@ -37,6 +38,17 @@ export function FixtureApp() {
   const backupMode = backupFixtureModeFromSearch(window.location.search)
   const statusBarMode = statusBarFixtureModeFromSearch(window.location.search)
   const [activityStep, setActivityStep] = useState(0)
+  const fixtureSource = completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode)
+  useDesktopFixtures({ source: fixtureSource, mode: statusBarMode },
+    (source) => setStatusBarHandoff((current) => ({ source, route: current?.route })),
+    (route) => {
+      setStatusBarHandoff((current) => ({ source: current?.source ?? fixtureSource, route }))
+      const url = new URL(window.location.href)
+      url.searchParams.set("view", "app")
+      window.history.replaceState(null, "", url)
+      setSurface("app")
+    },
+  )
 
   useEffect(() => {
     const stepCount = activityFixtureStepCount(activityMode)
@@ -59,7 +71,7 @@ export function FixtureApp() {
           key={`${scenario}:${githubState ?? "source"}:${workspaceMode ?? "source"}:${sandboxConfigurationMode ?? "source"}:${systemIssueMode ?? "source"}:${repositoryPushMode ?? "source"}:${activityMode ?? "source"}:${githubManagementMode ?? "source"}`}
           backupPreviewMode={backupMode}
           initialRoute={statusBarHandoff?.route}
-          source={statusBarHandoff?.source ?? (completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode))}
+          source={statusBarHandoff?.source ?? fixtureSource}
         />
       ) : surface === "status-bar" ? (
         <StatusBarPreview

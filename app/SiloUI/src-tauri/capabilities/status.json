@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "status",
+  "description": "The status panel can resize and dismiss itself, open the main window, update the tray, and quit Silo.",
+  "windows": ["status"],
+  "permissions": ["allow-open-main", "allow-hide-status", "allow-resize-status", "allow-quit-app", "allow-update-tray"]
+}
