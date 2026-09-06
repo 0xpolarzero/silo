@@ -109,7 +109,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
         <h1 className="flex-1 text-sm font-semibold">Silo</h1>
         {stale && <SandboxAction label="Retry sandbox status" onClick={actions.refresh}><RotateCw /></SandboxAction>}
       </header>
-      <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">
+      <div className="shrink-0 px-2">
         {repair && <ListCard className="mb-2">
           <ListRow
             icon={<ListRowIcon className={repair.status === "repairing" ? undefined : "bg-destructive/10 text-destructive"}>{repair.status === "repairing" ? <Loader2 className="size-3.5 animate-spin" /> : <CircleAlert className="size-3.5" />}</ListRowIcon>}
@@ -131,6 +131,8 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
           actionLabel={`Review push failure for ${operation.workspace}, ${operation.repositoryPath}`}
           onReview={() => actions.openSilo({ workspace: operation.workspace, workspaceSection: "files" })}
         />)}
+      </div>
+      <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">
         {source.workspaces.length ? <ListCard>
           <ol aria-label="Sandboxes" className="divide-y">
             {source.workspaces.map((workspace) => {
