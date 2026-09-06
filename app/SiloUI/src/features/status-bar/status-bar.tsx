@@ -127,7 +127,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
         />)}
       </div>
       <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">
-        {source.workspaces.length ? <ListCard>
+        {source.workspaces.length ? <ListCard className="border-0">
           <ol aria-label="Sandboxes" className="divide-y">
             {source.workspaces.map((workspace) => {
               const { machine } = workspace
