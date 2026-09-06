@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react"
-import { ChevronRight, CircleAlert, Code, ExternalLink, Globe, Loader2, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronRight, CircleAlert, Code, ExternalLink, Globe, Loader2, Monitor, MoreHorizontal, PanelTop, Play, Power, RotateCw, Server, Square, Terminal } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
 import { CopyButton } from "@/components/copy-button"
@@ -160,7 +160,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
                   detailClassName="overflow-visible whitespace-normal"
                   actions={<>
                     {!availability.busy && !repair && (review
-                      ? <SandboxAction label={`Review ${machine.name}`} onClick={() => actions.openSilo({ workspace: machine.name, workspaceSection: "logs" })}><TriangleAlert /></SandboxAction>
+                      ? <SandboxAction label={`See logs for ${machine.name}`} onClick={() => actions.openSilo({ workspace: machine.name, workspaceSection: "logs" })}><Terminal /></SandboxAction>
                       : workspace.freshness === "stale" ? <SandboxAction label={`Retry ${machine.name} status`} onClick={actions.refresh}><RotateCw /></SandboxAction>
                         : availability.canOpen ? <>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(machine.name)}><Terminal /></SandboxAction>

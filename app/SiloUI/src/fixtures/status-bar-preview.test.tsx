@@ -116,4 +116,15 @@ describe("status bar preview", () => {
     expect(screen.getByRole("region", { name: "System issue" })).toBeVisible()
     expect(screen.queryByRole("main", { name: "Status bar preview" })).not.toBeInTheDocument()
   })
+
+  it("opens the Logs item filtered to the sandbox with an error", async () => {
+    window.history.replaceState(null, "", "?view=status-bar&scenario=bootstrap-failure")
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole("button", { name: "See logs for dev" }))
+    const navigation = within(screen.getByRole("navigation", { name: "Silo navigation" }))
+    expect(navigation.getByRole("button", { name: "Logs" })).toHaveAttribute("aria-current", "page")
+    expect(screen.getByRole("button", { name: "Remove dev" })).toBeVisible()
+    expect(screen.queryByRole("main", { name: "Status bar preview" })).not.toBeInTheDocument()
+  })
 })

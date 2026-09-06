@@ -65,7 +65,7 @@ describe("status bar", () => {
     const { user, actions } = setup({ runtimeRepair: { status: "needed", reason: "Runtime not verified" } })
     expect(screen.getByText("Silo needs repair")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Open dev in Terminal" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /^Review / })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^See logs for / })).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Repair…" }))
     expect(actions.openSilo).toHaveBeenCalledWith({ tab: "system" })
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
