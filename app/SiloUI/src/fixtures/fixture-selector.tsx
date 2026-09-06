@@ -16,10 +16,11 @@ import {
 } from "@/fixtures/application-scenarios"
 import type { SurfaceName } from "@/fixtures/surfaces"
 import { surfaceNames } from "@/fixtures/surfaces"
+import { statusBarFixtureModes, type StatusBarFixtureMode } from "@/fixtures/status-bar-scenarios"
 
 import { ThemeToggle } from "@/features/onboarding/components/theme-toggle"
 
-export function FixtureSelector({ surface, scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, githubManagementMode, activityMode, backupMode }: {
+export function FixtureSelector({ surface, scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, githubManagementMode, activityMode, backupMode, statusBarMode }: {
   surface: SurfaceName
   scenario: ScenarioName
   githubState?: GitHubFixtureState
@@ -30,6 +31,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
   githubManagementMode?: GitHubManagementFixtureMode
   backupMode?: BackupFixtureMode
   activityMode?: ActivityFixtureMode
+  statusBarMode?: StatusBarFixtureMode
 }) {
   function selectFixture(parameter: string, value: string) {
     const url = new URL(window.location.href)
@@ -51,7 +53,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
           {surfaceNames.map((name) => <option key={name} value={name}>{name}</option>)}
         </select>
       </label>
-      {surface === "app" && (
+      {(surface === "app" || surface === "status-bar") && (
         <>
           <label className="flex items-center gap-2">
             State
@@ -65,7 +67,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
               {workspaceFixtureModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
             </select>
           </label>
-          <label className="flex items-center gap-2">
+          {surface === "app" && <label className="flex items-center gap-2">
             Change
             <select
               aria-label="Sandbox change fixture"
@@ -76,7 +78,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
               <option value="source">source</option>
               {sandboxConfigurationFixtureModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
             </select>
-          </label>
+          </label>}
           <label className="flex items-center gap-2">
             System
             <select
@@ -89,7 +91,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
               {systemIssueFixtureModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
             </select>
           </label>
-          <label className="flex items-center gap-2">
+          {surface === "app" && <><label className="flex items-center gap-2">
             Push
             <select
               aria-label="Repository push fixture"
@@ -135,7 +137,21 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
             >
               {backupFixtureModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
             </select>
-          </label>
+          </label></>}
+          {surface === "status-bar" && (
+            <label className="flex items-center gap-2">
+              Preview
+              <select
+                aria-label="Status bar fixture"
+                className="rounded border border-border bg-background px-1.5 py-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                value={statusBarMode ?? "source"}
+                onChange={(event) => selectFixture("status-bar", event.target.value)}
+              >
+                <option value="source">source</option>
+                {statusBarFixtureModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+              </select>
+            </label>
+          )}
         </>
       )}
       <label className="flex items-center gap-2">
@@ -149,7 +165,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
           {scenarioNames.map((name) => <option key={name} value={name}>{name}</option>)}
         </select>
       </label>
-      <label className="flex items-center gap-2">
+      {surface !== "status-bar" && <label className="flex items-center gap-2">
         GitHub
         <select
           aria-label="GitHub fixture state"
@@ -160,7 +176,7 @@ export function FixtureSelector({ surface, scenario, githubState, workspaceMode,
           <option value="source">source</option>
           {githubFixtureStates.map((state) => <option key={state} value={state}>{state}</option>)}
         </select>
-      </label>
+      </label>}
       <ThemeToggle />
     </aside>
   )

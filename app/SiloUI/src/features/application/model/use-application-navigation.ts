@@ -8,6 +8,8 @@ interface Location {
   settingsSection: SettingsSection
 }
 
+export type ApplicationInitialRoute = Partial<Location> & { workspace?: string }
+
 interface History {
   entries: Location[]
   index: number
@@ -34,9 +36,13 @@ function withoutSystemIssue(history: History): History {
   return { entries, index }
 }
 
-export function useApplicationNavigation(hasSystemIssue: boolean) {
+export function useApplicationNavigation(hasSystemIssue: boolean, initialRoute?: ApplicationInitialRoute) {
   const [storedHistory, setHistory] = useState<History>({
-    entries: [{ tab: "workspaces", workspaceSection: "overview", settingsSection: "general" }],
+    entries: [{
+      tab: initialRoute?.tab ?? "workspaces",
+      workspaceSection: initialRoute?.workspaceSection ?? "overview",
+      settingsSection: initialRoute?.settingsSection ?? "general",
+    }],
     index: 0,
   })
   const history = hasSystemIssue ? storedHistory : withoutSystemIssue(storedHistory)

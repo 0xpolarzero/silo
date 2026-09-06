@@ -4,7 +4,7 @@ import type { BackupFixtureMode } from "@/fixtures/application-backup"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { ApplicationShell, type ApplicationNavigationLoading } from "@/features/application/components/application-shell"
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, RuntimeRepairPresentation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
-import { useApplicationNavigation } from "@/features/application/model/use-application-navigation"
+import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { BackupPage } from "@/features/application/pages/backup-page"
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
@@ -64,12 +64,16 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
   }
 }
 
-export function ApplicationApp({ source, actions, backupPreviewMode }: { source: ApplicationSource; actions: ApplicationActions; backupPreviewMode?: BackupFixtureMode }) {
+export function ApplicationApp({ source, actions, backupPreviewMode, initialRoute }: { source: ApplicationSource; actions: ApplicationActions; backupPreviewMode?: BackupFixtureMode; initialRoute?: ApplicationInitialRoute }) {
   const activeRuntimeRepair = source.runtimeRepair?.status === "succeeded" ? null : source.runtimeRepair
-  const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair))
+  const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute)
   const { tab: activeTab, workspaceSection, settingsSection } = navigation
   const [workspaces, setWorkspaces] = useState(() => source.workspaces.map((workspace) => ({ ...workspace, machine: { ...workspace.machine } })))
-  const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<Set<string>>(() => new Set())
+  const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<Set<string>>(() => new Set(
+    source.workspaces
+      .filter(({ machine }) => machine.name === initialRoute?.workspace || machine.id === initialRoute?.workspace)
+      .map(({ machine }) => machine.id),
+  ))
   const [logQuery, setLogQuery] = useState("")
   const [reduceMotion, setReduceMotion] = useState(source.preferences.reduceMotion)
   const [sandboxConfigurationOperation, setSandboxConfigurationOperation] = useState<SandboxConfigurationOperation | null>(source.sandboxConfigurationOperation)
