@@ -26,6 +26,7 @@ and expanded states. Avoid adding page-specific title or caption sizes.
 | General | Startup, polling, application preferences, and accessibility settings. |
 | Notifications | Main toggle and alert categories. |
 | System issue | Repair header and expanded details; ordered repair steps share the icon tile. |
+| Status bar | Sandbox rows, status labels, secret-change tooltips, repair row, and inline lifecycle confirmation use the same app components. |
 
 ## Specialized layouts reviewed
 
@@ -36,5 +37,21 @@ states are centered explanations. Inline operation feedback and temporary
 repair notices remain compact status messages within their owning surface.
 These do not need a two-line record card.
 
-Onboarding keeps its existing larger account and application preference
-presentation through the shared components' `compact` options.
+Onboarding uses the same compact account and application preference rows.
+
+## Status bar preview
+
+Open `?view=status-bar` or choose **status-bar** in the development View selector.
+State and System fixtures use the app's existing snapshots. The Preview selector
+adds stale status, an empty list, and a long list. The header and footer remain
+visible while the sandbox list scrolls.
+
+The content reference is `../Silo/Sources/MonitorView.swift`: aggregate health,
+one runtime-repair action, sandbox shortcuts and overflow actions, folder and site
+selection, Open Silo, and Quit. TypeScript components and tokens own the design.
+Freshness, busy state, and repair state gate quick actions. Repair appears once
+above the list. The editor picker browses sandbox folders, not host folders.
+
+Lifecycle progress and host handoffs are UI simulations. Terminal, editor, site,
+and Quit actions have no native effects in this preview. Open Silo navigates to
+the existing app surface and carries the selected sandbox and simulated state.

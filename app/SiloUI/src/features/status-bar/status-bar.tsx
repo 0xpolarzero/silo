@@ -114,7 +114,7 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
               const pending = confirmation?.workspace === machine.name ? confirmation : null
               const pendingSecrets = machine.kind === "vm" ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
               const activity = source.activities.find((item) => item.category === "sandbox" && item.workspace === machine.name && item.status === "running")
-              const review = workspace.state === "failed" || workspace.attention?.level === "error" || Boolean(repair)
+              const review = workspace.state === "failed" || workspace.attention?.level === "error"
               const detail = workspace.freshness === "stale" ? "Last known status" : workspace.attention?.message
               return <SandboxListItem key={machine.id} aria-label={machine.name} aria-busy={availability.busy || undefined}>
                 <SandboxListRow
@@ -134,8 +134,8 @@ function StatusBarContent({ source, actions, focusContent }: { source: Applicati
                   </span>}
                   detailClassName="overflow-visible whitespace-normal"
                   actions={<>
-                    {!availability.busy && (review
-                      ? <SandboxAction label={`Review ${machine.name}`} onClick={() => actions.openSilo(repair ? { tab: "system" } : { workspace: machine.name, workspaceSection: "logs" })}><TriangleAlert /></SandboxAction>
+                    {!availability.busy && !repair && (review
+                      ? <SandboxAction label={`Review ${machine.name}`} onClick={() => actions.openSilo({ workspace: machine.name, workspaceSection: "logs" })}><TriangleAlert /></SandboxAction>
                       : workspace.freshness === "stale" ? <SandboxAction label={`Retry ${machine.name} status`} onClick={actions.refresh}><RotateCw /></SandboxAction>
                         : availability.canOpen ? <>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(machine.name)}><Terminal /></SandboxAction>
