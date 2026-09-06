@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Activity, Archive, Box, Check, ChevronRight, CircleAlert, CircleCheck, Cloud, ExternalLink, File, Folder, GitBranch, KeyRound, Loader2, RotateCw, Search, TriangleAlert, Wrench } from "lucide-react"
 
 import { CopyButton } from "@/components/copy-button"
-import { DisclosureIndicator, disclosureTriggerStateClass } from "@/components/disclosure-indicator"
+import { DisclosureHeader } from "@/components/disclosure-header"
 import { FilterCombobox, type FilterOption } from "@/components/filter-combobox"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { StatusBadge } from "@/components/status-badge"
@@ -206,15 +206,13 @@ function Files({
           data-files-pane="repositories"
           data-pane-position="top"
         >
-          <div className="grid h-8 shrink-0 grid-cols-[minmax(0,1fr)_1.5rem] items-center gap-2 px-2" role="group" aria-label="Repository pane controls">
-            <span className="text-sm font-medium">Repositories</span>
-            <CollapsibleTrigger
-              aria-label={`${repositoriesOpen ? "Collapse" : "Expand"} repositories`}
-              className={`${disclosureTriggerStateClass} grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60`}
-            >
-              <DisclosureIndicator />
-            </CollapsibleTrigger>
-          </div>
+          <DisclosureHeader
+            className="h-8 shrink-0 px-2 py-0"
+            title="Repositories"
+            titleClassName="text-sm font-medium"
+            label={`${repositoriesOpen ? "Collapse" : "Expand"} repositories`}
+            controlsLabel="Repository pane controls"
+          />
           <CollapsibleContent className="file-pane-content-motion min-h-0 flex-1" data-files-pane-content="repositories">
             <div className="h-full overflow-y-auto overscroll-contain px-2 pt-2" data-files-pane-scroll="repositories">
               {repositories.length > 0 ? (
@@ -262,15 +260,13 @@ function Files({
           data-files-pane="file-tree"
           data-pane-position="bottom"
         >
-          <div className="grid h-8 shrink-0 grid-cols-[minmax(0,1fr)_1.5rem] items-center gap-2 px-2" role="group" aria-label="File tree pane controls">
-            <span className="text-sm font-medium">File tree</span>
-            <CollapsibleTrigger
-              aria-label={`${fileTreeOpen ? "Collapse" : "Expand"} file tree`}
-              className={`${disclosureTriggerStateClass} grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60`}
-            >
-              <DisclosureIndicator />
-            </CollapsibleTrigger>
-          </div>
+          <DisclosureHeader
+            className="h-8 shrink-0 px-2 py-0"
+            title="File tree"
+            titleClassName="text-sm font-medium"
+            label={`${fileTreeOpen ? "Collapse" : "Expand"} file tree`}
+            controlsLabel="File tree pane controls"
+          />
           <CollapsibleContent className="file-pane-content-motion min-h-0 flex-1" data-files-pane-content="file-tree">
             <div className="h-full overflow-y-auto overscroll-contain px-2 pt-2" data-files-pane-scroll="file-tree">
               <ul className="grid gap-0.5" aria-label="File tree">

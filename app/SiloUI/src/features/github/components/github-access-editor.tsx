@@ -2,15 +2,15 @@ import { useId, useMemo, useState, type ReactNode } from "react"
 import { Check, GitBranch, Info, LoaderCircle, RotateCcw, Search, Trash2, X } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
+import { DisclosureHeader } from "@/components/disclosure-header"
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { DisclosureIndicator, disclosureTriggerStateClass } from "@/components/disclosure-indicator"
 
 export type GitHubConnectionState = "disconnected" | "connecting" | "connected"
 
@@ -42,16 +42,13 @@ function WorkspaceDisclosure({ name, actions, children }: { name: string; action
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="collapsible-motion">
-      <div className="flex h-10 min-w-0 items-center gap-2 px-3">
-        <span className="min-w-0 flex-1 truncate text-xs font-semibold" title={name}>{name}</span>
-        {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
-        <CollapsibleTrigger
-          aria-label={`${open ? "Collapse" : "Expand"} ${name}`}
-          className={`${disclosureTriggerStateClass} grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60`}
-        >
-          <DisclosureIndicator />
-        </CollapsibleTrigger>
-      </div>
+      <DisclosureHeader
+        className="h-10 px-3 py-0"
+        title={<span title={name}>{name}</span>}
+        titleClassName="text-xs font-semibold"
+        label={`${open ? "Collapse" : "Expand"} ${name}`}
+        actions={actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
+      />
       <CollapsibleContent className="collapsible-content-motion">
         {children}
       </CollapsibleContent>
