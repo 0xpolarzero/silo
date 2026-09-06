@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useMemo, useState } from "react"
 
 import { TabsContent } from "@/components/ui/tabs"
 import { SetupComplete } from "@/features/onboarding/components/setup-complete"
@@ -18,10 +18,11 @@ import { GitHubStep } from "@/features/onboarding/steps/github-step"
 import { ReviewStep } from "@/features/onboarding/steps/review-step"
 import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
 
-interface OnboardingAppProps {
+export interface OnboardingAppProps {
   source: OnboardingSource
   actions: OnboardingActions
-  initialGitHubConnectionState?: GitHubConnectionState
+  githubConnectionState: GitHubConnectionState
+  completed: boolean
   repositoryOptions?: readonly string[]
   onOpenApp?: () => void
 }
@@ -126,27 +127,21 @@ function defaultRepositoryOptions(source: OnboardingSource): string[] {
 export function OnboardingApp({
   source,
   actions,
-  initialGitHubConnectionState,
+  githubConnectionState,
+  completed,
   repositoryOptions,
   onOpenApp,
 }: OnboardingAppProps) {
   const [activeStep, setActiveStep] = useState<OnboardingStep>("dependencies")
-  const [githubConnectionState, setGithubConnectionState] = useState<GitHubConnectionState>(
-    initialGitHubConnectionState ?? (source.githubPolicies.some(({ repositories }) => repositories.length > 0) ? "connected" : "disconnected"),
-  )
   const viewModel = useMemo(() => projectOnboarding(source, githubConnectionState), [githubConnectionState, source])
   const [workspaceSelections, setWorkspaceSelections] = useState(() => initialWorkspaceSelections(source))
   const [workspaceIdentities, setWorkspaceIdentities] = useState(() => initialWorkspaceIdentities(source))
   const [machines, setMachines] = useState<SetupMachineConfiguration[]>(() => source.machineConfigurations.map((machine) => ({ ...machine })))
   const [applicationPreferences, setApplicationPreferences] = useState(() => ({ ...source.applicationPreferences }))
-  const [finished, setFinished] = useState(false)
-  const connectTimer = useRef<number | undefined>(undefined)
   const availableRepositories = useMemo(
     () => uniqueRepositoryOptions(repositoryOptions ?? defaultRepositoryOptions(source)),
     [repositoryOptions, source],
   )
-
-  useEffect(() => () => window.clearTimeout(connectTimer.current), [])
 
   function move(offset: -1 | 1) {
     const current = onboardingSteps.indexOf(activeStep)
@@ -170,12 +165,6 @@ export function OnboardingApp({
     actions.saveMachineConfiguration(request)
   }
 
-  function connectGitHub() {
-    window.clearTimeout(connectTimer.current)
-    setGithubConnectionState("connecting")
-    connectTimer.current = window.setTimeout(() => setGithubConnectionState("connected"), 700)
-  }
-
   function updateWorkspaceSelections(workspace: string, selections: WorkspaceRepositorySelection[]) {
     setWorkspaceSelections((current) => ({ ...current, [workspace]: uniqueWorkspaceSelections(selections) }))
   }
@@ -193,7 +182,7 @@ export function OnboardingApp({
   }
 
   function continueSetup() {
-    if (finished) return
+    if (completed) return
     if (activeStep === "review") {
       if (viewModel.finishEnabled) {
         actions.finishSetup({
@@ -208,7 +197,6 @@ export function OnboardingApp({
             })),
           },
         })
-        setFinished(true)
       }
       return
     }
@@ -242,7 +230,7 @@ export function OnboardingApp({
       onStepChange={setActiveStep}
       onBack={() => move(-1)}
       onContinue={continueSetup}
-      completed={finished}
+      completed={completed}
       onOpenApp={onOpenApp}
     >
       <OnboardingPanel step="dependencies" activeStep={activeStep}>
@@ -264,14 +252,14 @@ export function OnboardingApp({
           workspaceSelections={workspaceSelections}
           workspaceIdentities={workspaceIdentities}
           currentHostGitIdentity={source.currentHostGitIdentity}
-          onConnect={connectGitHub}
+          onConnect={actions.connectGitHub}
           onWorkspaceSelectionsChange={updateWorkspaceSelections}
           onWorkspaceIdentityChange={updateWorkspaceIdentity}
           onResetWorkspaceIdentity={resetWorkspaceIdentity}
         />
       </OnboardingPanel>
       <OnboardingPanel step="review" activeStep={activeStep}>
-        {finished ? <SetupComplete machines={machines} githubSummary={githubSummary} /> : <ReviewStep
+        {completed ? <SetupComplete machines={machines} githubSummary={githubSummary} /> : <ReviewStep
           onEditStep={setActiveStep}
           workspaceRetryable={viewModel.workspaceProgress.retryable}
           queueItems={viewModel.queueItems}

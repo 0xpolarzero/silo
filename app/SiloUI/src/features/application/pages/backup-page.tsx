@@ -9,44 +9,36 @@ import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import type { ApplicationSource } from "@/features/application/model/application-source"
-import {
-  backupProgressSteps, backupRequiredGB, initialBackupArchive, restoreProgressSteps,
-  type BackupArchive, type BackupFixtureMode,
-} from "@/fixtures/application-backup"
+import type { BackupArchive, BackupController, BackupOperationKind } from "@/features/application/model/backup-source"
 
-type Operation = "backup" | "restore"
-type Flow =
+type Review =
   | { kind: "idle" }
   | { kind: "backup-review" }
   | { kind: "restore-review"; archive: BackupArchive; confirmation: string }
   | { kind: "invalid-archive"; archive: BackupArchive }
-  | { kind: "running"; operation: Operation; archive: BackupArchive; runningNames: string[]; step: number }
-  | { kind: "result"; operation: Operation; archive: BackupArchive; runningNames: string[]; outcome: "success" | "failed" | "restart-required" }
 
-interface BackupPageProps {
+export interface BackupPageProps {
   source: ApplicationSource
-  previewMode?: BackupFixtureMode
+  backup: BackupController
   onBusyChange?: (busy: boolean) => void
-  onRestoreComplete?: () => void
-  onRestartRequired?: (sandboxes: string[]) => void
 }
 
 export function BackupPage(props: BackupPageProps) {
-  // A replacement backup snapshot clears local previews and their pending timers.
-  return <BackupPageContent key={`${JSON.stringify(props.source.backup)}:${props.previewMode ?? "success"}`} {...props} />
+  return <BackupPageContent key={props.backup.state.snapshotId} {...props} />
 }
 
-function BackupPageContent({ source, previewMode = "success", onBusyChange, onRestoreComplete, onRestartRequired }: BackupPageProps) {
+function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
   const [destination, setDestination] = useState(source.backup.destination)
   const [pickingFolder, setPickingFolder] = useState(false)
   const [pickerError, setPickerError] = useState<string | null>(null)
-  const [archives, setArchives] = useState<BackupArchive[]>(() => source.backup.lastArchive ? [initialBackupArchive(source)] : [])
-  const [flow, setFlow] = useState<Flow>({ kind: "idle" })
+  const [review, setReview] = useState<Review>({ kind: "idle" })
   const [expandedArchive, setExpandedArchive] = useState<string | null>(null)
   const folderInput = useRef<HTMLInputElement>(null)
   const archiveInput = useRef<HTMLInputElement>(null)
   const backupButton = useRef<HTMLButtonElement>(null)
   const restoreButton = useRef<HTMLButtonElement>(null)
+  const { archives, operation, requiredSpaceGB } = backup.state
+  const flow = operation ?? review
   const busy = flow.kind === "running"
   const controlsDisabled = busy || pickingFolder
   const localSandboxes = source.workspaces.filter(({ machine }) => machine.kind === "vm")
@@ -58,38 +50,21 @@ function BackupPageContent({ source, previewMode = "success", onBusyChange, onRe
     return () => { if (busy) onBusyChange?.(false) }
   }, [busy, onBusyChange])
 
-  useEffect(() => {
-    if (flow.kind !== "running") return
-    // UI fixture only. No archive or sandbox is changed outside this preview.
-    const timer = window.setTimeout(() => {
-      if (flow.step < 3) {
-        setFlow({ ...flow, step: flow.step + 1 })
-        return
-      }
-      const failed = previewMode === `${flow.operation}-failed`
-      const needsRestart = flow.operation === "backup" && previewMode === "restart-required" && flow.runningNames.length > 0
-      if (!failed && flow.operation === "backup") setArchives((current) => [flow.archive, ...current])
-      if (!failed && flow.operation === "restore") onRestoreComplete?.()
-      if (needsRestart) onRestartRequired?.(flow.runningNames)
-      setFlow({ ...flow, kind: "result", outcome: failed ? "failed" : needsRestart ? "restart-required" : "success" })
-    }, 1_600)
-    return () => window.clearTimeout(timer)
-  }, [flow, previewMode, onRestoreComplete, onRestartRequired])
+  function showReview(next: Review) {
+    backup.actions.dismissOperation()
+    setReview(next)
+  }
 
   function closeFlow() {
-    setFlow({ kind: "idle" })
+    showReview({ kind: "idle" })
     if (backupExpanded) backupButton.current?.focus()
     else restoreButton.current?.focus()
   }
 
   function startBackup() {
     if (!destination || localSandboxes.length === 0) return
-    const archive: BackupArchive = {
-      name: `silo-${new Date().toISOString().slice(0, 10)}-${String(archives.length).padStart(3, "0")}.silo-backup`,
-      completedLabel: "Just now", size: source.backup.compressedSize, destination,
-      sandboxes: localSandboxes.map(({ machine }) => machine.name),
-    }
-    setFlow({ kind: "running", operation: "backup", archive, runningNames, step: 0 })
+    setReview({ kind: "idle" })
+    backup.actions.startBackup(destination)
   }
 
   async function pickDestination() {
@@ -103,7 +78,7 @@ function BackupPageContent({ source, previewMode = "success", onBusyChange, onRe
     }
     setPickingFolder(true)
     try {
-      // Only the folder name is used in this UI preview; no files are read or written.
+      // The selected folder remains a draft until backup is confirmed.
       const folder = await pickerWindow.showDirectoryPicker({ id: "silo-backup-destination", mode: "read" })
       setDestination(folder.name)
     } catch (error) {
@@ -115,8 +90,9 @@ function BackupPageContent({ source, previewMode = "success", onBusyChange, onRe
     }
   }
 
-  function reviewArchive(archive: BackupArchive) {
-    setFlow(previewMode === "invalid-archive" ? { kind: "invalid-archive", archive } : { kind: "restore-review", archive, confirmation: "" })
+  function reviewArchive(selection: BackupArchive | File) {
+    const { archive, valid } = backup.actions.inspectArchive(selection)
+    showReview(valid ? { kind: "restore-review", archive, confirmation: "" } : { kind: "invalid-archive", archive })
   }
 
   function pickArchive() {
@@ -124,10 +100,10 @@ function BackupPageContent({ source, previewMode = "success", onBusyChange, onRe
     archiveInput.current?.click()
   }
 
-  function operationPanel(operation: Operation) {
+  function operationPanel(operation: BackupOperationKind) {
     if ((flow.kind !== "running" && flow.kind !== "result") || flow.operation !== operation) return null
     if (flow.kind === "running") {
-      const step = (operation === "backup" ? backupProgressSteps : restoreProgressSteps)[flow.step]
+      const step = flow.progress
       return <ListRowDetails label={operation === "backup" ? "Backup in progress" : "Restore in progress"}>
         <div className="flex items-start gap-2" role="status">
           <LoaderCircle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 animate-spin motion-reduce:animate-none text-muted-foreground" />
@@ -144,16 +120,14 @@ function BackupPageContent({ source, previewMode = "success", onBusyChange, onRe
         {failed ? <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-destructive" /> : <Check aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />}
         <div className="min-w-0 space-y-1">
           <p className="font-medium">{operation === "backup" ? "Backup" : "Restore"} {failed ? "failed" : "completed"}</p>
-          <p className="text-[11px] text-muted-foreground">{failed
-            ? operation === "backup" ? "The destination disconnected while writing. No archive was saved; the previous sandbox running state was restored." : "The restored data could not be verified. Your previous sandbox state was recovered."
-            : operation === "backup" ? "Archive saved and checksum verified." : "All restored sandboxes are stopped. Start them from Overview when ready."}</p>
+          <p className="text-[11px] text-muted-foreground">{flow.message}</p>
           {!failed && <p className="break-all text-[10px] text-muted-foreground">{[flow.archive.destination, flow.archive.name].filter(Boolean).join(" / ")}</p>}
           {flow.outcome === "restart-required" && <p className="text-[11px] text-amber-700 dark:text-amber-400">Restart {flow.runningNames.join(", ")} to return to the previous running state. Your backup is valid.</p>}
         </div>
       </div>
       <div className="flex justify-end gap-1">
         <Button variant="ghost" size="xs" onClick={closeFlow}>{failed ? "Dismiss" : "Done"}</Button>
-        {failed && <Button variant="outline" size="xs" onClick={() => operation === "backup" ? setFlow({ kind: "backup-review" }) : pickArchive()}>{operation === "backup" ? "Review and retry" : "Choose another archive"}</Button>}
+        {failed && <Button variant="outline" size="xs" onClick={() => operation === "backup" ? showReview({ kind: "backup-review" }) : pickArchive()}>{operation === "backup" ? "Review and retry" : "Choose another archive"}</Button>}
       </div>
     </ListRowDetails>
   }
@@ -184,11 +158,7 @@ function BackupPageContent({ source, previewMode = "success", onBusyChange, onRe
               return
             }
             setPickerError(null)
-            // Archive contents and validation remain fixtures; selecting a file does not read it.
-            reviewArchive({
-              ...initialBackupArchive(source), name: file.name, destination: "", completedLabel: "Selected archive",
-              size: file.size >= 1024 ** 3 ? `${(file.size / 1024 ** 3).toFixed(1)} GB` : `${(file.size / 1024 ** 2).toFixed(1)} MB`,
-            })
+            reviewArchive(file)
           }}
         />
         {pickerError && <p role="alert" className="text-[11px] text-destructive">{pickerError}</p>}
@@ -210,14 +180,14 @@ function BackupPageContent({ source, previewMode = "success", onBusyChange, onRe
                 detail={<span title={destination || undefined}>{destination || "Select a destination to save your backups."}</span>}
                 actions={<div className="flex shrink-0 items-center gap-1">
                   <Button type="button" variant="ghost" size="xs" aria-label="Select destination" disabled={controlsDisabled} onClick={pickDestination}>Select destination…</Button>
-                  <Button ref={backupButton} type="button" variant="outline" size="xs" disabled={controlsDisabled || !destination || localSandboxes.length === 0} aria-expanded={backupExpanded} aria-controls="backup-details" onClick={() => setFlow({ kind: "backup-review" })}>Back up</Button>
+                  <Button ref={backupButton} type="button" variant="outline" size="xs" disabled={controlsDisabled || !destination || localSandboxes.length === 0} aria-expanded={backupExpanded} aria-controls="backup-details" onClick={() => showReview({ kind: "backup-review" })}>Back up</Button>
                 </div>}
               />
               <div id="backup-details">
                 {flow.kind === "backup-review" && <ListRowDetails label="Review backup">
                   <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[11px]">
                     <dt className="text-muted-foreground">Destination</dt><dd className="break-all">{destination}</dd>
-                    <dt className="text-muted-foreground">Space</dt><dd>About {backupRequiredGB} GB required</dd>
+                    <dt className="text-muted-foreground">Space</dt><dd>About {requiredSpaceGB} GB required</dd>
                     <dt className="text-muted-foreground">Sandboxes</dt><dd>{localSandboxes.map(({ machine }) => machine.name).join(", ")}</dd>
                   </dl>
                   <p className="text-[11px] text-muted-foreground">{runningNames.length > 0 ? `${runningNames.join(", ")} will stop briefly and restart after the backup. Stopped sandboxes will stay stopped.` : "All sandboxes are stopped and will stay stopped after the backup."}</p>
@@ -244,9 +214,12 @@ function BackupPageContent({ source, previewMode = "success", onBusyChange, onRe
                   <div className="space-y-1"><p className="break-all text-[11px] font-medium">{flow.archive.name}</p><p className="text-[10px] text-muted-foreground">{flow.archive.completedLabel} · {flow.archive.size} · {flow.archive.sandboxes.length} sandboxes</p><p className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400"><Check aria-hidden="true" className="size-3" />Checksum verified</p></div>
                   <p className="text-[11px] text-muted-foreground">Replaces current sandbox data with {flow.archive.sandboxes.join(", ")} from this archive. Changes since the backup will be lost. All restored sandboxes will stay stopped.</p>
                   <div className="flex flex-wrap items-end justify-between gap-3">
-                    <label className="grid gap-1.5 text-[11px]">Type RESTORE to confirm<Input autoFocus autoComplete="off" spellCheck={false} className="h-7 w-44 rounded-md text-xs md:text-xs" value={flow.confirmation} onChange={(event) => setFlow({ ...flow, confirmation: event.target.value })} /></label>
+                    <label className="grid gap-1.5 text-[11px]">Type RESTORE to confirm<Input autoFocus autoComplete="off" spellCheck={false} className="h-7 w-44 rounded-md text-xs md:text-xs" value={flow.confirmation} onChange={(event) => setReview({ ...flow, confirmation: event.target.value })} /></label>
                     <div className="flex gap-1"><Button variant="ghost" size="xs" onClick={closeFlow}>Cancel</Button><Button variant="destructive" size="xs" disabled={flow.confirmation !== "RESTORE"} onClick={() => {
-                      if (flow.confirmation === "RESTORE") setFlow({ kind: "running", operation: "restore", archive: flow.archive, runningNames, step: 0 })
+                      if (flow.confirmation === "RESTORE") {
+                        setReview({ kind: "idle" })
+                        backup.actions.startRestore(flow.archive)
+                      }
                     }}>Restore backup</Button></div>
                   </div>
                 </ListRowDetails>}

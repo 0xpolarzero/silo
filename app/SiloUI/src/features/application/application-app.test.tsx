@@ -2,13 +2,14 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-import { ApplicationApp } from "@/features/application/application-app"
+import { ApplicationPreview } from "@/fixtures/application-preview"
 import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { WorkspaceFixtureMode } from "@/fixtures/application-scenarios"
 
 function renderApplication(scenario: Parameters<typeof applicationSourceForScenario>[0] = "running", source?: ApplicationSource) {
   const actions: ApplicationActions = {
+    removeSecret: vi.fn(),
     repairRuntime: vi.fn(),
     saveMachineConfiguration: vi.fn(),
     retryMachineConfiguration: vi.fn(),
@@ -30,7 +31,7 @@ function renderApplication(scenario: Parameters<typeof applicationSourceForScena
   return {
     actions,
     user: userEvent.setup(),
-    ...render(<ApplicationApp source={source ?? applicationSourceForScenario(scenario)} actions={actions} />),
+    ...render(<ApplicationPreview source={source ?? applicationSourceForScenario(scenario)} actions={actions} />),
   }
 }
 
@@ -135,7 +136,7 @@ describe("application", () => {
       await application.user.click(back)
       await application.user.click(back)
     }
-    application.rerender(<ApplicationApp source={applicationSourceForScenario("running", undefined, undefined, undefined, "succeeded")} actions={application.actions} />)
+    application.rerender(<ApplicationPreview source={applicationSourceForScenario("running", undefined, undefined, undefined, "succeeded")} actions={application.actions} />)
     if (position === "past") {
       await application.user.click(back)
       expect(within(appPanel("Sandboxes")).getByRole("list", { name: "Repositories" })).toBeVisible()
@@ -653,13 +654,13 @@ describe("application", () => {
     expect(firstRow).toHaveTextContent("Preparing backup")
     expect(within(firstRow!).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "10")
 
-    application.rerender(<ApplicationApp source={sourceAt(2)} actions={application.actions} />)
+    application.rerender(<ApplicationPreview source={sourceAt(2)} actions={application.actions} />)
     const progressingRow = panel.getByRole("list", { name: "Recent activity" }).querySelector<HTMLElement>('[data-activity-id="live-backup"]')
     expect(progressingRow).toBe(firstRow)
     expect(progressingRow).toHaveTextContent("Checksumming archive")
     expect(within(progressingRow!).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "75")
 
-    application.rerender(<ApplicationApp source={sourceAt(4)} actions={application.actions} />)
+    application.rerender(<ApplicationPreview source={sourceAt(4)} actions={application.actions} />)
     const completedRow = panel.getByRole("list", { name: "Recent activity" }).querySelector<HTMLElement>('[data-activity-id="live-backup"]')
     expect(completedRow).toBe(firstRow)
     expect(completedRow).not.toHaveAttribute("aria-busy")
@@ -977,7 +978,7 @@ describe("application", () => {
     expect(actions.restartWorkspace).toHaveBeenCalledWith("dev")
     expect(label).toBeVisible()
 
-    rerender(<ApplicationApp source={{ ...source, secrets: source.secrets.map((secret) => ({ ...secret, state: "active" })) }} actions={actions} />)
+    rerender(<ApplicationPreview source={{ ...source, secrets: source.secrets.map((secret) => ({ ...secret, state: "active" })) }} actions={actions} />)
     expect(overview.queryByRole("note", { name: "Restart required for dev" })).not.toBeInTheDocument()
   })
 
@@ -1079,7 +1080,7 @@ describe("application", () => {
     expect(appPanel("System issue")).toBeVisible()
 
     application.rerender(
-      <ApplicationApp
+      <ApplicationPreview
         source={{ ...source, runtimeRepair: null }}
         actions={application.actions}
       />,
@@ -1147,7 +1148,7 @@ describe("application", () => {
     expect(appPanel("System issue")).toBeVisible()
 
     application.rerender(
-      <ApplicationApp
+      <ApplicationPreview
         source={applicationSourceForScenario("running", undefined, undefined, undefined, "succeeded")}
         actions={application.actions}
       />,

@@ -71,6 +71,7 @@ export interface OnboardingCompletionRequest {
 }
 
 export interface OnboardingActions {
+  connectGitHub: () => void
   saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void
   repairRuntime: () => void
   retryWorkspaceSetup: () => void

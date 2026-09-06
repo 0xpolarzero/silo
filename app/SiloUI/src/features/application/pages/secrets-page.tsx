@@ -9,14 +9,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 
-export function SecretsPage({ source }: { source: ApplicationSource }) {
-  const [secrets, setSecrets] = useState(source.secrets)
+export function SecretsPage({ source, onRemoveSecret }: { source: ApplicationSource; onRemoveSecret: (id: string) => void }) {
+  const secrets = source.secrets
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null)
 
   useEffect(() => {
-    // Fixture-only removals reset when a replacement source arrives.
-    // oxlint-disable-next-line react/set-state-in-effect
-    setSecrets(source.secrets)
     // oxlint-disable-next-line react/set-state-in-effect
     setPendingRemoval(null)
   }, [source.secrets])
@@ -26,7 +23,7 @@ export function SecretsPage({ source }: { source: ApplicationSource }) {
       setPendingRemoval(id)
       return
     }
-    setSecrets((current) => current.filter((secret) => secret.id !== id))
+    onRemoveSecret(id)
     setPendingRemoval(null)
   }
 

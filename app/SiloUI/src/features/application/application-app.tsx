@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { BackupFixtureMode } from "@/fixtures/application-backup"
+import type { BackupController } from "@/features/application/model/backup-source"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { ApplicationShell, type ApplicationNavigationLoading } from "@/features/application/components/application-shell"
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, RuntimeRepairPresentation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
@@ -64,11 +64,11 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
   }
 }
 
-export function ApplicationApp({ source, actions, backupPreviewMode, initialRoute }: { source: ApplicationSource; actions: ApplicationActions; backupPreviewMode?: BackupFixtureMode; initialRoute?: ApplicationInitialRoute }) {
+export function ApplicationApp({ source, actions, backup, initialRoute }: { source: ApplicationSource; actions: ApplicationActions; backup: BackupController; initialRoute?: ApplicationInitialRoute }) {
   const activeRuntimeRepair = source.runtimeRepair?.status === "succeeded" ? null : source.runtimeRepair
   const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute)
   const { tab: activeTab, workspaceSection, settingsSection } = navigation
-  const [workspaces, setWorkspaces] = useState(() => source.workspaces.map((workspace) => ({ ...workspace, machine: { ...workspace.machine } })))
+  const workspaces = source.workspaces
   const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<Set<string>>(() => new Set(
     source.workspaces
       .filter(({ machine }) => machine.name === initialRoute?.workspace || machine.id === initialRoute?.workspace)
@@ -102,15 +102,15 @@ export function ApplicationApp({ source, actions, backupPreviewMode, initialRout
   }
 
   useEffect(() => {
-    // The source is the authoritative snapshot when the native bridge publishes a replacement.
-    // oxlint-disable-next-line react/set-state-in-effect
-    setWorkspaces(source.workspaces.map((workspace) => ({ ...workspace, machine: { ...workspace.machine } })))
     // oxlint-disable-next-line react/set-state-in-effect
     setSelectedWorkspaceIds((current) => {
       const availableIds = new Set(source.workspaces.map(({ machine }) => machine.id))
       const next = new Set([...current].filter((id) => availableIds.has(id)))
       return next.size === current.size ? current : next
     })
+  }, [source.workspaces])
+
+  useEffect(() => {
     // The native bridge clears or replaces the pending operation alongside its authoritative snapshot.
     // oxlint-disable-next-line react/set-state-in-effect
     setSandboxConfigurationOperation(source.sandboxConfigurationOperation)
@@ -126,7 +126,7 @@ export function ApplicationApp({ source, actions, backupPreviewMode, initialRout
     })
     // oxlint-disable-next-line react/set-state-in-effect
     setReduceMotion(source.preferences.reduceMotion)
-  }, [source.workspaces, source.sandboxConfigurationOperation, source.repositoryPushOperations, source.preferences.terminal, source.preferences.editor, source.preferences.browser, source.preferences.reduceMotion])
+  }, [source.sandboxConfigurationOperation, source.repositoryPushOperations, source.preferences.terminal, source.preferences.editor, source.preferences.browser, source.preferences.reduceMotion])
 
   useEffect(() => {
     const status = source.runtimeRepair?.status
@@ -183,18 +183,6 @@ export function ApplicationApp({ source, actions, backupPreviewMode, initialRout
     setRepositoryPushOperations((current) => current.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath))
   }, [])
 
-  const restoreBackupPreview = useCallback(() => {
-    setWorkspaces((current) => current.map((workspace) => workspace.machine.kind === "vm"
-      ? { ...workspace, state: "stopped", stateDetail: "Stopped after restore" }
-      : workspace))
-  }, [])
-
-  const backupRestartPreview = useCallback((sandboxes: string[]) => {
-    setWorkspaces((current) => current.map((workspace) => workspace.machine.kind === "vm" && sandboxes.includes(workspace.machine.name)
-      ? { ...workspace, state: "stopped", stateDetail: "Stopped after backup" }
-      : workspace))
-  }, [])
-
   return (
     <ApplicationShell
       activeTab={visibleTab}
@@ -234,8 +222,8 @@ export function ApplicationApp({ source, actions, backupPreviewMode, initialRout
       <section id="application-panel-github" role="region" aria-labelledby="application-nav-github" hidden={visibleTab !== "github"} className="h-full min-h-0 overflow-hidden">
         <GitHubPage source={applicationSource} actions={actions} onBusyChange={setGitHubBusy} />
       </section>
-      <section id="application-panel-secrets" role="region" aria-labelledby="application-nav-secrets" hidden={visibleTab !== "secrets"}><SecretsPage source={applicationSource} /></section>
-      <section id="application-panel-backup" role="region" aria-labelledby="application-nav-backup" hidden={visibleTab !== "backup"}><BackupPage source={applicationSource} previewMode={backupPreviewMode} onBusyChange={setBackupBusy} onRestoreComplete={restoreBackupPreview} onRestartRequired={backupRestartPreview} /></section>
+      <section id="application-panel-secrets" role="region" aria-labelledby="application-nav-secrets" hidden={visibleTab !== "secrets"}><SecretsPage source={applicationSource} onRemoveSecret={actions.removeSecret} /></section>
+      <section id="application-panel-backup" role="region" aria-labelledby="application-nav-backup" hidden={visibleTab !== "backup"}><BackupPage source={applicationSource} backup={backup} onBusyChange={setBackupBusy} /></section>
       {activeRuntimeRepair && (
         <section id="application-panel-system" role="region" aria-labelledby="application-nav-system" hidden={visibleTab !== "system"}>
           <SystemIssuePage issue={activeRuntimeRepair} actions={actions} />

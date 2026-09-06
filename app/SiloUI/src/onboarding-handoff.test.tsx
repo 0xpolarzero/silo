@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it } from "vitest"
 
-import App from "./App"
+import { FixtureApp } from "./fixtures/fixture-app"
 
 const originalURL = window.location.href
 afterEach(() => window.history.replaceState(null, "", originalURL))
@@ -11,7 +11,7 @@ describe("onboarding to application", () => {
   it("opens Silo with the saved sandbox name and application preference", async () => {
     window.history.replaceState(null, "", "?view=onboarding&scenario=complete")
     const user = userEvent.setup()
-    render(<App />)
+    render(<FixtureApp />)
     await user.click(screen.getByRole("combobox", { name: "Browser" }))
     await user.click(screen.getByRole("option", { name: "Firefox" }))
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))

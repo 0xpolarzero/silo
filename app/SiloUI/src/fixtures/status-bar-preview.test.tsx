@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import App from "@/App"
+import { FixtureApp } from "./fixture-app"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { StatusBarPreview } from "@/fixtures/status-bar-preview"
 import { statusBarFixtureModeFromSearch, statusBarSourceForFixture } from "@/fixtures/status-bar-scenarios"
@@ -191,7 +191,7 @@ describe("status bar preview", () => {
   it("opens the requested application section with its sandbox filter and changed state", async () => {
     window.history.replaceState(null, "", "?view=status-bar&scenario=running&repository-push=failed")
     const user = userEvent.setup()
-    render(<App />)
+    render(<FixtureApp />)
     await user.click(screen.getByRole("button", { name: "Start playgrounds" }))
     await user.click(screen.getByRole("button", { name: "Review push failure for dev, acme/silo" }))
 
@@ -210,7 +210,7 @@ describe("status bar preview", () => {
   it("opens runtime repair in the application's existing System issue destination", async () => {
     window.history.replaceState(null, "", "?view=status-bar&scenario=running&system-issue=needed")
     const user = userEvent.setup()
-    render(<App />)
+    render(<FixtureApp />)
     await user.click(screen.getByRole("button", { name: "Repair…" }))
     expect(screen.getByRole("region", { name: "System issue" })).toBeVisible()
     expect(screen.queryByRole("main", { name: "Status bar preview" })).not.toBeInTheDocument()
@@ -219,7 +219,7 @@ describe("status bar preview", () => {
   it("opens the Logs item filtered to the sandbox with an error", async () => {
     window.history.replaceState(null, "", "?view=status-bar&scenario=bootstrap-failure")
     const user = userEvent.setup()
-    render(<App />)
+    render(<FixtureApp />)
     await user.click(screen.getByRole("button", { name: "See logs for dev" }))
     const navigation = within(screen.getByRole("navigation", { name: "Silo navigation" }))
     expect(navigation.getByRole("button", { name: "Logs" })).toHaveAttribute("aria-current", "page")

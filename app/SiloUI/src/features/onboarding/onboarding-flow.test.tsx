@@ -2,13 +2,13 @@ import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-import { OnboardingApp } from "./onboarding-app"
+import { OnboardingPreview } from "@/fixtures/onboarding-preview"
 import { onboardingScenarios } from "@/fixtures/scenarios"
 
 function setup(complete = false) {
   const finishSetup = vi.fn()
   const onOpenApp = vi.fn()
-  render(<OnboardingApp source={onboardingScenarios[complete ? "complete" : "running"]} onOpenApp={onOpenApp} actions={{
+  render(<OnboardingPreview source={onboardingScenarios[complete ? "complete" : "running"]} onOpenApp={onOpenApp} actions={{
     saveMachineConfiguration: vi.fn(), repairRuntime: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup,
   }} />)
   return { user: userEvent.setup(), finishSetup, onOpenApp }

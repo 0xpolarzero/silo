@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-import { OnboardingApp } from "@/features/onboarding/onboarding-app"
+import { OnboardingPreview } from "@/fixtures/onboarding-preview"
 import type { GitHubConnectionState } from "@/features/onboarding/model/onboarding-source"
 import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
 import { githubStateFromSearch, onboardingScenarios, repositoryFixtures } from "@/fixtures/scenarios"
@@ -11,7 +11,7 @@ import { FixtureSelector } from "@/fixtures/fixture-selector"
 
 function renderScenario(name: keyof typeof onboardingScenarios = "running", githubState?: GitHubConnectionState) {
   render(<FixtureSelector surface="onboarding" scenario={name} />)
-  return render(<OnboardingApp source={onboardingScenarios[name]} initialGitHubConnectionState={githubState} repositoryOptions={repositoryFixtures} actions={{
+  return render(<OnboardingPreview source={onboardingScenarios[name]} initialGitHubConnectionState={githubState} repositoryOptions={repositoryFixtures} actions={{
     saveMachineConfiguration: vi.fn(),
     repairRuntime: vi.fn(),
     retryWorkspaceSetup: vi.fn(),
@@ -22,7 +22,7 @@ function renderScenario(name: keyof typeof onboardingScenarios = "running", gith
 async function renderMachineScenario() {
   const saveMachineConfiguration = vi.fn()
   const user = userEvent.setup()
-  render(<OnboardingApp
+  render(<OnboardingPreview
     source={onboardingScenarios.running}
     repositoryOptions={repositoryFixtures}
     actions={{
@@ -223,7 +223,7 @@ describe("onboarding", () => {
         ],
       }],
     }
-    render(<OnboardingApp source={source} actions={{
+    render(<OnboardingPreview source={source} actions={{
       saveMachineConfiguration: vi.fn(),
       repairRuntime: vi.fn(),
       retryWorkspaceSetup: vi.fn(),
@@ -301,7 +301,7 @@ describe("onboarding", () => {
 
   it("treats repository names as case-insensitive when preventing duplicates", async () => {
     const user = userEvent.setup()
-    render(<OnboardingApp
+    render(<OnboardingPreview
       source={onboardingScenarios.running}
       initialGitHubConnectionState="connected"
       repositoryOptions={["ACME/SILO", "acme/silo", "acme/design-system"]}
@@ -435,7 +435,7 @@ describe("onboarding", () => {
 
   it("starts blank and leaves Reset safely unavailable without a host identity", async () => {
     const user = userEvent.setup()
-    render(<OnboardingApp
+    render(<OnboardingPreview
       source={{ ...onboardingScenarios.running, currentHostGitIdentity: null }}
       initialGitHubConnectionState="disconnected"
       actions={{ saveMachineConfiguration: vi.fn(), repairRuntime: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }}
@@ -554,7 +554,7 @@ describe("onboarding", () => {
     running.unmount()
 
     const finishSetup = vi.fn()
-    render(<OnboardingApp source={onboardingScenarios.complete} actions={{
+    render(<OnboardingPreview source={onboardingScenarios.complete} actions={{
       saveMachineConfiguration: vi.fn(),
       repairRuntime: vi.fn(),
       retryWorkspaceSetup: vi.fn(),
@@ -601,7 +601,7 @@ describe("onboarding", () => {
   it("finishes connected setup with explicit zero repository access and no skip state", async () => {
     const user = userEvent.setup()
     const finishSetup = vi.fn()
-    render(<OnboardingApp
+    render(<OnboardingPreview
       source={onboardingScenarios.complete}
       initialGitHubConnectionState="connected"
       repositoryOptions={repositoryFixtures}
@@ -669,13 +669,13 @@ describe("onboarding", () => {
     const repairRuntime = vi.fn()
     const retryWorkspaceSetup = vi.fn()
     const actions = { saveMachineConfiguration: vi.fn(), repairRuntime, retryWorkspaceSetup, finishSetup: vi.fn() }
-    const dependency = render(<OnboardingApp source={onboardingScenarios["dependency-failure"]} actions={actions} />)
+    const dependency = render(<OnboardingPreview source={onboardingScenarios["dependency-failure"]} actions={actions} />)
 
     await user.click(screen.getByRole("button", { name: "Repair…" }))
     expect(repairRuntime).toHaveBeenCalledOnce()
     dependency.unmount()
 
-    render(<OnboardingApp source={onboardingScenarios["bootstrap-failure"]} actions={actions} />)
+    render(<OnboardingPreview source={onboardingScenarios["bootstrap-failure"]} actions={actions} />)
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     await user.click(screen.getByRole("button", { name: "Retry" }))
     expect(retryWorkspaceSetup).toHaveBeenCalledOnce()
@@ -951,7 +951,7 @@ describe("onboarding", () => {
     }
     const saveMachineConfiguration = vi.fn()
     const user = userEvent.setup()
-    render(<OnboardingApp source={source} actions={{
+    render(<OnboardingPreview source={source} actions={{
       saveMachineConfiguration,
       repairRuntime: vi.fn(),
       retryWorkspaceSetup: vi.fn(),

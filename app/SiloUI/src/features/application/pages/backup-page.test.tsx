@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { BackupPage } from "@/features/application/pages/backup-page"
+import type { BackupController } from "@/features/application/model/backup-source"
+import { BackupPreview } from "@/fixtures/backup-preview"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 
 afterEach(() => {
@@ -22,6 +24,41 @@ async function finishOperation() {
 }
 
 describe("BackupPage", () => {
+  it("requests an operation and renders only progress and results supplied by its source", async () => {
+    vi.useFakeTimers()
+    const source = applicationSourceForScenario("running")
+    const archive = { name: "published.silo-backup", completedLabel: "Just now", size: "6 GB", destination: source.backup.destination, sandboxes: ["dev"] }
+    const backup: BackupController = {
+      state: { snapshotId: "snapshot-1", requiredSpaceGB: 7, archives: [], operation: null },
+      actions: {
+        inspectArchive: vi.fn(() => ({ archive, valid: true })),
+        startBackup: vi.fn(), startRestore: vi.fn(), dismissOperation: vi.fn(),
+      },
+    }
+    const { rerender } = render(<BackupPage source={source} backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Back up" }))
+    expect(screen.getByRole("group", { name: "Review backup" })).toHaveTextContent("About 7 GB required")
+    fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
+    expect(backup.actions.startBackup).toHaveBeenCalledExactlyOnceWith(source.backup.destination)
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+
+    rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, operation: {
+      kind: "running", operation: "backup", archive, runningNames: ["dev"],
+      progress: { title: "Saving current data", detail: "Received from the source", progress: 23 },
+    } } }} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "23")
+    expect(screen.getByRole("status")).toHaveTextContent("Received from the source")
+    expect(screen.getByText("No backups yet")).toBeVisible()
+
+    rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, archives: [archive], operation: {
+      kind: "result", operation: "backup", archive, runningNames: ["dev"], outcome: "success", message: "Saved by the source",
+    } } }} />)
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+    expect(screen.getByRole("status")).toHaveTextContent("Saved by the source")
+    expect(screen.getByRole("button", { name: "Details for published.silo-backup" })).toBeVisible()
+  })
+
   it("starts with no backup history and requires a destination before creating the first archive", async () => {
     vi.useFakeTimers()
     const source = applicationSourceForScenario("running")
@@ -29,7 +66,7 @@ describe("BackupPage", () => {
       .mockRejectedValueOnce(new DOMException("Cancelled", "AbortError"))
       .mockResolvedValueOnce({ name: "First backups" })
     vi.stubGlobal("showDirectoryPicker", picker)
-    render(<BackupPage source={{ ...source, backup: { ...source.backup, destination: "", lastArchive: "", completedLabel: "", compressedSize: "" } }} />)
+    render(<BackupPreview source={{ ...source, backup: { ...source.backup, destination: "", lastArchive: "", completedLabel: "", compressedSize: "" } }} />)
     const history = within(screen.getByRole("list", { name: "Recent backups" }))
     expect(history.getByText("No backups yet")).toBeVisible()
     expect(history.queryByRole("img", { name: "Backup completed" })).not.toBeInTheDocument()
@@ -53,7 +90,7 @@ describe("BackupPage", () => {
 
   it("uses the current virtual machine names in fixture archive details", () => {
     const source = applicationSourceForScenario("running")
-    render(<BackupPage source={{ ...source, workspaces: [
+    render(<BackupPreview source={{ ...source, workspaces: [
       { ...source.workspaces[0], machine: { ...source.workspaces[0].machine, name: "design" } },
       { ...source.workspaces[1], machine: { id: "remote", kind: "ssh", name: "remote", host: "remote.example.com", user: "developer", port: 22 } },
     ] }} />)
@@ -67,7 +104,7 @@ describe("BackupPage", () => {
   it("opens archive details from the title, supports keyboard toggling, and keeps restore separate", async () => {
     const user = userEvent.setup()
     const source = applicationSourceForScenario("running")
-    render(<BackupPage source={source} />)
+    render(<BackupPreview source={source} />)
     const header = screen.getByRole("button", { name: `Details for ${source.backup.lastArchive}` })
     expect(header).toHaveAttribute("aria-expanded", "false")
 
@@ -93,7 +130,7 @@ describe("BackupPage", () => {
       .mockRejectedValueOnce(new DOMException("Cancelled", "AbortError"))
       .mockResolvedValueOnce({ name: "My backups" })
     vi.stubGlobal("showDirectoryPicker", picker)
-    render(<BackupPage source={applicationSourceForScenario("running")} />)
+    render(<BackupPreview source={applicationSourceForScenario("running")} />)
     await user.click(screen.getByRole("button", { name: "Select destination" }))
     expect(picker).toHaveBeenCalledWith({ id: "silo-backup-destination", mode: "read" })
     expect(screen.getByText("External SSD / Silo Backups")).toBeVisible()
@@ -108,7 +145,7 @@ describe("BackupPage", () => {
 
   it("uses the native directory input when the directory handle API is unavailable", () => {
     vi.stubGlobal("showDirectoryPicker", undefined)
-    render(<BackupPage source={applicationSourceForScenario("running")} />)
+    render(<BackupPreview source={applicationSourceForScenario("running")} />)
     const input = screen.getByLabelText("Backup destination folder") as HTMLInputElement
     const click = vi.spyOn(input, "click").mockImplementation(() => undefined)
     fireEvent.click(screen.getByRole("button", { name: "Select destination" }))
@@ -123,7 +160,7 @@ describe("BackupPage", () => {
   })
 
   it("opens the native archive picker and reviews the selected file directly", () => {
-    render(<BackupPage source={applicationSourceForScenario("running")} />)
+    render(<BackupPreview source={applicationSourceForScenario("running")} />)
     const input = screen.getByLabelText("Backup archive file") as HTMLInputElement
     const click = vi.spyOn(input, "click").mockImplementation(() => undefined)
     fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
@@ -140,7 +177,7 @@ describe("BackupPage", () => {
   it("requires review, locks other actions while running, and adds only a completed backup to history", async () => {
     vi.useFakeTimers()
     const onBusyChange = vi.fn()
-    render(<BackupPage source={applicationSourceForScenario("running")} onBusyChange={onBusyChange} />)
+    render(<BackupPreview source={applicationSourceForScenario("running")} onBusyChange={onBusyChange} />)
     const history = within(screen.getByRole("list", { name: "Recent backups" }))
     fireEvent.click(screen.getByRole("button", { name: "Back up" }))
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
@@ -163,7 +200,7 @@ describe("BackupPage", () => {
 
   it("keeps failed backups out of history and lets the destination be changed before retrying", async () => {
     vi.useFakeTimers()
-    render(<BackupPage source={applicationSourceForScenario("running")} previewMode="backup-failed" />)
+    render(<BackupPreview source={applicationSourceForScenario("running")} previewMode="backup-failed" />)
     fireEvent.click(screen.getByRole("button", { name: "Back up" }))
     fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
     await finishOperation()
@@ -176,7 +213,7 @@ describe("BackupPage", () => {
 
   it("shows a valid archive with a separate restart warning when a sandbox cannot restart", async () => {
     vi.useFakeTimers()
-    render(<BackupPage source={applicationSourceForScenario("running")} previewMode="restart-required" />)
+    render(<BackupPreview source={applicationSourceForScenario("running")} previewMode="restart-required" />)
     fireEvent.click(screen.getByRole("button", { name: "Back up" }))
     fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
     await finishOperation()
@@ -188,7 +225,7 @@ describe("BackupPage", () => {
   it("validates an archive and requires typing RESTORE before replacing sandbox state", async () => {
     vi.useFakeTimers()
     const onRestoreComplete = vi.fn()
-    render(<BackupPage source={applicationSourceForScenario("running")} onRestoreComplete={onRestoreComplete} />)
+    render(<BackupPreview source={applicationSourceForScenario("running")} onRestoreComplete={onRestoreComplete} />)
     fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
     selectArchive()
     const review = screen.getByRole("group", { name: "Review restore" })
@@ -210,13 +247,13 @@ describe("BackupPage", () => {
 
   it("blocks damaged archives and clears confirmation when a restore is cancelled", () => {
     const source = applicationSourceForScenario("running")
-    const { rerender } = render(<BackupPage source={source} previewMode="invalid-archive" />)
+    const { rerender } = render(<BackupPreview source={source} previewMode="invalid-archive" />)
     fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
     selectArchive()
     expect(screen.getByRole("alert")).toHaveTextContent("Checksum mismatch")
     expect(screen.queryByRole("button", { name: "Restore backup" })).not.toBeInTheDocument()
 
-    rerender(<BackupPage source={source} />)
+    rerender(<BackupPreview source={source} />)
     fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
     selectArchive()
     fireEvent.change(screen.getByRole("textbox", { name: "Type RESTORE to confirm" }), { target: { value: "RESTORE" } })
@@ -228,7 +265,7 @@ describe("BackupPage", () => {
 
   it("keeps one history archive open and preserves the selected archive when reviewing a restore", async () => {
     vi.useFakeTimers()
-    render(<BackupPage source={applicationSourceForScenario("running")} />)
+    render(<BackupPreview source={applicationSourceForScenario("running")} />)
     fireEvent.click(screen.getByRole("button", { name: "Back up" }))
     fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
     await finishOperation()
@@ -254,10 +291,10 @@ describe("BackupPage", () => {
     vi.useFakeTimers()
     const source = applicationSourceForScenario("running")
     const onBusyChange = vi.fn()
-    const { rerender } = render(<BackupPage source={source} onBusyChange={onBusyChange} />)
+    const { rerender } = render(<BackupPreview source={source} onBusyChange={onBusyChange} />)
     fireEvent.click(screen.getByRole("button", { name: "Back up" }))
     fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
-    rerender(<BackupPage source={{ ...source, backup: { ...source.backup, lastArchive: "replacement.silo-backup" } }} onBusyChange={onBusyChange} />)
+    rerender(<BackupPreview source={{ ...source, backup: { ...source.backup, lastArchive: "replacement.silo-backup" } }} onBusyChange={onBusyChange} />)
     await finishOperation()
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
@@ -271,7 +308,7 @@ describe("BackupPage", () => {
     vi.useFakeTimers()
     const onRestoreComplete = vi.fn()
     const onBusyChange = vi.fn()
-    const { unmount } = render(<BackupPage source={applicationSourceForScenario("running")} previewMode="restore-failed" onRestoreComplete={onRestoreComplete} onBusyChange={onBusyChange} />)
+    const { unmount } = render(<BackupPreview source={applicationSourceForScenario("running")} previewMode="restore-failed" onRestoreComplete={onRestoreComplete} onBusyChange={onBusyChange} />)
     fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
     selectArchive()
     fireEvent.change(screen.getByRole("textbox", { name: "Type RESTORE to confirm" }), { target: { value: "RESTORE" } })

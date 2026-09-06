@@ -1,0 +1,11 @@
+[package]
+name = "silo-preview"
+version = "0.0.0"
+description = "Silo UI fixture preview"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.3", features = [] }

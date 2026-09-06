@@ -220,6 +220,7 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
+  removeSecret: (id: string) => void
   repairRuntime: () => void
   saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void
   retryMachineConfiguration: (workspace: string) => void
