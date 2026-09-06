@@ -149,6 +149,13 @@ export interface ApplicationSecret {
   state: "active" | "restart-required"
 }
 
+// Values travel only with a save request, never in the published secret metadata.
+export type SecretConfigurationRequest = {
+  name: string
+  workspaces: string[]
+  allowedDomains: string[]
+} & ({ operation: "add"; value: string } | { operation: "edit"; id: string; value?: string })
+
 export interface ApplicationGitIdentity {
   name: string
   email: string
@@ -220,6 +227,7 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
+  saveSecret: (request: SecretConfigurationRequest) => void
   removeSecret: (id: string) => void
   repairRuntime: () => void
   saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void

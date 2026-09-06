@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Box, Check, Globe, KeyRound, Pencil, Plus, RotateCw, Trash2 } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
@@ -7,16 +7,41 @@ import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
-import type { ApplicationSource } from "@/features/application/model/application-source"
+import { SecretEditor } from "@/features/application/components/secret-editor"
+import type { ApplicationSecret, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 
-export function SecretsPage({ source, onRemoveSecret }: { source: ApplicationSource; onRemoveSecret: (id: string) => void }) {
+export function SecretsPage({ source, onSaveSecret, onRemoveSecret }: {
+  source: ApplicationSource
+  onSaveSecret: (request: SecretConfigurationRequest) => void
+  onRemoveSecret: (id: string) => void
+}) {
   const secrets = source.secrets
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null)
+  const [editor, setEditor] = useState<{ secret?: ApplicationSecret } | null>(null)
+  const editorTrigger = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
     setPendingRemoval(null)
+    // oxlint-disable-next-line react/set-state-in-effect
+    setEditor(null)
   }, [source.secrets])
+
+  function openEditor(trigger: HTMLButtonElement, secret?: ApplicationSecret) {
+    editorTrigger.current = trigger
+    setPendingRemoval(null)
+    setEditor({ secret })
+  }
+
+  function closeEditor() {
+    setEditor(null)
+    editorTrigger.current?.focus()
+  }
+
+  function saveSecret(request: SecretConfigurationRequest) {
+    onSaveSecret(request)
+    closeEditor()
+  }
 
   function removeSecret(id: string) {
     if (pendingRemoval !== id) {
@@ -34,10 +59,11 @@ export function SecretsPage({ source, onRemoveSecret }: { source: ApplicationSou
           <h2 className="text-xs font-medium">Secrets</h2>
           <p className="text-[11px] text-muted-foreground">{secrets.length} configured</p>
         </div>
-        <Button type="button" variant="outline" size="xs" aria-label="Add secret">
+        <Button type="button" variant="outline" size="xs" aria-label="Add secret" onClick={(event) => openEditor(event.currentTarget)}>
           <Plus aria-hidden="true" data-icon="inline-start" /> Add
         </Button>
       </header>
+      {editor && !editor.secret && <ListCard><SecretEditor key="add" source={source} onSave={saveSecret} onCancel={closeEditor} /></ListCard>}
       {secrets.length > 0 ? (
         <TooltipProvider delayDuration={150}>
           <ListCard>
@@ -77,7 +103,7 @@ export function SecretsPage({ source, onRemoveSecret }: { source: ApplicationSou
                       actions={<div className="flex shrink-0 items-center gap-0.5 text-muted-foreground" role="group" aria-label={`Manage ${secret.name}`}>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <Button type="button" variant="ghost" size="icon-xs" aria-label={`Edit ${secret.name}`}>
+                            <Button type="button" variant="ghost" size="icon-xs" aria-label={`Edit ${secret.name}`} onClick={(event) => openEditor(event.currentTarget, secret)}>
                               <Pencil aria-hidden="true" />
                             </Button>
                           </TooltipTrigger>
@@ -95,6 +121,7 @@ export function SecretsPage({ source, onRemoveSecret }: { source: ApplicationSou
                         </InlineConfirmation>
                       </div>}
                     />
+                    {editor?.secret?.id === secret.id && <div className="border-t border-border"><SecretEditor key={secret.id} secret={secret} source={source} onSave={saveSecret} onCancel={closeEditor} /></div>}
                   </li>
                 )
               })}

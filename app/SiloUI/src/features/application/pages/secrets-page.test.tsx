@@ -9,23 +9,140 @@ import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 
 function SecretsPreview({ source }: { source: ApplicationSource }) {
   const fixture = useApplicationFixture(source)
-  return <SecretsPage source={fixture.source} onRemoveSecret={fixture.removeSecret} />
+  return <SecretsPage source={fixture.source} onSaveSecret={fixture.saveSecret} onRemoveSecret={fixture.removeSecret} />
 }
 
 describe("SecretsPage", () => {
+  it("adds a secret through the fixture and reopens its metadata without loading the value", async () => {
+    const user = userEvent.setup()
+    render(<SecretsPreview source={applicationSourceForScenario("running")} />)
+
+    await user.click(screen.getByRole("button", { name: "Add secret" }))
+    const form = within(screen.getByRole("form", { name: "Add secret" }))
+    expect(form.getByRole("textbox", { name: "Name" })).toHaveFocus()
+    await user.type(form.getByRole("textbox", { name: "Name" }), "SERVICE_TOKEN")
+    expect(form.getByLabelText("Value")).toHaveAttribute("type", "password")
+    await user.type(form.getByLabelText("Value"), "fixture-token")
+    await user.click(form.getByRole("checkbox", { name: "dev" }))
+    await user.type(form.getByRole("textbox", { name: "Allowed domains" }), "API.Example.test, *.example.test")
+    await user.click(form.getByRole("button", { name: "Save" }))
+
+    expect(screen.queryByRole("form")).not.toBeInTheDocument()
+    expect(screen.getByText("3 configured")).toBeVisible()
+    expect(screen.getByLabelText("Allowed domains for SERVICE_TOKEN")).toHaveTextContent("api.example.test, *.example.test")
+    await user.click(screen.getByRole("button", { name: "Edit SERVICE_TOKEN" }))
+    const editor = within(screen.getByRole("form", { name: "Edit SERVICE_TOKEN" }))
+    expect(editor.getByRole("textbox", { name: "Name" })).toHaveValue("SERVICE_TOKEN")
+    expect(editor.getByLabelText("Replacement value")).toHaveValue("")
+    expect(editor.getByRole("checkbox", { name: "dev" })).toBeChecked()
+    expect(editor.getByRole("textbox", { name: "Allowed domains" })).toHaveValue("api.example.test, *.example.test")
+  })
+
   it("requests removal after confirmation and waits for the source to publish the change", async () => {
     const user = userEvent.setup()
     const source = applicationSourceForScenario("running")
     const onRemoveSecret = vi.fn()
-    const { rerender } = render(<SecretsPage source={source} onRemoveSecret={onRemoveSecret} />)
+    const { rerender } = render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={onRemoveSecret} />)
     await user.click(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
     expect(onRemoveSecret).not.toHaveBeenCalled()
     await user.click(screen.getByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" }))
     expect(onRemoveSecret).toHaveBeenCalledExactlyOnceWith("package-token")
     expect(screen.getByText("PACKAGE_TOKEN")).toBeVisible()
 
-    rerender(<SecretsPage source={{ ...source, secrets: source.secrets.filter(({ id }) => id !== "package-token") }} onRemoveSecret={onRemoveSecret} />)
+    rerender(<SecretsPage source={{ ...source, secrets: source.secrets.filter(({ id }) => id !== "package-token") }} onSaveSecret={vi.fn()} onRemoveSecret={onRemoveSecret} />)
     expect(screen.queryByText("PACKAGE_TOKEN")).not.toBeInTheDocument()
+  })
+
+  it("validates required fields, duplicate names, and domain rules before publishing a save", async () => {
+    const user = userEvent.setup()
+    const onSaveSecret = vi.fn()
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={onSaveSecret} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Add secret" }))
+    const form = within(screen.getByRole("form", { name: "Add secret" }))
+    await user.click(form.getByRole("button", { name: "Save" }))
+    expect(form.getAllByRole("alert")).toHaveLength(4)
+    expect(form.getByRole("textbox", { name: "Name" })).toHaveFocus()
+
+    await user.type(form.getByRole("textbox", { name: "Name" }), "PACKAGE_TOKEN")
+    await user.type(form.getByLabelText("Value"), "fixture-token")
+    await user.click(form.getByRole("checkbox", { name: "personal" }))
+    await user.type(form.getByRole("textbox", { name: "Allowed domains" }), "https://api.example.test/path")
+    await user.click(form.getByRole("button", { name: "Save" }))
+    expect(form.getByText("A secret with this name already exists.")).toBeVisible()
+    expect(form.getByRole("textbox", { name: "Allowed domains" })).toHaveAttribute("aria-invalid", "true")
+    expect(onSaveSecret).not.toHaveBeenCalled()
+
+    await user.clear(form.getByRole("textbox", { name: "Name" }))
+    await user.type(form.getByRole("textbox", { name: "Name" }), "SERVICE_TOKEN")
+    await user.clear(form.getByRole("textbox", { name: "Allowed domains" }))
+    await user.type(form.getByRole("textbox", { name: "Allowed domains" }), "API.Example.test, api.example.test")
+    await user.keyboard("{Enter}")
+    expect(onSaveSecret).toHaveBeenCalledExactlyOnceWith({ operation: "add", name: "SERVICE_TOKEN", value: "fixture-token", workspaces: ["personal"], allowedDomains: ["api.example.test"] })
+    // The page waits for the source to publish the saved metadata.
+    expect(screen.getByText("2 configured")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Add secret" })).toHaveFocus()
+  })
+
+  it("keeps the existing value on metadata edits and sends a replacement only when entered", async () => {
+    const user = userEvent.setup()
+    const onSaveSecret = vi.fn()
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={onSaveSecret} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    let form = within(screen.getByRole("form", { name: "Edit PACKAGE_TOKEN" }))
+    expect(form.getByRole("textbox", { name: "Name" })).toBeDisabled()
+    expect(form.getByLabelText("Replacement value")).toHaveFocus()
+    await user.click(form.getByRole("checkbox", { name: "personal" }))
+    await user.click(form.getByRole("button", { name: "Save" }))
+    expect(onSaveSecret).toHaveBeenLastCalledWith({ operation: "edit", id: "package-token", name: "PACKAGE_TOKEN", workspaces: ["dev", "playgrounds", "personal"], allowedDomains: ["registry.npmjs.org"] })
+    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toHaveFocus()
+
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    form = within(screen.getByRole("form", { name: "Edit PACKAGE_TOKEN" }))
+    await user.type(form.getByLabelText("Replacement value"), "replacement-fixture")
+    await user.click(form.getByRole("button", { name: "Save" }))
+    expect(onSaveSecret).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "edit", id: "package-token", value: "replacement-fixture" }))
+  })
+
+  it("closes an unchanged edit without staging a restart", async () => {
+    const user = userEvent.setup()
+    const onSaveSecret = vi.fn()
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={onSaveSecret} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(onSaveSecret).not.toHaveBeenCalled()
+    expect(screen.queryByRole("form")).not.toBeInTheDocument()
+  })
+
+  it("requires acknowledgement before allowing every HTTPS destination", async () => {
+    const user = userEvent.setup()
+    render(<SecretsPreview source={applicationSourceForScenario("running")} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    const form = within(screen.getByRole("form", { name: "Edit PACKAGE_TOKEN" }))
+    await user.clear(form.getByRole("textbox", { name: "Allowed domains" }))
+    await user.type(form.getByRole("textbox", { name: "Allowed domains" }), "*")
+    await user.click(form.getByRole("button", { name: "Save" }))
+    expect(form.getByRole("alert")).toHaveTextContent("Confirm access to any HTTPS destination.")
+    await user.click(form.getByRole("checkbox", { name: "Allow any HTTPS destination" }))
+    await user.click(form.getByRole("button", { name: "Save" }))
+    expect(screen.queryByRole("form")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Allowed domains for PACKAGE_TOKEN")).toHaveTextContent("*")
+  })
+
+  it("discards cancelled edits and values, with Escape and Cancel returning focus to the trigger", async () => {
+    const user = userEvent.setup()
+    render(<SecretsPreview source={applicationSourceForScenario("running")} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    await user.type(screen.getByLabelText("Replacement value"), "discard-fixture")
+    await user.clear(screen.getByRole("textbox", { name: "Allowed domains" }))
+    await user.keyboard("{Escape}")
+    expect(screen.queryByRole("form")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toHaveFocus()
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    expect(screen.getByLabelText("Replacement value")).toHaveValue("")
+    expect(screen.getByRole("textbox", { name: "Allowed domains" })).toHaveValue("registry.npmjs.org")
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(screen.queryByRole("form")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toHaveFocus()
   })
 
   it("requires confirmation and lets Escape or an outside click cancel removal", async () => {
@@ -58,7 +175,19 @@ describe("SecretsPage", () => {
     expect(screen.getByRole("button", { name: "Add secret" })).toBeVisible()
   })
 
-  it("replaces preview removals and pending confirmation when the source changes", async () => {
+  it("preserves local changes when a status snapshot republishes unchanged secret metadata", async () => {
+    const user = userEvent.setup()
+    const source = applicationSourceForScenario("running")
+    const { rerender } = render(<SecretsPreview source={source} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    await user.clear(screen.getByRole("textbox", { name: "Allowed domains" }))
+    await user.type(screen.getByRole("textbox", { name: "Allowed domains" }), "packages.example.test")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    rerender(<SecretsPreview source={structuredClone(source)} />)
+    expect(screen.getByLabelText("Allowed domains for PACKAGE_TOKEN")).toHaveTextContent("packages.example.test")
+  })
+
+  it("replaces preview removals and pending confirmation when the source metadata changes", async () => {
     const user = userEvent.setup()
     const source = applicationSourceForScenario("running")
     const { rerender } = render(<SecretsPreview source={source} />)
@@ -66,7 +195,7 @@ describe("SecretsPage", () => {
     await user.click(screen.getByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" }))
     await user.click(screen.getByRole("button", { name: "Remove DATABASE_URL" }))
 
-    rerender(<SecretsPreview source={{ ...source, secrets: [...source.secrets] }} />)
+    rerender(<SecretsPreview source={{ ...source, secrets: source.secrets.map((secret) => ({ ...secret, state: "active" })) }} />)
     expect(screen.getByText("2 configured")).toBeVisible()
     expect(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" })).toBeVisible()
     expect(screen.queryByRole("button", { name: "Confirm removal of DATABASE_URL" })).not.toBeInTheDocument()

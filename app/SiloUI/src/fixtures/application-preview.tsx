@@ -5,6 +5,7 @@ import type { ApplicationInitialRoute } from "@/features/application/model/use-a
 import { useBackupFixture, type BackupFixtureMode } from "@/fixtures/application-backup"
 
 const inactiveApplicationActions: ApplicationActions = {
+  saveSecret: () => undefined,
   removeSecret: () => undefined,
   repairRuntime: () => undefined,
   saveMachineConfiguration: () => undefined,
@@ -41,6 +42,10 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
     actions={{
       ...inactiveApplicationActions,
       ...actions,
+      saveSecret: (request) => {
+        fixture.saveSecret(request)
+        actions?.saveSecret?.(request)
+      },
       removeSecret: (id) => {
         fixture.removeSecret(id)
         actions?.removeSecret?.(id)

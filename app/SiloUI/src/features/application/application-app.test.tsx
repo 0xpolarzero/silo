@@ -9,6 +9,7 @@ import type { WorkspaceFixtureMode } from "@/fixtures/application-scenarios"
 
 function renderApplication(scenario: Parameters<typeof applicationSourceForScenario>[0] = "running", source?: ApplicationSource) {
   const actions: ApplicationActions = {
+    saveSecret: vi.fn(),
     removeSecret: vi.fn(),
     repairRuntime: vi.fn(),
     saveMachineConfiguration: vi.fn(),
@@ -44,6 +45,24 @@ function appPanel(name: string) {
 }
 
 describe("application", () => {
+  it("keeps secret edits across navigation and shows pending changes on affected sandboxes", async () => {
+    const { user, actions } = renderApplication()
+    await user.click(within(appNavigation()).getByRole("button", { name: "Secrets" }))
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    const form = within(screen.getByRole("form", { name: "Edit PACKAGE_TOKEN" }))
+    await user.click(form.getByRole("checkbox", { name: "personal" }))
+    await user.clear(form.getByRole("textbox", { name: "Allowed domains" }))
+    await user.type(form.getByRole("textbox", { name: "Allowed domains" }), "packages.example.test")
+    await user.click(form.getByRole("button", { name: "Save" }))
+    expect(actions.saveSecret).toHaveBeenCalledExactlyOnceWith({ operation: "edit", id: "package-token", name: "PACKAGE_TOKEN", workspaces: ["dev", "playgrounds", "personal"], allowedDomains: ["packages.example.test"] })
+
+    await user.click(within(appNavigation()).getByRole("button", { name: "Overview" }))
+    expect(screen.getByRole("note", { name: "Secret changes apply on next start for personal" })).toBeVisible()
+    await user.click(within(appNavigation()).getByRole("button", { name: "Secrets" }))
+    expect(screen.getByLabelText("Allowed domains for PACKAGE_TOKEN")).toHaveTextContent("packages.example.test")
+    expect(within(screen.getByRole("group", { name: "Sandboxes for PACKAGE_TOKEN" })).getByText("personal")).toBeVisible()
+  })
+
   it("applies repeated status-panel routes without resetting the open application", async () => {
     const source = applicationSourceForScenario("running")
     const user = userEvent.setup()
