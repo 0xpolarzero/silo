@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react"
-import { Archive, Check, ChevronDown, Info, LoaderCircle, RotateCcw, TriangleAlert } from "lucide-react"
+import { Archive, Check, Info, LoaderCircle, RotateCcw, TriangleAlert } from "lucide-react"
 
+import { DisclosureHeader } from "@/components/disclosure-header"
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -263,19 +265,18 @@ function BackupPageContent({ source, previewMode = "success", onBusyChange, onRe
               title="No backups yet"
               detail="Completed backups will appear here."
             /></li>}
-            {archives.map((archive) => <li key={archive.name}>
-              <ListRow
-                className="hover:bg-muted/35 focus-within:bg-muted/35"
+            {archives.map((archive) => <Collapsible key={archive.name} asChild open={expandedArchive === archive.name} onOpenChange={(open) => setExpandedArchive(open ? archive.name : null)}><li>
+              <DisclosureHeader
                 icon={<ListRowIcon className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" role="img" aria-label="Backup completed"><Check className="size-3.5" aria-hidden="true" /></ListRowIcon>}
-                title={<span className="truncate" title={archive.name}>{archive.name}</span>}
+                title={archive.name}
                 detail={[archive.completedLabel, archive.size, `${archive.sandboxes.length} sandboxes`].filter(Boolean).join(" · ")}
-                actions={<Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground" aria-label={`Details for ${archive.name}`} aria-expanded={expandedArchive === archive.name} onClick={() => setExpandedArchive(expandedArchive === archive.name ? null : archive.name)}><ChevronDown aria-hidden="true" className={expandedArchive === archive.name ? "rotate-180" : ""} /></Button>}
+                label={`Details for ${archive.name}`}
               />
-              {expandedArchive === archive.name && <ListRowDetails label={`Archive details for ${archive.name}`}>
+              <CollapsibleContent className="collapsible-content-motion"><ListRowDetails label={`Archive details for ${archive.name}`}>
                 <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[11px]"><dt className="text-muted-foreground">Location</dt><dd className="break-all">{archive.destination}</dd><dt className="text-muted-foreground">Sandboxes</dt><dd>{archive.sandboxes.join(", ")}</dd></dl>
                 <div className="flex justify-end"><Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => reviewArchive(archive)}>Restore…</Button></div>
-              </ListRowDetails>}
-            </li>)}
+              </ListRowDetails></CollapsibleContent>
+            </li></Collapsible>)}
           </ul>
           </ListCard>
         </section>

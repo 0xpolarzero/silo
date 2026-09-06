@@ -64,6 +64,29 @@ describe("BackupPage", () => {
     expect(details.queryByText(/dev|playgrounds|personal/)).not.toBeInTheDocument()
   })
 
+  it("opens archive details from the title, supports keyboard toggling, and keeps restore separate", async () => {
+    const user = userEvent.setup()
+    const source = applicationSourceForScenario("running")
+    render(<BackupPage source={source} />)
+    const header = screen.getByRole("button", { name: `Details for ${source.backup.lastArchive}` })
+    expect(header).toHaveAttribute("aria-expanded", "false")
+
+    await user.click(screen.getByText(source.backup.lastArchive))
+    expect(header).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("group", { name: `Archive details for ${source.backup.lastArchive}` })).toBeVisible()
+
+    await user.keyboard(" ")
+    expect(header).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByRole("group", { name: `Archive details for ${source.backup.lastArchive}` })).not.toBeInTheDocument()
+    await user.keyboard("{Enter}")
+    expect(header).toHaveAttribute("aria-expanded", "true")
+
+    const details = within(screen.getByRole("group", { name: `Archive details for ${source.backup.lastArchive}` }))
+    await user.click(details.getByRole("button", { name: "Restore…" }))
+    expect(header).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("group", { name: "Review restore" })).toHaveTextContent(source.backup.lastArchive)
+  })
+
   it("opens the native folder picker, preserves cancelled choices, and uses the selected folder", async () => {
     const user = userEvent.setup()
     const picker = vi.fn()
@@ -203,13 +226,21 @@ describe("BackupPage", () => {
     expect(screen.getByRole("button", { name: "Restore backup" })).toBeDisabled()
   })
 
-  it("opens history details and preserves the selected archive when reviewing a restore", async () => {
+  it("keeps one history archive open and preserves the selected archive when reviewing a restore", async () => {
     vi.useFakeTimers()
     render(<BackupPage source={applicationSourceForScenario("running")} />)
     fireEvent.click(screen.getByRole("button", { name: "Back up" }))
     fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
     await finishOperation()
-    fireEvent.click(screen.getByRole("button", { name: "Details for silo-2026-09-02.silo-backup" }))
+    const history = within(screen.getByRole("list", { name: "Recent backups" }))
+    const originalArchive = history.getByRole("button", { name: "Details for silo-2026-09-02.silo-backup" })
+    fireEvent.click(history.getByText("silo-2026-09-02.silo-backup"))
+    expect(originalArchive).toHaveAttribute("aria-expanded", "true")
+    fireEvent.click(history.getByText(/Just now ·/))
+    expect(originalArchive).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByRole("group", { name: "Archive details for silo-2026-09-02.silo-backup" })).not.toBeInTheDocument()
+    fireEvent.click(history.getByText("silo-2026-09-02.silo-backup"))
+    expect(history.getAllByRole("button", { expanded: true })).toEqual([originalArchive])
     const details = within(screen.getByRole("group", { name: "Archive details for silo-2026-09-02.silo-backup" }))
     expect(details.getByText("External SSD / Silo Backups")).toBeVisible()
     fireEvent.click(details.getByRole("button", { name: "Restore…" }))
