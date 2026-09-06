@@ -13,6 +13,26 @@ function SecretsPreview({ source }: { source: ApplicationSource }) {
 }
 
 describe("SecretsPage", () => {
+  it.each(["Save", "Cancel", "Escape"])("restores focus after %s without reopening the Edit tooltip", async (action) => {
+    const user = userEvent.setup()
+    render(<SecretsPreview source={applicationSourceForScenario("running")} />)
+    const edit = screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })
+    await user.click(edit)
+    await user.type(screen.getByLabelText("Replacement value"), "fixture-replacement")
+    if (action === "Escape") await user.keyboard("{Escape}")
+    else await user.click(screen.getByRole("button", { name: action }))
+
+    expect(screen.queryByRole("form")).not.toBeInTheDocument()
+    expect(edit).toHaveFocus()
+    expect(screen.queryByRole("tooltip", { name: "Edit PACKAGE_TOKEN" })).not.toBeInTheDocument()
+
+    // Returning focus should stay quiet; deliberately focusing Edit still helps keyboard users.
+    await user.tab()
+    await user.tab({ shift: true })
+    expect(edit).toHaveFocus()
+    expect(screen.getByRole("tooltip", { name: "Edit PACKAGE_TOKEN" })).toBeVisible()
+  })
+
   it("adds a secret through the fixture and reopens its metadata without loading the value", async () => {
     const user = userEvent.setup()
     render(<SecretsPreview source={applicationSourceForScenario("running")} />)

@@ -19,6 +19,7 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret }: {
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null)
   const [editor, setEditor] = useState<{ secret?: ApplicationSecret } | null>(null)
   const editorTrigger = useRef<HTMLButtonElement>(null)
+  const restoringEditorFocus = useRef(false)
 
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
@@ -35,7 +36,9 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret }: {
 
   function closeEditor() {
     setEditor(null)
+    restoringEditorFocus.current = true
     editorTrigger.current?.focus()
+    restoringEditorFocus.current = false
   }
 
   function saveSecret(request: SecretConfigurationRequest) {
@@ -102,7 +105,10 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret }: {
                       </div>}
                       actions={<div className="flex shrink-0 items-center gap-0.5 text-muted-foreground" role="group" aria-label={`Manage ${secret.name}`}>
                         <Tooltip>
-                          <TooltipTrigger asChild>
+                          <TooltipTrigger asChild onFocus={(event) => {
+                            // Restore keyboard position without requesting the tooltip again.
+                            if (restoringEditorFocus.current) event.preventDefault()
+                          }}>
                             <Button type="button" variant="ghost" size="icon-xs" aria-label={`Edit ${secret.name}`} onClick={(event) => openEditor(event.currentTarget, secret)}>
                               <Pencil aria-hidden="true" />
                             </Button>
