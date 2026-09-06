@@ -39,6 +39,18 @@ These do not need a two-line record card.
 
 Onboarding uses the same compact account and application preference rows.
 
+## Screen transitions
+
+Keep transitions limited to their intended properties. Progress indicators animate
+their transform; buttons and tabs use the standard visual transition properties.
+Never include `all` or `visibility`: onboarding retains hidden panels to preserve
+drafts, expanded details, and scroll positions. A descendant that animates inherited
+visibility can remain painted after its panel is hidden, as described in
+[MDN’s visibility interpolation](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/visibility#interpolation).
+
+`src/test/transition-styles.test.ts` checks the compiled application CSS for this
+rule, including shared components, variants, and custom styles.
+
 ## Status bar preview
 
 Open `?view=status-bar` or choose **status-bar** in the development View selector.
