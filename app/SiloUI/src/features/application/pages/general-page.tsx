@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Accessibility, Paintbrush, Power } from "lucide-react"
 
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
-import { Checkbox } from "@/components/ui/checkbox"
+import { FilterCombobox } from "@/components/filter-combobox"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { ApplicationSource } from "@/features/application/model/application-source"
@@ -44,15 +44,6 @@ export function GeneralPage({
     return new Set(initial ? [initial.machine.id] : [])
   })
 
-  function toggleStartupWorkspace(workspaceID: string, checked: boolean) {
-    setStartupWorkspaces((current) => {
-      const next = new Set(current)
-      if (checked) next.add(workspaceID)
-      else next.delete(workspaceID)
-      return next
-    })
-  }
-
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
       <h2 className="text-xs font-medium">General</h2>
@@ -81,9 +72,17 @@ export function GeneralPage({
             <SettingRow icon={Power} title="Start sandboxes at launch" description="Start selected sandboxes when Silo opens." control={<Switch checked={startAtLaunch} onCheckedChange={setStartAtLaunch} aria-label="Start sandboxes at launch" />} />
             {startAtLaunch && (
               <ListRowDetails label="Sandboxes to start at launch" className="gap-2">
-                {source.workspaces.map((workspace) => (
-                  <label key={workspace.machine.id} className="flex items-center gap-2 text-xs"><Checkbox checked={startupWorkspaces.has(workspace.machine.id)} onCheckedChange={(checked) => toggleStartupWorkspace(workspace.machine.id, checked === true)} />{workspace.machine.name}</label>
-                ))}
+                <FilterCombobox
+                  options={source.workspaces.map(({ machine }) => ({ value: machine.id, label: machine.name }))}
+                  selectedValues={startupWorkspaces}
+                  onChange={setStartupWorkspaces}
+                  label="Startup sandboxes"
+                  inputLabel="Add sandbox at startup"
+                  placeholder="Select sandboxes…"
+                  listLabel="Available startup sandboxes"
+                  selectedLabel="Selected startup sandboxes"
+                  emptyMessage="No sandboxes available."
+                />
               </ListRowDetails>
             )}
           </div>

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react"
 import { KeyRound } from "lucide-react"
 
+import { FilterCombobox } from "@/components/filter-combobox"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -54,7 +55,7 @@ export function SecretEditor({ secret, source, onSave, onCancel }: {
     if (unchanged) onCancel()
     else onSave(request)
   }} onKeyDown={(event) => {
-    if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+    if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
       event.preventDefault()
       event.stopPropagation()
       onCancel()
@@ -74,14 +75,21 @@ export function SecretEditor({ secret, source, onSave, onCancel }: {
         {fieldError("value")}
       </div>
     </div>
-    <fieldset className="grid min-w-0 gap-2" aria-describedby={errors.workspaces ? `${id}-workspaces-error` : undefined}>
+    <fieldset className="grid min-w-0 gap-2">
       <legend className="mb-2 text-[11px] font-medium text-muted-foreground">Sandboxes</legend>
-      <div className="flex flex-wrap gap-x-4 gap-y-2">
-        {workspaces.map(({ machine }) => <label key={machine.id} className="flex items-center gap-2 text-xs">
-          <Checkbox checked={draft.workspaces.includes(machine.name)} aria-invalid={Boolean(errors.workspaces)} onCheckedChange={(checked) => update({ workspaces: checked === true ? [...draft.workspaces, machine.name] : draft.workspaces.filter((name) => name !== machine.name) })} />{machine.name}
-        </label>)}
-        {workspaces.length === 0 && <p className="text-[11px] text-muted-foreground">Add a virtual machine to assign secrets.</p>}
-      </div>
+      <FilterCombobox
+        options={workspaces.map(({ machine }) => ({ value: machine.name, label: machine.name }))}
+        selectedValues={new Set(draft.workspaces)}
+        onChange={(values) => update({ workspaces: [...values] })}
+        label="Secret sandboxes"
+        inputLabel="Add sandbox"
+        placeholder="Select sandboxes…"
+        listLabel="Available sandboxes"
+        selectedLabel="Selected sandboxes"
+        emptyMessage={workspaces.length === 0 ? "Add a virtual machine to assign secrets." : "No sandboxes available."}
+        inputInvalid={Boolean(errors.workspaces)}
+        inputDescribedBy={errors.workspaces ? `${id}-workspaces-error` : undefined}
+      />
       {fieldError("workspaces")}
     </fieldset>
     <div className="grid gap-1">

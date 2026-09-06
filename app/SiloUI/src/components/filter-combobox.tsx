@@ -21,6 +21,8 @@ export function FilterCombobox<Value extends string>({
   listLabel,
   selectedLabel,
   emptyMessage,
+  inputInvalid,
+  inputDescribedBy,
   compact = false,
   className,
 }: {
@@ -33,6 +35,8 @@ export function FilterCombobox<Value extends string>({
   listLabel: string
   selectedLabel: string
   emptyMessage: string
+  inputInvalid?: boolean
+  inputDescribedBy?: string
   compact?: boolean
   className?: string
 }) {
@@ -72,6 +76,8 @@ export function FilterCombobox<Value extends string>({
             <Input
               role="combobox"
               aria-label={inputLabel}
+              aria-invalid={inputInvalid}
+              aria-describedby={inputDescribedBy}
               aria-autocomplete="list"
               aria-expanded={open}
               aria-controls={listboxId}
@@ -94,10 +100,13 @@ export function FilterCombobox<Value extends string>({
                 } else if (event.key === "ArrowUp") {
                   event.preventDefault()
                   setActiveIndex((current) => Math.max(0, current - 1))
-                } else if (event.key === "Enter" && open && results[activeIndex]) {
+                } else if (event.key === "Enter") {
                   event.preventDefault()
-                  addValue(results[activeIndex].value)
-                } else if (event.key === "Escape") {
+                  if (open && results[activeIndex]) addValue(results[activeIndex].value)
+                  else setOpen(true)
+                } else if (event.key === "Escape" && open) {
+                  event.preventDefault()
+                  event.stopPropagation()
                   setOpen(false)
                 }
               }}
@@ -110,6 +119,10 @@ export function FilterCombobox<Value extends string>({
           aria-label={listLabel}
           className="max-h-[min(15rem,var(--radix-popover-content-available-height))] w-[var(--radix-popover-trigger-width)] overflow-y-auto overscroll-contain p-1"
           onOpenAutoFocus={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => {
+            event.preventDefault()
+            setOpen(false)
+          }}
         >
           {results.length > 0 ? results.map((option, index) => (
             <button
@@ -131,22 +144,22 @@ export function FilterCombobox<Value extends string>({
         </PopoverContent>
       </Popover>
 
-      <div className={cn("flex min-w-0 flex-wrap gap-1.5", !compact && "flex-1")} aria-label={selectedLabel}>
+      <div className={cn("flex min-w-0 flex-wrap gap-1.5", !compact && "flex-1 basis-40")} aria-label={selectedLabel}>
         {selectedOptions.map((option) => (
           <span
             key={option.value}
             className={cn(
-              "inline-flex items-center gap-1 rounded-full border border-border bg-muted/55 pr-1 text-xs font-medium",
+              "inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted/55 pr-1 text-xs font-medium",
               compact ? "h-7 pl-2" : "h-8 pl-2.5",
             )}
           >
-            {option.label}
+            <span className="truncate">{option.label}</span>
             <button
               type="button"
               aria-label={`Remove ${option.label}`}
               onClick={() => removeValue(option.value)}
               className={cn(
-                "grid place-items-center rounded-full text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "grid shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 compact ? "size-5" : "size-6",
               )}
             >
@@ -156,7 +169,7 @@ export function FilterCombobox<Value extends string>({
         ))}
       </div>
 
-      <Button className="order-last ml-auto" variant="ghost" size="xs" disabled={selectedValues.size === 0} onClick={() => onChange(new Set())}>Clear</Button>
+      <Button type="button" className="order-last ml-auto" variant="ghost" size="xs" disabled={selectedValues.size === 0} onClick={() => onChange(new Set())}>Clear</Button>
     </div>
   )
 }
