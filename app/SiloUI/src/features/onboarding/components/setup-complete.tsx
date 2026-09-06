@@ -8,7 +8,7 @@ export function SetupComplete({ machines, githubSummary }: {
   githubSummary: string
 }) {
   return (
-    <section aria-labelledby="setup-complete-title" className="mx-auto grid w-full max-w-3xl gap-3">
+    <section aria-labelledby="setup-complete-title" className="grid gap-3">
       <ListCard divided>
         <ListRow
           role="status"

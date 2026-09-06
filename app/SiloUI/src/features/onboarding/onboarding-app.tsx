@@ -37,8 +37,10 @@ function OnboardingPanel({ step, activeStep, children }: { step: OnboardingStep;
     aria-hidden={!active}
     inert={!active}
     style={{ visibility: active ? "visible" : "hidden" }}
-    className="absolute inset-0 mt-0 h-full min-h-0 overflow-y-auto px-4 py-5 outline-none sm:px-6 sm:py-6 [scrollbar-gutter:stable]"
-  >{children}</TabsContent>
+    className="absolute inset-0 mt-0 flex h-full min-h-0 flex-col overflow-y-auto outline-none"
+  >
+    <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-5 sm:px-6 sm:py-6">{children}</div>
+  </TabsContent>
 }
 
 function repositoryKey(repository: string): string {

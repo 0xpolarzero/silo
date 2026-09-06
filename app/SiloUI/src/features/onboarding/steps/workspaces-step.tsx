@@ -36,7 +36,7 @@ export function WorkspacesStep({ machines, progress, onMachinesChange, onRetry }
   const title = failed ? "Sandbox setup couldn’t finish" : complete ? "Sandboxes are ready" : running ? "Creating your sandboxes" : "Sandboxes are waiting"
 
   return (
-    <section aria-labelledby="workspaces-title" className="mx-auto flex h-full min-h-[28rem] w-full max-w-4xl flex-col gap-4">
+    <section aria-labelledby="workspaces-title" className="flex h-full min-h-[28rem] flex-col gap-4">
       <h2 id="workspaces-title" className="sr-only" data-visual-heading="hidden">
         {failed ? "Sandbox setup needs action" : title}
       </h2>

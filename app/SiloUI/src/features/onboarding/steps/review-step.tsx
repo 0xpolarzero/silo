@@ -41,7 +41,7 @@ const statusLabel: Record<ReviewQueueItemView["status"], string> = {
 
 export function ReviewStep({ workspaceRetryable, queueItems, machines, identitySummary, githubSummary, errorMessage, errorRecovery, onRetryWorkspaceSetup, onEditStep }: ReviewStepProps) {
   return (
-    <section aria-labelledby="review-title" className="mx-auto grid w-full max-w-4xl gap-4">
+    <section aria-labelledby="review-title" className="grid gap-4">
       <h2 id="review-title" className="sr-only" data-visual-heading="hidden">Review setup</h2>
 
       {errorMessage && <SetupNotice
