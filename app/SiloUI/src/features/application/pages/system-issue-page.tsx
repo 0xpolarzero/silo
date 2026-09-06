@@ -1,11 +1,8 @@
-import { useState } from "react"
 import { AlertCircle, Check, Circle, CircleAlert, ExternalLink, Loader2, RotateCw } from "lucide-react"
 
-import { CopyButton } from "@/components/copy-button"
-import { DisclosureIndicator, disclosureTriggerStateClass } from "@/components/disclosure-indicator"
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { LogDisclosure } from "@/components/log-disclosure"
 import type { ActiveRuntimeRepairPresentation, ApplicationActions, RuntimeRepairPhase } from "@/features/application/model/application-source"
 import { cn } from "@/lib/utils"
 
@@ -71,35 +68,6 @@ function RepairProgress({ issue }: { issue: ActiveRuntimeRepairPresentation }) {
   )
 }
 
-function TechnicalDetails({ details }: { details: string }) {
-  const [open, setOpen] = useState(false)
-
-  return (
-    <Collapsible open={open} onOpenChange={setOpen} className="group rounded-lg border border-border">
-      <CollapsibleTrigger
-        aria-label={open ? "Hide technical details" : "Show technical details"}
-        className={`${disclosureTriggerStateClass} flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60`}
-      >
-        Technical details
-        <DisclosureIndicator />
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="relative border-t border-border bg-zinc-950 text-zinc-200 dark:bg-black">
-          <CopyButton
-            variant="ghost"
-            size="xs"
-            className="absolute top-2 right-2 text-zinc-400 hover:bg-white/10 hover:text-white"
-            value={details}
-            labels={{ idle: "Copy technical details", copied: "Technical details copied", failed: "Copy technical details failed" }}
-            text={{ idle: "Copy", copied: "Copied", failed: "Copy failed" }}
-          />
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 pr-20 font-mono text-[11px] leading-5 select-text">{details}</pre>
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
-  )
-}
-
 function issueHeader(issue: ActiveRuntimeRepairPresentation) {
   if (issue.status === "repairing") {
     return {
@@ -153,7 +121,7 @@ export function SystemIssuePage({ issue, actions }: { issue: ActiveRuntimeRepair
           {issue.status === "failed" && (
             <>
               <p className="text-[11px] text-muted-foreground">{issue.recovery}</p>
-              {issue.diagnosticDetails && <TechnicalDetails details={issue.diagnosticDetails} />}
+              {issue.diagnosticDetails && <LogDisclosure title="Technical details" output={issue.diagnosticDetails} />}
             </>
           )}
           <div className="flex flex-wrap items-center justify-between gap-2">

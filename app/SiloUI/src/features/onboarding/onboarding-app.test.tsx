@@ -515,7 +515,8 @@ describe("onboarding", () => {
     expect(panel.queryByText(/Internal verification path/)).not.toBeInTheDocument()
 
     const controls = panel.getByRole("group", { name: "Live activity controls" })
-    expect(within(controls).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Copy activity", "Collapse activity"])
+    expect(within(controls).getAllByRole("button")).toHaveLength(2)
+    expect(within(controls).getByRole("button", { name: "Collapse activity" })).toHaveTextContent("Live activity")
     const copy = vi.spyOn(navigator.clipboard, "writeText")
     await user.click(within(controls).getByRole("button", { name: "Copy activity" }))
     expect(copy).toHaveBeenCalledWith(expect.stringContaining("Verifying 'docs-build'."))
