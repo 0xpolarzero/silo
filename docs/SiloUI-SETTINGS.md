@@ -4,8 +4,89 @@ SiloUI saves preferences and unfinished onboarding input. Layout, navigation,
 and existing Save/Cancel/Finish actions stay unchanged. The approved application
 menus now show installed choices, their icons, `System default`, and a native
 `Choose…` action.
-The integrations configured by these preferences remain outside this piece.
 Swift code and Swift saved values are untouched.
+
+## Login and notification authorization
+
+The Launch Silo at login switch now reports the operating system's effective
+state. Loading settings, regaining focus, reopening the status panel, migrating
+an old document, or changing another preference never registers or unregisters
+Silo. Only an explicit switch action changes OS state, and the UI reads the
+result back before displaying or saving it. A saved `launchAtLogin` value is a
+record of the last explicit verified action, not authority. External OS changes
+therefore appear on focus and relaunch even when the saved value differs.
+
+On macOS 13 and later, the signed app bundle uses
+[SMAppService.mainApp](https://developer.apple.com/documentation/servicemanagement/smappservice/mainapp)
+and its `status`, `register`, and `unregister` APIs. Apple's
+[SMAppService](https://developer.apple.com/documentation/servicemanagement/smappservice)
+contract requires code signing. Status values remain distinct: enabled,
+not registered, requires approval, and not found. Requires approval stays off
+and exposes a deliberate Open System Settings action through Apple's
+`openSystemSettingsLoginItems`; it never reveals the startup child controls.
+Older macOS versions report the feature unavailable without raising the app's
+deployment floor. Registration applies to subsequent logins and does not
+relaunch the current process. The implementation uses the official SDK header
+at `ServiceManagement.framework/Headers/SMAppService.h` through
+`objc2-service-management` 0.3.2.
+
+On Linux, the user entry is
+`$XDG_CONFIG_HOME/autostart/org.silo.preview.desktop`, falling back to
+`~/.config/autostart`. The reader follows `$XDG_CONFIG_HOME` then
+`$XDG_CONFIG_DIRS` precedence and evaluates the effective entry rather than file
+presence. It honors `Hidden`, `OnlyShowIn`, `NotShowIn`, `TryExec`, executable
+availability, and the common `X-GNOME-Autostart-enabled` key. Disabling writes a
+user `Hidden=true` override, which also suppresses an enabled system entry.
+Writes use the same temporary-file, sync, atomic-replace, and directory-sync
+sequence as settings. The generated `Exec` uses `/usr/bin/env --` as a fixed
+executable and quotes the Silo executable as one argument, escapes reserved
+characters and literal percent signs, and uses the available `APPIMAGE` target
+when present. The fixed first token is required because GIO validates the
+unexpanded executable before it expands `%%` to a literal percent in the target
+path. GLib
+[KeyFile](https://docs.gtk.org/glib/struct.KeyFile.html) parses and emits desktop
+entries, and GIO resolves their executable. These rules come from the
+[Desktop Application Autostart Specification](https://specifications.freedesktop.org/autostart/latest/)
+and the [Desktop Entry Exec rules](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html).
+
+The Tauri autostart plugin is not used as the source of truth. Its documented
+[desktop plugin](https://v2.tauri.app/plugin/autostart/) delegates to
+`auto-launch`; the referenced 0.5 implementation checks file existence on Linux,
+uses a fixed home configuration path, emits an unquoted `Exec`, and uses a
+LaunchAgent existence check on macOS. Those checks cannot establish the required
+effective OS state.
+
+On macOS, the notification switch reads
+`UNUserNotificationCenter.getNotificationSettings`. Every explicit enable first
+reads fresh settings instead of trusting rendered state. It requests alert,
+sound, and badge authorization only while status is not determined, then reads
+settings again. The authorization worker waits for the user's callback without
+using the bounded settings-read timeout; the app stays responsive and suppresses
+duplicate requests while the system prompt is open. Denial stays off and exposes
+Open System Settings. Turning
+Silo notifications off changes only the Silo preference; it does not claim to
+revoke macOS authorization. This follows Apple's
+[notification authorization guidance](https://developer.apple.com/documentation/usernotifications/asking-permission-to-use-notifications)
+and the SDK declarations in
+`UserNotifications.framework/Headers/UNUserNotificationCenter.h`.
+
+Linux has no standard notification permission prompt. Silo enables its own
+preference only when the session owns the `org.freedesktop.Notifications` D-Bus
+service. The [Desktop Notifications Specification](https://specifications.freedesktop.org/notification/latest-single/)
+defines the service protocol, not a user authorization API; service availability
+does not guarantee that a desktop will display every notification. Producing
+real sandbox notification events remains outside this change. Category choices
+remain saved and hidden or disabled while the parent preference lacks verified
+authorization.
+
+Login and notification IO runs on Tauri blocking workers. Both integrations use
+main-window-only commands and narrow capabilities; the status window has no
+mutation permission. An OS failure triggers a readback, retains the real state,
+and shows one native error dialog for the explicit action. Initial read failures
+show one dialog; focus refresh failures only log, so refocusing cannot create a
+dialog loop. A verified OS change survives a later settings-save failure and the
+dialog reports that save failure without claiming rollback. OS actions never
+enter the ordinary optimistic settings retry queue.
 
 ## Installed application choices
 
@@ -138,14 +219,14 @@ exists.
 | JSON field | Existing control | Default when absent |
 | --- | --- | --- |
 | `theme` | Theme | System |
-| `launchAtLogin` | Launch Silo at login | On |
+| `launchAtLogin` | Last explicitly verified Launch Silo at login result | On; never applied to the OS automatically |
 | `startWorkspacesAtLaunch` | Start sandboxes at launch | Off |
 | `startupWorkspaceIds` | Startup sandboxes | Existing initial `dev` selection, otherwise first sandbox |
 | `terminal` | Terminal | Terminal |
 | `editor` | Code editor | Visual Studio Code |
 | `browser` | Browser | Safari |
 | `reduceMotion` | Reduce motion | Off |
-| `notificationsEnabled` | Enable notifications | On |
+| `notificationsEnabled` | Silo notification preference | On; effective only with current OS/service authorization |
 | `notifyHealth` | Sandbox health | On |
 | `notifyActions` | Action failures | On |
 | `notifyBackup` | Backup failures | On |
@@ -212,9 +293,10 @@ provides replacement; explicit sync calls provide the durability steps.
 Failures before replacement preserve the old file. A directory-sync failure
 after replacement leaves a complete new file but reports uncertain durability.
 
-Session edits remain usable and synchronized after a save failure. The next
+Ordinary session edits remain usable and synchronized after a save failure. The next
 change or flush retries them. Errors are returned in state and logged, with no
-new dialog or banner. Malformed, unreadable, unsupported-version, or invalid
+new dialog or banner. The system-integration error dialogs described above are
+the narrow exception. Malformed, unreadable, unsupported-version, or invalid
 saved documents are protected from all writes for that session; valid known
 preferences can still be displayed. Drafts must match the existing machine
 contracts and allow unfinished editor input. Documents are capped at 1 MiB,
@@ -236,7 +318,8 @@ loaded as the settings document.
 - Explicit native fixture selectors initialize native storage in memory before
   any file access. `view` and `native-status` are navigation, not fixture selectors.
 - Debug `SILO_SETTINGS_MEMORY=1` forces native memory storage. Native theme import
-  ignores memory stores, so a production theme cannot seed the fixture.
+  ignores memory stores, and system-integration commands stop before platform
+  adapters, so a production theme or host authorization cannot seed the fixture.
 - Debug `SILO_SETTINGS_DIR=/absolute/test/directory` selects a separate persisted
   test document. Reuse that directory to test restarts. Release builds ignore
   both environment overrides.
@@ -244,6 +327,46 @@ loaded as the settings document.
 Workspace status and integration results remain deterministic fixtures, not live
 VM telemetry or integration verification. Only preference edits and onboarding
 recovery input enter this storage path.
+
+Browser previews derive deterministic login and notification authority from
+their memory settings. Any explicit native fixture selector, including
+`scenario=complete`, remains isolated. After native settings initialize, the
+frontend reads their actual storage mode and selects deterministic integration
+authority for either explicit fixture storage or `SILO_SETTINGS_MEMORY=1`.
+Neither mode can read or mutate host login items or notification authorization.
+
+### Real completed-onboarding verification
+
+A debug-only presentation switch opens the real signed bundle directly on the
+completed onboarding panel while retaining real settings and system-integration
+adapters. It does not set a fixture query parameter and is ignored in fixture or
+`SILO_SETTINGS_MEMORY=1` mode. The debug build script supplies an ad-hoc signing
+identity without changing release-signing configuration. Build and verify the
+complete app bundle, then run from the repository root:
+
+```sh
+npm --prefix app/SiloUI run desktop:build:debug
+codesign --verify --deep --strict \
+  'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Preview.app'
+otool -l \
+  'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Preview.app/Contents/MacOS/silo-preview' \
+  | grep -B2 UserNotifications
+SILO_SETTINGS_TEST_DIR=$(mktemp -d /tmp/silo-system-ui.XXXXXX)
+open -n 'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Preview.app' \
+  --env "SILO_SETTINGS_DIR=$SILO_SETTINGS_TEST_DIR" \
+  --env "SILO_NATIVE_ONBOARDING_COMPLETE=1"
+```
+
+Use the two switches on the Stay informed card. For login, confirm the switch
+and startup children appear only after macOS reports enabled; if approval is
+required, use the presented System Settings action, approve Silo, then refocus
+the app. For notifications, accept or deny the first macOS prompt and confirm
+the parent switch and category rows match the resulting authorization. Disable
+notifications and confirm macOS authorization remains unchanged. Change each
+state externally in System Settings and refocus Silo to confirm readback. Quit
+Silo Preview, relaunch with the same two environment variables, and confirm OS
+state wins over the isolated saved flags. Do not use `scenario=complete` for this
+check because that selector intentionally activates fixture isolation.
 
 ## Verification
 
@@ -253,10 +376,10 @@ Completed on macOS arm64, 2026-09-07. Frontend commands run from `app/SiloUI`:
 npm test
 npm run typecheck
 npm run lint
-npm run desktop:build -- --debug --bundles app
+npm run desktop:build:debug
 ```
 
-All passed: 305 frontend tests, type checking, lint, and the macOS debug bundle.
+All passed: 357 frontend tests, type checking, lint, and the macOS debug bundle.
 The desktop build also runs the TypeScript and Vite production build. Tests use
 four Vitest workers: unrestricted workers caused CPU contention and five-second
 test timeouts on this host. Test timeouts and assertions were retained.
@@ -269,12 +392,37 @@ cargo build --offline --manifest-path app/SiloUI/src-tauri/Cargo.toml
 git diff --check -- app/SiloUI/src-tauri
 ```
 
-All passed: 20 Rust tests, including 18 settings tests and two existing panel
-geometry tests. Settings coverage includes every field, false/empty selections,
+All passed on macOS: 37 Rust tests. Settings coverage includes every field, false/empty selections,
 legacy import, unknown fields, invalid saved machines, corrupt/future documents,
 failed-write retry, incomplete temporary files, concurrent patches, onboarding
 recovery, fixture isolation, status initialization ordering, and both Quit
-acknowledgment paths.
+acknowledgment paths. Focused integration coverage includes verified on/off,
+approval-required, external disable, denied notifications, saved/default flags
+never invoking OS mutation, failed OS intents never entering settings retries,
+verified OS results surviving save errors, fixture authority, main-window guards,
+and initial-error dialog suppression on later refresh. Focused frontend tests
+also cover stale focus-read invalidation, a fresh notification read on every
+explicit enable, failed-read unknown authority, and runtime adapter selection for
+native fixture and memory storage. Linux-only tests cover XDG precedence, Hidden
+and `X-GNOME-Autostart-enabled=false` overrides, desktop restrictions,
+unavailable TryExec, a GIO round-trip and harmless launch through a path containing
+spaces, percent, quotes, backslash, dollar, and backtick characters, AppImage
+selection, and persistence errors. Final Linux verification passed all 43 native
+tests in a disposable Debian bookworm container with Rust 1.91.1, GTK 3, and
+WebKitGTK 4.1. The repository was mounted read-only and copied into the container
+for compilation. The test binary ran as ordinary UID 1000, because root bypasses
+the existing filesystem-permission failure test. GIO returns quoted executable
+strings on this GLib version; the state check parses the full command with
+`glib::shell_parse_argv` before checking the executable. This parses arguments
+without executing a shell. Build and test logs are retained under
+`app/SiloUI/src-tauri/target/settings-verification/`.
+
+`codesign --verify --deep --strict` passed for the generated bundle. Its identity
+is `org.silo.preview`, its signature is ad hoc with sealed resources, and its
+`LSMinimumSystemVersion` remains 10.13. `otool -l` reports
+`LC_LOAD_WEAK_DYLIB` for UserNotifications, while runtime calls remain guarded to
+macOS 10.14 or newer. This prevents the 10.13 deployment floor from gaining a
+strong load-time dependency on the newer framework.
 
 General, Notifications, and onboarding browser screenshots at 1160×820 were
 compared with committed HEAD: zero changed pixels on all three surfaces. Tests
@@ -297,6 +445,26 @@ The JSON file contained edits before Finish. Native Quit exited cleanly; a
 process check confirmed no remaining `silo-preview` instance after cleanup.
 The native launch logs were empty. Local screenshots and logs are kept in the
 ignored `app/SiloUI/src-tauri/target/settings-verification/` directory.
+
+For this integration change, `npm run desktop:build -- --debug --bundles app`
+created the same arm64 bundle. The complete bundle was then ad-hoc signed for
+local SMAppService verification. `codesign --verify --deep --strict` passed, the signed identifier is
+`org.silo.preview`, and the existing minimum system version remains 10.13.
+The executable links Apple's ServiceManagement and UserNotifications frameworks.
+The signed bundle was opened with `SILO_NATIVE_ONBOARDING_COMPLETE=1`, using the
+normal persisted settings and real OS adapters. Native accessibility checks
+observed both parent switches off on entry. Enabling `Launch Silo at login`
+returned a checked switch and revealed `Startup preferences`, the saved
+`Start sandboxes at launch` choice, and the saved sandbox selection. Disabling
+login registration returned an unchecked switch and hid those children. The
+original off state was restored; child preferences were not edited.
+
+Clicking `Enable notifications` entered the pending state: unchecked and disabled,
+with notification categories hidden. Grant/denial verification is still manual:
+computer-use access to Apple's `UserNotificationCenter` authorization-dialog app
+is blocked. The app was left open for the user to answer the OS request. No
+logout/login test was performed. The completed sandbox presentation remains a
+scaffold; these checks do not prove sandbox startup or live VM state.
 
 The complete native checklist below is **not** claimed as passed. Accessing the
 macOS status item through SystemUIServer timed out in automation; native panel
@@ -337,9 +505,7 @@ open -n 'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Preview.app' \
    do not appear or change. Repeat the native sequence on Linux when a desktop
    session is available.
 
-Linux native GUI verification is not established by the current host checks:
-the host reports Darwin arm64, and installed Rust targets are macOS arm64 and
-WebAssembly. Docker and OrbStack command-line tools exist; that alone does not
-prove a running Linux desktop session. No Linux build or GUI pass is claimed.
-The read-only `orb list --format json` probe returned no output and was canceled
-with Ctrl-C (exit 130); it did not establish a Linux VM or desktop session.
+Linux compilation and all 43 native tests passed in the disposable Docker
+environment described above. A Linux desktop session, notification delivery, and
+actual launch after logout/login remain manual checks; the container tests do
+not establish those behaviors.

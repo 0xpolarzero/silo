@@ -1,6 +1,7 @@
 mod applications;
 mod settings;
 mod status_panel;
+mod system_integrations;
 mod tray;
 
 use tauri::{Manager, WindowEvent};
@@ -22,6 +23,13 @@ fn main() {
             settings::flush_settings,
             settings::begin_settings_flush,
             settings::complete_settings_flush,
+            system_integrations::system_integrations_fixture,
+            system_integrations::read_system_integrations,
+            system_integrations::set_login_item,
+            system_integrations::request_notification_authorization,
+            system_integrations::open_integration_settings,
+            system_integrations::show_integration_error,
+            system_integrations::debug_onboarding_complete,
             applications::list_applications,
             applications::choose_application
         ])

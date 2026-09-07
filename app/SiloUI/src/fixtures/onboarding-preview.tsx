@@ -7,11 +7,12 @@ import { onboardingScenarios } from "./scenarios"
 interface OnboardingPreviewProps extends Omit<OnboardingAppProps, "actions" | "githubConnectionState" | "completed"> {
   actions?: Partial<OnboardingActions>
   initialGitHubConnectionState?: GitHubConnectionState
+  initialCompleted?: boolean
 }
 
-export function OnboardingPreview({ source: initialSource, actions, initialGitHubConnectionState, ...props }: OnboardingPreviewProps) {
+export function OnboardingPreview({ source: initialSource, actions, initialGitHubConnectionState, initialCompleted = false, ...props }: OnboardingPreviewProps) {
   const [source, setSource] = useState(initialSource)
-  const [completed, setCompleted] = useState(false)
+  const [completed, setCompleted] = useState(initialCompleted)
   const [githubConnectionState, setGitHubConnectionState] = useState<GitHubConnectionState>(
     initialGitHubConnectionState ?? (source.githubPolicies.some(({ repositories }) => repositories.length > 0) ? "connected" : "disconnected"),
   )
@@ -23,6 +24,7 @@ export function OnboardingPreview({ source: initialSource, actions, initialGitHu
     {...props}
     source={source}
     completed={completed}
+    presentationOnlyCompleted={initialCompleted}
     githubConnectionState={githubConnectionState}
     actions={{
       connectGitHub: () => {

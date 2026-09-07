@@ -4,12 +4,14 @@ import { Accessibility, Paintbrush, Power } from "lucide-react"
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { FilterCombobox } from "@/components/filter-combobox"
 import { Switch } from "@/components/ui/switch"
+import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { ApplicationPreferenceFields } from "@/features/preferences/components/application-preference-fields"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 import { useTheme } from "@/features/preferences/theme"
 import { SettingsProvider, useSettings } from "@/features/preferences/settings-store"
+import { useSystemIntegrations } from "@/features/preferences/system-integrations-store"
 
 function SettingRow({ icon: Icon, title, description, control }: { icon: typeof Power; title: string; description: string; control: React.ReactNode }) {
   return (
@@ -49,7 +51,8 @@ function GeneralPageContent({
 }: GeneralPageProps) {
   const { theme, setTheme } = useTheme()
   const { settings, store, updateSettings } = useSettings()
-  const { launchAtLogin, startWorkspacesAtLaunch: startAtLaunch } = settings
+  const integrations = useSystemIntegrations()
+  const { startWorkspacesAtLaunch: startAtLaunch } = settings
   const startupWorkspaces = new Set(settings.startupWorkspaceIds)
 
   useLayoutEffect(() => {
@@ -82,7 +85,16 @@ function GeneralPageContent({
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Startup</h3>
         <ListCard divided>
-          <SettingRow icon={Power} title="Launch Silo at login" description="Keep workspace status and notifications available." control={<Switch checked={launchAtLogin} onCheckedChange={(enabled) => { void updateSettings({ launchAtLogin: enabled }) }} aria-label="Launch Silo at login" />} />
+          <div>
+            <SettingRow icon={Power} title="Launch Silo at login" description="Keep workspace status and notifications available." control={<Switch checked={integrations.loginEnabled} disabled={!integrations.initialized || integrations.loginPending || integrations.loginItem.state === "error" || integrations.loginItem.state === "unavailable"} onCheckedChange={(enabled) => { void integrations.setLaunchAtLogin(enabled) }} aria-label="Launch Silo at login" />} />
+            {integrations.loginItem.state === "requiresApproval" && <ListRow
+              icon={null}
+              title="Approval required"
+              detail="Allow Silo in Login Items to finish enabling this setting."
+              detailClassName="whitespace-normal"
+              actions={<Button type="button" variant="outline" size="xs" onClick={() => { void integrations.openIntegrationSettings("loginItem") }}>Open System Settings</Button>}
+            />}
+          </div>
           <div>
             <SettingRow icon={Power} title="Start sandboxes at launch" description="Start selected sandboxes when Silo opens." control={<Switch checked={startAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startWorkspacesAtLaunch: enabled }) }} aria-label="Start sandboxes at launch" />} />
             {startAtLaunch && (

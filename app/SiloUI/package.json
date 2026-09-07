@@ -12,7 +12,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "desktop": "tauri dev",
-    "desktop:build": "tauri build"
+    "desktop:build": "tauri build",
+    "desktop:build:debug": "tauri build --debug --bundles app --config src-tauri/tauri.debug.conf.json"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

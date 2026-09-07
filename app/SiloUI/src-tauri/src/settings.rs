@@ -437,6 +437,12 @@ struct InitializedSettings {
     store: SettingsStore,
 }
 
+impl InitializedSettings {
+    fn uses_fixture_storage(&self) -> bool {
+        self.fixture || (self.store.path.is_none() && self.store.protected_error.is_none())
+    }
+}
+
 #[derive(Default)]
 struct SettingsState {
     store: Mutex<Option<InitializedSettings>>,
@@ -561,10 +567,7 @@ pub fn uses_fixture_storage(app: &AppHandle) -> Result<bool, String> {
     let state = app.state::<SettingsState>();
     let initialized = state.initialized()?;
     let current = initialized.as_ref().ok_or("Settings are not initialized")?;
-    Ok(
-        current.fixture
-            || (current.store.path.is_none() && current.store.protected_error.is_none()),
-    )
+    Ok(current.uses_fixture_storage())
 }
 
 #[tauri::command]
@@ -1159,6 +1162,28 @@ mod tests {
                 "mode change must not load production storage"
             ))
             .is_err());
+    }
+
+    #[test]
+    fn explicit_and_debug_memory_storage_are_both_fixture_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let explicit = InitializedSettings {
+            fixture: true,
+            store: SettingsStore::load(Some(path.clone())),
+        };
+        let memory = InitializedSettings {
+            fixture: false,
+            store: SettingsStore::load(None),
+        };
+        let persisted = InitializedSettings {
+            fixture: false,
+            store: SettingsStore::load(Some(path)),
+        };
+
+        assert!(explicit.uses_fixture_storage());
+        assert!(memory.uses_fixture_storage());
+        assert!(!persisted.uses_fixture_storage());
     }
 
     #[test]

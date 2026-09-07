@@ -17,6 +17,13 @@
     "allow-flush-settings",
     "allow-begin-settings-flush",
     "allow-complete-settings-flush",
+    "allow-system-integrations-fixture",
+    "allow-read-system-integrations",
+    "allow-set-login-item",
+    "allow-request-notification-authorization",
+    "allow-open-integration-settings",
+    "allow-show-integration-error",
+    "allow-debug-onboarding-complete",
     "allow-list-applications",
     "allow-choose-application"
   ]

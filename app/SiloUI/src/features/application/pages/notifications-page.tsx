@@ -2,7 +2,9 @@ import { Bell, CircleAlert, HardDrive, HeartPulse } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Switch } from "@/components/ui/switch"
+import { Button } from "@/components/ui/button"
 import { useSettings } from "@/features/preferences/settings-store"
+import { useSystemIntegrations } from "@/features/preferences/system-integrations-store"
 
 const categories = [
   { id: "notifyHealth", label: "Sandbox health", detail: "State changes and failed health checks.", icon: HeartPulse },
@@ -12,7 +14,8 @@ const categories = [
 
 export function NotificationsPage() {
   const { settings, updateSettings } = useSettings()
-  const enabled = settings.notificationsEnabled
+  const integrations = useSystemIntegrations()
+  const enabled = settings.notificationsEnabled && integrations.notificationsAuthorized
 
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
@@ -24,9 +27,16 @@ export function NotificationsPage() {
           title={<h3>Enable notifications</h3>}
           detail="Silo can send alerts while its window is closed."
           detailClassName="whitespace-normal"
-          actions={<Switch checked={enabled} onCheckedChange={(checked) => { void updateSettings({ notificationsEnabled: checked }) }} aria-label="Enable notifications" />}
+          actions={<Switch checked={enabled} disabled={!integrations.initialized || integrations.notificationsPending || integrations.notifications.state === "error" || integrations.notifications.state === "unavailable"} onCheckedChange={(checked) => { void integrations.setNotificationsEnabled(checked) }} aria-label="Enable notifications" />}
         />
       </ListCard>
+      {integrations.notifications.state === "denied" && <ListCard><ListRow
+        icon={null}
+        title="Blocked in System Settings"
+        detail="Allow notifications for Silo before enabling alerts."
+        detailClassName="whitespace-normal"
+        actions={<Button type="button" variant="outline" size="xs" onClick={() => { void integrations.openIntegrationSettings("notifications") }}>Open System Settings</Button>}
+      /></ListCard>}
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Alert categories</h3>
         <ListCard divided>

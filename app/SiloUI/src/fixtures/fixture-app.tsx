@@ -24,12 +24,12 @@ import { useDesktopFixtures } from "./use-desktop-fixtures"
 import { SettingsProvider } from "@/features/preferences/settings-store"
 import { settingsForFixture } from "./settings"
 
-export function FixtureApp() {
+export function FixtureApp({ nativeOnboardingComplete = false }: { nativeOnboardingComplete?: boolean }) {
   const source = applicationSourceForScenario(scenarioFromSearch(window.location.search))
-  return <SettingsProvider initialSettings={settingsForFixture(source)}><FixtureAppContent /></SettingsProvider>
+  return <SettingsProvider initialSettings={settingsForFixture(source)}><FixtureAppContent nativeOnboardingComplete={nativeOnboardingComplete} /></SettingsProvider>
 }
 
-function FixtureAppContent() {
+function FixtureAppContent({ nativeOnboardingComplete }: { nativeOnboardingComplete: boolean }) {
   const [surface, setSurface] = useState(() => surfaceFromSearch(window.location.search))
   const [completedSetup, setCompletedSetup] = useState<OnboardingCompletionRequest | null>(null)
   const [statusBarHandoff, setStatusBarHandoff] = useState<{ source: ApplicationSource; route?: StatusBarRoute } | null>(null)
@@ -98,6 +98,7 @@ function FixtureAppContent() {
           source={onboardingScenarios[scenario]}
           initialGitHubConnectionState={githubState}
           repositoryOptions={repositoryFixtures}
+          initialCompleted={nativeOnboardingComplete}
           onOpenApp={() => {
             const url = new URL(window.location.href)
             url.searchParams.set("view", "app")

@@ -26,6 +26,7 @@ export interface OnboardingAppProps {
   actions: OnboardingActions
   githubConnectionState: GitHubConnectionState
   completed: boolean
+  presentationOnlyCompleted?: boolean
   repositoryOptions?: readonly string[]
   onOpenApp?: () => void
 }
@@ -134,16 +135,20 @@ export function OnboardingApp({
   actions,
   githubConnectionState,
   completed,
+  presentationOnlyCompleted = false,
   repositoryOptions,
   onOpenApp,
 }: OnboardingAppProps) {
   const { settings, onboardingDraft, updateSettings, updateOnboardingDraft } = useSettings(source.applicationPreferences)
-  const [draft, setDraft] = useState<OnboardingDraft>(() => onboardingDraft ?? {
-    currentStep: "dependencies",
-    machines: source.machineConfigurations.map((machine) => ({ ...machine })),
-    unfinishedMachineEditor: null,
-    workspaceSelections: initialWorkspaceSelections(source),
-    workspaceIdentities: initialWorkspaceIdentities(source),
+  const [draft, setDraft] = useState<OnboardingDraft>(() => {
+    const restored = onboardingDraft ?? {
+      currentStep: "dependencies" as const,
+      machines: source.machineConfigurations.map((machine) => ({ ...machine })),
+      unfinishedMachineEditor: null,
+      workspaceSelections: initialWorkspaceSelections(source),
+      workspaceIdentities: initialWorkspaceIdentities(source),
+    }
+    return completed ? { ...restored, currentStep: "review" } : restored
   })
   const currentDraft = useRef(draft)
   const recoveryCleared = useRef(false)
@@ -166,11 +171,11 @@ export function OnboardingApp({
   // Completion comes from the existing action's result, never from a recovered
   // draft. A failed or unfinished completion leaves recovery data intact.
   useEffect(() => {
-    if (completed && !recoveryCleared.current) {
+    if (completed && !presentationOnlyCompleted && !recoveryCleared.current) {
       recoveryCleared.current = true
       void updateOnboardingDraft(null)
     }
-  }, [completed, updateOnboardingDraft])
+  }, [completed, presentationOnlyCompleted, updateOnboardingDraft])
 
   function updateDraft(changes: Partial<OnboardingDraft>) {
     if (completed || Object.entries(changes).every(([key, value]) => currentDraft.current[key as keyof OnboardingDraft] === value)) return

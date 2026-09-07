@@ -46,6 +46,20 @@ function expectDisclosureIndicator(trigger: HTMLElement) {
 }
 
 describe("onboarding", () => {
+  it("opens the deterministic completed presentation on Review without finishing setup", () => {
+    const finishSetup = vi.fn()
+    render(<OnboardingPreview
+      source={onboardingScenarios.running}
+      repositoryOptions={repositoryFixtures}
+      initialCompleted
+      actions={{ finishSetup }}
+    />)
+
+    expect(screen.getByRole("tab", { name: /Review/ })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByText("Stay informed")).toBeVisible()
+    expect(finishSetup).not.toHaveBeenCalled()
+  })
+
   it("only applies valid explicit GitHub fixture overrides", () => {
     expect(githubStateFromSearch("")).toBeUndefined()
     expect(githubStateFromSearch("?github=unknown")).toBeUndefined()

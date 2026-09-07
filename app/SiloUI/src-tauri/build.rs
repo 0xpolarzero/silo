@@ -1,4 +1,10 @@
 fn main() {
+    // objc2-user-notifications declares a normal framework dependency. The
+    // app still supports macOS 10.13, so override it at the final link step and
+    // guard every framework call at runtime on macOS 10.14 or newer.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-weak_framework,UserNotifications");
+    }
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "open_main",
@@ -14,6 +20,13 @@ fn main() {
             "flush_settings",
             "begin_settings_flush",
             "complete_settings_flush",
+            "system_integrations_fixture",
+            "read_system_integrations",
+            "set_login_item",
+            "request_notification_authorization",
+            "open_integration_settings",
+            "show_integration_error",
+            "debug_onboarding_complete",
             "list_applications",
             "choose_application",
         ]),
