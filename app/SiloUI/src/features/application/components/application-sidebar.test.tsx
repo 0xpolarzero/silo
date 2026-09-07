@@ -101,16 +101,21 @@ describe("sidebar hover preview", () => {
     expect(sidebar).toHaveAttribute("data-previewing", "true")
   })
 
-  it("dismisses with Escape and restores focus without reopening under the pointer", () => {
+  it("restores focus after Escape without reopening the preview or tooltip", () => {
     const { toggle, sidebar } = renderSidebar()
     fireEvent.pointerEnter(toggle)
     wait(200)
-    screen.getByRole("button", { name: "Files" }).focus()
+    act(() => screen.getByRole("button", { name: "Files" }).focus())
     fireEvent.keyDown(window, { key: "Escape" })
     expect(sidebar).toHaveAttribute("data-collapsed", "true")
     expect(toggle).toHaveFocus()
     wait(300)
     expect(sidebar).toHaveAttribute("data-previewing", "false")
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+
+    act(() => screen.getByRole("button", { name: "Page content" }).focus())
+    act(() => toggle.focus())
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Expand sidebar")
   })
 
   it("retains a preview during keyboard navigation and closes when focus leaves", () => {

@@ -3,11 +3,19 @@
 import * as React from "react"
 import { Tooltip as TooltipPrimitive } from "radix-ui"
 
+import { isRestoringFocus } from "@/lib/focus"
 import { cn } from "@/lib/utils"
 
 const Tooltip = TooltipPrimitive.Root
 const TooltipProvider = TooltipPrimitive.Provider
-const TooltipTrigger = TooltipPrimitive.Trigger
+
+function TooltipTrigger({ onFocus, ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+  return <TooltipPrimitive.Trigger {...props} onFocus={(event) => {
+    onFocus?.(event)
+    // Keep the restored keyboard position without opening a tooltip on dismissal.
+    if (isRestoringFocus(event.currentTarget)) event.preventDefault()
+  }} />
+}
 
 function TooltipContent({
   className,

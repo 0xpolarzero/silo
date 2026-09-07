@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 
+import { restoreFocus } from "@/lib/focus"
+
 function clearTimer(timer: RefObject<number | null>) {
   if (timer.current !== null) window.clearTimeout(timer.current)
   timer.current = null
@@ -20,7 +22,7 @@ export function useSidebarDisclosure() {
   const closePreview = useCallback(() => {
     clearTimer(openTimer)
     clearTimer(closeTimer)
-    if (sidebarRef.current?.contains(document.activeElement)) toggleRef.current?.focus()
+    if (sidebarRef.current?.contains(document.activeElement)) restoreFocus(toggleRef.current)
     setPreviewing(false)
   }, [])
 

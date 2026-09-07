@@ -51,6 +51,14 @@ visibility can remain painted after its panel is hidden, as described in
 `src/test/transition-styles.test.ts` checks the compiled application CSS for this
 rule, including shared components, variants, and custom styles.
 
+## Tooltips
+
+Use `restoreFocus` when dismissing a surface returns focus to its trigger.
+The shared tooltip trigger suppresses only that synchronous focus event; later
+hover and keyboard focus still open it. This uses
+[Radix's focus handler](https://github.com/radix-ui/primitives/blob/main/packages/react/tooltip/src/tooltip.tsx),
+which skips opening when the supplied handler prevents the event's default.
+
 ## Status bar preview
 
 Open `?view=status-bar` or choose **status-bar** in the development View selector.
