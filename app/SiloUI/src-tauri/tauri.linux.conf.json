@@ -2,7 +2,24 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
     "resources": {
-      "runtime/microsandbox/": "microsandbox/"
+      "runtime/microsandbox/": "microsandbox/",
+      "runtime/git/ssl/": "git-support/ssl/"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libc6 (>= 2.34)",
+          "libcurl4 | libcurl4t64",
+          "zlib1g"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "glibc",
+          "libcurl",
+          "zlib"
+        ]
+      }
     }
   }
 }
