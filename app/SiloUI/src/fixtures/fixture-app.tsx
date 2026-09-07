@@ -21,8 +21,15 @@ import { StatusBarPreview } from "@/fixtures/status-bar-preview"
 import { statusBarFixtureModeFromSearch } from "@/fixtures/status-bar-scenarios"
 import type { StatusBarRoute } from "@/features/status-bar/status-bar-types"
 import { useDesktopFixtures } from "./use-desktop-fixtures"
+import { SettingsProvider } from "@/features/preferences/settings-store"
+import { settingsForFixture } from "./settings"
 
 export function FixtureApp() {
+  const source = applicationSourceForScenario(scenarioFromSearch(window.location.search))
+  return <SettingsProvider initialSettings={settingsForFixture(source)}><FixtureAppContent /></SettingsProvider>
+}
+
+function FixtureAppContent() {
   const [surface, setSurface] = useState(() => surfaceFromSearch(window.location.search))
   const [completedSetup, setCompletedSetup] = useState<OnboardingCompletionRequest | null>(null)
   const [statusBarHandoff, setStatusBarHandoff] = useState<{ source: ApplicationSource; route?: StatusBarRoute } | null>(null)

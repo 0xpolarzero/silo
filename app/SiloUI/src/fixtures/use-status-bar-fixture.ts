@@ -4,6 +4,7 @@ import type { ApplicationSource, RepositoryPushOperation } from "@/features/appl
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 import { statusBarSourceForFixture, type StatusBarFixtureMode } from "./status-bar-scenarios"
+import { useSettings } from "@/features/preferences/settings-store"
 
 interface PreviewOperation {
   name: string
@@ -44,6 +45,7 @@ function completePush(source: ApplicationSource, operation: RepositoryPushOperat
 }
 
 export function useStatusBarFixture(source: ApplicationSource, mode: StatusBarFixtureMode | undefined, onOpenSilo: (source: ApplicationSource, route?: StatusBarRoute) => void) {
+  const { settings } = useSettings(source.preferences)
   const [settledSnapshot, setSnapshot] = useState(() => statusBarSourceForFixture(source, mode))
   const [pendingOperations, setPendingOperations] = useState<PreviewOperation[]>([])
   const operationTimers = useRef(new Map<string, number>())
@@ -52,6 +54,7 @@ export function useStatusBarFixture(source: ApplicationSource, mode: StatusBarFi
   const [acknowledgement, setAcknowledgement] = useState("")
   const snapshot: ApplicationSource = {
     ...settledSnapshot,
+    preferences: { ...settledSnapshot.preferences, ...settings },
     workspaces: settledSnapshot.workspaces.map((workspace) => {
       const pending = pendingOperations.find(({ name }) => name === workspace.machine.name)
       return pending ? { ...workspace, state: pending.action === "stopped" ? workspace.state : "starting", stateDetail: pending.title } : workspace
@@ -98,7 +101,7 @@ export function useStatusBarFixture(source: ApplicationSource, mode: StatusBarFi
   }
 
   function settleOperations() {
-    let next = pendingOperations.reduce(completeOperation, { ...settledSnapshot, activities: source.activities })
+    let next = pendingOperations.reduce(completeOperation, { ...settledSnapshot, preferences: { ...settledSnapshot.preferences, ...settings }, activities: source.activities })
     pendingPushes.current.forEach(({ operation, timer }) => {
       window.clearTimeout(timer)
       next = completePush(next, operation)

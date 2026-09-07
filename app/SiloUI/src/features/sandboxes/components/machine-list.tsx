@@ -20,13 +20,7 @@ import {
 } from "@/features/onboarding/model/machine-configuration"
 import { SandboxAction, SandboxList, SandboxListItem, SandboxListRow, type SandboxIconState, type SandboxRowTone } from "@/features/sandboxes/components/sandbox-list"
 import { machineSummary } from "@/features/sandboxes/model/machine-summary"
-
-interface MachineEditorState {
-  draft: SetupMachineConfiguration
-  originalID?: string
-  insertAt: number
-  displayAfterID?: string
-}
+import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
   badge?: ReactNode
@@ -49,6 +43,8 @@ interface MachineListProps {
   interactionDisabled?: boolean
   summary?: ReactNode
   footer?: ReactNode
+  initialEditorDraft?: MachineEditorDraft | null
+  onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
 }
 
 function SelectField({ label, value, values, suffix, error, onChange }: {
@@ -92,11 +88,12 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-function MachineEditor({ editor, machines, onCancel, onSave }: {
-  editor: MachineEditorState
+function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange }: {
+  editor: MachineEditorDraft
   machines: readonly SetupMachineConfiguration[]
   onCancel: () => void
   onSave: (machine: SetupMachineConfiguration) => void
+  onDraftChange: (draft: SetupMachineConfiguration) => void
 }) {
   const [draft, setDraft] = useState(editor.draft)
   const [errors, setErrors] = useState<MachineValidationErrors>({})
@@ -108,7 +105,9 @@ function MachineEditor({ editor, machines, onCancel, onSave }: {
   }, [])
 
   function update(changes: Partial<SetupMachineConfiguration>) {
-    setDraft((current) => ({ ...current, ...changes } as SetupMachineConfiguration))
+    const next = { ...draft, ...changes } as SetupMachineConfiguration
+    setDraft(next)
+    onDraftChange(next)
     setErrors({})
   }
 
@@ -179,13 +178,18 @@ function MachineEditor({ editor, machines, onCancel, onSave }: {
   )
 }
 
-export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, summary, footer }: MachineListProps) {
+export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, summary, footer, initialEditorDraft = null, onEditorDraftChange }: MachineListProps) {
   const [addOpen, setAddOpen] = useState(false)
-  const [editor, setEditor] = useState<MachineEditorState | null>(null)
+  const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const [draggedID, setDraggedID] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState("")
   const [operationError, setOperationError] = useState("")
+
+  function setEditor(next: MachineEditorDraft | null) {
+    setEditorState(next)
+    onEditorDraftChange?.(next)
+  }
 
   const displayMachines = useMemo(() => {
     if (!sortPriority) {
@@ -357,7 +361,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
                   onDrop={(event) => drop(event, index)}
                 >
                   {isEditing && editor ? (
-                    <MachineEditor editor={editor} machines={machines} onCancel={() => setEditor(null)} onSave={save} />
+                    <MachineEditor editor={editor} machines={machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} />
                   ) : (
                     <SandboxListRow
                       name={machine.name}

@@ -7,9 +7,12 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { StatusBarContent } from "@/features/status-bar/status-bar"
 import { statusBarHealth } from "@/features/status-bar/status-bar-model"
+import { useSettings } from "@/features/preferences/settings-store"
 import type { StatusBarActions } from "@/features/status-bar/status-bar-types"
 
-export function StatusPanel({ source, actions }: { source: ApplicationSource; actions: StatusBarActions }) {
+export function StatusPanel({ source: input, actions }: { source: ApplicationSource; actions: StatusBarActions }) {
+  const { settings } = useSettings(input.preferences)
+  const source = { ...input, preferences: { ...input.preferences, ...settings } }
   const content = useRef<HTMLDivElement>(null)
   const [opening, setOpening] = useState(0)
   const health = statusBarHealth(source)

@@ -11,5 +11,8 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: true,
+    // Full-window interaction tests compete for CPU when every jsdom file runs
+    // at once. Keep their normal timeout meaningful under the complete suite.
+    maxWorkers: 4,
   },
 })

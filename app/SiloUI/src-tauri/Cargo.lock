@@ -3014,8 +3014,11 @@ version = "0.0.0"
 dependencies = [
  "ksni",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

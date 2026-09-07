@@ -1,27 +1,18 @@
-import { useState } from "react"
 import { Bell, CircleAlert, HardDrive, HeartPulse } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Switch } from "@/components/ui/switch"
+import { useSettings } from "@/features/preferences/settings-store"
 
 const categories = [
-  { id: "health", label: "Sandbox health", detail: "State changes and failed health checks.", icon: HeartPulse },
-  { id: "actions", label: "Action failures", detail: "Start, stop, restart, push, and maintenance failures.", icon: CircleAlert },
-  { id: "backup", label: "Backup failures", detail: "Backup and restore operations that need attention.", icon: HardDrive },
+  { id: "notifyHealth", label: "Sandbox health", detail: "State changes and failed health checks.", icon: HeartPulse },
+  { id: "notifyActions", label: "Action failures", detail: "Start, stop, restart, push, and maintenance failures.", icon: CircleAlert },
+  { id: "notifyBackup", label: "Backup failures", detail: "Backup and restore operations that need attention.", icon: HardDrive },
 ] as const
 
 export function NotificationsPage() {
-  const [enabled, setEnabled] = useState(true)
-  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(() => new Set(categories.map((category) => category.id)))
-
-  function setCategory(id: string, checked: boolean) {
-    setSelectedCategories((current) => {
-      const next = new Set(current)
-      if (checked) next.add(id)
-      else next.delete(id)
-      return next
-    })
-  }
+  const { settings, updateSettings } = useSettings()
+  const enabled = settings.notificationsEnabled
 
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
@@ -33,7 +24,7 @@ export function NotificationsPage() {
           title={<h3>Enable notifications</h3>}
           detail="Silo can send alerts while its window is closed."
           detailClassName="whitespace-normal"
-          actions={<Switch checked={enabled} onCheckedChange={setEnabled} aria-label="Enable notifications" />}
+          actions={<Switch checked={enabled} onCheckedChange={(checked) => { void updateSettings({ notificationsEnabled: checked }) }} aria-label="Enable notifications" />}
         />
       </ListCard>
       <section className="grid gap-2">
@@ -47,7 +38,7 @@ export function NotificationsPage() {
               title={<h4>{label}</h4>}
               detail={detail}
               detailClassName="whitespace-normal"
-              actions={<Switch checked={selectedCategories.has(id)} onCheckedChange={(checked) => setCategory(id, checked)} disabled={!enabled} aria-label={label} />}
+              actions={<Switch checked={settings[id]} onCheckedChange={(checked) => { void updateSettings({ [id]: checked }) }} disabled={!enabled} aria-label={label} />}
             />
           ))}
         </ListCard>

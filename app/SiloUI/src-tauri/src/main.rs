@@ -1,3 +1,4 @@
+mod settings;
 mod status_panel;
 mod tray;
 
@@ -10,9 +11,18 @@ fn main() {
             status_panel::hide_status,
             status_panel::resize_status,
             status_panel::quit_app,
-            tray::update_tray
+            tray::update_tray,
+            settings::initialize_settings,
+            settings::read_settings,
+            settings::update_settings,
+            settings::update_onboarding_draft,
+            settings::import_legacy_theme,
+            settings::flush_settings,
+            settings::begin_settings_flush,
+            settings::complete_settings_flush
         ])
         .setup(|app| {
+            settings::install(app.handle());
             status_panel::install(app.handle())?;
             tray::install(app.handle())?;
             let window = app
@@ -39,6 +49,9 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Silo Preview")
         .run(|_app, _event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
+                settings::prevent_exit_until_saved(_app, api);
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen {
                 has_visible_windows: false,

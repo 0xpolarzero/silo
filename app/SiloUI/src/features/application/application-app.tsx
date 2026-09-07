@@ -16,6 +16,7 @@ import { SecretsPage } from "@/features/application/pages/secrets-page"
 import { SystemIssuePage } from "@/features/application/pages/system-issue-page"
 import { WorkspacesPage } from "@/features/application/pages/workspaces-page"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
+import { SettingsProvider, useSettings } from "@/features/preferences/settings-store"
 
 function workspaceAttentionCounts(source: Pick<ApplicationSource, "workspaces" | "sandboxConfigurationOperation">): { errors: number; warnings: number } {
   const attentionByMachine = new Map(source.workspaces.map((workspace) => [
@@ -66,7 +67,24 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
   }
 }
 
-export function ApplicationApp({ source, actions, backup, initialRoute, routeRequest }: { source: ApplicationSource; actions: ApplicationActions; backup: BackupController; initialRoute?: ApplicationInitialRoute; routeRequest?: ApplicationInitialRoute }) {
+type ApplicationAppProps = { source: ApplicationSource; actions: ApplicationActions; backup: BackupController; initialRoute?: ApplicationInitialRoute; routeRequest?: ApplicationInitialRoute }
+
+export function ApplicationApp(props: ApplicationAppProps) {
+  const initialWorkspace = props.source.workspaces.find(({ machine }) => machine.name === "dev") ?? props.source.workspaces[0]
+  return <SettingsProvider initialSettings={{
+    ...props.source.preferences,
+    startupWorkspaceIds: props.source.preferences.startupWorkspaceIds ?? (initialWorkspace ? [initialWorkspace.machine.id] : []),
+  }}><ApplicationContent {...props} /></SettingsProvider>
+}
+
+function ApplicationContent({ source, actions, backup, initialRoute, routeRequest }: ApplicationAppProps) {
+  const { settings, updateSettings } = useSettings()
+  const { reduceMotion } = settings
+  const applicationPreferences: ApplicationPreferenceSelection = {
+    terminal: settings.terminal,
+    editor: settings.editor,
+    browser: settings.browser,
+  }
   const activeRuntimeRepair = source.runtimeRepair?.status === "succeeded" ? null : source.runtimeRepair
   const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute)
   const { tab: activeTab, workspaceSection, settingsSection } = navigation
@@ -77,7 +95,6 @@ export function ApplicationApp({ source, actions, backup, initialRoute, routeReq
       .map(({ machine }) => machine.id),
   ))
   const [logQuery, setLogQuery] = useState("")
-  const [reduceMotion, setReduceMotion] = useState(source.preferences.reduceMotion)
   const [sandboxConfigurationOperation, setSandboxConfigurationOperation] = useState<SandboxConfigurationOperation | null>(source.sandboxConfigurationOperation)
   const [repositoryPushOperations, setRepositoryPushOperations] = useState<RepositoryPushOperation[]>(source.repositoryPushOperations)
   const [repairConfirmationVisible, setRepairConfirmationVisible] = useState(source.runtimeRepair?.status === "succeeded")
@@ -86,11 +103,6 @@ export function ApplicationApp({ source, actions, backup, initialRoute, routeReq
     source.github.state === "connecting"
       || (source.github.workspaceOperations ?? []).some(({ status }) => status === "applying"),
   )
-  const [applicationPreferences, setApplicationPreferences] = useState<ApplicationPreferenceSelection>(() => ({
-    terminal: source.preferences.terminal,
-    editor: source.preferences.editor,
-    browser: source.preferences.browser,
-  }))
   const previousRuntimeRepairStatus = useRef<RuntimeRepairPresentation["status"] | undefined>(undefined)
   const repairConfirmationTimer = useRef<number | null>(null)
   const visibleTab = activeTab
@@ -100,7 +112,7 @@ export function ApplicationApp({ source, actions, backup, initialRoute, routeReq
     workspaces,
     sandboxConfigurationOperation,
     repositoryPushOperations,
-    preferences: { ...source.preferences, ...applicationPreferences },
+    preferences: { ...source.preferences, ...settings },
   }
 
   useEffect(() => {
@@ -119,16 +131,15 @@ export function ApplicationApp({ source, actions, backup, initialRoute, routeReq
     // The native bridge replaces local push progress with its authoritative operation result.
     // oxlint-disable-next-line react/set-state-in-effect
     setRepositoryPushOperations(source.repositoryPushOperations)
-    // Keep local application choices aligned with a replacement native snapshot.
-    // oxlint-disable-next-line react/set-state-in-effect
-    setApplicationPreferences({
-      terminal: source.preferences.terminal,
-      editor: source.preferences.editor,
-      browser: source.preferences.browser,
-    })
-    // oxlint-disable-next-line react/set-state-in-effect
-    setReduceMotion(source.preferences.reduceMotion)
-  }, [source.sandboxConfigurationOperation, source.repositoryPushOperations, source.preferences.terminal, source.preferences.editor, source.preferences.browser, source.preferences.reduceMotion])
+  }, [source.sandboxConfigurationOperation, source.repositoryPushOperations])
+
+  function changeApplicationPreferences(next: ApplicationPreferenceSelection) {
+    const patch: Partial<ApplicationPreferenceSelection> = {}
+    for (const key of ["terminal", "editor", "browser"] as const) {
+      if (next[key] !== applicationPreferences[key]) patch[key] = next[key]
+    }
+    void updateSettings(patch)
+  }
 
   useEffect(() => {
     const status = source.runtimeRepair?.status
@@ -252,7 +263,7 @@ export function ApplicationApp({ source, actions, backup, initialRoute, routeReq
       )}
       <section id="application-panel-settings" role="region" aria-labelledby="application-nav-settings" hidden={visibleTab !== "settings"}>
         <div hidden={settingsSection !== "general"}>
-          <GeneralPage source={applicationSource} applicationPreferences={applicationPreferences} onApplicationPreferencesChange={setApplicationPreferences} reduceMotion={reduceMotion} onReduceMotionChange={setReduceMotion} />
+          <GeneralPage source={source} applicationPreferences={applicationPreferences} onApplicationPreferencesChange={changeApplicationPreferences} reduceMotion={reduceMotion} onReduceMotionChange={(enabled) => { void updateSettings({ reduceMotion: enabled }) }} />
         </div>
         <div hidden={settingsSection !== "notifications"}><NotificationsPage /></div>
       </section>

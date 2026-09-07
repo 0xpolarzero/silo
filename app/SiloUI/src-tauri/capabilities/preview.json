@@ -1,13 +1,21 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "preview",
-  "description": "The main window can drag, resize, minimize, and close itself.",
+  "description": "The main window owns shared settings and onboarding drafts, and can drag, resize, minimize, and close itself.",
   "windows": ["main"],
   "permissions": [
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-minimize",
-    "core:window:allow-toggle-maximize"
+    "core:window:allow-toggle-maximize",
+    "allow-read-settings",
+    "allow-initialize-settings",
+    "allow-update-settings",
+    "allow-update-onboarding-draft",
+    "allow-import-legacy-theme",
+    "allow-flush-settings",
+    "allow-begin-settings-flush",
+    "allow-complete-settings-flush"
   ]
 }

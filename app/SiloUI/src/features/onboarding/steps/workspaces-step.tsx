@@ -9,6 +9,7 @@ import { MachineList } from "@/features/sandboxes/components/machine-list"
 import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import type { WorkspaceProgressView, WorkspaceView } from "@/features/onboarding/model/onboarding-state"
+import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 import { cn } from "@/lib/utils"
 
 function formatElapsed(seconds: number): string {
@@ -24,11 +25,13 @@ const workspaceStatusLabel: Record<WorkspaceView["status"], string> = {
   failed: "Failed",
 }
 
-export function WorkspacesStep({ machines, progress, onMachinesChange, onRetry }: {
+export function WorkspacesStep({ machines, progress, onMachinesChange, onRetry, initialEditorDraft, onEditorDraftChange }: {
   machines: readonly SetupMachineConfiguration[]
   progress: WorkspaceProgressView
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
   onRetry: () => void
+  initialEditorDraft?: MachineEditorDraft | null
+  onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
 }) {
   const failed = progress.status === "failed"
   const running = progress.status === "running"
@@ -73,6 +76,8 @@ export function WorkspacesStep({ machines, progress, onMachinesChange, onRetry }
         <MachineList
           machines={machines}
           onMachinesChange={onMachinesChange}
+          initialEditorDraft={initialEditorDraft}
+          onEditorDraftChange={onEditorDraftChange}
           getRowPresentation={(machine) => {
             const status = progress.workspaces.find(({ name }) => name === machine.name)
             const state = status?.status ?? "waiting"

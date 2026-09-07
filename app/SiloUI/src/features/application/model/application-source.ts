@@ -222,6 +222,7 @@ export interface ApplicationSource {
   preferences: ApplicationPreferenceSelection & {
     launchAtLogin: boolean
     startWorkspacesAtLaunch: boolean
+    startupWorkspaceIds?: string[]
     reduceMotion: boolean
   }
 }

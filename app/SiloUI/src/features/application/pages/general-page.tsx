@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useLayoutEffect } from "react"
 import { Accessibility, Paintbrush, Power } from "lucide-react"
 
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
@@ -9,6 +9,7 @@ import type { ApplicationSource } from "@/features/application/model/application
 import { ApplicationPreferenceFields } from "@/features/preferences/components/application-preference-fields"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 import { useTheme } from "@/features/preferences/theme"
+import { SettingsProvider, useSettings } from "@/features/preferences/settings-store"
 
 function SettingRow({ icon: Icon, title, description, control }: { icon: typeof Power; title: string; description: string; control: React.ReactNode }) {
   return (
@@ -23,26 +24,40 @@ function SettingRow({ icon: Icon, title, description, control }: { icon: typeof 
   )
 }
 
-export function GeneralPage({
-  source,
-  applicationPreferences,
-  onApplicationPreferencesChange,
-  reduceMotion,
-  onReduceMotionChange,
-}: {
+type GeneralPageProps = {
   source: ApplicationSource
   applicationPreferences: ApplicationPreferenceSelection
   onApplicationPreferencesChange: (preferences: ApplicationPreferenceSelection) => void
   reduceMotion: boolean
   onReduceMotionChange: (enabled: boolean) => void
-}) {
+}
+
+export function GeneralPage(props: GeneralPageProps) {
+  const initialWorkspace = props.source.workspaces.find(({ machine }) => machine.name === "dev") ?? props.source.workspaces[0]
+  return <SettingsProvider initialSettings={{
+    ...props.source.preferences,
+    startupWorkspaceIds: props.source.preferences.startupWorkspaceIds ?? (initialWorkspace ? [initialWorkspace.machine.id] : []),
+  }}><GeneralPageContent {...props} /></SettingsProvider>
+}
+
+function GeneralPageContent({
+  source,
+  applicationPreferences,
+  onApplicationPreferencesChange,
+  reduceMotion,
+  onReduceMotionChange,
+}: GeneralPageProps) {
   const { theme, setTheme } = useTheme()
-  const [launchAtLogin, setLaunchAtLogin] = useState(source.preferences.launchAtLogin)
-  const [startAtLaunch, setStartAtLaunch] = useState(source.preferences.startWorkspacesAtLaunch)
-  const [startupWorkspaces, setStartupWorkspaces] = useState<Set<string>>(() => {
+  const { settings, store, updateSettings } = useSettings()
+  const { launchAtLogin, startWorkspacesAtLaunch: startAtLaunch } = settings
+  const startupWorkspaces = new Set(settings.startupWorkspaceIds)
+
+  useLayoutEffect(() => {
     const initial = source.workspaces.find(({ machine }) => machine.name === "dev") ?? source.workspaces[0]
-    return new Set(initial ? [initial.machine.id] : [])
-  })
+    store.updateDefaults({
+      startupWorkspaceIds: source.preferences.startupWorkspaceIds ?? (initial ? [initial.machine.id] : []),
+    })
+  }, [store, source.workspaces, source.preferences.startupWorkspaceIds])
 
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
@@ -67,15 +82,15 @@ export function GeneralPage({
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Startup</h3>
         <ListCard divided>
-          <SettingRow icon={Power} title="Launch Silo at login" description="Keep workspace status and notifications available." control={<Switch checked={launchAtLogin} onCheckedChange={setLaunchAtLogin} aria-label="Launch Silo at login" />} />
+          <SettingRow icon={Power} title="Launch Silo at login" description="Keep workspace status and notifications available." control={<Switch checked={launchAtLogin} onCheckedChange={(enabled) => { void updateSettings({ launchAtLogin: enabled }) }} aria-label="Launch Silo at login" />} />
           <div>
-            <SettingRow icon={Power} title="Start sandboxes at launch" description="Start selected sandboxes when Silo opens." control={<Switch checked={startAtLaunch} onCheckedChange={setStartAtLaunch} aria-label="Start sandboxes at launch" />} />
+            <SettingRow icon={Power} title="Start sandboxes at launch" description="Start selected sandboxes when Silo opens." control={<Switch checked={startAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startWorkspacesAtLaunch: enabled }) }} aria-label="Start sandboxes at launch" />} />
             {startAtLaunch && (
               <ListRowDetails label="Sandboxes to start at launch" className="gap-2">
                 <FilterCombobox
                   options={source.workspaces.map(({ machine }) => ({ value: machine.id, label: machine.name }))}
                   selectedValues={startupWorkspaces}
-                  onChange={setStartupWorkspaces}
+                  onChange={(selected) => { void updateSettings({ startupWorkspaceIds: [...selected] }) }}
                   label="Startup sandboxes"
                   inputLabel="Add sandbox at startup"
                   placeholder="Select sandboxes…"

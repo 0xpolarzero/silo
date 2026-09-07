@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useState } from "react"
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 
 import { TabsContent } from "@/components/ui/tabs"
 import { SetupComplete } from "@/features/onboarding/components/setup-complete"
@@ -17,6 +17,8 @@ import { DependenciesStep } from "@/features/onboarding/steps/dependencies-step"
 import { GitHubStep } from "@/features/onboarding/steps/github-step"
 import { ReviewStep } from "@/features/onboarding/steps/review-step"
 import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
+import type { OnboardingDraft } from "@/features/onboarding/model/onboarding-draft"
+import { useSettings } from "@/features/preferences/settings-store"
 
 export interface OnboardingAppProps {
   source: OnboardingSource
@@ -134,16 +136,44 @@ export function OnboardingApp({
   repositoryOptions,
   onOpenApp,
 }: OnboardingAppProps) {
-  const [activeStep, setActiveStep] = useState<OnboardingStep>("dependencies")
+  const { settings, onboardingDraft, updateSettings, updateOnboardingDraft } = useSettings(source.applicationPreferences)
+  const [draft, setDraft] = useState<OnboardingDraft>(() => onboardingDraft ?? {
+    currentStep: "dependencies",
+    machines: source.machineConfigurations.map((machine) => ({ ...machine })),
+    unfinishedMachineEditor: null,
+    workspaceSelections: initialWorkspaceSelections(source),
+    workspaceIdentities: initialWorkspaceIdentities(source),
+  })
+  const currentDraft = useRef(draft)
+  const recoveryCleared = useRef(false)
+  const { currentStep: activeStep, machines, workspaceSelections, workspaceIdentities } = draft
   const viewModel = useMemo(() => projectOnboarding(source, githubConnectionState), [githubConnectionState, source])
-  const [workspaceSelections, setWorkspaceSelections] = useState(() => initialWorkspaceSelections(source))
-  const [workspaceIdentities, setWorkspaceIdentities] = useState(() => initialWorkspaceIdentities(source))
-  const [machines, setMachines] = useState<SetupMachineConfiguration[]>(() => source.machineConfigurations.map((machine) => ({ ...machine })))
-  const [applicationPreferences, setApplicationPreferences] = useState(() => ({ ...source.applicationPreferences }))
+  const applicationPreferences = { terminal: settings.terminal, editor: settings.editor, browser: settings.browser }
   const availableRepositories = useMemo(
     () => uniqueRepositoryOptions(repositoryOptions ?? defaultRepositoryOptions(source)),
     [repositoryOptions, source],
   )
+
+  // Completion comes from the existing action's result, never from a recovered
+  // draft. A failed or unfinished completion leaves recovery data intact.
+  useEffect(() => {
+    if (completed && !recoveryCleared.current) {
+      recoveryCleared.current = true
+      void updateOnboardingDraft(null)
+    }
+  }, [completed, updateOnboardingDraft])
+
+  function updateDraft(changes: Partial<OnboardingDraft>) {
+    if (completed || Object.entries(changes).every(([key, value]) => currentDraft.current[key as keyof OnboardingDraft] === value)) return
+    const next = { ...currentDraft.current, ...changes }
+    currentDraft.current = next
+    setDraft(next)
+    void updateOnboardingDraft(next)
+  }
+
+  function setActiveStep(currentStep: OnboardingStep) {
+    updateDraft({ currentStep })
+  }
 
   function move(offset: -1 | 1) {
     const current = onboardingSteps.indexOf(activeStep)
@@ -153,34 +183,32 @@ export function OnboardingApp({
 
   function saveMachines(updated: SetupMachineConfiguration[]) {
     const request = configurationRequest(updated)
-    const previousNameByID = new Map(machines.map(({ id, name }) => [id, name]))
-    setWorkspaceSelections((current) => Object.fromEntries(request.machines.map(({ id, name }) => {
+    const current = currentDraft.current
+    const previousNameByID = new Map(current.machines.map(({ id, name }) => [id, name]))
+    const selections = Object.fromEntries(request.machines.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
-      return [name, current[name] ?? (previousName ? current[previousName] : undefined) ?? []]
-    })))
-    setWorkspaceIdentities((current) => Object.fromEntries(request.machines.map(({ id, name }) => {
+      return [name, current.workspaceSelections[name] ?? (previousName ? current.workspaceSelections[previousName] : undefined) ?? []]
+    }))
+    const identities = Object.fromEntries(request.machines.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
-      return [name, current[name] ?? (previousName ? current[previousName] : undefined)
+      return [name, current.workspaceIdentities[name] ?? (previousName ? current.workspaceIdentities[previousName] : undefined)
         ?? { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }]
-    })))
-    setMachines(request.machines)
+    }))
+    updateDraft({ machines: request.machines, workspaceSelections: selections, workspaceIdentities: identities, unfinishedMachineEditor: null })
     actions.saveMachineConfiguration(request)
   }
 
   function updateWorkspaceSelections(workspace: string, selections: WorkspaceRepositorySelection[]) {
-    setWorkspaceSelections((current) => ({ ...current, [workspace]: uniqueWorkspaceSelections(selections) }))
+    updateDraft({ workspaceSelections: { ...currentDraft.current.workspaceSelections, [workspace]: uniqueWorkspaceSelections(selections) } })
   }
 
   function updateWorkspaceIdentity(workspace: string, identity: WorkspaceGitIdentity) {
-    setWorkspaceIdentities((current) => ({ ...current, [workspace]: identity }))
+    updateDraft({ workspaceIdentities: { ...currentDraft.current.workspaceIdentities, [workspace]: identity } })
   }
 
   function resetWorkspaceIdentity(workspace: string) {
     if (!source.currentHostGitIdentity) return
-    setWorkspaceIdentities((current) => ({
-      ...current,
-      [workspace]: { ...current[workspace], ...source.currentHostGitIdentity },
-    }))
+    updateWorkspaceIdentity(workspace, { ...currentDraft.current.workspaceIdentities[workspace], ...source.currentHostGitIdentity })
   }
 
   function continueSetup() {
@@ -234,17 +262,23 @@ export function OnboardingApp({
       onContinue={continueSetup}
       completed={completed}
       onOpenApp={onOpenApp}
+      reduceMotion={settings.reduceMotion}
     >
       <OnboardingPanel step="dependencies" activeStep={activeStep}>
         <DependenciesStep
           groups={viewModel.dependencies}
           applicationPreferences={applicationPreferences}
-          onApplicationPreferencesChange={setApplicationPreferences}
+          onApplicationPreferencesChange={(preferences) => {
+            const changes = Object.fromEntries(Object.entries(preferences).filter(([key, value]) => (
+              applicationPreferences[key as keyof typeof applicationPreferences] !== value
+            )))
+            void updateSettings(changes)
+          }}
           onRepairRuntime={actions.repairRuntime}
         />
       </OnboardingPanel>
       <OnboardingPanel step="workspaces" activeStep={activeStep}>
-        <WorkspacesStep machines={machines} progress={viewModel.workspaceProgress} onMachinesChange={saveMachines} onRetry={actions.retryWorkspaceSetup} />
+        <WorkspacesStep machines={machines} progress={viewModel.workspaceProgress} onMachinesChange={saveMachines} onRetry={actions.retryWorkspaceSetup} initialEditorDraft={draft.unfinishedMachineEditor} onEditorDraftChange={(unfinishedMachineEditor) => updateDraft({ unfinishedMachineEditor })} />
       </OnboardingPanel>
       <OnboardingPanel step="github" activeStep={activeStep}>
         <GitHubStep
