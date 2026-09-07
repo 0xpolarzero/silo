@@ -40,7 +40,7 @@ export function StatusPanel({ source, actions }: { source: ApplicationSource; ac
     openSite: (name, port) => dismissThen(() => actions.openSite(name, port)),
   }
 
-  return <TooltipProvider delayDuration={150}>
+  return <TooltipProvider delayDuration={150} reduceMotion={source.preferences.reduceMotion}>
     <div ref={content} role="dialog" aria-label="Silo" tabIndex={-1}
       className="silo-window flex max-h-[520px] w-[380px] flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground outline-none"
       data-reduce-motion={source.preferences.reduceMotion}

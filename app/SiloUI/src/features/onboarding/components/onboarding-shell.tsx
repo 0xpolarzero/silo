@@ -40,7 +40,7 @@ export function OnboardingShell({ activeStep, viewModel, onStepChange, onBack, o
   const collapsed = pinnedCollapsed && !previewing
 
   return (
-    <TooltipProvider delayDuration={300}>
+    <TooltipProvider delayDuration={300} reduceMotion={reduceMotion}>
     <SiloWindow title="Silo Setup" label="Silo Setup" reduceMotion={reduceMotion} className={cn("silo-onboarding", pinnedCollapsed && "sidebar-pinned-collapsed")} titleBar={
       <WindowToolbar title="Silo Setup" sidebarId="onboarding-sidebar" collapsed={pinnedCollapsed} previewing={previewing} toggleRef={toggleRef} onToggleSidebar={toggle} onPreviewEnter={enterToggle} onPreviewLeave={leaveToggle} />
     }>

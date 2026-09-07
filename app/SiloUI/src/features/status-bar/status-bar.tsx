@@ -266,7 +266,7 @@ export function StatusBar({ source, actions, defaultOpen = false }: { source: Ap
     openSite: (name, port) => dismissThen(() => actions.openSite(name, port)),
   }
   return (
-    <TooltipProvider delayDuration={150}>
+    <TooltipProvider delayDuration={150} reduceMotion={source.preferences.reduceMotion}>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button variant="ghost" size="icon-sm" className="relative rounded-md" aria-label="Silo status bar" aria-description={health.label} title={`Silo · ${health.label}`}>

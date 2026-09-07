@@ -59,6 +59,12 @@ hover and keyboard focus still open it. This uses
 [Radix's focus handler](https://github.com/radix-ui/primitives/blob/main/packages/react/tooltip/src/tooltip.tsx),
 which skips opening when the supplied handler prevents the event's default.
 
+Pass the surface's reduced-motion preference to its outer `TooltipProvider`.
+Nested providers inherit it, and tooltip content receives it through
+[React context across portals](https://react.dev/reference/react-dom/createPortal).
+Tooltips disable entry and exit animations for either the app preference or
+the system's `prefers-reduced-motion` setting.
+
 ## Status bar preview
 
 Open `?view=status-bar` or choose **status-bar** in the development View selector.

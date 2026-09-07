@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -1579,6 +1579,28 @@ describe("application", () => {
 
     await user.click(navigation.getByRole("button", { name: "Backup" }))
     expect(within(appPanel("Backup")).getByText("silo-2026-09-02.silo-backup")).toBeVisible()
+  })
+
+  it("applies Reduce motion to tooltips outside the app window and restores animations when disabled", async () => {
+    // jsdom does not load the app stylesheet. Supply an animation so this checks
+    // that the preference overrides it, rather than passing on an unstyled tooltip.
+    render(<style>{'[data-slot="tooltip-content"] { animation: tooltip-fade 150ms; }'}</style>)
+    const { user } = renderApplication()
+    const navigation = within(appNavigation())
+
+    for (const reduceMotion of [true, false]) {
+      await user.click(navigation.getByRole("button", { name: "Settings" }))
+      await user.click(screen.getByRole("switch", { name: "Reduce motion" }))
+      await user.click(navigation.getByRole("button", { name: "Secrets" }))
+      act(() => screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }).focus())
+
+      const tooltip = screen.getByRole("tooltip", { name: "Edit PACKAGE_TOKEN" }).closest<HTMLElement>('[data-slot="tooltip-content"]')!
+      expect(tooltip).not.toBeNull()
+      // Radix temporarily disables animations while measuring offscreen content.
+      await waitFor(() => expect(tooltip.parentElement).not.toHaveStyle({ transform: "translate(0, -200%)" }))
+      expect(screen.getByRole("region", { name: "Silo" })).not.toContainElement(tooltip)
+      expect(getComputedStyle(tooltip).animation).toBe(reduceMotion ? "none" : "tooltip-fade 150ms")
+    }
   })
 
   it("preserves notification and general preferences across app sections", async () => {
