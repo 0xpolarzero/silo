@@ -1,9 +1,137 @@
 # SiloUI settings persistence
 
-SiloUI saves preferences and unfinished onboarding input. Controls, labels,
-layout, navigation, and existing Save/Cancel/Finish actions stay unchanged.
+SiloUI saves preferences and unfinished onboarding input. Layout, navigation,
+and existing Save/Cancel/Finish actions stay unchanged. The approved application
+menus now show installed choices, their icons, `System default`, and a native
+`Choose…` action.
 The integrations configured by these preferences remain outside this piece.
 Swift code and Swift saved values are untouched.
+
+## Installed application choices
+
+The Terminal, Code editor, and Browser menus use installed applications in the
+native app. Their existing layout stays the same. Each menu adds `Choose…`, which
+opens a native file picker at `/Applications` on macOS or `/usr/share/applications`
+on Linux. Cancel leaves the selection unchanged. Choosing an application does
+not launch it or implement the sandbox handoff it will eventually configure.
+
+On macOS, [NSWorkspace](https://developer.apple.com/documentation/appkit/nsworkspace)
+provides application handlers and default associations. Known terminal IDs keep
+source editors out of the terminal list. Known editor IDs supplement registered
+source-code handlers; other editors must declare source-editing support, so
+generic viewers and media handlers are excluded. Known browser IDs exclude
+chat apps, download managers, terminals, and VM helpers that also register HTTPS.
+Other browsers remain available through `Choose…`. Private empty `.command`,
+`.swift`, and `.rs` files supply existing URLs for the handler queries and are
+deleted automatically. The newer enumeration API is guarded; older macOS uses
+default handlers and known installed apps without raising the deployment target.
+Every result must be an existing application bundle with
+an executable. On Linux, [GIO desktop entries](https://docs.gtk.org/gio-unix/class.DesktopAppInfo.html)
+provide categories, visibility, executable checks, and browser/editor defaults.
+Browser suggestions require the `WebBrowser` category; handling HTTP or HTTPS
+alone does not make an application a browser.
+The [Desktop Entry specification](https://specifications.freedesktop.org/desktop-entry/latest/recognized-keys.html)
+defines `TryExec`, `Exec`, `Categories`, `Hidden`, and `NoDisplay` behavior.
+
+Icons appear beside application names in menu options and selected values, at
+16 CSS pixels inside the existing controls. macOS reads the native
+[NSWorkspace icon](https://developer.apple.com/documentation/appkit/nsworkspace/icon(forfile:))
+and renders a bounded 64×64 PNG on the discovery worker. Linux resolves the
+desktop entry's icon through the current
+[GTK icon theme](https://docs.gtk.org/gtk3/method.IconTheme.lookup_by_gicon.html)
+on the GTK main thread, then decodes and scales it to a 32px PNG with
+[GdkPixbuf](https://docs.gtk.org/gdk-pixbuf/ctor.Pixbuf.new_from_stream_at_scale.html).
+Missing or unreadable icons use a category symbol. Icons are decorative, never
+saved in settings, and never loaded from the host for fixtures.
+
+Lists refresh when a menu opens and when the main window regains focus. An
+explicit custom choice joins its selected category while it remains available.
+macOS accepts executable `.app` bundles; Linux accepts valid `.desktop` entries
+and executable files, including AppImages. A removed saved application stays
+saved and appears as a disabled `unavailable` selection.
+
+Each menu starts with `System default (app name)` and the current default's icon.
+The selected control shows `app name (default)` to keep the name visible in the
+existing width. Application menus fit their labels within the available screen
+width. If no default is reported, that option says `System default
+(not set)` and is disabled. Both platforms include a valid current browser
+default even when it is outside the suggested categories or curated list;
+merely registering HTTPS does not add other helper apps. Linux has no standard
+terminal-default association in GIO.
+
+The existing `terminal`, `editor`, and `browser` labels remain readable. New
+`terminalPath`, `editorPath`, and `browserPath` fields save the selected location
+alongside its label in the same atomic settings change. Missing/null paths mean
+an older label-only choice. Bundle filenames also match legacy names such as
+`iTerm` versus bundle metadata `iTerm2`; loading never rewrites a saved choice.
+Discovered defaults apply only when the corresponding setting is absent, and
+retain exact paths so identical application names do not select another copy.
+The boolean fields `terminalUseSystemDefault`, `editorUseSystemDefault`, and
+`browserUseSystemDefault` record whether to follow those defaults. A saved label
+or path without the flag remains an explicit choice. With neither a saved choice
+nor a flag, the control follows the system. Switching to system mode saves only
+the flag and retains the old label/path; resolved labels and paths follow the
+current catalog in both windows. Selecting an app saves its label/path together
+with a false flag. Refreshing discovery never writes settings.
+
+Browser and explicit native fixtures use a fixed catalog and disable the native
+picker. Native fixture storage is checked before consulting host applications or
+opening a dialog. Both native windows can read the catalog to resolve the same
+installed defaults; only the main window can open the application picker.
+The picker uses the official [Tauri dialog plugin](https://v2.tauri.app/plugin/dialog/)
+behind those commands; the frontend receives no general filesystem permission.
+
+### Application-choice verification
+
+Completed on macOS arm64, 2026-09-07. `npm test` plus focused reruns passed all
+335 frontend tests; `npm run typecheck`, `npm run lint`,
+`cargo test --offline --manifest-path app/SiloUI/src-tauri/Cargo.toml` (33 tests),
+and `npm run desktop:build -- --debug --bundles app` passed. The desktop build
+retains Vite's existing chunk-size advisory. Focused tests cover category
+filtering, available/custom paths, legacy labels, cancellation, icon conversion,
+unavailable apps, default-mode persistence, and both windows following changed
+defaults without writes. Linux classifier checks passed using an extracted
+Rust test harness; full Linux GIO/GTK compilation, icon tests, and GUI checks
+remain unverified on this Mac.
+
+Native checks used the bundled `Silo Preview.app` with an isolated
+`SILO_SETTINGS_DIR`, without an explicit fixture selector. Accessibility and
+screenshots confirmed:
+
+- Terminal choices: `System default (Terminal)`, Ghostty, iTerm2, Terminal, Warp,
+  and `Choose…`, with native icons.
+- Code editor choices: Cursor, Xcode, and Zed with their icons. Browser choices:
+  Arc, Brave Browser, Dia, Google Chrome, Safari, Tor Browser, and Zen. Chat,
+  terminal, download, and VM helper apps were absent from browser suggestions.
+- `Choose…` opened the `open-panel` sheet with `Where: Applications` and title
+  `Choose a terminal`. Selecting `/Applications/Ghostty.app` updated the Terminal
+  control and icon; the label and exact path were present in JSON before Finish.
+- Choosing Cursor from the editor menu saved its label/path. Both Ghostty and
+  Cursor survived Quit and relaunch during unfinished onboarding.
+- Selecting `System default (Terminal)` displayed `Terminal (default)` and
+  saved `terminalUseSystemDefault: true` while retaining Ghostty's saved
+  label/path. After another Quit/relaunch, Terminal remained in default mode,
+  Cursor remained explicit, and the untouched Browser showed `Zen (default)`.
+- Reopening `Choose…` and pressing `Cancel` retained default mode. The final
+  menu displayed the full system-default name. The closed control dimensions
+  and surrounding onboarding layout remained unchanged.
+
+The final test instance quit through `Quit Silo Preview`; a process check found
+no remaining Silo instance. Native stdout/stderr logs were empty. Local logs and
+the isolated settings snapshot are under the ignored
+`app/SiloUI/src-tauri/target/applications-verification/` directory. No host default
+associations or production settings were changed. Native status-panel visuals
+were not reverified; shared default resolution is covered by main/status tests.
+Workspace and integration states remain deterministic scaffold values.
+
+To repeat the focused UI check, build and launch with a fresh isolated settings
+directory as described below, then open Dependencies > Applications. Inspect all
+three lists and icons, choose and cancel a native application, select a named
+app, quit before Finish, and relaunch using the same directory. Switch to System
+default and repeat; confirm the current default name and retained explicit
+choice in the JSON. On Linux, also exercise `.desktop`, executable, and AppImage
+choices, GTK theme icons, and the disabled default option where no association
+exists.
 
 ## Saved values
 

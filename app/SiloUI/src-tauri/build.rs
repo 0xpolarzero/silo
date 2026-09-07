@@ -14,6 +14,8 @@ fn main() {
             "flush_settings",
             "begin_settings_flush",
             "complete_settings_flush",
+            "list_applications",
+            "choose_application",
         ]),
     ))
     .expect("failed to build desktop permissions");

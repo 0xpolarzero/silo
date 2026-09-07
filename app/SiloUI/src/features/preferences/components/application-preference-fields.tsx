@@ -3,6 +3,19 @@ import { Code2, Compass, SquareTerminal } from "lucide-react"
 import { ListRow, ListRowIcon } from "@/components/list-row"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
+import { matchesApplication, useApplications, type ApplicationKind } from "@/features/preferences/application-catalog"
+
+const chooseApplication = "__silo-choose-application__"
+const unavailableApplication = "__silo-unavailable-application__"
+const systemDefaultApplication = "__silo-system-default-application__"
+
+function ApplicationOptionLabel({ kind, name, icon }: { kind: ApplicationKind; name: string; icon?: string }) {
+  const Fallback = kind === "terminal" ? SquareTerminal : kind === "editor" ? Code2 : Compass
+  return <span className="flex min-w-0 items-center gap-2">
+    {icon ? <img src={icon} alt="" aria-hidden="true" draggable={false} className="size-4 shrink-0 object-contain" /> : <Fallback className="size-4 shrink-0" aria-hidden="true" />}
+    <span className="truncate">{name}</span>
+  </span>
+}
 
 function ApplicationPreferenceRow({
   icon: Icon,
@@ -38,8 +51,45 @@ export function ApplicationPreferenceFields({
   compact?: boolean
   onChange: (value: ApplicationPreferenceSelection) => void
 }) {
-  function update<Key extends keyof ApplicationPreferenceSelection>(key: Key, selection: ApplicationPreferenceSelection[Key]) {
-    onChange({ ...value, [key]: selection })
+  const { catalog, refresh, choose, available } = useApplications()
+
+  async function update(kind: ApplicationKind, selection: string) {
+    try {
+      if (selection === systemDefaultApplication) {
+        onChange({ ...value, [`${kind}UseSystemDefault`]: true })
+        return
+      }
+      const application = selection === chooseApplication
+        ? await choose(kind)
+        : catalog[kind].find(({ path }) => path === selection)
+      if (application) onChange({ ...value, [kind]: application.name, [`${kind}Path`]: application.path, [`${kind}UseSystemDefault`]: false })
+    } catch (error) {
+      console.error("Silo application selection:", error)
+    }
+  }
+
+  function applicationSelect(kind: ApplicationKind, label: string) {
+    const savedPath = value[`${kind}Path`]
+    const selected = catalog[kind].find((application) => savedPath ? application.path === savedPath : matchesApplication(application, value[kind]))
+    const useSystemDefault = value[`${kind}UseSystemDefault`] === true
+    const systemDefault = catalog[kind].find(({ path }) => path === catalog.defaults[kind])
+    return (
+      <Select
+        value={useSystemDefault ? systemDefaultApplication : selected?.path ?? unavailableApplication}
+        onValueChange={(selection) => { void update(kind, selection) }}
+        onOpenChange={(open) => { if (open) void refresh().catch((error: unknown) => console.error("Silo application discovery:", error)) }}
+      >
+        <SelectTrigger className={compact ? "h-7 text-[11px]" : undefined} aria-label={label}>
+          <SelectValue>{useSystemDefault ? <ApplicationOptionLabel kind={kind} name={systemDefault ? `${systemDefault.name} (default)` : "System default (not set)"} icon={systemDefault?.icon} /> : undefined}</SelectValue>
+        </SelectTrigger>
+        <SelectContent className="w-max min-w-[var(--radix-select-trigger-width)] max-w-[min(24rem,var(--radix-select-content-available-width))]">
+          <SelectItem value={systemDefaultApplication} disabled={!systemDefault}><ApplicationOptionLabel kind={kind} name={`System default (${systemDefault?.name ?? "not set"})`} icon={systemDefault?.icon} /></SelectItem>
+          {!useSystemDefault && !selected && <SelectItem value={unavailableApplication} disabled><ApplicationOptionLabel kind={kind} name={`${value[kind]} (unavailable)`} /></SelectItem>}
+          {catalog[kind].map((application) => <SelectItem key={application.path} value={application.path}><ApplicationOptionLabel kind={kind} name={application.name} icon={application.icon} /></SelectItem>)}
+          <SelectItem value={chooseApplication} disabled={!available}>Choose…</SelectItem>
+        </SelectContent>
+      </Select>
+    )
   }
 
   return (
@@ -49,48 +99,21 @@ export function ApplicationPreferenceFields({
         icon={SquareTerminal}
         title="Terminal"
         description="Used by sandbox terminal shortcuts."
-        control={(
-          <Select value={value.terminal} onValueChange={(selection) => update("terminal", selection)}>
-            <SelectTrigger className={compact ? "h-7 text-[11px]" : undefined} aria-label="Terminal"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Terminal">Terminal</SelectItem>
-              <SelectItem value="iTerm">iTerm</SelectItem>
-              <SelectItem value="Warp">Warp</SelectItem>
-            </SelectContent>
-          </Select>
-        )}
+        control={applicationSelect("terminal", "Terminal")}
       />
       <ApplicationPreferenceRow
         compact={compact}
         icon={Code2}
         title="Code editor"
         description="Used when opening sandbox files."
-        control={(
-          <Select value={value.editor} onValueChange={(selection) => update("editor", selection)}>
-            <SelectTrigger className={compact ? "h-7 text-[11px]" : undefined} aria-label="Code editor"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Visual Studio Code">Visual Studio Code</SelectItem>
-              <SelectItem value="Cursor">Cursor</SelectItem>
-              <SelectItem value="Zed">Zed</SelectItem>
-            </SelectContent>
-          </Select>
-        )}
+        control={applicationSelect("editor", "Code editor")}
       />
       <ApplicationPreferenceRow
         compact={compact}
         icon={Compass}
         title="Browser"
         description="Used when opening sandbox URLs."
-        control={(
-          <Select value={value.browser} onValueChange={(selection) => update("browser", selection)}>
-            <SelectTrigger className={compact ? "h-7 text-[11px]" : undefined} aria-label="Browser"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Safari">Safari</SelectItem>
-              <SelectItem value="Google Chrome">Google Chrome</SelectItem>
-              <SelectItem value="Firefox">Firefox</SelectItem>
-            </SelectContent>
-          </Select>
-        )}
+        control={applicationSelect("browser", "Browser")}
       />
     </>
   )

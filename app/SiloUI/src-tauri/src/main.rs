@@ -1,3 +1,4 @@
+mod applications;
 mod settings;
 mod status_panel;
 mod tray;
@@ -6,6 +7,7 @@ use tauri::{Manager, WindowEvent};
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             status_panel::open_main,
             status_panel::hide_status,
@@ -19,7 +21,9 @@ fn main() {
             settings::import_legacy_theme,
             settings::flush_settings,
             settings::begin_settings_flush,
-            settings::complete_settings_flush
+            settings::complete_settings_flush,
+            applications::list_applications,
+            applications::choose_application
         ])
         .setup(|app| {
             settings::install(app.handle());

@@ -15,7 +15,7 @@ import { OverviewPage } from "@/features/application/pages/overview-page"
 import { SecretsPage } from "@/features/application/pages/secrets-page"
 import { SystemIssuePage } from "@/features/application/pages/system-issue-page"
 import { WorkspacesPage } from "@/features/application/pages/workspaces-page"
-import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
+import { applicationPreferenceChanges, type ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 import { SettingsProvider, useSettings } from "@/features/preferences/settings-store"
 
 function workspaceAttentionCounts(source: Pick<ApplicationSource, "workspaces" | "sandboxConfigurationOperation">): { errors: number; warnings: number } {
@@ -84,6 +84,12 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     terminal: settings.terminal,
     editor: settings.editor,
     browser: settings.browser,
+    terminalUseSystemDefault: settings.terminalUseSystemDefault,
+    editorUseSystemDefault: settings.editorUseSystemDefault,
+    browserUseSystemDefault: settings.browserUseSystemDefault,
+    ...(settings.terminalPath && { terminalPath: settings.terminalPath }),
+    ...(settings.editorPath && { editorPath: settings.editorPath }),
+    ...(settings.browserPath && { browserPath: settings.browserPath }),
   }
   const activeRuntimeRepair = source.runtimeRepair?.status === "succeeded" ? null : source.runtimeRepair
   const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute)
@@ -134,11 +140,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   }, [source.sandboxConfigurationOperation, source.repositoryPushOperations])
 
   function changeApplicationPreferences(next: ApplicationPreferenceSelection) {
-    const patch: Partial<ApplicationPreferenceSelection> = {}
-    for (const key of ["terminal", "editor", "browser"] as const) {
-      if (next[key] !== applicationPreferences[key]) patch[key] = next[key]
-    }
-    void updateSettings(patch)
+    void updateSettings(applicationPreferenceChanges(applicationPreferences, next))
   }
 
   useEffect(() => {

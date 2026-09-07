@@ -16,6 +16,8 @@
     "allow-import-legacy-theme",
     "allow-flush-settings",
     "allow-begin-settings-flush",
-    "allow-complete-settings-flush"
+    "allow-complete-settings-flush",
+    "allow-list-applications",
+    "allow-choose-application"
   ]
 }

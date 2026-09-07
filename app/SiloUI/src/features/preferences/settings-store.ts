@@ -26,21 +26,40 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
   const pending: Change[] = []
   let confirmed: SettingsSnapshot = initialSnapshot ?? { revision: -1, settings: {}, onboardingDraft: null, saveError: null }
   let transportError: string | null = null
-  let current: SettingsView = { ...confirmed, settings: { ...defaults, ...readSettingsOverrides(confirmed.settings) } }
+  function resolveSettings(overrides: SettingsPatch) {
+    const settings = { ...defaults, ...overrides }
+    for (const kind of ["terminal", "editor", "browser"] as const) {
+      const path = `${kind}Path` as const
+      const mode = `${kind}UseSystemDefault` as const
+      settings[mode] = overrides[mode] ?? !(kind in overrides || path in overrides)
+      if (settings[mode]) {
+        settings[kind] = defaults[kind]
+        settings[path] = defaults[path]
+        continue
+      }
+      // A legacy saved label must not inherit a different installed default's path.
+      if (kind in overrides && !(path in overrides)) settings[path] = null
+    }
+    return settings
+  }
+  let current: SettingsView = { ...confirmed, settings: resolveSettings(readSettingsOverrides(confirmed.settings)) }
   let draining: Promise<void> | null = null
   let initialization: Promise<void> | null = null
   let unsubscribe: (() => void) | undefined
   let disposed = false
 
   function publish() {
+    const overrides = readSettingsOverrides(confirmed.settings)
+    for (const change of pending) {
+      if (change.kind === "settings") Object.assign(overrides, change.patch)
+    }
     const next: SettingsView = {
       ...confirmed,
-      settings: { ...defaults, ...readSettingsOverrides(confirmed.settings) },
+      settings: resolveSettings(overrides),
       saveError: transportError ?? confirmed.saveError,
     }
     for (const change of pending) {
-      if (change.kind === "settings") Object.assign(next.settings, change.patch)
-      else next.onboardingDraft = change.draft
+      if (change.kind === "draft") next.onboardingDraft = change.draft
     }
     if (JSON.stringify(next) === JSON.stringify(current)) return
     current = next

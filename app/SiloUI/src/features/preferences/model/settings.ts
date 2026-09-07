@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { applicationPathSchema } from "./application-preferences"
 
 export const settingSchemas = {
   theme: z.enum(["system", "dark", "light"]),
@@ -8,6 +9,12 @@ export const settingSchemas = {
   terminal: z.string().min(1).max(256),
   editor: z.string().min(1).max(256),
   browser: z.string().min(1).max(256),
+  terminalPath: applicationPathSchema,
+  editorPath: applicationPathSchema,
+  browserPath: applicationPathSchema,
+  terminalUseSystemDefault: z.boolean(),
+  editorUseSystemDefault: z.boolean(),
+  browserUseSystemDefault: z.boolean(),
   reduceMotion: z.boolean(),
   notificationsEnabled: z.boolean(),
   notifyHealth: z.boolean(),
@@ -28,6 +35,12 @@ export const defaultSettings: Settings = {
   terminal: "Terminal",
   editor: "Visual Studio Code",
   browser: "Safari",
+  terminalPath: null,
+  editorPath: null,
+  browserPath: null,
+  terminalUseSystemDefault: true,
+  editorUseSystemDefault: true,
+  browserUseSystemDefault: true,
   reduceMotion: false,
   notificationsEnabled: true,
   notifyHealth: true,

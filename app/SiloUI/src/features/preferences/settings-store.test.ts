@@ -4,6 +4,25 @@ import { createMemorySettingsStore, createSettingsStore, type SettingsBackend, t
 const snapshot = (revision = 0, settings = {}): SettingsSnapshot => ({ revision, settings, onboardingDraft: null, saveError: null })
 
 describe("settings synchronization", () => {
+  it("follows system application defaults after opting in without erasing the saved custom choice", async () => {
+    let state = snapshot(0, { editor: "Custom", editorPath: "/Applications/Custom.app" })
+    const store = createSettingsStore({
+      subscribe: async () => () => {}, read: async () => state,
+      updateSettings: async (patch) => { state = snapshot(state.revision + 1, { ...state.settings, ...patch }); return state },
+      updateOnboardingDraft: async () => state, flush: async () => {},
+    })
+    await store.initialize()
+    store.updateDefaults({ editor: "Zed", editorPath: "/Applications/Zed.app" })
+    expect(store.getSnapshot().settings).toMatchObject({ editor: "Custom", editorUseSystemDefault: false })
+    await store.updateSettings({ editorUseSystemDefault: true })
+    expect(store.getSnapshot().settings).toMatchObject({ editor: "Zed", editorPath: "/Applications/Zed.app", editorUseSystemDefault: true })
+    store.updateDefaults({ editor: "Cursor", editorPath: "/Applications/Cursor.app" })
+    expect(store.getSnapshot().settings.editor).toBe("Cursor")
+    expect(state.settings).toEqual({ editor: "Custom", editorPath: "/Applications/Custom.app", editorUseSystemDefault: true })
+    await store.updateSettings({ editorUseSystemDefault: false })
+    expect(store.getSnapshot().settings).toMatchObject({ editor: "Custom", editorPath: "/Applications/Custom.app" })
+  })
+
   it("keeps explicit false and empty selections across a new store session", async () => {
     const first = createMemorySettingsStore()
     await first.updateSettings({ launchAtLogin: false, startupWorkspaceIds: [], notifyHealth: false, editor: "Cursor" })

@@ -19,6 +19,7 @@ import { ReviewStep } from "@/features/onboarding/steps/review-step"
 import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
 import type { OnboardingDraft } from "@/features/onboarding/model/onboarding-draft"
 import { useSettings } from "@/features/preferences/settings-store"
+import { applicationPreferenceChanges } from "@/features/preferences/model/application-preferences"
 
 export interface OnboardingAppProps {
   source: OnboardingSource
@@ -148,7 +149,15 @@ export function OnboardingApp({
   const recoveryCleared = useRef(false)
   const { currentStep: activeStep, machines, workspaceSelections, workspaceIdentities } = draft
   const viewModel = useMemo(() => projectOnboarding(source, githubConnectionState), [githubConnectionState, source])
-  const applicationPreferences = { terminal: settings.terminal, editor: settings.editor, browser: settings.browser }
+  const applicationPreferences = {
+    terminal: settings.terminal, editor: settings.editor, browser: settings.browser,
+    terminalUseSystemDefault: settings.terminalUseSystemDefault,
+    editorUseSystemDefault: settings.editorUseSystemDefault,
+    browserUseSystemDefault: settings.browserUseSystemDefault,
+    ...(settings.terminalPath && { terminalPath: settings.terminalPath }),
+    ...(settings.editorPath && { editorPath: settings.editorPath }),
+    ...(settings.browserPath && { browserPath: settings.browserPath }),
+  }
   const availableRepositories = useMemo(
     () => uniqueRepositoryOptions(repositoryOptions ?? defaultRepositoryOptions(source)),
     [repositoryOptions, source],
@@ -269,10 +278,7 @@ export function OnboardingApp({
           groups={viewModel.dependencies}
           applicationPreferences={applicationPreferences}
           onApplicationPreferencesChange={(preferences) => {
-            const changes = Object.fromEntries(Object.entries(preferences).filter(([key, value]) => (
-              applicationPreferences[key as keyof typeof applicationPreferences] !== value
-            )))
-            void updateSettings(changes)
+            void updateSettings(applicationPreferenceChanges(applicationPreferences, preferences))
           }}
           onRepairRuntime={actions.repairRuntime}
         />

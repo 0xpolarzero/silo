@@ -13,9 +13,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3.27"
 uuid = "1"
+tauri-plugin-dialog = "2.7"
+base64 = "0.22"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri = { version = "2.11.3", features = ["tray-icon"] }
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.3.6"
+gio = "0.18"
+gtk = "0.18"

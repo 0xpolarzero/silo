@@ -570,6 +570,9 @@ describe("onboarding", () => {
         terminal: "Terminal",
         editor: "Visual Studio Code",
         browser: "Safari",
+        terminalUseSystemDefault: true,
+        editorUseSystemDefault: true,
+        browserUseSystemDefault: true,
       },
       github: {
         connectionState: "connected",

@@ -11,6 +11,9 @@ import { createDesktopSettingsStore, connectSettingsLifecycle } from './desktop/
 import { createFixtureSettingsStore, hasSettingsFixture, settingsForFixture } from './fixtures/settings'
 import { applicationSourceForScenario } from './fixtures/application-scenarios'
 import { scenarioFromSearch } from './fixtures/scenarios'
+import { ApplicationCatalogProvider } from './features/preferences/application-catalog'
+import { createApplicationService, emptyApplicationCatalog } from './desktop/applications'
+import { fixtureApplicationCatalog } from './fixtures/application-catalog'
 
 const desktop = isTauri()
 const statusPanel = desktop && getCurrentWindow().label === 'status'
@@ -23,13 +26,19 @@ async function start() {
   const stopLifecycle = desktop ? await connectSettingsLifecycle(store, !statusPanel) : () => {}
   if (desktop && !statusPanel) await invoke('initialize_settings', { fixture: hasSettingsFixture(window.location.search) })
   await store.initialize()
+  const applicationService = desktop && !hasSettingsFixture(window.location.search) ? createApplicationService(store) : undefined
+  const applicationCatalog = applicationService
+    ? await applicationService.read().catch((error: unknown) => { console.error('Silo applications:', error); return emptyApplicationCatalog })
+    : fixtureApplicationCatalog
   const stopTheme = initializeTheme(store)
   if (import.meta.hot) import.meta.hot.dispose(() => { stopTheme(); stopLifecycle(); store.dispose() })
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <SettingsProvider store={store}>
+        <ApplicationCatalogProvider initialCatalog={applicationCatalog} service={applicationService}>
         {statusPanel ? <DesktopStatusFixture /> : <FixtureApp />}
+        </ApplicationCatalogProvider>
       </SettingsProvider>
     </StrictMode>,
   )

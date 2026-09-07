@@ -227,8 +227,18 @@ fn valid_setting(key: &str, value: &Value) -> Option<bool> {
         | "notificationsEnabled"
         | "notifyHealth"
         | "notifyActions"
-        | "notifyBackup" => value.is_boolean(),
+        | "notifyBackup"
+        | "terminalUseSystemDefault"
+        | "editorUseSystemDefault"
+        | "browserUseSystemDefault" => value.is_boolean(),
         "terminal" | "editor" | "browser" => bounded_string(value, 256, false),
+        "terminalPath" | "editorPath" | "browserPath" => {
+            value.is_null()
+                || (bounded_string(value, 4096, false)
+                    && value
+                        .as_str()
+                        .is_some_and(|path| Path::new(path).is_absolute()))
+        }
         "startupWorkspaceIds" => value.as_array().is_some_and(|ids| {
             ids.len() <= 256 && ids.iter().all(|id| bounded_string(id, 256, false))
         }),
@@ -546,6 +556,17 @@ pub fn install(app: &AppHandle) {
     app.manage(ShutdownState::default());
 }
 
+// Application discovery and native pickers must not consult the host in fixtures.
+pub fn uses_fixture_storage(app: &AppHandle) -> Result<bool, String> {
+    let state = app.state::<SettingsState>();
+    let initialized = state.initialized()?;
+    let current = initialized.as_ref().ok_or("Settings are not initialized")?;
+    Ok(
+        current.fixture
+            || (current.store.path.is_none() && current.store.protected_error.is_none()),
+    )
+}
+
 #[tauri::command]
 pub async fn initialize_settings(
     app: AppHandle,
@@ -723,6 +744,78 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn system_default_modes_preserve_explicit_applications_across_restarts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let explicit = json!({
+            "terminal": "Custom Terminal", "terminalPath": "/Applications/Custom Terminal.app",
+            "editor": "Custom Editor", "editorPath": "/Applications/Custom Editor.app",
+            "browser": "Custom Browser", "browserPath": "/Applications/Custom Browser.app"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut store = SettingsStore::load(Some(path.clone()));
+        store.update(explicit.clone()).unwrap();
+        store = SettingsStore::load(Some(path.clone()));
+        assert_eq!(store.snapshot().settings, explicit);
+
+        for enabled in [true, false] {
+            let modes = json!({
+                "terminalUseSystemDefault": enabled,
+                "editorUseSystemDefault": enabled,
+                "browserUseSystemDefault": enabled
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            assert!(store.update(modes.clone()).unwrap().save_error.is_none());
+            store = SettingsStore::load(Some(path.clone()));
+            let mut expected = explicit.clone();
+            expected.extend(modes);
+            assert_eq!(store.snapshot().settings, expected);
+            assert!(store.snapshot().save_error.is_none());
+        }
+
+        let saved = fs::read(&path).unwrap();
+        for key in [
+            "terminalUseSystemDefault",
+            "editorUseSystemDefault",
+            "browserUseSystemDefault",
+        ] {
+            for invalid in [json!("true"), Value::Null, json!(0)] {
+                let mut patch = json!({"theme": "light"}).as_object().unwrap().clone();
+                patch.insert(key.into(), invalid);
+                assert!(store.update(patch).is_err());
+                assert_eq!(fs::read(&path).unwrap(), saved);
+            }
+        }
+        let document: Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(document["schemaVersion"], 1);
+    }
+
+    #[test]
+    fn chosen_application_label_and_location_survive_restart_together() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(path.clone()));
+        store.update(json!({ "editor": "Custom Editor", "editorPath": "/Applications/Custom Editor.app" }).as_object().unwrap().clone()).unwrap();
+        let restored = SettingsStore::load(Some(path)).snapshot();
+        assert_eq!(
+            restored.settings.get("editor"),
+            Some(&json!("Custom Editor"))
+        );
+        assert_eq!(
+            restored.settings.get("editorPath"),
+            Some(&json!("/Applications/Custom Editor.app"))
+        );
+        assert_eq!(
+            valid_setting("editorPath", &json!("relative.app")),
+            Some(false)
+        );
+        assert_eq!(valid_setting("editorPath", &Value::Null), Some(true));
+    }
     #[test]
     fn settings_survive_restart_including_false_and_empty_selections() {
         let directory = tempfile::tempdir().unwrap();
