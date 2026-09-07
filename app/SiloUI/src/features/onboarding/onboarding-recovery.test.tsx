@@ -8,7 +8,7 @@ import { createMemorySettingsStore, SettingsProvider, type SettingsStore } from 
 import { onboardingScenarios, repositoryFixtures } from "@/fixtures/scenarios"
 
 function actions(): OnboardingActions {
-  return { connectGitHub: vi.fn(), saveMachineConfiguration: vi.fn(), repairRuntime: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }
+  return { connectGitHub: vi.fn(), saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }
 }
 
 function onboarding(store: SettingsStore, handlers: OnboardingActions, { completed = false, githubConnectionState = "connected", scenario = "running" }: {

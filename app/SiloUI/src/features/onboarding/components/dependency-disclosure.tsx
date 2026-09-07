@@ -1,14 +1,13 @@
-import { AlertCircle, Check, RotateCw } from "lucide-react"
+import { AlertCircle, Check } from "lucide-react"
 import { useState } from "react"
 
 import { DisclosureHeader } from "@/components/disclosure-header"
 import { ListCard, ListRowDetails, ListRowIcon } from "@/components/list-row"
-import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { SetupNotice } from "@/features/onboarding/components/setup-notice"
 import type { DependencyGroupView } from "@/features/onboarding/model/onboarding-state"
 
-export function DependencyDisclosure({ group, onRepairRuntime }: { group: DependencyGroupView; onRepairRuntime: () => void }) {
+export function DependencyDisclosure({ group }: { group: DependencyGroupView }) {
   const [open, setOpen] = useState(group.status === "failed")
   const failedItems = group.items.filter(({ check }) => check && check.status !== "pass")
   const caption = failedItems.length > 0
@@ -51,14 +50,9 @@ export function DependencyDisclosure({ group, onRepairRuntime }: { group: Depend
             {failedItems.map(({ name, check }) => check && (
               <SetupNotice
                 key={name}
-                title={check.id === "silo-runtime" ? "Silo runtime needs repair" : `${check.title} needs attention`}
+                title={`${check.title} needs attention`}
                 detail={check.detail}
-                recovery={check.id === "silo-runtime" ? undefined : check.remediation ?? undefined}
-                action={check.id === "silo-runtime" && (
-                  <Button type="button" variant="outline" size="xs" onClick={onRepairRuntime}>
-                    <RotateCw aria-hidden="true" />Repair…
-                  </Button>
-                )}
+                recovery={check.remediation ?? undefined}
               />
             ))}
           </ListRowDetails>

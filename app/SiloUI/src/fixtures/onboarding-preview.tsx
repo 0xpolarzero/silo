@@ -37,10 +37,6 @@ export function OnboardingPreview({ source: initialSource, actions, initialGitHu
         actions?.saveMachineConfiguration?.(request)
         setSource((current) => ({ ...current, machineConfigurations: request.machines }))
       },
-      repairRuntime: () => {
-        actions?.repairRuntime?.()
-        setSource(onboardingScenarios.running)
-      },
       retryWorkspaceSetup: () => {
         actions?.retryWorkspaceSetup?.()
         setSource(onboardingScenarios.running)

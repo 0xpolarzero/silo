@@ -10,7 +10,6 @@ import { githubStateFromSearch, onboardingScenarios, repositoryFixtures } from "
 function renderScenario(name: keyof typeof onboardingScenarios = "running", githubState?: GitHubConnectionState) {
   return render(<OnboardingPreview source={onboardingScenarios[name]} initialGitHubConnectionState={githubState} repositoryOptions={repositoryFixtures} actions={{
     saveMachineConfiguration: vi.fn(),
-    repairRuntime: vi.fn(),
     retryWorkspaceSetup: vi.fn(),
     finishSetup: vi.fn(),
   }} />)
@@ -24,7 +23,6 @@ async function renderMachineScenario() {
     repositoryOptions={repositoryFixtures}
     actions={{
       saveMachineConfiguration,
-      repairRuntime: vi.fn(),
       retryWorkspaceSetup: vi.fn(),
       finishSetup: vi.fn(),
     }}
@@ -236,7 +234,6 @@ describe("onboarding", () => {
     }
     render(<OnboardingPreview source={source} actions={{
       saveMachineConfiguration: vi.fn(),
-      repairRuntime: vi.fn(),
       retryWorkspaceSetup: vi.fn(),
       finishSetup: vi.fn(),
     }} />)
@@ -316,7 +313,7 @@ describe("onboarding", () => {
       source={onboardingScenarios.running}
       initialGitHubConnectionState="connected"
       repositoryOptions={["ACME/SILO", "acme/silo", "acme/design-system"]}
-      actions={{ saveMachineConfiguration: vi.fn(), repairRuntime: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }}
+      actions={{ saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }}
     />)
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
 
@@ -449,7 +446,7 @@ describe("onboarding", () => {
     render(<OnboardingPreview
       source={{ ...onboardingScenarios.running, currentHostGitIdentity: null }}
       initialGitHubConnectionState="disconnected"
-      actions={{ saveMachineConfiguration: vi.fn(), repairRuntime: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }}
+      actions={{ saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }}
     />)
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
 
@@ -486,19 +483,21 @@ describe("onboarding", () => {
     expect(name).toHaveValue("Local User")
   })
 
-  it("expands dependency groups and exposes real remediation", async () => {
+  it("expands the consolidated runtime failure and exposes non-repair remediation", async () => {
     const user = userEvent.setup()
     renderScenario("dependency-failure")
 
-    expect(screen.getByText("silo-ssh-proxy")).toBeVisible()
-    expect(screen.queryByText("Use Repair… to reinstall the bundled Silo runtime.")).not.toBeInTheDocument()
+    expect(screen.getByText("MicroSandbox runtime")).toBeVisible()
+    expect(screen.getByText("Reinstall this Silo build from a trusted package.")).toBeVisible()
+    expect(screen.queryByText("msb")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Repair/ })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled()
-    const disclosure = screen.getByRole("button", { name: /Silo tools/ })
+    const disclosure = screen.getByRole("button", { name: /Required software/ })
     expectDisclosureIndicator(disclosure)
     await user.click(disclosure)
-    expect(screen.queryByText("silo-ssh-proxy")).not.toBeInTheDocument()
+    expect(screen.queryByText("MicroSandbox runtime")).not.toBeInTheDocument()
     await user.click(disclosure)
-    expect(screen.getByText("silo-ssh-proxy")).toBeVisible()
+    expect(screen.getByText("MicroSandbox runtime")).toBeVisible()
   })
 
   it("keeps stress-fixture activity collapsed until requested and filters unsafe output", async () => {
@@ -567,7 +566,6 @@ describe("onboarding", () => {
     const finishSetup = vi.fn()
     render(<OnboardingPreview source={onboardingScenarios.complete} actions={{
       saveMachineConfiguration: vi.fn(),
-      repairRuntime: vi.fn(),
       retryWorkspaceSetup: vi.fn(),
       finishSetup,
     }} />)
@@ -621,7 +619,6 @@ describe("onboarding", () => {
       repositoryOptions={repositoryFixtures}
       actions={{
         saveMachineConfiguration: vi.fn(),
-        repairRuntime: vi.fn(),
         retryWorkspaceSetup: vi.fn(),
         finishSetup,
       }}
@@ -678,16 +675,10 @@ describe("onboarding", () => {
     expect(screen.queryByText("Complete the dependency checks before workspace creation starts.")).not.toBeInTheDocument()
   })
 
-  it("routes actionable failures through the narrow action seam", async () => {
+  it("routes retryable workspace failures through the narrow action seam", async () => {
     const user = userEvent.setup()
-    const repairRuntime = vi.fn()
     const retryWorkspaceSetup = vi.fn()
-    const actions = { saveMachineConfiguration: vi.fn(), repairRuntime, retryWorkspaceSetup, finishSetup: vi.fn() }
-    const dependency = render(<OnboardingPreview source={onboardingScenarios["dependency-failure"]} actions={actions} />)
-
-    await user.click(screen.getByRole("button", { name: "Repair…" }))
-    expect(repairRuntime).toHaveBeenCalledOnce()
-    dependency.unmount()
+    const actions = { saveMachineConfiguration: vi.fn(), retryWorkspaceSetup, finishSetup: vi.fn() }
 
     render(<OnboardingPreview source={onboardingScenarios["bootstrap-failure"]} actions={actions} />)
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
@@ -967,7 +958,6 @@ describe("onboarding", () => {
     const user = userEvent.setup()
     render(<OnboardingPreview source={source} actions={{
       saveMachineConfiguration,
-      repairRuntime: vi.fn(),
       retryWorkspaceSetup: vi.fn(),
       finishSetup: vi.fn(),
     }} />)

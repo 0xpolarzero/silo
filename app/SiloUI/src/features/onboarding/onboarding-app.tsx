@@ -285,7 +285,6 @@ export function OnboardingApp({
           onApplicationPreferencesChange={(preferences) => {
             void updateSettings(applicationPreferenceChanges(applicationPreferences, preferences))
           }}
-          onRepairRuntime={actions.repairRuntime}
         />
       </OnboardingPanel>
       <OnboardingPanel step="workspaces" activeStep={activeStep}>

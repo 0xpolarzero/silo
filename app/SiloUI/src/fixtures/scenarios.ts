@@ -62,9 +62,7 @@ const passingPreflightChecks = [
   { id: "tool-tar", title: "tar", status: "pass", detail: "/usr/bin/tar is executable.", remediation: null },
   { id: "tool-zstd", title: "zstd", status: "pass", detail: "/opt/homebrew/bin/zstd is executable.", remediation: null },
   { id: "tool-git-lfs", title: "git-lfs", status: "pass", detail: "/opt/homebrew/bin/git-lfs is executable.", remediation: null },
-  { id: "tool-msb", title: "msb", status: "pass", detail: "/opt/homebrew/bin/msb is executable.", remediation: null },
-  { id: "silo-runtime", title: "Silo runtime", status: "pass", detail: "Silo verified its coupled runtime.", remediation: null },
-  { id: "host-integration", title: "Host integration", status: "pass", detail: "The fixed loopback aliases and managed host records are installed.", remediation: null },
+  { id: "runtime-microsandbox", title: "Bundled MicroSandbox runtime", status: "pass", detail: "Bundled msb 0.6.17 and libkrunfw 5.6.1 passed integrity verification.", remediation: null },
 ] satisfies SiloPreflightCheck[]
 
 function progress(
@@ -193,12 +191,12 @@ const completeSource = {
 
 const dependencyFailureSource = {
   ...runningSource,
-  preflightChecks: passingPreflightChecks.map((check) => check.id === "silo-runtime" ? {
-    id: "silo-runtime",
-    title: "Silo runtime",
-    status: "needsAction" as const,
-    detail: "The activated bundled Silo runtime needs repair.",
-    remediation: "Use Repair… to reinstall the bundled Silo runtime.",
+  preflightChecks: passingPreflightChecks.map((check) => check.id === "runtime-microsandbox" ? {
+    id: "runtime-microsandbox",
+    title: "Bundled MicroSandbox runtime",
+    status: "unavailable" as const,
+    detail: "The bundled MicroSandbox runtime failed its integrity check.",
+    remediation: "Reinstall this Silo build from a trusted package.",
   } : check),
   progressEvents: [],
   bootstrapState: {

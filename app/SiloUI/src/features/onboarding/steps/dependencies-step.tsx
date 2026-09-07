@@ -8,18 +8,16 @@ export function DependenciesStep({
   groups,
   applicationPreferences,
   onApplicationPreferencesChange,
-  onRepairRuntime,
 }: {
   groups: DependencyGroupView[]
   applicationPreferences: ApplicationPreferenceSelection
   onApplicationPreferencesChange: (preferences: ApplicationPreferenceSelection) => void
-  onRepairRuntime: () => void
 }) {
   return (
     <section aria-labelledby="dependencies-title">
       <h2 id="dependencies-title" className="sr-only" data-visual-heading="hidden">Dependencies</h2>
       <div className="grid gap-2">
-        {groups.map((group) => <DependencyDisclosure key={group.id} group={group} onRepairRuntime={onRepairRuntime} />)}
+        {groups.map((group) => <DependencyDisclosure key={group.id} group={group} />)}
       </div>
       <section aria-labelledby="onboarding-applications-title" className="mt-5 grid gap-2">
         <h3 id="onboarding-applications-title" className="text-xs font-medium">Applications</h3>

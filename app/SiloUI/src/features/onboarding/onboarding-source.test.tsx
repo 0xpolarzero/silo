@@ -13,7 +13,6 @@ describe("onboarding source boundary", () => {
     const actions = {
       connectGitHub: vi.fn(),
       saveMachineConfiguration: vi.fn(),
-      repairRuntime: vi.fn(),
       retryWorkspaceSetup: vi.fn(),
       finishSetup: vi.fn(),
     }
@@ -37,7 +36,6 @@ describe("onboarding source boundary", () => {
     const actions = {
       connectGitHub: vi.fn(),
       saveMachineConfiguration: vi.fn(),
-      repairRuntime: vi.fn(),
       retryWorkspaceSetup: vi.fn(),
       finishSetup: vi.fn(),
     }

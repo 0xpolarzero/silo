@@ -66,22 +66,10 @@ export interface OnboardingViewModel {
 
 const inventory = [
   {
-    id: "silo-tools",
-    title: "Silo tools",
-    items: [
-      ["silo", "Manage and verify sandboxes", "silo-runtime"],
-      ["silo-ssh-proxy", "Route sandbox SSH"],
-      ["silo-github-proxy", "Scope GitHub HTTPS and LFS"],
-      ["silo-git-askpass", "Authenticate host Git"],
-      ["silo-keychain-bridge", "Read host-held credentials"],
-      ["silo-github-host-token", "Supply the GitHub proxy"],
-    ],
-  },
-  {
     id: "required-software",
     title: "Required software",
     items: [
-      ["msb", "Run MicroSandbox VMs", "tool-msb"],
+      ["MicroSandbox runtime", "Bundled msb and VM runtime", "runtime-microsandbox"],
       ["git", "Source control", "tool-git"],
       ["git-lfs", "Large repository files", "tool-git-lfs"],
       ["tar / gtar", "Backup and restore", "tool-tar"],
@@ -96,17 +84,6 @@ const inventory = [
       ["Apple Silicon", "arm64 architecture", "architecture"],
       ["20 GiB free", "Minimum disk space", "disk-space"],
       ["16 GiB memory", "Sandbox recommendation", "memory"],
-      ["Silo protocol 1", "Current app handshake"],
-      ["MicroSandbox runtime", "VM runtime available"],
-    ],
-  },
-  {
-    id: "host-integration",
-    title: "Host integration",
-    items: [
-      ["Host helper", "Signed, registered, reachable", "host-integration"],
-      ["Loopback aliases", "Fixed sandbox addresses"],
-      ["Host records", "Managed sandbox names"],
     ],
   },
 ] as const
@@ -237,11 +214,16 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
 export function projectOnboarding(source: OnboardingSource, githubConnectionState: GitHubConnectionState): OnboardingViewModel {
   const checksById = new Map(source.preflightChecks.map((check) => [check.id, check]))
   const dependencies = inventory.map((group): DependencyGroupView => {
-    const items = group.items.map(([name, role, checkId]) => ({
-      name,
-      role,
-      check: checkId ? checksById.get(checkId) : undefined,
-    }))
+    const items = group.items.map(([name, role, checkId]) => {
+      const check = checksById.get(checkId) ?? {
+        id: checkId,
+        title: name,
+        status: "unavailable" as const,
+        detail: "No check result was reported.",
+        remediation: null,
+      }
+      return { name, role, check }
+    })
     return {
       id: group.id,
       title: group.title,

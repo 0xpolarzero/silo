@@ -9,7 +9,7 @@ function setup(complete = false) {
   const finishSetup = vi.fn()
   const onOpenApp = vi.fn()
   render(<OnboardingPreview source={onboardingScenarios[complete ? "complete" : "running"]} onOpenApp={onOpenApp} actions={{
-    saveMachineConfiguration: vi.fn(), repairRuntime: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup,
+    saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup,
   }} />)
   return { user: userEvent.setup(), finishSetup, onOpenApp }
 }
@@ -31,11 +31,11 @@ describe("onboarding continuity", () => {
 
   it("retains expanded dependency details when returning to the step", async () => {
     const { user } = setup()
-    await user.click(screen.getByRole("button", { name: /Silo tools/ }))
-    expect(screen.getByRole("button", { name: /Silo tools/ })).toHaveAttribute("aria-expanded", "true")
+    await user.click(screen.getByRole("button", { name: /Required software/ }))
+    expect(screen.getByRole("button", { name: /Required software/ })).toHaveAttribute("aria-expanded", "true")
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
     await user.click(screen.getByRole("tab", { name: /Dependencies/ }))
-    expect(screen.getByRole("button", { name: /Silo tools/ })).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("button", { name: /Required software/ })).toHaveAttribute("aria-expanded", "true")
   })
 
   it("replaces the finished queue with a single handoff and submits setup once", async () => {

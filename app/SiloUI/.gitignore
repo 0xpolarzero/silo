@@ -13,6 +13,8 @@ dist-ssr
 coverage
 .vite
 *.local
+src-tauri/binaries/
+src-tauri/runtime/
 
 # Editor directories and files
 .vscode/*
