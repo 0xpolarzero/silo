@@ -95,7 +95,7 @@ function FixtureAppContent({ nativeOnboardingComplete }: { nativeOnboardingCompl
       ) : (
         <OnboardingPreview
           key={`${scenario}:${githubState ?? "source"}`}
-          source={onboardingScenarios[scenario]}
+          source={onboardingScenarios[scenarioFromSearch(window.location.search, "complete")]}
           initialGitHubConnectionState={githubState}
           repositoryOptions={repositoryFixtures}
           initialCompleted={nativeOnboardingComplete}

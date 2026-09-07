@@ -337,6 +337,12 @@ Neither mode can read or mutate host login items or notification authorization.
 
 ### Real completed-onboarding verification
 
+On a normal launch, onboarding uses completed sandbox fixture progress, so
+Review → Finish opens the permission switches without an environment override.
+Explicit loading and failure scenarios remain selectable for UI checks. This
+default changes only onboarding progress; native settings and OS permissions
+remain real. Sandbox readiness is still scaffold data, not live verification.
+
 A debug-only presentation switch opens the real signed bundle directly on the
 completed onboarding panel while retaining real settings and system-integration
 adapters. It does not set a fixture query parameter and is ignored in fixture or
@@ -469,7 +475,7 @@ scaffold; these checks do not prove sandbox startup or live VM state.
 The complete native checklist below is **not** claimed as passed. Accessing the
 macOS status item through SystemUIServer timed out in automation; native panel
 appearance, folder picker, focus, Escape, and outside-click dismissal remain
-unverified for this change. The default running setup fixture blocks machine
+unverified for this change. The then-default running setup fixture blocked machine
 editing, so native persistence checks used editable Git inputs; machine-editor
 recovery is covered by component and native storage tests.
 

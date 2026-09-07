@@ -8,8 +8,8 @@ const originalURL = window.location.href
 afterEach(() => window.history.replaceState(null, "", originalURL))
 
 describe("onboarding to application", () => {
-  it("opens Silo with the saved sandbox name and application preference", async () => {
-    window.history.replaceState(null, "", "?view=onboarding&scenario=complete")
+  it("finishes default onboarding, exposes permissions, and opens Silo with saved preferences", async () => {
+    window.history.replaceState(null, "", "?view=onboarding")
     const user = userEvent.setup()
     render(<FixtureApp />)
     await user.click(screen.getByRole("combobox", { name: "Browser" }))
@@ -20,7 +20,10 @@ describe("onboarding to application", () => {
     await user.type(screen.getByRole("textbox", { name: "Machine name" }), "build")
     await user.click(screen.getByRole("button", { name: "Save" }))
     await user.click(screen.getByRole("tab", { name: /Review/ }))
+    expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled()
     await user.click(screen.getByRole("button", { name: "Finish" }))
+    expect(screen.getByRole("switch", { name: "Launch Silo at login" })).toBeVisible()
+    expect(screen.getByRole("switch", { name: "Enable notifications" })).toBeVisible()
     await user.click(screen.getByRole("button", { name: "Open Silo" }))
     expect(screen.queryByRole("navigation", { name: "Setup steps" })).not.toBeInTheDocument()
     const navigation = within(screen.getByRole("navigation", { name: "Silo navigation" }))

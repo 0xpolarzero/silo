@@ -262,9 +262,9 @@ export const onboardingScenarios: Record<ScenarioName, OnboardingSource> = {
   "stress-running": parseOnboardingSource(stressRunningSource),
 }
 
-export function scenarioFromSearch(search: string): ScenarioName {
+export function scenarioFromSearch(search: string, fallback: ScenarioName = "running"): ScenarioName {
   const requested = new URLSearchParams(search).get("scenario")
-  return scenarioNames.find((name) => name === requested) ?? "running"
+  return scenarioNames.find((name) => name === requested) ?? fallback
 }
 
 export function githubStateFromSearch(search: string): GitHubFixtureState | undefined {
