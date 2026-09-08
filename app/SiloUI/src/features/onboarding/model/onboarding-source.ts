@@ -25,6 +25,8 @@ export const onboardingSourceSchema = z.object({
   bootstrapState: siloBootstrapStateSchema,
   preflightChecks: z.array(siloPreflightCheckSchema),
   progressEvents: z.array(siloProgressEventSchema),
+  activityEvents: z.array(siloProgressEventSchema).optional(),
+  activityError: z.string().optional(),
   githubPolicies: z.array(githubWorkspacePolicySchema),
   currentHostGitIdentity: z.object({
     name: z.string(),

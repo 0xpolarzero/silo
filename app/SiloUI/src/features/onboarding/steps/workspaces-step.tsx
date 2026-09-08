@@ -69,7 +69,7 @@ export function WorkspacesStep({ machines, progress, onMachinesChange, onRetry, 
           </div>
           {failed && <p className="text-[11px] leading-4 text-muted-foreground select-text">{progress.recovery ?? "Resolve the reported sandbox issue, then retry setup."}</p>}
         </ListRowDetails>
-        <ActivityOutput events={progress.visibleEvents} embedded />
+        <ActivityOutput events={progress.visibleEvents} error={progress.activityError} embedded />
       </ListCard>
 
       <div className="min-h-48 flex-1">

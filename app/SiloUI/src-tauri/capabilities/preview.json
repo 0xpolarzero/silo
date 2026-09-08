@@ -37,6 +37,7 @@
     "allow-workspace-action",
     "allow-retry-workspace-start",
     "allow-configure-workspace-identities",
+    "allow-read-setup-activity",
     "allow-save-machine-configuration"
   ]
 }

@@ -227,6 +227,45 @@ Sandboxes screen without error; all three VMs remained Stopped. The app was
 left open. Screenshots are in the ignored `src-tauri/target/ui-evidence/`
 directory: `review-inline-validation.jpg` and `review-finish-disconnected.jpg`.
 
+## Live activity
+
+1. Open onboarding's Sandboxes step and expand Live activity. After restarting
+   Silo, it displays the latest recorded attempt; it does not rerun setup.
+2. Continue with existing sandboxes. Return to Sandboxes: activity must include
+   timestamped verification for each VM and an explicit completed outcome.
+3. When adding a VM, activity must identify disk preparation, image resolution,
+   download, image checks/preparation, configuration saving and verification.
+   Downloaded bytes are real; a total is shown only when every layer size is
+   known. Cached images need not produce a download. A quiet create reports its
+   last stage and elapsed time every five seconds.
+4. An actual failure must end with an error, affected VM and recovery guidance.
+   Warnings represent nonfatal conditions. Copy activity must copy the same safe
+   text shown on screen, without raw registry URLs, credentials or host paths.
+5. Quit and relaunch. The recorded outcome and diagnostics remain available.
+   A recorded unfinished attempt is labelled interrupted, never completed.
+   A history read/write failure is explicit and does not invent history.
+
+Do not interrupt a user's VM operation merely to produce a screenshot. Native
+tests cover interrupted/corrupt histories, missing storage, safe failure
+categories, streamed output and exit-event delivery. Tests use temporary storage;
+there is no production fixture switch or debug activity feed.
+
+Verified on macOS with the rebuilt production bundle: Continue verified all
+three existing VMs, activity showed timestamped start/verification/completion,
+and the same attempt reappeared after a normal quit/relaunch. Onboarding remains
+open with Live activity expanded. Screenshots: `activity-completed.jpg` and
+`activity-retained.jpg` under the ignored `src-tauri/target/ui-evidence/` folder.
+No user VM was started. A separate disposable runtime check downloaded a fresh
+BusyBox image and created a stopped sandbox successfully, reporting 266,867 then
+1,900,727 bytes against a 1,900,727-byte total; temporary storage was removed.
+
+Validation: the full frontend suite passed 442 tests before two final boundary
+regressions were added; the final affected bridge/panel suite passed all 30
+tests. All 37 native runtime tests passed, including the local socket test.
+Three tests extracted verbatim from the patched upstream encoder passed.
+Typecheck, lint, desktop bundling and signature verification passed. Linux
+native execution was not tested on this macOS host.
+
 The isolated native walkthrough observed actual creation progress, responsive
 Continue, identity work waiting behind creation, and disabled Finish. The live
 image download timed out; Retry then returned a Docker registry connection

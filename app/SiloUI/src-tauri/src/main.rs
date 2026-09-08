@@ -47,6 +47,7 @@ fn main() {
             runtime::configure_workspace_identities,
             runtime::workspace_action,
             backup_controller::retry_workspace_start,
+            runtime::read_setup_activity,
             runtime::save_machine_configuration
         ])
         .setup(|app| {

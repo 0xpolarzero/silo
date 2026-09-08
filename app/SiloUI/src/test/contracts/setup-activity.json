@@ -1,0 +1,43 @@
+[
+  {
+    "schemaVersion": 1,
+    "type": "progress",
+    "requestId": "attempt-1",
+    "phase": "workspaces",
+    "step": "setup-started",
+    "workspace": "",
+    "message": "Sandbox setup started.",
+    "safeForDisplay": true,
+    "timestamp": 1700000000000,
+    "level": "info",
+    "elapsedSeconds": 0
+  },
+  {
+    "schemaVersion": 1,
+    "type": "progress",
+    "requestId": "attempt-1",
+    "phase": "workspaces",
+    "step": "setup-completed",
+    "workspace": "",
+    "message": "Sandbox setup completed.",
+    "safeForDisplay": true,
+    "timestamp": 1700000001000,
+    "level": "info",
+    "elapsedSeconds": 1
+  },
+  {
+    "schemaVersion": 1,
+    "type": "progress",
+    "requestId": "attempt-2",
+    "phase": "workspaces",
+    "step": "setup-failed",
+    "workspace": "dev",
+    "message": "Sandbox setup failed (exit code 13): Permission was denied. Check access to Silo's storage and retry.",
+    "safeForDisplay": true,
+    "timestamp": 1700000002000,
+    "level": "error",
+    "elapsedSeconds": 2,
+    "failureCode": "permission",
+    "exitCode": 13
+  }
+]

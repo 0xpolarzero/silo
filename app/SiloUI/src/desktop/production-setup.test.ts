@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { OnboardingCompletionRequest } from "@/features/onboarding/model/onboarding-source"
+import type { SiloProgressEvent } from "@/contracts/silo"
 import { createProductionSource, type ProductionBridge } from "./production-source"
 
 const application = applicationSourceForScenario("running")
@@ -15,13 +16,14 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
 }
-async function setup() {
+async function setup(savedActivity: SiloProgressEvent[] = []) {
   const machines = vi.fn<() => Promise<unknown>>().mockResolvedValue(application)
   const identities = vi.fn<() => Promise<unknown>>().mockResolvedValue(undefined)
   const events = new Map<string, (event?: { payload: unknown }) => void>()
   const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) => {
     if (command === "read_application_state") return application
     if (command === "read_backup_state") return { snapshotId: "test", availability: "available", archives: [], operation: null }
+    if (command === "read_setup_activity") return savedActivity
     if (command === "save_machine_configuration") return machines()
     if (command === "configure_workspace_identities") return identities()
     throw new Error(`Unexpected command ${command}`)
@@ -33,6 +35,56 @@ async function setup() {
 }
 
 describe("production setup queue", () => {
+  it("restores saved activity without treating it as new setup progress", async () => {
+    const saved: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId: "previous-attempt", phase: "workspaces", step: "setup-failed", timestamp: 1788912000000, level: "error", message: "Image download failed. Check your connection and retry.", safeForDisplay: true }
+    const { store } = await setup([saved])
+    expect(store.getSnapshot().setupActivity).toEqual([saved])
+    expect(store.getSnapshot().setupEvents).toEqual([])
+    expect(store.getSnapshot().setupQueue.every(({ status }) => status === "idle")).toBe(true)
+    store.dispose()
+  })
+
+  it("does not replace current activity with a previous attempt after a command finishes", async () => {
+    const saved: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId: "previous-attempt", phase: "workspaces", message: "Previous attempt", safeForDisplay: true }
+    const { store, machines, invoke, emit } = await setup([saved])
+    const pending = deferred<unknown>()
+    machines.mockReturnValueOnce(pending.promise)
+    const job = store.submitSetupStep("workspaces", request)
+    await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
+    const requestId = invoke.mock.calls.find(([command]) => command === "save_machine_configuration")?.[1]?.requestId as string
+    const event: SiloProgressEvent = { ...saved, requestId, message: "Verifying dev…" }
+    emit(event)
+    pending.resolve(application)
+    await job
+    expect(store.getSnapshot().setupActivity).toEqual([event])
+    store.dispose()
+  })
+
+  it("recovers the terminal error from disk when its live event was not delivered", async () => {
+    const saved: SiloProgressEvent[] = []
+    const { store, machines, invoke } = await setup(saved)
+    const pending = deferred<unknown>()
+    machines.mockReturnValueOnce(pending.promise)
+    const job = expect(store.submitSetupStep("workspaces", request)).rejects.toThrow("download failed")
+    await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
+    const requestId = invoke.mock.calls.find(([command]) => command === "save_machine_configuration")?.[1]?.requestId as string
+    saved.push({ schemaVersion: 1, type: "progress", requestId, phase: "workspaces", step: "setup-failed", level: "error", message: "Image download failed. Check your connection and retry.", safeForDisplay: true })
+    pending.reject(new Error("download failed"))
+    await job
+    expect(store.getSnapshot().setupActivity).toEqual(saved)
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "workspaceRun")?.status).toBe("failed")
+    store.dispose()
+  })
+
+  it("records a safe failure even when native setup fails before activity storage opens", async () => {
+    const { store, machines } = await setup()
+    machines.mockRejectedValueOnce(new Error("private/path token=secret"))
+    await expect(store.submitSetupStep("workspaces", request)).rejects.toThrow()
+    expect(store.getSnapshot().setupActivity?.at(-1)).toMatchObject({ step: "setup-failed", level: "error", safeForDisplay: true })
+    expect(JSON.stringify(store.getSnapshot().setupActivity)).not.toContain("secret")
+    store.dispose()
+  })
+
   it("starts idle, coalesces duplicate Continue, and waits before applying identity", async () => {
     const { store, machines, identities } = await setup()
     expect(store.getSnapshot().setupQueue.every(({ status }) => status === "idle")).toBe(true)

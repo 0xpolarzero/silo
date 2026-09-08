@@ -44,6 +44,8 @@ export function productionOnboardingSource(application: ApplicationSource | null
     },
     preflightChecks: dependencies.checks,
     progressEvents: setup ? setup.setupEvents : operation?.progressEvents ? [...operation.progressEvents] : [],
+    activityEvents: setup?.setupActivity,
+    activityError: setup?.setupActivityError,
     githubPolicies: [],
     currentHostGitIdentity: application?.github.hostIdentity ?? null,
     applicationPreferences,

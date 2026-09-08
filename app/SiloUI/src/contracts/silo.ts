@@ -108,6 +108,13 @@ export const siloProgressEventSchema = z.object({
   fraction: z.number().min(0).max(1).optional(),
   message: z.string(),
   safeForDisplay: z.boolean(),
+  timestamp: z.number().int().nonnegative().optional(),
+  level: z.enum(["info", "warning", "error"]).optional(),
+  elapsedSeconds: z.number().nonnegative().optional(),
+  downloadedBytes: z.number().int().nonnegative().optional(),
+  totalBytes: z.number().int().nonnegative().optional(),
+  failureCode: z.enum(["auth", "access", "disk", "permission", "network", "timeout", "integrity", "resources", "configuration", "unavailable", "runtime"]).optional(),
+  exitCode: z.number().int().optional(),
 }).strict()
 
 export const siloBootstrapResultSchema = z.object({

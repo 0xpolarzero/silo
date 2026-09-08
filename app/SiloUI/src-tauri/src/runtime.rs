@@ -14,7 +14,7 @@ use std::{
     process::{Command, Stdio},
     sync::Mutex,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -383,10 +383,84 @@ pub(crate) fn prepare_runtime_home(
     })
 }
 
+struct SetupRunner<'a> {
+    request_id: &'a str,
+    publish: &'a dyn Fn(MachineConfigurationProgress),
+}
+
+impl RuntimeRunner for SetupRunner<'_> {
+    fn run(
+        &self,
+        paths: &RuntimePaths,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<CommandOutput, RuntimeError> {
+        let workspace = args
+            .windows(2)
+            .find(|pair| pair[0] == "--name")
+            .map(|pair| pair[1].as_str())
+            .unwrap_or("");
+        let layers = Mutex::new(HashMap::<u64, u64>::new());
+        let total = Mutex::new(None::<u64>);
+        run_msb_with_progress(paths, args, timeout, &|value| {
+            let Some(phase) = value.get("phase").and_then(Value::as_str) else {
+                return;
+            };
+            let message = match phase {
+                "image-resolving" => "Resolving the VM image…",
+                "image-resolved" => "VM image resolved; preparing the download…",
+                "image-download" => "Downloading the VM image…",
+                "image-downloaded" => "VM image layer downloaded.",
+                "image-verifying" => "Checking the downloaded image…",
+                "image-preparing" => "Preparing the VM image on disk…",
+                "image-ready" => {
+                    "VM image ready; preparing the system disk and runtime configuration…"
+                }
+                "runtime-waiting" => "Waiting for the runtime to finish preparing the VM…",
+                _ => return,
+            };
+            let mut event = machine_progress(self.request_id, phase, workspace, 0);
+            event.fraction = None;
+            event.message = if workspace.is_empty() {
+                message.into()
+            } else {
+                format!("{workspace}: {message}")
+            };
+            if phase == "image-resolved" {
+                *total.lock().unwrap() = value.get("totalBytes").and_then(Value::as_u64);
+            }
+            if matches!(phase, "image-download" | "image-downloaded") {
+                if let (Some(index), Some(bytes)) = (
+                    value.get("layerIndex").and_then(Value::as_u64),
+                    value.get("downloadedBytes").and_then(Value::as_u64),
+                ) {
+                    let mut layers = layers.lock().unwrap();
+                    if layers.len() < 1024 || layers.contains_key(&index) {
+                        layers.insert(index, bytes);
+                        event.downloaded_bytes =
+                            Some(layers.values().copied().fold(0u64, u64::saturating_add));
+                        event.total_bytes = *total.lock().unwrap();
+                    }
+                }
+            }
+            (self.publish)(event);
+        })
+    }
+}
+
 pub(crate) fn run_msb(
     paths: &RuntimePaths,
     args: &[String],
     timeout: Duration,
+) -> Result<CommandOutput, RuntimeError> {
+    run_msb_with_progress(paths, args, timeout, &|_| {})
+}
+
+fn run_msb_with_progress(
+    paths: &RuntimePaths,
+    args: &[String],
+    timeout: Duration,
+    report: &dyn Fn(Value),
 ) -> Result<CommandOutput, RuntimeError> {
     for (description, path) in [
         ("bundled MicroSandbox executable", &paths.executable),
@@ -399,10 +473,10 @@ pub(crate) fn run_msb(
         }
     }
     prepare_runtime_home(&paths.home, paths.storage_home.as_deref())?;
-    let stdout_file = tempfile::tempfile().map_err(|error| {
+    let stdout_file = tempfile::NamedTempFile::new().map_err(|error| {
         RuntimeError::Unavailable(format!("Silo could not capture runtime output: {error}"))
     })?;
-    let stderr_file = tempfile::tempfile().map_err(|error| {
+    let stderr_file = tempfile::NamedTempFile::new().map_err(|error| {
         RuntimeError::Unavailable(format!("Silo could not capture runtime errors: {error}"))
     })?;
     let mut child = Command::new(&paths.executable)
@@ -411,20 +485,80 @@ pub(crate) fn run_msb(
         .env("MSB_PATH", &paths.executable)
         .env("MSB_LIBKRUNFW_PATH", &paths.library)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout_file.try_clone().map_err(|error| {
-            RuntimeError::Unavailable(format!("Silo could not capture runtime output: {error}"))
-        })?))
-        .stderr(Stdio::from(stderr_file.try_clone().map_err(|error| {
-            RuntimeError::Unavailable(format!("Silo could not capture runtime errors: {error}"))
-        })?))
+        .stdout(Stdio::from(stdout_file.as_file().try_clone().map_err(
+            |error| {
+                RuntimeError::Unavailable(format!("Silo could not capture runtime output: {error}"))
+            },
+        )?))
+        .stderr(Stdio::from(stderr_file.as_file().try_clone().map_err(
+            |error| {
+                RuntimeError::Unavailable(format!("Silo could not capture runtime errors: {error}"))
+            },
+        )?))
         .spawn()
         .map_err(|error| {
             RuntimeError::Unavailable(format!("Silo could not start its bundled runtime: {error}"))
         })?;
     let deadline = Instant::now() + timeout;
+    let mut progress_offset = 0;
+    let mut progress_pending = String::new();
+    let mut next_progress = Instant::now();
+    let mut last_progress = Instant::now();
+    let mut last_phase = serde_json::json!({"phase": "runtime-waiting"});
+    let mut exited = None;
     let status = loop {
-        if stdout_file.metadata().map(|value| value.len()).unwrap_or(0) > MAX_OUTPUT_BYTES
-            || stderr_file.metadata().map(|value| value.len()).unwrap_or(0) > MAX_OUTPUT_BYTES
+        if args.iter().any(|arg| arg == "--progress-json") && Instant::now() >= next_progress {
+            next_progress = Instant::now() + Duration::from_secs(1);
+            if let Ok(mut capture) = stderr_file.reopen() {
+                let _ = capture.seek(SeekFrom::Start(progress_offset));
+                let mut bytes = Vec::new();
+                if capture
+                    .take(MAX_OUTPUT_BYTES)
+                    .read_to_end(&mut bytes)
+                    .is_ok()
+                {
+                    progress_offset += bytes.len() as u64;
+                    progress_pending.push_str(&String::from_utf8_lossy(&bytes));
+                    let mut latest = None;
+                    while let Some(end) = progress_pending.find('\n') {
+                        let line: String = progress_pending.drain(..=end).collect();
+                        if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                            if value.get("type").and_then(Value::as_str) == Some("silo-progress") {
+                                // Keep phase boundaries; collapse repeated chunk updates within this poll.
+                                if latest.as_ref().is_some_and(|old: &Value| {
+                                    old.get("phase") != value.get("phase")
+                                        || old.get("layerIndex") != value.get("layerIndex")
+                                }) {
+                                    report(latest.take().unwrap());
+                                }
+                                latest = Some(value);
+                            }
+                        }
+                    }
+                    if let Some(value) = latest {
+                        last_phase = value.clone();
+                        report(value);
+                        last_progress = Instant::now();
+                    }
+                }
+            }
+            if last_progress.elapsed() >= Duration::from_secs(5) {
+                report(last_phase.clone());
+                last_progress = Instant::now();
+            }
+        }
+        if stdout_file
+            .as_file()
+            .metadata()
+            .map(|value| value.len())
+            .unwrap_or(0)
+            > MAX_OUTPUT_BYTES
+            || stderr_file
+                .as_file()
+                .metadata()
+                .map(|value| value.len())
+                .unwrap_or(0)
+                > MAX_OUTPUT_BYTES
         {
             let _ = child.kill();
             let _ = child.wait();
@@ -433,8 +567,14 @@ pub(crate) fn run_msb(
                 detail: "the runtime returned too much output".into(),
             });
         }
+        if let Some(status) = exited.take() {
+            break status;
+        }
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => {
+                exited = Some(status);
+                next_progress = Instant::now();
+            }
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
             Ok(None) => {
                 let _ = child.kill();
@@ -453,20 +593,53 @@ pub(crate) fn run_msb(
             }
         }
     };
-    let stdout = read_capture(stdout_file)?;
-    let stderr = read_capture(stderr_file)?;
+    let stdout = read_capture(stdout_file.into_file())?;
+    let stderr = read_capture(stderr_file.into_file())?;
     if !status.success() {
-        let raw_detail = if stderr.trim().is_empty() {
-            &stdout
+        let stderr_detail = runtime_error_text(&stderr);
+        let stdout_detail = runtime_error_text(&stdout);
+        let raw_detail = if stderr_detail.trim().is_empty() {
+            &stdout_detail
         } else {
-            &stderr
+            &stderr_detail
         };
         return Err(RuntimeError::Failed {
             operation: operation_name(args),
-            detail: clean_detail(raw_detail, &paths.home),
+            detail: format!(
+                "exit code {}: {}",
+                status.code().unwrap_or(-1),
+                clean_detail(raw_detail, &paths.home)
+            ),
         });
     }
     Ok(CommandOutput { stdout, stderr })
+}
+
+fn runtime_error_text(capture: &str) -> String {
+    capture
+        .lines()
+        .filter(|line| {
+            !serde_json::from_str::<Value>(line)
+                .ok()
+                .is_some_and(|event| {
+                    event.get("type").and_then(Value::as_str) == Some("silo-progress")
+                })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn mentions_http_status(detail: &str, status: &str) -> bool {
+    let words: Vec<_> = detail
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words
+        .windows(2)
+        .any(|pair| matches!(pair[0], "http" | "status") && pair[1] == status)
+        || words
+            .windows(3)
+            .any(|parts| parts[0] == "status" && parts[1] == "code" && parts[2] == status)
 }
 
 fn read_capture(mut file: File) -> Result<String, RuntimeError> {
@@ -802,19 +975,31 @@ pub fn workspace_action(
     result.map_err(|error| error.to_string())
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct MachineConfigurationProgress {
+pub struct MachineConfigurationProgress {
     schema_version: u8,
     #[serde(rename = "type")]
-    event_type: &'static str,
+    event_type: String,
     request_id: String,
-    phase: &'static str,
+    phase: String,
     step: String,
     workspace: String,
-    fraction: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fraction: Option<u8>,
     message: String,
     safe_for_display: bool,
+    timestamp: u64,
+    level: String,
+    elapsed_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    downloaded_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
 }
 
 fn machine_progress(
@@ -828,20 +1013,358 @@ fn machine_progress(
         ("workspace-configuration", _) => format!("{workspace} configured."),
         ("workspace-verification", 0) => format!("Verifying {workspace}…"),
         ("workspace-verification", _) => format!("{workspace} verified."),
+        ("workspace-disk-preparation", _) => format!("Preparing {workspace}'s workspace disk…"),
+        ("workspace-runtime-preparation", _) => {
+            format!("Preparing {workspace}'s VM image and system disk…")
+        }
+        ("workspace-settings", _) => format!("Saving {workspace}'s configuration…"),
+        ("setup-started", _) => "Sandbox setup started.".into(),
+        ("setup-completed", _) => "Sandbox setup completed.".into(),
+        ("setup-failed", _) => "Sandbox setup failed.".into(),
+        ("setup-interrupted", _) => {
+            "Sandbox setup was interrupted when Silo closed. Check the sandbox state, then retry."
+                .into()
+        }
         ("workspace-removal", 0) => format!("Removing {workspace}…"),
         _ => format!("{workspace} removed."),
     };
     MachineConfigurationProgress {
         schema_version: 1,
-        event_type: "progress",
+        event_type: "progress".into(),
         request_id: request_id.into(),
-        phase: "workspaces",
+        phase: "workspaces".into(),
         step: step.into(),
         workspace: workspace.into(),
-        fraction,
+        fraction: (!step.starts_with("setup-")
+            && matches!(
+                step,
+                "workspace-configuration" | "workspace-verification" | "workspace-removal"
+            ))
+        .then_some(fraction),
         message,
         safe_for_display: true,
+        timestamp: activity_timestamp(),
+        level: "info".into(),
+        elapsed_seconds: 0,
+        downloaded_bytes: None,
+        total_bytes: None,
+        failure_code: None,
+        exit_code: None,
     }
+}
+
+fn activity_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn activity_path(paths: &RuntimePaths) -> PathBuf {
+    paths.metadata.with_file_name("setup-activity.json")
+}
+
+fn failure_code(error: &RuntimeError) -> &'static str {
+    let lower = error.to_string().to_lowercase();
+    if lower.contains("unauthorized")
+        || lower.contains("authentication")
+        || mentions_http_status(&lower, "401")
+    {
+        "auth"
+    } else if lower.contains("forbidden") || mentions_http_status(&lower, "403") {
+        "access"
+    } else if lower.contains("no space left") {
+        "disk"
+    } else if lower.contains("permission denied") || lower.contains("permission was denied") {
+        "permission"
+    } else if lower.contains("connection")
+        || lower.contains("dns")
+        || lower.contains("error sending request")
+    {
+        "network"
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        "timeout"
+    } else if lower.contains("digest") || lower.contains("checksum") {
+        "integrity"
+    } else if lower.contains("cpu")
+        || lower.contains("memory")
+        || lower.contains("storage allocation")
+        || lower.contains("resource")
+    {
+        "resources"
+    } else if matches!(
+        error,
+        RuntimeError::Invalid(_) | RuntimeError::Malformed(_) | RuntimeError::Busy
+    ) {
+        "configuration"
+    } else if matches!(error, RuntimeError::Unavailable(_)) {
+        "unavailable"
+    } else {
+        "runtime"
+    }
+}
+
+fn failure_message(code: &str, exit_code: Option<i32>) -> Option<String> {
+    let reason = match code {
+        "auth" => "The image registry rejected authentication. Check registry access and retry.",
+        "access" => "The image registry denied access. Check registry access and retry.",
+        "disk" => "Not enough free disk space. Free some space and retry.",
+        "permission" => "Permission was denied. Check access to Silo's storage and retry.",
+        "network" => "The image registry could not be reached. Check your internet connection and retry.",
+        "timeout" => "The operation timed out. Check the sandbox state and retry.",
+        "integrity" => "The downloaded image failed its integrity check. Retry the download.",
+        "resources" => "Sandbox CPU, memory, or storage limits could not be validated. Review the sandbox resources against this computer's limits and retry.",
+        "configuration" => "The sandbox configuration could not be applied or verified. Review its settings and current state before retrying.",
+        "unavailable" => "A required runtime or host resource is unavailable. Check Silo's Dependencies screen before retrying.",
+        "runtime" => "The runtime did not complete the operation. Check the sandbox state and retry.",
+        _ => return None,
+    };
+    Some(match exit_code {
+        Some(code) => format!("Sandbox setup failed (exit code {code}): {reason}"),
+        None => format!("Sandbox setup failed: {reason}"),
+    })
+}
+
+fn runtime_exit_code(error: &RuntimeError) -> Option<i32> {
+    let RuntimeError::Failed { detail, .. } = error else {
+        return None;
+    };
+    detail
+        .split("exit code ")
+        .nth(1)?
+        .split(|ch: char| ch != '-' && !ch.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn safe_activity_error(error: &RuntimeError) -> String {
+    match error {
+        RuntimeError::Failed { operation, detail } => {
+            let lower = detail.to_lowercase();
+            let reason = if lower.contains("unauthorized")
+                || lower.contains("authentication")
+                || mentions_http_status(&lower, "401")
+            {
+                "The image registry rejected authentication. Check registry access and retry."
+            } else if mentions_http_status(&lower, "403")
+                || lower.contains("forbidden")
+                || lower.contains("denied access")
+            {
+                "The image registry denied access. Check registry access and retry."
+            } else if lower.contains("no space left") || lower.contains("free disk space") {
+                "Not enough free disk space. Free some space and retry."
+            } else if lower.contains("permission denied") {
+                "Permission was denied. Check access to Silo's storage and retry."
+            } else if lower.contains("connection")
+                || lower.contains("dns")
+                || lower.contains("error sending request")
+                || lower.contains("could not be reached")
+            {
+                "The image registry could not be reached. Check your internet connection and retry."
+            } else if lower.contains("timeout") || lower.contains("timed out") {
+                "The operation timed out. Check the sandbox state and retry."
+            } else if lower.contains("digest")
+                || lower.contains("checksum")
+                || lower.contains("integrity check")
+            {
+                "The downloaded image failed its integrity check. Retry the download."
+            } else {
+                "The runtime did not complete the operation. Check the sandbox state and retry."
+            };
+            let exit_code = detail
+                .strip_prefix("exit code ")
+                .and_then(|value| value.split(':').next())
+                .and_then(|value| value.parse::<i32>().ok());
+            if let Some(code) = exit_code {
+                format!("{operation} (exit code {code}): {reason}")
+            } else {
+                format!("{operation}: {reason}")
+            }
+        }
+        RuntimeError::Busy | RuntimeError::TimedOut { .. } => error.to_string(),
+        // These errors are generated by Silo, but may contain OS paths or process details.
+        _ => {
+            let text = error.to_string();
+            text.split_whitespace()
+                .map(|word| {
+                    if word.contains('/')
+                        || word.contains('@')
+                        || word.to_lowercase().contains("token")
+                        || word.contains('=')
+                    {
+                        "[redacted]"
+                    } else {
+                        word
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(800)
+                .collect()
+        }
+    }
+}
+
+struct ActivityJournal {
+    path: PathBuf,
+    events: Vec<MachineConfigurationProgress>,
+    started: Instant,
+}
+
+impl ActivityJournal {
+    fn start(paths: &RuntimePaths, _request_id: &str) -> Result<Self, String> {
+        let journal = Self {
+            path: activity_path(paths),
+            events: Vec::new(),
+            started: Instant::now(),
+        };
+        // Failure to retain diagnostics must not prevent the requested setup.
+        // The first append publishes a visible warning if storage is unavailable.
+        Ok(journal)
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or("Silo's activity storage path is invalid.")?;
+        fs::create_dir_all(parent).map_err(|_| "Silo could not prepare setup activity storage.")?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|_| "Silo could not save setup activity.")?;
+        serde_json::to_writer(&mut file, &self.events)
+            .map_err(|_| "Silo could not encode setup activity.")?;
+        file.as_file()
+            .sync_all()
+            .map_err(|_| "Silo could not save setup activity.")?;
+        file.persist(&self.path)
+            .map_err(|_| "Silo could not save setup activity.")?;
+        Ok(())
+    }
+
+    fn append(&mut self, mut event: MachineConfigurationProgress) -> MachineConfigurationProgress {
+        event.elapsed_seconds = self.started.elapsed().as_secs();
+        // Progress updates replace the previous update for the same stage, retaining boundaries.
+        if self.events.last().is_some_and(|last| {
+            last.step == event.step
+                && last.workspace == event.workspace
+                && last.fraction.is_none()
+                && !event.step.starts_with("setup-")
+        }) {
+            self.events.pop();
+        }
+        if self.events.len() >= 512 {
+            self.events.remove(1);
+        }
+        self.events.push(event.clone());
+        if self.persist().is_err() {
+            let mut warning = event.clone();
+            warning.level = "warning".into();
+            warning.message = "Setup continues, but Silo could not retain its activity history. Copy the activity before closing Silo.".into();
+            warning.step = "activity-storage-warning".into();
+            warning.fraction = None;
+            if self.events.len() >= 512 {
+                self.events.remove(1);
+            }
+            self.events.push(warning);
+        }
+        event
+    }
+}
+
+fn read_activity(
+    paths: &RuntimePaths,
+    recover_interrupted: bool,
+) -> Result<Vec<MachineConfigurationProgress>, String> {
+    let path = activity_path(paths);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .map_err(|_| "Silo could not read its setup activity history.")?
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Silo could not read its setup activity history.")?;
+    if bytes.len() > 1024 * 1024 {
+        return Err("Silo's setup activity history is too large to read.".into());
+    }
+    let mut events: Vec<MachineConfigurationProgress> =
+        serde_json::from_slice(&bytes).map_err(|_| "Silo's setup activity history is damaged.")?;
+    if events.len() > 512
+        || events.iter().any(|event| {
+            event.schema_version != 1
+                || event.event_type != "progress"
+                || event.phase != "workspaces"
+                || !event.safe_for_display
+                || event.request_id.is_empty()
+                || event.request_id.len() > 256
+                || event.workspace.len() > 128
+                || !event
+                    .workspace
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || "-_".contains(ch))
+                || !matches!(event.level.as_str(), "info" | "warning" | "error")
+                || event.fraction.is_some_and(|value| value > 1)
+        })
+    {
+        return Err("Silo's setup activity history is invalid.".into());
+    }
+    for event in &mut events {
+        event.message = match event.step.as_str() {
+            "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
+            "image-resolving" => format!("{}: Resolving the VM image…", event.workspace),
+            "image-resolved" => format!("{}: VM image resolved; preparing the download…", event.workspace),
+            "image-download" => format!("{}: Downloading the VM image…", event.workspace),
+            "image-downloaded" => format!("{}: VM image layer downloaded.", event.workspace),
+            "image-verifying" => format!("{}: Checking the downloaded image…", event.workspace),
+            "image-preparing" => format!("{}: Preparing the VM image on disk…", event.workspace),
+            "image-ready" => format!("{}: VM image ready; preparing the system disk and runtime configuration…", event.workspace),
+            "runtime-waiting" => format!("{}: Waiting for the runtime to finish preparing the VM…", event.workspace),
+            "host-memory-warning" => "Silo could not measure host memory. Setup can continue, but available memory could not be checked.".into(),
+            "activity-storage-warning" => "Silo could not retain its activity history. Copy the activity before closing Silo.".into(),
+            "setup-failed" => failure_message(event.failure_code.as_deref().unwrap_or("runtime"), event.exit_code).ok_or("Silo's setup activity history contains an unknown failure.")?,
+            _ => return Err("Silo's setup activity history contains an unknown operation.".into()),
+        };
+    }
+    if recover_interrupted
+        && events
+            .iter()
+            .rev()
+            .find(|event| event.step != "activity-storage-warning")
+            .is_some_and(|event| {
+                !matches!(
+                    event.step.as_str(),
+                    "setup-completed" | "setup-failed" | "setup-interrupted"
+                )
+            })
+    {
+        let last = events.last().unwrap();
+        let mut interrupted =
+            machine_progress(&last.request_id, "setup-interrupted", &last.workspace, 0);
+        interrupted.level = "warning".into();
+        interrupted.elapsed_seconds = last.elapsed_seconds;
+        if events.len() >= 512 {
+            events.remove(1);
+        }
+        events.push(interrupted);
+        ActivityJournal {
+            path,
+            events: events.clone(),
+            started: Instant::now(),
+        }
+        .persist()?;
+    }
+    Ok(events)
+}
+
+#[tauri::command]
+pub fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurationProgress>, String> {
+    let paths = runtime_paths(&app)?;
+    let guard = MUTATION_LOCK.try_lock().ok();
+    read_activity(&paths, guard.is_some())
 }
 
 #[tauri::command]
@@ -859,27 +1382,69 @@ pub async fn save_machine_configuration(
         let _guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
-        let progress = |step: &str, workspace: &str, fraction: u8| {
-            if let Err(error) = app.emit_to(
-                "main",
-                "silo://machine-configuration-progress",
-                machine_progress(&request_id, step, workspace, fraction),
-            ) {
-                eprintln!("Silo could not publish configuration progress: {error}");
+        let journal = Mutex::new(ActivityJournal::start(&paths, &request_id)?);
+        let publish = |event: MachineConfigurationProgress| {
+            let mut journal = journal.lock().unwrap_or_else(|error| error.into_inner());
+            let event = journal.append(event);
+            if let Some(warning) = journal.events.last().filter(|entry| entry.step == "activity-storage-warning") {
+                let _ = app.emit_to("main", "silo://machine-configuration-progress", warning);
             }
+            let _ = app.emit_to("main", "silo://machine-configuration-progress", &event);
         };
-        host_resources()
+        publish(machine_progress(&request_id, "setup-started", "", 0));
+        let progress = |step: &str, workspace: &str, fraction: u8| {
+            publish(machine_progress(&request_id, step, workspace, fraction));
+        };
+        let result = host_resources()
             .and_then(|resources| {
+                if resources.physical_memory_bytes.is_none() {
+                    let mut warning = machine_progress(&request_id, "host-memory-warning", "", 0);
+                    warning.level = "warning".into();
+                    warning.message = "Silo could not measure host memory. Setup can continue, but available memory could not be checked.".into();
+                    publish(warning);
+                }
                 save_machine_configuration_with_progress(
-                    &ProcessRunner,
+                    &SetupRunner {
+                        request_id: &request_id,
+                        publish: &publish,
+                    },
                     &paths,
                     &resources,
                     request,
                     &progress,
                 )
             })
-            .and_then(|_| read_application_state_with(&ProcessRunner, &paths))
-            .map_err(|error| error.to_string())
+            .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+        let mut outcome = machine_progress(
+            &request_id,
+            if result.is_ok() {
+                "setup-completed"
+            } else {
+                "setup-failed"
+            },
+            "",
+            0,
+        );
+        if let Err(error) = &result {
+            outcome.level = "error".into();
+            outcome.failure_code = Some(failure_code(error).into());
+            outcome.exit_code = runtime_exit_code(error);
+            let last = journal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .events
+                .last()
+                .cloned();
+            if let Some(last) = last {
+                outcome.workspace = last.workspace;
+            }
+            outcome.message = format!(
+                "Sandbox setup failed: {} Check the sandbox state before retrying.",
+                safe_activity_error(error)
+            );
+        }
+        publish(outcome);
+        result.map_err(|error| safe_activity_error(&error))
     })
     .await
     .map_err(|error| format!("Sandbox configuration worker failed: {error}"))?
@@ -1271,7 +1836,7 @@ fn save_machine_configuration_with_progress(
             match previous_by_id.get(machine.id()) {
                 None => {
                     progress("workspace-configuration", machine.name(), 0);
-                    create_machine(runner, paths, machine)?;
+                    create_machine_with_progress(runner, paths, machine, progress)?;
                 }
                 Some(old) if *old == machine => {
                     if machine.is_vm() {
@@ -1291,6 +1856,7 @@ fn save_machine_configuration_with_progress(
                 .machines
                 .retain(|existing| existing.id() != machine.id());
             applied.machines.push(machine.clone());
+            progress("workspace-settings", machine.name(), 0);
             write_metadata(&paths.metadata, &applied)?;
             progress("workspace-configuration", machine.name(), 1);
             if machine.is_vm() {
@@ -1354,6 +1920,15 @@ fn create_machine(
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
+    create_machine_with_progress(runner, paths, machine, &|_, _, _| {})
+}
+
+fn create_machine_with_progress(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+    progress: &dyn Fn(&str, &str, u8),
+) -> Result<(), RuntimeError> {
     let MachineConfiguration::Vm {
         id,
         name,
@@ -1368,6 +1943,7 @@ fn create_machine(
         return Ok(());
     };
     let workspace_volume = disk_path(paths, name, "workspace");
+    progress("workspace-disk-preparation", name, 0);
     create_disk_volume(&workspace_volume, *workspace_storage_gib)?;
     let preflight = (|| {
         let listed = runner.run(
@@ -1423,7 +1999,9 @@ fn create_machine(
         format!("silo.runtime-storage-gib={runtime_storage_gib}"),
         "--no-start".into(),
         "--quiet".into(),
+        "--progress-json".into(),
     ];
+    progress("workspace-runtime-preparation", name, 0);
     if let Err(error) = runner.run(paths, &args, MUTATION_TIMEOUT) {
         return Err(with_cleanup_error(
             error,
@@ -1953,6 +2531,252 @@ mod tests {
                 .pop_front()
                 .expect("missing stub output")
         }
+    }
+
+    #[test]
+    fn activity_history_survives_restart_and_marks_only_unfinished_attempts_interrupted() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut journal = ActivityJournal::start(&paths, "attempt-1").unwrap();
+        journal.append(machine_progress("attempt-1", "setup-started", "", 0));
+        journal.append(machine_progress(
+            "attempt-1",
+            "workspace-verification",
+            "dev",
+            0,
+        ));
+        assert_eq!(read_activity(&paths, false).unwrap().len(), 2);
+        let recovered = read_activity(&paths, true).unwrap();
+        assert_eq!(recovered.last().unwrap().step, "setup-interrupted");
+        assert_eq!(recovered.last().unwrap().level, "warning");
+        assert_eq!(recovered.last().unwrap().workspace, "dev");
+        assert!(recovered.last().unwrap().fraction.is_none());
+        assert_eq!(read_activity(&paths, true).unwrap().len(), 3);
+        let mut journal = ActivityJournal::start(&paths, "attempt-2").unwrap();
+        journal.append(machine_progress("attempt-2", "setup-started", "", 0));
+        journal.append(machine_progress("attempt-2", "setup-completed", "", 0));
+        let completed = read_activity(&paths, true).unwrap();
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed.last().unwrap().step, "setup-completed");
+    }
+
+    #[test]
+    fn activity_does_not_publish_private_runtime_error_details() {
+        let error = RuntimeError::Failed { operation: "Creating the sandbox".into(), detail: "error sending request https://user:SECRET@registry.test/image?token=SECRET /Users/alice/private".into() };
+        let safe = safe_activity_error(&error);
+        assert!(safe.contains("registry could not be reached"));
+        for private in ["SECRET", "alice", "registry.test", "token"] {
+            assert!(!safe.contains(private));
+        }
+    }
+
+    #[test]
+    fn activity_reports_history_write_failure_without_losing_the_operation() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = ActivityJournal::start(&paths(&directory), "attempt").unwrap();
+        journal.path = directory.path().join("missing-parent/file/activity.json");
+        fs::write(directory.path().join("missing-parent"), "blocked").unwrap();
+        let event = journal.append(machine_progress(
+            "attempt",
+            "workspace-verification",
+            "dev",
+            1,
+        ));
+        assert_eq!(event.fraction, Some(1));
+        assert_eq!(
+            journal.events.last().unwrap().step,
+            "activity-storage-warning"
+        );
+        assert!(journal.events.iter().any(|event| event.fraction == Some(1)));
+    }
+
+    #[test]
+    fn structured_progress_is_drained_on_exit_and_ignores_untrusted_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::write(&paths.library, "test").unwrap();
+        fs::write(&paths.executable, "#!/bin/sh\nprintf '%s\\n' 'private token=SECRET' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":7,\"totalBytes\":9}' '{\"type\":\"silo-progress\",\"phase\":\"image-ready\"}' >&2\n").unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let events = Mutex::new(Vec::new());
+        let publish = |event| events.lock().unwrap().push(event);
+        SetupRunner {
+            request_id: "attempt",
+            publish: &publish,
+        }
+        .run(
+            &paths,
+            &[
+                "create".into(),
+                "--name".into(),
+                "dev".into(),
+                "--progress-json".into(),
+            ],
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].downloaded_bytes, Some(7));
+        assert_eq!(events[1].step, "image-ready");
+        assert!(events.iter().all(|event| !event.message.contains("SECRET")));
+    }
+
+    #[test]
+    fn activity_preserves_safe_failure_categories_and_rejects_modified_history() {
+        for (detail, expected) in [
+            ("401 Unauthorized SECRET", "authentication"),
+            ("403 forbidden SECRET", "denied access"),
+            ("digest mismatch SECRET", "integrity check"),
+            ("no space left SECRET", "free disk space"),
+        ] {
+            let safe = safe_activity_error(&RuntimeError::Failed {
+                operation: "Creating the sandbox".into(),
+                detail: detail.into(),
+            });
+            assert!(safe.contains(expected));
+            assert!(!safe.contains("SECRET"));
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+        let mut event = machine_progress("attempt", "setup-completed", "", 0);
+        event.message = "SECRET arbitrary persisted text".into();
+        journal.append(event);
+        assert_eq!(
+            read_activity(&paths, true).unwrap()[0].message,
+            "Sandbox setup completed."
+        );
+        journal.events[0].workspace = "https://SECRET".into();
+        journal.persist().unwrap();
+        assert!(read_activity(&paths, true).is_err());
+    }
+
+    #[test]
+    fn failed_activity_keeps_typed_reason_and_exit_code_across_restart() {
+        let cases = [
+            (
+                RuntimeError::Failed {
+                    operation: "Creating the sandbox".into(),
+                    detail: "exit code 17: 401 unauthorized SECRET".into(),
+                },
+                "auth",
+                "authentication",
+                Some(17),
+            ),
+            (
+                RuntimeError::Failed {
+                    operation: "Creating the sandbox".into(),
+                    detail: "exit code 13: Permission denied /private/SECRET".into(),
+                },
+                "permission",
+                "Permission was denied",
+                Some(13),
+            ),
+            (
+                RuntimeError::Invalid("Sandbox dev has an invalid CPU limit or ceiling.".into()),
+                "resources",
+                "CPU, memory, or storage",
+                None,
+            ),
+            (
+                RuntimeError::Failed {
+                    operation: "Creating the sandbox".into(),
+                    detail: "exit code 29: unexpected SECRET".into(),
+                },
+                "runtime",
+                "did not complete",
+                Some(29),
+            ),
+        ];
+        for (error, code, message, exit_code) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+            let mut event = machine_progress("attempt", "setup-failed", "dev", 0);
+            event.failure_code = Some(failure_code(&error).into());
+            event.exit_code = runtime_exit_code(&error);
+            event.level = "error".into();
+            event.message = "untrusted SECRET must never be shown".into();
+            journal.append(event);
+            let recovered = read_activity(&paths, true).unwrap();
+            let event = recovered.last().unwrap();
+            assert_eq!(event.failure_code.as_deref(), Some(code));
+            assert_eq!(event.exit_code, exit_code);
+            assert!(event.message.contains(message));
+            assert!(!event.message.contains("SECRET"));
+            if let Some(code) = exit_code {
+                assert!(event.message.contains(&format!("exit code {code}")));
+            }
+        }
+    }
+
+    #[test]
+    fn interruption_recovery_keeps_a_full_journal_within_its_bound() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+        journal.events = (0..512)
+            .map(|_| machine_progress("attempt", "workspace-verification", "dev", 0))
+            .collect();
+        journal.persist().unwrap();
+        assert_eq!(read_activity(&paths, true).unwrap().len(), 512);
+        assert_eq!(read_activity(&paths, true).unwrap().len(), 512);
+    }
+
+    #[test]
+    fn structured_byte_counts_cannot_change_runtime_error_classification() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::write(&paths.library, "test").unwrap();
+        fs::write(&paths.executable, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":40123,\"totalBytes\":40399}' 'DNS lookup failed' >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let error = run_msb(
+            &paths,
+            &["create".into(), "--progress-json".into()],
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
+        assert_eq!(failure_code(&error), "network");
+        assert!(safe_activity_error(&error).contains("could not be reached"));
+        assert!(!error.to_string().contains("40123"));
+        for detail in [
+            "DNS failure for item40123",
+            "downloaded 40399 bytes then DNS failure",
+        ] {
+            assert_eq!(
+                failure_code(&RuntimeError::Failed {
+                    operation: "Creating".into(),
+                    detail: detail.into()
+                }),
+                "network"
+            );
+        }
+        assert!(mentions_http_status("http status: 401", "401"));
+        assert!(mentions_http_status("status code 403", "403"));
+        assert!(!mentions_http_status("http 40123", "401"));
+    }
+
+    #[test]
+    fn activity_contract_matches_frontend_fixture() {
+        let mut started = machine_progress("attempt-1", "setup-started", "", 0);
+        started.timestamp = 1_700_000_000_000;
+        let mut completed = machine_progress("attempt-1", "setup-completed", "", 0);
+        completed.timestamp = 1_700_000_001_000;
+        completed.elapsed_seconds = 1;
+        let mut failed = machine_progress("attempt-2", "setup-failed", "dev", 0);
+        failed.timestamp = 1_700_000_002_000;
+        failed.elapsed_seconds = 2;
+        failed.level = "error".into();
+        failed.failure_code = Some("permission".into());
+        failed.exit_code = Some(13);
+        failed.message = failure_message("permission", Some(13)).unwrap();
+        let events = vec![started, completed, failed];
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../src/test/contracts/setup-activity.json"))
+                .unwrap();
+        assert_eq!(serde_json::to_value(events).unwrap(), fixture);
     }
 
     fn paths(directory: &tempfile::TempDir) -> RuntimePaths {
@@ -2498,7 +3322,11 @@ mod tests {
             let events = events.lock().unwrap();
             let boundaries: Vec<_> = events
                 .iter()
-                .map(|event| (event.step.as_str(), event.fraction))
+                .filter_map(|event| {
+                    event
+                        .fraction
+                        .map(|fraction| (event.step.as_str(), fraction))
+                })
                 .collect();
             let mut expected = vec![
                 ("workspace-configuration", 0),

@@ -85,6 +85,8 @@ export interface ProductionSnapshot {
   setupStartedAt?: number
   setupFinishedAt?: number
   setupEvents: SiloProgressEvent[]
+  setupActivity?: SiloProgressEvent[]
+  setupActivityError?: string
   setupCandidate?: SetupMachineConfigurationRequest
   source: ApplicationSource | null
   backup: BackupState
@@ -132,6 +134,18 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return state
   }
 
+  async function readSetupActivity(requestId?: string) {
+    const sequence = operationSequence
+    try {
+      const events = z.array(siloProgressEventSchema).max(2000).parse(await native.invoke("read_setup_activity"))
+      if (disposed || sequence !== operationSequence) return
+      if (requestId && !events.some((event) => event.requestId === requestId)) return
+      publish({ ...snapshot, setupActivity: events, setupActivityError: undefined })
+    } catch {
+      if (!disposed && sequence === operationSequence) publish({ ...snapshot, setupActivityError: "Saved setup activity could not be loaded. Retry by reopening Silo." })
+    }
+  }
+
   async function refresh() {
     const sequence = ++refreshSequence
     const [applicationResult, backupResult] = await Promise.allSettled([
@@ -172,7 +186,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
         const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
         activeConfiguration = { ...activeConfiguration, progressEvents }
-        publish({ ...snapshot, setupEvents: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
+        publish({ ...snapshot, setupEvents: progressEvents, setupActivity: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
         if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
       }))
     } catch (cause) {
@@ -182,7 +196,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       throw new Error(error)
     }
     window.addEventListener("focus", refresh)
-    await refresh()
+    await Promise.all([refresh(), readSetupActivity()])
   }
 
   function reportUnavailable(message: string) {
@@ -262,20 +276,28 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const promise = enqueueSetup(["workspaceRun", "workspaceVerify"], async (job) => {
       activeMachineJob = job
       setSetupStatus(["identityRun", "identityVerify", "completion"], "idle")
-      const requestId = `setup-${++operationSequence}`
+      ++operationSequence
+      const requestId = crypto.randomUUID()
       activeRequestId = requestId
       activeConfiguration = { id: requestId, status: "applying", candidate: request, progressEvents: [], result: null, error: null }
-      publish({ ...snapshot, setupCandidate: request, setupEvents: [], setupStartedAt: Math.floor(Date.now() / 1000), setupFinishedAt: undefined, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
+      publish({ ...snapshot, setupCandidate: request, setupEvents: [], setupActivity: [], setupStartedAt: Math.floor(Date.now() / 1000), setupFinishedAt: undefined, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
+      let failed = false
       try {
         const result = parseApplicationSource(await native.invoke("save_machine_configuration", { request, requestId }))
         activeConfiguration = null
         publish({ ...snapshot, source: result, error: null })
         return result
       } catch (cause) {
+        failed = true
         activeConfiguration = { ...activeConfiguration!, status: "failed", error: { code: "native_bridge_failed", message: errorMessage(cause), recovery: "Review the configuration and retry.", workspace: snapshot.setupEvents.at(-1)?.workspace ?? null, retryable: true } }
         if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } })
         throw cause
       } finally {
+        await readSetupActivity(requestId)
+        if (failed && !snapshot.setupActivity?.some((event) => event.requestId === requestId && (event.step === "setup-failed" || event.step === "setup-interrupted"))) {
+          const event: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId, phase: "workspaces", step: "setup-failed", timestamp: Date.now(), level: "error", message: "Silo could not finish sandbox setup. Review the reported error and retry. This failure could not be retained in activity history.", safeForDisplay: true }
+          publish({ ...snapshot, setupActivity: [...(snapshot.setupActivity ?? []), event] })
+        }
         activeRequestId = null
         activeMachineJob = undefined
         publish({ ...snapshot, setupFinishedAt: Math.floor(Date.now() / 1000) })

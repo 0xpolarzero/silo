@@ -141,3 +141,32 @@ verification event cannot be emitted after an error. These native commands and
 state reads run off the UI thread using Tauri's existing blocking-worker pattern.
 The settings shutdown handshake drains submitted setup jobs before exiting.
 No setup work starts merely because a saved draft is rendered or reopened.
+
+## Setup activity and retained diagnostics
+
+MicroSandbox's [typed image progress](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/crates/image/lib/progress.rs)
+already reports layer bytes and preparation stages, but its
+[CLI renderer](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/crates/cli/lib/ui.rs)
+hides progress when stderr is not a terminal. Silo now bundles a narrow
+`create --progress-json` patch: allowlisted stage names and numeric counts go to
+stderr; normal JSON command results remain on stdout. No image URL, digest,
+credential or host path is included. Byte updates are throttled to one per
+second while phase boundaries and completion are retained. A total is exposed
+only when all layer sizes are known. Completed bytes never establish VM success.
+
+The native setup runner consumes that stream, records disk/configuration checks,
+and sends small updates through the existing
+[Tauri event mechanism](https://v2.tauri.app/develop/calling-frontend/).
+Quiet creates repeat the last real stage with elapsed time every five seconds.
+Errors include the failing VM, a safe reason and recovery guidance; runtime
+exit codes are retained. Unknown raw stderr is not copied to the activity panel.
+Warnings cover actual unavailable memory checks and activity-storage failures.
+
+The latest attempt is written atomically to `setup-activity.json` beside runtime
+metadata, with a private file mode and a bounded history. Reads validate and
+reconstruct display text from trusted event types. A nonterminal attempt is
+marked interrupted after restart. The frontend keeps this history separate from
+current progress, loads it at launch and after command completion, and rejects
+history from a different attempt when a current command finishes. A failure
+before native activity storage opens still receives an explicit in-session
+failure message. Copy uses the same filtered text shown in the existing panel.

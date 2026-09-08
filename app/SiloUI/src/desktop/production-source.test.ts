@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { BackupState } from "@/features/application/model/backup-source"
 import { createProductionSource, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
+import { siloProgressEventSchema } from "@/contracts/silo"
 
 const source = applicationSourceForScenario("running")
 const backup: BackupState = {
@@ -30,6 +31,10 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("accepts activity serialized by the native journal", () => {
+    const events = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../test/contracts/setup-activity.json"), "utf8")) as unknown[]
+    expect(events.map((event) => siloProgressEventSchema.parse(event))).toEqual(events)
+  })
   it("accepts the exact backup state serialized by the Rust bridge", () => {
     const state = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../test/contracts/backup-state.json"), "utf8"))
     expect(parseBackupState(state)).toEqual(state)
@@ -65,6 +70,20 @@ describe("production application bridge", () => {
     store.applicationActions.stopWorkspace("dev")
     await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("workspace_action", { action: "stop", name: "dev" }))
     await vi.waitFor(() => expect(mock.invoke.mock.calls.filter(([command]) => command === "read_application_state")).toHaveLength(2))
+    store.dispose()
+  })
+
+  it("reports unreadable activity without replacing it with success or raw diagnostics", async () => {
+    const mock = native({ invoke: vi.fn(async (command) => {
+      if (command === "read_setup_activity") throw new Error("private path and token")
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return structuredClone(backup)
+    }) as ProductionBridge["invoke"] })
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    expect(store.getSnapshot().setupActivityError).toBe("Saved setup activity could not be loaded. Retry by reopening Silo.")
+    expect(store.getSnapshot().setupEvents).toEqual([])
+    expect(store.getSnapshot().source).not.toBeNull()
     store.dispose()
   })
 

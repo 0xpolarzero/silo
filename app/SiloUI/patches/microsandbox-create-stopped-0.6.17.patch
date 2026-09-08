@@ -5,16 +5,16 @@ index 26fee23e..044b0b7c 100644
 @@ -95,7 +95,7 @@ enum Commands {
      /// Create a sandbox from an image and run a command in it.
      Run(run::RunArgs),
- 
+
 -    /// Create a sandbox and boot it in the background.
 +    /// Create a sandbox; snapshot restores remain stopped until `start`.
      Create(create::CreateArgs),
- 
+
      /// Modify sandbox configuration.
 @@ -776,6 +776,45 @@ mod command_tests {
          assert!(matches!(modify.command, Commands::Modify(_)));
      }
- 
+
 +    #[test]
 +    fn create_accepts_explicit_no_start_and_preserves_default() {
 +        let cli =
@@ -58,19 +58,18 @@ index 26fee23e..044b0b7c 100644
      fn plural_resource_commands_route_to_list_actions() {
          let cli = Cli::try_parse_from(["msb", "images"]).unwrap();
 diff --git a/crates/cli/lib/commands/create.rs b/crates/cli/lib/commands/create.rs
-index 9069611c..0f4e3711 100644
 --- a/crates/cli/lib/commands/create.rs
 +++ b/crates/cli/lib/commands/create.rs
 @@ -1,4 +1,4 @@
 -//! `msb create` command — create and boot a fresh sandbox.
 +//! `msb create` command — create a fresh sandbox.
- 
+
  use clap::Args;
  use microsandbox::sandbox::Sandbox;
-@@ -10,14 +10,28 @@ use crate::{sandbox_config, ui};
+@@ -10,13 +10,31 @@
  // Types
  //--------------------------------------------------------------------------------------------------
- 
+
 -/// Create a sandbox and boot it in the background.
 +/// Create a sandbox, booting image-based creates and leaving snapshot restores stopped.
  #[derive(Debug, Args)]
@@ -82,7 +81,7 @@ index 9069611c..0f4e3711 100644
 +    /// `image`.
 +    #[arg(conflicts_with = "from_snapshot")]
      pub image: Option<String>,
- 
++
 +    /// Materialize a stopped sandbox from a snapshot artifact (path or name).
 +    #[arg(
 +        long = "from-snapshot",
@@ -95,12 +94,15 @@ index 9069611c..0f4e3711 100644
 +    #[arg(long = "no-start")]
 +    pub no_start: bool,
 +
++    /// Emit safe newline-delimited image progress JSON to stderr.
++    #[arg(long)]
++    pub progress_json: bool,
+
      /// Sandbox configuration options.
      #[command(flatten)]
-     pub sandbox: SandboxOpts,
-@@ -42,7 +56,9 @@ pub async fn run(
+@@ -42,7 +60,9 @@
      }
- 
+
      let resolved = sandbox_config::resolve(&args.sandbox.config)?;
 -    let image = resolved.image(args.image.as_deref(), None)?;
 +    let image = resolved.image(args.image.as_deref(), args.from_snapshot.as_deref())?;
@@ -109,10 +111,10 @@ index 9069611c..0f4e3711 100644
      let builder = resolved.apply(Sandbox::builder(&name))?;
      let builder = image.apply(builder)?;
      let builder = if resolved.loaded() {
-@@ -51,9 +67,13 @@ pub async fn run(
+@@ -51,23 +71,33 @@
          apply_sandbox_opts(builder, &args.sandbox)?
      };
- 
+
 -    let (mut progress, task) = builder
 -        .detached(true)
 -        .create_detached_with_pull_progress()?;
@@ -126,7 +128,17 @@ index 9069611c..0f4e3711 100644
      let mut display = if args.sandbox.quiet {
          ui::PullProgressDisplay::quiet(&image.display())
      } else {
-@@ -67,7 +87,9 @@ pub async fn run(
+         ui::PullProgressDisplay::new(&image.display())
+     };
+
++    let mut last_byte_progress = None;
+     while let Some(event) = progress.recv().await {
++        if args.progress_json && should_emit_progress(&event, &mut last_byte_progress) {
++            eprintln!("{}", progress_json(&event));
++        }
+         display.handle_event(event);
+     }
+
      match task.await {
          Ok(Ok(sandbox)) => {
              display.finish();
@@ -137,6 +149,147 @@ index 9069611c..0f4e3711 100644
              // Print auto-generated name to stdout so it's scriptable.
              if !is_named {
                  println!("{name}");
+@@ -85,3 +115,140 @@
+
+     Ok(())
+ }
++
++/// Only phase names and counts cross this boundary; image references and paths stay private.
++fn progress_json(event: &microsandbox_image::PullProgress) -> serde_json::Value {
++    use microsandbox_image::PullProgress;
++    use serde_json::json;
++    match event {
++        PullProgress::Resolving { .. } => {
++            json!({"type": "silo-progress", "phase": "image-resolving"})
++        }
++        PullProgress::Resolved {
++            layer_count,
++            total_download_bytes,
++            ..
++        } => {
++            json!({"type": "silo-progress", "phase": "image-resolved", "layerCount": layer_count, "totalBytes": total_download_bytes})
++        }
++        PullProgress::LayerDownloadProgress {
++            layer_index,
++            downloaded_bytes,
++            total_bytes,
++            ..
++        } => {
++            json!({"type": "silo-progress", "phase": "image-download", "layerIndex": layer_index, "downloadedBytes": downloaded_bytes, "totalBytes": total_bytes})
++        }
++        PullProgress::LayerDownloadComplete {
++            layer_index,
++            downloaded_bytes,
++            ..
++        } => {
++            json!({"type": "silo-progress", "phase": "image-downloaded", "layerIndex": layer_index, "downloadedBytes": downloaded_bytes})
++        }
++        PullProgress::LayerDownloadVerifying { layer_index, .. } => {
++            json!({"type": "silo-progress", "phase": "image-verifying", "layerIndex": layer_index})
++        }
++        PullProgress::LayerMaterializeStarted { layer_index, .. }
++        | PullProgress::LayerMaterializeWriting { layer_index }
++        | PullProgress::LayerMaterializeComplete { layer_index, .. } => {
++            json!({"type": "silo-progress", "phase": "image-preparing", "layerIndex": layer_index})
++        }
++        PullProgress::LayerMaterializeProgress {
++            layer_index,
++            bytes_read,
++            total_bytes,
++        } => {
++            json!({"type": "silo-progress", "phase": "image-preparing", "layerIndex": layer_index, "preparedBytes": bytes_read, "totalBytes": total_bytes})
++        }
++        PullProgress::StitchMergingTrees { .. }
++        | PullProgress::StitchWritingFsmeta
++        | PullProgress::StitchWritingVmdk
++        | PullProgress::StitchComplete => {
++            json!({"type": "silo-progress", "phase": "image-preparing"})
++        }
++        PullProgress::Complete { .. } => json!({"type": "silo-progress", "phase": "image-ready"}),
++    }
++}
++
++#[cfg(test)]
++mod progress_tests {
++    use super::*;
++    use microsandbox_image::PullProgress;
++
++    #[test]
++    fn reports_actual_bytes_without_image_credentials() {
++        let event = PullProgress::LayerDownloadProgress {
++            layer_index: 2,
++            digest: "private-digest".into(),
++            downloaded_bytes: 123,
++            total_bytes: Some(456),
++        };
++        assert_eq!(
++            progress_json(&event),
++            serde_json::json!({
++                "type": "silo-progress", "phase": "image-download", "layerIndex": 2,
++                "downloadedBytes": 123, "totalBytes": 456,
++            })
++        );
++        let event = PullProgress::Resolving {
++            reference: "https://user:secret@example.com/image".into(),
++        };
++        assert_eq!(
++            progress_json(&event),
++            serde_json::json!({"type": "silo-progress", "phase": "image-resolving"})
++        );
++    }
++
++    #[test]
++    fn throttles_bytes_without_dropping_completion() {
++        let event = PullProgress::LayerDownloadProgress {
++            layer_index: 0,
++            digest: "unused".into(),
++            downloaded_bytes: 1,
++            total_bytes: Some(2),
++        };
++        let mut last = None;
++        assert!(should_emit_progress(&event, &mut last));
++        assert!(!should_emit_progress(&event, &mut last));
++        let complete = PullProgress::LayerDownloadComplete {
++            layer_index: 0,
++            digest: "unused".into(),
++            downloaded_bytes: 2,
++        };
++        assert!(should_emit_progress(&complete, &mut last));
++        assert_eq!(progress_json(&complete)["downloadedBytes"], 2);
++    }
++
++    #[test]
++    fn unknown_download_size_stays_unknown() {
++        let event = PullProgress::LayerDownloadProgress {
++            layer_index: 0,
++            digest: "unused".into(),
++            downloaded_bytes: 123,
++            total_bytes: None,
++        };
++        assert!(progress_json(&event)["totalBytes"].is_null());
++    }
++}
++
++// Bound diagnostic output independently of image size. Phase and completion events are never throttled.
++fn should_emit_progress(
++    event: &microsandbox_image::PullProgress,
++    last: &mut Option<std::time::Instant>,
++) -> bool {
++    use microsandbox_image::PullProgress;
++    if !matches!(
++        event,
++        PullProgress::LayerDownloadProgress { .. } | PullProgress::LayerMaterializeProgress { .. }
++    ) {
++        return true;
++    }
++    let now = std::time::Instant::now();
++    if last.is_some_and(|previous| now.duration_since(previous) < std::time::Duration::from_secs(1))
++    {
++        return false;
++    }
++    *last = Some(now);
++    true
++}
 diff --git a/crates/image/lib/lib.rs b/crates/image/lib/lib.rs
 index 137badd7..e8333126 100644
 --- a/crates/image/lib/lib.rs
@@ -149,10 +302,36 @@ index 137badd7..e8333126 100644
 +/// Write a VMDK descriptor for validated local extent files.
 +pub use stitch::vmdk::write_vmdk_descriptor;
 diff --git a/crates/image/lib/registry/client.rs b/crates/image/lib/registry/client.rs
-index 13359153..4e22d01a 100644
 --- a/crates/image/lib/registry/client.rs
 +++ b/crates/image/lib/registry/client.rs
-@@ -578,15 +578,43 @@ impl Registry {
+@@ -404,8 +404,7 @@
+                         .metadata
+                         .layers
+                         .iter()
+-                        .filter_map(|layer| layer.size_bytes)
+-                        .reduce(|a, b| a + b),
++                        .try_fold(0u64, |total, layer| total.checked_add(layer.size_bytes?)),
+                 });
+                 p.send(PullProgress::Complete {
+                     reference: ref_str,
+@@ -457,13 +456,9 @@
+         }
+
+         let layer_count = layer_descriptors.len();
+-        let total_bytes: Option<u64> = {
+-            let sum: u64 = layer_descriptors
+-                .iter()
+-                .filter_map(|layer| layer.size)
+-                .sum();
+-            if sum > 0 { Some(sum) } else { None }
+-        };
++        let total_bytes = layer_descriptors
++            .iter()
++            .try_fold(0u64, |total, layer| total.checked_add(layer.size?));
+
+         tracing::debug!(
+             reference = %reference,
+@@ -578,15 +573,43 @@
          &self,
          reference: &oci_client::Reference,
      ) -> ImageResult<(Vec<u8>, String, Vec<u8>)> {
@@ -161,7 +340,7 @@ index 13359153..4e22d01a 100644
              .client
              .pull_manifest_and_config(reference, &self.auth)
              .await?;
- 
+
 -        let manifest_bytes = serde_json::to_vec(&manifest)
 -            .map_err(|e| ImageError::ManifestParse(format!("failed to serialize manifest: {e}")))?;
 -
@@ -199,12 +378,12 @@ index 13359153..4e22d01a 100644
 +            config.into_bytes(),
 +        ))
      }
- 
+
      /// Parse manifest, resolving multi-platform index if needed.
-@@ -1803,6 +1831,82 @@ mod tests {
+@@ -1803,6 +1826,82 @@
          },
      };
- 
+
 +    #[tokio::test]
 +    async fn registry_fetch_preserves_original_manifest_digest_bytes() {
 +        use sha2::{Digest as _, Sha256};
@@ -330,7 +509,7 @@ index 0f9eaacd..b9aa57cf 100644
 +                return Err(err);
 +            }
 +        };
- 
+
 -        // Claim the persisted identity in Starting state. Running is published only after the
 -        // guest agent and all create-time validation are ready for callers.
 +        // Claim the persisted identity. Eager create remains non-connectable in Starting until
@@ -366,7 +545,7 @@ index 0f9eaacd..b9aa57cf 100644
 +            }
 +        };
          tracing::debug!(sandbox_id, sandbox = %config.spec.name, "create_local: db record inserted");
- 
+
 +        if !start {
 +            if let Some(manifest_digest) = pinned_manifest_digest.as_deref()
 +                && let Err(err) =
@@ -391,7 +570,7 @@ index 0f9eaacd..b9aa57cf 100644
 @@ -545,6 +581,19 @@ impl LocalBackend {
          ))
      }
- 
+
 +    /// Copy a snapshot upper into the sandbox storage without starting a runtime.
 +    async fn materialize_snapshot_upper(
 +        source: PathBuf,
@@ -410,7 +589,7 @@ index 0f9eaacd..b9aa57cf 100644
      /// The sandbox process creates the relay socket asynchronously during startup.
 @@ -1205,6 +1254,7 @@ impl LocalBackend {
      }
- 
+
      /// Insert a provisional local create record that remains non-connectable until ready.
 +    #[cfg(test)]
      async fn insert_starting_sandbox_record(
@@ -425,11 +604,11 @@ index 0f9eaacd..b9aa57cf 100644
 +        HostPermissions, MAX_HOSTNAME_BYTES, MountOptions, OciRootfsSource, PullPolicy,
 +        RootfsSource, SandboxConfig, SandboxStatus, StatVirtualization, VolumeMount,
      };
- 
+
      /// Open both pools at `db_path` for tests, with migrations applied.
 @@ -1578,7 +1628,7 @@ mod tests {
          ];
- 
+
          let err = match backend
 -            .create_sandbox(backend_trait, config, SpawnMode::Attached, None)
 +            .create_sandbox(backend_trait, config, true, SpawnMode::Attached, None)
@@ -438,7 +617,7 @@ index 0f9eaacd..b9aa57cf 100644
              Ok(_) => panic!("expected invalid direct-config mounts to be rejected"),
 @@ -1605,7 +1655,7 @@ mod tests {
          config.spec.runtime.hostname = Some("y".repeat(MAX_HOSTNAME_BYTES + 1));
- 
+
          let err = match backend
 -            .create_sandbox(backend.clone(), config, SpawnMode::Attached, None)
 +            .create_sandbox(backend.clone(), config, true, SpawnMode::Attached, None)
@@ -448,7 +627,7 @@ index 0f9eaacd..b9aa57cf 100644
 @@ -1811,6 +1861,139 @@ mod tests {
          assert_eq!(ready.status, SandboxStatus::Running);
      }
- 
+
 +    #[tokio::test]
 +    async fn test_start_false_materializes_snapshot_and_later_start_uses_persisted_config() {
 +        let temp = tempfile::Builder::new()
@@ -640,7 +819,7 @@ index 951c6c8f..7c2b22f6 100644
 @@ -1262,7 +1262,21 @@ impl SandboxBuilder {
          }
          let snap_ref = snap.manifest().image.reference.clone();
- 
+
 +        let size_bytes = file_state.upper.size_bytes;
 +        let mib = 1024 * 1024;
 +        let size_mib = u32::try_from(size_bytes / mib)
@@ -726,7 +905,7 @@ index 951c6c8f..7c2b22f6 100644
 @@ -2130,6 +2170,36 @@ mod tests {
          );
      }
- 
+
 +    #[tokio::test]
 +    async fn test_builder_from_snapshot_preserves_root_capacity() {
 +        let temp = tempfile::tempdir().unwrap();
@@ -766,7 +945,7 @@ index 4d2f19f1..d0e64be9 100644
 +++ b/sdk/rust/lib/sandbox/handle.rs
 @@ -950,7 +950,10 @@ fn is_local_ephemeral_handle(inner: &SandboxHandleInner) -> bool {
  }
- 
+
  fn sandbox_status_is_terminal(status: SandboxStatus) -> bool {
 -    matches!(status, SandboxStatus::Stopped | SandboxStatus::Crashed)
 +    matches!(
@@ -774,7 +953,7 @@ index 4d2f19f1..d0e64be9 100644
 +        SandboxStatus::Created | SandboxStatus::Stopped | SandboxStatus::Crashed
 +    )
  }
- 
+
  fn connect_or_start_action(status: SandboxStatus) -> ConnectOrStartAction {
 @@ -1082,6 +1085,7 @@ mod tests {
          ] {
@@ -791,7 +970,7 @@ index 9098e747..315df541 100644
 @@ -192,24 +192,31 @@ pub struct SandboxPage {
      pub next_cursor: Option<String>,
  }
- 
+
 -/// A running sandbox.
 +/// A sandbox created through a backend.
  ///
@@ -816,7 +995,7 @@ index 9098e747..315df541 100644
      name: String,
      config: SandboxConfig,
  }
- 
+
 +enum SandboxState {
 +    Local(crate::backend::SandboxLocalState),
 +    LocalCreated { db_id: i32 },
@@ -887,10 +1066,10 @@ index 9098e747..315df541 100644
 -        remove_local_persisted_sandbox(local_backend, &self.name, local.db_id).await
 +        remove_local_persisted_sandbox(local_backend, &self.name, db_id).await
      }
- 
+
      /// Unique name identifying this sandbox.
 @@ -594,16 +620,18 @@ impl Sandbox {
- 
+
      /// Stable identity of this persisted sandbox.
      pub fn id(&self) -> SandboxId {
 -        match self.inner.as_ref() {
@@ -902,7 +1081,7 @@ index 9098e747..315df541 100644
 +            SandboxState::Cloud(state) => SandboxId::cloud(&state.id),
          }
      }
- 
+
      fn identity(&self) -> SandboxIdentity {
 -        match self.inner.as_ref() {
 -            crate::backend::SandboxInner::Local(state) => SandboxIdentity::Local(state.db_id),
@@ -913,11 +1092,11 @@ index 9098e747..315df541 100644
 +            SandboxState::Cloud(state) => SandboxIdentity::Cloud(state.id.clone()),
          }
      }
- 
+
 @@ -651,21 +679,20 @@ impl Sandbox {
          &self.backend
      }
- 
+
 -    /// Local-only state accessor. Returns `Some` when this `Sandbox` was
 -    /// created by the local libkrun backend.
 +    /// Local runtime-state accessor. Returns `Some` only after the local guest has started.
@@ -930,7 +1109,7 @@ index 9098e747..315df541 100644
 +            SandboxState::LocalCreated { .. } | SandboxState::Cloud(_) => None,
          }
      }
- 
+
      /// Cloud-only state accessor. Returns `Some` when this `Sandbox` was
      /// created by the cloud backend.
      pub fn cloud(&self) -> Option<&crate::backend::SandboxCloudState> {
@@ -942,7 +1121,7 @@ index 9098e747..315df541 100644
 +            SandboxState::Local(_) | SandboxState::LocalCreated { .. } => None,
          }
      }
- 
+
 @@ -675,8 +702,21 @@ impl Sandbox {
          &self,
          op: Operation,
@@ -965,10 +1144,10 @@ index 9098e747..315df541 100644
 +            SandboxState::Cloud(_) => None,
 +        }
      }
- 
+
      /// Live status from the backend. Always hits `backend.sandboxes().get(name)`
 @@ -784,14 +824,16 @@ impl Sandbox {
- 
+
      /// Low-level access to the guest agent client.
      ///
 -    /// **Local-only**: panics if called on a cloud sandbox. Use
@@ -992,7 +1171,7 @@ index 9098e747..315df541 100644
              }
          }
 @@ -799,12 +841,14 @@ impl Sandbox {
- 
+
      /// Get a cloneable reference to the agent client.
      ///
 -    /// **Local-only**: panics if called on a cloud sandbox. Mirrors
@@ -1050,12 +1229,12 @@ index 8998d360..5f4626e8 100644
 @@ -245,6 +245,8 @@ pub(super) async fn save_snapshot(
              )));
          }
- 
+
 +        validate_cached_metadata(head.manifest(), &metadata)?;
 +
          let metadata_path = cache.image_metadata_path(&image_ref);
          push_required_cache_file(&mut cache_files, &metadata_path, "manifests")?;
- 
+
 @@ -1903,7 +1905,7 @@ async fn install_staged_cache(
              MicrosandboxError::Custom(format!("invalid snapshot image digest: {e}"))
          })?;
@@ -1079,7 +1258,7 @@ index 8998d360..5f4626e8 100644
 +        .cloned()
 +        .collect();
 +    ensure_cache_targets_compatible(&portable_files, cache_stage, cache_dir).await?;
- 
+
      let metadata_path = staged_cache.image_metadata_path(&image_ref);
 -    for source in expected_files.iter().filter(|path| **path != metadata_path) {
 +    for source in portable_files.iter().filter(|path| **path != metadata_path) {
@@ -1092,10 +1271,10 @@ index 8998d360..5f4626e8 100644
 +    }
 +    install_local_vmdk(&real_cache.vmdk_path(&pinned_digest), &extents).await?;
      install_cache_file(&metadata_path, cache_stage, cache_dir).await?;
- 
+
      Ok(())
  }
- 
+
 +async fn install_local_vmdk(target: &Path, extents: &[PathBuf]) -> MicrosandboxResult<()> {
 +    let parent = target
 +        .parent()
@@ -1145,11 +1324,11 @@ index 8998d360..5f4626e8 100644
 +    }
      Ok(())
  }
- 
+
 @@ -2309,6 +2352,80 @@ mod tests {
          assert_eq!(serde_json::to_vec(&entry).unwrap(), released);
      }
- 
+
 +    #[tokio::test]
 +    async fn cache_publication_preserves_target_created_after_preflight() {
 +        let directory = tempfile::tempdir().unwrap();

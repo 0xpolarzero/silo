@@ -38,6 +38,7 @@ export interface WorkspaceProgressView {
   fraction?: number
   workspaces: WorkspaceView[]
   visibleEvents: SiloProgressEvent[]
+  activityError?: string
   readyCount: number
   workingCount: number
   waitingCount: number
@@ -202,7 +203,8 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
     totalOperations,
     fraction: totalOperations > 0 ? completedOperations / totalOperations : undefined,
     workspaces,
-    visibleEvents,
+    visibleEvents: source.activityEvents?.filter(({ safeForDisplay }) => safeForDisplay) ?? visibleEvents,
+    activityError: source.activityError,
     readyCount: workspaces.filter(({ status }) => status === "ready").length,
     workingCount: workspaces.filter(({ status }) => status === "working").length,
     waitingCount: workspaces.filter(({ status }) => status === "waiting").length,
