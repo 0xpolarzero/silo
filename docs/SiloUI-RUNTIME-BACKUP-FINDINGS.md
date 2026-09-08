@@ -192,3 +192,36 @@ The existing sandbox identity action also sets and verifies `JJ_USER` and
 alongside Git author/committer values. This does not install jj or change the
 host's Git/jj configuration. Example identities remain isolated to fixtures;
 there is no production fallback name or email.
+
+## Dependency recovery (2026-09-09)
+
+Dependency checks remain read-only. Missing, incompatible or damaged bundled
+components direct the user to reinstall Silo through the original download or
+package manager while keeping app data. `RuntimePaths` stores VM data under
+Tauri's app data directory, separate from bundled executables and resources;
+settings use that same app data directory. Replacing app files does not require
+removing either data directory. No automatic download, repair or privilege
+change is introduced.
+
+Timeouts, bridge failures and unavailable probes offer Retry checks, followed by
+quitting and reopening Silo if the failure repeats. They do not prove package
+damage and must not recommend reinstalling. Unreadable bundled files explain
+read/run permissions. A skipped Git LFS check directs the user to the preceding
+Git failure rather than inventing a second diagnosis.
+
+Host failures describe the host action: update an unsupported OS/distribution,
+enable virtualization/KVM, or grant the current user access to `/dev/kvm` and
+sign out and back in. Linux uses a read/write device open plus
+`KVM_GET_API_VERSION`, never VM creation. The [kernel API documentation](https://docs.kernel.org/virt/kvm/api.html)
+requires API 12. [Ubuntu's virtualization documentation](https://ubuntu.com/server/docs/how-to/virtualisation/libvirt/)
+confirms that hardware virtualization can require enabling in firmware settings.
+These are host requirements, so reinstalling Silo cannot resolve them. Commands
+that change groups or install distribution packages are intentionally not guessed
+across all Linux distributions.
+
+Focused checks: `npm test -- src/desktop/dependencies.test.ts` and
+`cargo test --manifest-path src-tauri/Cargo.toml dependencies::tests` from
+`app/SiloUI`. Native tests cover missing/damaged bundles, transient probes,
+old glibc, missing KVM and denied KVM access; store tests verify bridge and timeout
+recovery never recommends reinstalling. Linux failure mappings run as pure tests
+on macOS; this is not live Linux hardware verification.

@@ -11,6 +11,10 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
+const REINSTALL_GUIDANCE: &str = "Reinstall Silo from its original download or package manager, keeping its app data. Your VMs and settings are stored separately from the app.";
+const RETRY_GUIDANCE: &str =
+    "Retry checks. If this keeps happening, quit and reopen Silo, then retry.";
+
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(target_os = "linux")]
 const MAX_HASH_BYTES: u64 = 128 * 1024 * 1024;
@@ -492,9 +496,9 @@ fn run_bounded(
 impl ProbeError {
     fn to_check(self, id: &str, title: &str, reinstall: bool) -> DependencyCheck {
         let recovery = if reinstall {
-            "Reinstall this Silo build from a trusted package."
+            REINSTALL_GUIDANCE
         } else {
-            "Check this host requirement, then retry checks."
+            RETRY_GUIDANCE
         };
         match self {
             Self::Timeout => DependencyCheck::failure(
@@ -502,23 +506,35 @@ impl ProbeError {
                 title,
                 CheckStatus::Timeout,
                 "The check did not finish in time. No successful result was recorded.",
-                "Retry checks. If it times out again, reinstall Silo from a trusted package.",
+                RETRY_GUIDANCE,
             ),
             Self::Missing(detail) => {
                 DependencyCheck::failure(id, title, CheckStatus::Unavailable, detail, recovery)
             }
-            Self::Unreadable(detail) => {
-                DependencyCheck::failure(id, title, CheckStatus::Unavailable, detail, recovery)
-            }
+            Self::Unreadable(detail) => DependencyCheck::failure(
+                id,
+                title,
+                CheckStatus::Unavailable,
+                detail,
+                if reinstall {
+                    "Check that your user can read and run Silo’s app files, then retry checks."
+                } else {
+                    RETRY_GUIDANCE
+                },
+            ),
             Self::Malformed(detail) => {
                 DependencyCheck::failure(id, title, CheckStatus::Failed, detail, recovery)
             }
             Self::Unsupported(detail) => {
                 DependencyCheck::failure(id, title, CheckStatus::Failed, detail, recovery)
             }
-            Self::Unavailable(detail) => {
-                DependencyCheck::failure(id, title, CheckStatus::Unavailable, detail, recovery)
-            }
+            Self::Unavailable(detail) => DependencyCheck::failure(
+                id,
+                title,
+                CheckStatus::Unavailable,
+                detail,
+                RETRY_GUIDANCE,
+            ),
         }
     }
 }
@@ -555,10 +571,13 @@ fn system_check() -> DependencyCheck {
                 .to_check(id, title, false);
         }
         if major.unwrap() < 14 {
-            return ProbeError::Unsupported(format!(
-                "macOS {version} is not supported by this Silo build."
-            ))
-            .to_check(id, title, false);
+            return DependencyCheck::failure(
+                id,
+                title,
+                CheckStatus::Failed,
+                format!("macOS {version} is not supported by this Silo build."),
+                "Update macOS to version 14 or later, then retry checks.",
+            );
         }
         return DependencyCheck::pass(id, title, format!("macOS {version} · Apple silicon"));
     }
@@ -600,10 +619,13 @@ fn linux_system_version_result(version: &str, target: &str) -> DependencyCheck {
         );
     };
     if (major, minor) < (2, 34) {
-        return ProbeError::Unsupported(format!(
-            "glibc {version} is older than the required 2.34 for {target}."
-        ))
-        .to_check("system-os", "Supported OS", false);
+        return DependencyCheck::failure(
+            "system-os",
+            "Supported OS",
+            CheckStatus::Failed,
+            format!("glibc {version} is older than the required 2.34 for {target}."),
+            "Upgrade to a Linux distribution with glibc 2.34 or later, then retry checks.",
+        );
     }
     let architecture = if target.starts_with("aarch64") {
         "arm64"
@@ -630,20 +652,21 @@ fn virtualization_check() -> DependencyCheck {
             Ok(value) if value == "1" => {
                 DependencyCheck::pass(id, title, "Apple Hypervisor available")
             }
-            Ok(_) => ProbeError::Unsupported(
-                "Apple Hypervisor support is unavailable on this Mac.".into(),
-            )
-            .to_check(id, title, false),
+            Ok(_) => DependencyCheck::failure(id, title, CheckStatus::Failed,
+                "Apple Hypervisor support is unavailable on this Mac.",
+                "Use an Apple silicon Mac with macOS 14 or later. If Silo is inside a VM, its host must support and enable nested virtualization."),
             Err(error) => error.to_check(id, title, false),
         };
     }
     #[cfg(target_os = "linux")]
     {
-        let device = match std::fs::OpenOptions::new().read(true).write(true).open("/dev/kvm") {
+        let device = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/kvm")
+        {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return DependencyCheck::failure(id, title, CheckStatus::Unavailable, "/dev/kvm is unavailable on this host.", "Enable KVM for this Linux host, then retry checks."),
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return DependencyCheck::failure(id, title, CheckStatus::Failed, "Silo cannot open /dev/kvm for this user.", "Grant this user KVM access using the host's documented policy, sign out, and retry checks."),
-            Err(error) => return DependencyCheck::failure(id, title, CheckStatus::Unavailable, format!("Silo could not open /dev/kvm: {error}"), "Check the host KVM device, then retry checks."),
+            Err(error) => return kvm_open_failure(error),
         };
         use std::os::fd::AsRawFd;
         // KVM_GET_API_VERSION is _IO(KVMIO, 0x00). It queries only and never creates a VM.
@@ -668,6 +691,27 @@ fn virtualization_check() -> DependencyCheck {
             )
         };
     }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn kvm_open_failure(error: io::Error) -> DependencyCheck {
+    let (status, detail, recovery) = match error.kind() {
+        io::ErrorKind::NotFound => (CheckStatus::Unavailable,
+            "/dev/kvm is unavailable on this host.".to_owned(),
+            "Enable hardware virtualization in your host settings and enable KVM using your Linux distribution’s instructions. Inside a VM, enable nested virtualization on its host. Then retry checks."),
+        io::ErrorKind::PermissionDenied => (CheckStatus::Failed,
+            "Silo cannot open /dev/kvm for this user.".to_owned(),
+            "Ask your administrator to grant your user read and write access to /dev/kvm, usually through the kvm group. Sign out and back in, then retry checks."),
+        _ => (CheckStatus::Unavailable, format!("Silo could not open /dev/kvm: {error}"),
+            "Retry checks. If this keeps happening, check that KVM is enabled and /dev/kvm is accessible on this host."),
+    };
+    DependencyCheck::failure(
+        "system-virtualization",
+        "Virtualization",
+        status,
+        detail,
+        recovery,
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -822,7 +866,7 @@ fn git_checks(paths: &ProbePaths) -> [DependencyCheck; 2] {
                     "Git LFS",
                     CheckStatus::Unavailable,
                     "Git LFS was not checked because the bundled Git manifest is unavailable.",
-                    "Reinstall this Silo build from a trusted package.",
+                    "Resolve the Git check above, then retry checks.",
                 ),
             ]
         }
@@ -866,7 +910,7 @@ fn git_checks(paths: &ProbePaths) -> [DependencyCheck; 2] {
                 "Git LFS",
                 CheckStatus::Unavailable,
                 "Git LFS was not checked because the bundled Git manifest is invalid.",
-                "Reinstall this Silo build from a trusted package.",
+                "Resolve the Git check above, then retry checks.",
             ),
         ];
     }
@@ -884,8 +928,8 @@ fn git_checks(paths: &ProbePaths) -> [DependencyCheck; 2] {
                     "tool-git-lfs",
                     "Git LFS",
                     CheckStatus::Unavailable,
-                    "Git LFS was not checked because packaged Git integrity failed.",
-                    "Reinstall this Silo build from a trusted package.",
+                    "Git LFS was not checked because bundled Git integrity could not be verified.",
+                    "Resolve the Git check above, then retry checks.",
                 ),
             ];
         }
@@ -904,8 +948,8 @@ fn git_checks(paths: &ProbePaths) -> [DependencyCheck; 2] {
                     "tool-git-lfs",
                     "Git LFS",
                     CheckStatus::Unavailable,
-                    "Git LFS was not checked because packaged Git integrity failed.",
-                    "Reinstall this Silo build from a trusted package.",
+                    "Git LFS was not checked because bundled Git integrity could not be verified.",
+                    "Resolve the Git check above, then retry checks.",
                 ),
             ];
         }
@@ -1065,6 +1109,74 @@ pub async fn read_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_distinguishes_bundle_damage_from_temporary_probe_failures() {
+        for error in [
+            ProbeError::Missing("missing runtime".into()),
+            ProbeError::Malformed("checksum mismatch".into()),
+            ProbeError::Unsupported("incompatible runtime".into()),
+        ] {
+            let check = error.to_check("runtime-microsandbox", "Runtime", true);
+            assert_ne!(check.status, CheckStatus::Pass);
+            assert_eq!(check.remediation.as_deref(), Some(REINSTALL_GUIDANCE));
+        }
+        for packaged in [true, false] {
+            for error in [
+                ProbeError::Timeout,
+                ProbeError::Unavailable("probe could not run".into()),
+            ] {
+                let check = error.to_check("check", "Check", packaged);
+                assert_ne!(check.status, CheckStatus::Pass);
+                assert_eq!(check.remediation.as_deref(), Some(RETRY_GUIDANCE));
+            }
+        }
+        let unreadable =
+            ProbeError::Unreadable("permission denied".into()).to_check("runtime", "Runtime", true);
+        assert!(unreadable
+            .remediation
+            .as_deref()
+            .unwrap()
+            .contains("read and run"));
+        assert!(!unreadable
+            .remediation
+            .as_deref()
+            .unwrap()
+            .contains("Reinstall"));
+    }
+
+    #[test]
+    fn host_recovery_names_the_requirement_without_reinstalling_silo() {
+        let old_linux = linux_system_version_result("2.33", "x86_64-unknown-linux-gnu");
+        assert!(old_linux
+            .remediation
+            .unwrap()
+            .contains("Linux distribution with glibc 2.34"));
+        let missing = kvm_open_failure(io::Error::from(io::ErrorKind::NotFound));
+        assert_eq!(missing.status, CheckStatus::Unavailable);
+        assert!(missing
+            .remediation
+            .as_deref()
+            .unwrap()
+            .contains("nested virtualization"));
+        let denied = kvm_open_failure(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert_eq!(denied.status, CheckStatus::Failed);
+        assert!(denied
+            .remediation
+            .as_deref()
+            .unwrap()
+            .contains("read and write access to /dev/kvm"));
+        assert!(denied
+            .remediation
+            .as_deref()
+            .unwrap()
+            .contains("Sign out and back in"));
+        let transient = kvm_open_failure(io::Error::from(io::ErrorKind::Interrupted));
+        assert_eq!(transient.status, CheckStatus::Unavailable);
+        for check in [missing, denied, transient] {
+            assert!(!check.remediation.unwrap().contains("Reinstall"));
+        }
+    }
 
     #[test]
     fn maps_linux_glibc_boundaries_to_actual_check_results() {

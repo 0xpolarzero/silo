@@ -44,9 +44,7 @@ function exceptionalChecks(status: "unavailable" | "timeout", detail: string): S
     title: pendingChecks.find((check) => check.id === id)!.title,
     status,
     detail,
-    remediation: status === "timeout"
-      ? "Retry checks. If they time out again, reinstall Silo from a trusted package."
-      : "Retry checks. If they remain unavailable, reinstall Silo from a trusted package.",
+    remediation: "Retry checks. If this keeps happening, quit and reopen Silo, then retry.",
   }))
 }
 
