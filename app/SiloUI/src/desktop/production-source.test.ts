@@ -73,6 +73,27 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("keeps detected identity across VM results that omit it, then accepts a fresh missing identity", async () => {
+    const hostIdentity = { name: "Host Author", email: "host@example.test" }
+    let currentIdentity: typeof hostIdentity | undefined = hostIdentity
+    const machineResult = structuredClone(source)
+    delete machineResult.github.hostIdentity
+    const mock = native({ invoke: vi.fn(async (command) => {
+      if (command === "read_application_state") return { ...structuredClone(source), github: { ...source.github, hostIdentity: currentIdentity } }
+      if (command === "read_backup_state") return structuredClone(backup)
+      if (command === "read_setup_activity") return []
+      if (command === "save_machine_configuration") return machineResult
+    }) as ProductionBridge["invoke"] })
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    await store.configureMachines({ schemaVersion: 1, machines: source.workspaces.map(({ machine }) => machine) })
+    expect(store.getSnapshot().source?.github.hostIdentity).toEqual(hostIdentity)
+    currentIdentity = undefined
+    await store.refresh()
+    expect(store.getSnapshot().source?.github.hostIdentity).toBeUndefined()
+    store.dispose()
+  })
+
   it("reports unreadable activity without replacing it with success or raw diagnostics", async () => {
     const mock = native({ invoke: vi.fn(async (command) => {
       if (command === "read_setup_activity") throw new Error("private path and token")

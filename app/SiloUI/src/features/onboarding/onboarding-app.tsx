@@ -154,6 +154,7 @@ export function OnboardingApp({
     return completed ? { ...restored, currentStep: "review" } : restored
   })
   const currentDraft = useRef(draft)
+  const editedIdentities = useRef(new Set<string>())
   const recoveryCleared = useRef(false)
   const { currentStep: activeStep, machines, workspaceSelections, workspaceIdentities } = draft
   const viewModel = useMemo(() => {
@@ -186,6 +187,25 @@ export function OnboardingApp({
     setDraft(next)
     void updateOnboardingDraft(next)
   }, [source, updateOnboardingDraft])
+
+  useEffect(() => {
+    const host = source.currentHostGitIdentity
+    if (completed || !host) return
+    const current = currentDraft.current
+    const identities = { ...current.workspaceIdentities }
+    let changed = false
+    for (const { name } of current.machines) {
+      const identity = identities[name]
+      if (editedIdentities.current.has(name) || identity?.apply === false || identity?.name.trim() || identity?.email.trim()) continue
+      identities[name] = { ...host, apply: true }
+      changed = true
+    }
+    if (!changed) return
+    const next = { ...current, workspaceIdentities: identities }
+    currentDraft.current = next
+    setDraft(next)
+    void updateOnboardingDraft(next)
+  }, [completed, source.currentHostGitIdentity, machines, updateOnboardingDraft])
 
   // Completion comes from the existing action's result, never from a recovered
   // draft. A failed or unfinished completion leaves recovery data intact.
@@ -236,6 +256,7 @@ export function OnboardingApp({
   }
 
   function updateWorkspaceIdentity(workspace: string, identity: WorkspaceGitIdentity) {
+    editedIdentities.current.add(workspace)
     updateDraft({ workspaceIdentities: { ...currentDraft.current.workspaceIdentities, [workspace]: identity } })
   }
 

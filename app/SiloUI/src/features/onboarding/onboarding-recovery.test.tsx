@@ -15,13 +15,14 @@ function actions(): OnboardingActions {
   return { connectGitHub: vi.fn(), saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }
 }
 
-function onboarding(store: SettingsStore, handlers: OnboardingActions, { completed = false, githubConnectionState = "connected", scenario = "running" }: {
+function onboarding(store: SettingsStore, handlers: OnboardingActions, { completed = false, githubConnectionState = "connected", scenario = "running", hostIdentity }: {
   completed?: boolean
   githubConnectionState?: GitHubConnectionState
   scenario?: "running" | "complete"
+  hostIdentity?: { name: string; email: string } | null
 } = {}) {
   return <SettingsProvider store={store}><ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(store)}><OnboardingApp
-    source={onboardingScenarios[scenario]}
+    source={{ ...onboardingScenarios[scenario], ...(hostIdentity !== undefined && { currentHostGitIdentity: hostIdentity }) }}
     actions={handlers}
     githubConnectionState={githubConnectionState}
     completed={completed}
@@ -38,6 +39,27 @@ async function restartStore(previous: SettingsStore) {
 }
 
 describe("onboarding restart recovery", () => {
+  it("fills untouched identities when host detection finishes without replacing manual edits", async () => {
+    const user = userEvent.setup()
+    const store = createMemorySettingsStore()
+    const handlers = actions()
+    const view = render(onboarding(store, handlers, { hostIdentity: null }))
+    await user.click(screen.getByRole("tab", { name: /GitHub/ }))
+    expect(screen.getByLabelText("Git name for dev")).toHaveValue("")
+    await user.type(screen.getByLabelText("Git name for playgrounds"), "My custom author")
+    await user.click(screen.getByRole("checkbox", { name: "Apply Git identity to personal" }))
+    const hostIdentity = { name: "Detected Author", email: "detected@example.test" }
+    view.rerender(onboarding(store, handlers, { hostIdentity }))
+    expect(screen.getByLabelText("Git name for dev")).toHaveValue(hostIdentity.name)
+    expect(screen.getByLabelText("Git email for dev")).toHaveValue(hostIdentity.email)
+    expect(screen.getByLabelText("Git name for playgrounds")).toHaveValue("My custom author")
+    expect(screen.getByLabelText("Git email for playgrounds")).toHaveValue("")
+    expect(screen.getByLabelText("Git name for personal")).toHaveValue("")
+    await user.clear(screen.getByLabelText("Git name for dev"))
+    await user.clear(screen.getByLabelText("Git email for dev"))
+    view.rerender(onboarding(store, handlers, { hostIdentity: { ...hostIdentity } }))
+    expect(screen.getByLabelText("Git name for dev")).toHaveValue("")
+  })
   it("submits a restored sandbox draft once when Continue is clicked", async () => {
     const first = createMemorySettingsStore()
     const machine = { ...onboardingScenarios.complete.machineConfigurations[0], name: "recovered" }

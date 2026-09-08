@@ -210,7 +210,10 @@ enum Freshness {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GitHubSource {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host_identity: Option<crate::host_identity::HostIdentity>,
     state: &'static str,
 }
 
@@ -907,6 +910,8 @@ fn configure_workspace_identities_with(
             ("GIT_AUTHOR_EMAIL", &identity.email),
             ("GIT_COMMITTER_NAME", &identity.name),
             ("GIT_COMMITTER_EMAIL", &identity.email),
+            ("JJ_USER", &identity.name),
+            ("JJ_EMAIL", &identity.email),
         ];
         let mut args = vec!["modify".into(), identity.workspace.clone()];
         for (key, value) in expected {
@@ -932,6 +937,8 @@ fn identity_matches(config: &Value, identity: &WorkspaceIdentity) -> bool {
         ("GIT_AUTHOR_EMAIL", &identity.email),
         ("GIT_COMMITTER_NAME", &identity.name),
         ("GIT_COMMITTER_EMAIL", &identity.email),
+        ("JJ_USER", &identity.name),
+        ("JJ_EMAIL", &identity.email),
     ];
     config
         .get("env")
@@ -950,7 +957,10 @@ fn identity_matches(config: &Value, identity: &WorkspaceIdentity) -> bool {
 pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        read_application_state_with(&ProcessRunner, &paths).map_err(|error| error.to_string())
+        let mut source = read_application_state_with(&ProcessRunner, &paths)
+            .map_err(|error| error.to_string())?;
+        source.github.host_identity = crate::host_identity::read();
+        Ok(source)
     })
     .await
     .map_err(|error| format!("Sandbox state worker failed: {error}"))?
@@ -1508,6 +1518,7 @@ fn read_application_state_with(
         sandbox_configuration_operation: None,
         repository_push_operations: Vec::new(),
         github: GitHubSource {
+            host_identity: None,
             state: "disconnected",
         },
         secrets: Vec::new(),
@@ -3102,7 +3113,8 @@ mod tests {
             {"key":"GIT_AUTHOR_NAME","value":"Test User"},
             {"key":"GIT_AUTHOR_EMAIL","value":"test@example.com"},
             {"key":"GIT_COMMITTER_NAME","value":"Test User"},
-            {"key":"GIT_COMMITTER_EMAIL","value":"test@example.com"}
+            {"key":"GIT_COMMITTER_EMAIL","value":"test@example.com"},
+            {"key":"JJ_USER","value":"Test User"}, {"key":"JJ_EMAIL","value":"test@example.com"}
         ]);
         let runner =
             StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null), verified]);
@@ -3113,6 +3125,10 @@ mod tests {
         assert!(calls[1]
             .iter()
             .any(|arg| arg == "GIT_AUTHOR_NAME=Test User"));
+        assert!(calls[1].iter().any(|arg| arg == "JJ_USER=Test User"));
+        assert!(calls[1]
+            .iter()
+            .any(|arg| arg == "JJ_EMAIL=test@example.com"));
         assert!(!calls.iter().any(|args| args[0] == "start"));
         let missing = StubRunner::successful_json(vec![
             inspect(&paths, "Stopped"),
@@ -3151,7 +3167,8 @@ mod tests {
         let mut unchanged = running;
         unchanged["config"]["env"] = json!([
             {"key":"GIT_AUTHOR_NAME","value":"Test User"}, {"key":"GIT_AUTHOR_EMAIL","value":"test@example.com"},
-            {"key":"GIT_COMMITTER_NAME","value":"Test User"}, {"key":"GIT_COMMITTER_EMAIL","value":"test@example.com"}
+            {"key":"GIT_COMMITTER_NAME","value":"Test User"}, {"key":"GIT_COMMITTER_EMAIL","value":"test@example.com"},
+            {"key":"JJ_USER","value":"Test User"}, {"key":"JJ_EMAIL","value":"test@example.com"}
         ]);
         let runner = StubRunner::successful_json(vec![unchanged]);
         configure_workspace_identities_with(&runner, &paths, &[identity]).unwrap();

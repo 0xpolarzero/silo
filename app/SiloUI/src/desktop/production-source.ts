@@ -36,7 +36,7 @@ const applicationSourceShape = z.object({
   activities: z.array(z.unknown()),
   sandboxConfigurationOperation: z.unknown().nullable(),
   repositoryPushOperations: z.array(z.unknown()),
-  github: z.object({ state: z.enum(["disconnected", "connecting", "connected"]) }).passthrough(),
+  github: z.object({ state: z.enum(["disconnected", "connecting", "connected"]), hostIdentity: z.object({ name: z.string(), email: z.string() }).nullable().optional() }).passthrough(),
   secrets: z.array(z.unknown()),
   backup: z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() }),
   preferences: z.object({
@@ -126,6 +126,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (disposed) return
     snapshot = next
     listeners.forEach((listener) => listener())
+  }
+
+  function parseMutationSource(value: unknown): ApplicationSource {
+    const result = parseApplicationSource(value)
+    return result.github.hostIdentity === undefined
+      ? { ...result, github: { ...result.github, hostIdentity: snapshot.source?.github.hostIdentity } }
+      : result
   }
 
   function unreadableBackup(message: string): BackupState {
@@ -220,7 +227,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     pendingWorkspaceActions.add(key)
     void native.invoke<unknown>("workspace_action", { action, name, ...extras })
       .then((result) => {
-        const source = parseApplicationSource(result)
+        const source = parseMutationSource(result)
         publish({ ...snapshot, source, error: null })
         return refresh()
       })
@@ -283,7 +290,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       publish({ ...snapshot, setupCandidate: request, setupEvents: [], setupActivity: [], setupStartedAt: Math.floor(Date.now() / 1000), setupFinishedAt: undefined, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
       let failed = false
       try {
-        const result = parseApplicationSource(await native.invoke("save_machine_configuration", { request, requestId }))
+        const result = parseMutationSource(await native.invoke("save_machine_configuration", { request, requestId }))
         activeConfiguration = null
         publish({ ...snapshot, source: result, error: null })
         return result
@@ -411,7 +418,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     cancelOperation() { void native.invoke("cancel_backup_operation").then(refresh).catch((cause) => reportUnavailable(`Backup cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
     retryStart(name) {
       void native.invoke<unknown>("retry_workspace_start", { name }).then((result) => {
-        const source = parseApplicationSource(result)
+        const source = parseMutationSource(result)
         publish({ ...snapshot, source, error: null })
         return refresh()
       }).catch((cause) => setWorkspaceFailure("start", name, cause))

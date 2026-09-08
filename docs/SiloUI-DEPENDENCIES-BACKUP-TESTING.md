@@ -266,6 +266,23 @@ Three tests extracted verbatim from the patched upstream encoder passed.
 Typecheck, lint, desktop bundling and signature verification passed. Linux
 native execution was not tested on this macOS host.
 
+## Host Git and jj identity
+
+Open GitHub in onboarding: untouched author fields should use the configured
+host Git name/email, or a complete jj pair if Git has none. Without either,
+fields remain empty and manual entry remains available. Edit one sandbox's
+identity and navigate away/back: it must retain that edit. Reset uses the
+detected host pair. Continue applies/verifies Git and jj identity variables in
+stopped VMs; the host configuration is read-only.
+
+Native verification replaced the old example draft with the detected Git author
+and applied it successfully to all three existing stopped sandboxes. Review
+showed Git author Complete; GitHub remained disconnected. No VM was started and
+onboarding remains open. Eight native identity tests, 68 focused frontend tests,
+and the final 20 bridge/recovery tests passed; typecheck, lint, bundle build and
+signature verification passed. jj fallback uses isolated regression tests;
+the real-app walkthrough used Git.
+
 The isolated native walkthrough observed actual creation progress, responsive
 Continue, identity work waiting behind creation, and disabled Finish. The live
 image download timed out; Retry then returned a Docker registry connection

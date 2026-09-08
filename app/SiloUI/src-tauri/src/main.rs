@@ -2,6 +2,7 @@ mod applications;
 mod backup;
 mod backup_controller;
 mod dependencies;
+mod host_identity;
 mod runtime;
 mod settings;
 mod status_panel;

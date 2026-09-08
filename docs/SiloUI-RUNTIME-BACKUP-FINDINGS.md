@@ -170,3 +170,25 @@ current progress, loads it at launch and after command completion, and rejects
 history from a different attempt when a current command finishes. A failure
 before native activity storage opens still receives an explicit in-session
 failure message. Copy uses the same filtered text shown in the existing panel.
+
+## Host author defaults
+
+Production reads a complete name/email pair from the installed Git using
+[`git config --global --includes --get`](https://git-scm.com/docs/git-config).
+This respects user configuration and included files without borrowing the app
+checkout's repository identity. If either value is unavailable, it reads a
+complete pair through [`jj config get`](https://docs.jj-vcs.dev/latest/config/).
+It never combines fields from different tools or guesses from the login name.
+Both reads run outside a repository, have bounded output and a two-second
+timeout, and never change host configuration. Missing/failed reads leave manual
+entry available. GUI executable lookup includes standard user and Homebrew
+installation directories.
+
+Onboarding fills only untouched empty identities when host detection arrives;
+manual edits and disabled Apply choices remain intact. Mutation responses that
+omit host identity retain the detected value until the next authoritative read.
+The existing sandbox identity action also sets and verifies `JJ_USER` and
+`JJ_EMAIL`, the [Jujutsu identity environment variables](https://docs.jj-vcs.dev/latest/cli-reference/#jj-metaedit),
+alongside Git author/committer values. This does not install jj or change the
+host's Git/jj configuration. Example identities remain isolated to fixtures;
+there is no production fallback name or email.
