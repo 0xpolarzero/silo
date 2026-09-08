@@ -529,22 +529,7 @@ fn system_check() -> DependencyCheck {
     {
         let target = expected_target().expect("supported Linux target");
         let version = glibc_version();
-        let Some((major, minor)) = parse_major_minor(&version) else {
-            return ProbeError::Malformed("glibc returned an invalid version.".into())
-                .to_check(id, title, false);
-        };
-        if (major, minor) < (2, 34) {
-            return ProbeError::Unsupported(format!(
-                "glibc {version} is older than the required 2.34 for {target}."
-            ))
-            .to_check(id, title, false);
-        }
-        let architecture = if target.starts_with("aarch64") {
-            "arm64"
-        } else {
-            "x86_64"
-        };
-        return DependencyCheck::pass(id, title, format!("Linux {architecture} · glibc {version}"));
+        return linux_system_version_result(&version, target);
     }
 }
 
@@ -566,6 +551,33 @@ fn glibc_version() -> String {
 fn parse_major_minor(value: &str) -> Option<(u32, u32)> {
     let mut parts = value.split('.');
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_system_version_result(version: &str, target: &str) -> DependencyCheck {
+    let Some((major, minor)) = parse_major_minor(version) else {
+        return ProbeError::Malformed("glibc returned an invalid version.".into()).to_check(
+            "system-os",
+            "Supported OS",
+            false,
+        );
+    };
+    if (major, minor) < (2, 34) {
+        return ProbeError::Unsupported(format!(
+            "glibc {version} is older than the required 2.34 for {target}."
+        ))
+        .to_check("system-os", "Supported OS", false);
+    }
+    let architecture = if target.starts_with("aarch64") {
+        "arm64"
+    } else {
+        "x86_64"
+    };
+    DependencyCheck::pass(
+        "system-os",
+        "Supported OS",
+        format!("Linux {architecture} · glibc {version}"),
+    )
 }
 
 fn virtualization_check() -> DependencyCheck {
@@ -1008,10 +1020,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_version_boundaries() {
-        assert_eq!(parse_major_minor("2.34"), Some((2, 34)));
-        assert_eq!(parse_major_minor("2.39"), Some((2, 39)));
-        assert_eq!(parse_major_minor("broken"), None);
+    fn maps_linux_glibc_boundaries_to_actual_check_results() {
+        assert_eq!(
+            linux_system_version_result("2.34", "aarch64-unknown-linux-gnu"),
+            DependencyCheck::pass("system-os", "Supported OS", "Linux arm64 · glibc 2.34")
+        );
+        assert_eq!(
+            linux_system_version_result("2.33", "x86_64-unknown-linux-gnu").status,
+            CheckStatus::Failed
+        );
+        assert_eq!(
+            linux_system_version_result("broken", "x86_64-unknown-linux-gnu").status,
+            CheckStatus::Failed
+        );
     }
 
     #[test]

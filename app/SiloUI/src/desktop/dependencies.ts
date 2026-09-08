@@ -58,6 +58,17 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
   let disposed = false
   let activeTimeout: ReturnType<typeof globalThis.setTimeout> | undefined
   const listeners = new Set<() => void>()
+  const clearWatchdog = () => {
+    if (activeTimeout !== undefined) globalThis.clearTimeout(activeTimeout)
+    activeTimeout = undefined
+  }
+  const armWatchdog = (onTimeout: () => void) => {
+    clearWatchdog()
+    activeTimeout = globalThis.setTimeout(() => {
+      activeTimeout = undefined
+      onTimeout()
+    }, 15_000)
+  }
   const publish = (checks: SiloPreflightCheck[]) => {
     if (disposed) return
     snapshot = checks
@@ -68,12 +79,11 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     activeRequest = requestId
     invocationActive = true
-    activeTimeout = globalThis.setTimeout(() => {
+    armWatchdog(() => {
       if (activeRequest !== requestId) return
       activeRequest = null
-      activeTimeout = undefined
       publish(exceptionalChecks("timeout", "Dependency checks timed out. No successful result was recorded."))
-    }, 15_000)
+    })
     void Promise.resolve().then(() => invokeChecks("read_dependencies", { requestId })).then((input) => {
       if (activeRequest !== requestId) return
       try { publish(validateDependencyReport(input, requestId)) }
@@ -81,8 +91,7 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
     }).catch(() => {
       if (activeRequest === requestId) publish(exceptionalChecks("unavailable", "Dependency checks are unavailable because the desktop bridge did not respond."))
     }).finally(() => {
-      if (activeTimeout !== undefined) globalThis.clearTimeout(activeTimeout)
-      activeTimeout = undefined
+      clearWatchdog()
       invocationActive = false
       if (!disposed && retryQueued) {
         retryQueued = false
@@ -96,6 +105,11 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
     if (invocationActive) {
       activeRequest = null
       retryQueued = true
+      armWatchdog(() => {
+        if (!retryQueued) return
+        retryQueued = false
+        publish(exceptionalChecks("timeout", "Dependency checks timed out. No successful result was recorded."))
+      })
       return
     }
     startRequest()
@@ -112,8 +126,7 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
       disposed = true
       activeRequest = null
       retryQueued = false
-      if (activeTimeout !== undefined) globalThis.clearTimeout(activeTimeout)
-      activeTimeout = undefined
+      clearWatchdog()
       listeners.clear()
     },
   }

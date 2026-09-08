@@ -82,6 +82,23 @@ describe("native dependency report validation", () => {
     store.dispose()
   })
 
+  it("keeps a queued Retry bounded when the previous bridge request never settles", async () => {
+    vi.useFakeTimers()
+    const invokeChecks = vi.fn(() => new Promise(() => undefined))
+    const store = createNativeDependencyStore(invokeChecks)
+
+    store.retry()
+    await Promise.resolve()
+    store.retry()
+    expect(store.getSnapshot().every(({ status }) => status === "pending")).toBe(true)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(store.getSnapshot().every(({ status }) => status === "timeout")).toBe(true)
+    expect(invokeChecks).toHaveBeenCalledOnce()
+
+    store.dispose()
+    vi.useRealTimers()
+  })
+
   it("disposes listeners and suppresses late results", async () => {
     let resolveRequest!: (value: unknown) => void
     let requestId = ""
