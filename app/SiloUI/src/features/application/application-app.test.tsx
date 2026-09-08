@@ -266,7 +266,7 @@ describe("application", () => {
       const backup = navigation.getByRole("button", { name: "Backup" })
       fireEvent.click(backup)
       fireEvent.click(screen.getByRole("button", { name: "Choose backup…" }))
-      fireEvent.change(screen.getByLabelText("Backup archive file"), { target: { files: [new File(["fixture archive"], "restore.silo-backup")] } })
+      await act(async () => { await Promise.resolve() })
       fireEvent.click(screen.getByRole("button", { name: "Restore new sandbox" }))
       expect(backup).toHaveAttribute("aria-busy", "true")
       fireEvent.click(navigation.getByRole("button", { name: "Overview" }))

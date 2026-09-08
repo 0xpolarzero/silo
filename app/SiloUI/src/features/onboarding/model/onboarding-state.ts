@@ -162,12 +162,13 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
     if (event.workspace) latestByWorkspace.set(event.workspace, event)
   }
 
+  const workspaceVerified = source.bootstrapState.completedPhases.includes("workspaces") && source.bootstrapResult?.phase === "complete"
   const workspaces = source.bootstrapConfiguration.workspaces.map(({ name }): WorkspaceView => {
     const latest = latestByWorkspace.get(name)
     if (failedWorkspace === name) {
       return { name, status: "failed", detail: source.error?.message ?? "Setup failed" }
     }
-    if (latest?.step === "workspace-verification" && latest.fraction === 1) {
+    if (workspaceVerified || (latest?.step === "workspace-verification" && latest.fraction === 1)) {
       return { name, status: "ready", detail: "Ready" }
     }
     if (latest && latest === currentEvent && latest.fraction !== 1) {
@@ -184,7 +185,9 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
   })
 
   const queueStatus = combineQueueStatus(queueItems.filter(({ id }) => queueByStep.workspaces.includes(id)))
-  const totalOperations = workspaces.length * 3
+  const recordedProgress = activeEvents.some(({ step }) => step && workspaceOperationSteps.has(step))
+  const totalOperations = workspaces.length * (recordedProgress ? 3 : 2)
+  const completedOperations = recordedProgress ? completionKeys.size : queueItems.filter(({ id, status }) => queueByStep.workspaces.includes(id) && status === "succeeded").length * workspaces.length
   return {
     status: queueStatus,
     elapsedSeconds: source.bootstrapState.startedAt
@@ -192,9 +195,9 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
       : 0,
     currentWorkspace: currentEvent?.workspace,
     currentMessage: source.error?.message ?? currentEvent?.message ?? source.bootstrapResult?.message ?? "Waiting to create workspaces",
-    completedOperations: completionKeys.size,
+    completedOperations,
     totalOperations,
-    fraction: totalOperations > 0 ? completionKeys.size / totalOperations : undefined,
+    fraction: totalOperations > 0 ? completedOperations / totalOperations : undefined,
     workspaces,
     visibleEvents,
     readyCount: workspaces.filter(({ status }) => status === "ready").length,
@@ -248,7 +251,7 @@ export function projectOnboarding(source: OnboardingSource, githubConnectionStat
     dependencyStatus,
     workspaceProgress,
     queueItems,
-    finishEnabled: dependencyStatus === "succeeded" && source.error === null && queueItems.every(({ status }) => status === "succeeded"),
+    finishEnabled: dependencyStatus === "succeeded" && source.error === null && (source.readyToFinish ?? queueItems.every(({ status }) => status === "succeeded")),
     error: source.error,
     stepStatus,
   }

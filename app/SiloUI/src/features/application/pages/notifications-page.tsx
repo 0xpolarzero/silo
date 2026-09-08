@@ -9,7 +9,7 @@ import { useSystemIntegrations } from "@/features/preferences/system-integration
 const categories = [
   { id: "notifyHealth", label: "Sandbox health", detail: "State changes and failed health checks.", icon: HeartPulse },
   { id: "notifyActions", label: "Action failures", detail: "Start, stop, restart, push, and maintenance failures.", icon: CircleAlert },
-  { id: "notifyBackup", label: "Backup failures", detail: "Backup and restore operations that need attention.", icon: HardDrive },
+  { id: "notifyBackup", label: "Backup failures", detail: "Backup and restore operations that fail.", icon: HardDrive },
 ] as const
 
 export function NotificationsPage() {

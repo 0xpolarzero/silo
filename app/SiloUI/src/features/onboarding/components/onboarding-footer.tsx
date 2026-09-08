@@ -27,7 +27,7 @@ export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, co
     : viewModel.dependencyStatus === "failed"
       ? "Failed · Resolve dependency checks to continue"
       : failed
-        ? `Failed · ${failedItem?.failure ?? viewModel.error?.message ?? "Setup needs your attention"}`
+        ? `Failed · ${failedItem?.failure ?? viewModel.error?.message ?? "Setup did not complete"}`
         : complete
           ? "Complete · Ready to finish setup"
           : runningItem

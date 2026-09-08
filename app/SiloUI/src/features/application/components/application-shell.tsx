@@ -213,7 +213,7 @@ function SubNavigation<Section extends string>({
                         {attention.errors}
                       </span>
                     </TooltipTrigger>
-                    <TooltipContent>{attention.errors} sandbox {attention.errors === 1 ? "needs" : "need"} attention</TooltipContent>
+                    <TooltipContent>{attention.errors} sandbox {attention.errors === 1 ? "error" : "errors"}</TooltipContent>
                   </Tooltip>
                 )}
                 {attention.warnings > 0 && (

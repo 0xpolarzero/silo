@@ -1,73 +1,87 @@
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import './index.css'
-import { FixtureApp } from './fixtures/fixture-app'
-import { invoke, isTauri } from '@tauri-apps/api/core'
-import { getCurrentWindow } from '@tauri-apps/api/window'
-import { DesktopStatusFixture } from './fixtures/desktop-fixtures'
-import { initializeTheme } from './features/preferences/theme'
-import { SettingsProvider } from './features/preferences/settings-store'
-import { createDesktopSettingsStore, connectSettingsLifecycle } from './desktop/settings'
-import { createFixtureSettingsStore, hasSettingsFixture, settingsForFixture } from './fixtures/settings'
-import { applicationSourceForScenario } from './fixtures/application-scenarios'
-import { scenarioFromSearch } from './fixtures/scenarios'
-import { ApplicationCatalogProvider } from './features/preferences/application-catalog'
-import { createApplicationService, emptyApplicationCatalog } from './desktop/applications'
-import { fixtureApplicationCatalog } from './fixtures/application-catalog'
-import { connectSystemIntegrationLifecycle, createSystemIntegrationStoreForRuntime } from './desktop/system-integrations'
-import { SystemIntegrationProvider } from './features/preferences/system-integrations-store'
-import { createNativeDependencyStore, useDependencyStore, type DependencyStore } from './desktop/dependencies'
+import { StrictMode } from "react"
+import { createRoot } from "react-dom/client"
+import { invoke, isTauri } from "@tauri-apps/api/core"
+import { getCurrentWindow } from "@tauri-apps/api/window"
+
+import "./index.css"
+import { SiloWindow } from "@/components/silo-window"
+import { createApplicationService, emptyApplicationCatalog } from "@/desktop/applications"
+import { createNativeDependencyStore, useDependencyStore, type DependencyStore } from "@/desktop/dependencies"
+import { ProductionOnboarding } from "@/desktop/production-onboarding"
+import { createProductionSource, useProductionSource, type ProductionSource } from "@/desktop/production-source"
+import { createDesktopSettingsStore, connectSettingsLifecycle } from "@/desktop/settings"
+import { StatusPanel } from "@/desktop/status-panel"
+import { connectSystemIntegrationLifecycle, createDesktopSystemIntegrationStore } from "@/desktop/system-integrations"
+import { ApplicationApp } from "@/features/application/application-app"
+import { ApplicationCatalogProvider } from "@/features/preferences/application-catalog"
+import { SettingsProvider, useSettings } from "@/features/preferences/settings-store"
+import { SystemIntegrationProvider } from "@/features/preferences/system-integrations-store"
+import { initializeTheme } from "@/features/preferences/theme"
 
 const desktop = isTauri()
-const statusPanel = desktop && getCurrentWindow().label === 'status'
-const settingsFixture = hasSettingsFixture(window.location.search)
-const source = applicationSourceForScenario(scenarioFromSearch(window.location.search))
-const store = desktop
-  ? createDesktopSettingsStore(settingsForFixture(source), !statusPanel, settingsFixture)
-  : createFixtureSettingsStore(source)
+const statusPanel = desktop && getCurrentWindow().label === "status"
+const settings = createDesktopSettingsStore({}, !statusPanel)
+const production = createProductionSource()
 
 // oxlint-disable-next-line react/only-export-components
-function RootSurface({ nativeOnboardingComplete, dependencyStore }: { nativeOnboardingComplete: boolean; dependencyStore: DependencyStore | null }) {
+function Unavailable({ message, retry }: { message: string; retry?: () => void }) {
+  return <SiloWindow title="Silo" label="Silo unavailable"><div className="grid flex-1 place-items-center p-6"><div className="max-w-lg rounded-lg border border-destructive/25 bg-destructive/[.06] p-4" role="alert"><h1 className="text-sm font-semibold">Silo could not load</h1><p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{message}</p>{retry && <button type="button" className="mt-3 rounded-md border px-3 py-1.5 text-xs" onClick={retry}>Retry</button>}</div></div></SiloWindow>
+}
+
+// oxlint-disable-next-line react/only-export-components
+function ProductionSurface({ source, dependencyStore }: { source: ProductionSource; dependencyStore: DependencyStore | null }) {
+  const current = useProductionSource(source)
   const dependencies = useDependencyStore(dependencyStore)
+  const { settings: currentSettings } = useSettings()
+  if (!statusPanel && !currentSettings.onboardingComplete && dependencies) {
+    return <ProductionOnboarding application={current.source} dependencies={dependencies} source={source} />
+  }
+  if (!current.source) {
+    const message = current.error ?? (current.loading ? "Reading live sandbox state…" : "The native application state is unavailable. No sandbox state changed.")
+    return <Unavailable message={message} retry={current.loading ? undefined : () => { void source.refresh() }} />
+  }
   return statusPanel
-    ? <DesktopStatusFixture />
-    : <FixtureApp nativeOnboardingComplete={nativeOnboardingComplete} nativeDependencies={dependencies} nativeOperations={desktop && !settingsFixture} />
+    ? <StatusPanel source={current.source} actions={source.statusActions} />
+    : <ApplicationApp source={current.source} actions={source.applicationActions} backup={current.backup} />
 }
 
 async function start() {
-  const dependencyStore = desktop && !statusPanel && !settingsFixture ? createNativeDependencyStore() : null
-  dependencyStore?.retry()
-  const stopLifecycle = desktop ? await connectSettingsLifecycle(store, !statusPanel) : () => {}
-  if (desktop && !statusPanel) await invoke('initialize_settings', { fixture: settingsFixture })
-  await store.initialize()
-  const fixtureStorage = desktop && !statusPanel
-    ? await invoke<boolean>('system_integrations_fixture')
-    : true
-  const systemIntegrations = createSystemIntegrationStoreForRuntime(store, {
-    desktop,
-    main: !statusPanel,
-    fixtureStorage,
-  })
-  await systemIntegrations.initialize()
-  const stopSystemLifecycle = desktop && !statusPanel && !fixtureStorage
-    ? connectSystemIntegrationLifecycle(systemIntegrations)
-    : () => {}
-  const nativeOnboardingComplete = desktop && !statusPanel && !fixtureStorage
-    ? await invoke<boolean>('debug_onboarding_complete')
-    : false
-  const applicationService = desktop && !settingsFixture ? createApplicationService(store) : undefined
-  const applicationCatalog = applicationService
-    ? await applicationService.read().catch((error: unknown) => { console.error('Silo applications:', error); return emptyApplicationCatalog })
-    : fixtureApplicationCatalog
-  const stopTheme = initializeTheme(store)
-  if (import.meta.hot) import.meta.hot.dispose(() => { dependencyStore?.dispose(); stopTheme(); stopLifecycle(); stopSystemLifecycle(); systemIntegrations.dispose(); store.dispose() })
+  if (!desktop) {
+    createRoot(document.getElementById("root")!).render(<Unavailable message="Open Silo in the desktop app." />)
+    return
+  }
 
-  createRoot(document.getElementById('root')!).render(
+  const dependencies = !statusPanel ? createNativeDependencyStore() : null
+  dependencies?.retry()
+  const stopSettingsLifecycle = await connectSettingsLifecycle(settings, !statusPanel)
+  if (!statusPanel) await invoke("initialize_settings")
+  await settings.initialize()
+  const systemIntegrations = createDesktopSystemIntegrationStore(settings)
+  if (!statusPanel) await systemIntegrations.initialize()
+  const stopSystemLifecycle = !statusPanel ? connectSystemIntegrationLifecycle(systemIntegrations) : () => {}
+  const applicationService = !statusPanel ? createApplicationService(settings) : undefined
+  const applicationCatalog = applicationService
+    ? await applicationService.read().catch((error: unknown) => { console.error("Silo applications:", error); return emptyApplicationCatalog })
+    : emptyApplicationCatalog
+  const stopTheme = initializeTheme(settings)
+  void production.initialize().catch((error: unknown) => console.error("Silo live updates:", error))
+
+  if (import.meta.hot) import.meta.hot.dispose(() => {
+    dependencies?.dispose()
+    production.dispose()
+    stopTheme()
+    stopSettingsLifecycle()
+    stopSystemLifecycle()
+    systemIntegrations.dispose()
+    settings.dispose()
+  })
+
+  createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <SettingsProvider store={store}>
+      <SettingsProvider store={settings}>
         <SystemIntegrationProvider store={systemIntegrations}>
           <ApplicationCatalogProvider initialCatalog={applicationCatalog} service={applicationService}>
-          <RootSurface nativeOnboardingComplete={nativeOnboardingComplete} dependencyStore={dependencyStore} />
+            <ProductionSurface source={production} dependencyStore={dependencies} />
           </ApplicationCatalogProvider>
         </SystemIntegrationProvider>
       </SettingsProvider>
@@ -75,4 +89,7 @@ async function start() {
   )
 }
 
-void start()
+void start().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error)
+  createRoot(document.getElementById("root")!).render(<Unavailable message={`Silo startup failed: ${message}. No sandbox state changed.`} />)
+})

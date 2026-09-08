@@ -1,0 +1,46 @@
+[
+  {
+    "operation": "restore",
+    "archive": {
+      "name": "saved.silo-backup",
+      "archivePath": "/backups/saved.silo-backup",
+      "completedLabel": "Verified archive",
+      "size": "1 GB",
+      "destination": "/backups",
+      "sandboxes": [
+        "dev"
+      ]
+    },
+    "runningNames": [],
+    "targetName": "restored",
+    "kind": "running",
+    "progress": 5,
+    "phases": [
+      {
+        "title": "Restore",
+        "detail": "Creating sandbox",
+        "tone": "running"
+      }
+    ]
+  },
+  {
+    "operation": "restore",
+    "archive": {
+      "name": "saved.silo-backup",
+      "archivePath": "/backups/saved.silo-backup",
+      "completedLabel": "Verified archive",
+      "size": "1 GB",
+      "destination": "/backups",
+      "sandboxes": [
+        "dev"
+      ]
+    },
+    "runningNames": [],
+    "targetName": "restored",
+    "kind": "result",
+    "outcome": "failed",
+    "title": "Restore failed",
+    "message": "Runtime refused creation",
+    "detail": "No new sandbox was retained"
+  }
+]

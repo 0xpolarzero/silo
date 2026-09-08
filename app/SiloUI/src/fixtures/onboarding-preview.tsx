@@ -3,6 +3,11 @@ import { useEffect, useRef, useState } from "react"
 import { OnboardingApp, type OnboardingAppProps } from "@/features/onboarding/onboarding-app"
 import type { GitHubConnectionState, OnboardingActions } from "@/features/onboarding/model/onboarding-source"
 import { onboardingScenarios } from "./scenarios"
+import { ApplicationCatalogProvider } from "@/features/preferences/application-catalog"
+import { fixtureApplicationCatalog } from "./application-catalog"
+import { useSettings } from "@/features/preferences/settings-store"
+import { SystemIntegrationProvider } from "@/features/preferences/system-integrations-store"
+import { createFixtureSystemIntegrationStore } from "./system-integrations"
 
 interface OnboardingPreviewProps extends Omit<OnboardingAppProps, "actions" | "githubConnectionState" | "completed"> {
   actions?: Partial<OnboardingActions>
@@ -17,10 +22,12 @@ export function OnboardingPreview({ source: initialSource, actions, initialGitHu
     initialGitHubConnectionState ?? (source.githubPolicies.some(({ repositories }) => repositories.length > 0) ? "connected" : "disconnected"),
   )
   const connectTimer = useRef<number | undefined>(undefined)
+  const { store } = useSettings()
+  const [systemIntegrations] = useState(() => createFixtureSystemIntegrationStore(store))
 
   useEffect(() => () => window.clearTimeout(connectTimer.current), [])
 
-  return <OnboardingApp
+  return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><SystemIntegrationProvider store={systemIntegrations}><OnboardingApp
     {...props}
     source={{ ...source, preflightChecks: initialSource.preflightChecks }}
     completed={completed}
@@ -49,5 +56,5 @@ export function OnboardingPreview({ source: initialSource, actions, initialGitHu
         setCompleted(true)
       },
     }}
-  />
+  /></SystemIntegrationProvider></ApplicationCatalogProvider>
 }

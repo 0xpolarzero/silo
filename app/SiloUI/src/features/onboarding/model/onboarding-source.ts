@@ -17,6 +17,7 @@ import { applicationPreferenceSelectionSchema, type ApplicationPreferenceSelecti
 // remains an unmodified current protocol or app-state shape so a future bridge
 // only has to replace the provider.
 export const onboardingSourceSchema = z.object({
+  readyToFinish: z.boolean().optional(),
   machineConfigurations: setupMachineConfigurationRequestSchema.shape.machines,
   bootstrapConfiguration: siloBootstrapConfigurationSchema,
   bootstrapState: siloBootstrapStateSchema,

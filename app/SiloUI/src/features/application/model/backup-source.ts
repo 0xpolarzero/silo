@@ -1,5 +1,6 @@
 export interface BackupArchive {
   name: string
+  archivePath: string
   completedLabel: string
   size: string
   destination: string
@@ -30,17 +31,20 @@ export interface BackupState {
   snapshotId: string
   availability: "available" | "unavailable"
   availabilityMessage?: string
-  requiredSpaceGB: number
+  requiredSpaceGB?: number
   availableSpaceGB?: number
   unsupportedStorage?: { sandbox: string; label: string }
+  destination?: string
   archives: BackupArchive[]
   operation: BackupOperation | null
 }
 
 export interface BackupActions {
-  inspectArchive: (selection: BackupArchive | File) => { archive: BackupArchive; valid: boolean; reason?: string }
+  chooseDestination: () => Promise<string | null>
+  chooseArchive: () => Promise<{ archive: BackupArchive; valid: boolean; reason?: string } | null>
+  inspectArchive: (selection: BackupArchive) => Promise<{ archive: BackupArchive; valid: boolean; reason?: string }>
   startBackup: (destination: string, sandboxes: string[]) => void
-  startRestore: (archive: BackupArchive, newName: string) => void
+  startRestore: (archive: BackupArchive, newName: string, sourceName?: string) => void
   cancelOperation: () => void
   retryStart: (sandbox: string) => void
   dismissOperation: () => void

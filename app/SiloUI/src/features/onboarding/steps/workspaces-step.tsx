@@ -41,7 +41,7 @@ export function WorkspacesStep({ machines, progress, onMachinesChange, onRetry, 
   return (
     <section aria-labelledby="workspaces-title" className="flex h-full min-h-[28rem] flex-col gap-4">
       <h2 id="workspaces-title" className="sr-only" data-visual-heading="hidden">
-        {failed ? "Sandbox setup needs action" : title}
+        {failed ? "Sandbox setup failed" : title}
       </h2>
 
       <ListCard className="shrink-0" aria-label="Sandbox setup progress">

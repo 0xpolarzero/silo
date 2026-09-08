@@ -18,12 +18,12 @@ const nativeSnapshotSchema = z.object({
   saveError: z.string().nullable(),
 })
 
-export function createDesktopSettingsStore(initialSettings: SettingsPatch, main: boolean, fixture = false) {
+export function createDesktopSettingsStore(initialSettings: SettingsPatch, main: boolean) {
   let firstRead = true
   const backend: SettingsBackend = {
     async read() {
       let snapshot = nativeSnapshotSchema.parse(await invoke("read_settings"))
-      if (firstRead && main && !fixture) {
+      if (firstRead && main) {
         firstRead = false
         // Import an actual saved choice only. Retain its old key if migration fails.
         let theme: string | null = null

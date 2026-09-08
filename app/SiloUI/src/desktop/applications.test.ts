@@ -4,12 +4,11 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }))
 import { createApplicationService } from "./applications"
 import { createMemorySettingsStore, createSettingsStore, type SettingsBackend, type SettingsSnapshot } from "@/features/preferences/settings-store"
 import type { SettingsPatch } from "@/features/preferences/model/settings"
-import { fixtureApplicationCatalog } from "@/fixtures/application-catalog"
 
 const terminal = { name: "Ghostty", path: "/Applications/Ghostty.app" }
 const editor = { name: "Zed", path: "/Applications/Zed.app" }
 const browser = { name: "Firefox", path: "/Applications/Firefox.app" }
-const catalog = { terminal: [terminal], editor: [editor], browser: [browser], defaults: { browser: browser.path }, fixture: false }
+const catalog = { terminal: [terminal], editor: [editor], browser: [browser], defaults: { browser: browser.path } }
 const kinds = ["terminal", "editor", "browser"] as const
 beforeEach(() => { native.invoke.mockReset() })
 
@@ -40,10 +39,10 @@ it("uses installed defaults without saving them or overwriting existing choices"
   expect(write).not.toHaveBeenCalled()
 })
 
-it("uses deterministic choices when native storage reports fixture mode", async () => {
-  native.invoke.mockResolvedValue({ ...catalog, terminal: [], editor: [], browser: [], fixture: true })
+it("rejects malformed catalog entries before changing application defaults", async () => {
+  native.invoke.mockResolvedValue({ ...catalog, terminal: [{ name: "Invalid", path: "relative.app" }] })
   const store = createMemorySettingsStore()
-  expect(await createApplicationService(store).read()).toEqual(fixtureApplicationCatalog)
+  await expect(createApplicationService(store).read()).rejects.toThrow()
   expect(store.getSnapshot().settings.terminal).toBe("Terminal")
 })
 

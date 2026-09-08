@@ -17,6 +17,13 @@ const MAX_HASH_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_OUTPUT: u64 = 8 * 1024;
 const EXPECTED_MSB: &str = "0.6.17";
 const EXPECTED_LIBKRUNFW: &str = "5.6.1";
+const EXPECTED_MSB_SOURCE: &str = "5eca4de8bf233e57f114140f8c076ea8c96f21ab";
+const EXPECTED_MSB_SOURCE_ARCHIVE_SHA: &str =
+    "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06";
+const EXPECTED_MSB_PATCH_SHA: &str =
+    "a6a85f661a9836971968fccc04da6c72015c4195674536c3c0804a7f16cd5bdd";
+const EXPECTED_MSB_TOOLCHAIN: &str = "1.94.0";
+const EXPECTED_MSB_FEATURES: &str = "net,ssh";
 const EXPECTED_GIT: &str = "2.53.0";
 const EXPECTED_GIT_LFS: &str = "3.7.1";
 
@@ -93,7 +100,7 @@ struct MicrosandboxManifest {
     microsandbox_version: String,
     libkrunfw_version: String,
     target_triple: String,
-    executable: RuntimeFile,
+    executable: PatchedRuntimeFile,
     library: RuntimeFile,
 }
 
@@ -103,6 +110,22 @@ struct RuntimeFile {
     bundled_name: String,
     release_asset: String,
     sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PatchedRuntimeFile {
+    bundled_name: String,
+    sha256: String,
+    source_commit: String,
+    source_archive_sha256: String,
+    patch_sha256: String,
+    toolchain: String,
+    features: String,
+    official_release_asset: String,
+    official_release_sha256: String,
+    embedded_agentd_release_asset: String,
+    embedded_agentd_release_sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -290,6 +313,20 @@ fn expected_runtime_assets(
             "libkrunfw.so.5.6.1",
             "libkrunfw-linux-x86_64.so",
             "d395efaa21984cc6934c900519909a12c8148d9688cfc88f9da3b42132ae32c2",
+        )),
+        _ => None,
+    }
+}
+
+fn expected_agentd_asset(target: &str) -> Option<(&'static str, &'static str)> {
+    match target {
+        "aarch64-apple-darwin" | "aarch64-unknown-linux-gnu" => Some((
+            "agentd-aarch64",
+            "04bd19fcc184edc8323f588eb0fbfb9ffec00ae457bd9f6d1c62377223db5f4c",
+        )),
+        "x86_64-unknown-linux-gnu" => Some((
+            "agentd-x86_64",
+            "c6c5e7f719cbde966b4a2a366bff8f6bdec8a45a0fd8afe3fcab27243d01d1f8",
         )),
         _ => None,
     }
@@ -725,7 +762,7 @@ fn microsandbox_check(paths: &ProbePaths) -> DependencyCheck {
 }
 
 fn runtime_manifest_matches(manifest: &MicrosandboxManifest) -> bool {
-    manifest.schema_version == 1
+    manifest.schema_version == 2
         && manifest.microsandbox_version == EXPECTED_MSB
         && manifest.libkrunfw_version == EXPECTED_LIBKRUNFW
         && Some(manifest.target_triple.as_str()) == expected_target()
@@ -739,8 +776,18 @@ fn runtime_manifest_matches(manifest: &MicrosandboxManifest) -> bool {
                 library_sha,
             )| {
                 manifest.executable.bundled_name == executable_name
-                    && manifest.executable.release_asset == executable_asset
-                    && manifest.executable.sha256 == executable_sha
+                    && valid_sha256(&manifest.executable.sha256)
+                    && manifest.executable.source_commit == EXPECTED_MSB_SOURCE
+                    && manifest.executable.source_archive_sha256 == EXPECTED_MSB_SOURCE_ARCHIVE_SHA
+                    && manifest.executable.patch_sha256 == EXPECTED_MSB_PATCH_SHA
+                    && manifest.executable.toolchain == EXPECTED_MSB_TOOLCHAIN
+                    && manifest.executable.features == EXPECTED_MSB_FEATURES
+                    && manifest.executable.official_release_asset == executable_asset
+                    && manifest.executable.official_release_sha256 == executable_sha
+                    && expected_agentd_asset(&manifest.target_triple).is_some_and(|(asset, sha)| {
+                        manifest.executable.embedded_agentd_release_asset == asset
+                            && manifest.executable.embedded_agentd_release_sha256 == sha
+                    })
                     && manifest.library.bundled_name == library_name
                     && manifest.library.release_asset == library_asset
                     && manifest.library.sha256 == library_sha
@@ -1091,11 +1138,23 @@ mod tests {
             library_sha,
         ) = expected_runtime_assets(target).unwrap();
         let mut runtime: MicrosandboxManifest = serde_json::from_value(serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "microsandboxVersion": EXPECTED_MSB,
             "libkrunfwVersion": EXPECTED_LIBKRUNFW,
             "targetTriple": target,
-            "executable": { "bundledName": executable_name, "releaseAsset": executable_asset, "sha256": executable_sha },
+            "executable": {
+                "bundledName": executable_name,
+                "sha256": "1".repeat(64),
+                "sourceCommit": EXPECTED_MSB_SOURCE,
+                "sourceArchiveSha256": EXPECTED_MSB_SOURCE_ARCHIVE_SHA,
+                "patchSha256": EXPECTED_MSB_PATCH_SHA,
+                "toolchain": EXPECTED_MSB_TOOLCHAIN,
+                "features": EXPECTED_MSB_FEATURES,
+                "officialReleaseAsset": executable_asset,
+                "officialReleaseSha256": executable_sha,
+                "embeddedAgentdReleaseAsset": expected_agentd_asset(target).unwrap().0,
+                "embeddedAgentdReleaseSha256": expected_agentd_asset(target).unwrap().1
+            },
             "library": { "bundledName": library_name, "releaseAsset": library_asset, "sha256": library_sha }
         })).unwrap();
         assert!(runtime_manifest_matches(&runtime));

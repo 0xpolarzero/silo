@@ -6,6 +6,10 @@ import { OnboardingApp } from "@/features/onboarding/onboarding-app"
 import type { GitHubConnectionState, OnboardingActions } from "@/features/onboarding/model/onboarding-source"
 import { createMemorySettingsStore, SettingsProvider, type SettingsStore } from "@/features/preferences/settings-store"
 import { onboardingScenarios, repositoryFixtures } from "@/fixtures/scenarios"
+import { ApplicationCatalogProvider } from "@/features/preferences/application-catalog"
+import { fixtureApplicationCatalog } from "@/fixtures/application-catalog"
+import { SystemIntegrationProvider } from "@/features/preferences/system-integrations-store"
+import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
 
 function actions(): OnboardingActions {
   return { connectGitHub: vi.fn(), saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }
@@ -16,13 +20,13 @@ function onboarding(store: SettingsStore, handlers: OnboardingActions, { complet
   githubConnectionState?: GitHubConnectionState
   scenario?: "running" | "complete"
 } = {}) {
-  return <SettingsProvider store={store}><OnboardingApp
+  return <SettingsProvider store={store}><ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(store)}><OnboardingApp
     source={onboardingScenarios[scenario]}
     actions={handlers}
     githubConnectionState={githubConnectionState}
     completed={completed}
     repositoryOptions={repositoryFixtures}
-  /></SettingsProvider>
+  /></SystemIntegrationProvider></ApplicationCatalogProvider></SettingsProvider>
 }
 
 async function restartStore(previous: SettingsStore) {

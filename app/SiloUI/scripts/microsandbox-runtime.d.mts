@@ -3,6 +3,8 @@ export interface RuntimeTarget {
   arch: string
   executableAsset: string
   executableSha256: string
+  agentdAsset: string
+  agentdSha256: string
   libraryAsset: string
   libraryName: string
   librarySha256: string
@@ -17,6 +19,12 @@ export interface LicenseArtifact {
 export const MICRO_SANDBOX_VERSION: string
 export const LIBKRUNFW_VERSION: string
 export const RELEASE_BASE_URL: string
+export const MICROSANDBOX_SOURCE_URL: string
+export const MICROSANDBOX_SOURCE_SHA256: string
+export const MICROSANDBOX_PATCH_PATH: string
+export const MICROSANDBOX_PATCH_SHA256: string
+export const MICROSANDBOX_BUILD_TOOLCHAIN: string
+export const MICROSANDBOX_BUILD_FEATURES: string
 export const runtimeTargets: Readonly<Record<string, Readonly<RuntimeTarget>>>
 export const licenseArtifacts: readonly Readonly<LicenseArtifact>[]
 export function resolveRuntimeTarget(
@@ -25,13 +33,26 @@ export function resolveRuntimeTarget(
 ): string
 export function selectRuntime(targetTriple: string): Readonly<RuntimeTarget>
 export function sha256(bytes: ArrayBufferView): string
+export function applyRuntimePatch(sourceRoot: string, patchPath: string): void
 export function verifySha256(bytes: ArrayBufferView, expected: string, label: string): void
 export function stageRuntime(options: {
   appRoot: string
   targetTriple: string
+  hostTriple?: string
   fetchBytes: (url: string) => Promise<ArrayBufferView>
   selected?: RuntimeTarget
   licenses?: LicenseArtifact[]
+  sourceArtifact?: { url: string; sha256: string }
+  buildExecutable?: (options: {
+    appRoot: string
+    targetTriple: string
+    hostTriple: string
+    sourceArchive: ArrayBufferView
+    patch: ArrayBufferView
+    agentd: ArrayBufferView
+    cacheRoot: string
+  }) => Promise<ArrayBufferView>
+  verifyExecutable?: boolean
 }): Promise<{
   targetTriple: string
   executablePath: string

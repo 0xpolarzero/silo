@@ -4,6 +4,9 @@ import { expect, it, vi } from "vitest"
 
 import { GeneralPage } from "./general-page"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
+import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
+import { SystemIntegrationProvider } from "@/features/preferences/system-integrations-store"
+import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
 
 it("searches a long startup sandbox list and preserves selections when startup is toggled", async () => {
   const user = userEvent.setup()
@@ -12,7 +15,8 @@ it("searches a long startup sandbox list and preserves selections when startup i
     ...source.workspaces[0],
     machine: { ...source.workspaces[0].machine, id: `sandbox-${index + 1}`, name: `sandbox-${index + 1}` },
   }))
-  render(<GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} />)
+  const settings = createMemorySettingsStore(source.preferences)
+  render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)
   const startup = screen.getByRole("switch", { name: "Start sandboxes at launch" })
   if (!source.preferences.startWorkspacesAtLaunch) await user.click(startup)
   const input = screen.getByRole("combobox", { name: "Add sandbox at startup" })

@@ -105,9 +105,9 @@ pub fn application_at(path: &Path) -> Option<Application> {
     })
 }
 
-/// Run after discovery on the GTK main thread. Fixtures never read host icons.
+/// Run after discovery on the GTK main thread.
 pub fn load_icons(catalog: &mut ApplicationCatalog) {
-    if catalog.fixture || !gtk::is_initialized_main_thread() {
+    if !gtk::is_initialized_main_thread() {
         return;
     }
     for application in catalog
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn fixture_icon_enrichment_leaves_fixture_assets_unchanged() {
+    fn icon_enrichment_outside_gtk_main_thread_leaves_assets_unchanged() {
         let application = Application {
             name: "Fixture editor".into(),
             path: "/fixture/editor.desktop".into(),
@@ -310,7 +310,6 @@ mod tests {
         };
         let mut catalog = ApplicationCatalog {
             editor: vec![application.clone()],
-            fixture: true,
             ..Default::default()
         };
         load_icons(&mut catalog);

@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest"
 
 import { createMemorySettingsStore, createSettingsStore, type SettingsBackend, type SettingsSnapshot } from "./settings-store"
 import {
-  createFixtureSystemIntegrationStore,
   createSystemIntegrationStore,
   type SystemIntegrationService,
   type SystemIntegrations,
@@ -220,18 +219,4 @@ describe("verified system integration state", () => {
     expect(native.value.showError).toHaveBeenCalledWith("Login read failed\nNotification read failed")
   })
 
-  it("uses deterministic fixture authority without a host adapter", async () => {
-    const settings = createMemorySettingsStore({ launchAtLogin: false, notificationsEnabled: false })
-    const store = createFixtureSystemIntegrationStore(settings)
-    await store.initialize()
-    await store.setLaunchAtLogin(true)
-    await store.setNotificationsEnabled(true)
-
-    expect(store.getSnapshot()).toMatchObject({
-      platform: "fixture",
-      loginItem: { state: "enabled" },
-      notifications: { state: "authorized" },
-    })
-    expect(settings.getSnapshot().settings).toMatchObject({ launchAtLogin: true, notificationsEnabled: true })
-  })
 })

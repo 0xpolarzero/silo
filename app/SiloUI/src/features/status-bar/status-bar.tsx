@@ -144,7 +144,7 @@ export function StatusBarContent({ source, actions, focusContent }: { source: Ap
           <ListRow
             icon={<ListRowIcon className={repair.status === "repairing" ? undefined : "bg-destructive/10 text-destructive"}>{repair.status === "repairing" ? <Loader2 className="size-3.5 animate-spin" /> : <CircleAlert className="size-3.5" />}</ListRowIcon>}
             title={repair.status === "repairing" ? "Repairing Silo…" : "Silo needs repair"}
-            detail={repair.status === "repairing" ? "Sandboxes will be available shortly" : "The Silo runtime needs attention"}
+            detail={repair.status === "repairing" ? "Sandboxes will be available shortly" : "The Silo runtime is unavailable"}
             actions={<Button variant="outline" size="xs" onClick={() => actions.openSilo({ tab: "system" })}>{repair.status === "repairing" ? "View" : "Repair…"}</Button>}
           />
         </ListCard>}

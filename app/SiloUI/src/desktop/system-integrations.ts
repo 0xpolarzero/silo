@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 
 import {
-  createFixtureSystemIntegrationStore,
   createSystemIntegrationStore,
   systemIntegrationsSchema,
   type LoginItemStatus,
@@ -19,15 +18,6 @@ export function createDesktopSystemIntegrationStore(settings: SettingsStore) {
     showError: (message) => invoke("show_integration_error", { message }),
   }
   return createSystemIntegrationStore(service, settings)
-}
-
-export function createSystemIntegrationStoreForRuntime(
-  settings: SettingsStore,
-  runtime: { desktop: boolean; main: boolean; fixtureStorage: boolean },
-) {
-  return runtime.desktop && runtime.main && !runtime.fixtureStorage
-    ? createDesktopSystemIntegrationStore(settings)
-    : createFixtureSystemIntegrationStore(settings)
 }
 
 export function connectSystemIntegrationLifecycle(store: ReturnType<typeof createDesktopSystemIntegrationStore>) {

@@ -6,6 +6,8 @@ import { GeneralPage } from "@/features/application/pages/general-page"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { createMemorySettingsStore, createSettingsStore, SettingsProvider, type SettingsStore } from "./settings-store"
 import { initializeTheme } from "./theme"
+import { SystemIntegrationProvider } from "./system-integrations-store"
+import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
 
 let systemDark = false
 let media: EventTarget
@@ -29,7 +31,7 @@ afterEach(() => {
 function renderSettings(store: SettingsStore) {
   const source = applicationSourceForScenario("complete")
   const user = userEvent.setup()
-  render(<SettingsProvider store={store}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SettingsProvider>)
+  render(<SettingsProvider store={store}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(store)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)
   return async (theme: string) => {
     await user.click(screen.getByRole("combobox", { name: "Theme" }))
     await user.click(screen.getByRole("option", { name: theme }))

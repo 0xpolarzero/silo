@@ -20,6 +20,7 @@ export const settingSchemas = {
   notifyHealth: z.boolean(),
   notifyActions: z.boolean(),
   notifyBackup: z.boolean(),
+  onboardingComplete: z.boolean(),
 } as const
 
 export const settingsSchema = z.object(settingSchemas).strict()
@@ -46,6 +47,7 @@ export const defaultSettings: Settings = {
   notifyHealth: true,
   notifyActions: true,
   notifyBackup: true,
+  onboardingComplete: false,
 }
 
 // Read fields independently: one invalid field must not erase other saved choices.

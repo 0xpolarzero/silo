@@ -222,6 +222,7 @@ fn valid_setting(key: &str, value: &Value) -> Option<bool> {
     Some(match key {
         "theme" => matches!(value.as_str(), Some("system" | "light" | "dark")),
         "launchAtLogin"
+        | "onboardingComplete"
         | "startWorkspacesAtLaunch"
         | "reduceMotion"
         | "notificationsEnabled"
@@ -433,14 +434,7 @@ fn valid_draft(value: &Value) -> bool {
 }
 
 struct InitializedSettings {
-    fixture: bool,
     store: SettingsStore,
-}
-
-impl InitializedSettings {
-    fn uses_fixture_storage(&self) -> bool {
-        self.fixture || (self.store.path.is_none() && self.store.protected_error.is_none())
-    }
 }
 
 #[derive(Default)]
@@ -452,18 +446,13 @@ struct SettingsState {
 impl SettingsState {
     fn initialize(
         &self,
-        fixture: bool,
         path: impl FnOnce() -> Result<Option<PathBuf>, String>,
     ) -> Result<Snapshot, String> {
         let mut initialized = self.store.lock().map_err(|_| "Settings are unavailable")?;
         if let Some(current) = initialized.as_ref() {
-            return if current.fixture == fixture {
-                Ok(current.store.snapshot())
-            } else {
-                Err("Relaunch Silo to change the settings fixture mode".into())
-            };
+            return Ok(current.store.snapshot());
         }
-        let store = match if fixture { Ok(None) } else { path() } {
+        let store = match path() {
             Ok(path) => SettingsStore::load(path),
             Err(error) => {
                 let mut store = SettingsStore::load(None);
@@ -472,7 +461,7 @@ impl SettingsState {
             }
         };
         let snapshot = store.snapshot();
-        *initialized = Some(InitializedSettings { fixture, store });
+        *initialized = Some(InitializedSettings { store });
         self.ready.notify_all();
         Ok(snapshot)
     }
@@ -480,7 +469,7 @@ impl SettingsState {
     fn initialized(&self) -> Result<MutexGuard<'_, Option<InitializedSettings>>, String> {
         let guard = self.store.lock().map_err(|_| "Settings are unavailable")?;
         // This is called only from blocking workers. Waiting releases the mutex so
-        // the main window's initialize command can choose fixture mode first.
+        // the main window can initialize persistent settings first.
         let (guard, _) = self
             .ready
             .wait_timeout_while(guard, Duration::from_secs(10), |value| value.is_none())
@@ -544,44 +533,24 @@ impl ShutdownState {
 }
 
 fn settings_path(app: &AppHandle) -> tauri::Result<Option<PathBuf>> {
-    #[cfg(debug_assertions)]
-    {
-        if std::env::var("SILO_SETTINGS_MEMORY").as_deref() == Ok("1") {
-            return Ok(None);
-        }
-        if let Some(directory) = std::env::var_os("SILO_SETTINGS_DIR") {
-            return Ok(Some(PathBuf::from(directory).join("settings.json")));
-        }
-    }
     Ok(Some(app.path().app_config_dir()?.join("settings.json")))
 }
 
 pub fn install(app: &AppHandle) {
-    // Do not touch saved values until the main window identifies fixture mode.
     app.manage(SettingsState::default());
     app.manage(ShutdownState::default());
-}
-
-// Application discovery and native pickers must not consult the host in fixtures.
-pub fn uses_fixture_storage(app: &AppHandle) -> Result<bool, String> {
-    let state = app.state::<SettingsState>();
-    let initialized = state.initialized()?;
-    let current = initialized.as_ref().ok_or("Settings are not initialized")?;
-    Ok(current.uses_fixture_storage())
 }
 
 #[tauri::command]
 pub async fn initialize_settings(
     app: AppHandle,
     window: WebviewWindow,
-    fixture: bool,
 ) -> Result<Snapshot, String> {
     require_main(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<SettingsState>();
-        let snapshot = state.initialize(fixture, || {
-            settings_path(&app).map_err(|error| error.to_string())
-        })?;
+        let snapshot =
+            state.initialize(|| settings_path(&app).map_err(|error| error.to_string()))?;
         publish(&app, &snapshot);
         Ok(snapshot)
     })
@@ -1134,13 +1103,11 @@ mod tests {
     }
 
     #[test]
-    fn fixture_initialization_never_resolves_or_reads_the_saved_directory() {
+    fn initialization_resolves_storage_once_and_reuses_loaded_state() {
         let state = SettingsState::default();
-        let snapshot = state
-            .initialize(true, || {
-                panic!("fixture must not resolve production storage")
-            })
-            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let snapshot = state.initialize(|| Ok(Some(path))).unwrap();
         assert!(snapshot.settings.is_empty());
         state
             .initialized()
@@ -1152,38 +1119,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             state
-                .initialize(true, || panic!("reinitialization must not reread storage"))
+                .initialize(|| panic!("reinitialization must not reread storage"))
                 .unwrap()
                 .settings["theme"],
             "light"
         );
-        assert!(state
-            .initialize(false, || panic!(
-                "mode change must not load production storage"
-            ))
-            .is_err());
-    }
-
-    #[test]
-    fn explicit_and_debug_memory_storage_are_both_fixture_authority() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let explicit = InitializedSettings {
-            fixture: true,
-            store: SettingsStore::load(Some(path.clone())),
-        };
-        let memory = InitializedSettings {
-            fixture: false,
-            store: SettingsStore::load(None),
-        };
-        let persisted = InitializedSettings {
-            fixture: false,
-            store: SettingsStore::load(Some(path)),
-        };
-
-        assert!(explicit.uses_fixture_storage());
-        assert!(memory.uses_fixture_storage());
-        assert!(!persisted.uses_fixture_storage());
     }
 
     #[test]
@@ -1202,9 +1142,7 @@ mod tests {
                 .snapshot()
         });
         ready.recv().unwrap();
-        state
-            .initialize(true, || panic!("fixture must not read saved state"))
-            .unwrap();
+        state.initialize(|| Ok(None)).unwrap();
         assert!(reader.join().unwrap().settings.is_empty());
     }
 

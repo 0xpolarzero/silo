@@ -18,6 +18,7 @@ export function backupFixtureModeFromSearch(search: string): BackupFixtureMode |
 export function initialBackupArchive(source: ApplicationSource): BackupArchive {
   return {
     name: source.backup.lastArchive,
+    archivePath: `${source.backup.destination}/${source.backup.lastArchive}`,
     completedLabel: source.backup.completedLabel,
     size: source.backup.compressedSize,
     destination: source.backup.destination,
@@ -104,12 +105,18 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
       operation: running ? { kind: "running", operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), progress: 18 + running.step * 25, phases: phasesFor(running.operation, running.step) } : result,
     },
     actions: {
-      inspectArchive(selection) {
-        const archive = selection instanceof File ? { ...initialBackupArchive(source), name: selection.name, destination: "Selected file", completedLabel: "Selected archive", size: selection.size > 0 ? `${Math.max(0.1, selection.size / 1024 ** 2).toFixed(1)} MB` : "12.4 GB" } : selection
+      async chooseDestination() { return source.backup.destination },
+      async chooseArchive() {
+        const archive = { ...initialBackupArchive(source), name: "dev.silo-backup", archivePath: "/selected/dev.silo-backup", destination: "Selected file", completedLabel: "Selected archive", size: "12.4 GB" }
+        return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this backup format is newer than this Silo version." } : { archive, valid: true }
+      },
+      async inspectArchive(selection) {
+        const archive = selection
         return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this backup format is newer than this Silo version." } : { archive, valid: true }
       },
       startBackup(destination, sandboxes) {
-        start("backup", { name: `silo-${new Date().toISOString().slice(0, 10)}-${sandboxes.join("-")}.silo-backup`, completedLabel: "Just now", size: source.backup.compressedSize, destination, sandboxes }, sandboxes)
+        const name = `silo-${new Date().toISOString().slice(0, 10)}-${sandboxes.join("-")}.silo-backup`
+        start("backup", { name, archivePath: `${destination}/${name}`, completedLabel: "Just now", size: source.backup.compressedSize, destination, sandboxes }, sandboxes)
       },
       startRestore: (archive, newName) => start("restore", archive, archive.sandboxes, newName),
       cancelOperation() {
@@ -127,7 +134,9 @@ export function useUnavailableBackup(source: ApplicationSource): BackupControlle
   return {
     state: { snapshotId: JSON.stringify(source.backup), availability: "unavailable", availabilityMessage: "Backup and restore are not available in this Silo build. No sandbox data was changed.", requiredSpaceGB: 0, archives: [], operation: null },
     actions: {
-      inspectArchive: (selection) => ({ archive: selection instanceof File ? { name: selection.name, completedLabel: "", size: "", destination: "", sandboxes: [] } : selection, valid: false, reason: "Native restore validation is unavailable in this Silo build." }),
+      chooseDestination: async () => null,
+      chooseArchive: async () => null,
+      inspectArchive: async (selection) => ({ archive: selection, valid: false, reason: "Native restore validation is unavailable in this Silo build." }),
       startBackup: () => undefined,
       startRestore: () => undefined,
       cancelOperation: () => undefined,

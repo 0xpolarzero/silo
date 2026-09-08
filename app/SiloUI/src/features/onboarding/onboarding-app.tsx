@@ -170,6 +170,15 @@ export function OnboardingApp({
     [repositoryOptions, source],
   )
 
+  useEffect(() => {
+    const current = currentDraft.current
+    if (current.machines.length > 0 || current.unfinishedMachineEditor || source.machineConfigurations.length === 0) return
+    const next = { ...current, machines: source.machineConfigurations.map((machine) => ({ ...machine })), workspaceSelections: initialWorkspaceSelections(source), workspaceIdentities: initialWorkspaceIdentities(source) }
+    currentDraft.current = next
+    setDraft(next)
+    void updateOnboardingDraft(next)
+  }, [source, updateOnboardingDraft])
+
   // Completion comes from the existing action's result, never from a recovered
   // draft. A failed or unfinished completion leaves recovery data intact.
   useEffect(() => {

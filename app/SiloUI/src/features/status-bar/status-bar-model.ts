@@ -6,10 +6,10 @@ export function statusBarHealth(source: ApplicationSource) {
   if (source.workspaces.some((workspace) => workspace.state === "failed" || workspace.attention?.level === "error")
     || source.sandboxConfigurationOperation?.status === "failed"
     || source.repositoryPushOperations.some(({ status }) => status === "failed")) {
-    return { label: "Needs attention", tone: "error" } as const
+    return { label: "Sandbox error", tone: "error" } as const
   }
   if (source.workspaces.some(({ freshness }) => freshness === "stale")) return { label: "Last known status", tone: "warning" } as const
-  if (source.workspaces.some(({ attention }) => attention?.level === "warning")) return { label: "Needs attention", tone: "warning" } as const
+  if (source.workspaces.some(({ attention }) => attention?.level === "warning")) return { label: "Sandbox warning", tone: "warning" } as const
   if (source.sandboxConfigurationOperation?.status === "awaiting-approval") return { label: "Approval needed", tone: "warning" } as const
   if (repair?.status === "repairing") return { label: "Repairing…", tone: "busy" } as const
   if (source.workspaces.some(({ state }) => state === "starting")

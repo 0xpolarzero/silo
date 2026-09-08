@@ -1,0 +1,1229 @@
+diff --git a/crates/cli/bin/main.rs b/crates/cli/bin/main.rs
+index 26fee23e..044b0b7c 100644
+--- a/crates/cli/bin/main.rs
++++ b/crates/cli/bin/main.rs
+@@ -95,7 +95,7 @@ enum Commands {
+     /// Create a sandbox from an image and run a command in it.
+     Run(run::RunArgs),
+ 
+-    /// Create a sandbox and boot it in the background.
++    /// Create a sandbox; snapshot restores remain stopped until `start`.
+     Create(create::CreateArgs),
+ 
+     /// Modify sandbox configuration.
+@@ -776,6 +776,45 @@ mod command_tests {
+         assert!(matches!(modify.command, Commands::Modify(_)));
+     }
+ 
++    #[test]
++    fn create_accepts_explicit_no_start_and_preserves_default() {
++        let cli =
++            Cli::try_parse_from(["msb", "create", "alpine", "--name", "stopped", "--no-start"])
++                .unwrap();
++        let Commands::Create(args) = cli.command else {
++            panic!("expected create");
++        };
++        assert!(args.no_start);
++        let cli = Cli::try_parse_from(["msb", "create", "alpine"]).unwrap();
++        let Commands::Create(args) = cli.command else {
++            panic!("expected create");
++        };
++        assert!(!args.no_start);
++    }
++
++    #[test]
++    fn create_accepts_stopped_snapshot_restore() {
++        let cli = Cli::try_parse_from([
++            "msb",
++            "create",
++            "--name",
++            "restored",
++            "--from-snapshot",
++            "verified",
++        ])
++        .unwrap();
++
++        let Commands::Create(args) = cli.command else {
++            panic!("expected create command");
++        };
++        assert_eq!(args.from_snapshot.as_deref(), Some("verified"));
++        assert!(args.image.is_none());
++        assert!(
++            Cli::try_parse_from(["msb", "create", "alpine", "--from-snapshot", "verified"])
++                .is_err()
++        );
++    }
++
+     #[test]
+     fn plural_resource_commands_route_to_list_actions() {
+         let cli = Cli::try_parse_from(["msb", "images"]).unwrap();
+diff --git a/crates/cli/lib/commands/create.rs b/crates/cli/lib/commands/create.rs
+index 9069611c..0f4e3711 100644
+--- a/crates/cli/lib/commands/create.rs
++++ b/crates/cli/lib/commands/create.rs
+@@ -1,4 +1,4 @@
+-//! `msb create` command — create and boot a fresh sandbox.
++//! `msb create` command — create a fresh sandbox.
+ 
+ use clap::Args;
+ use microsandbox::sandbox::Sandbox;
+@@ -10,14 +10,28 @@ use crate::{sandbox_config, ui};
+ // Types
+ //--------------------------------------------------------------------------------------------------
+ 
+-/// Create a sandbox and boot it in the background.
++/// Create a sandbox, booting image-based creates and leaving snapshot restores stopped.
+ #[derive(Debug, Args)]
+ pub struct CreateArgs {
+     /// Image to use (e.g. alpine, python, ./rootfs, ./disk.qcow2).
+     ///
+-    /// May be omitted when a config file supplies `image`.
++    /// Mutually exclusive with `--from-snapshot`. May be omitted when a config file supplies
++    /// `image`.
++    #[arg(conflicts_with = "from_snapshot")]
+     pub image: Option<String>,
+ 
++    /// Materialize a stopped sandbox from a snapshot artifact (path or name).
++    #[arg(
++        long = "from-snapshot",
++        alias = "from-snap",
++        value_name = "PATH_OR_NAME"
++    )]
++    pub from_snapshot: Option<String>,
++
++    /// Create persistent storage and configuration without booting the VM.
++    #[arg(long = "no-start")]
++    pub no_start: bool,
++
+     /// Sandbox configuration options.
+     #[command(flatten)]
+     pub sandbox: SandboxOpts,
+@@ -42,7 +56,9 @@ pub async fn run(
+     }
+ 
+     let resolved = sandbox_config::resolve(&args.sandbox.config)?;
+-    let image = resolved.image(args.image.as_deref(), None)?;
++    let image = resolved.image(args.image.as_deref(), args.from_snapshot.as_deref())?;
++    let create_stopped =
++        args.no_start || matches!(&image, sandbox_config::ResolvedImage::Snapshot(_));
+     let builder = resolved.apply(Sandbox::builder(&name))?;
+     let builder = image.apply(builder)?;
+     let builder = if resolved.loaded() {
+@@ -51,9 +67,13 @@ pub async fn run(
+         apply_sandbox_opts(builder, &args.sandbox)?
+     };
+ 
+-    let (mut progress, task) = builder
+-        .detached(true)
+-        .create_detached_with_pull_progress()?;
++    let (mut progress, task) = if create_stopped {
++        builder.create_stopped_with_pull_progress()?
++    } else {
++        builder
++            .detached(true)
++            .create_detached_with_pull_progress()?
++    };
+     let mut display = if args.sandbox.quiet {
+         ui::PullProgressDisplay::quiet(&image.display())
+     } else {
+@@ -67,7 +87,9 @@ pub async fn run(
+     match task.await {
+         Ok(Ok(sandbox)) => {
+             display.finish();
+-            sandbox.detach().await;
++            if !create_stopped {
++                sandbox.detach().await;
++            }
+             // Print auto-generated name to stdout so it's scriptable.
+             if !is_named {
+                 println!("{name}");
+diff --git a/crates/image/lib/lib.rs b/crates/image/lib/lib.rs
+index 137badd7..e8333126 100644
+--- a/crates/image/lib/lib.rs
++++ b/crates/image/lib/lib.rs
+@@ -55,3 +55,6 @@ pub use platform::{Arch, Os, Platform};
+ pub use progress::{PullProgress, PullProgressHandle, PullProgressSender, progress_channel};
+ pub use pull::{PullOptions, PullPolicy, PullResult, RootfsMaterialization};
+ pub use registry::{Registry, RegistryBuilder};
++
++/// Write a VMDK descriptor for validated local extent files.
++pub use stitch::vmdk::write_vmdk_descriptor;
+diff --git a/crates/image/lib/registry/client.rs b/crates/image/lib/registry/client.rs
+index 13359153..4e22d01a 100644
+--- a/crates/image/lib/registry/client.rs
++++ b/crates/image/lib/registry/client.rs
+@@ -578,15 +578,43 @@ impl Registry {
+         &self,
+         reference: &oci_client::Reference,
+     ) -> ImageResult<(Vec<u8>, String, Vec<u8>)> {
+-        let (manifest, manifest_digest, config) = self
++        let (_, manifest_digest, config) = self
+             .client
+             .pull_manifest_and_config(reference, &self.auth)
+             .await?;
+ 
+-        let manifest_bytes = serde_json::to_vec(&manifest)
+-            .map_err(|e| ImageError::ManifestParse(format!("failed to serialize manifest: {e}")))?;
+-
+-        Ok((manifest_bytes, manifest_digest, config.into_bytes()))
++        // OCI digests cover the registry's exact bytes. Re-serializing the
++        // parsed manifest changes whitespace/field order and poisons archives.
++        let pinned = oci_client::Reference::with_digest(
++            reference.registry().to_string(),
++            reference.repository().to_string(),
++            manifest_digest.clone(),
++        );
++        let (manifest_bytes, raw_digest) = self
++            .client
++            .pull_manifest_raw(
++                &pinned,
++                &self.auth,
++                &[
++                    "application/vnd.oci.image.manifest.v1+json",
++                    "application/vnd.docker.distribution.manifest.v2+json",
++                ],
++            )
++            .await?;
++        use sha2::{Digest as _, Sha256};
++        let actual = format!("sha256:{}", hex::encode(Sha256::digest(&manifest_bytes)));
++        if raw_digest != manifest_digest || actual != manifest_digest {
++            return Err(ImageError::DigestMismatch {
++                digest: manifest_digest.clone(),
++                expected: manifest_digest,
++                actual,
++            });
++        }
++        Ok((
++            manifest_bytes.to_vec(),
++            manifest_digest,
++            config.into_bytes(),
++        ))
+     }
+ 
+     /// Parse manifest, resolving multi-platform index if needed.
+@@ -1803,6 +1831,82 @@ mod tests {
+         },
+     };
+ 
++    #[tokio::test]
++    async fn registry_fetch_preserves_original_manifest_digest_bytes() {
++        use sha2::{Digest as _, Sha256};
++        use std::io::{Read, Write};
++        let config = b"{}";
++        let config_digest = format!("sha256:{}", hex::encode(Sha256::digest(config)));
++        let raw = format!(
++            "{{\n  \"schemaVersion\": 2, \"mediaType\": \"application/vnd.oci.image.manifest.v1+json\",\n  \"config\": {{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"size\":2,\"digest\":\"{config_digest}\"}}, \"layers\": []\n}}"
++        );
++        let expected_digest = format!("sha256:{}", hex::encode(Sha256::digest(raw.as_bytes())));
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        listener.set_nonblocking(true).unwrap();
++        let address = listener.local_addr().unwrap().to_string();
++        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
++        let server_done = done.clone();
++        let served_raw = raw.clone();
++        let served_digest = expected_digest.clone();
++        let server = std::thread::spawn(move || {
++            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
++            while !server_done.load(std::sync::atomic::Ordering::Relaxed)
++                && std::time::Instant::now() < deadline
++            {
++                let Ok((mut stream, _)) = listener.accept() else {
++                    std::thread::sleep(std::time::Duration::from_millis(5));
++                    continue;
++                };
++                stream
++                    .set_read_timeout(Some(std::time::Duration::from_secs(1)))
++                    .unwrap();
++                let mut request = [0u8; 4096];
++                let count = stream.read(&mut request).unwrap();
++                let request = String::from_utf8_lossy(&request[..count]);
++                let manifest = request.contains("/manifests/");
++                let body = if manifest {
++                    served_raw.as_bytes()
++                } else {
++                    config
++                };
++                let header = if manifest {
++                    format!(
++                        "Docker-Content-Digest: {served_digest}\r\nContent-Type: application/vnd.oci.image.manifest.v1+json\r\n"
++                    )
++                } else {
++                    String::new()
++                };
++                write!(
++                    stream,
++                    "HTTP/1.1 200 OK\r\n{header}Content-Length: {}\r\nConnection: close\r\n\r\n",
++                    body.len()
++                )
++                .unwrap();
++                stream.write_all(body).unwrap();
++            }
++        });
++        let directory = tempdir().unwrap();
++        let registry = super::Registry::builder(
++            Platform::host_linux(),
++            GlobalCache::new(directory.path()).unwrap(),
++        )
++        .add_insecure_registries(vec![address.clone()])
++        .build()
++        .unwrap();
++        let reference = format!("{address}/test/image:latest").parse().unwrap();
++        let result = registry.fetch_manifest_and_config(&reference).await;
++        done.store(true, std::sync::atomic::Ordering::Relaxed);
++        server.join().unwrap();
++        let (bytes, digest, actual_config) = result.unwrap();
++        assert_eq!(digest, expected_digest);
++        assert_eq!(actual_config, config);
++        assert_eq!(
++            bytes,
++            raw.as_bytes(),
++            "OCI digests cover original bytes, including whitespace"
++        );
++    }
++
+     #[test]
+     fn test_platform_resolver_prefers_exact_variant() {
+         let manifests = vec![
+diff --git a/sdk/rust/lib/backend/local/sandbox/create.rs b/sdk/rust/lib/backend/local/sandbox/create.rs
+index 0f9eaacd..b9aa57cf 100644
+--- a/sdk/rust/lib/backend/local/sandbox/create.rs
++++ b/sdk/rust/lib/backend/local/sandbox/create.rs
+@@ -89,6 +89,7 @@ impl LocalBackend {
+         &self,
+         backend: Arc<dyn Backend>,
+         mut config: SandboxConfig,
++        start: bool,
+         mode: SpawnMode,
+         progress: Option<PullProgressSender>,
+     ) -> MicrosandboxResult<Sandbox> {
+@@ -294,14 +295,12 @@ impl LocalBackend {
+                         "patches cannot be combined with from_snapshot".into(),
+                     ));
+                 }
+-                let dst = upper_path.clone();
+-                tokio::task::spawn_blocking(move || {
+-                    microsandbox_utils::copy::fast_copy(&snap_upper, &dst)
+-                })
+-                .await
+-                .map_err(|e| {
+-                    crate::MicrosandboxError::Custom(format!("snapshot copy task: {e}"))
+-                })??;
++                if let Err(err) =
++                    Self::materialize_snapshot_upper(snap_upper, upper_path.clone()).await
++                {
++                    let _ = remove_dir_if_exists(&sandbox_dir);
++                    return Err(err);
++                }
+             } else {
+                 match &root_disk {
+                     RootDisk::Managed { size_mib } => {
+@@ -372,22 +371,59 @@ impl LocalBackend {
+         // Sandbox-time named-volume creation is one-shot create intent. Provision
+         // before inserting the sandbox row so volume conflicts or incompatibilities
+         // cannot leave a stopped sandbox that never booted.
+-        let created_named_volumes = ensure_named_volumes(self, &config).await?;
++        tokio::fs::create_dir_all(&sandbox_dir).await?;
++        let created_named_volumes = match ensure_named_volumes(self, &config).await {
++            Ok(volumes) => volumes,
++            Err(err) => {
++                let _ = remove_dir_if_exists(&sandbox_dir);
++                return Err(err);
++            }
++        };
+ 
+-        // Claim the persisted identity in Starting state. Running is published only after the
+-        // guest agent and all create-time validation are ready for callers.
++        // Claim the persisted identity. Eager create remains non-connectable in Starting until
++        // the guest is ready; stopped create publishes Created only after host-side state has
++        // been materialized.
+         let write_db = db.write();
+         let persisted_config = config.clone_for_persistence();
+-        let sandbox_id =
+-            match Self::insert_starting_sandbox_record(write_db, &persisted_config).await {
+-                Ok(sandbox_id) => sandbox_id,
+-                Err(err) => {
+-                    rollback_created_named_volumes(self, &created_named_volumes).await;
+-                    return Err(err);
+-                }
+-            };
++        let initial_status = if start {
++            SandboxStatus::Starting
++        } else {
++            SandboxStatus::Created
++        };
++        let sandbox_id = match Self::insert_sandbox_record_with_status(
++            write_db,
++            &persisted_config,
++            initial_status,
++        )
++        .await
++        {
++            Ok(sandbox_id) => sandbox_id,
++            Err(err) => {
++                rollback_created_named_volumes(self, &created_named_volumes).await;
++                let _ = remove_dir_if_exists(&sandbox_dir);
++                return Err(err);
++            }
++        };
+         tracing::debug!(sandbox_id, sandbox = %config.spec.name, "create_local: db record inserted");
+ 
++        if !start {
++            if let Some(manifest_digest) = pinned_manifest_digest.as_deref()
++                && let Err(err) =
++                    Self::persist_oci_manifest_pin(write_db, sandbox_id, manifest_digest).await
++            {
++                rollback_created_named_volumes(self, &created_named_volumes).await;
++                let _ = Self::delete_sandbox_record(write_db, sandbox_id).await;
++                let _ = remove_dir_if_exists(&sandbox_dir);
++                return Err(err);
++            }
++
++            return Ok(Sandbox::from_local_created(
++                backend,
++                sandbox_id,
++                persisted_config,
++            ));
++        }
++
+         // Spawn the sandbox process and create the bridge. On failure, return the provisional
+         // Starting row to Stopped so it cannot remain as a phantom boot.
+         let (local_state, returned_config) = match self
+@@ -545,6 +581,19 @@ impl LocalBackend {
+         ))
+     }
+ 
++    /// Copy a snapshot upper into the sandbox storage without starting a runtime.
++    async fn materialize_snapshot_upper(
++        source: PathBuf,
++        destination: PathBuf,
++    ) -> MicrosandboxResult<()> {
++        tokio::task::spawn_blocking(move || {
++            microsandbox_utils::copy::fast_copy(&source, &destination)
++        })
++        .await
++        .map_err(|e| crate::MicrosandboxError::Custom(format!("snapshot copy task: {e}")))??;
++        Ok(())
++    }
++
+     /// Wait for the agent relay socket to become available and connect.
+     ///
+     /// The sandbox process creates the relay socket asynchronously during startup.
+@@ -1205,6 +1254,7 @@ impl LocalBackend {
+     }
+ 
+     /// Insert a provisional local create record that remains non-connectable until ready.
++    #[cfg(test)]
+     async fn insert_starting_sandbox_record(
+         db: &DbWriteConnection,
+         config: &SandboxConfig,
+@@ -1450,8 +1500,8 @@ mod tests {
+     use crate::backend::{Backend, LocalBackend};
+     use crate::runtime::SpawnMode;
+     use crate::sandbox::{
+-        HostPermissions, MAX_HOSTNAME_BYTES, MountOptions, OciRootfsSource, RootfsSource,
+-        SandboxConfig, SandboxStatus, StatVirtualization, VolumeMount,
++        HostPermissions, MAX_HOSTNAME_BYTES, MountOptions, OciRootfsSource, PullPolicy,
++        RootfsSource, SandboxConfig, SandboxStatus, StatVirtualization, VolumeMount,
+     };
+ 
+     /// Open both pools at `db_path` for tests, with migrations applied.
+@@ -1578,7 +1628,7 @@ mod tests {
+         ];
+ 
+         let err = match backend
+-            .create_sandbox(backend_trait, config, SpawnMode::Attached, None)
++            .create_sandbox(backend_trait, config, true, SpawnMode::Attached, None)
+             .await
+         {
+             Ok(_) => panic!("expected invalid direct-config mounts to be rejected"),
+@@ -1605,7 +1655,7 @@ mod tests {
+         config.spec.runtime.hostname = Some("y".repeat(MAX_HOSTNAME_BYTES + 1));
+ 
+         let err = match backend
+-            .create_sandbox(backend.clone(), config, SpawnMode::Attached, None)
++            .create_sandbox(backend.clone(), config, true, SpawnMode::Attached, None)
+             .await
+         {
+             Ok(_) => panic!("invalid hostname should fail before sandbox creation"),
+@@ -1811,6 +1861,139 @@ mod tests {
+         assert_eq!(ready.status, SandboxStatus::Running);
+     }
+ 
++    #[tokio::test]
++    async fn test_start_false_materializes_snapshot_and_later_start_uses_persisted_config() {
++        let temp = tempfile::Builder::new()
++            .prefix("msb-stopped")
++            .tempdir_in("/tmp")
++            .unwrap();
++        let backend = Arc::new(
++            LocalBackend::builder()
++                .home(temp.path().join("home"))
++                .build()
++                .await
++                .unwrap(),
++        );
++        let backend_trait: Arc<dyn Backend> = backend.clone();
++
++        let image_ref: microsandbox_image::Reference =
++            "docker.io/library/alpine:3.20".parse().unwrap();
++        let metadata = microsandbox_image::CachedImageMetadata {
++            manifest_digest:
++                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
++            config_digest:
++                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
++            raw_manifest_json: r#"{"schemaVersion":2,"layers":[]}"#.into(),
++            raw_config_json:
++                r#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#
++                    .into(),
++            config: microsandbox_image::ImageConfig::default(),
++            layers: Vec::new(),
++        };
++        let manifest_digest: microsandbox_image::Digest = metadata.manifest_digest.parse().unwrap();
++        let cache = microsandbox_image::GlobalCache::new(&backend.cache_dir()).unwrap();
++        cache
++            .write_image_metadata_async(&image_ref, &metadata)
++            .await
++            .unwrap();
++        microsandbox_image::erofs::write_erofs(
++            &microsandbox_image::tree::FileTree::new(),
++            &cache.fsmeta_erofs_path(&manifest_digest),
++        )
++        .unwrap();
++        fs::write(cache.vmdk_path(&manifest_digest), b"# vmdk fixture").unwrap();
++
++        let source = temp.path().join("snapshot-upper.ext4");
++        fs::write(&source, b"captured snapshot upper").unwrap();
++        let mut config = test_config_with_rootfs(
++            "created-only",
++            RootfsSource::Oci(OciRootfsSource {
++                reference: image_ref.to_string(),
++                root_disk: None,
++            }),
++        );
++        config.spec.runtime.hostname = Some("snapshot-host".into());
++        config.spec.pull_policy = PullPolicy::Never;
++        config.manifest_digest = Some(metadata.manifest_digest.clone());
++        config.snapshot_upper_source = Some(source);
++
++        let sandbox = backend_trait
++            .sandboxes()
++            .create(backend_trait.clone(), config, false)
++            .await
++            .unwrap();
++        let pools = backend.db().await.unwrap();
++        let row = sandbox_entity::Entity::find()
++            .filter(sandbox_entity::Column::Name.eq("created-only"))
++            .one(pools.read())
++            .await
++            .unwrap()
++            .unwrap();
++        let runs = run_entity::Entity::find()
++            .filter(run_entity::Column::SandboxId.eq(row.id))
++            .all(pools.read())
++            .await
++            .unwrap();
++        let persisted: SandboxConfig = serde_json::from_str(&row.config).unwrap();
++
++        assert_eq!(sandbox.status().await.unwrap(), SandboxStatus::Created);
++        assert_eq!(row.status, SandboxStatus::Created);
++        assert!(row.active_config.is_none());
++        assert!(
++            runs.is_empty(),
++            "start=false must not create a runtime run row"
++        );
++        assert_eq!(
++            persisted.spec.runtime.hostname.as_deref(),
++            Some("snapshot-host")
++        );
++        match &persisted.spec.image {
++            RootfsSource::Oci(oci) => assert_eq!(oci.reference, image_ref.to_string()),
++            other => panic!("expected persisted OCI rootfs, got {other:?}"),
++        }
++        assert_eq!(
++            persisted.manifest_digest.as_deref(),
++            Some(metadata.manifest_digest.as_str())
++        );
++        assert!(persisted.snapshot_upper_source.is_none());
++
++        let upper = backend
++            .sandboxes_dir()
++            .join("created-only")
++            .join("upper.ext4");
++        assert_eq!(fs::read(&upper).unwrap(), b"captured snapshot upper");
++        let pins = sandbox_rootfs_entity::Entity::find()
++            .filter(sandbox_rootfs_entity::Column::SandboxId.eq(row.id))
++            .all(pools.read())
++            .await
++            .unwrap();
++        assert_eq!(pins.len(), 1);
++
++        // Force the later-start preflight to stop before spawning a guest. The missing path in
++        // the error proves start loaded the manifest digest from the persisted create config.
++        fs::remove_file(cache.vmdk_path(&manifest_digest)).unwrap();
++        let error = match backend_trait
++            .sandboxes()
++            .start(backend_trait.clone(), "created-only")
++            .await
++        {
++            Ok(_) => panic!("missing persisted base must fail before boot"),
++            Err(error) => error,
++        };
++        assert!(error.to_string().contains("VMDK missing"), "got: {error}");
++        assert_eq!(fs::read(&upper).unwrap(), b"captured snapshot upper");
++        assert_eq!(sandbox.status().await.unwrap(), SandboxStatus::Created);
++        let runs = run_entity::Entity::find()
++            .filter(run_entity::Column::SandboxId.eq(row.id))
++            .all(pools.read())
++            .await
++            .unwrap();
++        assert!(runs.is_empty(), "failed preflight must not start a runtime");
++
++        sandbox.remove_persisted().await.unwrap();
++        assert!(!upper.exists());
++    }
++
+     #[tokio::test]
+     async fn test_desired_and_active_configs_persist_mount_owner() {
+         let temp = tempdir().unwrap();
+diff --git a/sdk/rust/lib/backend/local/sandbox/mod.rs b/sdk/rust/lib/backend/local/sandbox/mod.rs
+index 7f06a07b..a3b2a6e1 100644
+--- a/sdk/rust/lib/backend/local/sandbox/mod.rs
++++ b/sdk/rust/lib/backend/local/sandbox/mod.rs
+@@ -983,13 +983,11 @@ impl SandboxBackend for LocalBackend {
+         &'a self,
+         backend: Arc<dyn Backend>,
+         config: SandboxConfig,
+-        _start: bool,
++        start: bool,
+     ) -> BoxFuture<'a, MicrosandboxResult<Sandbox>> {
+         Box::pin(async move {
+             self.warn_cloud_only(&config);
+-            // Local backend always boots immediately — `start` only differs
+-            // for cloud where create-without-start is a distinct state.
+-            self.create_sandbox(backend, config, SpawnMode::Attached, None)
++            self.create_sandbox(backend, config, start, SpawnMode::Attached, None)
+                 .await
+         })
+     }
+@@ -1001,7 +999,7 @@ impl SandboxBackend for LocalBackend {
+     ) -> BoxFuture<'a, MicrosandboxResult<Sandbox>> {
+         Box::pin(async move {
+             self.warn_cloud_only(&config);
+-            self.create_sandbox(backend, config, SpawnMode::Detached, None)
++            self.create_sandbox(backend, config, true, SpawnMode::Detached, None)
+                 .await
+         })
+     }
+diff --git a/sdk/rust/lib/backend/sandbox.rs b/sdk/rust/lib/backend/sandbox.rs
+index 4a20797f..6e9ac45c 100644
+--- a/sdk/rust/lib/backend/sandbox.rs
++++ b/sdk/rust/lib/backend/sandbox.rs
+@@ -152,12 +152,8 @@ pub trait SandboxBackend: Send + Sync {
+     /// `backend` Arc and the variant-specific state inside `SandboxInner`.
+     ///
+     /// `start` controls whether the sandbox is booted as part of create.
+-    /// **Cloud honours `start`** (forwards it as `?start=true|false` on the
+-    /// create request). **Local always boots immediately** — the local impl
+-    /// ignores the flag, because libkrun has no equivalent "create-without-
+-    /// start" state. This asymmetry is intentional per the SDK parity plan
+-    /// (D6.4); callers that need a stopped local sandbox should create then
+-    /// `stop()` it explicitly.
++    /// Both backends honor `start`. For local sandboxes, `false` materializes
++    /// host-side state and persists `Created` without spawning a guest process.
+     fn create<'a>(
+         &'a self,
+         backend: Arc<dyn Backend>,
+diff --git a/sdk/rust/lib/sandbox/builder.rs b/sdk/rust/lib/sandbox/builder.rs
+index 951c6c8f..7c2b22f6 100644
+--- a/sdk/rust/lib/sandbox/builder.rs
++++ b/sdk/rust/lib/sandbox/builder.rs
+@@ -1262,7 +1262,21 @@ impl SandboxBuilder {
+         }
+         let snap_ref = snap.manifest().image.reference.clone();
+ 
++        let size_bytes = file_state.upper.size_bytes;
++        let mib = 1024 * 1024;
++        let size_mib = u32::try_from(size_bytes / mib)
++            .ok()
++            .filter(|size| *size > 0 && size_bytes % mib == 0)
++            .ok_or_else(|| {
++                crate::MicrosandboxError::SnapshotIntegrity(
++                    "snapshot root size must be a positive whole MiB supported by the runtime"
++                        .into(),
++                )
++            })?;
+         self.config.spec.image = RootfsSource::oci(snap_ref);
++        if let RootfsSource::Oci(oci) = &mut self.config.spec.image {
++            oci.root_disk = Some(crate::sandbox::RootDisk::managed(size_mib));
++        }
+         self.config.manifest_digest = Some(snap.manifest().image.manifest_digest.clone());
+         self.config.snapshot_upper_source = Some(snap.path().join(&file_state.upper.file));
+         Ok(())
+@@ -1339,6 +1353,26 @@ impl SandboxBuilder {
+     ) -> crate::MicrosandboxResult<(
+         PullProgressHandle,
+         tokio::task::JoinHandle<crate::MicrosandboxResult<super::Sandbox>>,
++    )> {
++        self.create_with_pull_progress_and_start(true)
++    }
++
++    /// Materialize and persist the sandbox without booting, with pull progress reporting.
++    pub fn create_stopped_with_pull_progress(
++        self,
++    ) -> crate::MicrosandboxResult<(
++        PullProgressHandle,
++        tokio::task::JoinHandle<crate::MicrosandboxResult<super::Sandbox>>,
++    )> {
++        self.create_with_pull_progress_and_start(false)
++    }
++
++    fn create_with_pull_progress_and_start(
++        self,
++        start: bool,
++    ) -> crate::MicrosandboxResult<(
++        PullProgressHandle,
++        tokio::task::JoinHandle<crate::MicrosandboxResult<super::Sandbox>>,
+     )> {
+         let (handle, sender) = microsandbox_image::progress_channel();
+         let task = tokio::spawn(async move {
+@@ -1359,12 +1393,17 @@ impl SandboxBuilder {
+                         .as_local()
+                         .ok_or_else(|| MicrosandboxError::local_only(Operation::SandboxCreate))?;
+                     local
+-                        .create_sandbox(backend.clone(), config, mode, Some(sender))
++                        .create_sandbox(backend.clone(), config, start, mode, Some(sender))
+                         .await
+                 }
+                 crate::backend::BackendKind::Cloud => {
+                     drop(sender);
+-                    if detached {
++                    if !start {
++                        backend
++                            .sandboxes()
++                            .create(backend.clone(), config, false)
++                            .await
++                    } else if detached {
+                         backend
+                             .sandboxes()
+                             .create_detached(backend.clone(), config)
+@@ -1372,7 +1411,7 @@ impl SandboxBuilder {
+                     } else {
+                         backend
+                             .sandboxes()
+-                            .create(backend.clone(), config, true)
++                            .create(backend.clone(), config, start)
+                             .await
+                     }
+                 }
+@@ -1402,6 +1441,7 @@ impl SandboxBuilder {
+                         .create_sandbox(
+                             backend.clone(),
+                             config,
++                            true,
+                             crate::runtime::SpawnMode::Detached,
+                             Some(sender),
+                         )
+@@ -2130,6 +2170,36 @@ mod tests {
+         );
+     }
+ 
++    #[tokio::test]
++    async fn test_builder_from_snapshot_preserves_root_capacity() {
++        let temp = tempfile::tempdir().unwrap();
++        let upper = std::fs::File::create(temp.path().join("upper.ext4")).unwrap();
++        upper.set_len(2 * 1024 * 1024).unwrap();
++        let manifest = serde_json::json!({
++            "schema": 1, "artifact": "snapshot", "scope": "disk",
++            "created_at": "2026-05-01T12:00:00Z", "parent": null,
++            "image": { "ref": "docker.io/library/alpine:3.20", "manifest_digest": format!("sha256:{}", "a".repeat(64)) },
++            "source_sandbox": "source",
++            "state": { "kind": "file", "format": "raw", "fstype": "ext4",
++                "upper": { "file": "upper.ext4", "size_bytes": 2 * 1024 * 1024, "integrity": null } },
++            "labels": {}, "extensions": {}, "requires": []
++        });
++        std::fs::write(
++            temp.path().join("snapshot.json"),
++            serde_json::to_vec(&manifest).unwrap(),
++        )
++        .unwrap();
++        let config = SandboxBuilder::new("restored")
++            .from_snapshot(temp.path().to_str().unwrap())
++            .build()
++            .await
++            .unwrap();
++        assert_eq!(
++            config.spec.image.oci_root_disk(),
++            Some(&crate::sandbox::RootDisk::managed(2))
++        );
++    }
++
+     #[tokio::test]
+     async fn test_builder_from_snapshot_rejects_explicit_oci_image() {
+         let err = SandboxBuilder::new("test")
+diff --git a/sdk/rust/lib/sandbox/handle.rs b/sdk/rust/lib/sandbox/handle.rs
+index 4d2f19f1..d0e64be9 100644
+--- a/sdk/rust/lib/sandbox/handle.rs
++++ b/sdk/rust/lib/sandbox/handle.rs
+@@ -950,7 +950,10 @@ fn is_local_ephemeral_handle(inner: &SandboxHandleInner) -> bool {
+ }
+ 
+ fn sandbox_status_is_terminal(status: SandboxStatus) -> bool {
+-    matches!(status, SandboxStatus::Stopped | SandboxStatus::Crashed)
++    matches!(
++        status,
++        SandboxStatus::Created | SandboxStatus::Stopped | SandboxStatus::Crashed
++    )
+ }
+ 
+ fn connect_or_start_action(status: SandboxStatus) -> ConnectOrStartAction {
+@@ -1082,6 +1085,7 @@ mod tests {
+         ] {
+             assert_eq!(connect_or_start_action(status), ConnectOrStartAction::Start);
+             assert_eq!(restart_action(status), RestartAction::Start);
++            assert!(sandbox_status_is_terminal(status));
+             assert!(!destroy_requires_stop(status));
+         }
+         assert_eq!(
+diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
+index 9098e747..315df541 100644
+--- a/sdk/rust/lib/sandbox/mod.rs
++++ b/sdk/rust/lib/sandbox/mod.rs
+@@ -192,24 +192,31 @@ pub struct SandboxPage {
+     pub next_cursor: Option<String>,
+ }
+ 
+-/// A running sandbox.
++/// A sandbox created through a backend.
+ ///
+ /// Created via [`Sandbox::builder`] or [`Sandbox::create`]. Provides
+-/// lifecycle management and access to the agent bridge for guest communication.
++/// Running instances provide lifecycle management and access to the agent bridge for guest
++/// communication. A locally materialized `Created` instance exposes persisted metadata and can be
++/// started through [`Sandbox::get`] and [`SandboxHandle::start`].
+ ///
+ /// Per the SDK local-cloud parity plan (D6.4) `Sandbox` is a single type
+ /// regardless of backend. It holds an [`Arc<dyn Backend>`](crate::backend::Backend)
+-/// to route lifecycle ops through, and a backend-private
+-/// [`SandboxInner`](crate::backend::SandboxInner) enum carrying variant-specific
+-/// state. Users reach variant data via [`Sandbox::local`] / [`Sandbox::cloud`].
++/// to route lifecycle ops through and private variant-specific state. Users reach live variant
++/// data via [`Sandbox::local`] / [`Sandbox::cloud`].
+ #[derive(Clone)]
+ pub struct Sandbox {
+     backend: Arc<dyn crate::backend::Backend>,
+-    inner: Arc<crate::backend::SandboxInner>,
++    state: Arc<SandboxState>,
+     name: String,
+     config: SandboxConfig,
+ }
+ 
++enum SandboxState {
++    Local(crate::backend::SandboxLocalState),
++    LocalCreated { db_id: i32 },
++    Cloud(crate::backend::SandboxCloudState),
++}
++
+ /// Result of observing a sandbox in a terminal non-running state.
+ #[derive(Debug, Clone)]
+ pub struct SandboxStopResult {
+@@ -338,7 +345,7 @@ impl Sandbox {
+                         crate::MicrosandboxError::local_only(Operation::SandboxCreate)
+                     })?;
+                     local
+-                        .create_sandbox(backend.clone(), config, mode, Some(sender))
++                        .create_sandbox(backend.clone(), config, true, mode, Some(sender))
+                         .await
+                 }
+                 crate::backend::BackendKind::Cloud => {
+@@ -473,7 +480,21 @@ impl Sandbox {
+     ) -> Self {
+         Self {
+             backend,
+-            inner: Arc::new(crate::backend::SandboxInner::Local(local)),
++            state: Arc::new(SandboxState::Local(local)),
++            name: config.spec.name.clone(),
++            config,
++        }
++    }
++
++    /// Build an outer `Sandbox` for materialized local state that has not booted.
++    pub(crate) fn from_local_created(
++        backend: Arc<dyn crate::backend::Backend>,
++        db_id: i32,
++        config: SandboxConfig,
++    ) -> Self {
++        Self {
++            backend,
++            state: Arc::new(SandboxState::LocalCreated { db_id }),
+             name: config.spec.name.clone(),
+             config,
+         }
+@@ -506,7 +527,7 @@ impl Sandbox {
+     ) -> Self {
+         Self {
+             backend,
+-            inner: Arc::new(crate::backend::SandboxInner::Cloud(state)),
++            state: Arc::new(SandboxState::Cloud(state)),
+             name,
+             config,
+         }
+@@ -577,14 +598,19 @@ impl Sandbox {
+     /// `Unsupported` error on cloud — the previous `self`-by-value
+     /// signature consumed the sandbox even on the failing path.
+     pub async fn remove_persisted(&self) -> MicrosandboxResult<()> {
+-        let local = self.require_local(Operation::SandboxRemovePersisted)?;
++        let db_id = self.local_db_id().ok_or_else(|| {
++            crate::MicrosandboxError::unsupported(
++                Operation::SandboxRemovePersisted,
++                UnsupportedReason::UseInstead(Operation::SandboxRemove),
++            )
++        })?;
+         let local_backend = self.backend.as_local().ok_or_else(|| {
+             crate::MicrosandboxError::unsupported(
+                 Operation::SandboxRemovePersisted,
+                 UnsupportedReason::UseInstead(Operation::SandboxRemove),
+             )
+         })?;
+-        remove_local_persisted_sandbox(local_backend, &self.name, local.db_id).await
++        remove_local_persisted_sandbox(local_backend, &self.name, db_id).await
+     }
+ 
+     /// Unique name identifying this sandbox.
+@@ -594,16 +620,18 @@ impl Sandbox {
+ 
+     /// Stable identity of this persisted sandbox.
+     pub fn id(&self) -> SandboxId {
+-        match self.inner.as_ref() {
+-            crate::backend::SandboxInner::Local(state) => SandboxId::local(state.db_id),
+-            crate::backend::SandboxInner::Cloud(state) => SandboxId::cloud(&state.id),
++        match self.state.as_ref() {
++            SandboxState::Local(state) => SandboxId::local(state.db_id),
++            SandboxState::LocalCreated { db_id } => SandboxId::local(*db_id),
++            SandboxState::Cloud(state) => SandboxId::cloud(&state.id),
+         }
+     }
+ 
+     fn identity(&self) -> SandboxIdentity {
+-        match self.inner.as_ref() {
+-            crate::backend::SandboxInner::Local(state) => SandboxIdentity::Local(state.db_id),
+-            crate::backend::SandboxInner::Cloud(state) => SandboxIdentity::Cloud(state.id.clone()),
++        match self.state.as_ref() {
++            SandboxState::Local(state) => SandboxIdentity::Local(state.db_id),
++            SandboxState::LocalCreated { db_id } => SandboxIdentity::Local(*db_id),
++            SandboxState::Cloud(state) => SandboxIdentity::Cloud(state.id.clone()),
+         }
+     }
+ 
+@@ -651,21 +679,20 @@ impl Sandbox {
+         &self.backend
+     }
+ 
+-    /// Local-only state accessor. Returns `Some` when this `Sandbox` was
+-    /// created by the local libkrun backend.
++    /// Local runtime-state accessor. Returns `Some` only after the local guest has started.
+     pub fn local(&self) -> Option<&crate::backend::SandboxLocalState> {
+-        match self.inner.as_ref() {
+-            crate::backend::SandboxInner::Local(s) => Some(s),
+-            crate::backend::SandboxInner::Cloud(_) => None,
++        match self.state.as_ref() {
++            SandboxState::Local(state) => Some(state),
++            SandboxState::LocalCreated { .. } | SandboxState::Cloud(_) => None,
+         }
+     }
+ 
+     /// Cloud-only state accessor. Returns `Some` when this `Sandbox` was
+     /// created by the cloud backend.
+     pub fn cloud(&self) -> Option<&crate::backend::SandboxCloudState> {
+-        match self.inner.as_ref() {
+-            crate::backend::SandboxInner::Cloud(s) => Some(s),
+-            crate::backend::SandboxInner::Local(_) => None,
++        match self.state.as_ref() {
++            SandboxState::Cloud(state) => Some(state),
++            SandboxState::Local(_) | SandboxState::LocalCreated { .. } => None,
+         }
+     }
+ 
+@@ -675,8 +702,21 @@ impl Sandbox {
+         &self,
+         op: Operation,
+     ) -> MicrosandboxResult<&crate::backend::SandboxLocalState> {
+-        self.local()
+-            .ok_or_else(|| crate::MicrosandboxError::local_only(op))
++        match self.state.as_ref() {
++            SandboxState::Local(state) => Ok(state),
++            SandboxState::LocalCreated { .. } => Err(crate::MicrosandboxError::SandboxNotRunning(
++                format!("'{}' is not running (status: Created)", self.name),
++            )),
++            SandboxState::Cloud(_) => Err(crate::MicrosandboxError::local_only(op)),
++        }
++    }
++
++    fn local_db_id(&self) -> Option<i32> {
++        match self.state.as_ref() {
++            SandboxState::Local(state) => Some(state.db_id),
++            SandboxState::LocalCreated { db_id } => Some(*db_id),
++            SandboxState::Cloud(_) => None,
++        }
+     }
+ 
+     /// Live status from the backend. Always hits `backend.sandboxes().get(name)`
+@@ -784,14 +824,16 @@ impl Sandbox {
+ 
+     /// Low-level access to the guest agent client.
+     ///
+-    /// **Local-only**: panics if called on a cloud sandbox. Use
+-    /// [`local()`](Self::local) to check first when calling from generic
+-    /// code. The cloud variant has no `AgentClient` — the cloud worker owns
+-    /// the in-VM bridge — so there is nothing to return.
++    /// Panics if called on a cloud sandbox or before a local sandbox has started. Use
++    /// [`local()`](Self::local) to check for live local runtime state first. The cloud variant has
++    /// no `AgentClient` because the cloud worker owns the in-VM bridge.
+     pub fn client(&self) -> &AgentClient {
+-        match self.local() {
+-            Some(local) => &local.client,
+-            None => {
++        match self.state.as_ref() {
++            SandboxState::Local(local) => &local.client,
++            SandboxState::LocalCreated { .. } => {
++                panic!("Sandbox::client called before local sandbox was started")
++            }
++            SandboxState::Cloud(_) => {
+                 panic!("Sandbox::client called on cloud sandbox — use sb.local() to check first")
+             }
+         }
+@@ -799,12 +841,14 @@ impl Sandbox {
+ 
+     /// Get a cloneable reference to the agent client.
+     ///
+-    /// **Local-only**: panics if called on a cloud sandbox. Mirrors
+-    /// [`client`](Self::client).
++    /// Panics under the same conditions as [`client`](Self::client).
+     pub fn client_arc(&self) -> Arc<AgentClient> {
+-        match self.local() {
+-            Some(local) => Arc::clone(&local.client),
+-            None => panic!(
++        match self.state.as_ref() {
++            SandboxState::Local(local) => Arc::clone(&local.client),
++            SandboxState::LocalCreated { .. } => {
++                panic!("Sandbox::client_arc called before local sandbox was started")
++            }
++            SandboxState::Cloud(_) => panic!(
+                 "Sandbox::client_arc called on cloud sandbox — use sb.local() to check first"
+             ),
+         }
+@@ -1012,10 +1056,10 @@ impl Sandbox {
+     /// and `run --detach`. No-op for cloud sandboxes (the cloud worker owns
+     /// the lifecycle regardless of this process).
+     pub async fn detach(self) {
+-        if let crate::backend::SandboxInner::Local(local) = self.inner.as_ref()
+-            && let Some(h) = &local.handle
++        if let SandboxState::Local(local) = self.state.as_ref()
++            && let Some(handle) = &local.handle
+         {
+-            h.lock().await.disarm();
++            handle.lock().await.disarm();
+         }
+         // Normal drop runs — client reader task is aborted and
+         // ProcessHandle drops without sending SIGTERM.
+@@ -1624,7 +1668,7 @@ pub(super) async fn remove_local_persisted_sandbox(
+     }
+     if !matches!(
+         current.status,
+-        SandboxStatus::Stopped | SandboxStatus::Crashed
++        SandboxStatus::Created | SandboxStatus::Stopped | SandboxStatus::Crashed
+     ) {
+         return Err(crate::MicrosandboxError::SandboxStillRunning(format!(
+             "cannot remove sandbox {name:?}: status is {:?}",
+@@ -1667,7 +1711,7 @@ pub(super) async fn remove_local_persisted_sandbox(
+     }
+     if !matches!(
+         current.status,
+-        SandboxStatus::Stopped | SandboxStatus::Crashed
++        SandboxStatus::Created | SandboxStatus::Stopped | SandboxStatus::Crashed
+     ) {
+         return Err(crate::MicrosandboxError::SandboxStillRunning(format!(
+             "cannot remove sandbox {name:?}: status changed to {:?}",
+diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
+index 8998d360..5f4626e8 100644
+--- a/sdk/rust/lib/snapshot/archive.rs
++++ b/sdk/rust/lib/snapshot/archive.rs
+@@ -245,6 +245,8 @@ pub(super) async fn save_snapshot(
+             )));
+         }
+ 
++        validate_cached_metadata(head.manifest(), &metadata)?;
++
+         let metadata_path = cache.image_metadata_path(&image_ref);
+         push_required_cache_file(&mut cache_files, &metadata_path, "manifests")?;
+ 
+@@ -1903,7 +1905,7 @@ async fn install_staged_cache(
+             MicrosandboxError::Custom(format!("invalid snapshot image digest: {e}"))
+         })?;
+     let staged_cache = microsandbox_image::GlobalCache::new_async(cache_stage).await?;
+-    let _real_cache = microsandbox_image::GlobalCache::new_async(cache_dir).await?;
++    let real_cache = microsandbox_image::GlobalCache::new_async(cache_dir).await?;
+     let metadata = staged_cache
+         .read_image_metadata_async(&image_ref)
+         .await?
+@@ -1918,17 +1920,54 @@ async fn install_staged_cache(
+     let expected_files =
+         expected_cache_files(&staged_cache, &image_ref, &metadata, &pinned_digest)?;
+     ensure_only_expected_cache_files(cache_stage, &expected_files)?;
+-    ensure_cache_targets_compatible(&expected_files, cache_stage, cache_dir).await?;
++    // VMDK descriptors contain absolute extent paths, so an archived descriptor
++    // cannot be compared with or installed into a different cache directory.
++    let staged_vmdk = staged_cache.vmdk_path(&pinned_digest);
++    let portable_files: HashSet<PathBuf> = expected_files
++        .iter()
++        .filter(|path| **path != staged_vmdk)
++        .cloned()
++        .collect();
++    ensure_cache_targets_compatible(&portable_files, cache_stage, cache_dir).await?;
+ 
+     let metadata_path = staged_cache.image_metadata_path(&image_ref);
+-    for source in expected_files.iter().filter(|path| **path != metadata_path) {
++    for source in portable_files.iter().filter(|path| **path != metadata_path) {
+         install_cache_file(source, cache_stage, cache_dir).await?;
+     }
++    let mut extents = vec![real_cache.fsmeta_erofs_path(&pinned_digest)];
++    for layer in &metadata.layers {
++        let digest: microsandbox_image::Digest = layer.diff_id.parse()?;
++        extents.push(real_cache.layer_erofs_path(&digest));
++    }
++    install_local_vmdk(&real_cache.vmdk_path(&pinned_digest), &extents).await?;
+     install_cache_file(&metadata_path, cache_stage, cache_dir).await?;
+ 
+     Ok(())
+ }
+ 
++async fn install_local_vmdk(target: &Path, extents: &[PathBuf]) -> MicrosandboxResult<()> {
++    let parent = target
++        .parent()
++        .ok_or_else(|| MicrosandboxError::Custom("VMDK cache path has no parent".into()))?;
++    tokio::fs::create_dir_all(parent).await?;
++    let staged = tempfile::NamedTempFile::new_in(parent)?;
++    let refs: Vec<&Path> = extents.iter().map(PathBuf::as_path).collect();
++    microsandbox_image::write_vmdk_descriptor(staged.path(), &refs)?;
++    staged.as_file().sync_all()?;
++    if tokio::fs::symlink_metadata(target).await.is_ok() {
++        ensure_cache_target_compatible(staged.path(), target).await?;
++        return Ok(());
++    }
++    match staged.persist_noclobber(target) {
++        Ok(_) => {}
++        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
++            ensure_cache_target_compatible(error.file.path(), target).await?;
++        }
++        Err(error) => return Err(error.error.into()),
++    }
++    Ok(())
++}
++
+ fn validate_cached_metadata(
+     manifest: &microsandbox_image::snapshot::Manifest,
+     metadata: &microsandbox_image::CachedImageMetadata,
+@@ -2086,14 +2125,18 @@ async fn install_cache_file(
+     cache_dir: &Path,
+ ) -> MicrosandboxResult<()> {
+     let target = cache_install_target(source, cache_stage, cache_dir)?;
+-    if tokio::fs::symlink_metadata(&target).await.is_ok() {
+-        ensure_cache_target_compatible(source, &target).await?;
+-        return Ok(());
+-    }
+     if let Some(parent) = target.parent() {
+         tokio::fs::create_dir_all(parent).await?;
+     }
+-    tokio::fs::rename(source, target).await?;
++    // The stage lives inside this cache filesystem. Publishing a hard link is
++    // atomic and cannot replace a target created after the compatibility check.
++    match tokio::fs::hard_link(source, &target).await {
++        Ok(()) => tokio::fs::remove_file(source).await?,
++        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
++            ensure_cache_target_compatible(source, &target).await?;
++        }
++        Err(error) => return Err(error.into()),
++    }
+     Ok(())
+ }
+ 
+@@ -2309,6 +2352,80 @@ mod tests {
+         assert_eq!(serde_json::to_vec(&entry).unwrap(), released);
+     }
+ 
++    #[tokio::test]
++    async fn cache_publication_preserves_target_created_after_preflight() {
++        let directory = tempfile::tempdir().unwrap();
++        let stage = directory.path().join("stage");
++        let cache = directory.path().join("cache");
++        std::fs::create_dir_all(stage.join("layers")).unwrap();
++        std::fs::create_dir_all(cache.join("layers")).unwrap();
++        let source = stage.join("layers/example.erofs");
++        let target = cache.join("layers/example.erofs");
++        std::fs::write(&source, b"imported data").unwrap();
++        ensure_cache_targets_compatible(&HashSet::from([source.clone()]), &stage, &cache)
++            .await
++            .unwrap();
++        // A separate importer publishes after preflight and before installation.
++        std::fs::write(&target, b"concurrently published data").unwrap();
++        assert!(install_cache_file(&source, &stage, &cache).await.is_err());
++        assert_eq!(
++            std::fs::read(&target).unwrap(),
++            b"concurrently published data"
++        );
++        assert_eq!(std::fs::read(&source).unwrap(), b"imported data");
++        std::fs::remove_file(&target).unwrap();
++        install_cache_file(&source, &stage, &cache).await.unwrap();
++        assert_eq!(std::fs::read(&target).unwrap(), b"imported data");
++        assert!(!source.exists());
++    }
++
++    #[tokio::test]
++    async fn imported_vmdk_uses_destination_paths_and_preserves_existing_cache() {
++        let directory = tempfile::tempdir().unwrap();
++        let source = directory.path().join("source");
++        let destination = directory.path().join("destination");
++        std::fs::create_dir_all(&source).unwrap();
++        std::fs::create_dir_all(&destination).unwrap();
++        for root in [&source, &destination] {
++            std::fs::write(root.join("layer.erofs"), vec![7u8; 4096]).unwrap();
++        }
++        let old_descriptor = source.join("root.vmdk");
++        microsandbox_image::write_vmdk_descriptor(&old_descriptor, &[&source.join("layer.erofs")])
++            .unwrap();
++        let target = destination.join("root.vmdk");
++        install_local_vmdk(&target, &[destination.join("layer.erofs")])
++            .await
++            .unwrap();
++        let correct = std::fs::read(&target).unwrap();
++        assert_ne!(correct, std::fs::read(&old_descriptor).unwrap());
++        assert!(
++            String::from_utf8_lossy(&correct)
++                .contains(destination.canonicalize().unwrap().to_str().unwrap())
++        );
++        let metadata_before = std::fs::metadata(&target).unwrap().modified().unwrap();
++        install_local_vmdk(&target, &[destination.join("layer.erofs")])
++            .await
++            .unwrap();
++        assert_eq!(
++            std::fs::metadata(&target).unwrap().modified().unwrap(),
++            metadata_before
++        );
++        assert_eq!(
++            std::fs::read(destination.join("layer.erofs")).unwrap(),
++            vec![7u8; 4096]
++        );
++        std::fs::write(&target, b"existing unrelated descriptor").unwrap();
++        assert!(
++            install_local_vmdk(&target, &[destination.join("layer.erofs")])
++                .await
++                .is_err()
++        );
++        assert_eq!(
++            std::fs::read(&target).unwrap(),
++            b"existing unrelated descriptor"
++        );
++    }
++
+     #[tokio::test]
+     async fn replace_archive_overwrites_existing_destination() {
+         let directory = tempfile::tempdir().unwrap();

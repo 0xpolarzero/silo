@@ -26,7 +26,6 @@ pub struct ApplicationCatalog {
     pub editor: Vec<Application>,
     pub browser: Vec<Application>,
     pub defaults: BTreeMap<String, String>,
-    pub fixture: bool,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -84,12 +83,8 @@ pub async fn list_applications(
         return Err("This window cannot discover applications".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        if crate::settings::uses_fixture_storage(&app)? {
-            return Ok(ApplicationCatalog {
-                fixture: true,
-                ..Default::default()
-            });
-        }
+        #[cfg(target_os = "macos")]
+        let _ = &app;
         let mut catalog = platform::discover()?;
         include_selections(&mut catalog, selections, platform::application_at);
         #[cfg(target_os = "linux")]
@@ -118,9 +113,6 @@ pub async fn choose_application(
         return Err("Only the main window can choose applications".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        if crate::settings::uses_fixture_storage(&app)? {
-            return Ok(None);
-        }
         let title = match kind {
             ApplicationKind::Terminal => "Choose a terminal",
             ApplicationKind::Editor => "Choose a code editor",

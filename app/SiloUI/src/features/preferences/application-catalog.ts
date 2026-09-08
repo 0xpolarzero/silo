@@ -1,6 +1,4 @@
 import { createContext, createElement, useContext, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
-import { fixtureApplicationCatalog } from "@/fixtures/application-catalog"
-
 export type ApplicationKind = "terminal" | "editor" | "browser"
 export interface Application { name: string; path: string; icon?: string }
 export function matchesApplication(application: Application, savedName: string) {
@@ -14,22 +12,22 @@ export interface ApplicationCatalog {
   editor: Application[]
   browser: Application[]
   defaults: Partial<Record<ApplicationKind, string>>
-  fixture: boolean
 }
 export interface ApplicationService {
   read: () => Promise<ApplicationCatalog>
   choose: (kind: ApplicationKind) => Promise<Application | null>
 }
 
-const fixture = {
-  catalog: fixtureApplicationCatalog,
+const emptyCatalog: ApplicationCatalog = { terminal: [], editor: [], browser: [], defaults: {} }
+const fallback = {
+  catalog: emptyCatalog,
   available: false,
   refresh: async () => {},
   choose: async (_kind: ApplicationKind): Promise<Application | null> => null,
 }
-const ApplicationContext = createContext(fixture)
+const ApplicationContext = createContext(fallback)
 
-export function ApplicationCatalogProvider({ initialCatalog = fixtureApplicationCatalog, service, children }: {
+export function ApplicationCatalogProvider({ initialCatalog = emptyCatalog, service, children }: {
   initialCatalog?: ApplicationCatalog
   service?: ApplicationService
   children: ReactNode
@@ -55,7 +53,7 @@ export function ApplicationCatalogProvider({ initialCatalog = fixtureApplication
   }, [])
 
   async function choose(kind: ApplicationKind) {
-    if (!service || catalog.fixture) return null
+    if (!service) return null
     const application = await service.choose(kind)
     if (application) {
       revision.current++
@@ -68,7 +66,7 @@ export function ApplicationCatalogProvider({ initialCatalog = fixtureApplication
 
   // These are event handlers; their request counter is never accessed during render.
   // oxlint-disable-next-line react/refs
-  return createElement(ApplicationContext.Provider, { value: { catalog, available: Boolean(service) && !catalog.fixture, refresh, choose } }, children)
+  return createElement(ApplicationContext.Provider, { value: { catalog, available: Boolean(service), refresh, choose } }, children)
 }
 
 export function useApplications() { return useContext(ApplicationContext) }

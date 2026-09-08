@@ -4,7 +4,6 @@ import type { ApplicationCatalog, ApplicationKind, ApplicationService } from "@/
 import { matchesApplication } from "@/features/preferences/application-catalog"
 import type { SettingsStore } from "@/features/preferences/settings-store"
 import type { SettingsPatch } from "@/features/preferences/model/settings"
-import { fixtureApplicationCatalog } from "@/fixtures/application-catalog"
 
 const kinds = ["terminal", "editor", "browser"] as const
 const applicationSchema = z.object({
@@ -14,9 +13,8 @@ const applicationSchema = z.object({
 const catalogSchema = z.object({
   terminal: z.array(applicationSchema), editor: z.array(applicationSchema), browser: z.array(applicationSchema),
   defaults: z.object({ terminal: z.string().optional(), editor: z.string().optional(), browser: z.string().optional() }),
-  fixture: z.boolean(),
 })
-export const emptyApplicationCatalog: ApplicationCatalog = { terminal: [], editor: [], browser: [], defaults: {}, fixture: false }
+export const emptyApplicationCatalog: ApplicationCatalog = { terminal: [], editor: [], browser: [], defaults: {} }
 
 export function createApplicationService(store: SettingsStore): ApplicationService {
   return {
@@ -24,7 +22,6 @@ export function createApplicationService(store: SettingsStore): ApplicationServi
       const settings = store.getSnapshot().settings
       const selections = Object.fromEntries(kinds.flatMap((kind) => settings[`${kind}Path`] ? [[kind, settings[`${kind}Path`]]] : []))
       const catalog = catalogSchema.parse(await invoke("list_applications", { selections }))
-      if (catalog.fixture) return fixtureApplicationCatalog
       const defaults: SettingsPatch = {}
       for (const kind of kinds) {
         const selected = catalog[kind].find(({ path }) => path === catalog.defaults[kind])

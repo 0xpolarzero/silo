@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { execFileSync } from "node:child_process"
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
@@ -8,6 +9,12 @@ export const RELEASE_BASE_URL = `https://github.com/superradcompany/microsandbox
 
 const SOURCE_BASE_URL = "https://raw.githubusercontent.com"
 const MICROSANDBOX_COMMIT = "5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+export const MICROSANDBOX_SOURCE_URL = `https://codeload.github.com/superradcompany/microsandbox/tar.gz/${MICROSANDBOX_COMMIT}`
+export const MICROSANDBOX_SOURCE_SHA256 = "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06"
+export const MICROSANDBOX_PATCH_PATH = "patches/microsandbox-create-stopped-0.6.17.patch"
+export const MICROSANDBOX_PATCH_SHA256 = "a6a85f661a9836971968fccc04da6c72015c4195674536c3c0804a7f16cd5bdd"
+export const MICROSANDBOX_BUILD_TOOLCHAIN = "1.94.0"
+export const MICROSANDBOX_BUILD_FEATURES = "net,ssh"
 const LIBKRUNFW_COMMIT = "21cb6dce19a615f63e41ecb913334d18560c1364"
 
 export const runtimeTargets = Object.freeze({
@@ -16,6 +23,8 @@ export const runtimeTargets = Object.freeze({
     arch: "aarch64",
     executableAsset: "msb-darwin-aarch64",
     executableSha256: "2d3b8883da496ca7ec54f4ea122984022160295f9e4df2af198348fd1f24cdde",
+    agentdAsset: "agentd-aarch64",
+    agentdSha256: "04bd19fcc184edc8323f588eb0fbfb9ffec00ae457bd9f6d1c62377223db5f4c",
     libraryAsset: "libkrunfw-darwin-aarch64.dylib",
     libraryName: "libkrunfw.5.dylib",
     librarySha256: "20b588c2031519cee3ad93fee4b2a0ca4805f2a3c721198911a6248fd34f65e0",
@@ -25,6 +34,8 @@ export const runtimeTargets = Object.freeze({
     arch: "aarch64",
     executableAsset: "msb-linux-aarch64",
     executableSha256: "bab283cb12902838cff629f10b28683d322ae8ce09cc2d720e90d1b169857878",
+    agentdAsset: "agentd-aarch64",
+    agentdSha256: "04bd19fcc184edc8323f588eb0fbfb9ffec00ae457bd9f6d1c62377223db5f4c",
     libraryAsset: "libkrunfw-linux-aarch64.so",
     libraryName: "libkrunfw.so.5.6.1",
     librarySha256: "b5d205d504c3e1876c47dbb674534436b7aabc09b0fdb32d98b5fff438d9a5b6",
@@ -34,6 +45,8 @@ export const runtimeTargets = Object.freeze({
     arch: "x86_64",
     executableAsset: "msb-linux-x86_64",
     executableSha256: "7f79c9d0996fac42b4879f4798c6f985f7981b005af0a9b4b8b1ab5e590daee4",
+    agentdAsset: "agentd-x86_64",
+    agentdSha256: "c6c5e7f719cbde966b4a2a366bff8f6bdec8a45a0fd8afe3fcab27243d01d1f8",
     libraryAsset: "libkrunfw-linux-x86_64.so",
     libraryName: "libkrunfw.so.5.6.1",
     librarySha256: "d395efaa21984cc6934c900519909a12c8148d9688cfc88f9da3b42132ae32c2",
@@ -108,12 +121,103 @@ async function fetchVerified(fetchBytes, url, expectedSha256, label, cachePath) 
   return bytes
 }
 
+function runBuildTool(executable, args, options = {}) {
+  return execFileSync(executable, args, {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "inherit"],
+    ...options,
+  })
+}
+
+export function applyRuntimePatch(sourceRoot, patchPath) {
+  // Extracted sources live below Silo's checkout. Give Git a local root;
+  // otherwise `git apply` can silently skip every path as outside the cwd.
+  runBuildTool("/usr/bin/git", ["init", "--quiet"], { cwd: sourceRoot })
+  runBuildTool("/usr/bin/git", ["apply", "--check", patchPath], { cwd: sourceRoot })
+  runBuildTool("/usr/bin/git", ["apply", patchPath], { cwd: sourceRoot })
+}
+
+async function buildPatchedExecutable({
+  targetTriple,
+  hostTriple,
+  sourceArchive,
+  patch,
+  agentd,
+  cacheRoot,
+}) {
+  if (targetTriple !== hostTriple) {
+    throw new Error(`Patched MicroSandbox cross-builds are not supported: host ${hostTriple}, target ${targetTriple}`)
+  }
+  const rustcVersion = runBuildTool("rustc", [`+${MICROSANDBOX_BUILD_TOOLCHAIN}`, "--version"]).trim()
+  const cacheKey = sha256(Buffer.from([
+    MICROSANDBOX_SOURCE_SHA256,
+    MICROSANDBOX_PATCH_SHA256,
+    rustcVersion,
+    targetTriple,
+    MICROSANDBOX_BUILD_FEATURES,
+  ].join("\n")))
+  const buildRoot = join(cacheRoot, "patched-builds", cacheKey)
+  const cachedExecutable = join(buildRoot, "msb")
+  const cachedDigest = join(buildRoot, "msb.sha256")
+  if (await validCachedFile(cachedExecutable, (await readFile(cachedDigest, "utf8").catch(() => "")).trim())) {
+    const version = runBuildTool(cachedExecutable, ["--version"]).trim()
+    const createHelp = runBuildTool(cachedExecutable, ["create", "--help"])
+    if (version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start")) {
+      return readFile(cachedExecutable)
+    }
+  }
+
+  const workRoot = join(buildRoot, "work")
+  const archivePath = join(buildRoot, "source.tar.gz")
+  const patchPath = join(buildRoot, "create-stopped.patch")
+  const cargoTarget = join(buildRoot, "cargo-target")
+  await rm(workRoot, { recursive: true, force: true })
+  await mkdir(workRoot, { recursive: true })
+  await writeFile(archivePath, sourceArchive)
+  await writeFile(patchPath, patch)
+  runBuildTool("/usr/bin/tar", ["-xzf", archivePath, "-C", workRoot])
+  const entries = await import("node:fs/promises").then(({ readdir }) => readdir(workRoot, { withFileTypes: true }))
+  const source = entries.filter((entry) => entry.isDirectory()).map((entry) => join(workRoot, entry.name))
+  if (source.length !== 1) throw new Error("Pinned MicroSandbox source archive has an unexpected layout")
+  applyRuntimePatch(source[0], patchPath)
+  const agentdPath = join(source[0], "build", "agentd")
+  await mkdir(dirname(agentdPath), { recursive: true })
+  await writeFile(agentdPath, agentd, { mode: 0o755 })
+  await chmod(agentdPath, 0o755)
+  runBuildTool("cargo", [
+    `+${MICROSANDBOX_BUILD_TOOLCHAIN}`,
+    "build",
+    "--locked",
+    "--release",
+    "--no-default-features",
+    "--features",
+    MICROSANDBOX_BUILD_FEATURES,
+    "--target",
+    targetTriple,
+    "-p",
+    "microsandbox-cli",
+  ], { cwd: source[0], env: { ...process.env, CARGO_TARGET_DIR: cargoTarget } })
+  const built = join(cargoTarget, targetTriple, "release", "msb")
+  const bytes = await readFile(built)
+  await mkdir(buildRoot, { recursive: true })
+  await writeFile(`${cachedExecutable}.tmp-${process.pid}`, bytes, { mode: 0o755 })
+  await rename(`${cachedExecutable}.tmp-${process.pid}`, cachedExecutable)
+  await writeFile(cachedDigest, `${sha256(bytes)}\n`)
+  await rm(workRoot, { recursive: true, force: true })
+  return bytes
+}
+
 export async function stageRuntime({
   appRoot,
   targetTriple,
+  hostTriple = targetTriple,
   fetchBytes,
   selected = selectRuntime(targetTriple),
   licenses = licenseArtifacts,
+  sourceArtifact = { url: MICROSANDBOX_SOURCE_URL, sha256: MICROSANDBOX_SOURCE_SHA256 },
+  buildExecutable = buildPatchedExecutable,
+  verifyExecutable = true,
 }) {
   const tauriRoot = resolve(appRoot, "src-tauri")
   const binariesRoot = join(tauriRoot, "binaries")
@@ -130,13 +234,40 @@ export async function stageRuntime({
   await rm(stagedRoot, { recursive: true, force: true })
   await mkdir(dirname(libraryPath), { recursive: true })
 
-  const executable = await fetchVerified(
+  await fetchVerified(
     fetchBytes,
     `${RELEASE_BASE_URL}/${selected.executableAsset}`,
     selected.executableSha256,
     selected.executableAsset,
     join(cacheRoot, selected.executableAsset),
   )
+  const sourceArchive = await fetchVerified(
+    fetchBytes,
+    sourceArtifact.url,
+    sourceArtifact.sha256,
+    "MicroSandbox pinned source",
+    join(cacheRoot, `microsandbox-${MICROSANDBOX_COMMIT}.tar.gz`),
+  )
+  const agentd = await fetchVerified(
+    fetchBytes,
+    `${RELEASE_BASE_URL}/${selected.agentdAsset}`,
+    selected.agentdSha256,
+    selected.agentdAsset,
+    join(cacheRoot, selected.agentdAsset),
+  )
+  const patchPath = resolve(appRoot, MICROSANDBOX_PATCH_PATH)
+  assertInside(appRoot, patchPath)
+  const patch = await readFile(patchPath)
+  verifySha256(patch, MICROSANDBOX_PATCH_SHA256, "Silo stopped-create patch")
+  const executable = Buffer.from(await buildExecutable({
+    appRoot,
+    targetTriple,
+    hostTriple,
+    sourceArchive,
+    patch,
+    agentd,
+    cacheRoot,
+  }))
   const library = await fetchVerified(
     fetchBytes,
     `${RELEASE_BASE_URL}/${selected.libraryAsset}`,
@@ -149,6 +280,23 @@ export async function stageRuntime({
   const executableTemporary = `${executablePath}.tmp-${process.pid}`
   await writeFile(executableTemporary, executable, { mode: 0o755 })
   await chmod(executableTemporary, 0o755)
+  if (verifyExecutable) {
+    const isolatedHome = join(stagedRoot, "verify-home")
+    await mkdir(isolatedHome, { recursive: true })
+    const environment = {
+      ...process.env,
+      HOME: isolatedHome,
+      MSB_HOME: isolatedHome,
+      MSB_PATH: executableTemporary,
+      MSB_LIBKRUNFW_PATH: libraryPath,
+    }
+    const version = runBuildTool(executableTemporary, ["--version"], { env: environment }).trim()
+    const createHelp = runBuildTool(executableTemporary, ["create", "--help"], { env: environment })
+    if (version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--from-snapshot") || !createHelp.includes("--no-start")) {
+      throw new Error("Patched MicroSandbox executable failed its version or stopped-create capability check")
+    }
+    await rm(isolatedHome, { recursive: true, force: true })
+  }
   await rename(executableTemporary, executablePath)
   await writeFile(libraryPath, library, { mode: 0o644 })
 
@@ -166,14 +314,22 @@ export async function stageRuntime({
   }
 
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     microsandboxVersion: MICRO_SANDBOX_VERSION,
     libkrunfwVersion: LIBKRUNFW_VERSION,
     targetTriple,
     executable: {
       bundledName: "msb",
-      releaseAsset: selected.executableAsset,
-      sha256: selected.executableSha256,
+      sha256: sha256(executable),
+      sourceCommit: MICROSANDBOX_COMMIT,
+      sourceArchiveSha256: MICROSANDBOX_SOURCE_SHA256,
+      patchSha256: MICROSANDBOX_PATCH_SHA256,
+      toolchain: MICROSANDBOX_BUILD_TOOLCHAIN,
+      features: MICROSANDBOX_BUILD_FEATURES,
+      officialReleaseAsset: selected.executableAsset,
+      officialReleaseSha256: selected.executableSha256,
+      embeddedAgentdReleaseAsset: selected.agentdAsset,
+      embeddedAgentdReleaseSha256: selected.agentdSha256,
     },
     library: {
       bundledName: selected.libraryName,

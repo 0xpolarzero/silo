@@ -1,14 +1,14 @@
-import { createContext, createElement, useContext, useState, useSyncExternalStore, type ReactNode } from "react"
+import { createContext, createElement, useContext, useSyncExternalStore, type ReactNode } from "react"
 import { z } from "zod"
 
-import { useSettings, type SettingsStore } from "./settings-store"
+import type { SettingsStore } from "./settings-store"
 
 const loginStateSchema = z.enum(["enabled", "notRegistered", "requiresApproval", "notFound", "unavailable", "error"])
 const notificationStateSchema = z.enum(["notDetermined", "denied", "authorized", "provisional", "unavailable", "error"])
 const status = <T extends z.ZodType>(state: T) => z.object({ state, error: z.string().nullable() })
 
 export const systemIntegrationsSchema = z.object({
-  platform: z.enum(["macos", "linux", "fixture"]),
+  platform: z.enum(["macos", "linux"]),
   loginItem: status(loginStateSchema),
   notifications: status(notificationStateSchema),
 })
@@ -32,7 +32,7 @@ export interface SystemIntegrationView extends SystemIntegrations {
 }
 
 const unknown: SystemIntegrations = {
-  platform: "fixture",
+  platform: "macos",
   loginItem: { state: "notRegistered", error: null },
   notifications: { state: "notDetermined", error: null },
 }
@@ -182,29 +182,6 @@ export function createSystemIntegrationStore(
 
 export type SystemIntegrationStore = ReturnType<typeof createSystemIntegrationStore>
 
-export function createFixtureSystemIntegrationStore(settings: SettingsStore) {
-  const preferences = settings.getSnapshot().settings
-  let fixture = {
-    platform: "fixture" as const,
-    loginItem: { state: preferences.launchAtLogin ? "enabled" as const : "notRegistered" as const, error: null },
-    notifications: { state: preferences.notificationsEnabled ? "authorized" as const : "notDetermined" as const, error: null },
-  }
-  const service: SystemIntegrationService = {
-    read: async () => fixture,
-    setLoginItem: async (enabled) => {
-      fixture = { ...fixture, loginItem: { state: enabled ? "enabled" : "notRegistered", error: null } }
-      return fixture.loginItem
-    },
-    requestNotifications: async () => {
-      fixture = { ...fixture, notifications: { state: "authorized", error: null } }
-      return fixture.notifications
-    },
-    openSettings: async () => {},
-    showError: async () => {},
-  }
-  return createSystemIntegrationStore(service, settings, fixture)
-}
-
 const SystemIntegrationContext = createContext<SystemIntegrationStore | null>(null)
 
 export function SystemIntegrationProvider({ store, children }: { store: SystemIntegrationStore; children: ReactNode }) {
@@ -213,9 +190,8 @@ export function SystemIntegrationProvider({ store, children }: { store: SystemIn
 
 export function useSystemIntegrations() {
   const inherited = useContext(SystemIntegrationContext)
-  const settings = useSettings()
-  const [local] = useState(() => createFixtureSystemIntegrationStore(settings.store))
-  const store = inherited ?? local
+  if (!inherited) throw new Error("SystemIntegrationProvider is required")
+  const store = inherited
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot)
   return {
     ...snapshot,
