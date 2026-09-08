@@ -110,6 +110,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let setupTail: Promise<unknown> = Promise.resolve()
   let acceptingSetup = true
   let lastMachineJob: { key: string; promise: Promise<ApplicationSource> } | undefined
+  let identityVerificationSequence = 0
+  let lastVerificationKey: string | undefined
   let lastIdentityJob: { key: string; promise: Promise<void> } | undefined
   let activeConfiguration: ApplicationSource["sandboxConfigurationOperation"] = null
   let activeRequestId: string | null = null
@@ -278,6 +280,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
     const key = JSON.stringify(request)
     if (lastMachineJob?.key === key) return lastMachineJob.promise
+    ++identityVerificationSequence
+    lastVerificationKey = undefined
     lastIdentityJob = undefined
     setSetupStatus(["identityRun", "identityVerify", "completion"], "idle")
     const promise = enqueueSetup(["workspaceRun", "workspaceVerify"], async (job) => {
@@ -315,8 +319,36 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return promise
   }
 
+  async function verifySetupIdentities(request: Pick<OnboardingCompletionRequest, "machineConfiguration" | "github">): Promise<void> {
+    const key = JSON.stringify([request.machineConfiguration, request.github.workspaces.map(({ workspace, identity }) => ({ workspace, identity }))])
+    if (key === lastVerificationKey) return
+    const sequence = ++identityVerificationSequence
+    if (snapshot.setupQueue.some(({ status }) => status === "queued" || status === "running")) {
+      await setupTail
+      if (disposed || sequence !== identityVerificationSequence) return
+      return verifySetupIdentities(request)
+    }
+    lastVerificationKey = key
+    lastIdentityJob = undefined
+    setSetupStatus(["identityRun", "identityVerify"], "idle")
+    const identities = request.github.workspaces.map(({ workspace, identity }) => ({ workspace, ...identity }))
+    const machines = request.machineConfiguration.machines
+    if (machines.length === 0 || identities.length !== machines.length || machines.some(({ name }) => !identities.some(({ workspace }) => workspace === name))) return
+    try {
+      const verified = z.boolean().parse(await native.invoke("verify_workspace_identities", { identities }))
+      if (disposed || sequence !== identityVerificationSequence) return
+      setSetupStatus(["identityRun", "identityVerify"], verified ? "succeeded" : "idle")
+    } catch {
+      // A read failure cannot establish completion. Continue will run the normal
+      // setup operation and report any actionable runtime error there.
+      if (!disposed && sequence === identityVerificationSequence) setSetupStatus(["identityRun", "identityVerify"], "idle")
+    }
+  }
+
   function submitSetupStep(step: "workspaces" | "github", request: OnboardingCompletionRequest): Promise<unknown> {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
+    ++identityVerificationSequence
+    lastVerificationKey = undefined
     if (step === "github" && request.github.connectionState === "connected" && request.github.workspaces.some(({ repositories }) => repositories.length > 0)) {
       const error = new Error("Repository setup is not available yet. Remove the repository selections before continuing.")
       setSetupStatus(["identityRun", "identityVerify"], "failed", error.message)
@@ -447,6 +479,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     refresh,
     configureMachines,
     submitSetupStep,
+    verifySetupIdentities,
     finishSetup,
     drainSetup,
     applicationActions,

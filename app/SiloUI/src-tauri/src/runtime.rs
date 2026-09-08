@@ -843,6 +843,67 @@ pub struct WorkspaceIdentity {
 }
 
 #[tauri::command]
+pub async fn verify_workspace_identities(
+    app: AppHandle,
+    identities: Vec<WorkspaceIdentity>,
+) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        let _guard = MUTATION_LOCK
+            .try_lock()
+            .map_err(|_| RuntimeError::Busy.to_string())?;
+        verify_workspace_identities_with(&ProcessRunner, &paths, &identities)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Git identity verification worker failed: {error}"))?
+}
+
+fn verify_workspace_identities_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    identities: &[WorkspaceIdentity],
+) -> Result<bool, RuntimeError> {
+    if identities.is_empty() || identities.len() > MAX_MACHINE_COUNT {
+        return Ok(false);
+    }
+    let metadata = read_metadata(&paths.metadata)?;
+    let mut names = HashSet::new();
+    for identity in identities {
+        validate_name(&identity.workspace)?;
+        if !names.insert(&identity.workspace)
+            || !metadata
+                .machines
+                .iter()
+                .any(|machine| machine.name() == identity.workspace)
+        {
+            return Ok(false);
+        }
+        if !metadata
+            .machines
+            .iter()
+            .any(|machine| machine.name() == identity.workspace && machine.is_vm())
+        {
+            return Ok(false);
+        }
+        let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
+        ensure_managed(&inspected)?;
+        if !identity.apply {
+            continue;
+        }
+        if [&identity.name, &identity.email].iter().any(|value| {
+            value.trim().is_empty() || value.len() > 1024 || value.chars().any(char::is_control)
+        }) {
+            return Ok(false);
+        }
+        if !identity_matches(&inspected.config, identity) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[tauri::command]
 pub async fn configure_workspace_identities(
     app: AppHandle,
     identities: Vec<WorkspaceIdentity>,
@@ -3095,6 +3156,50 @@ mod tests {
         let successful = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null)]);
         remove_machine(&successful, &paths, &vm()).unwrap();
         assert!(!disk.exists());
+    }
+
+    #[test]
+    fn identity_resume_reads_actual_configuration_without_mutating() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let identity = WorkspaceIdentity {
+            workspace: "dev".into(),
+            name: "Test User".into(),
+            email: "test@example.com".into(),
+            apply: true,
+        };
+        let mut actual = inspect(&paths, "Running");
+        actual["config"]["env"] = json!([
+            {"key":"GIT_AUTHOR_NAME","value":"Test User"}, {"key":"GIT_AUTHOR_EMAIL","value":"test@example.com"},
+            {"key":"GIT_COMMITTER_NAME","value":"Test User"}, {"key":"GIT_COMMITTER_EMAIL","value":"test@example.com"},
+            {"key":"JJ_USER","value":"Test User"}, {"key":"JJ_EMAIL","value":"test@example.com"}
+        ]);
+        let runner = StubRunner::successful_json(vec![actual]);
+        assert!(
+            verify_workspace_identities_with(&runner, &paths, std::slice::from_ref(&identity))
+                .unwrap()
+        );
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        assert_eq!(runner.calls.lock().unwrap()[0][0], "inspect");
+        let mismatch = StubRunner::successful_json(vec![inspect(&paths, "Stopped")]);
+        assert!(!verify_workspace_identities_with(
+            &mismatch,
+            &paths,
+            std::slice::from_ref(&identity)
+        )
+        .unwrap());
+        let failed = StubRunner::new(vec![Err(RuntimeError::Unavailable("missing VM".into()))]);
+        assert!(verify_workspace_identities_with(
+            &failed,
+            &paths,
+            &[WorkspaceIdentity {
+                apply: false,
+                ..identity
+            }]
+        )
+        .is_err());
+        assert!(!verify_workspace_identities_with(&StubRunner::new(vec![]), &paths, &[]).unwrap());
     }
 
     #[test]

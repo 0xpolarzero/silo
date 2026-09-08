@@ -38,6 +38,7 @@ fn main() {
             "dismiss_backup_operation",
             "read_application_state",
             "configure_workspace_identities",
+            "verify_workspace_identities",
             "workspace_action",
             "retry_workspace_start",
             "save_machine_configuration",
