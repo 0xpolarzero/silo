@@ -271,6 +271,49 @@ pub fn request_notifications() -> Result<IntegrationStatus, String> {
     Ok(notifications())
 }
 
+pub fn deliver_notification(title: &str, body: &str) -> Result<(), String> {
+    use gio::glib::variant::ToVariant;
+    let proxy = gio::DBusProxy::for_bus_sync(
+        gio::BusType::Session,
+        gio::DBusProxyFlags::DO_NOT_AUTO_START,
+        None,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        None::<&gio::Cancellable>,
+    )
+    .map_err(|_| "The desktop notification service is unavailable")?;
+    if proxy.name_owner().is_none() {
+        return Ok(());
+    }
+    // The standard has no permission prompt. The desktop controls suppression/DND.
+    let hints = std::collections::HashMap::from([
+        ("desktop-entry", "org.silo.preview".to_variant()),
+        ("urgency", 1u8.to_variant()),
+    ]);
+    let parameters = (
+        "Silo",
+        0u32,
+        "org.silo.preview",
+        title,
+        body,
+        Vec::<String>::new(),
+        hints,
+        -1i32,
+    )
+        .to_variant();
+    proxy
+        .call_sync(
+            "Notify",
+            Some(&parameters),
+            gio::DBusCallFlags::NO_AUTO_START,
+            5000,
+            None::<&gio::Cancellable>,
+        )
+        .map_err(|_| "The desktop could not deliver the notification")?;
+    Ok(())
+}
+
 pub fn open_settings(_integration: &str) -> Result<(), String> {
     Err("This desktop does not provide a standard settings page for this integration".into())
 }

@@ -908,16 +908,22 @@ pub async fn configure_workspace_identities(
     app: AppHandle,
     identities: Vec<WorkspaceIdentity>,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let notify_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         let _guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
-        configure_workspace_identities_with(&ProcessRunner, &paths, &identities)
-            .map_err(|error| error.to_string())
+        let result = configure_workspace_identities_with(&ProcessRunner, &paths, &identities);
+        result.map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| format!("Git identity worker failed: {error}"))?
+    .map_err(|error| format!("Git identity worker failed: {error}"))
+    .and_then(|result| result);
+    if result.is_err() {
+        crate::notifications::action_failed(&notify_app, "Git identity setup failed");
+    }
+    result
 }
 
 fn configure_workspace_identities_with(
@@ -1027,23 +1033,118 @@ pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource,
     .map_err(|error| format!("Sandbox state worker failed: {error}"))?
 }
 
+/// A background health observation uses the same real inspection as the UI, without
+/// host identity discovery. Never hold the mutation lock while inspecting: user
+/// actions take priority. Discard observations overlapping an ongoing mutation or
+/// metadata change. No sandbox is created, started, or changed here.
+pub(crate) fn health_observations(
+    app: &AppHandle,
+) -> Option<crate::notifications::HealthObservations> {
+    drop(MUTATION_LOCK.try_lock().ok()?);
+    struct HealthRunner(Instant);
+    impl RuntimeRunner for HealthRunner {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            let remaining = Duration::from_secs(5)
+                .checked_sub(self.0.elapsed())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| RuntimeError::TimedOut {
+                    operation: "Health check".into(),
+                })?;
+            if !paths.home.is_dir()
+                || paths
+                    .storage_home
+                    .as_ref()
+                    .is_some_and(|home| !home.is_dir())
+            {
+                return Err(RuntimeError::Unavailable(
+                    "The managed runtime is unavailable.".into(),
+                ));
+            }
+            run_msb(paths, args, timeout.min(remaining))
+        }
+    }
+    let paths = runtime_paths(app);
+    let before = paths
+        .as_ref()
+        .ok()
+        .and_then(|paths| fs::read(&paths.metadata).ok());
+    let source = paths.as_ref().map_err(Clone::clone).and_then(|paths| {
+        read_application_state_with(&HealthRunner(Instant::now()), paths)
+            .map_err(|error| error.to_string())
+    });
+    drop(MUTATION_LOCK.try_lock().ok()?);
+    let after = paths
+        .as_ref()
+        .ok()
+        .and_then(|paths| fs::read(&paths.metadata).ok());
+    if before != after {
+        return None;
+    }
+    let mut observations = std::collections::HashMap::new();
+    observations.insert(
+        "runtime".into(),
+        (
+            "Silo".into(),
+            if source.is_err() {
+                "Health checks unavailable"
+            } else {
+                "Health checks available"
+            },
+        ),
+    );
+    if let Ok(source) = source {
+        for workspace in source
+            .workspaces
+            .into_iter()
+            .filter(|workspace| workspace.machine.is_vm())
+        {
+            let state = if workspace.attention.is_some() {
+                "Health or configuration check failed"
+            } else {
+                match workspace.state {
+                    WorkspaceState::Running => "Running",
+                    WorkspaceState::Stopped => "Stopped",
+                    WorkspaceState::Starting => "Starting",
+                    WorkspaceState::Failed => "Failed",
+                }
+            };
+            observations.insert(
+                format!("vm:{}", workspace.machine.id()),
+                (workspace.machine.name().into(), state),
+            );
+        }
+    }
+    Some(observations)
+}
+
 #[tauri::command]
 pub fn workspace_action(
     app: AppHandle,
     action: String,
     name: String,
 ) -> Result<ApplicationSource, String> {
-    let paths = runtime_paths(&app)?;
-    let guard = MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| RuntimeError::Busy.to_string())?;
-    let result = host_resources()
-        .and_then(|resources| {
-            workspace_action_with(&ProcessRunner, &paths, &resources, &action, &name)
-        })
-        .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
-    drop(guard);
-    result.map_err(|error| error.to_string())
+    let result = (|| {
+        let paths = runtime_paths(&app)?;
+        let guard = MUTATION_LOCK
+            .try_lock()
+            .map_err(|_| RuntimeError::Busy.to_string())?;
+        let result = host_resources()
+            .and_then(|resources| {
+                workspace_action_with(&ProcessRunner, &paths, &resources, &action, &name)
+            })
+            .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+        drop(guard);
+        result.map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        crate::notifications::action_failed(&app, "Sandbox action failed");
+    }
+    result
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1448,7 +1549,8 @@ pub async fn save_machine_configuration(
     if request_id.trim().is_empty() || request_id.len() > 256 {
         return Err("Invalid sandbox configuration request ID.".into());
     }
-    tauri::async_runtime::spawn_blocking(move || {
+    let notify_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         let _guard = MUTATION_LOCK
             .try_lock()
@@ -1518,7 +1620,11 @@ pub async fn save_machine_configuration(
         result.map_err(|error| safe_activity_error(&error))
     })
     .await
-    .map_err(|error| format!("Sandbox configuration worker failed: {error}"))?
+    .map_err(|error| format!("Sandbox configuration worker failed: {error}")).and_then(|result| result);
+    if result.is_err() {
+        crate::notifications::action_failed(&notify_app, "Sandbox setup failed");
+    }
+    result
 }
 
 fn read_application_state_with(

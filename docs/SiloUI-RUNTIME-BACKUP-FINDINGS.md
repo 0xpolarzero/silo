@@ -247,3 +247,50 @@ before exit. Startup does not alter the saved preference or selected IDs. Tests
 use temporary metadata and a fake process runner, never a user's VMs. Focused
 checks: `cargo test --manifest-path src-tauri/Cargo.toml launch_` and
 `cargo test --manifest-path src-tauri/Cargo.toml startup::tests` from `app/SiloUI`.
+
+## Native notifications (2026-09-09)
+
+Existing notification preferences now gate real native delivery. `notificationsEnabled`
+controls all categories; `notifyHealth`, `notifyActions`, and `notifyBackup` retain
+existing default-true behavior when absent from the settings document. Explicit
+false disables that category. Unreadable/protected settings fail closed. Delivery
+never requests permission, changes preferences, or changes an operation's result.
+
+- macOS uses the existing UserNotifications framework, checks authorization before
+  each request, and submits only for authorized/provisional states. A retained
+  delegate permits foreground banners/list entries; macOS settings and Focus still
+  determine presentation. Delivery errors produce a generic application log line.
+- Linux uses the existing GIO session-bus connection to
+  `org.freedesktop.Notifications.Notify`, a five-second delivery timeout, and the
+  app's desktop-entry hint. No shell command or extra executable is needed. The
+  notification daemon controls desktop policy and suppression; the standard does
+  not expose per-application permission authorization or a standard permission prompt.
+- Sandbox action, identity setup, and sandbox configuration failures notify once
+  from the command's final result, including failures before work begins. Startup
+  failures use the same action category. There is no cooldown that hides a distinct
+  failed retry. Notifications contain fixed safe recovery text, never raw errors,
+  paths, credentials, or Git author values.
+- Backup and restore report failed results and backup restart-required results.
+  Explicit cancellation and successful backup/restore results remain silent.
+- A background thread inspects real local sandbox state every 30 seconds with a
+  five-second total command budget. It never holds the mutation lock during reads,
+  skips active mutations, and discards reads if a mutation remains active or saved
+  metadata changed. It does not start VMs. Existing runtime paths must already exist.
+  The first observation and newly discovered sandbox baselines are silent; subsequent
+  actual state/health-check transitions produce one grouped notification with up to
+  three validated sandbox names and states. Unchanged observations do not repeat.
+  Remote SSH placeholders are excluded. Disabling notifications still advances the
+  baseline, so reenabling does not replay old problems.
+
+Primary references:
+
+- [Apple: asking permission](https://developer.apple.com/documentation/usernotifications/asking-permission-to-use-notifications)
+- [Apple: handling foreground notifications](https://developer.apple.com/documentation/usernotifications/handling-notifications-and-notification-related-actions)
+- [Freedesktop notification protocol](https://specifications.freedesktop.org/notification/latest-single/)
+- [Freedesktop desktop-entry hint](https://specifications.freedesktop.org/notification/latest/hints.html)
+
+Native policy tests cover master/category preferences, denied/unknown permission
+states, silent first/unchanged/new-sandbox observations, actual state transitions,
+bounded grouped messages, and backup failure/partial-restart/cancellation routing.
+No test sends a synthetic OS notification or changes the user's notification settings.
+Linux delivery requires live Linux desktop verification; the current host is macOS.

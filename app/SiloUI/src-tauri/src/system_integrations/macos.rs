@@ -174,6 +174,76 @@ pub fn request_notifications() -> Result<IntegrationStatus, String> {
     }
 }
 
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2::{define_class, msg_send};
+use objc2_foundation::{NSObject, NSObjectProtocol};
+use objc2_user_notifications::{
+    UNNotification, UNNotificationPresentationOptions, UNUserNotificationCenterDelegate,
+};
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; this delegate has no mutable state.
+    #[unsafe(super = NSObject)]
+    #[ivars = ()]
+    struct NotificationDelegate;
+    unsafe impl NSObjectProtocol for NotificationDelegate {}
+    unsafe impl UNUserNotificationCenterDelegate for NotificationDelegate {
+        #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
+        fn will_present(
+            &self,
+            _center: &UNUserNotificationCenter,
+            _notification: &UNNotification,
+            completion: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
+        ) {
+            // The app targets macOS 13+. The OS still applies user settings and Focus.
+            completion
+                .call((UNNotificationPresentationOptions::Banner
+                    | UNNotificationPresentationOptions::List,));
+        }
+    }
+);
+
+thread_local! { static NOTIFICATION_DELEGATE: std::cell::RefCell<Option<Retained<NotificationDelegate>>> = const { std::cell::RefCell::new(None) }; }
+pub fn install_notifications() {
+    if !macos_10_14_or_newer() {
+        return;
+    }
+    use objc2::AnyThread;
+    let allocated = NotificationDelegate::alloc().set_ivars(());
+    // SAFETY: NSObject's init has the declared signature and initializes our subclass.
+    let delegate: Retained<NotificationDelegate> = unsafe { msg_send![super(allocated), init] };
+    UNUserNotificationCenter::currentNotificationCenter()
+        .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    // UserNotifications stores its delegate weakly. Keep it alive on the installation thread.
+    NOTIFICATION_DELEGATE.with(|slot| *slot.borrow_mut() = Some(delegate));
+}
+
+pub fn deliver_notification(title: &str, body: &str) -> Result<(), String> {
+    if !super::notification_authorized(&notification_status().state) {
+        return Ok(());
+    }
+    use objc2_user_notifications::{UNMutableNotificationContent, UNNotificationRequest};
+    let content = UNMutableNotificationContent::new();
+    content.setTitle(&NSString::from_str(title));
+    content.setBody(&NSString::from_str(body));
+    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+        &NSString::from_str(&uuid::Uuid::new_v4().to_string()),
+        &content,
+        None,
+    );
+    let (send, receive) = mpsc::sync_channel(1);
+    let handler = RcBlock::new(move |error: *mut NSError| {
+        let _ = send.send(error.is_null());
+    });
+    UNUserNotificationCenter::currentNotificationCenter()
+        .addNotificationRequest_withCompletionHandler(&request, Some(&handler));
+    match receive.recv_timeout(CALLBACK_TIMEOUT) {
+        Ok(true) => Ok(()),
+        _ => Err("macOS could not schedule the notification".into()),
+    }
+}
+
 pub fn open_settings(integration: &str) -> Result<(), String> {
     match integration {
         "loginItem" if macos_13_or_newer() => {

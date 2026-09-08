@@ -116,9 +116,33 @@ pub fn show_integration_error(
     Ok(())
 }
 
+pub(crate) fn install_notifications() {
+    #[cfg(target_os = "macos")]
+    platform::install_notifications();
+}
+
+/// Delivery never requests authorization or opens a permission prompt.
+pub(crate) fn deliver_notification(title: &str, body: &str) -> Result<(), String> {
+    platform::deliver_notification(title, body)
+}
+
+fn notification_authorized(state: &str) -> bool {
+    matches!(state, "authorized" | "provisional")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_confirmed_notification_authorization_allows_delivery() {
+        for state in ["authorized", "provisional"] {
+            assert!(notification_authorized(state));
+        }
+        for state in ["notDetermined", "denied", "unavailable", "error", "unknown"] {
+            assert!(!notification_authorized(state));
+        }
+    }
 
     #[test]
     fn integration_mutations_are_main_window_only() {

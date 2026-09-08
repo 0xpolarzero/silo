@@ -487,6 +487,21 @@ pub(crate) async fn start_backup(
     sandboxes: Vec<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
+    let result = start_backup_inner(app.clone(), window, controller, destination, sandboxes).await;
+    if result.is_err() {
+        crate::notifications::backup_result(&app, "backup", "failed");
+    }
+    result
+}
+
+async fn start_backup_inner(
+    app: AppHandle,
+    window: WebviewWindow,
+    controller: State<'_, Arc<Controller>>,
+    destination: String,
+    sandboxes: Vec<String>,
+) -> Result<(), String> {
+    require_main(&window)?;
     let controller = controller.inner().clone();
     let selected_destination = controller
         .view
@@ -615,6 +630,14 @@ pub(crate) async fn start_backup(
                     );
                 }
             }
+        }
+        if let Operation::Result {
+            operation: kind,
+            outcome,
+            ..
+        } = &operation
+        {
+            crate::notifications::backup_result(&app_for_work, kind, outcome);
         }
         let _ = set_operation(&controller_for_work, operation);
         finish(&controller_for_work);
@@ -899,6 +922,30 @@ pub(crate) async fn start_restore(
     source_name: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
+    let result = start_restore_inner(
+        app.clone(),
+        window,
+        controller,
+        archive_path,
+        new_name,
+        source_name,
+    )
+    .await;
+    if result.is_err() {
+        crate::notifications::backup_result(&app, "restore", "failed");
+    }
+    result
+}
+
+async fn start_restore_inner(
+    app: AppHandle,
+    window: WebviewWindow,
+    controller: State<'_, Arc<Controller>>,
+    archive_path: String,
+    new_name: String,
+    source_name: Option<String>,
+) -> Result<(), String> {
+    require_main(&window)?;
     runtime::validate_name(&new_name).map_err(|error| error.to_string())?;
     controller
         .busy
@@ -983,6 +1030,14 @@ pub(crate) async fn start_restore(
                 detail: Some("No existing sandbox or backup was replaced.".into()),
             },
         };
+        if let Operation::Result {
+            operation: kind,
+            outcome,
+            ..
+        } = &operation
+        {
+            crate::notifications::backup_result(&app_for_work, kind, outcome);
+        }
         let _ = set_operation(&controller_for_work, operation);
         finish(&controller_for_work);
         publish(&app_for_work, &controller_for_work);
