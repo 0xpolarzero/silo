@@ -21,6 +21,11 @@ export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, co
   const checkingDependencies = viewModel.dependencyStatus === "running"
   const failed = viewModel.dependencyStatus === "failed" || !!failedItem || !!viewModel.error
   const complete = completed || (viewModel.dependencyStatus === "succeeded" && viewModel.queueItems.length > 0 && viewModel.queueItems.every(({ status }) => status === "succeeded"))
+  const completedStepMessage = viewModel.stepStatus[activeStep] === "succeeded"
+    ? activeStep === "workspaces" ? "Complete · Sandboxes are ready"
+      : activeStep === "github" ? "Complete · Git identity setup is complete" : null
+    : null
+  const stepComplete = !!completedStepMessage && !checkingDependencies && !failed && !runningItem && !queued
   const statusText = completed
     ? "Complete · Silo is ready"
     : checkingDependencies
@@ -34,6 +39,7 @@ export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, co
           : runningItem
             ? `In progress · ${runningItem.label}`
             : queued ? "Waiting · Setup tasks are queued"
+              : completedStepMessage ? completedStepMessage
               : isReview && viewModel.finishEnabled ? "Ready · Finish setup"
               : activeStep === "dependencies" && viewModel.dependencyStatus === "succeeded" ? "Ready · Continue to configure sandboxes"
                 : "Not started · Continue to start this step"
@@ -42,7 +48,7 @@ export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, co
     <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-3 border-t border-border bg-muted/20 px-4 py-3 sm:px-6" aria-label="Onboarding actions">
       <div className="flex min-w-0 flex-[1_1_12rem] items-start gap-2 text-xs leading-5 text-muted-foreground" aria-live="polite">
         {failed && !completed ? <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-destructive" />
-          : complete ? <Check className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          : complete || stepComplete ? <Check className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
             : checkingDependencies || runningItem ? <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin" />
               : <Clock3 className="mt-0.5 size-3.5 shrink-0" />}
         <span className="break-words">{statusText}</span>

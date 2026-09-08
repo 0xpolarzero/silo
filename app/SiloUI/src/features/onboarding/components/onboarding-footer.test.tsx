@@ -22,6 +22,19 @@ describe("onboarding queue feedback", () => {
     expect(screen.getByText("In progress · Create sandboxes")).toBeVisible()
   })
 
+  it("keeps completed sandbox work complete when returning from another step", () => {
+    const viewModel = projectOnboarding({ ...onboardingScenarios.complete, setupQueue: setupQueue.map((item) => item.id === "workspaceRun" || item.id === "workspaceVerify" ? { ...item, status: "succeeded" } : item) }, "disconnected")
+    const props = { viewModel, onBack: vi.fn(), onContinue: vi.fn() }
+    const view = render(<OnboardingFooter {...props} activeStep="review" />)
+    view.rerender(<OnboardingFooter {...props} activeStep="workspaces" />)
+    expect(screen.getByText("Complete · Sandboxes are ready")).toBeVisible()
+    expect(screen.queryByText("Not started · Continue to start this step")).not.toBeInTheDocument()
+    view.rerender(<OnboardingFooter {...props} activeStep="github" />)
+    expect(screen.getByText("Not started · Continue to start this step")).toBeVisible()
+    view.rerender(<OnboardingFooter {...props} activeStep="workspaces" />)
+    expect(screen.getByText("Complete · Sandboxes are ready")).toBeVisible()
+  })
+
   it("projects only explicit operations and does not invent GitHub completion", () => {
     const view = projectOnboarding({ ...onboardingScenarios.complete, setupQueue }, "disconnected")
     expect(view.queueItems.map(({ id }) => id)).toEqual(setupQueue.map(({ id }) => id))
