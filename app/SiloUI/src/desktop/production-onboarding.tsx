@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import type { DependencyRuntime } from "@/desktop/dependencies"
 import { useProductionSource, type ProductionSnapshot, type ProductionSource } from "@/desktop/production-source"
-import type { SetupMachineConfigurationRequest, SetupMachineConfiguration, SiloBootstrapConfiguration } from "@/contracts/silo"
+import type { SetupMachineConfiguration, SiloBootstrapConfiguration } from "@/contracts/silo"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { OnboardingApp } from "@/features/onboarding/onboarding-app"
 import type { OnboardingSource } from "@/features/onboarding/model/onboarding-source"
@@ -54,7 +54,7 @@ export function productionOnboardingSource(application: ApplicationSource | null
   }
 }
 
-export function ProductionOnboarding({ application, dependencies, source }: { application: ApplicationSource | null; dependencies: DependencyRuntime; source: ProductionSource }) {
+export function ProductionOnboarding({ application, dependencies, source, onOpenApp }: { application: ApplicationSource | null; dependencies: DependencyRuntime; source: ProductionSource; onOpenApp?: () => void }) {
   const setup = useProductionSource(source)
   const [, tick] = useState(0)
   const setupRunning = setup.setupQueue.some(({ status }) => status === "running")
@@ -63,8 +63,9 @@ export function ProductionOnboarding({ application, dependencies, source }: { ap
     const timer = window.setInterval(() => tick((value) => value + 1), 1000)
     return () => window.clearInterval(timer)
   }, [setupRunning])
-  const { settings, updateSettings, store } = useSettings()
-  const lastConfiguration = useRef<SetupMachineConfigurationRequest | null>(null)
+  const { settings, onboardingDraft, updateSettings, store } = useSettings()
+  const lastSubmission = useRef<{ operation: () => Promise<unknown>; isFinishing: boolean } | null>(null)
+  const [completed, setCompleted] = useState(false)
   const submissionSequence = useRef(0)
   const [finishing, setFinishing] = useState(false)
   const [operationError, setOperationError] = useState<string | null>(null)
@@ -86,7 +87,23 @@ export function ProductionOnboarding({ application, dependencies, source }: { ap
     },
     [application, dependencies, preferences, operationError, finishing, setup],
   )
+  useEffect(() => {
+    if (!onboardingDraft?.machines.length || completed) return
+    void source.verifySetupIdentities({
+      machineConfiguration: { schemaVersion: 1, machines: onboardingDraft.machines },
+      github: {
+        connectionState: application?.github.state ?? "disconnected",
+        workspaces: onboardingDraft.machines.map(({ name }) => ({
+          workspace: name,
+          repositories: [],
+          identity: onboardingDraft.workspaceIdentities[name] ?? { name: "", email: "", apply: false },
+        })),
+      },
+    })
+  }, [source, onboardingDraft, application?.github.state, completed])
+
   function submit(operation: () => Promise<unknown>, isFinishing = false) {
+    lastSubmission.current = { operation, isFinishing }
     const sequence = ++submissionSequence.current
     setOperationError(null)
     setFinishing(isFinishing)
@@ -101,31 +118,38 @@ export function ProductionOnboarding({ application, dependencies, source }: { ap
 
   return <OnboardingApp
     source={onboarding}
-    completed={false}
+    completed={completed}
+    onOpenApp={onOpenApp}
     githubConnectionState={application?.github.state ?? "disconnected"}
     repositoryOptions={application?.github.repositoryCatalog}
     onRetryDependencies={dependencies.retry}
     actions={{
       submitStep: (step, request) => {
-        lastConfiguration.current = request.machineConfiguration
         submit(() => source.submitSetupStep(step, request))
       },
       connectGitHub: () => source.applicationActions.connectGitHub?.(),
       saveMachineConfiguration: (request) => {
-        lastConfiguration.current = request
         submit(() => source.configureMachines(request))
       },
       retryWorkspaceSetup: () => {
-        const request = lastConfiguration.current ?? application?.sandboxConfigurationOperation?.candidate
-        if (request) submit(() => source.configureMachines(request))
+        if (finishing) return
+        const previous = lastSubmission.current
+        if (previous) submit(previous.operation, previous.isFinishing)
+        else if (application?.sandboxConfigurationOperation?.status === "failed") {
+          const request = application.sandboxConfigurationOperation.candidate
+          submit(() => source.configureMachines(request))
+        }
       },
       finishSetup: (request) => {
         if (finishing) return
-        submit(() => source.finishSetup(request, async () => {
-          await updateSettings({ ...request.applications, onboardingComplete: true })
-          const error = store.getSnapshot().saveError
-          if (error) throw new Error(error)
-        }), true)
+        submit(async () => {
+          await source.finishSetup(request, async () => {
+            await updateSettings({ ...request.applications, onboardingComplete: true })
+            const error = store.getSnapshot().saveError
+            if (error) throw new Error(error)
+          })
+          setCompleted(true)
+        }, true)
       },
     }}
   />

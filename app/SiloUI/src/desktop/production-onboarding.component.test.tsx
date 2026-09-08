@@ -3,9 +3,11 @@ import { describe, expect, it, vi } from "vitest"
 import type { OnboardingAppProps } from "@/features/onboarding/onboarding-app"
 import { onboardingScenarios } from "@/fixtures/scenarios"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
+import type { OnboardingCompletionRequest } from "@/features/onboarding/model/onboarding-source"
 import type { SetupMachineConfigurationRequest } from "@/contracts/silo"
 import type { ProductionSource } from "./production-source"
 import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
+import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
 import { ProductionOnboarding } from "./production-onboarding"
 
 const captured = vi.hoisted(() => ({ props: null as OnboardingAppProps | null }))
@@ -61,4 +63,54 @@ describe("production onboarding submission errors", () => {
     await act(async () => { captured.props!.actions.retryWorkspaceSetup(); await Promise.resolve() })
     expect(configureMachines).toHaveBeenLastCalledWith(requestB)
   })
+
+  it("retries the submitted Git identity step instead of sandbox configuration", async () => {
+    const request: OnboardingCompletionRequest = { machineConfiguration: requestA, applications: application.preferences, github: { connectionState: "disconnected", workspaces: [] } }
+    const submitSetupStep = vi.fn().mockRejectedValueOnce(new Error("Identity verification failed")).mockResolvedValue(undefined)
+    const configureMachines = vi.fn()
+    const source = { submitSetupStep, configureMachines, applicationActions: {} } as unknown as ProductionSource
+    render(<ProductionOnboarding application={application} dependencies={dependencies} source={source} />)
+    await act(async () => { captured.props!.actions.submitStep!("github", request) })
+    expect(screen.getByText("Identity verification failed")).toBeVisible()
+    await act(async () => { captured.props!.actions.retryWorkspaceSetup() })
+    expect(submitSetupStep).toHaveBeenCalledTimes(2)
+    expect(submitSetupStep).toHaveBeenLastCalledWith("github", request)
+    expect(configureMachines).not.toHaveBeenCalled()
+    expect(screen.getByText("No error")).toBeVisible()
+  })
+
+  it("retries Finish and shows completion only after the settings callback succeeds", async () => {
+    const request: OnboardingCompletionRequest = { machineConfiguration: requestA, applications: application.preferences, github: { connectionState: "disconnected", workspaces: [] } }
+    const finishSetup = vi.fn().mockRejectedValueOnce(new Error("Settings write failed")).mockImplementation(async (_request, save: () => Promise<void>) => save())
+    const configureMachines = vi.fn()
+    const onOpenApp = vi.fn()
+    const source = { finishSetup, configureMachines, applicationActions: {} } as unknown as ProductionSource
+    render(<ProductionOnboarding application={application} dependencies={dependencies} source={source} onOpenApp={onOpenApp} />)
+    await act(async () => { captured.props!.actions.finishSetup(request) })
+    expect(screen.getByText("Settings write failed")).toBeVisible()
+    expect(captured.props!.completed).toBe(false)
+    await act(async () => { captured.props!.actions.retryWorkspaceSetup() })
+    expect(finishSetup).toHaveBeenCalledTimes(2)
+    expect(finishSetup).toHaveBeenLastCalledWith(request, expect.any(Function))
+    expect(configureMachines).not.toHaveBeenCalled()
+    expect(screen.getByText("No error")).toBeVisible()
+    expect(captured.props!.completed).toBe(true)
+    expect(captured.props!.onOpenApp).toBe(onOpenApp)
+  })
+
+
+  it("verifies the saved draft identity when onboarding is restored", async () => {
+    const machine = requestB.machines[0]
+    const identity = { name: "Saved author", email: "saved@example.invalid", apply: true }
+    const draft = { currentStep: "review" as const, machines: requestB.machines, unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: { [machine.name]: identity } }
+    const store = createMemorySettingsStore({}, draft)
+    const verifySetupIdentities = vi.fn().mockResolvedValue(undefined)
+    const source = { verifySetupIdentities, applicationActions: {} } as unknown as ProductionSource
+    render(<SettingsProvider store={store}><ProductionOnboarding application={application} dependencies={dependencies} source={source} /></SettingsProvider>)
+    expect(verifySetupIdentities).toHaveBeenCalledWith({ machineConfiguration: requestB, github: { connectionState: application.github.state, workspaces: [{ workspace: machine.name, repositories: [], identity }] } })
+    const changed = { ...identity, email: "changed@example.invalid" }
+    await act(async () => { await store.updateOnboardingDraft({ ...draft, workspaceIdentities: { [machine.name]: changed } }) })
+    expect(verifySetupIdentities).toHaveBeenLastCalledWith(expect.objectContaining({ github: expect.objectContaining({ workspaces: [{ workspace: machine.name, repositories: [], identity: changed }] }) }))
+  })
+
 })
