@@ -1804,6 +1804,60 @@ fn configuration_attention(
     }
 }
 
+pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
+    let paths = runtime_paths(app)?;
+    let _guard = MUTATION_LOCK
+        .lock()
+        .map_err(|_| RuntimeError::Busy.to_string())?;
+    if crate::startup::is_cancelled(app) {
+        return Ok(());
+    }
+    host_resources()
+        .and_then(|host| start_at_launch_with(&ProcessRunner, &paths, &host, id))
+        .map_err(|error| safe_activity_error(&error))
+}
+
+fn start_at_launch_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    host: &HostResources,
+    id: &str,
+) -> Result<(), RuntimeError> {
+    let metadata = read_metadata(&paths.metadata)?;
+    let machine = metadata.machines.iter().find(|machine| machine.id() == id)
+        .ok_or_else(|| RuntimeError::Invalid("A sandbox selected for launch no longer exists. Update the startup selection in Settings.".into()))?;
+    let name = machine.name();
+    if !machine.is_vm() {
+        return Err(RuntimeError::Invalid(format!(
+            "{name} is a remote SSH sandbox. Automatic remote startup is unavailable."
+        )));
+    }
+    let result = (|| {
+        let inspected = inspect_workspace(runner, paths, name)?;
+        ensure_managed(&inspected)?;
+        match inspected.status.to_ascii_lowercase().as_str() {
+            "running" => Ok(()),
+            "stopped" => {
+                workspace_action_with(runner, paths, host, "start", name)?;
+                let started = inspect_workspace(runner, paths, name)?;
+                ensure_managed(&started)?;
+                if started.status.eq_ignore_ascii_case("running") {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::Invalid(format!(
+                        "{name} did not reach the running state. Check its status before retrying."
+                    )))
+                }
+            }
+            _ => Err(RuntimeError::Invalid(format!(
+                "{name} is not stopped or running. Check its status before starting it."
+            ))),
+        }
+    })();
+    result
+        .map_err(|error| RuntimeError::Invalid(format!("{name}: {}", safe_activity_error(&error))))
+}
+
 fn workspace_action_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
@@ -3057,6 +3111,94 @@ mod tests {
 
         assert!(error.to_string().contains("cannot be resized in place"));
         assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn launch_starts_selected_existing_vm_and_verifies_running() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Stopped"),
+            inspect(&paths, "Stopped"),
+            json!(null),
+            inspect(&paths, "Running"),
+        ]);
+        start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[2], vec!["start", "--quiet", "dev"]);
+        assert_eq!(calls[3], vec!["inspect", "dev", "--format", "json"]);
+        assert!(!calls.iter().any(|call| call[0] == "create"));
+    }
+
+    #[test]
+    fn launch_skips_running_and_rejects_missing_ssh_and_unready() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(
+            &paths.metadata,
+            &request(vec![
+                vm(),
+                MachineConfiguration::Ssh {
+                    id: "00000000-0000-4000-8000-000000000002".into(),
+                    name: "remote".into(),
+                    host: "example.test".into(),
+                    user: "user".into(),
+                    port: 22,
+                },
+            ]),
+        )
+        .unwrap();
+        let runner = StubRunner::successful_json(vec![inspect(&paths, "Running")]);
+        start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap();
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        assert!(start_at_launch_with(&runner, &paths, &generous_host(), "deleted").is_err());
+        assert!(start_at_launch_with(
+            &runner,
+            &paths,
+            &generous_host(),
+            "00000000-0000-4000-8000-000000000002"
+        )
+        .is_err());
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Stopped"),
+            inspect(&paths, "Stopped"),
+            json!(null),
+            inspect(&paths, "Stopped"),
+        ]);
+        assert!(
+            start_at_launch_with(&runner, &paths, &generous_host(), vm().id())
+                .unwrap_err()
+                .to_string()
+                .contains("did not reach")
+        );
+    }
+
+    #[test]
+    fn launch_respects_resources_and_ownership_without_starting() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mut unowned = inspect(&paths, "Stopped");
+        unowned["config"]["labels"] = json!({});
+        let runner = StubRunner::successful_json(vec![unowned]);
+        assert!(start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).is_err());
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Stopped"),
+            inspect(&paths, "Stopped"),
+        ]);
+        let host = HostResources {
+            logical_cpus: 1,
+            physical_memory_bytes: Some(1024),
+        };
+        assert!(start_at_launch_with(&runner, &paths, &host, vm().id()).is_err());
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call[0] == "start"));
     }
 
     #[test]

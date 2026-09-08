@@ -541,6 +541,16 @@ pub fn install(app: &AppHandle) {
     app.manage(ShutdownState::default());
 }
 
+/// Read validated, persisted preferences from a blocking native worker.
+pub(crate) fn current_settings(app: &AppHandle) -> Result<Map<String, Value>, String> {
+    let state = app.state::<SettingsState>();
+    let snapshot = state.initialize(|| settings_path(app).map_err(|error| error.to_string()))?;
+    match snapshot.save_error {
+        Some(error) => Err(error),
+        None => Ok(snapshot.settings),
+    }
+}
+
 #[tauri::command]
 pub async fn initialize_settings(
     app: AppHandle,
@@ -660,6 +670,7 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool) {
     if !app.state::<ShutdownState>().claim_exit(frontend_completed) {
         return;
     }
+    crate::startup::cancel_and_wait(app);
     // The frontend has drained its invoke queue. Wait for any native write already in progress.
     if let Ok(mut initialized) = app.state::<SettingsState>().store.lock() {
         if let Some(current) = initialized.as_mut() {
@@ -678,6 +689,7 @@ pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi) {
         return;
     }
     api.prevent_exit();
+    crate::startup::cancel(app);
     if !state.request() {
         return;
     }

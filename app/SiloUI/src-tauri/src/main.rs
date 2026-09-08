@@ -3,8 +3,10 @@ mod backup;
 mod backup_controller;
 mod dependencies;
 mod host_identity;
+mod notifications;
 mod runtime;
 mod settings;
+mod startup;
 mod status_panel;
 mod system_integrations;
 mod tray;
@@ -76,6 +78,8 @@ fn main() {
                 }
             });
             window.show()?;
+            notifications::install(app.handle());
+            startup::install(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

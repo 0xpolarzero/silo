@@ -225,3 +225,25 @@ Focused checks: `npm test -- src/desktop/dependencies.test.ts` and
 old glibc, missing KVM and denied KVM access; store tests verify bridge and timeout
 recovery never recommends reinstalling. Linux failure mappings run as pure tests
 on macOS; this is not live Linux hardware verification.
+
+## Start selected sandboxes when Silo launches (2026-09-09)
+
+Native app setup starts a blocking worker once per process. It reads the same
+validated persisted settings store as the UI and requires both completed
+onboarding and the enabled startup preference. It uses only the saved selected
+IDs, once each, in saved order. An empty selection starts nothing. Refreshing or
+reopening a webview cannot repeat startup: Tauri's [`Builder::setup`](https://docs.rs/tauri/latest/tauri/struct.Builder.html#method.setup)
+accepts a `FnOnce` hook on the native app builder, unlike a webview page-load hook.
+
+Each selected local VM must already exist and belong to Silo. Running VMs are
+left running; stopped VMs use the existing lifecycle resource checks and start
+command, then are inspected to verify Running. Missing, SSH, inconsistent, or
+failed selections do not create or repair anything. Remaining selections are
+still attempted, and one existing error dialog lists failures, even if system
+notifications are disabled. Real state refreshes after each attempt.
+
+Quit cancels remaining selections and waits for the current bounded native start
+before exit. Startup does not alter the saved preference or selected IDs. Tests
+use temporary metadata and a fake process runner, never a user's VMs. Focused
+checks: `cargo test --manifest-path src-tauri/Cargo.toml launch_` and
+`cargo test --manifest-path src-tauri/Cargo.toml startup::tests` from `app/SiloUI`.
