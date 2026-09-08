@@ -127,7 +127,7 @@ describe("onboarding restart recovery", () => {
     vi.mocked(handlers.saveMachineConfiguration).mockClear()
     const restored = render(onboarding(second, handlers, { githubConnectionState: "disconnected" }))
     expect(screen.getByRole("tab", { name: /Review/ })).toHaveAttribute("aria-selected", "true")
-    const list = screen.getByRole("list", { name: "Sandboxes in setup order" })
+    const list = screen.getByRole("list", { name: "Sandboxes" })
     expect(within(list).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
       expect.stringContaining("personal"), expect.stringContaining("development"), expect.stringContaining("playgrounds"),
     ])

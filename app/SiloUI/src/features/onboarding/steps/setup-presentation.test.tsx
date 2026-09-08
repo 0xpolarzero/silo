@@ -78,7 +78,7 @@ describe("setup progress and review presentation", () => {
     expect(screen.queryByRole("list", { name: "Setup operations" })).not.toBeInTheDocument()
     expect(screen.queryByText("queued")).not.toBeInTheDocument()
     expect(screen.queryByText("succeeded")).not.toBeInTheDocument()
-    const sandboxes = within(screen.getByRole("list", { name: "Sandboxes in setup order" })).getAllByRole("listitem")
+    const sandboxes = within(screen.getByRole("list", { name: "Sandboxes" })).getAllByRole("listitem")
     expect(sandboxes.map((row) => row.querySelector("[title]")?.getAttribute("title"))).toEqual(["dev", "playgrounds", "personal"])
     expect(sandboxes[0]).toHaveTextContent("Complete")
     expect(sandboxes[1]).toHaveTextContent("In progress")
@@ -97,12 +97,17 @@ describe("setup progress and review presentation", () => {
     ["failed", "Failed"],
   ] as const)("shows %s Git validation on the author card", (status, label) => {
     render(<ReviewStep machines={productionMachineDefaults} workspaces={progress.workspaces} queueItems={[
+      { id: "githubRun", label: "Save GitHub", status: "succeeded" },
+      { id: "githubVerify", label: "Verify GitHub", status },
       { id: "identityRun", label: "Save Git identities", status: "succeeded" },
       { id: "identityVerify", label: "Verify Git identities", status, failure: status === "failed" ? "Git identity could not be verified." : undefined },
     ]} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
     const author = screen.getByRole("group", { name: "Git author" })
     expect(author).toHaveTextContent(label)
     expect(author).toHaveTextContent("Alex · alex@example.com")
+    for (const row of [author, screen.getByRole("group", { name: "GitHub access" })]) {
+      expect(row.classList.contains("bg-emerald-500/[0.035]")).toBe(status === "succeeded")
+    }
     if (status === "failed") expect(author).toHaveTextContent("Git identity could not be verified.")
   })
 
@@ -110,7 +115,7 @@ describe("setup progress and review presentation", () => {
     render(<ReviewStep machines={productionMachineDefaults} workspaces={[
       { name: "dev", status: "failed", detail: "Sandbox could not be verified." },
     ]} queueItems={[]} workspaceRetryable={false} identitySummary="No Git author" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
-    const sandboxes = within(screen.getByRole("list", { name: "Sandboxes in setup order" })).getAllByRole("listitem")
+    const sandboxes = within(screen.getByRole("list", { name: "Sandboxes" })).getAllByRole("listitem")
     expect(sandboxes[0]).toHaveTextContent("Failed")
     expect(sandboxes[0]).toHaveTextContent("Sandbox could not be verified.")
     expect(sandboxes[1]).not.toHaveTextContent("Complete")
@@ -122,10 +127,10 @@ describe("setup progress and review presentation", () => {
     const edit = renderReview()
     await user.click(screen.getByRole("button", { name: "Edit sandboxes" }))
     expect(edit).toHaveBeenLastCalledWith("workspaces")
-    await user.click(screen.getByRole("button", { name: "Edit GitHub access" }))
+    await user.click(screen.getByRole("button", { name: "Edit GitHub and Git identity" }))
     expect(edit).toHaveBeenLastCalledWith("github")
-    await user.click(screen.getByRole("button", { name: "Edit Git author" }))
-    expect(edit).toHaveBeenLastCalledWith("github")
+    expect(screen.queryByRole("button", { name: "Edit GitHub access" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Edit Git author" })).not.toBeInTheDocument()
   })
 
   it("keeps recovery visible while technical evidence stays optional", async () => {

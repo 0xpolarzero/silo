@@ -632,7 +632,7 @@ describe("onboarding", () => {
     await user.click(screen.getByRole("tab", { name: /Review/ }))
     expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled()
     expect(screen.queryByRole("list", { name: "Setup operations" })).not.toBeInTheDocument()
-    expect(within(screen.getByRole("list", { name: "Sandboxes in setup order" })).getAllByText("Complete")).toHaveLength(3)
+    expect(within(screen.getByRole("list", { name: "Sandboxes" })).getAllByText("Complete")).toHaveLength(3)
     await user.click(screen.getByRole("button", { name: "Finish" }))
     expect(finishSetup).toHaveBeenCalledWith({
       machineConfiguration: {
@@ -1050,7 +1050,7 @@ describe("onboarding", () => {
     expect(screen.getByTestId("machine-list")).toBeVisible()
 
     await user.click(screen.getByRole("tab", { name: /Review/ }))
-    const review = screen.getByRole("list", { name: "Sandboxes in setup order" })
+    const review = screen.getByRole("list", { name: "Sandboxes" })
     const rows = within(review).getAllByRole("listitem")
     const expected = [
       ["remote", "ssh", "ops@remote.example.com:22"],

@@ -39,6 +39,8 @@ function ValidationBadge({ status }: { status: ReviewQueueItemView["status"] }) 
 
 export function ReviewStep({ workspaceRetryable, queueItems, machines, workspaces, identitySummary, githubSummary, errorMessage, errorRecovery, onRetryWorkspaceSetup, onEditStep }: ReviewStepProps) {
   const identityItems = queueItems.filter(({ id }) => id === "identityRun" || id === "identityVerify")
+  const githubItems = queueItems.filter(({ id }) => id === "githubRun" || id === "githubVerify")
+  const githubComplete = githubItems.length === 2 && githubItems.every(({ status }) => status === "succeeded")
   const identityFailure = identityItems.find(({ status }) => status === "failed")
   const identityStatus = identityFailure ? "failed"
     : identityItems.some(({ status }) => status === "running") ? "running"
@@ -58,10 +60,10 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, workspace
 
       <section aria-labelledby="review-machines-heading" className="min-w-0">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <h3 id="review-machines-heading" className="text-xs font-medium">Sandboxes in setup order</h3>
+          <h3 id="review-machines-heading" className="text-xs font-medium">Sandboxes</h3>
           {onEditStep && <Button type="button" variant="ghost" size="xs" onClick={() => onEditStep("workspaces")} aria-label="Edit sandboxes"><Pencil aria-hidden="true" />Edit</Button>}
         </div>
-        <SandboxList label="Sandboxes in setup order">
+        <SandboxList label="Sandboxes">
           {machines.map((machine, index) => {
             const workspace = workspaces.find(({ name }) => name === machine.name)
             const state = workspace?.status ?? "waiting"
@@ -85,20 +87,23 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, workspace
       </section>
 
       <section aria-labelledby="review-preferences-heading">
-        <h3 id="review-preferences-heading" className="mb-2 text-xs font-medium">GitHub and Git identity</h3>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h3 id="review-preferences-heading" className="text-xs font-medium">GitHub and Git identity</h3>
+          {onEditStep && <Button type="button" variant="ghost" size="xs" onClick={() => onEditStep("github")} aria-label="Edit GitHub and Git identity"><Pencil aria-hidden="true" />Edit</Button>}
+        </div>
         <ListCard divided>
           {[
-            { title: "GitHub access", detail: githubSummary, Icon: GitBranch },
-            { title: "Git author", detail: identitySummary, Icon: UserRound },
-          ].map(({ title, detail, Icon }) => <ListRow
+            { title: "GitHub access", detail: githubSummary, Icon: GitBranch, complete: githubComplete },
+            { title: "Git author", detail: identitySummary, Icon: UserRound, complete: identityStatus === "succeeded" },
+          ].map(({ title, detail, Icon, complete }) => <ListRow
             key={title}
             icon={<ListRowIcon aria-hidden="true"><Icon className="size-3.5" /></ListRowIcon>}
             role="group"
             aria-label={title}
+            className={complete ? "bg-emerald-500/[0.035] hover:bg-emerald-500/[0.07] focus-within:bg-emerald-500/[0.07]" : undefined}
             title={<>{title}{title === "Git author" && <ValidationBadge status={identityStatus} />}</>}
             detail={title === "Git author" && identityFailure?.failure ? `${detail} · ${identityFailure.failure}` : detail}
             detailClassName={title === "Git author" && identityFailure ? "whitespace-normal break-words text-destructive" : undefined}
-            actions={onEditStep && <Button type="button" variant="ghost" size="xs" onClick={() => onEditStep("github")} aria-label={`Edit ${title}`}><Pencil aria-hidden="true" />Edit</Button>}
           />)}
         </ListCard>
       </section>
