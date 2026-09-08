@@ -1943,7 +1943,7 @@ fn start_at_launch_with(
         ensure_managed(&inspected)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
-            "stopped" => {
+            "created" | "stopped" => {
                 workspace_action_with(runner, paths, host, "start", name)?;
                 let started = inspect_workspace(runner, paths, name)?;
                 ensure_managed(&started)?;
@@ -3224,17 +3224,19 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let runner = StubRunner::successful_json(vec![
-            inspect(&paths, "Stopped"),
-            inspect(&paths, "Stopped"),
-            json!(null),
-            inspect(&paths, "Running"),
-        ]);
-        start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[2], vec!["start", "--quiet", "dev"]);
-        assert_eq!(calls[3], vec!["inspect", "dev", "--format", "json"]);
-        assert!(!calls.iter().any(|call| call[0] == "create"));
+        for initial_status in ["Created", "Stopped"] {
+            let runner = StubRunner::successful_json(vec![
+                inspect(&paths, initial_status),
+                inspect(&paths, initial_status),
+                json!(null),
+                inspect(&paths, "Running"),
+            ]);
+            start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap();
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls[2], vec!["start", "--quiet", "dev"]);
+            assert_eq!(calls[3], vec!["inspect", "dev", "--format", "json"]);
+            assert!(!calls.iter().any(|call| call[0] == "create"));
+        }
     }
 
     #[test]
@@ -3279,6 +3281,18 @@ mod tests {
                 .to_string()
                 .contains("did not reach")
         );
+    }
+
+    #[test]
+    fn launch_does_not_recover_crashed_or_transitioning_vms() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        for status in ["Crashed", "Starting", "Draining", "Paused"] {
+            let runner = StubRunner::successful_json(vec![inspect(&paths, status)]);
+            assert!(start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).is_err());
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        }
     }
 
     #[test]

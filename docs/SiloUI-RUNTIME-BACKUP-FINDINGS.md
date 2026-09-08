@@ -294,3 +294,10 @@ states, silent first/unchanged/new-sandbox observations, actual state transition
 bounded grouped messages, and backup failure/partial-restart/cancellation routing.
 No test sends a synthetic OS notification or changes the user's notification settings.
 Linux delivery requires live Linux desktop verification; the current host is macOS.
+
+Startup recognizes MicroSandbox `Created` as an existing, startable VM as well as
+`Stopped`. The pinned [sandbox status enum](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/crates/db/lib/entity/sandbox.rs)
+defines `Created` as created but not yet started; Silo's `--no-start` preparation
+uses this state and displays it as Stopped. Crashed VMs require a manual start;
+launch does not perform automatic crash recovery. The startup regression covers
+both Created and Stopped before verifying Running.
