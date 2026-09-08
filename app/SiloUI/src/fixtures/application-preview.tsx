@@ -13,7 +13,7 @@ import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrati
 const inactiveApplicationActions: ApplicationActions = {
   saveSecret: () => undefined,
   removeSecret: () => undefined,
-  repairRuntime: () => undefined,
+  retryRuntimeChecks: () => undefined,
   saveMachineConfiguration: () => undefined,
   retryMachineConfiguration: () => undefined,
   pushRepository: () => undefined,

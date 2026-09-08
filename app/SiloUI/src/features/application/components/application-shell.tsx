@@ -365,7 +365,7 @@ export function ApplicationShell({
                   loading={navigationLoading?.tabs?.system}
                   active={activeTab === "system"}
                   collapsed={collapsed}
-                  tone={systemIssueStatus === "repairing" ? "warning" : "danger"}
+                  tone="danger"
                   onClick={() => selectTab("system")}
                 />
               )}

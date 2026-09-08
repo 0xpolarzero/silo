@@ -1,133 +1,31 @@
-import { AlertCircle, Check, Circle, CircleAlert, ExternalLink, Loader2, RotateCw } from "lucide-react"
+import { CircleAlert, RotateCw } from "lucide-react"
 
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
-import { LogDisclosure } from "@/components/log-disclosure"
-import type { ActiveRuntimeRepairPresentation, ApplicationActions, RuntimeRepairPhase } from "@/features/application/model/application-source"
-import { cn } from "@/lib/utils"
-
-const repairSteps: ReadonlyArray<{ phase: RuntimeRepairPhase; label: string }> = [
-  { phase: "installing-runtime", label: "Bundled Silo tools" },
-  { phase: "installing-configuration", label: "Default configuration" },
-  { phase: "verifying", label: "Installation verification" },
-]
-
-const siloIssuesURL = "https://github.com/0xpolarzero/silo/issues"
-
-type StepState = "complete" | "active" | "failed" | "waiting"
-
-function stepState(issue: ActiveRuntimeRepairPresentation, index: number): StepState {
-  if (issue.status !== "repairing" && issue.status !== "failed") return "waiting"
-  const activeIndex = repairSteps.findIndex(({ phase }) => phase === issue.phase)
-  if (index < activeIndex) return "complete"
-  if (index > activeIndex) return "waiting"
-  return issue.status === "failed" ? "failed" : "active"
-}
-
-const stepStateLabel: Record<StepState, string> = {
-  complete: "Complete",
-  active: "In progress",
-  failed: "Failed",
-  waiting: "Waiting",
-}
-
-function StepIcon({ state }: { state: StepState }) {
-  if (state === "complete") return <Check className="size-3.5" aria-hidden="true" />
-  if (state === "active") return <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-  if (state === "failed") return <AlertCircle className="size-3.5" aria-hidden="true" />
-  return <Circle className="size-3" aria-hidden="true" />
-}
-
-function RepairProgress({ issue }: { issue: ActiveRuntimeRepairPresentation }) {
-  return (
-    <ol className="grid gap-1" aria-label="Repair progress">
-      {repairSteps.map((step, index) => {
-        const state = stepState(issue, index)
-        return (
-          <li key={step.phase} data-step-state={state} className="grid grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-2 text-[11px]">
-            <ListRowIcon aria-hidden="true" className={cn(
-              state === "complete" && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-              state === "active" && "bg-amber-500/10 text-amber-700 dark:text-amber-400",
-              state === "failed" && "bg-destructive/10 text-destructive",
-              state === "waiting" && "bg-muted text-muted-foreground/65",
-            )}>
-              <StepIcon state={state} />
-            </ListRowIcon>
-            <span className={cn("font-medium", state === "waiting" && "text-muted-foreground")}>{step.label}</span>
-            <span className={cn(
-              "text-[10px]",
-              state === "complete" && "text-emerald-700 dark:text-emerald-400",
-              state === "active" && "text-amber-700 dark:text-amber-400",
-              state === "failed" && "text-destructive",
-              state === "waiting" && "text-muted-foreground",
-            )}>{stepStateLabel[state]}</span>
-          </li>
-        )
-      })}
-    </ol>
-  )
-}
-
-function issueHeader(issue: ActiveRuntimeRepairPresentation) {
-  if (issue.status === "repairing") {
-    return {
-      icon: Loader2,
-      title: "Repairing installation",
-      description: `Step ${issue.completedSteps + 1} of ${issue.totalSteps}`,
-      tone: "warning" as const,
-    }
-  }
-  if (issue.status === "failed") {
-    return { icon: CircleAlert, title: "Repair couldn’t finish", description: issue.summary, tone: "danger" as const }
-  }
-  if (issue.status === "unavailable") {
-    return { icon: CircleAlert, title: "Silo runtime is unavailable", description: issue.reason, tone: "danger" as const }
-  }
-  return { icon: CircleAlert, title: "Silo installation needs repair", description: issue.reason, tone: "danger" as const }
-}
+import type { ActiveRuntimeRepairPresentation, ApplicationActions } from "@/features/application/model/application-source"
 
 export function SystemIssuePage({ issue, actions }: { issue: ActiveRuntimeRepairPresentation; actions: ApplicationActions }) {
-  const header = issueHeader(issue)
-  const Icon = header.icon
-  const showsProgress = issue.status === "repairing" || (issue.status === "failed" && issue.phase !== undefined)
-  const footerNote = issue.status === "unavailable"
-    ? issue.recovery
-    : "Sandbox data, host integration, and GitHub access are not changed."
-
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
       <h2 className="text-xs font-medium">System issue</h2>
-      <ListCard role={header.tone === "danger" ? "alert" : "status"} aria-live="polite">
+      <ListCard role="alert" aria-live="polite">
         <ListRow
           className="grid grid-cols-[auto_minmax(0,1fr)] gap-y-2 hover:bg-muted/35 focus-within:bg-muted/35 sm:flex"
-          icon={
-            <ListRowIcon aria-hidden="true" className={header.tone === "danger" ? "bg-destructive/10 text-destructive" : "bg-amber-500/10 text-amber-700 dark:text-amber-400"}>
-              <Icon className={cn("size-3.5", issue.status === "repairing" && "animate-spin motion-reduce:animate-none")} />
-            </ListRowIcon>
-          }
-          title={<h3>{header.title}</h3>}
-          detail={header.description}
+          icon={<ListRowIcon aria-hidden="true" className="bg-destructive/10 text-destructive"><CircleAlert className="size-3.5" /></ListRowIcon>}
+          title={<h3>Silo runtime is unavailable</h3>}
+          detail={issue.reason}
           detailClassName="whitespace-normal"
-          actions={issue.status !== "unavailable" && (
+          actions={
             <div className="col-start-2 shrink-0">
-              {issue.status === "needed" && <Button variant="outline" size="xs" onClick={actions.repairRuntime}><RotateCw aria-hidden="true" />Repair Installation</Button>}
-              {issue.status === "repairing" && <Button variant="outline" size="xs" disabled aria-label="Repair in progress">Repairing…</Button>}
-              {issue.status === "failed" && <Button variant="outline" size="xs" onClick={actions.repairRuntime}><RotateCw aria-hidden="true" />Retry Repair</Button>}
+              <Button variant="outline" size="xs" onClick={actions.retryRuntimeChecks} disabled={issue.checking}>
+                <RotateCw aria-hidden="true" className={issue.checking ? "animate-spin motion-reduce:animate-none" : undefined} />
+                {issue.checking ? "Checking…" : "Retry checks"}
+              </Button>
             </div>
-          )}
+          }
         />
-        <ListRowDetails label="Installation repair details">
-          {showsProgress && <RepairProgress issue={issue} />}
-          {issue.status === "failed" && (
-            <>
-              <p className="text-[11px] text-muted-foreground">{issue.recovery}</p>
-              {issue.diagnosticDetails && <LogDisclosure title="Technical details" output={issue.diagnosticDetails} />}
-            </>
-          )}
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="min-w-0 flex-1 text-[10px] text-muted-foreground">{footerNote}</p>
-            {issue.status === "failed" && <Button variant="ghost" size="xs" asChild><a href={siloIssuesURL} target="_blank" rel="noreferrer"><ExternalLink aria-hidden="true" />Open GitHub Issues</a></Button>}
-          </div>
+        <ListRowDetails label="Recovery instructions">
+          <p className="text-[11px] text-muted-foreground whitespace-pre-line">{issue.recovery ?? "Retry checks. If the runtime is still unavailable, quit and reopen Silo."}</p>
         </ListRowDetails>
       </ListCard>
     </div>

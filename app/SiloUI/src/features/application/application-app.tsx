@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
+import { useCallback, useEffect, useEffectEvent, useState } from "react"
 
 import type { BackupController } from "@/features/application/model/backup-source"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { ApplicationShell, type ApplicationNavigationLoading } from "@/features/application/components/application-shell"
 import { ApplicationCommandMenu } from "@/features/application/components/application-command-menu"
 import { applicationCommands } from "@/features/application/components/application-commands"
-import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, RuntimeRepairPresentation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { BackupPage } from "@/features/application/pages/backup-page"
 import { GeneralPage } from "@/features/application/pages/general-page"
@@ -54,7 +54,7 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
       github: githubBusy || githubSourceBusy || runningCategories.has("github"),
       secrets: runningCategories.has("secrets"),
       backup: backupBusy || runningCategories.has("backup"),
-      system: source.runtimeRepair?.status === "repairing" || runningCategories.has("system"),
+      system: source.runtimeRepair?.checking || runningCategories.has("system"),
     },
     workspaceSections: {
       overview: source.sandboxConfigurationOperation?.status === "applying"
@@ -91,7 +91,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     ...(settings.editorPath && { editorPath: settings.editorPath }),
     ...(settings.browserPath && { browserPath: settings.browserPath }),
   }
-  const activeRuntimeRepair = source.runtimeRepair?.status === "succeeded" ? null : source.runtimeRepair
+  const activeRuntimeRepair = source.runtimeRepair
   const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute)
   const { tab: activeTab, workspaceSection, settingsSection } = navigation
   const workspaces = source.workspaces
@@ -103,14 +103,11 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const [logQuery, setLogQuery] = useState("")
   const [sandboxConfigurationOperation, setSandboxConfigurationOperation] = useState<SandboxConfigurationOperation | null>(source.sandboxConfigurationOperation)
   const [repositoryPushOperations, setRepositoryPushOperations] = useState<RepositoryPushOperation[]>(source.repositoryPushOperations)
-  const [repairConfirmationVisible, setRepairConfirmationVisible] = useState(source.runtimeRepair?.status === "succeeded")
   const [backupBusy, setBackupBusy] = useState(false)
   const [githubBusy, setGitHubBusy] = useState(
     source.github.state === "connecting"
       || (source.github.workspaceOperations ?? []).some(({ status }) => status === "applying"),
   )
-  const previousRuntimeRepairStatus = useRef<RuntimeRepairPresentation["status"] | undefined>(undefined)
-  const repairConfirmationTimer = useRef<number | null>(null)
   const visibleTab = activeTab
   const visibleWorkspaceSection = workspaceSection
   const applicationSource = {
@@ -142,36 +139,6 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   function changeApplicationPreferences(next: ApplicationPreferenceSelection) {
     void updateSettings(applicationPreferenceChanges(applicationPreferences, next))
   }
-
-  useEffect(() => {
-    const status = source.runtimeRepair?.status
-    const previousStatus = previousRuntimeRepairStatus.current
-    previousRuntimeRepairStatus.current = status
-
-    if (status && status !== "succeeded") {
-      if (repairConfirmationTimer.current !== null) {
-        window.clearTimeout(repairConfirmationTimer.current)
-        repairConfirmationTimer.current = null
-      }
-      // oxlint-disable-next-line react/set-state-in-effect
-      setRepairConfirmationVisible(false)
-      return
-    }
-    if (status !== "succeeded" || previousStatus === "succeeded") return
-
-    // A successful repair is a transient result, not a navigation destination.
-    // oxlint-disable-next-line react/set-state-in-effect
-    setRepairConfirmationVisible(true)
-    if (repairConfirmationTimer.current !== null) window.clearTimeout(repairConfirmationTimer.current)
-    repairConfirmationTimer.current = window.setTimeout(() => {
-      setRepairConfirmationVisible(false)
-      repairConfirmationTimer.current = null
-    }, 4_000)
-  }, [source.runtimeRepair?.status, activeTab])
-
-  useEffect(() => () => {
-    if (repairConfirmationTimer.current !== null) window.clearTimeout(repairConfirmationTimer.current)
-  }, [])
 
   function updateMachines(machines: SetupMachineConfiguration[]) {
     const candidate = { schemaVersion: 1 as const, machines }
@@ -236,7 +203,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage source={applicationSource} actions={actions} onMachinesChange={updateMachines} repairCompleted={repairConfirmationVisible} />
+          <OverviewPage source={applicationSource} actions={actions} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
             workspaces={workspaces}

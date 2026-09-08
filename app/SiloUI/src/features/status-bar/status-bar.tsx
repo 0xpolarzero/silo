@@ -128,7 +128,7 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
 export function StatusBarContent({ source, actions, focusContent }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void }) {
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<{ workspace: string; action: "stop" | "restart" } | null>(null)
-  const repair = source.runtimeRepair && source.runtimeRepair.status !== "succeeded" ? source.runtimeRepair : null
+  const repair = source.runtimeRepair
   const folders = source.workspaces.find(({ machine }) => machine.id === folderWorkspace)
   const failedPushes = source.repositoryPushOperations.filter((operation) => operation.status === "failed")
   const failedConfiguration = source.sandboxConfigurationOperation?.status === "failed" ? source.sandboxConfigurationOperation : null
@@ -142,10 +142,10 @@ export function StatusBarContent({ source, actions, focusContent }: { source: Ap
       <div className="shrink-0 px-2 pt-2">
         {repair && <ListCard className="mb-2">
           <ListRow
-            icon={<ListRowIcon className={repair.status === "repairing" ? undefined : "bg-destructive/10 text-destructive"}>{repair.status === "repairing" ? <Loader2 className="size-3.5 animate-spin" /> : <CircleAlert className="size-3.5" />}</ListRowIcon>}
-            title={repair.status === "repairing" ? "Repairing Silo…" : "Silo needs repair"}
-            detail={repair.status === "repairing" ? "Sandboxes will be available shortly" : "The Silo runtime is unavailable"}
-            actions={<Button variant="outline" size="xs" onClick={() => actions.openSilo({ tab: "system" })}>{repair.status === "repairing" ? "View" : "Repair…"}</Button>}
+            icon={<ListRowIcon className="bg-destructive/10 text-destructive"><CircleAlert className="size-3.5" /></ListRowIcon>}
+            title="System issue"
+            detail={repair.reason}
+            actions={<Button variant="outline" size="xs" onClick={() => actions.openSilo({ tab: "system" })}>View issue</Button>}
           />
         </ListCard>}
         {failedConfiguration && <OperationIssue

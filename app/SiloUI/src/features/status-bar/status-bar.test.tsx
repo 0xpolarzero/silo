@@ -85,12 +85,12 @@ describe("status bar", () => {
     expect(trigger.querySelectorAll("svg")).toHaveLength(1)
   })
 
-  it("keeps loading visible without animation when reduced motion is enabled", () => {
-    const fixture = applicationSourceForScenario("running", undefined, undefined, undefined, "installing")
+  it("keeps the runtime failure visible while retrying checks", () => {
+    const fixture = applicationSourceForScenario("running", undefined, undefined, undefined, "checking")
     const { source, actions, rerender } = setup({ ...fixture, preferences: { ...fixture.preferences, reduceMotion: true } })
     const trigger = screen.getByRole("button", { name: "Silo status bar" })
-    expect(trigger).toHaveAccessibleDescription("Repairing…")
-    expect(trigger.querySelector(".lucide-loader-circle")).toBeInTheDocument()
+    expect(trigger).toHaveAccessibleDescription("System issue")
+    expect(trigger.querySelector(".lucide-circle-alert")).toBeInTheDocument()
     expect(trigger.querySelector(".animate-spin")).not.toBeInTheDocument()
     rerender(<StatusBar source={{ ...source, runtimeRepair: null, workspaces: [] }} actions={actions} />)
     expect(trigger).toHaveAccessibleDescription("No sandboxes")
@@ -141,10 +141,10 @@ describe("status bar", () => {
 
   it("opens repair in the app and prevents actions while repair is pending", async () => {
     const { user, actions } = setup({ runtimeRepair: { status: "needed", reason: "Runtime not verified" } })
-    expect(screen.getByText("Silo needs repair")).toBeInTheDocument()
+    expect(screen.getByText("System issue")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Open dev in Terminal" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^See logs for / })).not.toBeInTheDocument()
-    await user.click(screen.getByRole("button", { name: "Repair…" }))
+    await user.click(screen.getByRole("button", { name: "View issue" }))
     expect(actions.openSilo).toHaveBeenCalledWith({ tab: "system" })
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })

@@ -31,15 +31,7 @@ export const sandboxConfigurationFixtureModes = [
 ] as const
 export type SandboxConfigurationFixtureMode = (typeof sandboxConfigurationFixtureModes)[number]
 
-export const systemIssueFixtureModes = [
-  "needed",
-  "installing",
-  "configuring",
-  "verifying",
-  "failed",
-  "succeeded",
-  "runtime-missing",
-] as const
+export const systemIssueFixtureModes = ["needed", "checking", "runtime-missing"] as const
 export type SystemIssueFixtureMode = (typeof systemIssueFixtureModes)[number]
 
 export const repositoryPushFixtureModes = ["pushing", "succeeded", "failed"] as const
@@ -289,34 +281,11 @@ function runtimeRepairForFixture(
 ): RuntimeRepairPresentation | null {
   if (!mode) return scenario === "dependency-failure" ? neededRuntimeRepair : null
   if (mode === "needed") return neededRuntimeRepair
-  if (mode === "installing") {
-    return { status: "repairing", phase: "installing-runtime", completedSteps: 0, totalSteps: 3 }
-  }
-  if (mode === "configuring") {
-    return { status: "repairing", phase: "installing-configuration", completedSteps: 1, totalSteps: 3 }
-  }
-  if (mode === "verifying") {
-    return { status: "repairing", phase: "verifying", completedSteps: 2, totalSteps: 3 }
-  }
-  if (mode === "failed") {
-    return {
-      status: "failed",
-      phase: "verifying",
-      summary: "The activated runtime did not pass verification.",
-      recovery: "Retry the repair. If it fails again, open a GitHub issue and paste the technical details below.",
-      diagnosticDetails: [
-        "Installing bundled Silo tools",
-        "Installing default configuration",
-        "Verifying activated command identity",
-        "Final error: bundled Silo command failed its version handshake.",
-      ].join("\n"),
-    }
-  }
-  if (mode === "succeeded") return { status: "succeeded" }
+  if (mode === "checking") return { ...neededRuntimeRepair, checking: true }
   return {
     status: "unavailable",
     reason: "This app build is missing its bundled Silo runtime.",
-    recovery: "Reinstall Silo from a complete app bundle.",
+    recovery: "Reinstall Silo from a complete app bundle. Keep your existing VMs and settings.",
   }
 }
 

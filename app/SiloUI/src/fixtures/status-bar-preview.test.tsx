@@ -211,7 +211,7 @@ describe("status bar preview", () => {
     window.history.replaceState(null, "", "?view=status-bar&scenario=running&system-issue=needed")
     const user = userEvent.setup()
     render(<FixtureApp />)
-    await user.click(screen.getByRole("button", { name: "Repair…" }))
+    await user.click(screen.getByRole("button", { name: "View issue" }))
     expect(screen.getByRole("region", { name: "System issue" })).toBeVisible()
     expect(screen.queryByRole("main", { name: "Status bar preview" })).not.toBeInTheDocument()
   })

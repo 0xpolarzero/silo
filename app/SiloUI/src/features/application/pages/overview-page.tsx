@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, Loader2, Pause, Play, RotateCw, Square, TriangleAlert } from "lucide-react"
+import { CircleAlert, Loader2, Pause, Play, RotateCw, Square, TriangleAlert } from "lucide-react"
 import { useState } from "react"
 
 import { ListRowIcon } from "@/components/list-row"
@@ -205,12 +205,10 @@ export function OverviewPage({
   source,
   actions,
   onMachinesChange,
-  repairCompleted = false,
 }: {
   source: ApplicationSource
   actions: ApplicationActions
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
-  repairCompleted?: boolean
 }) {
   const [pendingStart, setPendingStart] = useState<string | null>(null)
   const [operationUnavailable, setOperationUnavailable] = useState(false)
@@ -223,12 +221,6 @@ export function OverviewPage({
 
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
-      {repairCompleted && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.07] px-3 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-400" role="status" aria-live="polite" aria-atomic="true">
-          <CircleCheck className="size-4 shrink-0" aria-hidden="true" />
-          Installation repaired
-        </div>
-      )}
       <div className="min-h-0 flex-1">
         <MachineList
           machines={machines}

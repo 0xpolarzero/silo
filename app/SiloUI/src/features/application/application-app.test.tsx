@@ -11,7 +11,7 @@ function renderApplication(scenario: Parameters<typeof applicationSourceForScena
   const actions: ApplicationActions = {
     saveSecret: vi.fn(),
     removeSecret: vi.fn(),
-    repairRuntime: vi.fn(),
+    retryRuntimeChecks: vi.fn(),
     saveMachineConfiguration: vi.fn(),
     retryMachineConfiguration: vi.fn(),
     pushRepository: vi.fn(),
@@ -160,7 +160,7 @@ describe("application", () => {
   })
 
   it.each(["past", "future"] as const)("removes a resolved issue from the %s navigation history", async (position) => {
-    const application = renderApplication("running", applicationSourceForScenario("running", undefined, undefined, undefined, "verifying"))
+    const application = renderApplication("running", applicationSourceForScenario("running", undefined, undefined, undefined, "checking"))
     const navigation = within(appNavigation())
     await application.user.click(navigation.getByRole("button", { name: "Files" }))
     await application.user.click(navigation.getByRole("button", { name: "System issue" }))
@@ -171,7 +171,7 @@ describe("application", () => {
       await application.user.click(back)
       await application.user.click(back)
     }
-    application.rerender(<ApplicationPreview source={applicationSourceForScenario("running", undefined, undefined, undefined, "succeeded")} actions={application.actions} />)
+    application.rerender(<ApplicationPreview source={applicationSourceForScenario("running")} actions={application.actions} />)
     if (position === "past") {
       await application.user.click(back)
       expect(within(appPanel("Sandboxes")).getByRole("list", { name: "Repositories" })).toBeVisible()
@@ -341,7 +341,7 @@ describe("application", () => {
       { label: "GitHub", source: applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "applying") },
       { label: "Secrets", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "secrets-live") },
       { label: "Backup", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "backup-live") },
-      { label: "System issue", source: applicationSourceForScenario("running", undefined, undefined, undefined, "installing") },
+      { label: "System issue", source: applicationSourceForScenario("running", undefined, undefined, undefined, "checking") },
     ]
 
     for (const { label, source, section } of cases) {
@@ -1151,20 +1151,20 @@ describe("application", () => {
       "Settings",
     ])
     expect(primaryItems.at(-2)).toHaveAttribute("data-navigation-tone", "danger")
-    expect(within(appPanel("Sandboxes")).queryByText("Silo installation needs repair")).not.toBeInTheDocument()
+    expect(within(appPanel("Sandboxes")).queryByText("Silo runtime is unavailable")).not.toBeInTheDocument()
 
     await failed.user.click(navigation.getByRole("button", { name: "System issue" }))
 
     expect(navigation.getByRole("button", { name: "System issue" })).toHaveAttribute("aria-current", "page")
     const systemIssue = within(appPanel("System issue"))
     expect(systemIssue.getByRole("heading", { name: "System issue", level: 2 })).toBeVisible()
-    expect(systemIssue.getByRole("heading", { name: "Silo installation needs repair", level: 3 })).toBeVisible()
+    expect(systemIssue.getByRole("heading", { name: "Silo runtime is unavailable", level: 3 })).toBeVisible()
     expect(systemIssue.getByText("Silo could not verify the bundled runtime used to manage sandboxes.")).toBeVisible()
     expect(systemIssue.queryByText(/Repair reinstalls Silo/)).not.toBeInTheDocument()
-    expect(systemIssue.getByText("Sandbox data, host integration, and GitHub access are not changed.")).toBeVisible()
+    expect(systemIssue.getByText("Retry checks. If the runtime is still unavailable, quit and reopen Silo.")).toBeVisible()
 
-    await failed.user.click(systemIssue.getByRole("button", { name: "Repair Installation" }))
-    expect(failed.actions.repairRuntime).toHaveBeenCalledOnce()
+    await failed.user.click(systemIssue.getByRole("button", { name: "Retry checks" }))
+    expect(failed.actions.retryRuntimeChecks).toHaveBeenCalledOnce()
   })
 
   it("removes a resolved system issue and returns to Sandboxes", async () => {
@@ -1186,95 +1186,28 @@ describe("application", () => {
     expect(within(appPanel("Sandboxes")).getByRole("list", { name: "Configured sandboxes" })).toBeVisible()
   })
 
-  it.each([
-    ["installing", "Bundled Silo tools", "Step 1 of 3", "Installing bundled Silo tools…"],
-    ["configuring", "Default configuration", "Step 2 of 3", "Checking default configuration…"],
-    ["verifying", "Installation verification", "Step 3 of 3", "Verifying the installation…"],
-  ] as const)("shows concise %s repair progress", async (mode, phase, step, omittedCaption) => {
-    const source = applicationSourceForScenario("running", undefined, undefined, undefined, mode)
+  it("keeps the issue visible and prevents duplicate retries while checking", async () => {
+    const source = applicationSourceForScenario("running", undefined, undefined, undefined, "checking")
     const application = renderApplication("running", source)
-    const navigation = within(appNavigation())
-
-    await application.user.click(navigation.getByRole("button", { name: "System issue" }))
-    expect(navigation.getByRole("button", { name: "System issue" })).toHaveAttribute("data-navigation-tone", "warning")
+    await application.user.click(within(appNavigation()).getByRole("button", { name: "System issue" }))
     const page = within(appPanel("System issue"))
-    expect(page.getByRole("heading", { name: "Repairing installation", level: 3 })).toBeVisible()
-    expect(page.queryByText(omittedCaption)).not.toBeInTheDocument()
-    expect(page.getByText(step)).toBeVisible()
-    const progress = page.getByRole("list", { name: "Repair progress" })
-    expect(within(progress).getAllByRole("listitem")).toHaveLength(3)
-    expect(within(progress).getByText(phase).closest("li")).toHaveAttribute("data-step-state", "active")
-    expect(page.getByRole("button", { name: "Repair in progress" })).toBeDisabled()
+    expect(page.getByRole("alert")).toHaveTextContent("Silo could not verify the bundled runtime")
+    expect(page.getByRole("button", { name: "Checking…" })).toBeDisabled()
+    expect(page.queryByRole("list", { name: "Repair progress" })).not.toBeInTheDocument()
+    await application.user.click(page.getByRole("button", { name: "Checking…" }))
+    expect(application.actions.retryRuntimeChecks).not.toHaveBeenCalled()
   })
 
-  it("shows retry and optional technical details after repair fails", async () => {
-    const source = applicationSourceForScenario("running", undefined, undefined, undefined, "failed")
+  it("shows the specific host fix without recommending reinstallation", async () => {
+    const source = applicationSourceForScenario("running")
+    source.runtimeRepair = { status: "unavailable", reason: "KVM access is denied.", recovery: "Ask your administrator to grant your user access to /dev/kvm, then retry checks." }
     const application = renderApplication("running", source)
-    const navigation = within(appNavigation())
-
-    await application.user.click(navigation.getByRole("button", { name: "System issue" }))
+    await application.user.click(within(appNavigation()).getByRole("button", { name: "System issue" }))
     const page = within(appPanel("System issue"))
-    expect(page.getByRole("heading", { name: "Repair couldn’t finish", level: 3 })).toBeVisible()
-    expect(page.getByText("The activated runtime did not pass verification.")).toBeVisible()
-    expect(page.getByText("Retry the repair. If it fails again, open a GitHub issue and paste the technical details below.")).toBeVisible()
-    expect(page.getByRole("link", { name: "Open GitHub Issues" })).toHaveAttribute("href", "https://github.com/0xpolarzero/silo/issues")
-    expect(page.getByRole("link", { name: "Open GitHub Issues" })).toHaveAttribute("target", "_blank")
-    expect(page.queryByText(/version handshake/)).not.toBeInTheDocument()
-
-    await application.user.click(page.getByRole("button", { name: "Show technical details" }))
-    expect(page.getByText(/version handshake/)).toBeVisible()
-    const copy = vi.spyOn(navigator.clipboard, "writeText")
-    await application.user.click(page.getByRole("button", { name: "Copy technical details" }))
-    expect(copy).toHaveBeenCalledWith(expect.stringContaining("version handshake"))
-    const copiedDetails = page.getByRole("button", { name: "Technical details copied" })
-    expect(copiedDetails).toBeVisible()
-    expect(copiedDetails).toHaveAttribute("data-copy-status", "copied")
-    expect(copiedDetails.querySelector("svg")).toHaveClass("lucide-check")
-    await application.user.click(page.getByRole("button", { name: "Retry Repair" }))
-    expect(application.actions.repairRuntime).toHaveBeenCalledOnce()
-  })
-
-  it("removes a repaired issue, returns to Sandbox Overview, and confirms success there", async () => {
-    const source = applicationSourceForScenario("running", undefined, undefined, undefined, "verifying")
-    const application = renderApplication("running", source)
-    const navigation = within(appNavigation())
-
-    await application.user.click(within(navigation.getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "Files" }))
-    await application.user.click(navigation.getByRole("button", { name: "System issue" }))
-    expect(appPanel("System issue")).toBeVisible()
-
-    application.rerender(
-      <ApplicationPreview
-        source={applicationSourceForScenario("running", undefined, undefined, undefined, "succeeded")}
-        actions={application.actions}
-      />,
-    )
-
-    expect(navigation.queryByRole("button", { name: "System issue" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("region", { name: "System issue" })).not.toBeInTheDocument()
-    const sandboxes = within(appPanel("Sandboxes"))
-    expect(within(navigation.getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page")
-    expect(sandboxes.getByRole("status")).toHaveTextContent("Installation repaired")
-    expect(sandboxes.getByRole("list", { name: "Configured sandboxes" })).toBeVisible()
-    await application.user.click(screen.getByRole("button", { name: "Go back" }))
-    expect(sandboxes.getByRole("list", { name: "Repositories" })).toBeVisible()
-    await application.user.click(screen.getByRole("button", { name: "Go forward" }))
-    expect(sandboxes.getByRole("list", { name: "Configured sandboxes" })).toBeVisible()
-    expect(screen.queryByRole("region", { name: "System issue" })).not.toBeInTheDocument()
-  })
-
-  it("removes the repair confirmation after four seconds", () => {
-    vi.useFakeTimers()
-    const application = renderApplication("running", applicationSourceForScenario("running", undefined, undefined, undefined, "succeeded"))
-
-    try {
-      expect(within(appPanel("Sandboxes")).getByRole("status")).toHaveTextContent("Installation repaired")
-      act(() => vi.advanceTimersByTime(4_000))
-      expect(within(appPanel("Sandboxes")).queryByRole("status")).not.toBeInTheDocument()
-    } finally {
-      application.unmount()
-      vi.useRealTimers()
-    }
+    expect(page.getByText(source.runtimeRepair.recovery!)).toBeVisible()
+    expect(page.queryByText(/reinstall/i)).not.toBeInTheDocument()
+    await application.user.click(page.getByRole("button", { name: "Retry checks" }))
+    expect(application.actions.retryRuntimeChecks).toHaveBeenCalledOnce()
   })
 
   it("gives reinstall guidance when the bundled runtime is unavailable", async () => {
@@ -1285,7 +1218,7 @@ describe("application", () => {
     const page = within(appPanel("System issue"))
     expect(page.getByRole("heading", { name: "Silo runtime is unavailable", level: 3 })).toBeVisible()
     expect(page.getByText("This app build is missing its bundled Silo runtime.")).toBeVisible()
-    expect(page.getByText("Reinstall Silo from a complete app bundle.")).toBeVisible()
+    expect(page.getByText("Reinstall Silo from a complete app bundle. Keep your existing VMs and settings.")).toBeVisible()
     expect(page.queryByRole("button", { name: /repair/i })).not.toBeInTheDocument()
   })
 

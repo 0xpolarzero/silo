@@ -30,8 +30,8 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
     { label: "Settings", icon: Settings2, route: { settingsSection: "general" }, keywords: ["general", "preferences", "applications"] },
     { label: "Notifications", icon: Bell, route: { settingsSection: "notifications" }, keywords: ["alerts"] },
   ]
-  if (source.runtimeRepair && source.runtimeRepair.status !== "succeeded") {
-    destinations.push({ label: "System issue", icon: CircleAlert, route: { tab: "system" }, keywords: ["repair", "runtime", "installation"] })
+  if (source.runtimeRepair) {
+    destinations.push({ label: "System issue", icon: CircleAlert, route: { tab: "system" }, keywords: ["checks", "runtime", "installation"] })
   }
   const commands: ApplicationCommand[] = destinations.map(({ label, icon, route, keywords }) => ({
     id: `page:${label}`, label, icon, keywords, group: "Go to", run: () => navigate(route),

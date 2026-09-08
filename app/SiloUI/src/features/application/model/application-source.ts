@@ -13,36 +13,14 @@ export type WorkspaceSection = "overview" | "files" | "logs" | "network" | "acti
 export type WorkspaceDetailSection = Exclude<WorkspaceSection, "overview">
 export type WorkspaceState = "running" | "starting" | "stopped" | "failed"
 
-export type RuntimeRepairPhase = "installing-runtime" | "installing-configuration" | "verifying"
+export type RuntimeRepairPresentation = {
+  status: "needed" | "unavailable"
+  reason: string
+  recovery?: string
+  checking?: boolean
+}
 
-export type RuntimeRepairPresentation =
-  | {
-      status: "needed"
-      reason: string
-    }
-  | {
-      status: "repairing"
-      phase: RuntimeRepairPhase
-      completedSteps: 0 | 1 | 2
-      totalSteps: 3
-    }
-  | {
-      status: "failed"
-      phase?: RuntimeRepairPhase
-      summary: string
-      recovery: string
-      diagnosticDetails?: string
-    }
-  | {
-      status: "succeeded"
-    }
-  | {
-      status: "unavailable"
-      reason: string
-      recovery: string
-    }
-
-export type ActiveRuntimeRepairPresentation = Exclude<RuntimeRepairPresentation, { status: "succeeded" }>
+export type ActiveRuntimeRepairPresentation = RuntimeRepairPresentation
 
 export type SandboxConfigurationOperation =
   | {
@@ -235,7 +213,7 @@ export interface ApplicationSource {
 export interface ApplicationActions {
   saveSecret: (request: SecretConfigurationRequest) => void
   removeSecret: (id: string) => void
-  repairRuntime: () => void
+  retryRuntimeChecks: () => void
   saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void
   retryMachineConfiguration: (workspace: string) => void
   pushRepository: (workspace: string, repositoryPath: string) => void
