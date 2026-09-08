@@ -1,10 +1,40 @@
 mod applications;
+mod dependencies;
 mod settings;
 mod status_panel;
 mod system_integrations;
 mod tray;
 
 use tauri::{Manager, WindowEvent};
+
+#[cfg(debug_assertions)]
+fn debug_fixture_url() -> Option<tauri::Url> {
+    let query = std::env::var("SILO_DEBUG_FIXTURE_QUERY").ok()?;
+    if !query.starts_with('?') || query.len() > 512 || query.contains(['\n', '\r', '#']) {
+        return None;
+    }
+    let allowed = [
+        "view",
+        "scenario",
+        "github",
+        "sandbox-state",
+        "sandbox-change",
+        "system-issue",
+        "repository-push",
+        "activity",
+        "github-operation",
+        "backup-operation",
+        "resource-notice",
+    ];
+    let valid = query[1..].split('&').all(|pair| {
+        let key = pair.split('=').next().unwrap_or_default();
+        !key.is_empty() && allowed.contains(&key)
+    });
+    if !valid {
+        return None;
+    }
+    format!("tauri://localhost/{query}").parse().ok()
+}
 
 fn main() {
     tauri::Builder::default()
@@ -31,7 +61,8 @@ fn main() {
             system_integrations::show_integration_error,
             system_integrations::debug_onboarding_complete,
             applications::list_applications,
-            applications::choose_application
+            applications::choose_application,
+            dependencies::read_dependencies
         ])
         .setup(|app| {
             settings::install(app.handle());
@@ -40,6 +71,10 @@ fn main() {
             let window = app
                 .get_webview_window("main")
                 .expect("main window is configured");
+            #[cfg(debug_assertions)]
+            if let Some(url) = debug_fixture_url() {
+                window.navigate(url)?;
+            }
             #[cfg(target_os = "linux")]
             window.set_decorations(false)?;
             let handle = app.handle().clone();
@@ -73,4 +108,16 @@ fn main() {
                 status_panel::report(status_panel::open_main(_app.clone()));
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_fixture_query_rejects_unowned_keys() {
+        std::env::set_var("SILO_DEBUG_FIXTURE_QUERY", "?view=app&unknown=1");
+        assert!(debug_fixture_url().is_none());
+        std::env::remove_var("SILO_DEBUG_FIXTURE_QUERY");
+    }
 }

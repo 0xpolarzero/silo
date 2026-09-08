@@ -2,7 +2,7 @@ import { useApplicationFixture } from "@/fixtures/application-state"
 import { ApplicationApp } from "@/features/application/application-app"
 import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { useBackupFixture, type BackupFixtureMode } from "@/fixtures/application-backup"
+import { useBackupFixture, useUnavailableBackup, type BackupFixtureMode } from "@/fixtures/application-backup"
 
 const inactiveApplicationActions: ApplicationActions = {
   saveSecret: () => undefined,
@@ -20,12 +20,19 @@ const inactiveApplicationActions: ApplicationActions = {
   disconnectGitHub: () => undefined,
 }
 
-export function ApplicationPreview({ source, actions, backupPreviewMode, initialRoute }: {
+export function ApplicationPreview({ source, actions, backupPreviewMode, initialRoute, nativeOperations = false }: {
   source: ApplicationSource
   actions?: Partial<ApplicationActions>
   backupPreviewMode?: BackupFixtureMode
   initialRoute?: ApplicationInitialRoute
+  nativeOperations?: boolean
 }) {
+  return nativeOperations
+    ? <UnavailableApplicationPreview source={source} actions={actions} initialRoute={initialRoute} />
+    : <FixtureApplicationPreview source={source} actions={actions} backupPreviewMode={backupPreviewMode} initialRoute={initialRoute} />
+}
+
+function FixtureApplicationPreview({ source, actions, backupPreviewMode, initialRoute }: Parameters<typeof ApplicationPreview>[0]) {
   const fixture = useApplicationFixture(source)
   const backup = useBackupFixture({
     source: fixture.source,
@@ -52,4 +59,9 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
       },
     }}
   />
+}
+
+function UnavailableApplicationPreview({ source, actions, initialRoute }: Parameters<typeof ApplicationPreview>[0]) {
+  const backup = useUnavailableBackup(source)
+  return <ApplicationApp source={{ ...source, vmOperationsUnavailable: "VM operations are not available in this Silo build. No sandbox state was changed." }} initialRoute={initialRoute} routeRequest={initialRoute} backup={backup} actions={{ ...inactiveApplicationActions, ...actions }} />
 }

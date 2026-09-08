@@ -1,6 +1,8 @@
-import { CircleAlert, CircleCheck, Loader2, Pause, Play, RotateCw, Square } from "lucide-react"
+import { CircleAlert, CircleCheck, Loader2, Pause, Play, RotateCw, Square, TriangleAlert } from "lucide-react"
+import { useState } from "react"
 
 import { ListRowIcon } from "@/components/list-row"
+import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import type { SetupMachineConfiguration, SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
@@ -210,6 +212,8 @@ export function OverviewPage({
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
   repairCompleted?: boolean
 }) {
+  const [pendingStart, setPendingStart] = useState<string | null>(null)
+  const [operationUnavailable, setOperationUnavailable] = useState(false)
   const visibleWorkspaces = displayWorkspaces(source)
   const workspaces = new Map(visibleWorkspaces.map((workspace) => [workspace.machine.id, workspace]))
   const committedWorkspaces = new Map(source.workspaces.map((workspace) => [workspace.machine.id, workspace]))
@@ -228,8 +232,17 @@ export function OverviewPage({
       <div className="min-h-0 flex-1">
         <MachineList
           machines={machines}
-          onMachinesChange={onMachinesChange}
+          onMachinesChange={(next) => {
+            if (source.vmOperationsUnavailable) setOperationUnavailable(true)
+            else onMachinesChange(next)
+          }}
           interactionDisabled={configurationLocked}
+          validateOperation={(machine, isNew) => {
+            if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
+            const notice = source.resourceNotice
+            if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
+            return `Not enough storage to create ${machine.name}. About ${notice.requiredGB} GB is needed on ${notice.volume}; ${notice.availableGB} GB is available. No sandbox was created.`
+          }}
           summary={configurationOperation ? <>{source.workspaces.length} configured · Applying sandbox changes</> : undefined}
           sortPriority={(machine) => {
             const workspace = workspaces.get(machine.id)
@@ -278,10 +291,25 @@ export function OverviewPage({
                   {workspace?.attention && <> · {workspace.attention.message}</>}
                 </span>
               ),
-              actions: <WorkspaceActions machine={machine} state={state} actions={actions} disabled={configurationLocked} />,
+              actions: <WorkspaceActions machine={machine} state={state} actions={{
+                ...actions,
+                startWorkspace: (name) => {
+                  if (source.vmOperationsUnavailable) setOperationUnavailable(true)
+                  else if (source.resourceNotice?.kind === "start-memory" && source.resourceNotice.sandbox === name) setPendingStart(name)
+                  else actions.startWorkspace(name)
+                },
+                pauseWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.pauseWorkspace(name),
+                stopWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
+                restartWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
+              }} disabled={configurationLocked} />,
             }
           }}
         />
+        {pendingStart && source.resourceNotice?.kind === "start-memory" && <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[.07] p-3" role="status">
+          <div className="flex gap-2"><TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600" aria-hidden="true" /><div><p className="text-xs font-medium">Starting {pendingStart} may slow this computer</p><p className="mt-1 text-[11px] text-muted-foreground">Silo found high memory pressure now. This VM can use up to {source.resourceNotice.memoryGiB} GB. Close memory-heavy apps, or start anyway.</p></div></div>
+          <div className="mt-2 flex justify-end gap-1"><Button type="button" variant="ghost" size="xs" onClick={() => setPendingStart(null)}>Cancel</Button><Button type="button" variant="outline" size="xs" onClick={() => { actions.startWorkspace(pendingStart); setPendingStart(null) }}>Start anyway</Button></div>
+        </div>}
+        {operationUnavailable && source.vmOperationsUnavailable && <div className="mt-3 rounded-lg border border-destructive/20 bg-destructive/[.06] p-3" role="alert"><div className="flex gap-2"><CircleAlert className="mt-0.5 size-3.5 shrink-0 text-destructive" aria-hidden="true" /><div className="min-w-0 flex-1"><p className="text-xs font-medium">VM operation unavailable</p><p className="mt-1 text-[11px] text-muted-foreground">{source.vmOperationsUnavailable}</p></div></div><div className="mt-2 flex justify-end"><Button variant="ghost" size="xs" onClick={() => setOperationUnavailable(false)}>Dismiss</Button></div></div>}
       </div>
     </div>
   )

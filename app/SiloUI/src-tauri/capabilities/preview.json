@@ -25,6 +25,7 @@
     "allow-show-integration-error",
     "allow-debug-onboarding-complete",
     "allow-list-applications",
-    "allow-choose-application"
+    "allow-choose-application",
+    "allow-read-dependencies"
   ]
 }

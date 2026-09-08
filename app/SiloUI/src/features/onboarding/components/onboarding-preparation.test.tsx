@@ -11,17 +11,17 @@ describe("onboarding preparation interactions", () => {
   it("projects only the approved dependency inventory with one bundled runtime result", () => {
     const view = projectOnboarding(onboardingScenarios.complete, "connected")
 
-    expect(view.dependencies.map(({ id }) => id)).toEqual(["required-software", "mac-runtime"])
+    expect(view.dependencies.map(({ id }) => id)).toEqual(["system", "bundled-tools"])
     expect(view.dependencies[0].items.map(({ name }) => name)).toEqual([
-      "MicroSandbox runtime", "git", "git-lfs", "tar / gtar", "zstd",
+      "Supported OS", "Virtualization",
     ])
     expect(view.dependencies[1].items.map(({ name }) => name)).toEqual([
-      "macOS 26+", "Apple Silicon", "20 GiB free", "16 GiB memory",
+      "MicroSandbox runtime", "Git", "Git LFS",
     ])
-    expect(view.dependencies[0].items[0].check).toMatchObject({
+    expect(view.dependencies[1].items[0].check).toMatchObject({
       id: "runtime-microsandbox",
       status: "pass",
-      detail: "Bundled msb 0.6.17 and libkrunfw 5.6.1 passed integrity verification.",
+      detail: "Bundled msb 0.6.17 · libkrunfw 5.6.1",
     })
   })
 
@@ -32,8 +32,8 @@ describe("onboarding preparation interactions", () => {
     }
     const view = projectOnboarding(source, "connected")
 
-    expect(view.dependencies[0].status).toBe("failed")
-    expect(view.dependencies[0].items[0].check).toMatchObject({ status: "unavailable", detail: "No check result was reported." })
+    expect(view.dependencies[1].status).toBe("failed")
+    expect(view.dependencies[1].items[0].check).toMatchObject({ status: "unavailable", detail: "No check result was reported." })
     expect(view.dependencyStatus).toBe("failed")
     expect(view.finishEnabled).toBe(false)
   })
@@ -43,27 +43,30 @@ describe("onboarding preparation interactions", () => {
     const group = projectOnboarding(onboardingScenarios.running, "connected").dependencies[0]
     render(<DependencyDisclosure group={group} />)
 
-    expect(screen.getByText("5 components ready")).toBeVisible()
-    expect(screen.queryByText("MicroSandbox runtime")).not.toBeInTheDocument()
-    const trigger = screen.getByRole("button", { name: "Required software" })
+    expect(screen.getByText("2 of 2 checks passed")).toBeVisible()
+    expect(screen.queryByText("Supported OS")).not.toBeInTheDocument()
+    const trigger = screen.getByRole("button", { name: "System" })
     trigger.focus()
     await user.keyboard(" ")
     expect(trigger).toHaveAttribute("aria-expanded", "true")
-    expect(screen.getByText("MicroSandbox runtime")).toBeVisible()
+    expect(screen.getByText("Supported OS")).toBeVisible()
+    expect(screen.queryByText("Supported operating system and build architecture")).not.toBeInTheDocument()
     await user.keyboard(" ")
     expect(trigger).toHaveAttribute("aria-expanded", "false")
-    expect(screen.queryByText("MicroSandbox runtime")).not.toBeInTheDocument()
+    expect(screen.queryByText("Supported OS")).not.toBeInTheDocument()
   })
 
   it("opens a failed bundled runtime check without offering onboarding repair", () => {
-    const group = projectOnboarding(onboardingScenarios["dependency-failure"], "connected").dependencies[0]
+    const group = projectOnboarding(onboardingScenarios["dependency-failure"], "connected").dependencies[1]
     render(<DependencyDisclosure group={group} />)
 
-    expect(screen.getByText("1 check needs attention")).toBeVisible()
-    const trigger = screen.getByRole("button", { name: "Required software" })
+    expect(screen.getByText("Checks unavailable")).toBeVisible()
+    const trigger = screen.getByRole("button", { name: "Bundled tools" })
     expect(trigger).toHaveAttribute("aria-expanded", "true")
     const notice = screen.getByRole("alert")
-    expect(within(notice).getByText("Bundled MicroSandbox runtime needs attention")).toBeVisible()
+    expect(screen.getByText("Check unavailable")).toHaveClass("truncate", "whitespace-nowrap")
+    expect(screen.getAllByText("The bundled MicroSandbox runtime failed its integrity check.")).toHaveLength(1)
+    expect(within(notice).getByText("Bundled MicroSandbox runtime")).toBeVisible()
     expect(within(notice).getByText("Reinstall this Silo build from a trusted package.")).toBeVisible()
     expect(within(notice).queryByRole("button", { name: /Repair/ })).not.toBeInTheDocument()
   })

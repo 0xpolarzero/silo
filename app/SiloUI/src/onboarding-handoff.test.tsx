@@ -34,7 +34,7 @@ describe("onboarding to application", () => {
     expect(screen.getByRole("combobox", { name: "Browser" })).toHaveTextContent("Firefox")
     await user.click(navigation.getByRole("button", { name: "Backup" }))
     expect(screen.getByText("No backups yet")).toBeVisible()
-    expect(screen.getByRole("button", { name: "Back up" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Create backup…" })).toBeEnabled()
     expect(new URL(window.location.href).searchParams.get("view")).toBe("app")
   })
 })

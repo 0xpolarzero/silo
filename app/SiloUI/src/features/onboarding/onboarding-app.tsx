@@ -29,6 +29,7 @@ export interface OnboardingAppProps {
   presentationOnlyCompleted?: boolean
   repositoryOptions?: readonly string[]
   onOpenApp?: () => void
+  onRetryDependencies?: () => void
 }
 
 function OnboardingPanel({ step, activeStep, children }: { step: OnboardingStep; activeStep: OnboardingStep; children: ReactNode }) {
@@ -138,6 +139,7 @@ export function OnboardingApp({
   presentationOnlyCompleted = false,
   repositoryOptions,
   onOpenApp,
+  onRetryDependencies,
 }: OnboardingAppProps) {
   const { settings, onboardingDraft, updateSettings, updateOnboardingDraft } = useSettings(source.applicationPreferences)
   const [draft, setDraft] = useState<OnboardingDraft>(() => {
@@ -285,6 +287,7 @@ export function OnboardingApp({
           onApplicationPreferencesChange={(preferences) => {
             void updateSettings(applicationPreferenceChanges(applicationPreferences, preferences))
           }}
+          onRetry={onRetryDependencies}
         />
       </OnboardingPanel>
       <OnboardingPanel step="workspaces" activeStep={activeStep}>

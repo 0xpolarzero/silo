@@ -12,14 +12,13 @@ export type PresentationStatus = "waiting" | "running" | "succeeded" | "failed"
 
 export interface DependencyItemView {
   name: string
-  role: string
   check?: SiloPreflightCheck
 }
 
 export interface DependencyGroupView {
   id: string
   title: string
-  status: "succeeded" | "failed"
+  status: "succeeded" | "failed" | "running"
   items: DependencyItemView[]
 }
 
@@ -66,24 +65,20 @@ export interface OnboardingViewModel {
 
 const inventory = [
   {
-    id: "required-software",
-    title: "Required software",
+    id: "system",
+    title: "System",
     items: [
-      ["MicroSandbox runtime", "Bundled msb and VM runtime", "runtime-microsandbox"],
-      ["git", "Source control", "tool-git"],
-      ["git-lfs", "Large repository files", "tool-git-lfs"],
-      ["tar / gtar", "Backup and restore", "tool-tar"],
-      ["zstd", "Archive compression", "tool-zstd"],
+      ["Supported OS", "system-os"],
+      ["Virtualization", "system-virtualization"],
     ],
   },
   {
-    id: "mac-runtime",
-    title: "Mac and runtime",
+    id: "bundled-tools",
+    title: "Bundled tools",
     items: [
-      ["macOS 26+", "Supported system", "macos-version"],
-      ["Apple Silicon", "arm64 architecture", "architecture"],
-      ["20 GiB free", "Minimum disk space", "disk-space"],
-      ["16 GiB memory", "Sandbox recommendation", "memory"],
+      ["MicroSandbox runtime", "runtime-microsandbox"],
+      ["Git", "tool-git"],
+      ["Git LFS", "tool-git-lfs"],
     ],
   },
 ] as const
@@ -214,7 +209,7 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
 export function projectOnboarding(source: OnboardingSource, githubConnectionState: GitHubConnectionState): OnboardingViewModel {
   const checksById = new Map(source.preflightChecks.map((check) => [check.id, check]))
   const dependencies = inventory.map((group): DependencyGroupView => {
-    const items = group.items.map(([name, role, checkId]) => {
+    const items = group.items.map(([name, checkId]) => {
       const check = checksById.get(checkId) ?? {
         id: checkId,
         title: name,
@@ -222,16 +217,21 @@ export function projectOnboarding(source: OnboardingSource, githubConnectionStat
         detail: "No check result was reported.",
         remediation: null,
       }
-      return { name, role, check }
+      return { name, check }
     })
+    const status = items.some(({ check }) => check?.status === "pending")
+      ? "running" as const
+      : items.some(({ check }) => check && check.status !== "pass") ? "failed" as const : "succeeded" as const
     return {
       id: group.id,
       title: group.title,
-      status: items.some(({ check }) => check && check.status !== "pass") ? "failed" : "succeeded",
+      status,
       items,
     }
   })
-  const dependencyStatus = dependencies.some(({ status }) => status === "failed") ? "failed" : "succeeded"
+  const dependencyStatus = dependencies.some(({ status }) => status === "running")
+    ? "running"
+    : dependencies.some(({ status }) => status === "failed") ? "failed" : "succeeded"
   const queueItems = projectQueue(source)
   const workspaceProgress = projectWorkspaceProgress(source, queueItems)
   const stepStatus = {

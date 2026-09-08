@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-export const preflightStatusSchema = z.enum(["pass", "needsAction", "unavailable"])
+export const preflightStatusSchema = z.enum(["pending", "pass", "failed", "needsAction", "unavailable", "timeout"])
 
 export const siloPreflightCheckSchema = z.object({
   id: z.string().min(1),

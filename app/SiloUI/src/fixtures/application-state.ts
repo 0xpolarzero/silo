@@ -19,10 +19,18 @@ export function useApplicationFixture(source: ApplicationSource) {
     setSecrets(source.secrets)
   }
 
-  const onRestoreComplete = useCallback(() => {
-    setWorkspaces((current) => current.map((workspace) => workspace.machine.kind === "vm"
-      ? { ...workspace, state: "stopped", stateDetail: "Stopped after restore" }
-      : workspace))
+  const onRestoreComplete = useCallback((targetName: string) => {
+    setWorkspaces((current) => {
+      const sourceWorkspace = current.find(({ machine }) => machine.kind === "vm")
+      if (!sourceWorkspace || sourceWorkspace.machine.kind !== "vm" || current.some(({ machine }) => machine.name === targetName)) return current
+      return [...current, {
+        ...sourceWorkspace,
+        machine: { ...sourceWorkspace.machine, id: crypto.randomUUID(), name: targetName },
+        state: "stopped",
+        stateDetail: "Restored and verified",
+        attention: undefined,
+      }]
+    })
   }, [])
   const onRestartRequired = useCallback((sandboxes: string[]) => {
     setWorkspaces((current) => current.map((workspace) => workspace.machine.kind === "vm" && sandboxes.includes(workspace.machine.name)

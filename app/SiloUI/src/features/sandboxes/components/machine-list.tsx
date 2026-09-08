@@ -45,6 +45,7 @@ interface MachineListProps {
   footer?: ReactNode
   initialEditorDraft?: MachineEditorDraft | null
   onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
+  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean) => string | undefined
 }
 
 function SelectField({ label, value, values, suffix, error, onChange }: {
@@ -178,7 +179,7 @@ function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange }: {
   )
 }
 
-export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, summary, footer, initialEditorDraft = null, onEditorDraftChange }: MachineListProps) {
+export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation }: MachineListProps) {
   const [addOpen, setAddOpen] = useState(false)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
@@ -244,6 +245,8 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
 
   function save(machine: SetupMachineConfiguration) {
     if (interactionDisabled) return
+    const blocked = validateOperation?.(machine, !editor?.originalID)
+    if (blocked) { setOperationError(blocked); return }
     const updated = [...machines]
     if (editor?.originalID) {
       const index = updated.findIndex(({ id }) => id === editor.originalID)

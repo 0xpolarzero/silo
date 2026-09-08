@@ -1,328 +1,131 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react"
-import userEvent from "@testing-library/user-event"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { BackupPage } from "@/features/application/pages/backup-page"
-import type { BackupController } from "@/features/application/model/backup-source"
 import { BackupPreview } from "@/fixtures/backup-preview"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
+import { useBackupFixture, useUnavailableBackup } from "@/fixtures/application-backup"
+import { BackupPage } from "./backup-page"
 
-afterEach(() => {
-  vi.useRealTimers()
-  vi.unstubAllGlobals()
-  vi.restoreAllMocks()
-})
+const source = applicationSourceForScenario("running")
 
-function selectArchive(name = "silo-2026-09-02.silo-backup") {
-  fireEvent.change(screen.getByLabelText("Backup archive file"), { target: { files: [new File(["fixture archive"], name)] } })
+function selectArchive(name = "dev.silo-backup") {
+  const input = screen.getByLabelText("Backup archive file")
+  fireEvent.change(input, { target: { files: [new File(["archive"], name)] } })
 }
 
-async function finishOperation() {
+async function finish() {
   for (let step = 0; step < 4; step += 1) {
-    await act(async () => { await vi.advanceTimersByTimeAsync(1_600) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(900) })
   }
 }
 
-describe("BackupPage", () => {
-  it("requests an operation and renders only progress and results supplied by its source", async () => {
-    vi.useFakeTimers()
-    const source = applicationSourceForScenario("running")
-    const archive = { name: "published.silo-backup", completedLabel: "Just now", size: "6 GB", destination: source.backup.destination, sandboxes: ["dev"] }
-    const backup: BackupController = {
-      state: { snapshotId: "snapshot-1", requiredSpaceGB: 7, archives: [], operation: null },
-      actions: {
-        inspectArchive: vi.fn(() => ({ archive, valid: true })),
-        startBackup: vi.fn(), startRestore: vi.fn(), dismissOperation: vi.fn(),
-      },
-    }
-    const { rerender } = render(<BackupPage source={source} backup={backup} />)
-    fireEvent.click(screen.getByRole("button", { name: "Back up" }))
-    expect(screen.getByRole("group", { name: "Review backup" })).toHaveTextContent("About 7 GB required")
-    fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
-    expect(backup.actions.startBackup).toHaveBeenCalledExactlyOnceWith(source.backup.destination)
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+describe("backup and restore presentation", () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
 
-    rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, operation: {
-      kind: "running", operation: "backup", archive, runningNames: ["dev"],
-      progress: { title: "Saving current data", detail: "Received from the source", progress: 23 },
-    } } }} />)
-    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
-    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "23")
-    expect(screen.getByRole("status")).toHaveTextContent("Received from the source")
-    expect(screen.getByText("No backups yet")).toBeVisible()
-
-    rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, archives: [archive], operation: {
-      kind: "result", operation: "backup", archive, runningNames: ["dev"], outcome: "success", message: "Saved by the source",
-    } } }} />)
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
-    expect(screen.getByRole("status")).toHaveTextContent("Saved by the source")
-    expect(screen.getByRole("button", { name: "Details for published.silo-backup" })).toBeVisible()
-  })
-
-  it("starts with no backup history and requires a destination before creating the first archive", async () => {
-    vi.useFakeTimers()
-    const source = applicationSourceForScenario("running")
-    const picker = vi.fn()
-      .mockRejectedValueOnce(new DOMException("Cancelled", "AbortError"))
-      .mockResolvedValueOnce({ name: "First backups" })
-    vi.stubGlobal("showDirectoryPicker", picker)
-    render(<BackupPreview source={{ ...source, backup: { ...source.backup, destination: "", lastArchive: "", completedLabel: "", compressedSize: "" } }} />)
-    const history = within(screen.getByRole("list", { name: "Recent backups" }))
-    expect(history.getByText("No backups yet")).toBeVisible()
-    expect(history.queryByRole("img", { name: "Backup completed" })).not.toBeInTheDocument()
-    expect(screen.getByText("Select a destination to save your backups.")).toBeVisible()
-    expect(screen.getByRole("button", { name: "Back up" })).toBeDisabled()
-
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Select destination" })) })
-    expect(screen.getByRole("button", { name: "Back up" })).toBeDisabled()
-    expect(screen.queryByRole("group", { name: "Review backup" })).not.toBeInTheDocument()
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Select destination" })) })
-    expect(screen.getByRole("button", { name: "Back up" })).toBeEnabled()
-    fireEvent.click(screen.getByRole("button", { name: "Back up" }))
-    expect(screen.getByRole("group", { name: "Review backup" })).toHaveTextContent("First backups")
-    fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
-    expect(history.getByText("No backups yet")).toBeVisible()
-    await finishOperation()
-    expect(history.queryByText("No backups yet")).not.toBeInTheDocument()
-    expect(history.getAllByRole("img", { name: "Backup completed" })).toHaveLength(1)
-    expect(history.getByText("Just now · 3 sandboxes")).toBeVisible()
-  })
-
-  it("uses the current virtual machine names in fixture archive details", () => {
-    const source = applicationSourceForScenario("running")
-    render(<BackupPreview source={{ ...source, workspaces: [
-      { ...source.workspaces[0], machine: { ...source.workspaces[0].machine, name: "design" } },
-      { ...source.workspaces[1], machine: { id: "remote", kind: "ssh", name: "remote", host: "remote.example.com", user: "developer", port: 22 } },
-    ] }} />)
-    fireEvent.click(screen.getByRole("button", { name: `Details for ${source.backup.lastArchive}` }))
-    const details = within(screen.getByRole("group", { name: `Archive details for ${source.backup.lastArchive}` }))
-    expect(details.getByText("design")).toBeVisible()
-    expect(details.queryByText("remote")).not.toBeInTheDocument()
-    expect(details.queryByText(/dev|playgrounds|personal/)).not.toBeInTheDocument()
-  })
-
-  it("opens archive details from the title, supports keyboard toggling, and keeps restore separate", async () => {
-    const user = userEvent.setup()
-    const source = applicationSourceForScenario("running")
+  it("selects sandboxes and explains the running interruption before capture", () => {
     render(<BackupPreview source={source} />)
-    const header = screen.getByRole("button", { name: `Details for ${source.backup.lastArchive}` })
-    expect(header).toHaveAttribute("aria-expanded", "false")
-
-    await user.click(screen.getByText(source.backup.lastArchive))
-    expect(header).toHaveAttribute("aria-expanded", "true")
-    expect(screen.getByRole("group", { name: `Archive details for ${source.backup.lastArchive}` })).toBeVisible()
-
-    await user.keyboard(" ")
-    expect(header).toHaveAttribute("aria-expanded", "false")
-    expect(screen.queryByRole("group", { name: `Archive details for ${source.backup.lastArchive}` })).not.toBeInTheDocument()
-    await user.keyboard("{Enter}")
-    expect(header).toHaveAttribute("aria-expanded", "true")
-
-    const details = within(screen.getByRole("group", { name: `Archive details for ${source.backup.lastArchive}` }))
-    await user.click(details.getByRole("button", { name: "Restore…" }))
-    expect(header).toHaveAttribute("aria-expanded", "true")
-    expect(screen.getByRole("group", { name: "Review restore" })).toHaveTextContent(source.backup.lastArchive)
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    expect(screen.getByRole("group", { name: "Choose backup" })).toHaveTextContent("devRunning")
+    fireEvent.click(screen.getByRole("button", { name: "Review backup" }))
+    const interruption = screen.getByRole("group", { name: "Running sandbox interruption" })
+    expect(interruption).toHaveTextContent("save a disk copy")
+    expect(interruption).toHaveTextContent("Programs inside the VM start fresh")
+    expect(within(interruption).getByRole("button", { name: "Stop and back up" })).toBeEnabled()
   })
 
-  it("opens the native folder picker, preserves cancelled choices, and uses the selected folder", async () => {
-    const user = userEvent.setup()
-    const picker = vi.fn()
-      .mockRejectedValueOnce(new DOMException("Cancelled", "AbortError"))
-      .mockResolvedValueOnce({ name: "My backups" })
-    vi.stubGlobal("showDirectoryPicker", picker)
-    render(<BackupPreview source={applicationSourceForScenario("running")} />)
-    await user.click(screen.getByRole("button", { name: "Select destination" }))
-    expect(picker).toHaveBeenCalledWith({ id: "silo-backup-destination", mode: "read" })
-    expect(screen.getByText("External SSD / Silo Backups")).toBeVisible()
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-    expect(screen.queryByRole("group", { name: "Backup destination" })).not.toBeInTheDocument()
-    await user.click(screen.getByRole("button", { name: "Select destination" }))
-    expect(screen.getByText("My backups")).toBeVisible()
-    await user.click(screen.getByRole("button", { name: "Back up" }))
-    expect(screen.getByRole("group", { name: "Review backup" })).toHaveTextContent("My backups")
-    expect(screen.getByRole("group", { name: "Review backup" })).not.toHaveTextContent("GB available")
+  it("blocks unsupported shared storage and a known destination shortage", () => {
+    const unsupported = render(<BackupPreview source={source} previewMode="unsupported-storage" />)
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Review backup" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Complete backup is blocked")
+    expect(screen.getByRole("alert")).toHaveTextContent("outside Silo’s managed disk")
+    unsupported.unmount()
+
+    render(<BackupPreview source={source} previewMode="space-blocked" />)
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Review backup" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("32 GB is needed; 19 GB is available")
   })
 
-  it("uses the native directory input when the directory handle API is unavailable", () => {
-    vi.stubGlobal("showDirectoryPicker", undefined)
-    render(<BackupPreview source={applicationSourceForScenario("running")} />)
-    const input = screen.getByLabelText("Backup destination folder") as HTMLInputElement
-    const click = vi.spyOn(input, "click").mockImplementation(() => undefined)
-    fireEvent.click(screen.getByRole("button", { name: "Select destination" }))
-    expect(click).toHaveBeenCalledOnce()
-    expect(input.webkitdirectory).toBe(true)
-    const file = new File(["fixture"], "archive.silo-backup")
-    Object.defineProperty(file, "webkitRelativePath", { value: "Local backups/archive.silo-backup" })
-    fireEvent.change(input, { target: { files: [file] } })
-    expect(screen.getByText("Local backups")).toBeVisible()
-    fireEvent.change(input, { target: { files: [] } })
-    expect(screen.getByText("Local backups")).toBeVisible()
-  })
-
-  it("opens the native archive picker and reviews the selected file directly", () => {
-    render(<BackupPreview source={applicationSourceForScenario("running")} />)
-    const input = screen.getByLabelText("Backup archive file") as HTMLInputElement
-    const click = vi.spyOn(input, "click").mockImplementation(() => undefined)
-    fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
-    expect(click).toHaveBeenCalledOnce()
-    expect(input).toHaveAttribute("accept", ".silo-backup")
-    fireEvent.change(input, { target: { files: [] } })
-    expect(screen.queryByRole("group", { name: "Review restore" })).not.toBeInTheDocument()
-    selectArchive("my-backup.silo-backup")
-    expect(screen.getByRole("group", { name: "Review restore" })).toHaveTextContent("my-backup.silo-backup")
-    expect(screen.queryByRole("button", { name: "Use archive" })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Restore backup" })).toBeDisabled()
-  })
-
-  it("requires review, locks other actions while running, and adds only a completed backup to history", async () => {
-    vi.useFakeTimers()
-    const onBusyChange = vi.fn()
-    render(<BackupPreview source={applicationSourceForScenario("running")} onBusyChange={onBusyChange} />)
-    const history = within(screen.getByRole("list", { name: "Recent backups" }))
-    fireEvent.click(screen.getByRole("button", { name: "Back up" }))
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
-    expect(screen.getByRole("group", { name: "Review backup" })).toHaveTextContent("dev will stop briefly")
-    fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
+  it("shows per-phase progress, safe cancellation, and cleanup outcome", () => {
+    render(<BackupPreview source={source} />)
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Review backup" }))
+    fireEvent.click(screen.getByRole("button", { name: "Stop and back up" }))
     expect(screen.getByRole("progressbar", { name: "Backup progress" })).toBeVisible()
-    expect(screen.getByRole("button", { name: "Choose archive…" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Select destination" })).toBeDisabled()
-    expect(onBusyChange).toHaveBeenLastCalledWith(true)
-    expect(history.getAllByRole("listitem")).toHaveLength(1)
-
-    await finishOperation()
-    expect(screen.getByRole("status")).toHaveTextContent("Backup completed")
-    expect(history.getAllByRole("listitem")).toHaveLength(2)
-    expect(onBusyChange).toHaveBeenLastCalledWith(false)
-    fireEvent.click(screen.getByRole("button", { name: "Done" }))
-    expect(screen.queryByRole("status")).not.toBeInTheDocument()
-    expect(history.getAllByRole("listitem")).toHaveLength(2)
+    expect(screen.getByText("Save disk copies")).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Cancel backup…" }))
+    expect(screen.getByRole("group", { name: "Cancel backup" })).toHaveTextContent("safe point")
+    fireEvent.click(screen.getByRole("button", { name: "Cancel and clean up" }))
+    expect(screen.getByRole("status")).toHaveTextContent("Backup cancelled")
+    expect(screen.getByRole("status")).toHaveTextContent("Existing backups were not changed")
   })
 
-  it("keeps failed backups out of history and lets the destination be changed before retrying", async () => {
-    vi.useFakeTimers()
-    render(<BackupPreview source={applicationSourceForScenario("running")} previewMode="backup-failed" />)
-    fireEvent.click(screen.getByRole("button", { name: "Back up" }))
-    fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
-    await finishOperation()
-    expect(screen.getByRole("alert")).toHaveTextContent("Backup failed")
-    expect(within(screen.getByRole("list", { name: "Recent backups" })).getAllByRole("listitem")).toHaveLength(1)
-    fireEvent.click(screen.getByRole("button", { name: "Review and retry" }))
-    expect(screen.getByRole("group", { name: "Review backup" })).toBeVisible()
-    expect(screen.getByRole("button", { name: "Select destination" })).toBeEnabled()
+  it("keeps verified backup success separate from restart failure and recovers", async () => {
+    render(<BackupPreview source={source} previewMode="restart-required" />)
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Review backup" }))
+    fireEvent.click(screen.getByRole("button", { name: "Stop and back up" }))
+    await finish()
+    expect(screen.getByRole("status")).toHaveTextContent("Backup ready; restart failed")
+    fireEvent.click(screen.getByRole("button", { name: "Retry start" }))
+    expect(screen.getByRole("status")).toHaveTextContent("dev is running again")
   })
 
-  it("shows a valid archive with a separate restart warning when a sandbox cannot restart", async () => {
-    vi.useFakeTimers()
-    render(<BackupPreview source={applicationSourceForScenario("running")} previewMode="restart-required" />)
-    fireEvent.click(screen.getByRole("button", { name: "Back up" }))
-    fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
-    await finishOperation()
-    expect(screen.getByRole("status")).toHaveTextContent("Backup completed")
-    expect(screen.getByRole("status")).toHaveTextContent("Restart dev")
-    expect(within(screen.getByRole("list", { name: "Recent backups" })).getAllByRole("listitem")).toHaveLength(2)
-  })
-
-  it("validates an archive and requires typing RESTORE before replacing sandbox state", async () => {
-    vi.useFakeTimers()
+  it("validates before review and restores to an editable new stopped sandbox", async () => {
     const onRestoreComplete = vi.fn()
-    render(<BackupPreview source={applicationSourceForScenario("running")} onRestoreComplete={onRestoreComplete} />)
-    fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
+    render(<BackupPreview source={source} onRestoreComplete={onRestoreComplete} />)
+    fireEvent.click(screen.getByRole("button", { name: "Choose backup…" }))
     selectArchive()
     const review = screen.getByRole("group", { name: "Review restore" })
-    expect(review).toHaveTextContent("Checksum verified")
-    expect(review).toHaveTextContent("All restored sandboxes will stay stopped")
-    const restore = screen.getByRole("button", { name: "Restore backup" })
-    expect(restore).toBeDisabled()
-    fireEvent.change(screen.getByRole("textbox", { name: "Type RESTORE to confirm" }), { target: { value: "restore" } })
-    expect(restore).toBeDisabled()
-    fireEvent.change(screen.getByRole("textbox", { name: "Type RESTORE to confirm" }), { target: { value: "RESTORE" } })
-    fireEvent.click(restore)
-    expect(screen.getByRole("button", { name: "Back up" })).toBeDisabled()
-    expect(onRestoreComplete).not.toHaveBeenCalled()
-    await finishOperation()
-    expect(screen.getByRole("status")).toHaveTextContent("Restore completed")
+    expect(review).toHaveTextContent("Backup validated")
+    expect(review).toHaveTextContent("Existing sandboxes and backups stay unchanged")
+    const name = screen.getByRole("textbox", { name: "New sandbox name" })
+    expect(name).toHaveValue("dev-restored")
+    fireEvent.click(screen.getByRole("button", { name: "Restore new sandbox" }))
+    await finish()
     expect(onRestoreComplete).toHaveBeenCalledOnce()
-    expect(within(screen.getByRole("list", { name: "Recent backups" })).getAllByRole("listitem")).toHaveLength(1)
+    expect(screen.getByRole("status")).toHaveTextContent("dev-restored is ready")
+    expect(screen.getByRole("status")).toHaveTextContent("running programs were not")
   })
 
-  it("blocks damaged archives and clears confirmation when a restore is cancelled", () => {
-    const source = applicationSourceForScenario("running")
-    const { rerender } = render(<BackupPreview source={source} previewMode="invalid-archive" />)
-    fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
+  it("blocks corrupt archives and removes incomplete new VMs after cancellation", () => {
+    const invalid = render(<BackupPreview source={source} previewMode="invalid-archive" />)
+    fireEvent.click(screen.getByRole("button", { name: "Choose backup…" }))
     selectArchive()
-    expect(screen.getByRole("alert")).toHaveTextContent("Checksum mismatch")
-    expect(screen.queryByRole("button", { name: "Restore backup" })).not.toBeInTheDocument()
+    expect(screen.getByRole("alert")).toHaveTextContent("cannot be restored")
+    invalid.unmount()
 
-    rerender(<BackupPreview source={source} />)
-    fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
+    render(<BackupPreview source={source} />)
+    fireEvent.click(screen.getByRole("button", { name: "Choose backup…" }))
     selectArchive()
-    fireEvent.change(screen.getByRole("textbox", { name: "Type RESTORE to confirm" }), { target: { value: "RESTORE" } })
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
-    fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
-    selectArchive()
-    expect(screen.getByRole("button", { name: "Restore backup" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Restore new sandbox" }))
+    fireEvent.click(screen.getByRole("button", { name: "Cancel restore…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Cancel and remove" }))
+    expect(screen.getByRole("status")).toHaveTextContent("incomplete dev-restored sandbox was removed")
   })
 
-  it("keeps one history archive open and preserves the selected archive when reviewing a restore", async () => {
-    vi.useFakeTimers()
-    render(<BackupPreview source={applicationSourceForScenario("running")} />)
-    fireEvent.click(screen.getByRole("button", { name: "Back up" }))
-    fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
-    await finishOperation()
-    const history = within(screen.getByRole("list", { name: "Recent backups" }))
-    const originalArchive = history.getByRole("button", { name: "Details for silo-2026-09-02.silo-backup" })
-    fireEvent.click(history.getByText("silo-2026-09-02.silo-backup"))
-    expect(originalArchive).toHaveAttribute("aria-expanded", "true")
-    fireEvent.click(history.getByText(/Just now ·/))
-    expect(originalArchive).toHaveAttribute("aria-expanded", "false")
-    expect(screen.queryByRole("group", { name: "Archive details for silo-2026-09-02.silo-backup" })).not.toBeInTheDocument()
-    fireEvent.click(history.getByText("silo-2026-09-02.silo-backup"))
-    expect(history.getAllByRole("button", { expanded: true })).toEqual([originalArchive])
-    const details = within(screen.getByRole("group", { name: "Archive details for silo-2026-09-02.silo-backup" }))
-    expect(details.getByText("External SSD / Silo Backups")).toBeVisible()
-    fireEvent.click(details.getByRole("button", { name: "Restore…" }))
-    expect(screen.getByRole("group", { name: "Review restore" })).toHaveTextContent("silo-2026-09-02.silo-backup")
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "Type RESTORE to confirm" }), { key: "Escape" })
-    expect(screen.queryByRole("group", { name: "Review restore" })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Choose archive…" })).toHaveFocus()
+  it("returns explicit unavailable behavior for native entry points without a backend", () => {
+    function NativeUnavailable() { return <BackupPage source={source} backup={useUnavailableBackup(source)} /> }
+    render(<NativeUnavailable />)
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("not available in this Silo build")
+    expect(screen.queryByRole("status", { name: /completed/i })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }))
+    fireEvent.click(screen.getByRole("button", { name: "Choose backup…" }))
+    expect(screen.getByRole("group", { name: "Restore unavailable" })).toHaveTextContent("not available in this Silo build")
   })
 
-  it("discards a running preview when an authoritative backup snapshot replaces it", async () => {
-    vi.useFakeTimers()
-    const source = applicationSourceForScenario("running")
-    const onBusyChange = vi.fn()
-    const { rerender } = render(<BackupPreview source={source} onBusyChange={onBusyChange} />)
-    fireEvent.click(screen.getByRole("button", { name: "Back up" }))
-    fireEvent.click(screen.getByRole("button", { name: "Start backup" }))
-    rerender(<BackupPreview source={{ ...source, backup: { ...source.backup, lastArchive: "replacement.silo-backup" } }} onBusyChange={onBusyChange} />)
-    await finishOperation()
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
-    expect(screen.queryByRole("status")).not.toBeInTheDocument()
-    expect(onBusyChange).toHaveBeenLastCalledWith(false)
-    const history = within(screen.getByRole("list", { name: "Recent backups" }))
-    expect(history.getAllByRole("listitem")).toHaveLength(1)
-    expect(history.getByText("replacement.silo-backup")).toBeVisible()
-  })
-
-  it("does not report a failed restore as completed and cancels timers on unmount", async () => {
-    vi.useFakeTimers()
-    const onRestoreComplete = vi.fn()
-    const onBusyChange = vi.fn()
-    const { unmount } = render(<BackupPreview source={applicationSourceForScenario("running")} previewMode="restore-failed" onRestoreComplete={onRestoreComplete} onBusyChange={onBusyChange} />)
-    fireEvent.click(screen.getByRole("button", { name: "Choose archive…" }))
-    selectArchive()
-    fireEvent.change(screen.getByRole("textbox", { name: "Type RESTORE to confirm" }), { target: { value: "RESTORE" } })
-    fireEvent.click(screen.getByRole("button", { name: "Restore backup" }))
-    await finishOperation()
-    expect(screen.getByRole("alert")).toHaveTextContent("Restore failed")
-    expect(onRestoreComplete).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole("button", { name: "Choose another archive" }))
-    selectArchive()
-    fireEvent.change(screen.getByRole("textbox", { name: "Type RESTORE to confirm" }), { target: { value: "RESTORE" } })
-    fireEvent.click(screen.getByRole("button", { name: "Restore backup" }))
-    unmount()
-    await finishOperation()
-    expect(onRestoreComplete).not.toHaveBeenCalled()
-    expect(onBusyChange).toHaveBeenLastCalledWith(false)
+  it("does not pass unknown destination capacity", () => {
+    function UnknownSpace() {
+      const backup = useBackupFixture({ source })
+      return <BackupPage source={source} backup={{ ...backup, state: { ...backup.state, availableSpaceGB: undefined } }} />
+    }
+    render(<UnknownSpace />)
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Review backup" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Destination space is unavailable")
+    expect(screen.queryByRole("button", { name: "Start backup" })).not.toBeInTheDocument()
   })
 })

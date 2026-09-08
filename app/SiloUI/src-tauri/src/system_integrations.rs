@@ -171,7 +171,7 @@ pub fn debug_onboarding_complete(app: AppHandle, window: WebviewWindow) -> Resul
         if fixture(&app)? {
             return Ok(false);
         }
-        return Ok(std::env::var("SILO_NATIVE_ONBOARDING_COMPLETE").as_deref() == Ok("1"));
+        return Ok(std::env::var("SILO_ONBOARDING_COMPLETE").as_deref() == Ok("1"));
     }
     #[cfg(not(debug_assertions))]
     Ok(false)

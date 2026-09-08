@@ -29,6 +29,7 @@ fn main() {
             "debug_onboarding_complete",
             "list_applications",
             "choose_application",
+            "read_dependencies",
         ]),
     ))
     .expect("failed to build desktop permissions");

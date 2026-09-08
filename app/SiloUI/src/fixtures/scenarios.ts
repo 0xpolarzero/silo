@@ -54,15 +54,11 @@ const bootstrapConfiguration = {
 } satisfies SiloBootstrapConfiguration
 
 const passingPreflightChecks = [
-  { id: "macos-version", title: "macOS 26 or later", status: "pass", detail: "Detected macOS 26.", remediation: null },
-  { id: "architecture", title: "Apple Silicon", status: "pass", detail: "Detected arm64.", remediation: null },
-  { id: "disk-space", title: "Available disk space", status: "pass", detail: "128 GiB available; setup estimates at least 20 GiB.", remediation: null },
-  { id: "memory", title: "Memory budget", status: "pass", detail: "Detected 64 GiB physical memory.", remediation: null },
-  { id: "tool-git", title: "git", status: "pass", detail: "/usr/bin/git is executable.", remediation: null },
-  { id: "tool-tar", title: "tar", status: "pass", detail: "/usr/bin/tar is executable.", remediation: null },
-  { id: "tool-zstd", title: "zstd", status: "pass", detail: "/opt/homebrew/bin/zstd is executable.", remediation: null },
-  { id: "tool-git-lfs", title: "git-lfs", status: "pass", detail: "/opt/homebrew/bin/git-lfs is executable.", remediation: null },
-  { id: "runtime-microsandbox", title: "Bundled MicroSandbox runtime", status: "pass", detail: "Bundled msb 0.6.17 and libkrunfw 5.6.1 passed integrity verification.", remediation: null },
+  { id: "system-os", title: "Supported OS", status: "pass", detail: "macOS 15.6 · Apple silicon", remediation: null },
+  { id: "system-virtualization", title: "Virtualization", status: "pass", detail: "Apple Hypervisor available", remediation: null },
+  { id: "runtime-microsandbox", title: "MicroSandbox runtime", status: "pass", detail: "Bundled msb 0.6.17 · libkrunfw 5.6.1", remediation: null },
+  { id: "tool-git", title: "Git", status: "pass", detail: "Bundled Git 2.53.0", remediation: null },
+  { id: "tool-git-lfs", title: "Git LFS", status: "pass", detail: "Bundled Git LFS 3.7.1", remediation: null },
 ] satisfies SiloPreflightCheck[]
 
 function progress(

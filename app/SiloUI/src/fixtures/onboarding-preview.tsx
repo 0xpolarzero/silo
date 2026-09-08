@@ -22,7 +22,7 @@ export function OnboardingPreview({ source: initialSource, actions, initialGitHu
 
   return <OnboardingApp
     {...props}
-    source={source}
+    source={{ ...source, preflightChecks: initialSource.preflightChecks }}
     completed={completed}
     presentationOnlyCompleted={initialCompleted}
     githubConnectionState={githubConnectionState}
@@ -39,7 +39,10 @@ export function OnboardingPreview({ source: initialSource, actions, initialGitHu
       },
       retryWorkspaceSetup: () => {
         actions?.retryWorkspaceSetup?.()
-        setSource(onboardingScenarios.running)
+        setSource((current) => ({
+          ...onboardingScenarios.running,
+          preflightChecks: current.preflightChecks,
+        }))
       },
       finishSetup: (request) => {
         actions?.finishSetup?.(request)

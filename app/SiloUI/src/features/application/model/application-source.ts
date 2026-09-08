@@ -219,6 +219,11 @@ export interface ApplicationSource {
     compressedSize: string
     destination: string
   }
+  /** Operation-owned capacity evidence. Fixtures set this only through an explicit scenario. */
+  resourceNotice?:
+    | { kind: "create-storage"; sandbox: string; requiredGB: number; availableGB: number; volume: string }
+    | { kind: "start-memory"; sandbox: string; memoryGiB: number }
+  vmOperationsUnavailable?: string
   preferences: ApplicationPreferenceSelection & {
     launchAtLogin: boolean
     startWorkspacesAtLaunch: boolean

@@ -14,13 +14,16 @@ interface OnboardingFooterProps {
 
 export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, completed = false, onOpenApp }: OnboardingFooterProps) {
   const isReview = activeStep === "review"
-  const dependenciesBlocked = activeStep === "dependencies" && viewModel.dependencyStatus === "failed"
+  const dependenciesBlocked = activeStep === "dependencies" && viewModel.dependencyStatus !== "succeeded"
   const failedItem = viewModel.queueItems.find(({ status }) => status === "failed")
   const runningItem = viewModel.queueItems.find(({ status }) => status === "running")
+  const checkingDependencies = viewModel.dependencyStatus === "running"
   const failed = viewModel.dependencyStatus === "failed" || !!failedItem || !!viewModel.error
   const complete = completed || (viewModel.dependencyStatus === "succeeded" && viewModel.queueItems.length > 0 && viewModel.queueItems.every(({ status }) => status === "succeeded"))
   const statusText = completed
     ? "Complete · Silo is ready"
+    : checkingDependencies
+      ? "Checking · Verifying required compatibility"
     : viewModel.dependencyStatus === "failed"
       ? "Failed · Resolve dependency checks to continue"
       : failed
@@ -36,7 +39,7 @@ export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, co
       <div className="flex min-w-0 flex-[1_1_12rem] items-start gap-2 text-xs leading-5 text-muted-foreground" aria-live="polite">
         {failed && !completed ? <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-destructive" />
           : complete ? <Check className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-            : runningItem ? <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin" />
+            : checkingDependencies || runningItem ? <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin" />
               : <Clock3 className="mt-0.5 size-3.5 shrink-0" />}
         <span className="break-words">{statusText}</span>
       </div>

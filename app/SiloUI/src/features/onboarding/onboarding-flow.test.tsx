@@ -31,11 +31,11 @@ describe("onboarding continuity", () => {
 
   it("retains expanded dependency details when returning to the step", async () => {
     const { user } = setup()
-    await user.click(screen.getByRole("button", { name: /Required software/ }))
-    expect(screen.getByRole("button", { name: /Required software/ })).toHaveAttribute("aria-expanded", "true")
+    await user.click(screen.getByRole("button", { name: /System/ }))
+    expect(screen.getByRole("button", { name: /System/ })).toHaveAttribute("aria-expanded", "true")
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
     await user.click(screen.getByRole("tab", { name: /Dependencies/ }))
-    expect(screen.getByRole("button", { name: /Required software/ })).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("button", { name: /System/ })).toHaveAttribute("aria-expanded", "true")
   })
 
   it("replaces the finished queue with a single handoff and submits setup once", async () => {

@@ -6,7 +6,7 @@ export function BackupPreview(props: {
   source: ApplicationSource
   previewMode?: BackupFixtureMode
   onBusyChange?: (busy: boolean) => void
-  onRestoreComplete?: () => void
+  onRestoreComplete?: (targetName: string) => void
   onRestartRequired?: (sandboxes: string[]) => void
 }) {
   const backup = useBackupFixture(props)

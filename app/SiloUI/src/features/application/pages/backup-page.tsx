@@ -1,259 +1,141 @@
 import { useEffect, useRef, useState } from "react"
-import { Archive, Check, Info, LoaderCircle, RotateCcw, TriangleAlert } from "lucide-react"
+import { Archive, Check, Circle, CircleX, RotateCcw, TriangleAlert } from "lucide-react"
 
 import { DisclosureHeader } from "@/components/disclosure-header"
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import type { BackupArchive, BackupController, BackupOperationKind } from "@/features/application/model/backup-source"
 
-type Review =
+type Flow =
   | { kind: "idle" }
+  | { kind: "backup-select" }
   | { kind: "backup-review" }
-  | { kind: "restore-review"; archive: BackupArchive; confirmation: string }
-  | { kind: "invalid-archive"; archive: BackupArchive }
+  | { kind: "backup-running-confirm" }
+  | { kind: "restore-review"; archive: BackupArchive; newName: string }
+  | { kind: "invalid-archive"; reason: string }
+  | { kind: "unavailable"; operation: BackupOperationKind }
+  | { kind: "cancel-confirm"; operation: BackupOperationKind }
 
-export interface BackupPageProps {
-  source: ApplicationSource
-  backup: BackupController
-  onBusyChange?: (busy: boolean) => void
+function Notice({ tone, title, children }: { tone: "neutral" | "success" | "warning" | "danger"; title: string; children: React.ReactNode }) {
+  const classes = tone === "danger" ? "border-destructive/20 bg-destructive/[.06]" : tone === "warning" ? "border-amber-500/25 bg-amber-500/[.07]" : tone === "success" ? "border-emerald-500/25 bg-emerald-500/[.06]" : "border-border bg-muted/30"
+  const Icon = tone === "danger" ? CircleX : tone === "warning" ? TriangleAlert : tone === "success" ? Check : Circle
+  return <div className={`rounded-lg border p-3 ${classes}`} role={tone === "danger" ? "alert" : "status"}>
+    <div className="flex gap-2"><Icon className={tone === "danger" ? "mt-0.5 size-3.5 shrink-0 text-destructive" : tone === "warning" ? "mt-0.5 size-3.5 shrink-0 text-amber-600" : tone === "success" ? "mt-0.5 size-3.5 shrink-0 text-emerald-600" : "mt-0.5 size-3.5 shrink-0 text-muted-foreground"} aria-hidden="true" /><div className="min-w-0 flex-1"><p className="text-xs font-medium">{title}</p><div className="mt-1 text-[11px] leading-4 text-muted-foreground">{children}</div></div></div>
+  </div>
 }
+
+export interface BackupPageProps { source: ApplicationSource; backup: BackupController; onBusyChange?: (busy: boolean) => void }
 
 export function BackupPage(props: BackupPageProps) {
   return <BackupPageContent key={props.backup.state.snapshotId} {...props} />
 }
 
 function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
+  const [flow, setFlow] = useState<Flow>({ kind: "idle" })
   const [destination, setDestination] = useState(source.backup.destination)
-  const [pickingFolder, setPickingFolder] = useState(false)
-  const [pickerError, setPickerError] = useState<string | null>(null)
-  const [review, setReview] = useState<Review>({ kind: "idle" })
+  const [selected, setSelected] = useState(() => new Set(source.workspaces.filter(({ machine }) => machine.kind === "vm").map(({ machine }) => machine.name)))
   const [expandedArchive, setExpandedArchive] = useState<string | null>(null)
   const folderInput = useRef<HTMLInputElement>(null)
   const archiveInput = useRef<HTMLInputElement>(null)
-  const backupButton = useRef<HTMLButtonElement>(null)
-  const restoreButton = useRef<HTMLButtonElement>(null)
-  const { archives, operation, requiredSpaceGB } = backup.state
-  const flow = operation ?? review
-  const busy = flow.kind === "running"
-  const controlsDisabled = busy || pickingFolder
-  const localSandboxes = source.workspaces.filter(({ machine }) => machine.kind === "vm")
-  const runningNames = localSandboxes.filter(({ state }) => state === "running").map(({ machine }) => machine.name)
-  const backupExpanded = flow.kind === "backup-review" || ((flow.kind === "running" || flow.kind === "result") && flow.operation === "backup")
+  const operation = backup.state.operation
+  const busy = operation?.kind === "running"
+  const vmWorkspaces = source.workspaces.filter(({ machine }) => machine.kind === "vm")
+  const selectedRunning = vmWorkspaces.filter(({ machine, state }) => selected.has(machine.name) && state === "running").map(({ machine }) => machine.name)
+  const controlsDisabled = Boolean(busy)
 
-  useEffect(() => {
-    onBusyChange?.(busy)
-    return () => { if (busy) onBusyChange?.(false) }
-  }, [busy, onBusyChange])
+  useEffect(() => { onBusyChange?.(Boolean(busy)); return () => { if (busy) onBusyChange?.(false) } }, [busy, onBusyChange])
 
-  function showReview(next: Review) {
+  function begin(next: Flow, operation: BackupOperationKind) {
     backup.actions.dismissOperation()
-    setReview(next)
+    if (backup.state.availability === "unavailable") { setFlow({ kind: "unavailable", operation }); return }
+    setFlow(next)
   }
 
-  function closeFlow() {
-    showReview({ kind: "idle" })
-    if (backupExpanded) backupButton.current?.focus()
-    else restoreButton.current?.focus()
+  function reviewBackup() {
+    if (backup.state.unsupportedStorage && selected.has(backup.state.unsupportedStorage.sandbox)) { setFlow({ kind: "backup-review" }); return }
+    if (backup.state.availableSpaceGB === undefined || backup.state.availableSpaceGB < backup.state.requiredSpaceGB) { setFlow({ kind: "backup-review" }); return }
+    setFlow(selectedRunning.length > 0 ? { kind: "backup-running-confirm" } : { kind: "backup-review" })
   }
 
   function startBackup() {
-    if (!destination || localSandboxes.length === 0) return
-    setReview({ kind: "idle" })
-    backup.actions.startBackup(destination)
+    backup.actions.startBackup(destination, [...selected])
+    setFlow({ kind: "idle" })
   }
 
-  async function pickDestination() {
-    setPickerError(null)
-    const pickerWindow = window as Window & {
-      showDirectoryPicker?: (options: { id: string; mode: "read" }) => Promise<FileSystemDirectoryHandle>
-    }
-    if (!pickerWindow.showDirectoryPicker) {
-      folderInput.current?.click()
-      return
-    }
-    setPickingFolder(true)
-    try {
-      // The selected folder remains a draft until backup is confirmed.
-      const folder = await pickerWindow.showDirectoryPicker({ id: "silo-backup-destination", mode: "read" })
-      setDestination(folder.name)
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === "AbortError")) {
-        setPickerError("Could not open the folder picker. Try again.")
-      }
-    } finally {
-      setPickingFolder(false)
-    }
+  function inspect(selection: BackupArchive | File) {
+    if (backup.state.availability === "unavailable") { setFlow({ kind: "unavailable", operation: "restore" }); return }
+    const result = backup.actions.inspectArchive(selection)
+    if (!result.valid) { setFlow({ kind: "invalid-archive", reason: result.reason ?? "This backup could not be validated." }); return }
+    const base = result.archive.sandboxes[0] || "sandbox"
+    const proposed = `${base}-restored`
+    setFlow({ kind: "restore-review", archive: result.archive, newName: proposed })
   }
 
-  function reviewArchive(selection: BackupArchive | File) {
-    const { archive, valid } = backup.actions.inspectArchive(selection)
-    showReview(valid ? { kind: "restore-review", archive, confirmation: "" } : { kind: "invalid-archive", archive })
-  }
-
-  function pickArchive() {
-    setPickerError(null)
-    archiveInput.current?.click()
-  }
-
-  function operationPanel(operation: BackupOperationKind) {
-    if ((flow.kind !== "running" && flow.kind !== "result") || flow.operation !== operation) return null
-    if (flow.kind === "running") {
-      const step = flow.progress
-      return <ListRowDetails label={operation === "backup" ? "Backup in progress" : "Restore in progress"}>
-        <div className="flex items-start gap-2" role="status">
-          <LoaderCircle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 animate-spin motion-reduce:animate-none text-muted-foreground" />
-          <div className="min-w-0 flex-1"><p className="font-medium">{step.title}</p><p className="mt-0.5 text-[11px] text-muted-foreground">{step.detail}</p></div>
-          <span className="text-[10px] tabular-nums text-muted-foreground">{step.progress}%</span>
-        </div>
-        <Progress value={step.progress} aria-label={operation === "backup" ? "Backup progress" : "Restore progress"} />
-        <p className="text-[10px] text-muted-foreground">Keep Silo open until this finishes.</p>
-      </ListRowDetails>
-    }
-    const failed = flow.outcome === "failed"
-    return <ListRowDetails label={operation === "backup" ? "Backup result" : "Restore result"}>
-      <div role={failed ? "alert" : "status"} className="flex items-start gap-2">
-        {failed ? <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-destructive" /> : <Check aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />}
-        <div className="min-w-0 space-y-1">
-          <p className="font-medium">{operation === "backup" ? "Backup" : "Restore"} {failed ? "failed" : "completed"}</p>
-          <p className="text-[11px] text-muted-foreground">{flow.message}</p>
-          {!failed && <p className="break-all text-[10px] text-muted-foreground">{[flow.archive.destination, flow.archive.name].filter(Boolean).join(" / ")}</p>}
-          {flow.outcome === "restart-required" && <p className="text-[11px] text-amber-700 dark:text-amber-400">Restart {flow.runningNames.join(", ")} to return to the previous running state. Your backup is valid.</p>}
-        </div>
-      </div>
-      <div className="flex justify-end gap-1">
-        <Button variant="ghost" size="xs" onClick={closeFlow}>{failed ? "Dismiss" : "Done"}</Button>
-        {failed && <Button variant="outline" size="xs" onClick={() => operation === "backup" ? showReview({ kind: "backup-review" }) : pickArchive()}>{operation === "backup" ? "Review and retry" : "Choose another archive"}</Button>}
-      </div>
+  function operationPanel(kind: BackupOperationKind) {
+    if (!operation || operation.operation !== kind) return null
+    if (operation.kind === "running" && flow.kind === "cancel-confirm" && flow.operation === kind) return <ListRowDetails label={`Cancel ${kind}`}>
+      <Notice tone="warning" title={kind === "backup" ? "Cancel after the current safe point?" : `Cancel and remove ${operation.targetName}?`}>
+        {kind === "backup" ? "Silo will stop writing, remove the incomplete file, and restore the previous running state where possible. Existing backups stay unchanged." : "Silo will stop at a safe point and remove the incomplete new sandbox. The backup file and existing sandboxes stay unchanged."}
+      </Notice>
+      <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Keep {kind === "backup" ? "backing up" : "restoring"}</Button><Button variant="outline" size="xs" onClick={() => { backup.actions.cancelOperation(); setFlow({ kind: "idle" }) }}>{kind === "backup" ? "Cancel and clean up" : "Cancel and remove"}</Button></div>
+    </ListRowDetails>
+    if (operation.kind === "running") return <ListRowDetails label={`${kind === "backup" ? "Backup" : "Restore"} in progress`}>
+      <ol className="grid gap-3">{operation.phases.map((phase) => <li key={phase.title} className="grid grid-cols-[1rem_1fr] gap-x-2"><span className={`mt-1 size-2 rounded-full ${phase.tone === "succeeded" ? "bg-emerald-500" : phase.tone === "running" ? "bg-foreground" : "bg-muted-foreground/30"}`} /><div><p className="text-xs font-medium">{phase.title}</p><p className="text-[11px] text-muted-foreground">{phase.detail}</p></div></li>)}</ol>
+      <Progress value={operation.progress} aria-label={kind === "backup" ? "Backup progress" : "Restore progress"} />
+      <div className="flex justify-end"><Button variant="outline" size="xs" onClick={() => setFlow({ kind: "cancel-confirm", operation: kind })}>Cancel {kind}…</Button></div>
+    </ListRowDetails>
+    const tone = operation.outcome === "success" ? "success" : operation.outcome === "restart-required" ? "warning" : operation.outcome === "failed" ? "danger" : "neutral"
+    return <ListRowDetails label={`${kind === "backup" ? "Backup" : "Restore"} result`}>
+      <Notice tone={tone} title={operation.title}><p>{operation.message}</p>{operation.detail && <p className="mt-1">{operation.detail}</p>}</Notice>
+      <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => backup.actions.dismissOperation()}>Done</Button>{operation.outcome === "restart-required" && <Button variant="outline" size="xs" onClick={() => backup.actions.retryStart(operation.runningNames[0])}>Retry start</Button>}{operation.outcome === "failed" && <Button variant="outline" size="xs" onClick={() => kind === "backup" ? setFlow({ kind: "backup-select" }) : archiveInput.current?.click()}>Review and retry</Button>}</div>
     </ListRowDetails>
   }
 
-  return (
-    <TooltipProvider delayDuration={150}>
-      <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6" onKeyDown={(event) => {
-        if (event.key === "Escape" && flow.kind !== "idle" && !busy) { event.preventDefault(); closeFlow() }
-      }}>
-        <input
-          ref={(element) => { folderInput.current = element; if (element) element.webkitdirectory = true }}
-          type="file" hidden aria-label="Backup destination folder" disabled={controlsDisabled}
-          onChange={(event) => {
-            const input = event.currentTarget
-            const name = input.webkitEntries?.[0]?.name || input.files?.[0]?.webkitRelativePath.split("/")[0]
-            if (name) setDestination(name)
-            input.value = ""
-          }}
-        />
-        <input
-          ref={archiveInput} type="file" accept=".silo-backup" hidden aria-label="Backup archive file" disabled={controlsDisabled}
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0]
-            event.currentTarget.value = ""
-            if (!file) return
-            if (!file.name.endsWith(".silo-backup")) {
-              setPickerError("Choose a .silo-backup archive.")
-              return
-            }
-            setPickerError(null)
-            reviewArchive(file)
-          }}
-        />
-        {pickerError && <p role="alert" className="text-[11px] text-destructive">{pickerError}</p>}
-        <section className="grid gap-2">
-          <h2 className="text-xs font-medium">Backup</h2>
-          <ListCard>
-          <ul className="divide-y divide-border" aria-label="Backup controls">
-            <li>
-              <ListRow
-                className="hover:bg-muted/35 focus-within:bg-muted/35"
-                icon={<ListRowIcon aria-hidden="true"><Archive className="size-3.5" /></ListRowIcon>}
-                title={<>
-                  <h3 className="truncate">Create backup</h3>
-                  <Tooltip>
-                    <TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-xs" className="size-4 text-muted-foreground" aria-label="What a backup includes"><Info aria-hidden="true" /></Button></TooltipTrigger>
-                    <TooltipContent>Includes sandbox code, VM state, databases, Docker data, and guest-side credentials. macOS Keychain credentials are excluded.</TooltipContent>
-                  </Tooltip>
-                </>}
-                detail={<span title={destination || undefined}>{destination || "Select a destination to save your backups."}</span>}
-                actions={<div className="flex shrink-0 items-center gap-1">
-                  <Button type="button" variant="ghost" size="xs" aria-label="Select destination" disabled={controlsDisabled} onClick={pickDestination}>Select destination…</Button>
-                  <Button ref={backupButton} type="button" variant="outline" size="xs" disabled={controlsDisabled || !destination || localSandboxes.length === 0} aria-expanded={backupExpanded} aria-controls="backup-details" onClick={() => showReview({ kind: "backup-review" })}>Back up</Button>
-                </div>}
-              />
-              <div id="backup-details">
-                {flow.kind === "backup-review" && <ListRowDetails label="Review backup">
-                  <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[11px]">
-                    <dt className="text-muted-foreground">Destination</dt><dd className="break-all">{destination}</dd>
-                    <dt className="text-muted-foreground">Space</dt><dd>About {requiredSpaceGB} GB required</dd>
-                    <dt className="text-muted-foreground">Sandboxes</dt><dd>{localSandboxes.map(({ machine }) => machine.name).join(", ")}</dd>
-                  </dl>
-                  <p className="text-[11px] text-muted-foreground">{runningNames.length > 0 ? `${runningNames.join(", ")} will stop briefly and restart after the backup. Stopped sandboxes will stay stopped.` : "All sandboxes are stopped and will stay stopped after the backup."}</p>
-                  <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={closeFlow}>Cancel</Button><Button autoFocus variant="outline" size="xs" onClick={startBackup}>Start backup</Button></div>
-                </ListRowDetails>}
-                {operationPanel("backup")}
-              </div>
-            </li>
-            <li>
-              <ListRow
-                className="hover:bg-muted/35 focus-within:bg-muted/35"
-                icon={<ListRowIcon aria-hidden="true"><RotateCcw className="size-3.5" /></ListRowIcon>}
-                title={<h3 className="truncate">Restore archive</h3>}
-                detail="Replaces all sandbox state and leaves sandboxes stopped."
-                detailClassName="whitespace-normal"
-                actions={<Button ref={restoreButton} type="button" variant="outline" size="xs" disabled={controlsDisabled} onClick={pickArchive}>Choose archive…</Button>}
-              />
-              <div id="restore-details">
-                {flow.kind === "invalid-archive" && <ListRowDetails label="Archive validation">
-                  <div role="alert" className="space-y-1"><p className="font-medium text-destructive">Checksum mismatch</p><p className="text-[11px] text-muted-foreground">This archive is incomplete or damaged. Choose another copy. No sandbox data has changed.</p></div>
-                  <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={closeFlow}>Cancel</Button><Button variant="outline" size="xs" onClick={() => pickArchive()}>Choose another archive</Button></div>
-                </ListRowDetails>}
-                {flow.kind === "restore-review" && <ListRowDetails label="Review restore">
-                  <div className="space-y-1"><p className="break-all text-[11px] font-medium">{flow.archive.name}</p><p className="text-[10px] text-muted-foreground">{flow.archive.completedLabel} · {flow.archive.size} · {flow.archive.sandboxes.length} sandboxes</p><p className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400"><Check aria-hidden="true" className="size-3" />Checksum verified</p></div>
-                  <p className="text-[11px] text-muted-foreground">Replaces current sandbox data with {flow.archive.sandboxes.join(", ")} from this archive. Changes since the backup will be lost. All restored sandboxes will stay stopped.</p>
-                  <div className="flex flex-wrap items-end justify-between gap-3">
-                    <label className="grid gap-1.5 text-[11px]">Type RESTORE to confirm<Input autoFocus autoComplete="off" spellCheck={false} className="h-7 w-44 rounded-md text-xs md:text-xs" value={flow.confirmation} onChange={(event) => setReview({ ...flow, confirmation: event.target.value })} /></label>
-                    <div className="flex gap-1"><Button variant="ghost" size="xs" onClick={closeFlow}>Cancel</Button><Button variant="destructive" size="xs" disabled={flow.confirmation !== "RESTORE"} onClick={() => {
-                      if (flow.confirmation === "RESTORE") {
-                        setReview({ kind: "idle" })
-                        backup.actions.startRestore(flow.archive)
-                      }
-                    }}>Restore backup</Button></div>
-                  </div>
-                </ListRowDetails>}
-                {operationPanel("restore")}
-              </div>
-            </li>
-          </ul>
-          </ListCard>
-        </section>
-        <section className="grid gap-2" aria-labelledby="backup-history-heading">
-          <h3 id="backup-history-heading" className="text-xs font-medium">Recent backups</h3>
-          <ListCard>
-          <ul className="divide-y divide-border" aria-label="Recent backups">
-            {archives.length === 0 && <li><ListRow
-              icon={<ListRowIcon aria-hidden="true"><Archive className="size-3.5" /></ListRowIcon>}
-              title="No backups yet"
-              detail="Completed backups will appear here."
-            /></li>}
-            {archives.map((archive) => <Collapsible key={archive.name} asChild open={expandedArchive === archive.name} onOpenChange={(open) => setExpandedArchive(open ? archive.name : null)}><li>
-              <DisclosureHeader
-                icon={<ListRowIcon className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" role="img" aria-label="Backup completed"><Check className="size-3.5" aria-hidden="true" /></ListRowIcon>}
-                title={archive.name}
-                detail={[archive.completedLabel, archive.size, `${archive.sandboxes.length} sandboxes`].filter(Boolean).join(" · ")}
-                label={`Details for ${archive.name}`}
-              />
-              <CollapsibleContent className="collapsible-content-motion"><ListRowDetails label={`Archive details for ${archive.name}`}>
-                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[11px]"><dt className="text-muted-foreground">Location</dt><dd className="break-all">{archive.destination}</dd><dt className="text-muted-foreground">Sandboxes</dt><dd>{archive.sandboxes.join(", ")}</dd></dl>
-                <div className="flex justify-end"><Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => reviewArchive(archive)}>Restore…</Button></div>
-              </ListRowDetails></CollapsibleContent>
-            </li></Collapsible>)}
-          </ul>
-          </ListCard>
-        </section>
-      </div>
-    </TooltipProvider>
-  )
+  const restoreNameConflict = flow.kind === "restore-review" && source.workspaces.some(({ machine }) => machine.name.toLowerCase() === flow.newName.toLowerCase())
+  const restoreSpaceBlocked = flow.kind === "restore-review" && (backup.state.availableSpaceGB === undefined || backup.state.availableSpaceGB < backup.state.requiredSpaceGB)
+
+  return <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
+    <input ref={(node) => { folderInput.current = node; if (node) node.webkitdirectory = true }} type="file" hidden aria-label="Backup destination folder" onChange={(event) => { const name = event.currentTarget.webkitEntries?.[0]?.name || event.currentTarget.files?.[0]?.webkitRelativePath.split("/")[0]; if (name) setDestination(name); event.currentTarget.value = "" }} />
+    <input ref={archiveInput} type="file" hidden accept=".silo-backup" aria-label="Backup archive file" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) inspect(file) }} />
+    <header><h2 className="text-sm font-semibold">Backup</h2><p className="mt-1 text-xs text-muted-foreground">Create a self-contained Silo backup or restore one as a new sandbox.</p></header>
+    <ListCard><ul className="divide-y divide-border" aria-label="Backup controls">
+      <li><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title={<h3>Create backup</h3>} detail="Back up selected sandboxes to a folder." actions={<Button variant="outline" size="xs" disabled={controlsDisabled} aria-expanded={flow.kind.startsWith("backup")} onClick={() => begin({ kind: "backup-select" }, "backup")}>Create backup…</Button>} />
+        {flow.kind === "backup-select" && <ListRowDetails label="Choose backup">
+          <div className="grid gap-2 text-[11px]">{vmWorkspaces.map(({ machine, state }) => <label key={machine.id} className="flex items-center gap-2"><Checkbox checked={selected.has(machine.name)} onCheckedChange={(checked) => setSelected((current) => { const next = new Set(current); if (checked) next.add(machine.name); else next.delete(machine.name); return next })} />{machine.name}<span className="text-muted-foreground">{state === "running" ? "Running" : "Stopped"}</span></label>)}
+            <label className="grid gap-1">Destination<div className="flex gap-2"><Input value={destination} readOnly /><Button variant="outline" size="xs" onClick={() => folderInput.current?.click()}>Change…</Button></div></label>
+          </div><p className="text-[11px] text-muted-foreground">Includes managed disks, required image data, and Silo VM settings. Archive format and compression are automatic.</p>
+          <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Cancel</Button><Button variant="outline" size="xs" disabled={!destination || selected.size === 0} onClick={reviewBackup}>Review backup</Button></div>
+        </ListRowDetails>}
+        {flow.kind === "backup-review" && <ListRowDetails label="Review backup">
+          {backup.state.unsupportedStorage && selected.has(backup.state.unsupportedStorage.sandbox) ? <Notice tone="danger" title="Complete backup is blocked"><p>{backup.state.unsupportedStorage.sandbox} uses “{backup.state.unsupportedStorage.label}”, which is outside Silo’s managed disk and cannot be included. No backup was created.</p></Notice>
+            : backup.state.availableSpaceGB === undefined ? <Notice tone="danger" title="Destination space is unavailable"><p>Silo could not verify the space needed to create a complete backup. No backup was created.</p></Notice>
+            : backup.state.availableSpaceGB < backup.state.requiredSpaceGB ? <Notice tone="danger" title="Not enough space at this destination"><p>About {backup.state.requiredSpaceGB} GB is needed; {backup.state.availableSpaceGB} GB is available. The estimate includes temporary export space and is not a reservation.</p></Notice>
+            : <><dl className="grid grid-cols-[7rem_1fr] gap-1 text-[11px]"><dt className="text-muted-foreground">Sandboxes</dt><dd>{[...selected].join(", ")}</dd><dt className="text-muted-foreground">Destination</dt><dd>{destination}</dd><dt className="text-muted-foreground">Space</dt><dd>About {backup.state.requiredSpaceGB} GB needed · {backup.state.availableSpaceGB ?? "Unknown"} GB available</dd><dt className="text-muted-foreground">Current state</dt><dd>{selectedRunning.length ? `${selectedRunning.join(", ")} will stop briefly` : "Selected sandboxes are stopped and will stay stopped"}</dd></dl><div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "backup-select" })}>Back</Button><Button variant="outline" size="xs" onClick={startBackup}>Start backup</Button></div></>}
+        </ListRowDetails>}
+        {flow.kind === "backup-running-confirm" && <ListRowDetails label="Running sandbox interruption"><Notice tone="warning" title={`${selectedRunning.join(", ")} must stop briefly`}><p>Silo will stop the selected running sandbox, save a disk copy, then restart it while the backup continues writing. Programs inside the VM start fresh.</p></Notice><div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "backup-select" })}>Cancel</Button><Button variant="outline" size="xs" onClick={startBackup}>Stop and back up</Button></div></ListRowDetails>}
+        {flow.kind === "unavailable" && flow.operation === "backup" && <ListRowDetails label="Backup unavailable"><Notice tone="danger" title="Backup is unavailable"><p>{backup.state.availabilityMessage}</p></Notice><div className="flex justify-end"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Dismiss</Button></div></ListRowDetails>}
+        {operationPanel("backup")}
+      </li>
+      <li><ListRow icon={<ListRowIcon><RotateCcw className="size-3.5" /></ListRowIcon>} title={<h3>Restore backup</h3>} detail="Validate an archive and restore it as a new sandbox." actions={<Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => backup.state.availability === "unavailable" ? begin({ kind: "unavailable", operation: "restore" }, "restore") : archiveInput.current?.click()}>Choose backup…</Button>} />
+        {flow.kind === "invalid-archive" && <ListRowDetails label="Archive validation"><Notice tone="danger" title="This backup cannot be restored"><p>{flow.reason} No sandbox data changed.</p></Notice><div className="flex justify-end"><Button variant="outline" size="xs" onClick={() => archiveInput.current?.click()}>Choose another backup</Button></div></ListRowDetails>}
+        {flow.kind === "restore-review" && <ListRowDetails label="Review restore">
+          <Notice tone="success" title="Backup validated"><p>{flow.archive.name} · format and checksum verified</p></Notice>
+          {restoreNameConflict && <Notice tone="danger" title={`The name ${flow.newName} already exists`}><p>Choose a new sandbox name. Silo will not overwrite an existing sandbox.</p></Notice>}
+          {restoreSpaceBlocked && <Notice tone="danger" title={backup.state.availableSpaceGB === undefined ? "Managed storage is unavailable" : "Not enough managed storage"}><p>{backup.state.availableSpaceGB === undefined ? "Silo could not verify the required managed storage. No sandbox was created." : `About ${backup.state.requiredSpaceGB} GB is needed; ${backup.state.availableSpaceGB} GB is available. No sandbox was created.`}</p></Notice>}
+          <label className="grid gap-1 text-[11px]">New sandbox name<Input autoFocus value={flow.newName} aria-invalid={restoreNameConflict} onChange={(event) => setFlow({ ...flow, newName: event.target.value })} /></label>
+          <dl className="grid grid-cols-[7rem_1fr] gap-1 text-[11px]"><dt className="text-muted-foreground">Location</dt><dd>Silo managed storage</dd><dt className="text-muted-foreground">Space</dt><dd>{backup.state.requiredSpaceGB} GB needed · {backup.state.availableSpaceGB ?? "Unknown"} GB available</dd></dl>
+          <p className="text-[11px] text-muted-foreground">Restores saved disk files and Silo settings. Programs start fresh. Existing sandboxes and backups stay unchanged.</p>
+          <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Cancel</Button><Button variant="outline" size="xs" disabled={!flow.newName || restoreNameConflict || restoreSpaceBlocked} onClick={() => { backup.actions.startRestore(flow.archive, flow.newName); setFlow({ kind: "idle" }) }}>Restore new sandbox</Button></div>
+        </ListRowDetails>}
+        {flow.kind === "unavailable" && flow.operation === "restore" && <ListRowDetails label="Restore unavailable"><Notice tone="danger" title="Restore is unavailable"><p>{backup.state.availabilityMessage}</p></Notice><div className="flex justify-end"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Dismiss</Button></div></ListRowDetails>}
+        {operationPanel("restore")}
+      </li>
+    </ul></ListCard>
+    <section className="grid gap-2"><h3 className="text-xs font-medium">Recent backups</h3><ListCard><ul className="divide-y divide-border" aria-label="Recent backups">{backup.state.archives.length === 0 && <li><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title="No backups yet" detail="Completed backups will appear here." /></li>}{backup.state.archives.map((archive) => <Collapsible key={archive.name} open={expandedArchive === archive.name} onOpenChange={(open) => setExpandedArchive(open ? archive.name : null)} asChild><li><DisclosureHeader icon={<ListRowIcon className="bg-emerald-500/10 text-emerald-600"><Check className="size-3.5" /></ListRowIcon>} title={archive.name} detail={[archive.completedLabel, archive.size, `${archive.sandboxes.length} sandboxes`].join(" · ")} label={`Details for ${archive.name}`} /><CollapsibleContent><ListRowDetails label={`Archive details for ${archive.name}`}><p className="text-[11px] text-muted-foreground">{archive.destination} · {archive.sandboxes.join(", ")}</p><div className="flex justify-end"><Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => inspect(archive)}>Restore…</Button></div></ListRowDetails></CollapsibleContent></li></Collapsible>)}</ul></ListCard></section>
+  </div>
 }

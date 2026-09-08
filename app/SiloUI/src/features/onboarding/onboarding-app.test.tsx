@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { OnboardingPreview } from "@/fixtures/onboarding-preview"
+import { FixtureApp } from "@/fixtures/fixture-app"
 import type { GitHubConnectionState } from "@/features/onboarding/model/onboarding-source"
 import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
 import { githubStateFromSearch, onboardingScenarios, repositoryFixtures } from "@/fixtures/scenarios"
@@ -492,12 +493,57 @@ describe("onboarding", () => {
     expect(screen.queryByText("msb")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Repair/ })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled()
-    const disclosure = screen.getByRole("button", { name: /Required software/ })
+    const disclosure = screen.getByRole("button", { name: /Bundled tools/ })
     expectDisclosureIndicator(disclosure)
     await user.click(disclosure)
     expect(screen.queryByText("MicroSandbox runtime")).not.toBeInTheDocument()
     await user.click(disclosure)
     expect(screen.getByText("MicroSandbox runtime")).toBeVisible()
+  })
+
+  it("updates native dependency reports through the real fixture wrapper without discarding local state", async () => {
+    const pendingChecks = onboardingScenarios.complete.preflightChecks.map((check) => ({
+        ...check,
+        status: "pending" as const,
+        detail: `Checking ${check.title}…`,
+      }))
+    const retry = vi.fn()
+    const { rerender } = render(<FixtureApp nativeDependencies={{ checks: pendingChecks, retry }} />)
+
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled()
+    expect(screen.getAllByLabelText("Checking")).not.toHaveLength(0)
+
+    rerender(<FixtureApp nativeDependencies={{ checks: onboardingScenarios.complete.preflightChecks, retry }} />)
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled()
+    expect(screen.getAllByLabelText("All checks passed")).toHaveLength(2)
+
+    const unavailableChecks = onboardingScenarios.complete.preflightChecks.map((check) => check.id === "system-virtualization" ? {
+        ...check,
+        status: "unavailable" as const,
+        detail: "Virtualization checks are unavailable.",
+      } : check)
+    rerender(<FixtureApp nativeDependencies={{ checks: unavailableChecks, retry }} />)
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled()
+    expect(screen.getByText("Checks unavailable")).toBeVisible()
+  })
+
+  it("keeps native dependency failures authoritative after workspace Retry", async () => {
+    const user = userEvent.setup()
+    window.history.replaceState(null, "", "/?view=onboarding&scenario=bootstrap-failure")
+    const checks = onboardingScenarios.complete.preflightChecks.map((check) => check.id === "system-virtualization" ? {
+        ...check,
+        status: "unavailable" as const,
+        detail: "Virtualization checks are unavailable.",
+      } : check)
+    render(<FixtureApp nativeDependencies={{ checks, retry: vi.fn() }} />)
+
+    await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    await user.click(screen.getByRole("tab", { name: /Dependencies/ }))
+
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled()
+    expect(screen.getByText("Checks unavailable")).toBeVisible()
+    window.history.replaceState(null, "", "/")
   })
 
   it("keeps stress-fixture activity collapsed until requested and filters unsafe output", async () => {

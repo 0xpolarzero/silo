@@ -16,6 +16,7 @@ import { createApplicationService, emptyApplicationCatalog } from './desktop/app
 import { fixtureApplicationCatalog } from './fixtures/application-catalog'
 import { connectSystemIntegrationLifecycle, createSystemIntegrationStoreForRuntime } from './desktop/system-integrations'
 import { SystemIntegrationProvider } from './features/preferences/system-integrations-store'
+import { createNativeDependencyStore, useDependencyStore, type DependencyStore } from './desktop/dependencies'
 
 const desktop = isTauri()
 const statusPanel = desktop && getCurrentWindow().label === 'status'
@@ -25,7 +26,17 @@ const store = desktop
   ? createDesktopSettingsStore(settingsForFixture(source), !statusPanel, settingsFixture)
   : createFixtureSettingsStore(source)
 
+// oxlint-disable-next-line react/only-export-components
+function RootSurface({ nativeOnboardingComplete, dependencyStore }: { nativeOnboardingComplete: boolean; dependencyStore: DependencyStore | null }) {
+  const dependencies = useDependencyStore(dependencyStore)
+  return statusPanel
+    ? <DesktopStatusFixture />
+    : <FixtureApp nativeOnboardingComplete={nativeOnboardingComplete} nativeDependencies={dependencies} nativeOperations={desktop && !settingsFixture} />
+}
+
 async function start() {
+  const dependencyStore = desktop && !statusPanel && !settingsFixture ? createNativeDependencyStore() : null
+  dependencyStore?.retry()
   const stopLifecycle = desktop ? await connectSettingsLifecycle(store, !statusPanel) : () => {}
   if (desktop && !statusPanel) await invoke('initialize_settings', { fixture: settingsFixture })
   await store.initialize()
@@ -49,14 +60,14 @@ async function start() {
     ? await applicationService.read().catch((error: unknown) => { console.error('Silo applications:', error); return emptyApplicationCatalog })
     : fixtureApplicationCatalog
   const stopTheme = initializeTheme(store)
-  if (import.meta.hot) import.meta.hot.dispose(() => { stopTheme(); stopLifecycle(); stopSystemLifecycle(); systemIntegrations.dispose(); store.dispose() })
+  if (import.meta.hot) import.meta.hot.dispose(() => { dependencyStore?.dispose(); stopTheme(); stopLifecycle(); stopSystemLifecycle(); systemIntegrations.dispose(); store.dispose() })
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <SettingsProvider store={store}>
         <SystemIntegrationProvider store={systemIntegrations}>
           <ApplicationCatalogProvider initialCatalog={applicationCatalog} service={applicationService}>
-          {statusPanel ? <DesktopStatusFixture /> : <FixtureApp nativeOnboardingComplete={nativeOnboardingComplete} />}
+          <RootSurface nativeOnboardingComplete={nativeOnboardingComplete} dependencyStore={dependencyStore} />
           </ApplicationCatalogProvider>
         </SystemIntegrationProvider>
       </SettingsProvider>

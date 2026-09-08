@@ -23,13 +23,15 @@ import type { StatusBarRoute } from "@/features/status-bar/status-bar-types"
 import { useDesktopFixtures } from "./use-desktop-fixtures"
 import { SettingsProvider } from "@/features/preferences/settings-store"
 import { settingsForFixture } from "./settings"
+import type { DependencyRuntime } from "@/desktop/dependencies"
+import { resourceFixtureModeFromSearch, withResourceFixture } from "./application-resources"
 
-export function FixtureApp({ nativeOnboardingComplete = false }: { nativeOnboardingComplete?: boolean }) {
+export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean }) {
   const source = applicationSourceForScenario(scenarioFromSearch(window.location.search))
-  return <SettingsProvider initialSettings={settingsForFixture(source)}><FixtureAppContent nativeOnboardingComplete={nativeOnboardingComplete} /></SettingsProvider>
+  return <SettingsProvider initialSettings={settingsForFixture(source)}><FixtureAppContent nativeOnboardingComplete={nativeOnboardingComplete} nativeDependencies={nativeDependencies} nativeOperations={nativeOperations} /></SettingsProvider>
 }
 
-function FixtureAppContent({ nativeOnboardingComplete }: { nativeOnboardingComplete: boolean }) {
+function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativeOperations }: { nativeOnboardingComplete: boolean; nativeDependencies: DependencyRuntime | null; nativeOperations: boolean }) {
   const [surface, setSurface] = useState(() => surfaceFromSearch(window.location.search))
   const [completedSetup, setCompletedSetup] = useState<OnboardingCompletionRequest | null>(null)
   const [statusBarHandoff, setStatusBarHandoff] = useState<{ source: ApplicationSource; route?: StatusBarRoute } | null>(null)
@@ -42,9 +44,11 @@ function FixtureAppContent({ nativeOnboardingComplete }: { nativeOnboardingCompl
   const githubManagementMode = githubManagementFixtureModeFromSearch(window.location.search)
   const activityMode = activityFixtureModeFromSearch(window.location.search)
   const backupMode = backupFixtureModeFromSearch(window.location.search)
+  const resourceMode = resourceFixtureModeFromSearch(window.location.search)
   const statusBarMode = statusBarFixtureModeFromSearch(window.location.search)
   const [activityStep, setActivityStep] = useState(0)
-  const fixtureSource = completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode)
+  const [dependencyFixtureRecovered, setDependencyFixtureRecovered] = useState(false)
+  const fixtureSource = withResourceFixture(completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode), resourceMode)
   useDesktopFixtures({ source: fixtureSource, mode: statusBarMode },
     (source) => setStatusBarHandoff((current) => ({ source, route: current?.route })),
     (route) => {
@@ -78,6 +82,7 @@ function FixtureAppContent({ nativeOnboardingComplete }: { nativeOnboardingCompl
           backupPreviewMode={backupMode}
           initialRoute={statusBarHandoff?.route}
           source={statusBarHandoff?.source ?? fixtureSource}
+          nativeOperations={nativeOperations}
         />
       ) : surface === "status-bar" ? (
         <StatusBarPreview
@@ -95,7 +100,14 @@ function FixtureAppContent({ nativeOnboardingComplete }: { nativeOnboardingCompl
       ) : (
         <OnboardingPreview
           key={`${scenario}:${githubState ?? "source"}`}
-          source={onboardingScenarios[scenarioFromSearch(window.location.search, "complete")]}
+          source={nativeDependencies ? {
+            ...onboardingScenarios[scenarioFromSearch(window.location.search, "complete")],
+            preflightChecks: nativeDependencies.checks,
+          } : dependencyFixtureRecovered ? {
+            ...onboardingScenarios[scenarioFromSearch(window.location.search, "complete")],
+            preflightChecks: onboardingScenarios.complete.preflightChecks,
+          } : onboardingScenarios[scenarioFromSearch(window.location.search, "complete")]}
+          onRetryDependencies={nativeDependencies?.retry ?? (scenario === "dependency-failure" ? () => setDependencyFixtureRecovered(true) : undefined)}
           initialGitHubConnectionState={githubState}
           repositoryOptions={repositoryFixtures}
           initialCompleted={nativeOnboardingComplete}

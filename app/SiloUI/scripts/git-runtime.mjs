@@ -280,6 +280,12 @@ export async function stageGitRuntime({
       gitLfsVersion: GIT_LFS_VERSION,
       archive: { name: selected.archive, sha256: selected.sha256 },
       minimumPlatform: selected.minimumPlatform,
+      executableSha256: {
+        git: gitRuntimeSha256(await readFile(stagedBinaries.git)),
+        gitLfs: gitRuntimeSha256(await readFile(stagedBinaries.gitLfs)),
+        gitRemoteHttp: gitRuntimeSha256(await readFile(stagedBinaries.gitRemoteHttp)),
+        gitRemoteHttps: gitRuntimeSha256(await readFile(stagedBinaries.gitRemoteHttps)),
+      },
       paths: {
         git: "bin/git",
         gitExecPath: "libexec/git-core",
