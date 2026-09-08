@@ -10,6 +10,7 @@
     "beforeBuildCommand": "npm run build:desktop"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Silo",
@@ -25,6 +26,7 @@
       },
       {
         "label": "status",
+        "transparent": true,
         "title": "Silo",
         "url": "index.html?native-status",
         "width": 380,

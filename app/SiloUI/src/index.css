@@ -221,6 +221,12 @@ html.dark {
   }
 }
 
+/* Let the rounded status panel define the native window's visible outline. */
+html.native-status,
+html.native-status body {
+  background: transparent;
+}
+
 @keyframes suppress-repository-overflow-after-tree-expand {
   from, to { overflow-y: hidden; }
 }

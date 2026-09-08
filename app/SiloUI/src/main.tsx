@@ -20,6 +20,7 @@ import { initializeTheme } from "@/features/preferences/theme"
 
 const desktop = isTauri()
 const statusPanel = desktop && getCurrentWindow().label === "status"
+document.documentElement.classList.toggle("native-status", statusPanel)
 const settings = createDesktopSettingsStore({}, !statusPanel)
 const production = createProductionSource()
 
