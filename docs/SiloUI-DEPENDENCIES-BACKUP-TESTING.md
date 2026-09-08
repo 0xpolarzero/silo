@@ -268,6 +268,40 @@ native execution was not tested on this macOS host.
 
 ## Host Git and jj identity
 
+### Resume, retry and completion
+
+1. Apply the Git author on GitHub, then open Review and confirm **Complete**.
+   Quit and reopen Silo before finishing onboarding. The same author must regain
+   **Complete** after a read-only check of the saved VM configuration. Opening
+   onboarding must not create a VM or rewrite its identity.
+2. Change an author without submitting it. Review must not claim that the new
+   value is complete. Continue applies and verifies that value normally.
+3. Regression tests cover failed sandbox submissions, failed identity submissions
+   and failed final settings saves. **Retry** must repeat the failed submission,
+   not replace it with sandbox configuration. Do not damage a real installation
+   or change host permissions to manufacture these failures manually.
+4. Leave GitHub disconnected and click **Finish**. After the settings save
+   succeeds, the existing **Setup complete** screen must remain visible with
+   login and notification options. **Open Silo** enters the main app.
+5. Quit and reopen after successful completion. Silo must open the main app
+   directly. Failed completion must leave onboarding open with its error.
+
+Dependency checks retain their existing Retry checks and reinstall guidance;
+this flow does not download replacement app components.
+
+Native verification on 2026-09-09 used the rebuilt production debug bundle at
+`src-tauri/target/debug/bundle/macos/Silo.app`. Before the fix, quitting and
+reopening changed Git author from Complete to Not started. After the fix,
+reopening restored Complete without submission. Finish with GitHub disconnected
+showed Setup complete, the login/notification controls and Open Silo. Open Silo
+entered Sandboxes; quitting and reopening entered Sandboxes directly. All three
+VMs remained Stopped. The final instance was left open. Retry failure paths were
+covered by component/source regression tests, not manufactured against live data.
+The 461-test frontend suite, focused native identity regression, TypeScript,
+lint, debug bundle build and strict signature verification passed. Build/test
+logs for this run are `/tmp/silo-onboarding-fixes-build.log` and
+`/tmp/silo-onboarding-fixes-tests.log`.
+
 Open GitHub in onboarding: untouched author fields should use the configured
 host Git name/email, or a complete jj pair if Git has none. Without either,
 fields remain empty and manual entry remains available. Edit one sandbox's
