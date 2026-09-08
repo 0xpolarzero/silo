@@ -189,3 +189,39 @@ must run off the main thread, and Rust enum fields must serialize using the same
 names expected by TypeScript. Shared native/frontend contract tests cover idle,
 running and completed backup payloads. Failed state reads retain an explicit
 operation error rather than hiding the outcome.
+
+## Continue and the setup queue
+
+1. Reopen a saved draft on Sandboxes. Before submission, the footer says
+   **Not started**, and the draft determines the operation count. Merely opening
+   the app does not create its VMs.
+2. Click Continue. The exact displayed configuration enters the queue and starts.
+   Returning and clicking Continue again must not duplicate an identical job.
+3. During creation, the Sandboxes panel shows the actual VM and operation, an
+   elapsed timer and native activity. Navigation remains responsive.
+4. Continue from GitHub submits the selected identities after VM creation.
+   Review shows submitted work running/waiting, with unsubmitted work labelled
+   **Not started**. Finish persists completion only after prerequisites succeed.
+5. A failed request keeps its error and Retry. The failed VM must not retain an
+   In progress badge. Retry uses the latest submitted draft. Quit waits for
+   submitted native work before completing the settings shutdown handshake.
+
+The isolated native walkthrough observed actual creation progress, responsive
+Continue, identity work waiting behind creation, and disabled Finish. The live
+image download timed out; Retry then returned a Docker registry connection
+error. Both outcomes were displayed without success. Queue ordering, duplicate
+submission, retry, stale-result handling and shutdown use deterministic deferred
+bridge regressions; no fixture launch mode was added to the application.
+
+Final queue verification: 425 frontend tests in 49 files passed with
+`npm --prefix app/SiloUI test -- --maxWorkers=1 --testTimeout=30000`;
+typecheck and lint passed. Parallel runs hit the existing five-second UI-test
+deadlines, so the final run used one worker and a larger runner deadline without
+changing assertions or test configuration. The 28 focused native runtime tests
+and 15 settings lifecycle tests passed. The production desktop bundle built and
+passed signature verification.
+
+After reopening the rebuilt production app, the existing three-VM draft showed
+**Not started · Continue to start this step**, **Continue to create sandboxes**,
+and **0 of 6 operations complete**. The user's draft was not submitted during
+verification. Screenshot: `src-tauri/target/ui-evidence/setup-draft-idle.jpg`.

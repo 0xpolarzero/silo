@@ -49,7 +49,7 @@ export interface WorkspaceProgressView {
 export interface ReviewQueueItemView {
   id: SetupQueueItemID
   label: string
-  status: "queued" | "running" | "succeeded" | "failed"
+  status: "idle" | "queued" | "running" | "succeeded" | "failed"
   failure?: string
 }
 
@@ -117,6 +117,7 @@ const queueLabels: Record<SetupQueueItemID, string> = {
 }
 
 function projectQueue(source: OnboardingSource): ReviewQueueItemView[] {
+  if (source.setupQueue) return source.setupQueue.map((item) => ({ ...item, label: queueLabels[item.id] }))
   const ids = Object.keys(queueLabels) as SetupQueueItemID[]
   const completedPhases = new Set(source.bootstrapState.completedPhases)
   const workspaceBoundaryComplete = completedPhases.has("workspaces") && source.bootstrapResult?.phase === "complete"
@@ -162,13 +163,13 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
     if (event.workspace) latestByWorkspace.set(event.workspace, event)
   }
 
-  const workspaceVerified = source.bootstrapState.completedPhases.includes("workspaces") && source.bootstrapResult?.phase === "complete"
+  const workspaceVerified = source.setupQueue ? source.setupQueue.some(({ id, status }) => id === "workspaceVerify" && status === "succeeded") : source.bootstrapState.completedPhases.includes("workspaces") && source.bootstrapResult?.phase === "complete"
   const workspaces = source.bootstrapConfiguration.workspaces.map(({ name }): WorkspaceView => {
     const latest = latestByWorkspace.get(name)
     if (failedWorkspace === name) {
       return { name, status: "failed", detail: source.error?.message ?? "Setup failed" }
     }
-    if (workspaceVerified || (latest?.step === "workspace-verification" && latest.fraction === 1)) {
+    if (workspaceVerified || (!source.setupQueue && latest?.step === "workspace-verification" && latest.fraction === 1)) {
       return { name, status: "ready", detail: "Ready" }
     }
     if (latest && latest === currentEvent && latest.fraction !== 1) {
@@ -185,7 +186,9 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
   })
 
   const queueStatus = combineQueueStatus(queueItems.filter(({ id }) => queueByStep.workspaces.includes(id)))
-  const recordedProgress = activeEvents.some(({ step }) => step && workspaceOperationSteps.has(step))
+  const recordedProgress = !source.setupQueue && activeEvents.some(({ step }) => step && workspaceOperationSteps.has(step))
+  const idleWorkspaceQueue = source.setupQueue?.filter(({ id }) => queueByStep.workspaces.includes(id)).every(({ status }) => status === "idle") === true
+  const pendingMessage = source.setupQueue?.some(({ id, status }) => queueByStep.workspaces.includes(id) && status === "queued") ? "Sandbox setup is queued" : source.setupQueue ? "Continue to create sandboxes" : "Waiting to create workspaces"
   const totalOperations = workspaces.length * (recordedProgress ? 3 : 2)
   const completedOperations = recordedProgress ? completionKeys.size : queueItems.filter(({ id, status }) => queueByStep.workspaces.includes(id) && status === "succeeded").length * workspaces.length
   return {
@@ -194,7 +197,7 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
       ? Math.max(0, source.bootstrapState.updatedAt - source.bootstrapState.startedAt)
       : 0,
     currentWorkspace: currentEvent?.workspace,
-    currentMessage: source.error?.message ?? currentEvent?.message ?? source.bootstrapResult?.message ?? "Waiting to create workspaces",
+    currentMessage: source.error?.message ?? (idleWorkspaceQueue ? "Continue to create sandboxes" : currentEvent?.message ?? source.bootstrapResult?.message ?? pendingMessage),
     completedOperations,
     totalOperations,
     fraction: totalOperations > 0 ? completedOperations / totalOperations : undefined,
@@ -240,7 +243,7 @@ export function projectOnboarding(source: OnboardingSource, githubConnectionStat
   const stepStatus = {
     dependencies: dependencyStatus,
     workspaces: workspaceProgress.status,
-    github: githubConnectionState === "connected"
+    github: source.setupQueue ? combineQueueStatus(queueItems.filter(({ id }) => ["githubRun", "githubVerify", "identityRun", "identityVerify"].includes(id))) : githubConnectionState === "connected"
       ? "succeeded"
       : githubConnectionState === "connecting" ? "running" : "waiting",
     review: combineQueueStatus(queueItems.filter(({ id }) => queueByStep.review.includes(id))),

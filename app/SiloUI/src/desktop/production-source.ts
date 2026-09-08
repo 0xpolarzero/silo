@@ -3,12 +3,13 @@ import { listen } from "@tauri-apps/api/event"
 import { useSyncExternalStore } from "react"
 import { z } from "zod"
 
-import type { SetupMachineConfigurationRequest } from "@/contracts/silo"
+import { siloProgressEventSchema, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
+import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
 import type { ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 
-type EventHandler = () => void
+type EventHandler = (event?: { payload: unknown }) => void
 
 export interface ProductionBridge {
   invoke: <T>(command: string, arguments_?: Record<string, unknown>) => Promise<T>
@@ -80,6 +81,11 @@ function unavailableBackup(message: string): BackupState {
 }
 
 export interface ProductionSnapshot {
+  setupQueue: NonNullable<OnboardingSource["setupQueue"]>
+  setupStartedAt?: number
+  setupFinishedAt?: number
+  setupEvents: SiloProgressEvent[]
+  setupCandidate?: SetupMachineConfigurationRequest
   source: ApplicationSource | null
   backup: BackupState
   loading: boolean
@@ -88,11 +94,24 @@ export interface ProductionSnapshot {
 
 export function createProductionSource(native: ProductionBridge = bridge) {
   let snapshot: ProductionSnapshot = {
+    setupQueue: ["workspaceRun", "workspaceVerify", "identityRun", "identityVerify", "completion"].map((id) => ({ id: id as SetupQueueItemID, status: "idle" })),
+    setupEvents: [],
     source: null,
     backup: unavailableBackup("Backup state has not loaded. No sandbox data changed."),
     loading: true,
     error: null,
   }
+  type SetupItem = NonNullable<OnboardingSource["setupQueue"]>[number]
+  type SetupJob = { items: SetupItem[] }
+  let setupJobs: SetupJob[] = []
+  let activeMachineJob: SetupJob | undefined
+  let setupTail: Promise<unknown> = Promise.resolve()
+  let acceptingSetup = true
+  let lastMachineJob: { key: string; promise: Promise<ApplicationSource> } | undefined
+  let lastIdentityJob: { key: string; promise: Promise<void> } | undefined
+  let activeConfiguration: ApplicationSource["sandboxConfigurationOperation"] = null
+  let activeRequestId: string | null = null
+  let operationSequence = 0
   let disposed = false
   let refreshSequence = 0
   const unlisten: Array<() => void> = []
@@ -140,13 +159,22 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       }
       catch (cause) { backup = unreadableBackup(`Silo returned invalid backup state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
     } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
-    publish({ source, backup, loading: false, error })
+    if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
+    publish({ ...snapshot, source, backup, loading: false, error })
   }
 
   async function initialize() {
     try {
       unlisten.push(await native.listen("silo://application-state-changed", () => { void refresh() }))
       unlisten.push(await native.listen("desktop:status-opened", () => { void refresh() }))
+      unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
+        const parsed = siloProgressEventSchema.safeParse(event?.payload)
+        if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
+        const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
+        activeConfiguration = { ...activeConfiguration, progressEvents }
+        publish({ ...snapshot, setupEvents: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
+        if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
+      }))
     } catch (cause) {
       unlisten.splice(0).forEach((stop) => stop())
       const error = `Silo could not subscribe to application updates: ${errorMessage(cause)}`
@@ -186,23 +214,109 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       .finally(() => pendingWorkspaceActions.delete(key))
   }
 
-  async function configureMachines(request: SetupMachineConfigurationRequest) {
-    try {
-      const result = parseApplicationSource(await native.invoke("save_machine_configuration", { request }))
-      publish({ ...snapshot, source: result, error: null })
-      await refresh()
-      return result
-    } catch (cause) {
-      if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, workspaces: snapshot.source.workspaces.map((workspace) => ({ ...workspace, freshness: "stale" })), sandboxConfigurationOperation: {
-          id: `save-failed-${Date.now()}`,
-          status: "failed",
-          candidate: request,
-          progressEvents: [],
-          result: null,
-          error: { code: "native_bridge_failed", message: errorMessage(cause), recovery: "Refresh to confirm the current configuration before retrying.", workspace: null, retryable: true },
-        } } })
-      throw cause
+  function projectSetupJobs() {
+    publish({ ...snapshot, setupQueue: snapshot.setupQueue.map((item) => {
+      const states = setupJobs.flatMap((job) => job.items.filter(({ id }) => id === item.id))
+      return states.find(({ status }) => status === "running") ?? states.find(({ status }) => status === "queued") ?? states.at(-1) ?? item
+    }) })
+  }
+
+  function setSetupStatus(ids: SetupQueueItemID[], status: SetupItem["status"], failure?: string) {
+    setupJobs = setupJobs.filter((job) => !job.items.some(({ id }) => ids.includes(id)) || job.items.some(({ status }) => status === "running" || status === "queued"))
+    publish({ ...snapshot, setupQueue: snapshot.setupQueue.map((item) => ids.includes(item.id) ? { id: item.id, status, ...(failure && { failure }) } : item) })
+    projectSetupJobs()
+  }
+
+  function setJobStatus(job: SetupJob, ids: SetupQueueItemID[], status: SetupItem["status"], failure?: string) {
+    job.items = job.items.map((item) => ids.includes(item.id) ? { id: item.id, status, ...(failure && { failure }) } : item)
+    projectSetupJobs()
+  }
+
+  function enqueueSetup<T>(ids: SetupQueueItemID[], work: (job: SetupJob) => Promise<T>): Promise<T> {
+    setSetupStatus(ids, "queued")
+    const job: SetupJob = { items: ids.map((id) => ({ id, status: "queued" })) }
+    setupJobs.push(job)
+    projectSetupJobs()
+    const promise = setupTail.then(async () => {
+      if (disposed) throw new Error("Silo was closed before the setup task started.")
+      setJobStatus(job, [ids[0]], "running")
+      try {
+        const result = await work(job)
+        setJobStatus(job, ids, "succeeded")
+        return result
+      } catch (cause) {
+        setJobStatus(job, ids, "failed", errorMessage(cause))
+        throw cause
+      }
+    })
+    setupTail = promise.catch(() => {})
+    return promise
+  }
+
+  function configureMachines(request: SetupMachineConfigurationRequest): Promise<ApplicationSource> {
+    if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
+    const key = JSON.stringify(request)
+    if (lastMachineJob?.key === key) return lastMachineJob.promise
+    lastIdentityJob = undefined
+    setSetupStatus(["identityRun", "identityVerify", "completion"], "idle")
+    const promise = enqueueSetup(["workspaceRun", "workspaceVerify"], async (job) => {
+      activeMachineJob = job
+      setSetupStatus(["identityRun", "identityVerify", "completion"], "idle")
+      const requestId = `setup-${++operationSequence}`
+      activeRequestId = requestId
+      activeConfiguration = { id: requestId, status: "applying", candidate: request, progressEvents: [], result: null, error: null }
+      publish({ ...snapshot, setupCandidate: request, setupEvents: [], setupStartedAt: Math.floor(Date.now() / 1000), setupFinishedAt: undefined, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
+      try {
+        const result = parseApplicationSource(await native.invoke("save_machine_configuration", { request, requestId }))
+        activeConfiguration = null
+        publish({ ...snapshot, source: result, error: null })
+        return result
+      } catch (cause) {
+        activeConfiguration = { ...activeConfiguration!, status: "failed", error: { code: "native_bridge_failed", message: errorMessage(cause), recovery: "Review the configuration and retry.", workspace: snapshot.setupEvents.at(-1)?.workspace ?? null, retryable: true } }
+        if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } })
+        throw cause
+      } finally {
+        activeRequestId = null
+        activeMachineJob = undefined
+        publish({ ...snapshot, setupFinishedAt: Math.floor(Date.now() / 1000) })
+      }
+    })
+    lastMachineJob = { key, promise }
+    void promise.catch(() => { if (lastMachineJob?.promise === promise) lastMachineJob = undefined })
+    return promise
+  }
+
+  function submitSetupStep(step: "workspaces" | "github", request: OnboardingCompletionRequest): Promise<unknown> {
+    if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
+    if (step === "github" && request.github.workspaces.some(({ repositories }) => repositories.length > 0)) {
+      const error = new Error("Repository setup is not available yet. Remove the repository selections before continuing.")
+      setSetupStatus(["identityRun", "identityVerify"], "failed", error.message)
+      return Promise.reject(error)
     }
+    const machineJob = configureMachines(request.machineConfiguration)
+    if (step === "workspaces") return machineJob
+    const identities = request.github.workspaces.map(({ workspace, identity }) => ({ workspace, ...identity }))
+    const key = JSON.stringify([request.machineConfiguration, identities])
+    if (lastIdentityJob?.key === key) return lastIdentityJob.promise
+    const promise = enqueueSetup(["identityRun", "identityVerify"], async () => {
+      await machineJob
+      await native.invoke("configure_workspace_identities", { identities })
+    })
+    lastIdentityJob = { key, promise }
+    void promise.catch(() => { if (lastIdentityJob?.promise === promise) lastIdentityJob = undefined })
+    return promise
+  }
+
+  function finishSetup(request: OnboardingCompletionRequest, markComplete: () => Promise<void>) {
+    if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
+    const preceding = submitSetupStep("github", request)
+    void preceding.catch(() => {})
+    return enqueueSetup(["completion"], async () => { await preceding; await markComplete() })
+  }
+
+  async function drainSetup() {
+    acceptingSetup = false
+    await setupTail
   }
 
   function saveMachineConfiguration(request: SetupMachineConfigurationRequest) {
@@ -303,7 +417,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     initialize,
     refresh,
     configureMachines,
-    configureIdentities: (identities: Array<{ workspace: string; name: string; email: string; apply: boolean }>) => native.invoke("configure_workspace_identities", { identities }),
+    submitSetupStep,
+    finishSetup,
+    drainSetup,
     applicationActions,
     backupActions,
     statusActions,

@@ -46,7 +46,7 @@ export function createDesktopSettingsStore(initialSettings: SettingsPatch, main:
   return createSettingsStore(backend, initialSettings)
 }
 
-export async function connectSettingsLifecycle(store: SettingsStore, main: boolean) {
+export async function connectSettingsLifecycle(store: SettingsStore, main: boolean, beforeFlush: () => Promise<void> = async () => {}) {
   let stop: (() => void) | undefined
   let connecting: Promise<void> | null = null
   let disposed = false
@@ -58,6 +58,7 @@ export async function connectSettingsLifecycle(store: SettingsStore, main: boole
           ? await listen("settings:flush-request", () => {
               void invoke("begin_settings_flush")
                 .catch((error: unknown) => console.error("Silo settings shutdown acknowledgment:", error))
+                .then(beforeFlush)
                 .then(() => store.flush())
                 .then(() => invoke("complete_settings_flush"))
                 .catch((error: unknown) => console.error("Silo settings shutdown:", error))

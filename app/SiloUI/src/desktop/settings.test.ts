@@ -140,6 +140,25 @@ describe("native settings transport", () => {
     await vi.waitFor(() => expect(native.handlers.has("settings:flush-request")).toBe(true))
   })
 
+  it("waits for setup work after claiming shutdown and before flushing settings", async () => {
+    native.invoke.mockResolvedValue(snapshot())
+    const settings = store()
+    await settings.initialize()
+    const setup = deferred<void>()
+    const beforeFlush = vi.fn(() => setup.promise)
+    cleanups.push(await connectSettingsLifecycle(settings, true, beforeFlush))
+    native.handlers.get("settings:flush-request")?.({ payload: null })
+    await vi.waitFor(() => expect(beforeFlush).toHaveBeenCalledOnce())
+    expect(native.invoke).toHaveBeenCalledWith("begin_settings_flush")
+    expect(native.invoke).not.toHaveBeenCalledWith("flush_settings")
+    expect(native.invoke).not.toHaveBeenCalledWith("complete_settings_flush")
+    setup.resolve()
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("complete_settings_flush"))
+    expect(native.invoke.mock.calls.map(([command]) => command)).toEqual([
+      "read_settings", "begin_settings_flush", "flush_settings", "read_settings", "complete_settings_flush",
+    ])
+  })
+
   it("waits for pending updates before acknowledging normal Quit", async () => {
     const write = deferred<ReturnType<typeof snapshot>>()
     let state = snapshot()

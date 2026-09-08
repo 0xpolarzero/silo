@@ -16,7 +16,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(180);
@@ -667,16 +667,20 @@ pub struct WorkspaceIdentity {
 }
 
 #[tauri::command]
-pub fn configure_workspace_identities(
+pub async fn configure_workspace_identities(
     app: AppHandle,
     identities: Vec<WorkspaceIdentity>,
 ) -> Result<(), String> {
-    let paths = runtime_paths(&app)?;
-    let _guard = MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| RuntimeError::Busy.to_string())?;
-    configure_workspace_identities_with(&ProcessRunner, &paths, &identities)
-        .map_err(|error| error.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        let _guard = MUTATION_LOCK
+            .try_lock()
+            .map_err(|_| RuntimeError::Busy.to_string())?;
+        configure_workspace_identities_with(&ProcessRunner, &paths, &identities)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Git identity worker failed: {error}"))?
 }
 
 fn configure_workspace_identities_with(
@@ -770,9 +774,13 @@ fn identity_matches(config: &Value, identity: &WorkspaceIdentity) -> bool {
 }
 
 #[tauri::command]
-pub fn read_application_state(app: AppHandle) -> Result<ApplicationSource, String> {
-    let paths = runtime_paths(&app)?;
-    read_application_state_with(&ProcessRunner, &paths).map_err(|error| error.to_string())
+pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        read_application_state_with(&ProcessRunner, &paths).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Sandbox state worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -794,22 +802,87 @@ pub fn workspace_action(
     result.map_err(|error| error.to_string())
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MachineConfigurationProgress {
+    schema_version: u8,
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    request_id: String,
+    phase: &'static str,
+    step: String,
+    workspace: String,
+    fraction: u8,
+    message: String,
+    safe_for_display: bool,
+}
+
+fn machine_progress(
+    request_id: &str,
+    step: &str,
+    workspace: &str,
+    fraction: u8,
+) -> MachineConfigurationProgress {
+    let message = match (step, fraction) {
+        ("workspace-configuration", 0) => format!("Configuring {workspace}…"),
+        ("workspace-configuration", _) => format!("{workspace} configured."),
+        ("workspace-verification", 0) => format!("Verifying {workspace}…"),
+        ("workspace-verification", _) => format!("{workspace} verified."),
+        ("workspace-removal", 0) => format!("Removing {workspace}…"),
+        _ => format!("{workspace} removed."),
+    };
+    MachineConfigurationProgress {
+        schema_version: 1,
+        event_type: "progress",
+        request_id: request_id.into(),
+        phase: "workspaces",
+        step: step.into(),
+        workspace: workspace.into(),
+        fraction,
+        message,
+        safe_for_display: true,
+    }
+}
+
 #[tauri::command]
-pub fn save_machine_configuration(
+pub async fn save_machine_configuration(
     app: AppHandle,
     request: MachineConfigurationRequest,
+    request_id: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    let paths = runtime_paths(&app)?;
-    let guard = MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| RuntimeError::Busy.to_string())?;
-    let result = host_resources()
-        .and_then(|resources| {
-            save_machine_configuration_with(&ProcessRunner, &paths, &resources, request)
-        })
-        .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
-    drop(guard);
-    result.map_err(|error| error.to_string())
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if request_id.trim().is_empty() || request_id.len() > 256 {
+        return Err("Invalid sandbox configuration request ID.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        let _guard = MUTATION_LOCK
+            .try_lock()
+            .map_err(|_| RuntimeError::Busy.to_string())?;
+        let progress = |step: &str, workspace: &str, fraction: u8| {
+            if let Err(error) = app.emit_to(
+                "main",
+                "silo://machine-configuration-progress",
+                machine_progress(&request_id, step, workspace, fraction),
+            ) {
+                eprintln!("Silo could not publish configuration progress: {error}");
+            }
+        };
+        host_resources()
+            .and_then(|resources| {
+                save_machine_configuration_with_progress(
+                    &ProcessRunner,
+                    &paths,
+                    &resources,
+                    request,
+                    &progress,
+                )
+            })
+            .and_then(|_| read_application_state_with(&ProcessRunner, &paths))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Sandbox configuration worker failed: {error}"))?
 }
 
 fn read_application_state_with(
@@ -1143,11 +1216,22 @@ fn workspace_action_with(
     Ok(())
 }
 
+#[cfg(test)]
 fn save_machine_configuration_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     host: &HostResources,
     request: MachineConfigurationRequest,
+) -> Result<(), RuntimeError> {
+    save_machine_configuration_with_progress(runner, paths, host, request, &|_, _, _| {})
+}
+
+fn save_machine_configuration_with_progress(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    host: &HostResources,
+    request: MachineConfigurationRequest,
+    progress: &dyn Fn(&str, &str, u8),
 ) -> Result<(), RuntimeError> {
     validate_request(&request)?;
     let previous = read_metadata(&paths.metadata)?;
@@ -1185,14 +1269,22 @@ fn save_machine_configuration_with(
     let result = (|| {
         for machine in &request.machines {
             match previous_by_id.get(machine.id()) {
-                None => create_machine(runner, paths, machine)?,
+                None => {
+                    progress("workspace-configuration", machine.name(), 0);
+                    create_machine(runner, paths, machine)?;
+                }
                 Some(old) if *old == machine => {
                     if machine.is_vm() {
+                        progress("workspace-verification", machine.name(), 0);
                         verify_machine_configuration(runner, paths, machine)?;
+                        progress("workspace-verification", machine.name(), 1);
                     }
                     continue;
                 }
-                Some(old) => update_machine(runner, paths, old, machine)?,
+                Some(old) => {
+                    progress("workspace-configuration", machine.name(), 0);
+                    update_machine(runner, paths, old, machine)?;
+                }
             }
             changed = true;
             applied
@@ -1200,8 +1292,11 @@ fn save_machine_configuration_with(
                 .retain(|existing| existing.id() != machine.id());
             applied.machines.push(machine.clone());
             write_metadata(&paths.metadata, &applied)?;
+            progress("workspace-configuration", machine.name(), 1);
             if machine.is_vm() {
+                progress("workspace-verification", machine.name(), 0);
                 verify_machine_configuration(runner, paths, machine)?;
+                progress("workspace-verification", machine.name(), 1);
             }
         }
         for machine in previous
@@ -1209,6 +1304,7 @@ fn save_machine_configuration_with(
             .iter()
             .filter(|machine| !requested_ids.contains(machine.id()))
         {
+            progress("workspace-removal", machine.name(), 0);
             remove_machine_runtime(runner, paths, machine)?;
             changed = true;
             applied
@@ -1216,6 +1312,7 @@ fn save_machine_configuration_with(
                 .retain(|existing| existing.id() != machine.id());
             write_metadata(&paths.metadata, &applied)?;
             remove_machine_volumes(paths, machine)?;
+            progress("workspace-removal", machine.name(), 1);
         }
         write_metadata(&paths.metadata, &request)
     })();
@@ -2364,6 +2461,62 @@ mod tests {
         assert!(measured
             .physical_memory_bytes
             .is_some_and(|bytes| bytes > 0));
+    }
+
+    #[test]
+    fn configuration_progress_reports_real_boundaries_and_never_false_verification() {
+        for fail_verification in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let mut final_state = inspect(&paths, "Created");
+            if fail_verification {
+                final_state["config"]["resources"]["cpus"] = json!(1);
+            }
+            let runner = StubRunner::successful_json(vec![
+                json!([]),
+                json!(null),
+                inspect(&paths, "Created"),
+                final_state,
+            ]);
+            let events = Mutex::new(Vec::new());
+            let report = |step: &str, workspace: &str, fraction: u8| {
+                events.lock().unwrap().push(machine_progress(
+                    "request-1",
+                    step,
+                    workspace,
+                    fraction,
+                ))
+            };
+            let result = save_machine_configuration_with_progress(
+                &runner,
+                &paths,
+                &generous_host(),
+                request(vec![vm()]),
+                &report,
+            );
+            assert_eq!(result.is_err(), fail_verification);
+            let events = events.lock().unwrap();
+            let boundaries: Vec<_> = events
+                .iter()
+                .map(|event| (event.step.as_str(), event.fraction))
+                .collect();
+            let mut expected = vec![
+                ("workspace-configuration", 0),
+                ("workspace-configuration", 1),
+                ("workspace-verification", 0),
+            ];
+            if !fail_verification {
+                expected.push(("workspace-verification", 1));
+            }
+            assert_eq!(boundaries, expected);
+            for event in events.iter() {
+                let encoded = serde_json::to_value(event).unwrap();
+                assert_eq!(encoded["type"], "progress");
+                assert_eq!(encoded["requestId"], "request-1");
+                assert_eq!(encoded["workspace"], "dev");
+                assert_eq!(encoded["safeForDisplay"], true);
+            }
+        }
     }
 
     #[test]

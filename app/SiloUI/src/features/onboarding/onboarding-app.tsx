@@ -7,6 +7,7 @@ import { OnboardingShell } from "@/features/onboarding/components/onboarding-she
 import type {
   GitHubConnectionState,
   OnboardingActions,
+  OnboardingCompletionRequest,
   OnboardingSource,
   WorkspaceGitIdentity,
   WorkspaceRepositorySelection,
@@ -155,7 +156,14 @@ export function OnboardingApp({
   const currentDraft = useRef(draft)
   const recoveryCleared = useRef(false)
   const { currentStep: activeStep, machines, workspaceSelections, workspaceIdentities } = draft
-  const viewModel = useMemo(() => projectOnboarding(source, githubConnectionState), [githubConnectionState, source])
+  const viewModel = useMemo(() => {
+    const projectedSource = source.setupQueue ? {
+      ...source,
+      machineConfigurations: machines,
+      bootstrapConfiguration: { ...source.bootstrapConfiguration, workspaces: machines.flatMap((machine) => machine.kind === "vm" ? [{ name: machine.name, cpu: machine.cpus, cpuCeiling: machine.maxCPUs, memoryGiB: machine.memoryGiB, memoryCeilingGiB: machine.maxMemoryGiB, workspaceStorageGiB: machine.workspaceStorageGiB, runtimeStorageGiB: machine.runtimeStorageGiB }] : []) },
+    } : source
+    return projectOnboarding(projectedSource, githubConnectionState)
+  }, [githubConnectionState, source, machines])
   const applicationPreferences = {
     terminal: settings.terminal, editor: settings.editor, browser: settings.browser,
     terminalUseSystemDefault: settings.terminalUseSystemDefault,
@@ -236,25 +244,28 @@ export function OnboardingApp({
     updateWorkspaceIdentity(workspace, { ...currentDraft.current.workspaceIdentities[workspace], ...source.currentHostGitIdentity })
   }
 
+  function completionRequest(): OnboardingCompletionRequest {
+    return {
+      machineConfiguration: { schemaVersion: 1, machines: [...currentDraft.current.machines] },
+      applications: applicationPreferences,
+      github: {
+        connectionState: githubConnectionState,
+        workspaces: currentDraft.current.machines.map(({ name }) => ({
+          workspace: name,
+          repositories: [...(currentDraft.current.workspaceSelections[name] ?? [])],
+          identity: { ...(currentDraft.current.workspaceIdentities[name] ?? { name: "", email: "", apply: false }) },
+        })),
+      },
+    }
+  }
+
   function continueSetup() {
     if (completed) return
     if (activeStep === "review") {
-      if (viewModel.finishEnabled) {
-        actions.finishSetup({
-          machineConfiguration: configurationRequest(machines),
-          applications: applicationPreferences,
-          github: {
-            connectionState: githubConnectionState,
-            workspaces: machines.map(({ name }) => ({
-              workspace: name,
-              repositories: [...(workspaceSelections[name] ?? [])],
-              identity: { ...workspaceIdentities[name] },
-            })),
-          },
-        })
-      }
+      if (viewModel.finishEnabled) actions.finishSetup(completionRequest())
       return
     }
+    if (activeStep === "workspaces" || activeStep === "github") actions.submitStep?.(activeStep, completionRequest())
     move(1)
   }
 

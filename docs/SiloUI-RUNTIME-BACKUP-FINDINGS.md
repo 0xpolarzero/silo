@@ -124,3 +124,20 @@ Cache publication also uses atomic no-overwrite installation. If another process
 publishes the destination first, import verifies its content and retains it;
 it never replaces that file. Five focused upstream archive tests cover the
 relocated descriptor, existing descriptor preservation, and publication races.
+
+## Setup submission and progress
+
+A saved onboarding draft is not a submitted runtime operation. Continue on
+Sandboxes submits that exact configuration; Continue on GitHub submits identity
+work after its machine configuration. Equal submissions reuse the same job.
+Changed submissions run in order, and an older completion cannot hide later
+queued work. Unsupported repository setup fails explicitly before changing VMs.
+Finish queues final settings persistence after its prerequisites succeed.
+
+The production source exposes explicit idle, queued, running, succeeded and
+failed states. Native configuration emits correlated per-VM events immediately
+before and after actual configuration, verification and removal. A completed
+verification event cannot be emitted after an error. These native commands and
+state reads run off the UI thread using Tauri's existing blocking-worker pattern.
+The settings shutdown handshake drains submitted setup jobs before exiting.
+No setup work starts merely because a saved draft is rendered or reopened.

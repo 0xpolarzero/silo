@@ -38,6 +38,21 @@ async function restartStore(previous: SettingsStore) {
 }
 
 describe("onboarding restart recovery", () => {
+  it("submits a restored sandbox draft once when Continue is clicked", async () => {
+    const first = createMemorySettingsStore()
+    const machine = { ...onboardingScenarios.complete.machineConfigurations[0], name: "recovered" }
+    await first.updateOnboardingDraft({ currentStep: "workspaces", machines: [machine], unfinishedMachineEditor: null, workspaceSelections: { recovered: [] }, workspaceIdentities: { recovered: { name: "Saved Author", email: "saved@example.test", apply: true } } })
+    const restored = await restartStore(first)
+    const handlers = { ...actions(), submitStep: vi.fn() }
+    render(onboarding(restored, handlers))
+    expect(handlers.submitStep).not.toHaveBeenCalled()
+    await userEvent.setup().click(screen.getByRole("button", { name: "Continue" }))
+    expect(handlers.submitStep).toHaveBeenCalledOnce()
+    expect(handlers.submitStep).toHaveBeenCalledWith("workspaces", expect.objectContaining({ machineConfiguration: { schemaVersion: 1, machines: [machine] }, github: expect.objectContaining({ workspaces: [{ workspace: "recovered", repositories: [], identity: { name: "Saved Author", email: "saved@example.test", apply: true } }] }) }))
+    expect(handlers.saveMachineConfiguration).not.toHaveBeenCalled()
+    expect(screen.getByRole("tab", { name: /GitHub/ })).toHaveAttribute("aria-selected", "true")
+  })
+
   it("applies saved reduced motion and follows shared changes without remounting the shell", async () => {
     const store = createMemorySettingsStore({ reduceMotion: true })
     render(onboarding(store, actions()))

@@ -54,7 +54,7 @@ async function start() {
 
   const dependencies = !statusPanel ? createNativeDependencyStore() : null
   dependencies?.retry()
-  const stopSettingsLifecycle = await connectSettingsLifecycle(settings, !statusPanel)
+  const stopSettingsLifecycle = await connectSettingsLifecycle(settings, !statusPanel, () => production.drainSetup())
   if (!statusPanel) await invoke("initialize_settings")
   await settings.initialize()
   const systemIntegrations = createDesktopSystemIntegrationStore(settings)

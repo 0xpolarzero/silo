@@ -17,6 +17,7 @@ export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, co
   const dependenciesBlocked = activeStep === "dependencies" && viewModel.dependencyStatus !== "succeeded"
   const failedItem = viewModel.queueItems.find(({ status }) => status === "failed")
   const runningItem = viewModel.queueItems.find(({ status }) => status === "running")
+  const queued = viewModel.queueItems.some(({ status }) => status === "queued")
   const checkingDependencies = viewModel.dependencyStatus === "running"
   const failed = viewModel.dependencyStatus === "failed" || !!failedItem || !!viewModel.error
   const complete = completed || (viewModel.dependencyStatus === "succeeded" && viewModel.queueItems.length > 0 && viewModel.queueItems.every(({ status }) => status === "succeeded"))
@@ -32,7 +33,10 @@ export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, co
           ? "Complete · Ready to finish setup"
           : runningItem
             ? `In progress · ${runningItem.label}`
-            : "Waiting · Setup tasks are queued"
+            : queued ? "Waiting · Setup tasks are queued"
+              : isReview && viewModel.finishEnabled ? "Ready · Finish setup"
+              : activeStep === "dependencies" && viewModel.dependencyStatus === "succeeded" ? "Ready · Continue to configure sandboxes"
+                : "Not started · Continue to start this step"
 
   return (
     <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-3 border-t border-border bg-muted/20 px-4 py-3 sm:px-6" aria-label="Onboarding actions">

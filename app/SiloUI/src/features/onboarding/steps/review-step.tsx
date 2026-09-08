@@ -33,6 +33,7 @@ const detailById: Record<ReviewQueueItemView["id"], string> = {
 }
 
 const statusLabel: Record<ReviewQueueItemView["status"], string> = {
+  idle: "Not started",
   queued: "Waiting",
   running: "In progress",
   succeeded: "Complete",
@@ -98,7 +99,7 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, identityS
                   item.status === "failed" && "bg-destructive/10",
                   item.status === "running" && "bg-amber-500/10",
                   item.status === "succeeded" && "bg-emerald-500/10",
-                )}><StatusIcon status={item.status === "queued" ? "waiting" : item.status} waitingLabel={String(index + 1)} className="size-3.5" /></ListRowIcon>}
+                )}><StatusIcon status={item.status === "queued" || item.status === "idle" ? "waiting" : item.status} waitingLabel={String(index + 1)} className="size-3.5" /></ListRowIcon>}
                 title={item.label}
                 detail={item.failure ?? detailById[item.id]}
                 detailClassName="whitespace-normal break-words select-text"

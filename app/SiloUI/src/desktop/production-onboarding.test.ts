@@ -3,16 +3,9 @@ import { describe, expect, it, vi } from "vitest"
 import { onboardingScenarios } from "@/fixtures/scenarios"
 import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import type { OnboardingCompletionRequest } from "@/features/onboarding/model/onboarding-source"
-import { finishProductionOnboarding, productionOnboardingSource } from "./production-onboarding"
+import { productionOnboardingSource } from "./production-onboarding"
 
 const application = applicationSourceForScenario("running")
-const request: OnboardingCompletionRequest = {
-  machineConfiguration: { schemaVersion: 1, machines: application.workspaces.map(({ machine }) => machine) },
-  applications: application.preferences,
-  github: { connectionState: "disconnected", workspaces: [] },
-}
-
 describe("production onboarding", () => {
   it("projects only live dependency and machine state", () => {
     const checks = [{ id: "system-os", title: "Supported OS", status: "pass" as const, detail: "macOS", remediation: null }]
@@ -44,35 +37,6 @@ describe("production onboarding", () => {
     expect(source.preflightChecks).toBe(checks)
     expect(source.machineConfigurations).toEqual([])
     expect(source.bootstrapResult).toBeNull()
-  })
-
-  it("persists completion only after native machine configuration succeeds", async () => {
-    const markComplete = vi.fn(async () => {})
-    const configureMachines = vi.fn(async () => application)
-    const configureIdentities = vi.fn(async () => {})
-    await finishProductionOnboarding({ configureMachines, configureIdentities } as never, request, markComplete)
-    expect(configureMachines).toHaveBeenCalledWith(request.machineConfiguration)
-    expect(markComplete).toHaveBeenCalledOnce()
-
-    configureMachines.mockRejectedValueOnce(new Error("create failed"))
-    markComplete.mockClear()
-    await expect(finishProductionOnboarding({ configureMachines, configureIdentities } as never, request, markComplete)).rejects.toThrow("create failed")
-    expect(markComplete).not.toHaveBeenCalled()
-  })
-  it("does not complete onboarding if identity application fails", async () => {
-    const markComplete = vi.fn(async () => {})
-    const configureMachines = vi.fn(async () => application)
-    const configureIdentities = vi.fn(async () => { throw new Error("identity verification failed") })
-    await expect(finishProductionOnboarding({ configureMachines, configureIdentities } as never, request, markComplete)).rejects.toThrow("identity verification failed")
-    expect(markComplete).not.toHaveBeenCalled()
-  })
-
-  it("rejects unsupported repository requests before changing any VM", async () => {
-    const configureMachines = vi.fn()
-    const marked = vi.fn()
-    await expect(finishProductionOnboarding({ configureMachines } as never, { ...request, github: { connectionState: "disconnected", workspaces: [{ workspace: "dev", repositories: [{ repository: "example/repo", allowPushes: false }], identity: { name: "", email: "", apply: false } }] } }, marked)).rejects.toThrow("Repository setup is not available yet")
-    expect(configureMachines).not.toHaveBeenCalled()
-    expect(marked).not.toHaveBeenCalled()
   })
 
 })

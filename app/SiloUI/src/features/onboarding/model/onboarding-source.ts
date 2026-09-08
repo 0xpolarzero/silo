@@ -9,6 +9,7 @@ import {
   siloProgressEventSchema,
   siloProtocolErrorSchema,
   setupMachineConfigurationRequestSchema,
+  setupQueueItemIdSchema,
 } from "@/contracts/silo"
 import type { SetupMachineConfigurationRequest } from "@/contracts/silo"
 import { applicationPreferenceSelectionSchema, type ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
@@ -18,6 +19,7 @@ import { applicationPreferenceSelectionSchema, type ApplicationPreferenceSelecti
 // only has to replace the provider.
 export const onboardingSourceSchema = z.object({
   readyToFinish: z.boolean().optional(),
+  setupQueue: z.array(z.object({ id: setupQueueItemIdSchema, status: z.enum(["idle", "queued", "running", "succeeded", "failed"]), failure: z.string().optional() }).strict()).optional(),
   machineConfigurations: setupMachineConfigurationRequestSchema.shape.machines,
   bootstrapConfiguration: siloBootstrapConfigurationSchema,
   bootstrapState: siloBootstrapStateSchema,
@@ -72,6 +74,7 @@ export interface OnboardingCompletionRequest {
 }
 
 export interface OnboardingActions {
+  submitStep?: (step: "workspaces" | "github", request: OnboardingCompletionRequest) => void
   connectGitHub: () => void
   saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void
   retryWorkspaceSetup: () => void
