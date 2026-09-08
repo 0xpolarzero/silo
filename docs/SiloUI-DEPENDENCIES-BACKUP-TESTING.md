@@ -268,6 +268,50 @@ native execution was not tested on this macOS host.
 
 ## Host Git and jj identity
 
+### Automatic startup and notifications
+
+Use the existing completion screen or Settings controls; there is no test mode
+or extra production control for these features.
+
+1. With onboarding complete, enable Start sandboxes at launch and select a local
+   VM. Quit Silo normally and reopen it. Only selected local VMs should start;
+   already-running VMs must not restart. Opening/closing the status panel,
+   focusing the main window or refreshing state must not start them again.
+2. Disable automatic startup and relaunch. Stopped VMs must stay stopped.
+   Incomplete onboarding must never trigger automatic startup. Missing or remote
+   selections must not create a replacement VM or be reported as started.
+3. Enable notifications and the desired categories through the existing UI.
+   When the OS already grants permission, genuine state changes and failures
+   should produce the corresponding notifications. Opening Silo must not announce
+   every VM's initial state; repeated reads must not duplicate an alert.
+4. Disable all notifications or an individual category and repeat the relevant
+   event. That category must remain silent. Denied OS permission must not trigger
+   an automatic permission prompt. Use the existing Enable notifications control
+   to request permission deliberately.
+5. Failure tests use isolated runtime and delivery seams for startup, actions,
+   health reads and backup results. Do not corrupt user data to manufacture an
+   alert. Notification text must not include raw command output, credentials or
+   archive paths. A notification delivery failure must not undo a successful
+   sandbox operation or backup.
+
+Native verification on 2026-09-09 used the normal production debug bundle,
+`src-tauri/target/debug/bundle/macos/Silo.app`, with saved startup selections dev
+and playgrounds. The first attempt exposed a Created/Stopped mapping bug; a
+failing regression and fix added support for newly prepared Created VMs. The
+rebuilt app automatically started dev and playgrounds; personal stayed Stopped.
+The existing Stop dev and Stop playgrounds controls then returned both to Stopped.
+The final app remains open and startup preferences remain unchanged.
+
+Notification policy, initial-state suppression, health transitions and OS
+authorization were tested natively; the real startup failure exercised the
+action-failure hook. Visible OS notification delivery was not verified: automatic
+approval review rejected Notification Center inspection because it could expose
+unrelated private notifications. Linux delivery was not exercised on a Linux
+desktop. Native tests passed, including a Unix-socket test rerun outside the
+restricted sandbox, plus the final four Created/Stopped startup regressions.
+TypeScript build, lint, native bundle build and strict signature verification
+passed. The build log is `/tmp/silo-startup-notifications-build.log`.
+
 ### Resume, retry and completion
 
 1. Apply the Git author on GitHub, then open Review and confirm **Complete**.
