@@ -109,9 +109,23 @@ describe("production setup queue", () => {
     expect(store.getSnapshot().setupQueue.every(({ status }) => status === "succeeded")).toBe(true)
     store.dispose()
   })
-  it("rejects repository selections before changing any VM", async () => {
+  it("finishes with Git identity when disconnected GitHub has saved repository selections", async () => {
+    const { store, identities, invoke } = await setup()
+    const selected = structuredClone(request)
+    selected.github.workspaces[0].repositories = [{ repository: "owner/repo", allowPushes: false }]
+    const markComplete = vi.fn(async () => {})
+    await store.finishSetup(selected, markComplete)
+    expect(identities).toHaveBeenCalledOnce()
+    expect(invoke).toHaveBeenCalledWith("configure_workspace_identities", { identities: [{ workspace: selected.github.workspaces[0].workspace, ...selected.github.workspaces[0].identity }] })
+    expect(markComplete).toHaveBeenCalledOnce()
+    expect(store.getSnapshot().setupQueue.every(({ status }) => status === "succeeded")).toBe(true)
+    store.dispose()
+  })
+
+  it("rejects connected repository selections before changing any VM", async () => {
     const { store, machines, identities } = await setup()
     const selected = structuredClone(request)
+    selected.github.connectionState = "connected"
     selected.github.workspaces[0].repositories = [{ repository: "owner/repo", allowPushes: false }]
     const markComplete = vi.fn(async () => {})
     await expect(store.finishSetup(selected, markComplete)).rejects.toThrow("Repository setup is not available")

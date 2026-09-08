@@ -1,35 +1,25 @@
-import { GitBranch, Pencil, RotateCw, UserRound } from "lucide-react"
+import { GitBranch, LoaderCircle, Pencil, RotateCw, UserRound } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { SetupNotice } from "@/features/onboarding/components/setup-notice"
-import { StatusIcon } from "@/features/onboarding/components/status-icon"
 import { SandboxList, SandboxListItem, SandboxListRow } from "@/features/sandboxes/components/sandbox-list"
 import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
-import type { ReviewQueueItemView } from "@/features/onboarding/model/onboarding-state"
+import type { ReviewQueueItemView, WorkspaceView } from "@/features/onboarding/model/onboarding-state"
 import { cn } from "@/lib/utils"
 
 interface ReviewStepProps {
   workspaceRetryable: boolean
   queueItems: ReviewQueueItemView[]
   machines: readonly SetupMachineConfiguration[]
+  workspaces: WorkspaceView[]
   identitySummary: string
   githubSummary: string
   errorMessage?: string
   errorRecovery?: string
   onRetryWorkspaceSetup: () => void
   onEditStep?: (step: "workspaces" | "github") => void
-}
-
-const detailById: Record<ReviewQueueItemView["id"], string> = {
-  workspaceRun: "Create each sandbox with your chosen resources",
-  workspaceVerify: "Check that every sandbox is ready to use",
-  githubRun: "Save your repository access choices",
-  githubVerify: "Check access to your selected repositories",
-  identityRun: "Save your Git author name and email",
-  identityVerify: "Check your Git identity in every sandbox",
-  completion: "Open Silo when all setup checks are complete",
 }
 
 const statusLabel: Record<ReviewQueueItemView["status"], string> = {
@@ -40,7 +30,21 @@ const statusLabel: Record<ReviewQueueItemView["status"], string> = {
   failed: "Failed",
 }
 
-export function ReviewStep({ workspaceRetryable, queueItems, machines, identitySummary, githubSummary, errorMessage, errorRecovery, onRetryWorkspaceSetup, onEditStep }: ReviewStepProps) {
+function ValidationBadge({ status }: { status: ReviewQueueItemView["status"] }) {
+  return <span className={cn(
+    "inline-flex shrink-0 items-center gap-1 text-[10px] font-normal",
+    status === "failed" ? "text-destructive" : status === "running" ? "text-amber-700 dark:text-amber-400" : status === "succeeded" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground",
+  )}>{status === "running" && <LoaderCircle className="size-2.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{statusLabel[status]}</span>
+}
+
+export function ReviewStep({ workspaceRetryable, queueItems, machines, workspaces, identitySummary, githubSummary, errorMessage, errorRecovery, onRetryWorkspaceSetup, onEditStep }: ReviewStepProps) {
+  const identityItems = queueItems.filter(({ id }) => id === "identityRun" || id === "identityVerify")
+  const identityFailure = identityItems.find(({ status }) => status === "failed")
+  const identityStatus = identityFailure ? "failed"
+    : identityItems.some(({ status }) => status === "running") ? "running"
+    : identityItems.some(({ status }) => status === "queued") ? "queued"
+    : identityItems.length === 2 && identityItems.every(({ status }) => status === "succeeded") ? "succeeded" : "idle"
+
   return (
     <section aria-labelledby="review-title" className="grid gap-4">
       <h2 id="review-title" className="sr-only" data-visual-heading="hidden">Review setup</h2>
@@ -58,17 +62,25 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, identityS
           {onEditStep && <Button type="button" variant="ghost" size="xs" onClick={() => onEditStep("workspaces")} aria-label="Edit sandboxes"><Pencil aria-hidden="true" />Edit</Button>}
         </div>
         <SandboxList label="Sandboxes in setup order">
-          {machines.map((machine, index) => (
-            <SandboxListItem key={machine.id}>
+          {machines.map((machine, index) => {
+            const workspace = workspaces.find(({ name }) => name === machine.name)
+            const state = workspace?.status ?? "waiting"
+            const status = state === "ready" ? "succeeded" : state === "working" ? "running" : state === "failed" ? "failed"
+              : queueItems.some(({ id, status }) => (id === "workspaceRun" || id === "workspaceVerify") && status !== "idle") ? "queued" : "idle"
+            const summary = machineSummary(machine)
+            return <SandboxListItem key={machine.id} aria-busy={state === "working"}>
               <SandboxListRow
                 name={machine.name}
                 kind={machine.kind}
                 leading={<span className="w-5 shrink-0 text-center font-mono text-[10px] tabular-nums text-muted-foreground">{index + 1}</span>}
-                detail={machineSummary(machine)}
-                detailClassName="whitespace-normal break-words"
+                tone={state === "failed" ? "error" : state === "working" ? "starting" : state === "ready" ? "running" : "stopped"}
+                iconState={state === "failed" ? "error" : "normal"}
+                badge={<ValidationBadge status={status} />}
+                detail={<span title={summary}>{summary}{workspace && state !== "ready" && workspace.detail !== "Waiting" ? ` · ${workspace.detail}` : ""}</span>}
+                detailClassName={state === "failed" ? "whitespace-normal break-words" : undefined}
               />
             </SandboxListItem>
-          ))}
+          })}
         </SandboxList>
       </section>
 
@@ -81,35 +93,13 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, identityS
           ].map(({ title, detail, Icon }) => <ListRow
             key={title}
             icon={<ListRowIcon aria-hidden="true"><Icon className="size-3.5" /></ListRowIcon>}
-            title={title}
-            detail={detail}
-            detailClassName="whitespace-normal break-words"
+            role="group"
+            aria-label={title}
+            title={<>{title}{title === "Git author" && <ValidationBadge status={identityStatus} />}</>}
+            detail={title === "Git author" && identityFailure?.failure ? `${detail} · ${identityFailure.failure}` : detail}
+            detailClassName={title === "Git author" && identityFailure ? "whitespace-normal break-words text-destructive" : undefined}
             actions={onEditStep && <Button type="button" variant="ghost" size="xs" onClick={() => onEditStep("github")} aria-label={`Edit ${title}`}><Pencil aria-hidden="true" />Edit</Button>}
           />)}
-        </ListCard>
-      </section>
-
-      <section aria-labelledby="review-operations-heading">
-        <h3 id="review-operations-heading" className="mb-2 text-xs font-medium">Setup operations</h3>
-        <ListCard>
-          <ol className="divide-y divide-border" aria-label="Setup operations">
-            {queueItems.map((item, index) => <li key={item.id}>
-              <ListRow
-                icon={<ListRowIcon className={cn(
-                  item.status === "failed" && "bg-destructive/10",
-                  item.status === "running" && "bg-amber-500/10",
-                  item.status === "succeeded" && "bg-emerald-500/10",
-                )}><StatusIcon status={item.status === "queued" || item.status === "idle" ? "waiting" : item.status} waitingLabel={String(index + 1)} className="size-3.5" /></ListRowIcon>}
-                title={item.label}
-                detail={item.failure ?? detailById[item.id]}
-                detailClassName="whitespace-normal break-words select-text"
-                actions={<span className={cn(
-                  "shrink-0 text-[10px]",
-                  item.status === "failed" ? "text-destructive" : item.status === "running" ? "text-amber-700 dark:text-amber-400" : item.status === "succeeded" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground",
-                )}>{statusLabel[item.status]}</span>}
-              />
-            </li>)}
-          </ol>
         </ListCard>
       </section>
     </section>

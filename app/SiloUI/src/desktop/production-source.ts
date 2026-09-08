@@ -288,7 +288,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   function submitSetupStep(step: "workspaces" | "github", request: OnboardingCompletionRequest): Promise<unknown> {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
-    if (step === "github" && request.github.workspaces.some(({ repositories }) => repositories.length > 0)) {
+    if (step === "github" && request.github.connectionState === "connected" && request.github.workspaces.some(({ repositories }) => repositories.length > 0)) {
       const error = new Error("Repository setup is not available yet. Remove the repository selections before continuing.")
       setSetupStatus(["identityRun", "identityVerify"], "failed", error.message)
       return Promise.reject(error)

@@ -252,7 +252,7 @@ export function OnboardingApp({
         connectionState: githubConnectionState,
         workspaces: currentDraft.current.machines.map(({ name }) => ({
           workspace: name,
-          repositories: [...(currentDraft.current.workspaceSelections[name] ?? [])],
+          repositories: githubConnectionState === "connected" ? [...(currentDraft.current.workspaceSelections[name] ?? [])] : [],
           identity: { ...(currentDraft.current.workspaceIdentities[name] ?? { name: "", email: "", apply: false }) },
         })),
       },
@@ -332,6 +332,7 @@ export function OnboardingApp({
           onEditStep={setActiveStep}
           workspaceRetryable={viewModel.workspaceProgress.retryable}
           queueItems={viewModel.queueItems}
+          workspaces={viewModel.workspaceProgress.workspaces}
           machines={machines}
           githubSummary={githubSummary}
           identitySummary={identitySummary}

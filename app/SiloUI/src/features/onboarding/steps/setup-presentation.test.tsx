@@ -31,7 +31,7 @@ const queueItems: ReviewQueueItemView[] = [
 ]
 
 function renderReview(onEditStep = vi.fn()) {
-  render(<ReviewStep machines={productionMachineDefaults} queueItems={queueItems} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="2 repositories selected" onRetryWorkspaceSetup={vi.fn()} onEditStep={onEditStep} />)
+  render(<ReviewStep machines={productionMachineDefaults} queueItems={queueItems} workspaces={progress.workspaces} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="2 repositories selected" onRetryWorkspaceSetup={vi.fn()} onEditStep={onEditStep} />)
   return onEditStep
 }
 
@@ -73,20 +73,48 @@ describe("setup progress and review presentation", () => {
     expect(within(screen.getByRole("list", { name: "Configured sandboxes" })).getByText("Failed")).toBeVisible()
   })
 
-  it("uses readable operation statuses and preserves sandbox order and resources", () => {
+  it("shows validation on existing cards and preserves sandbox order and resources", () => {
     renderReview()
-    const operations = within(screen.getByRole("list", { name: "Setup operations" })).getAllByRole("listitem")
-    expect(operations).toHaveLength(7)
-    expect(operations[0]).toHaveTextContent("Complete")
-    expect(operations[1]).toHaveTextContent("In progress")
-    expect(operations[2]).toHaveTextContent("Waiting")
+    expect(screen.queryByRole("list", { name: "Setup operations" })).not.toBeInTheDocument()
     expect(screen.queryByText("queued")).not.toBeInTheDocument()
     expect(screen.queryByText("succeeded")).not.toBeInTheDocument()
     const sandboxes = within(screen.getByRole("list", { name: "Sandboxes in setup order" })).getAllByRole("listitem")
     expect(sandboxes.map((row) => row.querySelector("[title]")?.getAttribute("title"))).toEqual(["dev", "playgrounds", "personal"])
+    expect(sandboxes[0]).toHaveTextContent("Complete")
+    expect(sandboxes[1]).toHaveTextContent("In progress")
+    expect(sandboxes[1]).toHaveAttribute("aria-busy", "true")
+    expect(sandboxes[2]).toHaveTextContent("Waiting")
     expect(sandboxes[0]).toHaveTextContent("8 CPU · 32 GB RAM · 120 GB workspace")
     expect(screen.getByText("2 repositories selected")).toBeVisible()
     expect(screen.getByText("Alex · alex@example.com")).toBeVisible()
+  })
+
+  it.each([
+    ["idle", "Not started"],
+    ["queued", "Waiting"],
+    ["running", "In progress"],
+    ["succeeded", "Complete"],
+    ["failed", "Failed"],
+  ] as const)("shows %s Git validation on the author card", (status, label) => {
+    render(<ReviewStep machines={productionMachineDefaults} workspaces={progress.workspaces} queueItems={[
+      { id: "identityRun", label: "Save Git identities", status: "succeeded" },
+      { id: "identityVerify", label: "Verify Git identities", status, failure: status === "failed" ? "Git identity could not be verified." : undefined },
+    ]} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
+    const author = screen.getByRole("group", { name: "Git author" })
+    expect(author).toHaveTextContent(label)
+    expect(author).toHaveTextContent("Alex · alex@example.com")
+    if (status === "failed") expect(author).toHaveTextContent("Git identity could not be verified.")
+  })
+
+  it("keeps sandbox failures on the affected sandbox and never validates missing results", () => {
+    render(<ReviewStep machines={productionMachineDefaults} workspaces={[
+      { name: "dev", status: "failed", detail: "Sandbox could not be verified." },
+    ]} queueItems={[]} workspaceRetryable={false} identitySummary="No Git author" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
+    const sandboxes = within(screen.getByRole("list", { name: "Sandboxes in setup order" })).getAllByRole("listitem")
+    expect(sandboxes[0]).toHaveTextContent("Failed")
+    expect(sandboxes[0]).toHaveTextContent("Sandbox could not be verified.")
+    expect(sandboxes[1]).not.toHaveTextContent("Complete")
+    expect(screen.queryByText("Complete")).not.toBeInTheDocument()
   })
 
   it("routes review edit shortcuts to their corresponding steps", async () => {

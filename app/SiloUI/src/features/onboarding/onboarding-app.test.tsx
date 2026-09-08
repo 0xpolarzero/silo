@@ -154,6 +154,20 @@ describe("onboarding", () => {
     expect(screen.getByText("Taylor Example <taylor@example.com> → all 3 sandboxes")).toBeVisible()
   })
 
+  it("finishes without submitting saved repository selections when GitHub is skipped", async () => {
+    const user = userEvent.setup()
+    const finishSetup = vi.fn()
+    render(<OnboardingPreview source={onboardingScenarios.complete} initialGitHubConnectionState="disconnected" actions={{ finishSetup }} />)
+    await user.click(screen.getByRole("tab", { name: /Review/ }))
+    expect(screen.getByText("GitHub not connected")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Finish" }))
+    expect(finishSetup).toHaveBeenCalledOnce()
+    const request = finishSetup.mock.calls[0][0]
+    expect(request.github.connectionState).toBe("disconnected")
+    expect(request.github.workspaces.every(({ repositories }: { repositories: unknown[] }) => repositories.length === 0)).toBe(true)
+    expect(request.github.workspaces[0].identity).toMatchObject({ name: "Taylor Example", email: "taylor@example.com", apply: true })
+  })
+
   it("continues while GitHub is connecting and marks it in progress", async () => {
     const user = userEvent.setup()
     renderScenario("running", "connecting")
@@ -617,7 +631,8 @@ describe("onboarding", () => {
     }} />)
     await user.click(screen.getByRole("tab", { name: /Review/ }))
     expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled()
-    expect(within(screen.getByRole("list", { name: "Setup operations" })).getAllByRole("listitem")).toHaveLength(7)
+    expect(screen.queryByRole("list", { name: "Setup operations" })).not.toBeInTheDocument()
+    expect(within(screen.getByRole("list", { name: "Sandboxes in setup order" })).getAllByText("Complete")).toHaveLength(3)
     await user.click(screen.getByRole("button", { name: "Finish" }))
     expect(finishSetup).toHaveBeenCalledWith({
       machineConfiguration: {
@@ -1036,12 +1051,19 @@ describe("onboarding", () => {
 
     await user.click(screen.getByRole("tab", { name: /Review/ }))
     const review = screen.getByRole("list", { name: "Sandboxes in setup order" })
-    expect(within(review).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
-      expect.stringContaining("remotesshops@remote.example.com:22"),
-      expect.stringContaining("devvm8 CPU · 32 GB RAM"),
-      expect.stringContaining("playgroundsvm4 CPU · 32 GB RAM"),
-      expect.stringContaining("personalvm6 CPU · 16 GB RAM"),
-    ])
+    const rows = within(review).getAllByRole("listitem")
+    const expected = [
+      ["remote", "ssh", "ops@remote.example.com:22"],
+      ["dev", "vm", "8 CPU · 32 GB RAM"],
+      ["playgrounds", "vm", "4 CPU · 32 GB RAM"],
+      ["personal", "vm", "6 CPU · 16 GB RAM"],
+    ]
+    expect(rows).toHaveLength(expected.length)
+    expected.forEach(([name, kind, detail], index) => {
+      expect(within(rows[index]).getByText(name)).toBeVisible()
+      expect(within(rows[index]).getByText(kind)).toBeVisible()
+      expect(rows[index]).toHaveTextContent(detail)
+    })
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     expect(screen.getByRole("button", { name: "Expand activity" })).toHaveAttribute("aria-expanded", "false")
     expect(within(screen.getByRole("tabpanel")).queryByLabelText("Sandbox activity")).not.toBeInTheDocument()

@@ -200,11 +200,32 @@ operation error rather than hiding the outcome.
 3. During creation, the Sandboxes panel shows the actual VM and operation, an
    elapsed timer and native activity. Navigation remains responsive.
 4. Continue from GitHub submits the selected identities after VM creation.
-   Review shows submitted work running/waiting, with unsubmitted work labelled
-   **Not started**. Finish persists completion only after prerequisites succeed.
+   Review shows status on each sandbox and the Git author card, with unsubmitted
+   work labelled **Not started**. There is no separate Setup operations list.
+   Finish persists completion only after prerequisites succeed.
 5. A failed request keeps its error and Retry. The failed VM must not retain an
    In progress badge. Retry uses the latest submitted draft. Quit waits for
    submitted native work before completing the settings shutdown handshake.
+
+To check optional GitHub setup, leave GitHub disconnected and continue to Review.
+Saved repository choices remain in the draft but are excluded from submission
+until GitHub is connected. Git author choices still apply. Click Finish: setup
+must complete without a repository-setup error. Connected repository selections
+still fail explicitly because repository setup is not implemented.
+
+On Review, each verified sandbox must show **Complete**, matching its Sandboxes
+row. Git author shows **Complete** only after saving and verification succeed;
+pending and failed work retain their actual status. Errors may wrap, while
+normal card captions remain one line. Use Edit to return to each source step
+and confirm the same status after returning to Review.
+
+Native verification of the inline Review status used the rebuilt production
+`src-tauri/target/debug/bundle/macos/Silo.app`. Review showed dev, playgrounds,
+and personal as Complete; GitHub access was not connected and Git author was
+Not started. Clicking Finish applied the saved identity and opened the main
+Sandboxes screen without error; all three VMs remained Stopped. The app was
+left open. Screenshots are in the ignored `src-tauri/target/ui-evidence/`
+directory: `review-inline-validation.jpg` and `review-finish-disconnected.jpg`.
 
 The isolated native walkthrough observed actual creation progress, responsive
 Continue, identity work waiting behind creation, and disabled Finish. The live
