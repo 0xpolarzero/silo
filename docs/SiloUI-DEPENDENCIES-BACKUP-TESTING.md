@@ -289,6 +289,26 @@ native execution was not tested on this macOS host.
 Dependency checks retain their existing Retry checks and reinstall guidance;
 this flow does not download replacement app components.
 
+### Dependency recovery
+
+Missing or damaged bundled files explain how to reinstall from the original
+download or package manager while keeping app data. Host failures give the
+specific OS, architecture or Linux KVM requirement. Timeouts and bridge failures
+offer Retry checks, then reopening Silo, without claiming reinstall is needed.
+The main app exposes the same checks through its existing System issue or load
+error display. Retry checks becomes disabled Checking… while running, retains
+the error instructions and removes the issue only when checks pass. There is no
+Repair action, simulated repair progress or simulated success banner.
+
+Native verification on 2026-09-09 used a temporary copy of the production debug
+bundle with only its bundled msb removed. The load error displayed missing-file
+and reinstall guidance plus Retry checks. Restoring that file in the copy and
+clicking Retry checks returned to the real sandbox list without restarting the
+app; all three VMs stayed Stopped. The normal bundle was not damaged and no VM
+configuration changed. The temporary app was quit and removed. Regression tests
+cover retained guidance during checking and clearing it after success. Eight
+native dependency tests cover platform/error mapping; Linux was not tested live.
+
 Native verification on 2026-09-09 used the rebuilt production debug bundle at
 `src-tauri/target/debug/bundle/macos/Silo.app`. Before the fix, quitting and
 reopening changed Git author from Complete to Not started. After the fix,

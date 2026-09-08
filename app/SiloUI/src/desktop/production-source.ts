@@ -387,7 +387,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const applicationActions: ApplicationActions = {
     saveSecret: (_request: SecretConfigurationRequest) => reportUnavailable("Secret changes are not available in this Silo build. No secret was saved."),
     removeSecret: () => reportUnavailable("Secret changes are not available in this Silo build. No secret was removed."),
-    repairRuntime: () => reportUnavailable("Runtime repair is not available in this Silo build. No installation files changed."),
+    retryRuntimeChecks: () => { void refresh() },
     saveMachineConfiguration,
     retryMachineConfiguration: () => {
       const operation = snapshot.source?.sandboxConfigurationOperation
