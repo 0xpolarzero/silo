@@ -12,7 +12,7 @@ const MICROSANDBOX_COMMIT = "5eca4de8bf233e57f114140f8c076ea8c96f21ab"
 export const MICROSANDBOX_SOURCE_URL = `https://codeload.github.com/superradcompany/microsandbox/tar.gz/${MICROSANDBOX_COMMIT}`
 export const MICROSANDBOX_SOURCE_SHA256 = "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06"
 export const MICROSANDBOX_PATCH_PATH = "patches/microsandbox-create-stopped-0.6.17.patch"
-export const MICROSANDBOX_PATCH_SHA256 = "47bde23de17e34e1af4b3e8c320ca0b2047694a8ae28ad4429d9b3f11b690ec9"
+export const MICROSANDBOX_PATCH_SHA256 = "e6868dfbef5e7800949adbad98bda7fa501e8df47ac7146e601b50f145349ee8"
 export const MICROSANDBOX_BUILD_TOOLCHAIN = "1.94.0"
 export const MICROSANDBOX_BUILD_FEATURES = "net,ssh"
 const LIBKRUNFW_COMMIT = "21cb6dce19a615f63e41ecb913334d18560c1364"
@@ -163,7 +163,8 @@ async function buildPatchedExecutable({
   if (await validCachedFile(cachedExecutable, (await readFile(cachedDigest, "utf8").catch(() => "")).trim())) {
     const version = runBuildTool(cachedExecutable, ["--version"]).trim()
     const createHelp = runBuildTool(cachedExecutable, ["create", "--help"])
-    if (version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
+    const githubProtocol = runBuildTool(cachedExecutable, ["--silo-github-protocol"]).trim()
+    if (githubProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
       return readFile(cachedExecutable)
     }
   }
@@ -199,6 +200,9 @@ async function buildPatchedExecutable({
     "microsandbox-cli",
   ], { cwd: source[0], env: { ...process.env, CARGO_TARGET_DIR: cargoTarget } })
   const built = join(cargoTarget, targetTriple, "release", "msb")
+  if (runBuildTool(built, ["--silo-github-protocol"]).trim() !== "1") {
+    throw new Error("The built MicroSandbox is missing the restricted GitHub credential boundary")
+  }
   const bytes = await readFile(built)
   await mkdir(buildRoot, { recursive: true })
   await writeFile(`${cachedExecutable}.tmp-${process.pid}`, bytes, { mode: 0o755 })
