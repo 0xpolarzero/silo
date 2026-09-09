@@ -57,6 +57,22 @@ describe("live file tree", () => {
     expect(screen.queryByRole("button", { name: /shortcut/ })).not.toBeInTheDocument()
   })
 
+  it("keeps errors stable during automatic refresh and clears them after recovery", async () => {
+    let resolve!: (value: DirectoryPage) => void
+    const loader = vi.fn().mockRejectedValueOnce(new Error("private runtime details"))
+      .mockImplementationOnce(() => new Promise<DirectoryPage>((done) => { resolve = done }))
+    const store = createDirectoryStore(loader)
+    render(<WorkspaceFileTree workspace={workspace} store={store} active />)
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^Could not load this folder\.$/)
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1)
+    act(() => { window.dispatchEvent(new Event("focus")) })
+    expect(screen.getByRole("alert")).toHaveTextContent(/^Could not load this folder\.$/)
+    expect(screen.queryByRole("status", { name: "Loading folder" })).not.toBeInTheDocument()
+    await act(async () => resolve(page("recovered.txt")))
+    expect(screen.getByText("recovered.txt")).toBeVisible()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
   it("appends skeletons while paging without hiding current files", async () => {
     const user = userEvent.setup()
     let resolve!: (value: DirectoryPage) => void

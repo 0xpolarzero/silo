@@ -55,7 +55,7 @@ function Directory({ workspace, path, label, store, expanded, toggle }: {
           </div>}
         </li>
       ))}
-      {(snapshot.entries === null && !snapshot.error || snapshot.loadingMore) && <li role="status" aria-label="Loading folder" className="grid gap-0.5 py-1">
+      {((snapshot.entries === null || snapshot.loadingMore) && !snapshot.error) && <li role="status" aria-label="Loading folder" className="grid gap-0.5 py-1">
         {[24, 36, 28].map((width, index) => <div key={index} className="flex h-8 items-center gap-2 px-2 motion-safe:animate-pulse" aria-hidden="true">
           <span className="size-3.5 shrink-0" /><span className="size-4 rounded bg-muted" /><span className="h-3 rounded bg-muted" style={{ width: `${width}%` }} />
         </div>)}

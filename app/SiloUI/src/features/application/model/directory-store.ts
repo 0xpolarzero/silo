@@ -109,7 +109,7 @@ export function createDirectoryStore(loader?: DirectoryLoader) {
     const pending = new Promise<void>(resolve => { finish = resolve })
     record.pending = pending
     const operation = options.refresh ? 'refresh' : options.more && previous.entries !== null ? 'more' : 'load'
-    update(record, { ...previous, loading: true, loadingMore: operation === 'more', error: null, errorOperation: null })
+    update(record, { ...previous, loading: true, loadingMore: operation === 'more' })
     queue.push({ record, finish, run: async () => {
       try {
         if (!current()) return
@@ -137,7 +137,7 @@ export function createDirectoryStore(loader?: DirectoryLoader) {
       } catch (error) {
         const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
         const retryOperation = message === 'Folder listing expired. Refresh this folder.' || message === 'Folder changed. Reload to continue.' ? 'refresh' : operation
-        if (current()) update(record, { ...previous, loading: false, loadingMore: false, errorOperation: retryOperation, error: safeErrors.has(message) ? message : loader ? 'Could not load this folder. Retry.' : 'Files are unavailable.' })
+        if (current()) update(record, { ...previous, loading: false, loadingMore: false, errorOperation: retryOperation, error: safeErrors.has(message) ? message : loader ? 'Could not load this folder.' : 'Files are unavailable.' })
       } finally {
         if (current()) record.pending = null
       }

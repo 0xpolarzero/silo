@@ -83,7 +83,7 @@ describe('directory store', () => {
     const store = createDirectoryStore(loader)
     await store.load('dev', '/workspace')
     await store.load('dev', '/workspace', { more: true })
-    expect(store.getSnapshot(key)).toMatchObject({ entries: [entry('a')], nextOffset: 1, error: 'Could not load this folder. Retry.' })
+    expect(store.getSnapshot(key)).toMatchObject({ entries: [entry('a')], nextOffset: 1, error: 'Could not load this folder.' })
     await store.load('dev', '/workspace', { more: true })
     expect(store.getSnapshot(key).entries).toEqual([entry('a'), entry('b')])
     expect(loader.mock.calls.map(call => call[2])).toEqual([0, 1, 1])

@@ -45,6 +45,7 @@ fn main() {
             "dismiss_backup_operation",
             "read_application_state",
             "read_machine_configuration",
+            "list_workspace_directory",
             "push_repository",
             "read_secrets_state",
             "save_secret",

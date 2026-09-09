@@ -481,8 +481,12 @@ describe("application", () => {
     expect(fileTreeSection.closest('[data-slot="card"]')).toBeNull()
     expect(fileTreePane).toHaveClass("lg:border-l", "lg:pl-5")
     expect(fileTreePane).not.toHaveClass("border-l")
-    const devRepository = within(repositories).getByText("acme/silo").closest('[role="listitem"]') as HTMLElement
-    const playgroundsRepository = within(repositories).getByText("acme/platform-tools").closest('[role="listitem"]') as HTMLElement
+    const devRepository = within(repositories).getByText("silo").closest('[role="listitem"]') as HTMLElement
+    const playgroundsRepository = within(repositories).getByText("platform-tools").closest('[role="listitem"]') as HTMLElement
+    expect(within(devRepository).queryByText("acme/silo")).not.toBeInTheDocument()
+    await user.hover(within(devRepository).getByText("silo"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("acme/silo")
+    await user.unhover(within(devRepository).getByText("silo"))
     const devBadge = within(devRepository).getByLabelText("dev, Running")
     expect(devBadge).toBeVisible()
     expect(devBadge).toHaveAttribute("data-slot", "status-badge")
@@ -519,13 +523,13 @@ describe("application", () => {
     await user.click(filters.getByRole("combobox", { name: "Filter sandboxes" }))
     await user.click(screen.getByRole("option", { name: "dev" }))
     expect(filters.getByRole("button", { name: "Remove dev" })).toBeVisible()
-    expect(within(repositories).getByText("acme/silo")).toBeVisible()
+    expect(within(repositories).getByText("silo")).toBeVisible()
     expect(within(fileTree).getByRole("button", { name: "dev" })).toBeVisible()
     expect(within(repositories).queryByText("acme/platform-tools")).not.toBeInTheDocument()
     expect(within(fileTree).queryByRole("button", { name: "personal" })).not.toBeInTheDocument()
 
     await user.click(filters.getByRole("button", { name: "Remove dev" }))
-    expect(within(repositories).getByText("acme/platform-tools")).toBeVisible()
+    expect(within(repositories).getByText("platform-tools")).toBeVisible()
     expect(within(fileTree).getByRole("button", { name: "personal" })).toBeVisible()
 
     await user.click(filters.getByRole("combobox", { name: "Filter sandboxes" }))
@@ -791,7 +795,7 @@ describe("application", () => {
     const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
 
     await application.user.click(sandboxSections.getByRole("button", { name: "Files" }))
-    const row = within(appPanel("Sandboxes")).getByText("acme/silo").closest('[role="listitem"]') as HTMLElement
+    const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
     expect(within(row).getByRole("status")).toHaveClass("h-6")
     expect(within(row).getByRole("status")).toHaveTextContent(message)
     if (busy) expect(row).toHaveAttribute("aria-busy", "true")
@@ -808,7 +812,7 @@ describe("application", () => {
     const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
 
     await application.user.click(sandboxSections.getByRole("button", { name: "Files" }))
-    const row = within(appPanel("Sandboxes")).getByText("acme/silo").closest('[role="listitem"]') as HTMLElement
+    const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
     expect(within(row).getByRole("alert")).toHaveTextContent("Push failed because the remote branch changed.")
     expect(within(row).queryByText(/no longer matches/)).not.toBeInTheDocument()
 
@@ -829,7 +833,7 @@ describe("application", () => {
     try {
       const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
       fireEvent.click(sandboxSections.getByRole("button", { name: "Files" }))
-      const row = within(appPanel("Sandboxes")).getByText("acme/silo").closest('[role="listitem"]') as HTMLElement
+      const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
       expect(within(row).getByRole("status")).toHaveTextContent("Pushed 2 commits.")
 
       act(() => vi.advanceTimersByTime(4_000))
@@ -1063,7 +1067,7 @@ describe("application", () => {
     await user.click(sandboxSections.getByRole("button", { name: "Files" }))
     const files = within(appPanel("Sandboxes"))
     const repositories = files.getByRole("list", { name: "Repositories" })
-    expect(within(repositories).getByText("acme/silo")).toBeVisible()
+    expect(within(repositories).getByText("silo")).toBeVisible()
     expect(within(repositories).getAllByLabelText("dev, Running")[0]).toBeVisible()
 
     await user.click(navigation.getByRole("button", { name: "Settings" }))

@@ -199,7 +199,7 @@ describe("status bar preview", () => {
     expect(navigation.getByRole("button", { name: "Files" })).toHaveAttribute("aria-current", "page")
     expect(screen.getByRole("button", { name: "Remove dev" })).toBeVisible()
     const repositories = within(screen.getByRole("list", { name: "Repositories" }))
-    expect(repositories.getByText("acme/silo")).toBeVisible()
+    expect(repositories.getByText("silo")).toBeVisible()
     expect(repositories.queryByText("acme/platform-tools")).not.toBeInTheDocument()
     await user.click(navigation.getByRole("button", { name: "Overview" }))
     const playgrounds = within(screen.getByRole("list", { name: "Configured sandboxes" })).getByText("playgrounds").closest("li")!

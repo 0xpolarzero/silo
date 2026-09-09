@@ -112,7 +112,10 @@ function Files({
                         <ListRow
                           data-repository-header
                           icon={<ListRowIcon aria-hidden="true"><GitBranch className="size-3.5" /></ListRowIcon>}
-                          title={<span className="truncate">{repository.path}</span>}
+                          title={<TooltipProvider delayDuration={150}><Tooltip>
+                            <TooltipTrigger asChild><span className="truncate" tabIndex={0}>{repository.path.split("/").filter(Boolean).at(-1) ?? repository.path}</span></TooltipTrigger>
+                            <TooltipContent className="max-w-sm break-all">{repository.path}</TooltipContent>
+                          </Tooltip></TooltipProvider>}
                           detail={`${repository.branch} · ${repository.ahead} ahead, ${repository.behind} behind`}
                           actions={<WorkspaceBadge name={workspace.machine.name} state={workspace.state} />}
                         />
