@@ -44,6 +44,12 @@ const githubStateShape = z.object({
   ])).optional(),
 })
 
+const directoryPageShape = z.object({
+  snapshotId: z.string().min(1),
+  entries: z.array(z.object({ name: z.string().min(1), path: z.string().startsWith("/workspace/"), kind: z.enum(["folder", "file", "symlink"]) }).strict()).max(200),
+  nextOffset: z.number().int().nonnegative().nullable(),
+}).strict()
+
 const secretShape = z.object({
   id: z.string(), name: z.string(), workspaces: z.array(z.string()), allowedDomains: z.array(z.string()),
   state: z.enum(["active", "restart-required"]), pendingWorkspaces: z.array(z.string()).optional(),
@@ -514,6 +520,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     saveSecret: (request: SecretConfigurationRequest) => changeSecret("save_secret", { request }),
     removeSecret: (id: string) => changeSecret("remove_secret", { id }),
     retrySecret: (id: string) => changeSecret("retry_secret", { id }),
+    listWorkspaceDirectory: async (workspace, path, offset, snapshotId) => directoryPageShape.parse(await native.invoke("list_workspace_directory", { workspace, path, offset, snapshotId: snapshotId ?? null })),
     retryRuntimeChecks: () => { void refresh() },
     saveMachineConfiguration,
     retryMachineConfiguration: () => {

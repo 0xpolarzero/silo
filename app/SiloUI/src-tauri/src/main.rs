@@ -2,6 +2,7 @@ mod applications;
 mod backup;
 mod backup_controller;
 mod dependencies;
+mod files;
 mod github;
 mod github_http;
 #[cfg(test)]
@@ -30,6 +31,7 @@ fn main() {
             status_panel::quit_app,
             tray::update_tray,
             host_push::push_repository,
+            files::list_workspace_directory,
             secrets::read_secrets_state,
             secrets::save_secret,
             secrets::remove_secret,

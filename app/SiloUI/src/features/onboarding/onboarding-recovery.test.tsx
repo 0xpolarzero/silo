@@ -137,8 +137,7 @@ describe("onboarding restart recovery", () => {
 
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     await user.click(screen.getByRole("button", { name: "Edit dev" }))
-    await user.clear(screen.getByRole("textbox", { name: "Machine name" }))
-    await user.type(screen.getByRole("textbox", { name: "Machine name" }), "development")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
     await user.click(screen.getByRole("button", { name: "Save" }))
     await user.click(screen.getByRole("button", { name: "Reorder personal" }))
     await user.keyboard("{ArrowUp}{ArrowUp}")
@@ -151,18 +150,18 @@ describe("onboarding restart recovery", () => {
     expect(screen.getByRole("tab", { name: /Review/ })).toHaveAttribute("aria-selected", "true")
     const list = screen.getByRole("list", { name: "Sandboxes" })
     expect(within(list).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
-      expect.stringContaining("personal"), expect.stringContaining("development"), expect.stringContaining("playgrounds"),
+      expect.stringContaining("personal"), expect.stringContaining("dev"), expect.stringContaining("playgrounds"),
     ])
     expect(screen.getByText("GitHub not connected")).toBeVisible()
     expect(handlers.connectGitHub).not.toHaveBeenCalled()
     expect(handlers.saveMachineConfiguration).not.toHaveBeenCalled()
     expect(handlers.finishSetup).not.toHaveBeenCalled()
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
-    expect(screen.getByLabelText("Git name for development")).toHaveValue("Recovered Author")
-    expect(screen.getByLabelText("Git email for development")).toHaveValue("unfinished@")
-    expect(screen.getByRole("checkbox", { name: "Apply Git identity to development" })).not.toBeChecked()
+    expect(screen.getByLabelText("Git name for dev")).toHaveValue("Recovered Author")
+    expect(screen.getByLabelText("Git email for dev")).toHaveValue("unfinished@")
+    expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
     restored.rerender(onboarding(second, handlers))
-    expect(within(screen.getByRole("table", { name: "Selected repositories for development" })).getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).toBeChecked()
+    expect(within(screen.getByRole("table", { name: "Selected repositories for dev" })).getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).toBeChecked()
     expect(second.getSnapshot().onboardingDraft?.unfinishedMachineEditor).toBeNull()
   })
 

@@ -1,5 +1,7 @@
+import { WorkspaceFileTree } from "@/features/application/components/workspace-file-tree"
+import type { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useMemo, useState } from "react"
-import { Activity, Archive, Box, Check, ChevronRight, CircleAlert, Cloud, ExternalLink, File, Folder, GitBranch, KeyRound, Loader2, Search, TriangleAlert, Wrench } from "lucide-react"
+import { Activity, Archive, Box, Check, CircleAlert, Cloud, ExternalLink, GitBranch, KeyRound, Loader2, Search, TriangleAlert, Wrench } from "lucide-react"
 
 import { CopyButton } from "@/components/copy-button"
 import { DisclosureHeader } from "@/components/disclosure-header"
@@ -7,13 +9,13 @@ import { FilterCombobox, type FilterOption } from "@/components/filter-combobox"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { RepositoryPushFeedback } from "@/features/application/components/repository-push-feedback"
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
-import type { ApplicationActivity, ApplicationActivityCategory, ApplicationFileEntry, ApplicationWorkspace, RepositoryPushOperation, WorkspaceDetailSection } from "@/features/application/model/application-source"
+import type { ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, WorkspaceDetailSection } from "@/features/application/model/application-source"
 import { commitLabel } from "@/features/application/model/repository-push"
 import { cn } from "@/lib/utils"
 
@@ -54,68 +56,16 @@ function EmptyState({ title, description }: { title: string; description: string
   )
 }
 
-function FileTreeEntries({ entries, label }: { entries: ApplicationFileEntry[]; label: string }) {
-  return (
-    <ul className="grid gap-0.5 border-l border-border pl-3" aria-label={label}>
-      {entries.map((entry) => {
-        const hasChildren = entry.kind === "folder" && entry.children && entry.children.length > 0
-        if (!hasChildren) {
-          const Icon = entry.kind === "folder" ? Folder : File
-          return (
-            <li key={entry.name}>
-              <button type="button" className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left font-mono text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <span className="size-3.5 shrink-0" aria-hidden="true" />
-                <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                <span className="truncate">{entry.name}</span>
-              </button>
-            </li>
-          )
-        }
-
-        return (
-          <li key={entry.name}>
-            <Collapsible>
-              <CollapsibleTrigger className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left font-mono text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&[data-state=open]_.tree-caret]:rotate-90">
-                <ChevronRight className="tree-caret size-3.5 shrink-0 text-muted-foreground transition-transform" aria-hidden="true" />
-                <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                <span className="truncate">{entry.name}</span>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="ml-4">
-                <FileTreeEntries entries={entry.children ?? []} label={`${entry.name} contents`} />
-              </CollapsibleContent>
-            </Collapsible>
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
-
-function WorkspaceFileTree({ workspace }: { workspace: ApplicationWorkspace }) {
-  return (
-    <li>
-      <Collapsible defaultOpen>
-        <CollapsibleTrigger className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&[data-state=open]_.tree-caret]:rotate-90">
-          <ChevronRight className="tree-caret size-3.5 shrink-0 text-muted-foreground transition-transform" aria-hidden="true" />
-          <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-          <span className="truncate">{workspace.machine.name}</span>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="ml-4">
-          {workspace.files.length > 0
-            ? <FileTreeEntries entries={workspace.files} label={`Files in ${workspace.machine.name}`} />
-            : <p className="border-l border-border py-1 pl-5 text-xs text-muted-foreground">File browsing is unavailable.</p>}
-        </CollapsibleContent>
-      </Collapsible>
-    </li>
-  )
-}
-
 function Files({
   workspaces,
   repositoryPushOperations,
   onPushRepository,
   onDismissRepositoryPush,
+  directoryStore,
+  active,
 }: {
+  directoryStore: ReturnType<typeof createDirectoryStore>
+  active: boolean
   workspaces: ApplicationWorkspace[]
   repositoryPushOperations: RepositoryPushOperation[]
   onPushRepository: (workspace: string, repositoryPath: string, commitCount: number) => void
@@ -207,7 +157,7 @@ function Files({
           <CollapsibleContent className="file-pane-content-motion min-h-0 flex-1" data-files-pane-content="file-tree">
             <div className="h-full overflow-y-auto overscroll-contain px-2 pt-2" data-files-pane-scroll="file-tree">
               <ul className="grid gap-0.5" aria-label="File tree">
-                {workspaces.map((workspace) => <WorkspaceFileTree key={workspace.machine.id} workspace={workspace} />)}
+                {workspaces.map((workspace) => <WorkspaceFileTree key={workspace.machine.id} workspace={workspace} store={directoryStore} active={active} />)}
               </ul>
             </div>
           </CollapsibleContent>
@@ -486,6 +436,8 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
 }
 
 export function WorkspacesPage({
+  directoryStore,
+  active,
   workspaces,
   activities,
   selectedWorkspaceIds,
@@ -498,6 +450,8 @@ export function WorkspacesPage({
   onPushRepository,
   onDismissRepositoryPush,
 }: {
+  directoryStore: ReturnType<typeof createDirectoryStore>
+  active: boolean
   workspaces: ApplicationWorkspace[]
   activities: ApplicationActivity[]
   selectedWorkspaceIds: ReadonlySet<string>
@@ -518,7 +472,7 @@ export function WorkspacesPage({
   return (
     <div className="mx-auto grid h-full min-h-0 w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6">
       <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />
-      {section === "files" && <Files workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
+      {section === "files" && <Files directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
       {section === "logs" && <Logs workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} />}
       {section === "network" && <Network workspaces={visibleWorkspaces} browser={browser} />}
       {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} />}

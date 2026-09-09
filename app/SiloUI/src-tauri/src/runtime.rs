@@ -133,7 +133,7 @@ pub(crate) trait RuntimeRunner {
     ) -> Result<CommandOutput, RuntimeError>;
 }
 
-struct ProcessRunner;
+pub(crate) struct ProcessRunner;
 
 impl RuntimeRunner for ProcessRunner {
     fn run(
@@ -521,6 +521,12 @@ fn run_msb_with_progress(
         let guard = lock.lock().map_err(|_| {
             RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
         })?;
+        if args[0] == "exec"
+            && args.iter().take_while(|arg| arg.as_str() != "--").any(|arg| arg == "--no-start")
+        {
+            drop(guard);
+            return run_msb_process(paths, args, timeout, report);
+        }
         if args[0] != "exec" {
             return run_msb_process(paths, args, timeout, report);
         }

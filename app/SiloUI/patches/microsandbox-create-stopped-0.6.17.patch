@@ -3165,3 +3165,34 @@ index 8998d360..5f4626e8 100644
              anyhow::bail!(
                  "sandbox '{}' is in state {:?} and cannot be started",
                  name,
+--- a/crates/cli/lib/commands/exec.rs
++++ b/crates/cli/lib/commands/exec.rs
+@@ -19,6 +19,10 @@
+ pub struct ExecArgs {
+     /// Sandbox to run the command in.
+     pub name: String,
++
++    /// Refuse to start a stopped sandbox.
++    #[arg(long)]
++    pub no_start: bool,
+
+     /// Set an environment variable (KEY=value).
+     #[arg(short, long)]
+@@ -105,7 +109,16 @@
+         .transpose()?
+         .map(Duration::from_secs);
+
+-    let sandbox = super::resolve_and_start(&args.name, args.quiet).await?;
++    let sandbox = if args.no_start {
++        let handle = Sandbox::get(&args.name).await?;
++        anyhow::ensure!(
++            handle.status_snapshot() == microsandbox::sandbox::SandboxStatus::Running,
++            "sandbox must already be running"
++        );
++        handle.connect().await?
++    } else {
++        super::resolve_and_start(&args.name, args.quiet).await?
++    };
+
+     let result = run_started(
+         &sandbox,

@@ -12,7 +12,7 @@ const MICROSANDBOX_COMMIT = "5eca4de8bf233e57f114140f8c076ea8c96f21ab"
 export const MICROSANDBOX_SOURCE_URL = `https://codeload.github.com/superradcompany/microsandbox/tar.gz/${MICROSANDBOX_COMMIT}`
 export const MICROSANDBOX_SOURCE_SHA256 = "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06"
 export const MICROSANDBOX_PATCH_PATH = "patches/microsandbox-create-stopped-0.6.17.patch"
-export const MICROSANDBOX_PATCH_SHA256 = "e6868dfbef5e7800949adbad98bda7fa501e8df47ac7146e601b50f145349ee8"
+export const MICROSANDBOX_PATCH_SHA256 = "f8eed186f80eba00978f66ce089d375ea67f0631ef9771077674d88c3953dab1"
 export const MICROSANDBOX_BUILD_TOOLCHAIN = "1.94.0"
 export const MICROSANDBOX_BUILD_FEATURES = "net,ssh"
 const LIBKRUNFW_COMMIT = "21cb6dce19a615f63e41ecb913334d18560c1364"
@@ -163,8 +163,9 @@ async function buildPatchedExecutable({
   if (await validCachedFile(cachedExecutable, (await readFile(cachedDigest, "utf8").catch(() => "")).trim())) {
     const version = runBuildTool(cachedExecutable, ["--version"]).trim()
     const createHelp = runBuildTool(cachedExecutable, ["create", "--help"])
+    const execHelp = runBuildTool(cachedExecutable, ["exec", "--help"])
     const githubProtocol = runBuildTool(cachedExecutable, ["--silo-github-protocol"]).trim()
-    if (githubProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
+    if (execHelp.includes("--no-start") && githubProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
       return readFile(cachedExecutable)
     }
   }
@@ -296,7 +297,8 @@ export async function stageRuntime({
     }
     const version = runBuildTool(executableTemporary, ["--version"], { env: environment }).trim()
     const createHelp = runBuildTool(executableTemporary, ["create", "--help"], { env: environment })
-    if (version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--from-snapshot") || !createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
+    const execHelp = runBuildTool(executableTemporary, ["exec", "--help"], { env: environment })
+    if (!execHelp.includes("--no-start") || version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--from-snapshot") || !createHelp.includes("--no-start") || !createHelp.includes("--progress-json")) {
       throw new Error("Patched MicroSandbox executable failed its version or stopped-create capability check")
     }
     await rm(isolatedHome, { recursive: true, force: true })

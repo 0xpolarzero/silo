@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useEffectEvent, useState } from "react"
+import { createDirectoryStore } from "@/features/application/model/directory-store"
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react"
 
 import type { BackupController } from "@/features/application/model/backup-source"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
@@ -76,6 +77,21 @@ export function ApplicationApp(props: ApplicationAppProps) {
 }
 
 function ApplicationContent({ source, actions, backup, initialRoute, routeRequest }: ApplicationAppProps) {
+  const [directoryStore] = useState(() => createDirectoryStore(actions.listWorkspaceDirectory))
+  useLayoutEffect(() => {
+    directoryStore.setLoader(actions.listWorkspaceDirectory)
+  }, [actions.listWorkspaceDirectory, directoryStore])
+  const previousFileStates = useRef(new Map<string, string>())
+  useLayoutEffect(() => {
+    const current = new Map(source.workspaces.map((workspace) => [
+      workspace.machine.name, `${workspace.machine.id}:${workspace.state}:${workspace.freshness}`,
+    ]))
+    for (const [name, state] of previousFileStates.current) {
+      if (current.get(name) !== state) directoryStore.invalidateWorkspace(name)
+    }
+    previousFileStates.current = current
+  }, [source.workspaces, directoryStore])
+
   const { settings, updateSettings } = useSettings()
   const { reduceMotion } = settings
   const applicationPreferences: ApplicationPreferenceSelection = {
@@ -204,6 +220,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
           <OverviewPage source={applicationSource} actions={actions} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
+            directoryStore={directoryStore}
+            active={visibleTab === "workspaces"}
             workspaces={workspaces}
             activities={source.activities}
             selectedWorkspaceIds={selectedWorkspaceIds}

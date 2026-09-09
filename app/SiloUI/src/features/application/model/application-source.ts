@@ -1,3 +1,4 @@
+import type { DirectoryLoader } from "./directory-store"
 import type {
   SetupMachineConfiguration,
   SetupMachineConfigurationRequest,
@@ -218,6 +219,7 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
+  listWorkspaceDirectory?: DirectoryLoader
   saveSecret: (request: SecretConfigurationRequest) => Promise<void> | void
   removeSecret: (id: string) => Promise<void> | void
   retrySecret?: (id: string) => Promise<void> | void

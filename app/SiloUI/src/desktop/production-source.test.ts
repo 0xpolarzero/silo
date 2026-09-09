@@ -31,6 +31,20 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("loads directory pages through the native bridge and validates their shape", async () => {
+    const mock = native()
+    const page = { snapshotId: "snapshot", entries: [{ name: "a b.txt", path: "/workspace/a b.txt", kind: "file" }], nextOffset: null }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) =>
+      command === "list_workspace_directory" ? page : mock.invoke(command, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    expect(await store.applicationActions.listWorkspaceDirectory?.("dev", "/workspace", 200, "snapshot")).toEqual(page)
+    expect(invoke).toHaveBeenCalledWith("list_workspace_directory", { workspace: "dev", path: "/workspace", offset: 200, snapshotId: "snapshot" })
+    page.entries[0].path = "/outside"
+    await expect(store.applicationActions.listWorkspaceDirectory?.("dev", "/workspace", 0)).rejects.toThrow()
+    expect(invoke).not.toHaveBeenCalledWith("workspace_action", expect.anything())
+    store.dispose()
+  })
+
   it("saves secret values only in the native request and publishes value-free metadata", async () => {
     const mock = native()
     const request = { operation: "add" as const, name: "API_TOKEN", value: "private-test-value", workspaces: ["dev"], allowedDomains: ["api.example.test"] }
