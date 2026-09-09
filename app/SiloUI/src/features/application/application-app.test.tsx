@@ -1323,6 +1323,7 @@ describe("application", () => {
 
   it("keeps Git identity editable through disconnected and connecting GitHub states", async () => {
     const disconnectedSource = applicationSourceForScenario("running", "disconnected")
+    disconnectedSource.github.accessEnabled = false
     const disconnected = renderApplication("running", disconnectedSource)
     await disconnected.user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
     let github = within(appPanel("GitHub"))

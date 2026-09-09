@@ -305,8 +305,7 @@ export function GitHubPage({
             ? <WorkspaceSyncFeedback operation={operation} onRetry={() => retryWorkspace(name)} />
             : undefined
         }}
-        disabled={!accessEnabled}
-        repositoryControlsAvailable={catalogAvailable}
+        repositoryControlsAvailable={catalogAvailable && accessEnabled}
         confirmRepositoryClear
         busy={applying}
       />
