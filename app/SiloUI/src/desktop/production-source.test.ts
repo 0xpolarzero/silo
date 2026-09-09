@@ -51,7 +51,7 @@ describe("production application bridge", () => {
     await store.initialize()
     const before = store.getSnapshot().source!.github
     store.applicationActions.connectGitHub!()
-    await vi.waitFor(() => expect(store.getSnapshot().source?.github.repositoryCatalogStatus).toEqual({ status: "unavailable", message: "GitHub operation failed: GitHub is not configured in this build", canRetry: true }))
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.repositoryCatalogStatus).toEqual({ status: "unavailable", message: "GitHub operation failed: GitHub is not configured in this build", canRetry: false }))
     expect(store.getSnapshot().source?.github.workspaceOperations).toEqual(before.workspaceOperations)
     expect(store.getSnapshot().source?.github.account).toEqual(before.account)
     store.dispose()

@@ -426,7 +426,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     } catch (cause) {
       const message = `GitHub operation failed: ${errorMessage(cause)}`
       if (snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source, github: { ...snapshot.source.github,
-        repositoryCatalogStatus: { status: "unavailable", message, canRetry: true },
+        repositoryCatalogStatus: { status: "unavailable", message, canRetry: command === "refresh_github_repositories" },
       } } })
       throw cause
     }
