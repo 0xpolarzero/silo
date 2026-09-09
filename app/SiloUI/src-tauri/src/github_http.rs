@@ -216,12 +216,13 @@ fn is_rate_limit(status: u16, headers: &HeaderMap, body: &Value) -> bool {
         || message.contains("abuse detection")
 }
 fn retryable_response(status: u16, headers: &HeaderMap, body: &Value, safe: bool) -> bool {
-    is_rate_limit(status, headers, body) || (status >= 500 && (safe || body["retryable"] == true))
+    is_rate_limit(status, headers, body) || (status >= 500 && safe)
 }
 fn response(
     key: &str,
     result: Result<Response, reqwest::Error>,
     safe: bool,
+    revoke: bool,
 ) -> Result<Value, String> {
     let response = result.map_err(|_| {
         failure(
@@ -257,7 +258,22 @@ fn response(
         ));
     }
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    if revoke && matches!(status, 204 | 404) {
+        if let Ok(mut g) = gates().lock() {
+            g.requests.remove(key);
+        }
+        return Ok(serde_json::json!({"revoked":true}));
+    }
     if (200..300).contains(&status) {
+        if body.get("error").is_some() {
+            return Err(failure(
+                key,
+                false,
+                0,
+                false,
+                "GitHub rejected the authorization. Connect GitHub again.",
+            ));
+        }
         if body.is_null() {
             return Err(failure(
                 key,
@@ -286,47 +302,145 @@ fn response(
     };
     Err(failure(key, retryable, floor, rate, message))
 }
-pub(crate) fn service(root: &str, route: &str, body: Value) -> Result<Value, String> {
-    let url = reqwest::Url::parse(root).map_err(|_| "GitHub service URL is invalid.")?;
+/// Only fixed GitHub destinations are accepted. Tokens never follow redirects.
+pub(crate) enum Authentication {
+    None,
+    Bearer(String),
+    App {
+        client_id: String,
+        client_secret: String,
+    },
+}
+pub(crate) struct Request {
+    pub method: reqwest::Method,
+    pub url: String,
+    pub authentication: Authentication,
+    pub body: Value,
+    pub safe: bool,
+    pub revoke: bool,
+}
+pub(crate) fn send(request: Request) -> Result<Value, String> {
+    let url = reqwest::Url::parse(&request.url).map_err(|_| "Invalid GitHub destination.")?;
     if url.scheme() != "https"
+        || !matches!(url.host_str(), Some("api.github.com" | "github.com"))
+        || url.port().is_some()
         || !url.username().is_empty()
         || url.password().is_some()
-        || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err("GitHub service requires a configured HTTPS URL.".into());
+        return Err("Invalid GitHub destination.".into());
     }
-    let bytes = serde_json::to_vec(&body).map_err(|_| "Cannot encode GitHub request.")?;
-    let key = key(&format!("{}{route}", root.trim_end_matches('/')), &bytes);
+    let mut bytes =
+        serde_json::to_vec(&request.body).map_err(|_| "Cannot encode GitHub request.")?;
+    let mut builder = client()?
+        .request(request.method.clone(), url)
+        .header("Accept", "application/json")
+        .header("X-GitHub-Api-Version", "2022-11-28");
+    match request.authentication {
+        Authentication::None => {}
+        Authentication::Bearer(token) => {
+            bytes.extend_from_slice(token.as_bytes());
+            builder = builder.bearer_auth(token);
+        }
+        Authentication::App {
+            client_id,
+            client_secret,
+        } => {
+            bytes.extend_from_slice(client_id.as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(client_secret.as_bytes());
+            builder = builder.basic_auth(client_id, Some(client_secret));
+        }
+    }
+    let key = key(&format!("{} {}", request.method, request.url), &bytes);
     preflight(&key)?;
-    let safe = matches!(route, "/v1/tokens/revoke" | "/v1/oauth/revoke");
-    response(
-        &key,
-        client()?
-            .post(format!("{}{}", root.trim_end_matches('/'), route))
-            .json(&body)
-            .send(),
-        safe,
-    )
+    if !request.body.is_null() {
+        builder = builder.json(&request.body);
+    }
+    response(&key, builder.send(), request.safe, request.revoke)
 }
 pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
-    let key = key(path, token.as_bytes());
-    preflight(&key)?;
-    response(
-        &key,
-        client()?
-            .get(format!("https://api.github.com{path}"))
-            .bearer_auth(token)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send(),
-        true,
-    )
+    if !path.starts_with('/') || path.starts_with("//") {
+        return Err("Invalid GitHub API path.".into());
+    }
+    send(Request {
+        method: reqwest::Method::GET,
+        url: format!("https://api.github.com{path}"),
+        authentication: Authentication::Bearer(token.into()),
+        body: Value::Null,
+        safe: true,
+        revoke: false,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn wire_response(status: u16, body: &str, revoke: bool) -> Result<Value, String> {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let reply = format!(
+            "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            stream.read(&mut request).unwrap();
+            stream.write_all(reply.as_bytes()).unwrap();
+        });
+        let result = response(
+            &uuid::Uuid::new_v4().to_string(),
+            Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(format!("http://{address}"))
+                .send(),
+            false,
+            revoke,
+        );
+        server.join().unwrap();
+        result
+    }
+    #[test]
+    fn real_http_oauth_errors_are_redacted_and_revocation_accepts_empty_responses() {
+        let error = wire_response(
+            200,
+            r#"{"error":"bad_verification_code","error_description":"fixture-secret"}"#,
+            false,
+        )
+        .unwrap_err();
+        assert!(!error.contains("fixture-secret"));
+        assert!(error.contains("rejected"));
+        assert_eq!(wire_response(204, "", true).unwrap()["revoked"], true);
+        assert_eq!(wire_response(404, "", true).unwrap()["revoked"], true);
+        assert!(wire_response(204, "", false).is_err());
+        assert!(wire_response(302, "", false).is_err());
+        assert!(wire_response(200, "not json", false).is_err());
+    }
+    #[test]
+    fn credential_destinations_are_fixed_before_network() {
+        for url in [
+            "http://api.github.com/user",
+            "https://api.github.com.evil.test/user",
+            "https://user@api.github.com/user",
+            "https://github.com:444/user",
+            "https://github.com/user#fragment",
+        ] {
+            let error = send(Request {
+                method: reqwest::Method::POST,
+                url: url.into(),
+                authentication: Authentication::Bearer("fixture-secret".into()),
+                body: Value::Null,
+                safe: false,
+                revoke: false,
+            })
+            .unwrap_err();
+            assert_eq!(error, "Invalid GitHub destination.");
+        }
+    }
     #[test]
     fn expired_superseded_key_does_not_keep_scheduling_work() {
         let mut g = Gates::default();
@@ -368,7 +482,7 @@ mod tests {
         assert!(!is_rate_limit(401, &headers, &secondary));
     }
     #[test]
-    fn ambiguous_writes_require_service_confirmation_before_retry() {
+    fn upstream_body_cannot_authorize_replaying_ambiguous_writes() {
         let headers = HeaderMap::new();
         assert!(!retryable_response(502, &headers, &Value::Null, false));
         assert!(!retryable_response(
@@ -377,7 +491,7 @@ mod tests {
             &serde_json::json!({"retryable": false}),
             false
         ));
-        assert!(retryable_response(
+        assert!(!retryable_response(
             502,
             &headers,
             &serde_json::json!({"retryable": true}),
