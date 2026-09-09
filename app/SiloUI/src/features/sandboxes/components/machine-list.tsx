@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
-import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Server, Trash2 } from "lucide-react"
+import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Server, Trash2, X } from "lucide-react"
 
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Button } from "@/components/ui/button"
@@ -397,8 +397,10 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions ? undefined : <>
                         <SandboxAction label={`Edit ${machine.name}`} disabled={interactionDisabled} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
-                        <SandboxAction label={`Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}><CopyPlus /></SandboxAction>
                         <InlineConfirmation active={deleteArmed} onDismiss={() => setPendingDelete(null)}>
+                          <SandboxAction label={deleteArmed ? `Cancel deletion of ${machine.name}` : `Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => deleteArmed ? setPendingDelete(null) : startDuplicate(machine)}>
+                            {deleteArmed ? <X /> : <CopyPlus />}
+                          </SandboxAction>
                           <SandboxAction
                             label={deleteArmed ? `Confirm deletion of ${machine.name}` : `Delete ${machine.name}`}
                             destructive={deleteArmed}

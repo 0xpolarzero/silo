@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Box, Check, Globe, KeyRound, LoaderCircle, Pencil, Plus, RotateCw, Trash2 } from "lucide-react"
+import { Box, Check, Globe, KeyRound, LoaderCircle, Pencil, Plus, RotateCw, Trash2, X } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { InlineConfirmation } from "@/components/inline-confirmation"
@@ -142,15 +142,15 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret, onRetrySecre
                         </p>
                       </div>}
                       actions={<div className="flex shrink-0 items-center gap-0.5 text-muted-foreground" role="group" aria-label={`Manage ${secret.name}`}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button type="button" variant="ghost" size="icon-xs" aria-label={`Edit ${secret.name}`} disabled={saving || busy !== null || secret.removing} onClick={(event) => openEditor(event.currentTarget, secret)}>
-                              <Pencil aria-hidden="true" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Edit {secret.name}</TooltipContent>
-                        </Tooltip>
                         <InlineConfirmation active={confirmingRemoval} onDismiss={() => setPendingRemoval(null)}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button type="button" variant="ghost" size="icon-xs" aria-label={confirmingRemoval ? `Cancel removal of ${secret.name}` : `Edit ${secret.name}`} disabled={saving || busy !== null || secret.removing} onClick={(event) => confirmingRemoval ? setPendingRemoval(null) : openEditor(event.currentTarget, secret)}>
+                                {confirmingRemoval ? <X aria-hidden="true" /> : <Pencil aria-hidden="true" />}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>{confirmingRemoval ? "Cancel" : `Edit ${secret.name}`}</TooltipContent>
+                          </Tooltip>
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Button type="button" variant={confirmingRemoval ? "destructive" : "ghost"} size="icon-xs" aria-label={removalLabel} disabled={saving || busy !== null || secret.removing} onClick={() => removeSecret(secret.id)}>

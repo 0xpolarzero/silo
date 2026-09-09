@@ -258,6 +258,12 @@ describe("SecretsPage", () => {
     expect(list.getAllByRole("listitem")).toHaveLength(2)
     expect(list.getByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" })).toBeVisible()
 
+    expect(list.queryByRole("button", { name: "Edit PACKAGE_TOKEN" })).not.toBeInTheDocument()
+    await user.click(list.getByRole("button", { name: "Cancel removal of PACKAGE_TOKEN" }))
+    expect(list.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeVisible()
+    expect(screen.queryByRole("textbox", { name: "Allowed domains" })).not.toBeInTheDocument()
+    expect(list.getAllByRole("listitem")).toHaveLength(2)
+    await user.click(list.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
     await user.keyboard("{Escape}")
     expect(list.queryByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" })).not.toBeInTheDocument()
     await user.click(list.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
