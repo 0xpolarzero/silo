@@ -18,6 +18,9 @@ base64 = "0.22"
 libc = "0.2"
 microsandbox-image = { git = "https://github.com/superradcompany/microsandbox", rev = "5eca4de8bf233e57f114140f8c076ea8c96f21ab", package = "microsandbox-image" }
 sha2 = "0.10"
+time = { version = "0.3", features = ["parsing"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+keyring = { version = "3.6", features = ["apple-native", "sync-secret-service", "crypto-rust"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri = { version = "2.11.3", features = ["tray-icon"] }

@@ -2,6 +2,7 @@ mod applications;
 mod backup;
 mod backup_controller;
 mod dependencies;
+mod github;
 mod host_identity;
 mod notifications;
 mod runtime;
@@ -22,6 +23,13 @@ fn main() {
             status_panel::resize_status,
             status_panel::quit_app,
             tray::update_tray,
+            github::read_github_state,
+            github::connect_github,
+            github::disconnect_github,
+            github::set_github_access_enabled,
+            github::save_github_configuration,
+            github::retry_github_configuration,
+            github::refresh_github_repositories,
             settings::initialize_settings,
             settings::read_settings,
             settings::update_settings,
@@ -56,6 +64,7 @@ fn main() {
         ])
         .setup(|app| {
             settings::install(app.handle());
+            github::install(app.handle());
             backup_controller::install(app.handle())?;
             status_panel::install(app.handle())?;
             tray::install(app.handle())?;

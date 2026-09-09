@@ -1,4 +1,11 @@
 fn main() {
+    for key in [
+        "SILO_GITHUB_SERVICE_URL",
+        "SILO_GITHUB_CLIENT_ID",
+        "SILO_GITHUB_APP_SLUG",
+    ] {
+        println!("cargo:rerun-if-env-changed={key}");
+    }
     // objc2-user-notifications declares a normal framework dependency. The
     // app still supports macOS 10.13, so override it at the final link step and
     // guard every framework call at runtime on macOS 10.14 or newer.
@@ -37,6 +44,13 @@ fn main() {
             "cancel_backup_operation",
             "dismiss_backup_operation",
             "read_application_state",
+            "read_github_state",
+            "connect_github",
+            "disconnect_github",
+            "set_github_access_enabled",
+            "save_github_configuration",
+            "retry_github_configuration",
+            "refresh_github_repositories",
             "configure_workspace_identities",
             "verify_workspace_identities",
             "workspace_action",
