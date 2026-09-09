@@ -31,6 +31,18 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("invokes explicit host push and shows a native command failure without success", async () => {
+    const mock = native()
+    const original = mock.invoke.getMockImplementation()!
+    mock.invoke.mockImplementation((command, args) => command === "push_repository" ? Promise.reject(new Error("Repository authorization was removed")) : original(command, args))
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    store.applicationActions.pushRepository("dev", "/workspace/repo")
+    await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toContainEqual({ workspace: "dev", repositoryPath: "/workspace/repo", commitCount: 0, status: "failed", message: "Repository push failed: Repository authorization was removed" }))
+    expect(mock.invoke).toHaveBeenCalledWith("push_repository", { workspace: "dev", repositoryPath: "/workspace/repo" })
+    store.dispose()
+  })
+
   it("keeps all-repository intent and waits for native acknowledgment before showing changed access", async () => {
     let resolveMutation!: (value: unknown) => void
     const request = { accessEnabled: false, hostIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }

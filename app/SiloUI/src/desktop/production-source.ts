@@ -442,7 +442,14 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const operation = snapshot.source?.sandboxConfigurationOperation
       if (operation) saveMachineConfiguration(operation.candidate)
     },
-    pushRepository: () => reportUnavailable("Repository pushes are not available in this Silo build. No commits were pushed."),
+    pushRepository: (workspace, repositoryPath) => {
+      void native.invoke("push_repository", { workspace, repositoryPath }).then(refresh).catch((cause) => {
+        const message = `Repository push failed: ${errorMessage(cause)}`
+        if (snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source,
+          repositoryPushOperations: [...snapshot.source.repositoryPushOperations.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath), { workspace, repositoryPath, commitCount: 0, status: "failed", message }],
+        } })
+      })
+    },
     startWorkspace: (name) => workspaceAction("start", name),
     pauseWorkspace: (name) => workspaceAction("pause", name),
     stopWorkspace: (name) => workspaceAction("stop", name),
