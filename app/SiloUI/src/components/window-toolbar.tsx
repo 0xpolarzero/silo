@@ -80,8 +80,8 @@ export function WindowToolbar({ title, sidebarId, collapsed, previewing, toggleR
       </div>
       <span aria-hidden="true" data-tauri-drag-region={dragRegion} className="silo-toolbar-divider" />
     </div>
-    <div data-tauri-drag-region={dragRegion} className="flex min-w-0 flex-1 items-center px-4 sm:px-6">
-      {children ?? <h1 data-tauri-drag-region={dragRegion} className="text-[13px] font-medium">{title}</h1>}
+    <div data-tauri-drag-region={dragRegion} className="flex min-w-0 flex-1 items-center">
+      {children ? <div data-tauri-drag-region={dragRegion} className="mx-auto flex w-full max-w-4xl items-center px-4 sm:px-6">{children}</div> : <h1 data-tauri-drag-region={dragRegion} className="px-4 text-[13px] font-medium sm:px-6">{title}</h1>}
     </div>
   </header>
 }
