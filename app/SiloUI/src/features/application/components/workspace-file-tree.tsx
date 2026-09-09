@@ -9,6 +9,22 @@ import type { ApplicationWorkspace } from "@/features/application/model/applicat
 type DirectoryStore = ReturnType<typeof createDirectoryStore>
 const rowClass = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left font-mono text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&[data-state=open]_.tree-caret]:rotate-90"
 
+function FolderSkeleton() {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setVisible(true), 150)
+    return () => window.clearTimeout(timer)
+  }, [])
+  if (!visible) return null
+  return (
+    <li role="status" aria-label="Loading folder" className="grid gap-0.5 py-1">
+      {[24, 36, 28].map((width, index) => <div key={index} className="flex h-8 items-center gap-2 px-2 motion-safe:animate-pulse" aria-hidden="true">
+        <span className="size-3.5 shrink-0" /><span className="size-4 rounded bg-muted" /><span className="h-3 rounded bg-muted" style={{ width: `${width}%` }} />
+      </div>)}
+    </li>
+  )
+}
+
 function Directory({ workspace, path, label, store, expanded, toggle }: {
   workspace: string
   path: string
@@ -55,11 +71,7 @@ function Directory({ workspace, path, label, store, expanded, toggle }: {
           </div>}
         </li>
       ))}
-      {((snapshot.entries === null || snapshot.loadingMore) && !snapshot.error) && <li role="status" aria-label="Loading folder" className="grid gap-0.5 py-1">
-        {[24, 36, 28].map((width, index) => <div key={index} className="flex h-8 items-center gap-2 px-2 motion-safe:animate-pulse" aria-hidden="true">
-          <span className="size-3.5 shrink-0" /><span className="size-4 rounded bg-muted" /><span className="h-3 rounded bg-muted" style={{ width: `${width}%` }} />
-        </div>)}
-      </li>}
+      {((snapshot.entries === null || snapshot.loadingMore) && !snapshot.error) && <FolderSkeleton />}
       {snapshot.entries?.length === 0 && !snapshot.error && <li className="px-2 py-1 text-xs text-muted-foreground">Empty folder.</li>}
       {snapshot.error && <li className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
         <span role="alert">{snapshot.errorOperation === "refresh" && snapshot.entries ? "Couldn’t refresh. Showing previous files." : snapshot.error}</span>
