@@ -1292,6 +1292,20 @@ pub(crate) fn apply_github_identity(
 }
 
 #[tauri::command]
+pub async fn read_machine_configuration(
+    app: AppHandle,
+) -> Result<MachineConfigurationRequest, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        // Saved names and resources can render before live VM inspection finishes.
+        // This command does not infer or return a running/stopped state.
+        read_metadata(&paths.metadata).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
@@ -3796,6 +3810,31 @@ mod tests {
             *max_cpus = 4;
         }
         assert!(validate_request(&request(vec![invalid])).is_err());
+    }
+
+    #[test]
+    fn saved_configuration_is_available_without_runtime_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let expected = request(vec![vm()]);
+        write_metadata(&paths.metadata, &expected).unwrap();
+
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), expected);
+        assert!(!paths.executable.exists());
+        assert!(!paths.home.exists());
+        assert!(!paths.library.exists());
+    }
+
+    #[test]
+    fn saved_configuration_distinguishes_first_launch_from_invalid_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("machines.json");
+        assert!(read_metadata(&path).unwrap().machines.is_empty());
+
+        fs::write(&path, b"not json").unwrap();
+        assert!(read_metadata(&path).is_err());
+        fs::write(&path, br#"{"schemaVersion":1,"machines":[]}"#).unwrap();
+        assert!(read_metadata(&path).is_err());
     }
 
     #[test]

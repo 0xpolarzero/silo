@@ -58,6 +58,7 @@ fn main() {
             backup_controller::cancel_backup_operation,
             backup_controller::dismiss_backup_operation,
             runtime::read_application_state,
+            runtime::read_machine_configuration,
             runtime::configure_workspace_identities,
             runtime::verify_workspace_identities,
             runtime::workspace_action,
