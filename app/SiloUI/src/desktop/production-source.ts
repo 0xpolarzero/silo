@@ -128,7 +128,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     error: null,
   }
   type SetupItem = NonNullable<OnboardingSource["setupQueue"]>[number]
-  type SetupJob = { items: SetupItem[] }
+  type SetupJob = { items: SetupItem[]; activityId: string }
   let setupJobs: SetupJob[] = []
   let activeMachineJob: SetupJob | undefined
   let setupTail: Promise<unknown> = Promise.resolve()
@@ -283,20 +283,30 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     projectSetupJobs()
   }
 
-  function enqueueSetup<T>(ids: SetupQueueItemID[], work: (job: SetupJob) => Promise<T>): Promise<T> {
+  function recordGitHubActivity(requestId: string, phase: "github" | "identity", message: string, failed = false) {
+    const event: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId, phase, step: `${phase}-setup`, timestamp: Date.now(), level: failed ? "error" : "info", message, safeForDisplay: true }
+    publish({ ...snapshot, setupActivity: [...(snapshot.setupActivity ?? []), event].slice(-500) })
+  }
+
+  function enqueueSetup<T>(ids: SetupQueueItemID[], work: (job: SetupJob) => Promise<T>, activityId = crypto.randomUUID()): Promise<T> {
     setSetupStatus(ids, "queued")
-    const job: SetupJob = { items: ids.map((id) => ({ id, status: "queued" })) }
+    const activityPhase = ids.includes("githubRun") ? "github" : ids.includes("identityRun") ? "identity" : null
+    const activityLabel = activityPhase === "github" ? "GitHub access" : "Git identity"
+    const job: SetupJob = { activityId, items: ids.map((id) => ({ id, status: "queued" })) }
     setupJobs.push(job)
     projectSetupJobs()
     const promise = setupTail.then(async () => {
       if (disposed) throw new Error("Silo was closed before the setup task started.")
       setJobStatus(job, [ids[0]], "running")
+      if (activityPhase) recordGitHubActivity(activityId, activityPhase, `${activityLabel}: applying settings.`)
       try {
         const result = await work(job)
         setJobStatus(job, ids, "succeeded")
+        if (activityPhase) recordGitHubActivity(activityId, activityPhase, `${activityLabel}: setup complete.`)
         return result
       } catch (cause) {
         setJobStatus(job, ids, "failed", errorMessage(cause))
+        if (activityPhase) recordGitHubActivity(activityId, activityPhase, `${activityLabel}: setup failed. Review the reported error before retrying.`, true)
         throw cause
       }
     })
@@ -380,28 +390,32 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     lastVerificationKey = undefined
     const machineJob = configureMachines(request.machineConfiguration)
     if (step === "workspaces") return machineJob
+    const activityId = crypto.randomUUID()
     const identities = request.github.workspaces.map(({ workspace, identity }) => ({ workspace, ...identity }))
     const identityKey = JSON.stringify([request.machineConfiguration, identities])
     if (lastIdentityJob?.key !== identityKey) {
       const promise = enqueueSetup(["identityRun", "identityVerify"], async () => {
         await machineJob
         await native.invoke("configure_workspace_identities", { identities })
-      })
+      }, activityId)
       lastIdentityJob = { key: identityKey, promise }
       void promise.catch(() => { if (lastIdentityJob?.promise === promise) lastIdentityJob = undefined })
     }
     const identityJob = lastIdentityJob.promise
     const key = JSON.stringify([request.machineConfiguration, request.github])
     if (lastGitHubJob?.key === key) return lastGitHubJob.promise
-    const promise = enqueueSetup(["githubRun", "githubVerify"], async () => {
+    const promise = enqueueSetup(["githubRun", "githubVerify"], async (job) => {
       await identityJob
       if (request.github.connectionState === "connected") {
         const previous = snapshot.source?.github
         let github = await githubMutation("save_github_configuration", { configuration: { accessEnabled: true, hostIdentity: snapshot.source?.github.hostIdentity ?? null, workspaces: request.github.workspaces.map((policy) => ({ repositoryMode: "selected", allRepositoriesAllowChanges: false, ...policy })) } })
         if (previous?.policyRevision === github.policyRevision && previous?.workspaceOperations?.some(({ status }) => status === "failed") && github.workspaceOperations?.some(({ status }) => status === "failed")) github = await githubMutation("retry_github_configuration")
+        setJobStatus(job, ["githubRun"], "succeeded")
+        setJobStatus(job, ["githubVerify"], "running")
+        recordGitHubActivity(job.activityId, "github", "GitHub settings saved. Waiting for each sandbox to confirm access.")
         await waitForGitHubAccess(github, request.github.workspaces.map(({ workspace }) => workspace))
       }
-    })
+    }, activityId)
     lastGitHubJob = { key, promise }
     void promise.catch(() => { if (lastGitHubJob?.promise === promise) lastGitHubJob = undefined })
     return promise
@@ -445,11 +459,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const sequence = ++githubMutationSequence
     githubMutationPending = command === "save_github_configuration"
     ++refreshSequence
+    const connectionAttempt = command === "connect_github" ? crypto.randomUUID() : null
+    if (connectionAttempt) recordGitHubActivity(connectionAttempt, "github", "Opening GitHub authorization in your browser.")
     try {
       const github = githubStateShape.parse(await native.invoke(command, arguments_))
       if (sequence === githubMutationSequence && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github }, error: null })
+      if (connectionAttempt) recordGitHubActivity(connectionAttempt, "github", github.state === "connected" ? "GitHub account connected." : "GitHub authorization is pending.")
       return github
     } catch (cause) {
+      if (connectionAttempt) recordGitHubActivity(connectionAttempt, "github", "GitHub connection did not complete. You can try connecting again.", true)
       if (command === "connect_github" && sequence === githubMutationSequence) {
         try {
           const github = githubStateShape.parse(await native.invoke("read_github_state"))

@@ -172,6 +172,7 @@ export interface GitHubAccessEditorProps {
   compactConnection?: boolean
   connectedTitle?: ReactNode
   connectedDetail?: ReactNode
+  connectionProgress?: ReactNode
   connectedActions?: ReactNode
   notice?: ReactNode
   renderWorkspaceActions?: (workspace: GitHubWorkspace) => ReactNode
@@ -200,6 +201,7 @@ export function GitHubAccessEditor({
   compactConnection = false,
   connectedTitle = "Connected to GitHub",
   connectedDetail = "Repository credentials are scoped to each workspace.",
+  connectionProgress,
   connectedActions,
   notice,
   renderWorkspaceActions,
@@ -240,6 +242,7 @@ export function GitHubAccessEditor({
             </div>
           )}
         />
+        {connectionProgress}
       </ListCard>
 
       {!currentHostGitIdentity && (

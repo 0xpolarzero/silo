@@ -16,6 +16,7 @@ interface ReviewStepProps {
   workspaces: WorkspaceView[]
   identitySummary: string
   githubSummary: string
+  githubConnected?: boolean
   errorMessage?: string
   errorRecovery?: string
   onRetryWorkspaceSetup: () => void
@@ -37,9 +38,10 @@ function ValidationBadge({ status }: { status: ReviewQueueItemView["status"] }) 
   )}>{status === "running" && <LoaderCircle className="size-2.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{statusLabel[status]}</span>
 }
 
-export function ReviewStep({ workspaceRetryable, queueItems, machines, workspaces, identitySummary, githubSummary, errorMessage, errorRecovery, onRetryWorkspaceSetup, onEditStep }: ReviewStepProps) {
+export function ReviewStep({ workspaceRetryable, queueItems, machines, workspaces, identitySummary, githubSummary, githubConnected = true, errorMessage, errorRecovery, onRetryWorkspaceSetup, onEditStep }: ReviewStepProps) {
   const identityItems = queueItems.filter(({ id }) => id === "identityRun" || id === "identityVerify")
   const githubItems = queueItems.filter(({ id }) => id === "githubRun" || id === "githubVerify")
+  const githubStatus = githubItems.some(({ status }) => status === "failed") ? "failed" : githubItems.some(({ status }) => status === "running") ? "running" : githubItems.length === 2 && githubItems.every(({ status }) => status === "succeeded") ? "succeeded" : githubItems.some(({ status }) => status === "queued") ? "queued" : "idle"
   const githubComplete = githubItems.length === 2 && githubItems.every(({ status }) => status === "succeeded")
   const identityFailure = identityItems.find(({ status }) => status === "failed")
   const identityStatus = identityFailure ? "failed"
@@ -101,7 +103,7 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, workspace
             role="group"
             aria-label={title}
             className={complete ? "bg-emerald-500/[0.035] hover:bg-emerald-500/[0.07] focus-within:bg-emerald-500/[0.07]" : undefined}
-            title={<>{title}{title === "Git author" && <ValidationBadge status={identityStatus} />}</>}
+            title={<>{title}{title === "Git author" ? <ValidationBadge status={identityStatus} /> : githubConnected ? <ValidationBadge status={githubStatus} /> : <span className="text-[10px] font-normal text-muted-foreground">Skipped</span>}</>}
             detail={title === "Git author" && identityFailure?.failure ? `${detail} · ${identityFailure.failure}` : detail}
             detailClassName={title === "Git author" && identityFailure ? "whitespace-normal break-words text-destructive" : undefined}
           />)}

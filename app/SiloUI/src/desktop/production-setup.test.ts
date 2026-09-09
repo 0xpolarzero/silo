@@ -203,9 +203,12 @@ describe("production setup queue", () => {
     const outcome = status === "failed" ? expect(result).rejects.toThrow("Policy rejected") : expect(result).resolves.toBeUndefined()
     await vi.waitFor(() => expect(github).toHaveBeenCalledTimes(2), { timeout: 1500 })
     expect(markComplete).not.toHaveBeenCalled()
-    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubRun")?.status).toBe("running")
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubRun")?.status).toBe("succeeded")
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubVerify")?.status).toBe("running")
+    expect(store.getSnapshot().setupActivity?.at(-1)?.message).toContain("Waiting for each sandbox")
     pending.resolve({ ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status, message: "Policy rejected", ...(status === "failed" ? { canRetry: true } : {}) }] })
     await outcome
+    expect(store.getSnapshot().setupActivity?.at(-1)).toMatchObject({ phase: "github", level: status === "failed" ? "error" : "info", safeForDisplay: true })
     expect(markComplete).toHaveBeenCalledTimes(status === "succeeded" ? 1 : 0)
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "identityVerify")?.status).toBe("succeeded")
     store.dispose()

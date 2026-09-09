@@ -104,6 +104,7 @@ describe("setup progress and review presentation", () => {
     ]} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
     const author = screen.getByRole("group", { name: "Git author" })
     expect(author).toHaveTextContent(label)
+    expect(screen.getByRole("group", { name: "GitHub access" })).toHaveTextContent(label)
     expect(author).toHaveTextContent("Alex · alex@example.com")
     for (const row of [author, screen.getByRole("group", { name: "GitHub access" })]) {
       expect(row.classList.contains("bg-emerald-500/[0.035]")).toBe(status === "succeeded")

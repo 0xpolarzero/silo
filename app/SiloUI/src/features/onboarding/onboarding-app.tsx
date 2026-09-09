@@ -344,6 +344,8 @@ export function OnboardingApp({
       </OnboardingPanel>
       <OnboardingPanel step="github" activeStep={activeStep}>
         <GitHubStep
+          queueItems={viewModel.queueItems}
+          activityEvents={source.activityEvents ?? source.progressEvents}
           workspaces={machineWorkspaceViews}
           connectionState={githubConnectionState}
           repositoryOptions={availableRepositories}
@@ -365,6 +367,7 @@ export function OnboardingApp({
           queueItems={viewModel.queueItems}
           workspaces={viewModel.workspaceProgress.workspaces}
           machines={machines}
+          githubConnected={githubConnectionState === "connected"}
           githubSummary={githubSummary}
           identitySummary={identitySummary}
           errorMessage={viewModel.error?.message}
