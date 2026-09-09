@@ -1,0 +1,47 @@
+# Authenticated GitHub regression
+
+This opt-in test calls Silo's native token implementation directly against GitHub. It requires no Silo server. Default tests never contact GitHub or mutate repositories.
+
+## Requirements
+
+Use three **disposable private repositories under one owner**, each authorized for the Silo GitHub App. Enable Issues in the write fixture. The App must have the approved repository permissions (including Contents and Issues write). The parent token must be a valid user token for that App, not a PAT. The deliberately denied fixture is authorized at the App level but excluded from the VM grants.
+
+Provide these values through a private local environment or secret manager. Never paste token values into chat, command arguments, committed files, logs or screenshots:
+
+- `SILO_GITHUB_CLIENT_ID`, `SILO_GITHUB_CLIENT_SECRET`
+- `SILO_GITHUB_TEST_USER_TOKEN`
+- `SILO_GITHUB_TEST_READ_REPO`, `SILO_GITHUB_TEST_READ_REPO_ID`
+- `SILO_GITHUB_TEST_WRITE_REPO`, `SILO_GITHUB_TEST_WRITE_REPO_ID`
+- `SILO_GITHUB_TEST_DENIED_REPO`, `SILO_GITHUB_TEST_DENIED_REPO_ID`
+- `SILO_GITHUB_TEST_CONFIRM=private-test-repositories`
+
+Repository names use `owner/name`. IDs are the GitHub numeric repository IDs. The confirmation authorizes mutations only in the explicitly named disposable fixtures. Exact names, IDs, common ownership and privacy are verified before minting tokens or making mutations. Parent authorization is never revoked.
+
+From the repository root:
+
+```sh
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --offline \
+  github_authenticated_native_workflow -- --ignored --test-threads=1
+```
+
+The test verifies:
+
+- Native read/write token creation and exact repository boundaries through REST and GraphQL.
+- Forbidden repository access by both repository name and GraphQL node ID.
+- One uniquely marked issue created using the write token; REST and node-ID writes denied using the read token; an allowed node-ID update.
+- Child-token re-scoping through native code and directly through GitHub, plus direct child-token reset: neither may expand repository or write authority. Network, rate-limit and unexpected responses are not accepted as proof of denial.
+- “All repositories” includes all three authorized fixture repositories.
+- Individual child revocation leaves the parent and sibling token usable.
+- Finally, the test issue is closed and child tokens are individually revoked, including tokens created by the escalation probes.
+
+A failure reports only the stage, never a token or raw HTTP response. Check the named write repository for an issue titled `Silo authenticated regression <UUID>` if cleanup is unconfirmed. Closed issues remain as test evidence. A lost response to token mint or issue creation is ambiguous: it cannot safely be retried or guaranteed cleaned up; inspect the disposable fixtures and let unknown short-lived tokens expire. Never run this against working repositories.
+
+## Actual VM Git, gh and LFS
+
+Also provide `SILO_TEST_MSB` and `SILO_TEST_LIBKRUNFW` pointing to Silo's patched MicroSandbox binary and library, and set `SILO_GITHUB_TEST_VM=1`. Run the same command with hardware virtualization permissions.
+
+After native checks, the harness starts the existing ignored `github_authenticated_guest_workflow` test. Its process receives only scoped child tokens, fixture names and the required host toolchain environment. It does not receive the App client secret or parent user token. Child output is suppressed to avoid credential disclosure.
+
+The guest test uses a temporary managed VM to check real Git clone/fetch/push, `gh`, Git LFS roundtrip, absence of real tokens in guest environment/configuration, live write removal, full access removal, restoration and unchanged VM boot ID. It creates a unique test branch and deletes it during cleanup. Uploaded LFS objects can remain in GitHub storage after branch deletion; these repositories must be disposable.
+
+This harness does not automate browser consent, sign-in cancellation, token refresh expiry or Linux hardware. Those require their own explicit verification. A passing ordinary suite or a compiled ignored test is **not** an authenticated integration pass.
