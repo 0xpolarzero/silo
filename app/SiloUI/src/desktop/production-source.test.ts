@@ -31,6 +31,49 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("publishes saved sandbox configuration before requesting live state", async () => {
+    const machines = source.workspaces.map(({ machine }) => structuredClone(machine))
+    const invoke = vi.fn().mockResolvedValue({ schemaVersion: 1, machines })
+    const mock = native({ invoke })
+    const store = createProductionSource(mock.bridge)
+    const changed = vi.fn()
+    store.subscribe(changed)
+
+    await store.loadConfiguration()
+
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("read_machine_configuration")
+    expect(store.getSnapshot()).toMatchObject({ savedMachines: machines, source: null, loading: true, error: null })
+    expect(changed).toHaveBeenCalledOnce()
+    store.dispose()
+  })
+
+  it("accepts an empty saved configuration for a fresh install", async () => {
+    const mock = native({ invoke: vi.fn().mockResolvedValue({ schemaVersion: 1, machines: [] }) })
+    const store = createProductionSource(mock.bridge)
+
+    await store.loadConfiguration()
+
+    expect(store.getSnapshot().savedMachines).toEqual([])
+    expect(store.getSnapshot().source).toBeNull()
+    store.dispose()
+  })
+
+  it.each([
+    { schemaVersion: 2, machines: [] },
+    { schemaVersion: 1, machines: [{ name: "invalid" }] },
+    { schemaVersion: 1, machines: "unreadable" },
+    null,
+  ])("rejects malformed saved configuration without publishing sandbox rows: %j", async (configuration) => {
+    const mock = native({ invoke: vi.fn().mockResolvedValue(configuration) })
+    const store = createProductionSource(mock.bridge)
+
+    await expect(store.loadConfiguration()).rejects.toThrow()
+
+    expect(store.getSnapshot().savedMachines).toBeUndefined()
+    expect(store.getSnapshot().source).toBeNull()
+    store.dispose()
+  })
+
   it("invokes explicit host push and shows a native command failure without success", async () => {
     const mock = native()
     const original = mock.invoke.getMockImplementation()!
