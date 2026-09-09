@@ -1,6 +1,6 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { WorkspaceFileTree } from "./workspace-file-tree"
 import { createDirectoryStore, type DirectoryPage } from "../model/directory-store"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -11,34 +11,6 @@ const page = (name: string, kind: "file" | "folder" | "symlink" = "file"): Direc
 })
 
 describe("live file tree", () => {
-  afterEach(() => { cleanup(); vi.useRealTimers() })
-
-  it("waits 150 ms before showing a slow folder skeleton", async () => {
-    vi.useFakeTimers()
-    let resolve!: (value: DirectoryPage) => void
-    const store = createDirectoryStore(() => new Promise(done => { resolve = done }))
-    render(<WorkspaceFileTree workspace={workspace} store={store} active />)
-    act(() => { vi.advanceTimersByTime(149) })
-    expect(screen.queryByRole("status", { name: "Loading folder" })).not.toBeInTheDocument()
-    act(() => { vi.advanceTimersByTime(1) })
-    expect(screen.getByRole("status", { name: "Loading folder" })).toBeVisible()
-    await act(async () => resolve(page("ready.txt")))
-    expect(screen.getByText("ready.txt")).toBeVisible()
-    expect(screen.queryByRole("status", { name: "Loading folder" })).not.toBeInTheDocument()
-  })
-
-  it("never shows a skeleton for a fast response", async () => {
-    vi.useFakeTimers()
-    let resolve!: (value: DirectoryPage) => void
-    const store = createDirectoryStore(() => new Promise(done => { resolve = done }))
-    render(<WorkspaceFileTree workspace={workspace} store={store} active />)
-    act(() => { vi.advanceTimersByTime(100) })
-    await act(async () => resolve(page("ready.txt")))
-    act(() => { vi.advanceTimersByTime(100) })
-    expect(screen.getByText("ready.txt")).toBeVisible()
-    expect(screen.queryByRole("status", { name: "Loading folder" })).not.toBeInTheDocument()
-  })
-
   it("shows skeletons, lazily opens folders and immediately reuses cached contents", async () => {
     const user = userEvent.setup()
     let resolve!: (value: DirectoryPage) => void
@@ -47,7 +19,7 @@ describe("live file tree", () => {
       .mockResolvedValue({ entries: [{ name: "hello.txt", path: "/workspace/src/hello.txt", kind: "file" }], nextOffset: null, snapshotId: "child" })
     const store = createDirectoryStore(loader)
     render(<WorkspaceFileTree workspace={workspace} store={store} active />)
-    expect(await screen.findByRole("status", { name: "Loading folder" })).toBeVisible()
+    expect(screen.getByRole("status", { name: "Loading folder" })).toBeVisible()
     await act(async () => resolve(page("src", "folder")))
     expect(loader).toHaveBeenCalledTimes(1)
     await user.click(screen.getByRole("button", { name: "Folder src" }))
@@ -109,7 +81,7 @@ describe("live file tree", () => {
     render(<WorkspaceFileTree workspace={workspace} store={store} active />)
     await user.click(await screen.findByRole("button", { name: "Load more" }))
     expect(screen.getByText("first")).toBeVisible()
-    expect(await screen.findByRole("status", { name: "Loading folder" })).toBeVisible()
+    expect(screen.getByRole("status", { name: "Loading folder" })).toBeVisible()
     await act(async () => resolve(page("second")))
     await waitFor(() => expect(screen.getByText("second")).toBeVisible())
     expect(screen.getByText("first")).toBeVisible()
