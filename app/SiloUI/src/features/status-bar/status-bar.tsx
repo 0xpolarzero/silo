@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react"
+import { useRef, useState, type ComponentType, type ReactNode } from "react"
 import { ChevronRight, CircleAlert, Code, ExternalLink, GitBranch, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
@@ -28,13 +28,15 @@ function MenuItem({ children, icon, onSelect, disabled }: { children: ReactNode;
   return <DropdownMenu.Item className={menuItemClass} disabled={disabled} onSelect={onSelect}>{icon}{children}</DropdownMenu.Item>
 }
 
-function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: {
+export interface WorkspaceMenuProps {
   workspace: ApplicationWorkspace
   source: ApplicationSource
   actions: StatusBarActions
   onFolders: () => void
   onConfirm: (action: "stop" | "restart") => void
-}) {
+}
+
+function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: WorkspaceMenuProps) {
   const { machine } = workspace
   const { canOpen, canStart, canStop, canRestart } = workspaceAvailability(workspace, source)
   const sites = workspace.ports.filter(({ listening }) => listening === true).sort((a, b) => a.port - b.port)
@@ -125,7 +127,7 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
   )
 }
 
-export function StatusBarContent({ source, actions, focusContent }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void }) {
+export function StatusBarContent({ source, actions, focusContent, workspaceMenu: WorkspaceActions = WorkspaceMenu }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void; workspaceMenu?: ComponentType<WorkspaceMenuProps> }) {
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<{ workspace: string; action: "stop" | "restart" } | null>(null)
   const repair = source.runtimeRepair
@@ -204,7 +206,7 @@ export function StatusBarContent({ source, actions, focusContent }: { source: Ap
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} onClick={() => setFolderWorkspace(machine.id)}><Code /></SandboxAction>
                         </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => actions.startWorkspace(machine.name)}><Play /></SandboxAction>
                           : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: machine.name })}><SiloMark /></SandboxAction>)}
-                    <WorkspaceMenu workspace={workspace} source={source} actions={actions} onFolders={() => setFolderWorkspace(machine.id)} onConfirm={(action) => setConfirmation({ workspace: machine.name, action })} />
+                    <WorkspaceActions workspace={workspace} source={source} actions={actions} onFolders={() => setFolderWorkspace(machine.id)} onConfirm={(action) => setConfirmation({ workspace: machine.name, action })} />
                   </>}
                 />
                 <RepositoryPushes workspace={workspace} source={source} actions={actions} />
