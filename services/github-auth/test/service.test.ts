@@ -107,3 +107,20 @@ test('change-enabled tokens preserve the App installation workflow and project g
  assert.equal(result.status,200);
  assert.deepEqual(scoped?.permissions,{contents:'write',workflows:'write',repository_projects:'admin',metadata:'read'});
 });
+
+test('restricted token revocation deletes only that token, never the parent authorization',async()=>{
+ const calls:{url:string;method:string|undefined;body:unknown}[]=[];
+ const handle=createHandler(config,async(input,init)=>{
+  calls.push({url:String(input),method:init?.method,body:JSON.parse(String(init?.body))});
+  return new Response(null,{status:204});
+ });
+ const result=await handle(post('/v1/tokens/revoke',{accessToken:'restricted-token'}));
+ assert.equal(result.status,200);assert.deepEqual(await result.json(),{revoked:true});
+ assert.deepEqual(calls,[{url:`https://api.github.com/applications/${config.clientId}/token`,method:'DELETE',body:{access_token:'restricted-token'}}]);
+});
+test('restricted token revocation is idempotent but does not hide a network failure',async()=>{
+ const missing=createHandler(config,async()=>json({message:'Not Found'},404));
+ assert.equal((await missing(post('/v1/tokens/revoke',{accessToken:'restricted-token'}))).status,200);
+ const failed=createHandler(config,async()=>{throw Error('network unavailable');});
+ assert.equal((await failed(post('/v1/tokens/revoke',{accessToken:'restricted-token'}))).status,502);
+});

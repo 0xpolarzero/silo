@@ -1,5 +1,5 @@
 import {request as octokitRequest} from '@octokit/request';
-import {exchangeWebFlowCode,refreshToken,scopeToken,deleteAuthorization} from '@octokit/oauth-methods';
+import {exchangeWebFlowCode,refreshToken,scopeToken,deleteAuthorization,deleteToken} from '@octokit/oauth-methods';
 
 export interface Configuration {clientId:string;clientSecret:string}
 type ObjectValue=Record<string,unknown>;
@@ -32,7 +32,7 @@ export function createHandler(config:Configuration,fetchImplementation:typeof fe
    const auth={clientType:'github-app' as const,clientId:config.clientId,clientSecret:config.clientSecret,request:operation};
    const url=new URL(req.url);
    if(url.pathname==='/health'&&req.method==='GET')return reply(200,{status:'ok'});
-   if(!['/v1/oauth/exchange','/v1/oauth/refresh','/v1/oauth/revoke','/v1/tokens/scope'].includes(url.pathname))return reply(404,{error:'Not found.'});
+   if(!['/v1/oauth/exchange','/v1/oauth/refresh','/v1/oauth/revoke','/v1/tokens/scope','/v1/tokens/revoke'].includes(url.pathname))return reply(404,{error:'Not found.'});
    if(req.method!=='POST')return reply(405,{error:'POST required.'});
    if(req.headers.has('origin'))return reply(403,{error:'This endpoint accepts native application requests only.'});
    if(req.headers.get('content-type')?.split(';')[0].trim()!=='application/json')return reply(415,{error:'JSON required.'});
@@ -52,6 +52,10 @@ export function createHandler(config:Configuration,fetchImplementation:typeof fe
    }
    if(url.pathname==='/v1/oauth/revoke'){
     try{await deleteAuthorization({...auth,token:string(input.accessToken)});}catch(error){if(objectStatus(error)!==404)throw error;}
+    return reply(200,{revoked:true});
+   }
+   if(url.pathname==='/v1/tokens/revoke'){
+    try{await deleteToken({...auth,token:string(input.accessToken)});}catch(error){if(objectStatus(error)!==404)throw error;}
     return reply(200,{revoked:true});
    }
    const token=string(input.accessToken),ownerId=positiveId(input.ownerId),allowChanges=boolean(input.allowChanges);

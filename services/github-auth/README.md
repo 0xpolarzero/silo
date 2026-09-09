@@ -43,6 +43,7 @@ are rejected. GitHub errors are reduced to safe messages, never echoed raw.
 | `/v1/oauth/refresh` | `refreshToken` | Same token response |
 | `/v1/oauth/revoke` | `accessToken` | `revoked: true` |
 | `/v1/tokens/scope` | `accessToken`, `ownerId`, `repositoryIds`, `allowChanges`, optional `allRepositories` | `accessToken`, `expiresAt` |
+| `/v1/tokens/revoke` | `accessToken` (one restricted token) | `revoked: true` |
 
 Selected mode requires 1–500 unique positive repository IDs. All mode requires an
 empty ID list and an explicit `allRepositories: true`. It scopes to that owner and
@@ -63,3 +64,5 @@ implementation replaces Octokit.
 - [GitHub scoped tokens](https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token)
 - [Octokit OAuth methods](https://github.com/octokit/oauth-methods.js)
 - [GitHub App OAuth and PKCE](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
+
+Restricted-token revocation uses GitHub’s individual `DELETE /applications/{client_id}/token` endpoint. Disconnecting the whole account uses the separate authorization revocation endpoint. The tests verify these exact endpoints; a live proof that revoking a scoped child preserves its parent authorization still requires a configured App.

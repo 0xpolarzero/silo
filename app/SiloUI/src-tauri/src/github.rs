@@ -18,6 +18,8 @@ use tauri::Manager;
 
 static OPERATION: Mutex<()> = Mutex::new(());
 static SESSION: OnceLock<String> = OnceLock::new();
+static PENDING_RETIREMENTS: OnceLock<Mutex<std::collections::HashMap<String, Vec<String>>>> =
+    OnceLock::new();
 fn session() -> &'static str {
     SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
@@ -58,6 +60,10 @@ struct Document {
     refresh_at: u64,
     #[serde(default)]
     catalog_error: Option<String>,
+    #[serde(default)]
+    catalog_refresh_at: u64,
+    #[serde(default)]
+    grants_issued: bool,
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -249,6 +255,7 @@ fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
             }
         }
         if items.len() < 100 {
+            repos.sort_by_key(|repo| repo["id"].as_u64().unwrap_or(0));
             return Ok((repos, installed));
         }
     }
@@ -266,18 +273,162 @@ pub fn snapshot(app: &tauri::AppHandle) -> Result<Value, String> {
         json!({"state":if CONNECTING.load(Ordering::SeqCst){"connecting"}else if connected{"connected"}else{"disconnected"},"account":d.account,"accessEnabled":d.access_enabled,"hostIdentity":crate::host_identity::read(),"repositoryCatalog":d.repositories.iter().filter_map(|r|r["name"].as_str()).collect::<Vec<_>>(),"repositoryCatalogStatus":match &d.catalog_error { Some(message)=>json!({"status":"unavailable","message":message,"canRetry":true}),None=>json!({"status":"available"})},"workspaces":d.workspaces,"workspaceOperations":d.operations}),
     )
 }
+type TokenLedger = std::collections::HashMap<String, Vec<String>>;
+fn ledger_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new("org.silo.Silo.github", "runtime-grants")
+        .map_err(|_| "The system credential store is unavailable.".into())
+}
+fn read_ledger(entry: &keyring::Entry) -> Result<TokenLedger, String> {
+    match entry.get_password() {
+        Ok(secret) => serde_json::from_str(&secret)
+            .map_err(|_| "Stored GitHub runtime credentials are invalid.".into()),
+        Err(keyring::Error::NoEntry) => Ok(TokenLedger::new()),
+        Err(_) => {
+            Err("Cannot read GitHub runtime credentials from the system credential store.".into())
+        }
+    }
+}
+fn save_ledger(entry: &keyring::Entry, ledger: &TokenLedger) -> Result<(), String> {
+    entry
+        .set_password(
+            &serde_json::to_string(ledger)
+                .map_err(|_| "Cannot encode GitHub runtime credentials.")?,
+        )
+        .map_err(|_| {
+            "Cannot save GitHub runtime credentials in the system credential store.".into()
+        })
+}
+fn remember_grants(
+    app: &tauri::AppHandle,
+    workspace: &str,
+    grants: &[RuntimeGrant],
+) -> Result<(), String> {
+    if grants.is_empty() {
+        return Ok(());
+    }
+    let entry = ledger_entry()?;
+    let mut ledger = read_ledger(&entry)?;
+    let tokens = ledger.entry(workspace.into()).or_default();
+    for grant in grants {
+        tokens.push(grant.read_token.clone());
+        if let Some(write) = &grant.write_token {
+            tokens.push(write.clone());
+        }
+    }
+    tokens.sort();
+    tokens.dedup();
+    save_ledger(&entry, &ledger)?;
+    let mut document = load(app)?;
+    document.grants_issued = true;
+    save(app, &document)
+}
+
+fn retire_previous(app: &tauri::AppHandle, workspace: &str, revision: u64) -> Result<(), String> {
+    let pending = PENDING_RETIREMENTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut tokens = crate::runtime::scoped_cached_tokens(app, workspace)?;
+    if tokens.is_empty()
+        && !load(app)?.grants_issued
+        && pending
+            .lock()
+            .map_err(|_| "GitHub revocation state is unavailable.")?
+            .get(workspace)
+            .is_none()
+    {
+        // GitHub is optional. A sandbox that has never received credentials does not need a keyring to stay disabled.
+        return crate::runtime::apply_github_policy(
+            app,
+            workspace,
+            revision,
+            &json!({"version":1,"owners":[]}),
+        );
+    }
+    let ledger_entry = ledger_entry();
+    let mut ledger = ledger_entry
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(read_ledger);
+    if let Ok(stored) = &ledger {
+        if let Some(previous) = stored.get(workspace) {
+            tokens.extend(previous.iter().cloned());
+        }
+    }
+
+    if let Some(previous) = pending
+        .lock()
+        .map_err(|_| "GitHub revocation state is unavailable.")?
+        .get(workspace)
+    {
+        tokens.extend(previous.iter().cloned());
+    }
+    tokens.sort();
+    tokens.dedup();
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut first_failure = ledger.as_ref().err().cloned();
+    let mut remaining = Vec::new();
+    for token in tokens {
+        if first_failure.is_none() && Instant::now() < deadline {
+            if service("/v1/tokens/revoke", json!({"accessToken":&token})).is_ok() {
+                continue;
+            }
+        }
+        first_failure=Some("GitHub could not confirm that previous access was revoked. Access remains pending; retry when connected.".to_string());
+        remaining.push(token);
+    }
+    if let (Ok(entry), Ok(stored)) = (&ledger_entry, &mut ledger) {
+        let previous = stored.clone();
+        if remaining.is_empty() {
+            stored.remove(workspace);
+        } else {
+            stored.insert(workspace.into(), remaining.clone());
+        }
+        if previous != *stored {
+            if let Err(message) = save_ledger(entry, stored) {
+                first_failure = Some(message);
+            }
+        }
+    }
+    let mut state = pending
+        .lock()
+        .map_err(|_| "GitHub revocation state is unavailable.")?;
+    if remaining.is_empty() {
+        state.remove(workspace);
+    } else {
+        state.insert(workspace.into(), remaining);
+    }
+    drop(state);
+    // Always disable locally too, even when GitHub is offline. Never lose the failed-token retry list.
+    let local = crate::runtime::apply_github_policy(
+        app,
+        workspace,
+        revision,
+        &json!({"version":1,"owners":[]}),
+    );
+    match (first_failure, local) {
+        (None, Ok(())) => Ok(()),
+        (Some(message), _) => Err(message),
+        (None, Err(message)) => Err(message),
+    }
+}
+
 fn apply(app: &tauri::AppHandle, d: &mut Document, workspace: Option<&str>) -> Result<(), String> {
-    let mut refresh_at = now() + 3600;
+    let generation = CANCELLATION.load(Ordering::SeqCst);
+    let mut refresh_at = if workspace.is_some() {
+        d.refresh_at.min(now() + 3600)
+    } else {
+        now() + 3600
+    };
     for w in &d.workspaces {
         let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
         if workspace.is_some_and(|target| target != name) {
             continue;
         }
         // Revoke old authority before fetching replacements. A network/store failure must not keep old writes active.
-        let result = crate::runtime::apply_github_policy(app,name,d.revision,&json!({"version":1,"owners":[]}))
-        .and_then(|_| runtime_grants(app,name)).and_then(|grants| {
+        let result = retire_previous(app,name,d.revision)
+        .and_then(|_| { if CANCELLATION.load(Ordering::SeqCst)!=generation {Err("GitHub access changed during this operation. Applying the latest choice.".into())} else {runtime_grants(app,name)} }).and_then(|grants| {
+            if CANCELLATION.load(Ordering::SeqCst)!=generation {return Err("GitHub access changed during this operation. Applying the latest choice.".into());}
             if let Some(expiry)=grants.iter().map(|g|g.expires_at).min() { refresh_at=refresh_at.min(expiry.saturating_sub(120)); }
-            let profiles=json!({"version":1,"owners":grants.into_iter().map(|g|json!({"login":g.owner_login,"readToken":g.read_token,"writeToken":g.write_token,"expiresAt":g.expires_at})).collect::<Vec<_>>()});
+            remember_grants(app,name,&grants)?;
+            let profiles=json!({"version":1,"owners":grants.into_iter().map(|g|json!({"login":g.owner_login,"repositoryIds":g.repository_ids,"readToken":g.read_token,"writeToken":g.write_token,"expiresAt":g.expires_at})).collect::<Vec<_>>()});
             crate::runtime::apply_github_policy(app,name,d.revision,&profiles)?;
             crate::runtime::apply_github_identity(app,name,&w["identity"])
         });
@@ -296,13 +447,20 @@ fn apply(app: &tauri::AppHandle, d: &mut Document, workspace: Option<&str>) -> R
             .retain(|op| op["workspace"].as_str() != Some(name));
         d.operations.push(operation);
     }
+    // Grant issuance refreshes the authorized catalog. Retain that observation
+    // instead of overwriting it with this operation's earlier policy snapshot.
+    let latest = load(app)?;
+    d.repositories = latest.repositories;
+    d.catalog_error = latest.catalog_error;
+    d.catalog_refresh_at = latest.catalog_refresh_at;
+    d.grants_issued = latest.grants_issued;
     d.session = session().into();
     d.refresh_at = refresh_at;
     save(app, d)
 }
 
 fn validate(workspaces: &[Value]) -> Result<(), String> {
-    if workspaces.len() > 1000 {
+    if workspaces.len() > 64 {
         return Err("Too many sandbox policies.".into());
     };
     let mut names = std::collections::HashSet::new();
@@ -327,6 +485,24 @@ fn validate(workspaces: &[Value]) -> Result<(), String> {
             .as_str()
             .filter(|s| !s.is_empty() && s.len() <= 200)
             .ok_or("Missing sandbox name.")?;
+        crate::runtime::validate_name(name).map_err(|error| error.to_string())?;
+        let identity = w["identity"]
+            .as_object()
+            .ok_or("Missing Git identity settings.")?;
+        if identity
+            .keys()
+            .any(|key| !["name", "email", "apply"].contains(&key.as_str()))
+            || !w["identity"]["apply"].is_boolean()
+            || ["name", "email"].iter().any(|key| {
+                w["identity"][key].as_str().is_none_or(|value| {
+                    value.len() > 1024
+                        || value.chars().any(char::is_control)
+                        || (w["identity"]["apply"] == true && value.trim().is_empty())
+                })
+            })
+        {
+            return Err("Invalid Git identity settings.".into());
+        }
         if !names.insert(name) {
             return Err("Duplicate sandbox policy.".into());
         };
@@ -341,6 +517,13 @@ fn validate(workspaces: &[Value]) -> Result<(), String> {
             .as_array()
             .ok_or("Invalid repository selection.")?
         {
+            if r.as_object().is_none_or(|fields| {
+                fields
+                    .keys()
+                    .any(|key| !["repository", "allowPushes"].contains(&key.as_str()))
+            }) {
+                return Err("Unknown repository policy field.".into());
+            }
             let n = r["repository"].as_str().ok_or("Invalid repository name.")?;
             if !repository_names.insert(n.to_ascii_lowercase())
                 || n.split('/').count() != 2
@@ -401,6 +584,8 @@ pub(crate) fn runtime_grants(
     validate(std::slice::from_ref(&policy))?;
     let c = active_credential()?;
     d.repositories = catalog(&c)?;
+    d.catalog_error = None;
+    d.catalog_refresh_at = now() + 300;
     save(app, &d)?;
     let all = policy["repositoryMode"].as_str() == Some("all");
     let selected = policy["repositories"]
@@ -482,6 +667,56 @@ pub(crate) fn runtime_grants(
         });
     }
     Ok(grants)
+}
+
+/// Explicit host Push only: does not grant write access to the guest or modify its policy.
+pub(crate) fn host_push_credential(
+    app: &tauri::AppHandle,
+    workspace: &str,
+    repository: &str,
+) -> Result<String, String> {
+    let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+    let d = load(app)?;
+    if !d.access_enabled {
+        return Err("Enable GitHub access before pushing.".into());
+    }
+    let policy = d
+        .workspaces
+        .iter()
+        .find(|w| w["workspace"].as_str() == Some(workspace))
+        .ok_or("This sandbox has no GitHub repository authorization.")?;
+    validate(std::slice::from_ref(policy))?;
+    if policy["repositoryMode"].as_str() != Some("all")
+        && !policy["repositories"].as_array().is_some_and(|repos| {
+            repos
+                .iter()
+                .any(|r| r["repository"].as_str() == Some(repository))
+        })
+    {
+        return Err("This repository is not authorized for the sandbox.".into());
+    }
+    let c = active_credential()?;
+    let catalog = catalog(&c)?;
+    let repo = catalog
+        .iter()
+        .find(|r| r["name"].as_str() == Some(repository))
+        .ok_or("GitHub no longer authorizes this repository.")?;
+    let owner = repo["ownerId"]
+        .as_u64()
+        .ok_or("Invalid repository owner.")?;
+    let id = repo["id"]
+        .as_u64()
+        .ok_or("Invalid repository identifier.")?;
+    let response = service(
+        "/v1/tokens/scope",
+        json!({"accessToken":c.access_token,"ownerId":owner,"repositoryIds":[id],"allowChanges":true}),
+    )?;
+    token_expiry(&response)?;
+    response["accessToken"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "GitHub returned no restricted push credential.".into())
 }
 
 fn callback(request: &str, state: &str) -> Result<Option<String>, String> {
@@ -634,8 +869,15 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
         }
     }
     d.repositories = repos;
+    d.catalog_error = None;
+    d.catalog_refresh_at = now() + 300;
+    if CANCELLATION.load(Ordering::SeqCst) != generation {
+        return Err("GitHub connection cancelled.".into());
+    }
     store(&c)?;
+    d.revision += 1;
     save(app, &d)?;
+    apply(app, &mut d, None)?;
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -644,12 +886,39 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
     snapshot(app)
 }
 
+fn catalog_refresh_due(d: &Document, now: u64) -> bool {
+    d.access_enabled
+        && now >= d.catalog_refresh_at
+        && d.workspaces
+            .iter()
+            .any(|w| w["repositoryMode"].as_str() == Some("all"))
+}
+
 /// Re-establish host-only grants after relaunch and renew them before expiry.
 pub fn install(app: &tauri::AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || loop {
         if let Ok(_guard) = OPERATION.try_lock() {
             if let Ok(mut d) = load(&app) {
+                // All repositories includes newly authorized owners as well as new repos.
+                // Refresh the catalog independently of token expiry; unchanged catalogs do not interrupt connections.
+                if catalog_refresh_due(&d, now()) && credential().is_ok_and(|c| c.is_some()) {
+                    match active_credential().and_then(|c| catalog(&c)) {
+                        Ok(repositories) => {
+                            if d.repositories != repositories {
+                                d.refresh_at = 0;
+                            }
+                            d.repositories = repositories;
+                            d.catalog_error = None;
+                            d.catalog_refresh_at = now() + 300;
+                        }
+                        Err(message) => {
+                            d.catalog_error = Some(message);
+                            d.catalog_refresh_at = now() + 60;
+                        }
+                    }
+                    let _ = save(&app, &d);
+                }
                 if !d.workspaces.is_empty() && (d.session != session() || now() >= d.refresh_at) {
                     let _ = apply(&app, &mut d, None);
                 }
@@ -729,6 +998,9 @@ pub async fn set_github_access_enabled(
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<Value, String> {
+    if !enabled {
+        CANCELLATION.fetch_add(1, Ordering::SeqCst);
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
         let mut d = load(&app)?;
@@ -746,6 +1018,7 @@ pub async fn save_github_configuration(
     app: tauri::AppHandle,
     configuration: Value,
 ) -> Result<Value, String> {
+    CANCELLATION.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
         let ws = configuration["workspaces"]
@@ -758,12 +1031,7 @@ pub async fn save_github_configuration(
                 .as_str()
                 .ok_or("Invalid saved sandbox policy.")?;
             if !ws.iter().any(|w| w["workspace"].as_str() == Some(name)) {
-                crate::runtime::apply_github_policy(
-                    &app,
-                    name,
-                    d.revision + 1,
-                    &json!({"version":1,"owners":[]}),
-                )?;
+                retire_previous(&app, name, d.revision + 1)?;
             }
         }
         d.workspaces = ws.clone();
@@ -796,6 +1064,43 @@ pub async fn retry_github_configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtime_token_ledger_survives_reload_only_in_secure_store() {
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        assert!(read_ledger(&entry).unwrap().is_empty());
+        let mut ledger = TokenLedger::new();
+        ledger.insert("dev".into(), vec!["test-scoped-token".into()]);
+        save_ledger(&entry, &ledger).unwrap();
+        assert_eq!(read_ledger(&entry).unwrap(), ledger);
+        let mock = entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .unwrap();
+        mock.set_error(keyring::Error::Invalid(
+            "locked".into(),
+            "private detail".into(),
+        ));
+        assert!(read_ledger(&entry).is_err());
+        assert_eq!(read_ledger(&entry).unwrap(), ledger);
+    }
+    #[test]
+    fn all_repositories_refreshes_new_owners_before_token_expiry() {
+        let mut d = Document {
+            access_enabled: true,
+            workspaces: vec![json!({"repositoryMode":"all"})],
+            catalog_refresh_at: 100,
+            refresh_at: 3600,
+            ..Default::default()
+        };
+        assert!(!catalog_refresh_due(&d, 99));
+        assert!(catalog_refresh_due(&d, 100));
+        d.workspaces[0]["repositoryMode"] = json!("selected");
+        assert!(!catalog_refresh_due(&d, 100));
+        d.workspaces[0]["repositoryMode"] = json!("all");
+        d.access_enabled = false;
+        assert!(!catalog_refresh_due(&d, 100));
+    }
     #[test]
     fn secure_store_failure_does_not_become_disconnected_or_save_plaintext() {
         let entry =
@@ -863,9 +1168,26 @@ mod tests {
     }
     #[test]
     fn reject_ambiguous_policy() {
-        assert!(validate(&[json!({"workspace":"a","repositoryMode":"all","allRepositoriesAllowChanges":false,"repositories":[]})]).is_ok());
+        assert!(validate(&[json!({"workspace":"a","repositoryMode":"all","allRepositoriesAllowChanges":false,"repositories":[],"identity":{"name":"","email":"","apply":false}})]).is_ok());
         assert!(validate(&[json!({"workspace":"a","repositoryMode":"anything","allRepositoriesAllowChanges":false,"repositories":[]})]).is_err());
     }
+    #[test]
+    fn rejects_unknown_nested_policy_data_and_invalid_identity() {
+        let good = json!({"workspace":"dev","repositoryMode":"selected","allRepositoriesAllowChanges":false,
+            "repositories":[{"repository":"owner/repo","allowPushes":false}],
+            "identity":{"name":"Name","email":"name@example.invalid","apply":true}});
+        assert!(validate(&[good.clone()]).is_ok());
+        let mut injected = good.clone();
+        injected["identity"]["accessToken"] = json!("must-not-persist");
+        assert!(validate(&[injected]).is_err());
+        let mut injected = good.clone();
+        injected["repositories"][0]["credential"] = json!("must-not-persist");
+        assert!(validate(&[injected]).is_err());
+        let mut invalid = good;
+        invalid["identity"]["name"] = json!("name\ncommand");
+        assert!(validate(&[invalid]).is_err());
+    }
+
     #[test]
     fn missing_token_response_is_error() {
         assert!(from_response(json!({})).is_err());
