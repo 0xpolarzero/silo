@@ -4,6 +4,7 @@ import { ArrowLeft, ChevronRight, Code, Folder, Search } from "lucide-react"
 import { ListCard } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { FolderBreadcrumbs } from "@/components/folder-breadcrumbs"
 import type { ApplicationWorkspace } from "@/features/application/model/application-source"
 
 import { createDirectoryStore, directoryKey, type DirectoryLoader } from "@/features/application/model/directory-store"
@@ -67,14 +68,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
         </div>
       </header>
       <div className="grid min-h-0 flex-auto content-start gap-2 overflow-y-auto p-3">
-        <nav aria-label="Folder path" className="flex min-w-0 items-center gap-0.5 overflow-x-auto text-[11px]">
-          {["/workspace", ...segments].map((segment, index) => (
-            <span key={index} className="flex shrink-0 items-center gap-0.5">
-              {index > 0 && <ChevronRight className="size-3 text-muted-foreground" aria-hidden="true" />}
-              <button type="button" className="rounded px-1 py-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-current={index === segments.length ? "location" : undefined} onClick={() => navigate(segments.slice(0, index))}>{segment}</button>
-            </span>
-          ))}
-        </nav>
+        <FolderBreadcrumbs segments={segments} onNavigate={navigate} />
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input ref={search} aria-label="Filter folders" className="pl-8" placeholder="Filter folders…" value={query} onChange={(event) => setQuery(event.target.value)} />
