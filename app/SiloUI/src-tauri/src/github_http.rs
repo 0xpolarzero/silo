@@ -68,6 +68,21 @@ impl Gates {
     fn restore_floor(&mut self, until: u64) {
         self.rate_until = self.rate_until.max(until);
     }
+    fn next_retry(&self, at: u64) -> u64 {
+        // The worker's persisted deadline already wakes due requests. An old
+        // superseded key must not keep scheduling successful work forever.
+        self.requests
+            .values()
+            .filter_map(|failure| failure.until)
+            .filter(|until| *until > at)
+            .min()
+            .unwrap_or(0)
+            .max(if self.rate_until > at {
+                self.rate_until
+            } else {
+                0
+            })
+    }
     fn check(&self, key: &str, at: u64) -> Result<(), String> {
         if self.rate_until > at {
             return Err(waiting(self.rate_until, at));
@@ -136,21 +151,8 @@ pub(crate) fn retry_floor() -> u64 {
 pub(crate) fn retry_at() -> u64 {
     gates()
         .lock()
-        .map(|g| {
-            g.requests
-                .values()
-                .filter_map(|f| f.until)
-                .min()
-                .unwrap_or(0)
-                .max(g.rate_until)
-        })
+        .map(|g| g.next_retry(now()))
         .unwrap_or(u64::MAX)
-}
-pub(crate) fn retry_allowed() -> bool {
-    gates()
-        .lock()
-        .map(|g| g.requests.is_empty() || g.requests.values().any(|f| f.until.is_some()))
-        .unwrap_or(false)
 }
 pub(crate) fn reset_retries() {
     // An explicit Retry cannot bypass GitHub's requested waiting period.
@@ -325,6 +327,21 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn expired_superseded_key_does_not_keep_scheduling_work() {
+        let mut g = Gates::default();
+        g.fail("obsolete".into(), 100, true, 0, false, 0, "offline");
+        g.fail("current".into(), 110, true, 0, false, 0, "offline");
+        assert_eq!(g.next_retry(101), 102);
+        assert_eq!(g.next_retry(102), 112);
+        assert_eq!(g.next_retry(112), 0);
+        // Keep attempt counts and per-key refusal; only scheduling is filtered.
+        assert!(g.check("obsolete", 112).is_ok());
+        assert_eq!(g.requests["obsolete"].attempts, 1);
+        g.restore_floor(200);
+        assert_eq!(g.next_retry(112), 200);
+        assert_eq!(g.next_retry(200), 0);
+    }
     #[test]
     fn restored_rate_floor_survives_relaunch_and_cannot_be_shortened() {
         let mut g = Gates::default();
