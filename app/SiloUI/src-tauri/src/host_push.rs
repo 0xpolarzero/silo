@@ -140,8 +140,6 @@ struct HostGit {
 }
 impl HostGit {
     fn run(&self, args: &[&str], token: Option<&str>, remote: &str) -> Result<String, String> {
-        let out = tempfile::tempfile().map_err(|_| "Cannot capture Git output.")?;
-        let err = tempfile::tempfile().map_err(|_| "Cannot capture Git diagnostics.")?;
         let mut command = Command::new(&self.executable);
         command.process_group(0);
         unsafe {
@@ -196,10 +194,8 @@ impl HostGit {
             .env("GIT_LFS_SKIP_SMUDGE", "1")
             .env("LC_ALL", "C")
             .stdin(Stdio::null())
-            .stdout(Stdio::from(
-                out.try_clone().map_err(|_| "Cannot capture Git output.")?,
-            ))
-            .stderr(Stdio::from(err));
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         if cfg!(target_os = "linux") {
             command.env("GIT_SSL_CAINFO", self.support.join("ssl/cacert.pem"));
         }
@@ -220,6 +216,14 @@ impl HostGit {
         let mut child = command
             .spawn()
             .map_err(|_| "Bundled Git could not start. Repair Silo and retry.")?;
+        let stdout = child.stdout.take().ok_or("Cannot capture Git output.")?;
+        let output_reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stdout
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map(|_| bytes)
+        });
         let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             match child.try_wait().map_err(|_|"Cannot read Git process status.")? {
@@ -229,25 +233,14 @@ impl HostGit {
                 None=>thread::sleep(Duration::from_millis(25)),
             }
         }
-        let mut output = String::new();
-        let mut reader = out;
-        use std::io::{Seek, SeekFrom};
-        reader
-            .seek(SeekFrom::Start(0))
+        let output = output_reader
+            .join()
+            .map_err(|_| "Cannot capture Git output.")?
             .map_err(|_| "Cannot read Git output.")?;
-        if reader
-            .metadata()
-            .map_err(|_| "Cannot inspect Git output.")?
-            .len()
-            > 1024 * 1024
-        {
+        if output.len() > 1024 * 1024 {
             return Err("Git returned too much output to verify safely.".into());
         }
-        reader
-            .take(1024 * 1024)
-            .read_to_string(&mut output)
-            .map_err(|_| "Invalid Git output.")?;
-        Ok(output)
+        String::from_utf8(output).map_err(|_| "Invalid Git output.".into())
     }
 }
 fn temporary_budget(directory: &Path) -> Result<u64, String> {
@@ -288,6 +281,7 @@ fn copy(
         "exec".into(),
         name.into(),
         "--no-tty".into(),
+        "--stream".into(),
         "--quiet".into(),
         "--workdir".into(),
         "/".into(),
@@ -625,6 +619,37 @@ pub async fn push_repository(
     }).await.map_err(|_|"Host push task failed.")?
 }
 #[cfg(test)]
+pub(crate) fn verify_disposable_binary_transfer(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<(), String> {
+    guest(
+        paths,
+        name,
+        "printf '\\000\\377\\001\\376' > /tmp/silo-test-binary",
+        &[],
+    )?;
+    let temporary =
+        tempfile::tempdir().map_err(|_| "Cannot prepare binary transfer verification.")?;
+    let target = temporary.path().join("binary");
+    let mut remaining = 1024;
+    copy(
+        paths,
+        name,
+        "/tmp/silo-test-binary",
+        &target,
+        &mut remaining,
+    )?;
+    if fs::read(&target).map_err(|_| "Cannot read binary transfer verification.")?
+        != [0, 255, 1, 254]
+        || remaining != 1020
+    {
+        return Err("VM binary transfer changed bytes or did not account for their size.".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -663,7 +688,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let executable = root.join("msb");
-        fs::write(&executable, "#!/bin/sh\nprintf '\\000\\377'\n").unwrap();
+        fs::write(
+            &executable,
+            "#!/bin/sh\n[ \"$4\" = \"--stream\" ] || exit 42\nprintf '\\000\\377'\n",
+        )
+        .unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
         let paths = RuntimePaths {
             executable: executable.clone(),
@@ -686,6 +715,26 @@ mod tests {
         let target = root.join("oversized");
         assert!(copy(&paths, "dev", "/guest/object", &target, &mut budget).is_err());
         assert!(fs::metadata(target).unwrap().len() <= 1022);
+    }
+    #[test]
+    fn host_git_rejects_oversized_output_without_spooling_to_disk() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("git");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nexec /bin/dd if=/dev/zero bs=65536 count=32\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let git = HostGit {
+            executable,
+            directory: directory.path().into(),
+            home: directory.path().into(),
+            support: directory.path().into(),
+        };
+        assert!(git.run(&[], None, "").is_err());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
     #[test]
     fn requires_workspace_repository_paths() {

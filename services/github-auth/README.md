@@ -10,7 +10,11 @@ Use Node 24 or newer. Register a **production Silo GitHub App**, enable expiring
 user tokens, and register `http://127.0.0.1/github/callback` as the desktop callback
 (with GitHub's documented loopback-port behavior). Native login uses state and
 PKCE. Configure App repository permissions for the supported GitHub operations;
-GitHub remains the authority. Do not request unrelated account administration.
+GitHub remains the authority. Set every organization and account permission to
+**None**. Silo supports repository workflows, not organization or account
+administration: selecting repository IDs does not restrict an organization-level
+permission. Grant only repository permissions in the production App; both the
+read-only and change-enabled tokens inherit that boundary.
 
 Supply `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` through the hosting platform's
 secret manager. Never put the secret in source, build arguments, desktop bundles,
@@ -31,6 +35,22 @@ timeouts. Set desktop build configuration `SILO_GITHUB_SERVICE_URL` to the real
 HTTPS origin, `SILO_GITHUB_CLIENT_ID` to the same App ID string, and
 `SILO_GITHUB_APP_SLUG` to its App slug. No production domain or credentials are
 included here. Deployment requires those real account/infrastructure settings.
+
+## App registration
+
+GitHub supports an [App registration manifest](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest).
+A deployable manifest requires Silo's real homepage and registration callback; the
+callback must exchange GitHub's temporary code for App credentials and keep those
+credentials on the service host. Those deployment URLs and the registration
+callback are not configured here, so this repository does not include a pretend
+production manifest. Manual App registration can supply the same settings.
+
+Review the complete repository permission set when registering the App, with all
+organization/account permissions disabled. GitHub's granted permissions determine
+which `gh` operations work; Silo does not maintain a command-name allowlist.
+Repository operations requiring an ungranted permission fail with GitHub's normal
+permission error. Account and organization administration are outside this App's
+authority even when **Allow GitHub changes** is enabled.
 
 ## Native API
 
