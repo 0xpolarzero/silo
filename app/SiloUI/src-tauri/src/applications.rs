@@ -79,6 +79,18 @@ fn browser_selection(
     Ok(Some(Path::new(path)))
 }
 
+pub(crate) fn selected_terminal(app: &AppHandle) -> Result<Application, String> {
+    let settings = crate::settings::current_settings(app)?;
+    let path = if settings.get("terminalUseSystemDefault").and_then(|v| v.as_bool()).unwrap_or(true) {
+        platform::discover()?.defaults.remove("terminal")
+    } else { settings.get("terminalPath").and_then(|v| v.as_str()).map(str::to_owned) }
+    .ok_or("Choose an available terminal in Settings.")?;
+    platform::application_at(Path::new(&path)).ok_or_else(|| "The selected terminal is unavailable. Choose another in Settings.".into())
+}
+pub(crate) fn open_terminal(app: &AppHandle, application: &Application, command: &str) -> Result<(), String> {
+    platform::open_terminal(app, application, command)
+}
+
 pub(crate) fn selected_editor(app: &AppHandle) -> Result<Application, String> {
     let settings = crate::settings::current_settings(app)?;
     let path = if settings

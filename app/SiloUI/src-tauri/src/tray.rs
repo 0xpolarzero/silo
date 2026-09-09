@@ -143,7 +143,7 @@ mod platform {
                 ksni::menu::StandardItem {
                     label: "Open Silo…".into(),
                     activate: Box::new(|tray: &mut Self| {
-                        status_panel::report(status_panel::open_main(tray.app.clone()))
+                        status_panel::report(status_panel::open_main(tray.app.clone(), None))
                     }),
                     ..Default::default()
                 }
@@ -162,7 +162,7 @@ mod platform {
         fn watcher_offline(&self, _: ksni::OfflineReason) -> bool {
             self.online.store(false, Ordering::Relaxed);
             // A desktop without a tray must never strand an invisible app.
-            status_panel::report(status_panel::open_main(self.app.clone()));
+            status_panel::report(status_panel::open_main(self.app.clone(), None));
             true
         }
     }
@@ -196,7 +196,7 @@ mod platform {
                     app.state::<TrayState>()
                         .online
                         .store(false, Ordering::Relaxed);
-                    status_panel::report(status_panel::open_main(app.clone()));
+                    status_panel::report(status_panel::open_main(app.clone(), None));
                     eprintln!("Silo tray: {error}");
                 }
             }

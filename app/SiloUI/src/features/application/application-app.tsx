@@ -180,12 +180,12 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   }, [])
 
   function navigateCommand(route: ApplicationInitialRoute) {
-    if (route.workspaceSection && route.workspaceSection !== "overview") {
+    if (route.workspace || (route.workspaceSection && route.workspaceSection !== "overview")) {
       setSelectedWorkspaceIds(new Set(source.workspaces
         .filter(({ machine }) => machine.id === route.workspace || machine.name === route.workspace)
         .map(({ machine }) => machine.id)))
     }
-    if (route.workspaceSection) navigation.selectWorkspaceSection(route.workspaceSection)
+    if (route.workspaceSection || route.workspace) navigation.selectWorkspaceSection(route.workspaceSection ?? "overview")
     else if (route.settingsSection) navigation.selectSettingsSection(route.settingsSection)
     else if (route.tab) navigation.selectTab(route.tab)
   }

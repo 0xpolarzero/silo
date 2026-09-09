@@ -1479,14 +1479,15 @@ pub async fn workspace_action(
     name: String,
     path: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    if action == "open-editor" {
+    if matches!(action.as_str(), "open-editor" | "open-terminal") {
         return tauri::async_runtime::spawn_blocking(move || {
-            crate::editor::open(&app, &name, path.as_deref())?;
+            if action == "open-terminal" { crate::terminal::open(&app, &name)?; }
+            else { crate::editor::open(&app, &name, path.as_deref())?; }
             let paths = runtime_paths(&app)?;
             read_application_state_with(&ProcessRunner, &paths).map_err(|error| error.to_string())
         })
         .await
-        .map_err(|_| "The editor worker failed.".to_string())?;
+        .map_err(|_| "The application launcher failed.".to_string())?;
     }
     let worker_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {

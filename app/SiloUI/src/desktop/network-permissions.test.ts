@@ -37,3 +37,15 @@ describe("Network desktop permission boundary", () => {
     }
   })
 })
+
+it("keeps pending navigation exclusive to main and allows status push dismissal", () => {
+  expect(permissions("main")).toContain("allow-take-main-route")
+  expect(permissions("status")).not.toContain("allow-take-main-route")
+  expect(permissions("status")).toContain("allow-dismiss-repository-push")
+  const handlers = readFileSync(resolve(native, "src/main.rs"), "utf8")
+  const manifest = readFileSync(resolve(native, "build.rs"), "utf8")
+  for (const command of ["take_main_route", "dismiss_repository_push"]) {
+    expect(handlers).toContain(`::${command},`)
+    expect(manifest).toContain(`"${command}"`)
+  }
+})

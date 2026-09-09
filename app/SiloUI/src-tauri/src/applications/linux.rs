@@ -511,3 +511,13 @@ mod tests {
         assert!(application_at(&path).is_none());
     }
 }
+
+pub fn open_terminal(_app: &tauri::AppHandle, application: &Application, command: &str) -> Result<(), String> {
+    let path = Path::new(&application.path);
+    let executable = if path.extension().is_some_and(|s| s == "desktop") {
+        desktop_at(path).ok_or("The selected terminal is unavailable.")?.executable()
+    } else { path.to_path_buf() };
+    let mut launch = std::process::Command::new(&executable);
+    launch.args(crate::terminal::linux_arguments(&executable)?).args(["/bin/sh", "-c", &format!("exec {command}")]);
+    crate::terminal::launch(launch)
+}

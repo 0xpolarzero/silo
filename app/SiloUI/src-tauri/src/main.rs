@@ -20,6 +20,7 @@ mod startup;
 mod status_panel;
 mod system_integrations;
 mod tray;
+mod terminal;
 
 use tauri::{Manager, WindowEvent};
 
@@ -28,11 +29,13 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             status_panel::open_main,
+            status_panel::take_main_route,
             status_panel::hide_status,
             status_panel::resize_status,
             status_panel::quit_app,
             tray::update_tray,
             host_push::push_repository,
+            host_push::dismiss_repository_push,
             files::list_workspace_directory,
             network::read_network_state,
             network::save_network_port,
@@ -124,7 +127,7 @@ fn main() {
                 ..
             } = _event
             {
-                status_panel::report(status_panel::open_main(_app.clone()));
+                status_panel::report(status_panel::open_main(_app.clone(), None));
             }
         });
 }

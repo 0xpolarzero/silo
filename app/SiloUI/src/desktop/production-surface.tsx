@@ -1,3 +1,4 @@
+import { useMainRoute } from "@/desktop/use-main-route"
 import { useEffect, useState } from "react"
 import type { SiloPreflightCheck } from "@/contracts/silo"
 import { SiloWindow } from "@/components/silo-window"
@@ -30,6 +31,7 @@ export function Unavailable({ message, retry, checks = [], checking = false }: {
 
 export function ProductionSurface({ source, dependencyStore, statusPanel = false }: { source: ProductionSource; dependencyStore: DependencyStore | null; statusPanel?: boolean }) {
   const current = useProductionSource(source)
+  const routeRequest = useMainRoute(!statusPanel)
   const dependencies = useDependencyStore(dependencyStore)
   const { settings: currentSettings } = useSettings()
   const checks = dependencies?.checks
@@ -55,7 +57,7 @@ export function ProductionSurface({ source, dependencyStore, statusPanel = false
   }
   return statusPanel
     ? <StatusPanel source={current.source} actions={source.statusActions} />
-    : <ApplicationApp source={failures.length ? { ...current.source, runtimeRepair: {
+    : <ApplicationApp routeRequest={routeRequest} source={failures.length ? { ...current.source, runtimeRepair: {
       status: "unavailable", checking,
       reason: failures.map(({ title, detail }) => `${title}: ${detail}`).join("\n"),
       recovery: [...new Set(failures.map(({ remediation }) => remediation).filter(Boolean))].join("\n"),

@@ -651,12 +651,19 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     restartWorkspace: applicationActions.restartWorkspace,
     openTerminal: applicationActions.openTerminal,
     pushRepository: applicationActions.pushRepository,
-    openSilo: (_route?: StatusBarRoute) => { void native.invoke("open_main").catch((cause) => console.error("Silo main window:", errorMessage(cause))) },
+    openSilo: (route?: StatusBarRoute) => { void native.invoke("open_main", { route: route ?? null }).catch((cause) => console.error("Silo main window:", errorMessage(cause))) },
     quit: () => { void native.invoke("quit_app") },
     refresh: () => { void refresh() },
     openEditor: (name, path) => workspaceAction("open-editor", name, { path }),
     openSite: (workspace, port) => { void native.invoke("open_network_port", { workspace, port }).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
-    dismissRepositoryPush: () => {},
+    dismissRepositoryPush: (workspace, repositoryPath) => {
+      void native.invoke("dismiss_repository_push", { workspace, repositoryPath }).then(() => {
+        if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source,
+          repositoryPushOperations: snapshot.source.repositoryPushOperations.filter(operation => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath || operation.status === "pushing"),
+        } })
+        void refresh()
+      }).catch(cause => console.error("Silo push dismissal:", errorMessage(cause)))
+    },
   }
 
   return {

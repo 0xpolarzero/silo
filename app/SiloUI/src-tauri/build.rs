@@ -51,6 +51,8 @@ fn main() {
             "remove_network_port",
             "open_network_port",
             "push_repository",
+            "dismiss_repository_push",
+            "take_main_route",
             "read_secrets_state",
             "save_secret",
             "remove_secret",

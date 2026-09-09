@@ -8,6 +8,7 @@ use tauri::{
 pub struct PanelState {
     anchor: Mutex<Option<PhysicalPosition<f64>>>,
     blurred_at: Mutex<Option<Instant>>,
+    route: Mutex<Option<serde_json::Value>>,
 }
 
 pub fn install(app: &AppHandle) -> tauri::Result<()> {
@@ -137,7 +138,11 @@ pub fn hide_status(app: AppHandle) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-pub fn open_main(app: AppHandle) -> tauri::Result<()> {
+pub fn open_main(app: AppHandle, route: Option<serde_json::Value>) -> tauri::Result<()> {
+    if let Some(route) = route {
+        *app.state::<PanelState>().route.lock().expect("route lock") = Some(route);
+        app.emit_to("main", "desktop:route-requested", ())?;
+    }
     hide_status(app.clone())?;
     let main = app
         .get_webview_window("main")
@@ -145,6 +150,11 @@ pub fn open_main(app: AppHandle) -> tauri::Result<()> {
     main.show()?;
     main.unminimize()?;
     main.set_focus()
+}
+
+#[tauri::command]
+pub fn take_main_route(app: AppHandle) -> Option<serde_json::Value> {
+    app.state::<PanelState>().route.lock().ok()?.take()
 }
 
 #[tauri::command]

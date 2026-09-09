@@ -677,3 +677,51 @@ mod tests {
         });
     }
 }
+
+pub fn open_terminal(app: &tauri::AppHandle, application: &Application, command: &str) -> Result<(), String> {
+    let id = autoreleasepool(|_| {
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&application.path));
+        NSBundle::bundleWithURL(&url).and_then(|b| b.bundleIdentifier()).map(|id| id.to_string())
+    });
+    if id.as_deref() == Some("com.mitchellh.ghostty") {
+        let source = ghostty_script(command);
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            let result = autoreleasepool(|_| {
+                let script = objc2_foundation::NSAppleScript::initWithSource(objc2_foundation::NSAppleScript::alloc(), &NSString::from_str(&source)).ok_or("Could not prepare Ghostty's command.")?;
+                let mut error = None;
+                unsafe { script.executeAndReturnError(Some(&mut error)); }
+                if error.is_some() { Err("Ghostty could not open the terminal. Use Ghostty 1.3 or newer and allow Silo in System Settings → Privacy & Security → Automation.".to_string()) } else { Ok(()) }
+            });
+            let _ = send.send(result);
+        }).map_err(|_| "Could not contact the terminal launcher.")?;
+        return receive.recv_timeout(std::time::Duration::from_secs(60)).map_err(|_| "Ghostty did not respond. Check its Automation permission before retrying.")?;
+    }
+    if !matches!(id.as_deref(), Some("com.apple.Terminal" | "com.googlecode.iterm2")) {
+        return Err("This terminal does not have a supported command launcher. Choose Ghostty, Terminal, or iTerm in Settings.".into());
+    }
+    let file = crate::terminal::command_file(command)?;
+    let mut launch = std::process::Command::new("/usr/bin/open");
+    launch.arg("-a").arg(&application.path).arg(&file);
+    let result = crate::terminal::launch(launch);
+    if result.is_err() { let _ = fs::remove_file(file); }
+    result
+}
+fn ghostty_script(command: &str) -> String {
+    // Escape AppleScript strings separately from the shell argument quoting.
+    let command = command.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r");
+    format!(r#"with timeout of 30 seconds
+ tell application id "com.mitchellh.ghostty"
+  activate
+  set cfg to new surface configuration
+  set command of cfg to "{command}"
+  set wait after command of cfg to true
+  if (count of windows) is 0 then
+   new window with configuration cfg
+  else
+   set newTab to new tab in front window with configuration cfg
+   select tab newTab
+  end if
+ end tell
+end timeout"#)
+}

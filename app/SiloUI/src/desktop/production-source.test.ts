@@ -31,6 +31,16 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("passes status destinations and dismisses completed push results natively", async () => {
+    const mock = native()
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    store.statusActions.openSilo({ workspace: "dev", workspaceSection: "logs" })
+    expect(mock.invoke).toHaveBeenCalledWith("open_main", { route: { workspace: "dev", workspaceSection: "logs" } })
+    store.statusActions.dismissRepositoryPush("dev", "/workspace/repo")
+    await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("dismiss_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo" }))
+    store.dispose()
+  })
   it("keeps network mappings across application refresh and shares only reachable sites", async () => {
     const mock = native()
     const state = { workspaces: [{ workspace: "dev", error: null, ports: [{port:3000,hostPort:43000,scheme:"http",state:"reachable",configured:true}] }] }

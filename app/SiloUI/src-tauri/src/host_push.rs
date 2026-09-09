@@ -35,6 +35,28 @@ pub(crate) fn operations() -> Vec<Value> {
         })
         .unwrap_or_default()
 }
+fn dismiss_result(entries: &mut HashMap<String, (Value, Instant)>, key: &str) {
+    if entries
+        .get(key)
+        .is_some_and(|(value, _)| matches!(value["status"].as_str(), Some("failed" | "succeeded")))
+    {
+        entries.remove(key);
+    }
+}
+
+#[tauri::command]
+pub fn dismiss_repository_push(
+    app: tauri::AppHandle,
+    workspace: String,
+    repository_path: String,
+) -> Result<(), String> {
+    let mut entries = results().lock().map_err(|_| "Push state unavailable.")?;
+    dismiss_result(&mut entries, &format!("{workspace}\0{repository_path}"));
+    drop(entries);
+    let _ = app.emit("silo://application-state-changed", ());
+    Ok(())
+}
+
 fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Result<String, String> {
     let mut command = vec![
         "exec".into(),
@@ -651,6 +673,27 @@ pub(crate) fn verify_disposable_binary_transfer(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dismissal_removes_finished_results_but_preserves_active_pushes() {
+        let mut entries = std::collections::HashMap::new();
+        for status in ["failed", "succeeded", "pushing"] {
+            entries.insert(
+                status.into(),
+                (
+                    serde_json::json!({"status":status}),
+                    std::time::Instant::now(),
+                ),
+            );
+        }
+        for status in ["failed", "succeeded", "pushing"] {
+            super::dismiss_result(&mut entries, status);
+        }
+        assert_eq!(entries.len(), 1);
+        assert!(entries.contains_key("pushing"));
+        super::dismiss_result(&mut entries, "failed");
+        assert_eq!(entries.len(), 1);
+    }
+
     use super::*;
     #[test]
     fn rejects_untrusted_remote_destinations() {

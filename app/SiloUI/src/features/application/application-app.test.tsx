@@ -86,6 +86,8 @@ describe("application", () => {
     expect(within(appPanel("Sandboxes")).queryByRole("button", { name: "Remove dev" })).not.toBeInTheDocument()
     expect(within(appNavigation()).getByRole("button", { name: "Activity" })).toHaveAttribute("aria-current", "page")
     expect(appNavigation()).toHaveAttribute("data-collapsed", "true")
+    rerender(<ApplicationPreview source={source} initialRoute={{ workspace: "dev" }} />)
+    expect(within(appNavigation()).getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page")
   })
 
   it("collapses the sidebar to labelled icons and keeps every destination usable", async () => {
