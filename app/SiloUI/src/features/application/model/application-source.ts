@@ -173,7 +173,7 @@ export type GitHubWorkspaceOperation = {
 
 export type GitHubRepositoryCatalogStatus =
   | { status: "available" }
-  | { status: "unavailable"; message: string; canRetry: true }
+  | { status: "unavailable"; message: string; canRetry: boolean }
 
 export interface ApplicationSource {
   runtimeRepair: RuntimeRepairPresentation | null

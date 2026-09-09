@@ -301,3 +301,7 @@ defines `Created` as created but not yet started; Silo's `--no-start` preparatio
 uses this state and displays it as Stopped. Crashed VMs require a manual start;
 launch does not perform automatic crash recovery. The startup regression covers
 both Created and Stopped before verifying Running.
+
+
+GitHub access now has a separate [implementation plan](SiloUI-GITHUB-IMPLEMENTATION.md).
+The previous GitHub transport proposals were removed.

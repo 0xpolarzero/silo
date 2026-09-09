@@ -12,7 +12,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -28,6 +28,29 @@ const MANAGED_LABEL: &str = "silo.managed=true";
 const DEFAULT_IMAGE: &str = "registry-1.docker.io/library/ubuntu:24.04";
 
 pub(crate) static MUTATION_LOCK: Mutex<()> = Mutex::new(());
+const DISABLED_GITHUB_PROFILE: &str = r#"{"version":1,"owners":[]}"#;
+static GITHUB_PROFILES: OnceLock<Mutex<HashMap<(PathBuf, String), String>>> = OnceLock::new();
+
+fn github_command_workspace(args: &[String]) -> Option<&str> {
+    match args.first().map(String::as_str) {
+        Some("start" | "exec" | "modify" | "restart") => args.get(1).map(String::as_str),
+        _ => None,
+    }
+}
+
+pub(crate) fn github_environment(paths: &RuntimePaths, args: &[String]) -> String {
+    let Some(workspace) = github_command_workspace(args) else {
+        return DISABLED_GITHUB_PROFILE.into();
+    };
+    let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(profiles) = cache.lock() else {
+        return DISABLED_GITHUB_PROFILE.into();
+    };
+    profiles
+        .get(&(paths.home.clone(), workspace.into()))
+        .cloned()
+        .unwrap_or_else(|| DISABLED_GITHUB_PROFILE.into())
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct RuntimePaths {
@@ -156,7 +179,7 @@ pub struct ApplicationSource {
     activities: Vec<Value>,
     sandbox_configuration_operation: Option<Value>,
     repository_push_operations: Vec<Value>,
-    github: GitHubSource,
+    github: Value,
     secrets: Vec<Value>,
     backup: BackupSummary,
     preferences: Preferences,
@@ -207,14 +230,6 @@ enum AttentionLevel {
 #[serde(rename_all = "lowercase")]
 enum Freshness {
     Fresh,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GitHubSource {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    host_identity: Option<crate::host_identity::HostIdentity>,
-    state: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -487,6 +502,7 @@ fn run_msb_with_progress(
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)
         .env("MSB_LIBKRUNFW_PATH", &paths.library)
+        .env("SILO_GITHUB", github_environment(paths, args))
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file.as_file().try_clone().map_err(
             |error| {
@@ -896,7 +912,7 @@ fn verify_workspace_identities_with(
         }) {
             return Ok(false);
         }
-        if !identity_matches(&inspected.config, identity) {
+        if !verify_guest_identity(runner, paths, identity)? {
             return Ok(false);
         }
     }
@@ -960,35 +976,32 @@ fn configure_workspace_identities_with(
         }
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
         ensure_managed(&inspected)?;
-        if identity_matches(&inspected.config, identity) {
-            continue;
-        }
-        if !matches!(inspected.status.as_str(), "Created" | "Stopped" | "Crashed") {
-            return Err(RuntimeError::Invalid(format!(
-                "Stop '{}' before changing its Git identity.",
-                identity.workspace
-            )));
-        }
         changed.push(identity);
     }
     for identity in changed {
-        let expected = [
-            ("GIT_AUTHOR_NAME", &identity.name),
-            ("GIT_AUTHOR_EMAIL", &identity.email),
-            ("GIT_COMMITTER_NAME", &identity.name),
-            ("GIT_COMMITTER_EMAIL", &identity.email),
-            ("JJ_USER", &identity.name),
-            ("JJ_EMAIL", &identity.email),
-        ];
+        // Remove old boot overrides: normal Git/jj configuration must own defaults.
         let mut args = vec!["modify".into(), identity.workspace.clone()];
-        for (key, value) in expected {
-            args.extend(["--env".into(), format!("{key}={value}")]);
+        for key in [
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "JJ_USER",
+            "JJ_EMAIL",
+        ] {
+            args.extend(["--env-rm".into(), key.into()]);
         }
         args.extend(["--format".into(), "json".into()]);
         runner.run(paths, &args, MUTATION_TIMEOUT)?;
-        let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
-        let verified = identity_matches(&inspected.config, identity);
-        if !verified {
+        let script = r#"set -eu
+ git config --global -- user.name "$1"
+ git config --global -- user.email "$2"
+ if command -v jj >/dev/null 2>&1; then
+   jj config set --user -- user.name "$3"
+   jj config set --user -- user.email "$4"
+ fi"#;
+        run_identity_script(runner, paths, identity, script)?;
+        if !verify_guest_identity(runner, paths, identity)? {
             return Err(RuntimeError::Malformed(format!(
                 "Silo could not verify the saved Git identity for '{}'. Setup is not complete.",
                 identity.workspace
@@ -998,26 +1011,194 @@ fn configure_workspace_identities_with(
     Ok(())
 }
 
-fn identity_matches(config: &Value, identity: &WorkspaceIdentity) -> bool {
-    let expected = [
-        ("GIT_AUTHOR_NAME", &identity.name),
-        ("GIT_AUTHOR_EMAIL", &identity.email),
-        ("GIT_COMMITTER_NAME", &identity.name),
-        ("GIT_COMMITTER_EMAIL", &identity.email),
-        ("JJ_USER", &identity.name),
-        ("JJ_EMAIL", &identity.email),
-    ];
-    config
-        .get("env")
-        .and_then(Value::as_array)
-        .is_some_and(|vars| {
-            expected.iter().all(|(key, value)| {
-                vars.iter().any(|var| {
-                    var.get("key").and_then(Value::as_str) == Some(*key)
-                        && var.get("value").and_then(Value::as_str) == Some(value.as_str())
-                })
-            })
-        })
+fn run_identity_script(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    identity: &WorkspaceIdentity,
+    script: &str,
+) -> Result<CommandOutput, RuntimeError> {
+    // exec starts stopped sandboxes temporarily and preserves already-running VMs.
+    // Values are positional arguments, never interpolated shell source.
+    runner.run(
+        paths,
+        &[
+            "exec".into(),
+            identity.workspace.clone(),
+            "--no-tty".into(),
+            "--workdir".into(),
+            "/".into(),
+            "--quiet".into(),
+            "--timeout".into(),
+            "30s".into(),
+            "--".into(),
+            "sh".into(),
+            "-c".into(),
+            script.into(),
+            "silo-git-identity".into(),
+            identity.name.clone(),
+            identity.email.clone(),
+            serde_json::to_string(&identity.name)
+                .map_err(|_| RuntimeError::Invalid("Invalid Git name.".into()))?,
+            serde_json::to_string(&identity.email)
+                .map_err(|_| RuntimeError::Invalid("Invalid Git email.".into()))?,
+        ],
+        MUTATION_TIMEOUT,
+    )
+}
+
+fn verify_guest_identity(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    identity: &WorkspaceIdentity,
+) -> Result<bool, RuntimeError> {
+    let script = r#"set -eu
+ if [ "$(git config --global --get user.name)" != "$1" ] ||
+    [ "$(git config --global --get user.email)" != "$2" ]; then exit 0; fi
+ if command -v jj >/dev/null 2>&1; then
+   [ "$(jj config get user.name)" = "$1" ] || exit 0
+   [ "$(jj config get user.email)" = "$2" ] || exit 0
+ fi
+ printf '%s' silo-identity-verified"#;
+    Ok(run_identity_script(runner, paths, identity, script)?
+        .stdout
+        .trim()
+        == "silo-identity-verified")
+}
+
+/// Host-only retirement material; never serialize this result to the frontend.
+pub(crate) fn scoped_cached_tokens(
+    app: &AppHandle,
+    workspace: &str,
+) -> Result<Vec<String>, String> {
+    let paths = runtime_paths(app)?;
+    let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
+    let profiles = cache
+        .lock()
+        .map_err(|_| "GitHub runtime state is unavailable.")?;
+    let Some(raw) = profiles.get(&(paths.home, workspace.into())) else {
+        return Ok(Vec::new());
+    };
+    let profile: Value = serde_json::from_str(raw).map_err(|_| "Invalid cached GitHub state.")?;
+    let mut tokens = Vec::new();
+    for owner in profile["owners"]
+        .as_array()
+        .ok_or("Invalid cached GitHub grants.")?
+    {
+        for key in ["readToken", "writeToken"] {
+            if let Some(token) = owner[key].as_str() {
+                if !tokens.iter().any(|existing| existing == token) {
+                    tokens.push(token.into());
+                }
+            }
+        }
+    }
+    Ok(tokens)
+}
+
+/// A managed VM receives credentials through a host-only environment reference.
+/// The JSON profile is never a command argument, a config value or captured log.
+pub(crate) fn apply_github_policy(
+    app: &AppHandle,
+    workspace: &str,
+    _revision: u64,
+    profiles: &Value,
+) -> Result<(), String> {
+    let _guard = MUTATION_LOCK
+        .try_lock()
+        .map_err(|_| RuntimeError::Busy.to_string())?;
+    validate_name(workspace).map_err(|error| error.to_string())?;
+    if profiles["version"] != 1 || !profiles["owners"].is_array() {
+        return Err("Invalid GitHub access profile.".into());
+    }
+    let paths = runtime_paths(app)?;
+    let capability =
+        run_msb(&paths, &["--silo-github-protocol".into()], READ_TIMEOUT).map_err(|_| {
+            "This Silo runtime must be updated before GitHub access can be enabled.".to_string()
+        })?;
+    if capability.stdout.trim() != "1" {
+        return Err("This runtime does not support Silo GitHub permissions.".into());
+    }
+    let inspected =
+        inspect_workspace(&ProcessRunner, &paths, workspace).map_err(|error| error.to_string())?;
+    ensure_managed(&inspected).map_err(|error| error.to_string())?;
+    if inspected
+        .config
+        .pointer("/labels/silo.github-protocol")
+        .and_then(Value::as_str)
+        != Some("1")
+    {
+        return Err(
+            "Recreate this development sandbox to enable the new GitHub integration.".into(),
+        );
+    }
+    let profile =
+        serde_json::to_string(profiles).map_err(|_| "Cannot prepare GitHub access.".to_string())?;
+    if profile.len() > 128 * 1024 {
+        return Err("GitHub access profile is too large.".into());
+    }
+    // Discard any previous boot credential before attempting an update. A failed
+    // update must never restore stale credentials on a subsequent VM start.
+    let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
+    cache
+        .lock()
+        .map_err(|_| "GitHub runtime state is unavailable.".to_string())?
+        .remove(&(paths.home.clone(), workspace.into()));
+    let mut child = Command::new(&paths.executable)
+        .args([
+            "modify",
+            workspace,
+            "--secret",
+            "SILO_GITHUB@github.com,api.github.com,uploads.github.com",
+            "--format",
+            "json",
+        ])
+        .env("MSB_HOME", &paths.home)
+        .env("MSB_PATH", &paths.executable)
+        .env("MSB_LIBKRUNFW_PATH", &paths.library)
+        .env("SILO_GITHUB", &profile)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Could not apply GitHub access to the sandbox.".to_string())?;
+    let deadline = Instant::now() + MUTATION_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) => return Err(
+                "The sandbox rejected the GitHub access update. Retry after checking its state."
+                    .into(),
+            ),
+            Err(_) => return Err("Could not verify the GitHub access update.".into()),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Applying GitHub access timed out; it was not marked complete.".into());
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    cache
+        .lock()
+        .map_err(|_| "GitHub runtime state is unavailable.".to_string())?
+        .insert((paths.home.clone(), workspace.into()), profile);
+    Ok(())
+}
+
+pub(crate) fn apply_github_identity(
+    app: &AppHandle,
+    workspace: &str,
+    identity: &Value,
+) -> Result<(), String> {
+    let _guard = MUTATION_LOCK
+        .try_lock()
+        .map_err(|_| RuntimeError::Busy.to_string())?;
+    let paths = runtime_paths(app)?;
+    let parsed: WorkspaceIdentity = serde_json::from_value(serde_json::json!({
+        "workspace": workspace, "name": identity["name"], "email": identity["email"], "apply": identity["apply"]
+    })).map_err(|_| "Invalid Git author configuration.".to_string())?;
+    configure_workspace_identities_with(&ProcessRunner, &paths, &[parsed])
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1026,7 +1207,24 @@ pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource,
         let paths = runtime_paths(&app)?;
         let mut source = read_application_state_with(&ProcessRunner, &paths)
             .map_err(|error| error.to_string())?;
-        source.github.host_identity = crate::host_identity::read();
+        source.repository_push_operations = crate::host_push::operations();
+        for workspace in &mut source.workspaces {
+            if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running) {
+                match crate::host_push::discover(&paths, workspace.machine.name()) {
+                    Ok(repositories) => workspace.repositories = repositories,
+                    Err(message) => {
+                        if workspace.attention.is_none() {
+                            workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message });
+                        }
+                    }
+                }
+            }
+        }
+        source.github = crate::github::snapshot(&app).unwrap_or_else(|message| serde_json::json!({
+            "state": "disconnected", "accessEnabled": false, "repositoryCatalog": [],
+            "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
+            "workspaceOperations": [], "hostIdentity": crate::host_identity::read(),
+        }));
         Ok(source)
     })
     .await
@@ -1684,10 +1882,7 @@ fn read_application_state_with(
         activities: Vec::new(),
         sandbox_configuration_operation: None,
         repository_push_operations: Vec::new(),
-        github: GitHubSource {
-            host_identity: None,
-            state: "disconnected",
-        },
+        github: serde_json::json!({"state": "disconnected"}),
         secrets: Vec::new(),
         backup: BackupSummary {
             last_archive: "No backups yet".into(),
@@ -2147,6 +2342,42 @@ fn validate_machine_update(
     }
 }
 
+fn configure_guest_tools(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<(), RuntimeError> {
+    runner.run(
+        paths,
+        &[
+            "exec".into(),
+            name.into(),
+            "--no-tty".into(),
+            "--quiet".into(),
+            "--timeout".into(),
+            "10m".into(),
+            "--user".into(),
+            "root".into(),
+            "--workdir".into(),
+            "/".into(),
+            "--".into(),
+            "sh".into(),
+            "-c".into(),
+            include_str!("../guest/setup-github.sh").into(),
+        ],
+        Duration::from_secs(630),
+    )?;
+    let inspected = inspect_workspace(runner, paths, name)?;
+    ensure_managed(&inspected)?;
+    if !matches!(inspected.status.as_str(), "Created" | "Stopped") {
+        return Err(RuntimeError::Malformed(
+            "The sandbox tools were prepared, but the runtime did not restore its stopped state."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn create_machine(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
@@ -2193,6 +2424,12 @@ fn create_machine_with_progress(
                 "Sandbox '{name}' already exists in the runtime. No existing sandbox was changed."
             )));
         }
+        let protocol = runner.run(paths, &["--silo-github-protocol".into()], READ_TIMEOUT)?;
+        if protocol.stdout.trim() != "1" {
+            return Err(RuntimeError::Unavailable(
+                "The bundled runtime does not support secure GitHub access. Repair Silo before creating sandboxes.".into(),
+            ));
+        }
         Ok(())
     })();
     if let Err(error) = preflight {
@@ -2229,6 +2466,12 @@ fn create_machine_with_progress(
         format!("silo.workspace-storage-gib={workspace_storage_gib}"),
         "--label".into(),
         format!("silo.runtime-storage-gib={runtime_storage_gib}"),
+        "--secret".into(),
+        "SILO_GITHUB@github.com,api.github.com,uploads.github.com".into(),
+        "--env".into(),
+        "GH_TOKEN=$MSB_SILO_GITHUB".into(),
+        "--label".into(),
+        "silo.github-protocol=1".into(),
         "--no-start".into(),
         "--quiet".into(),
         "--progress-json".into(),
@@ -2247,6 +2490,12 @@ fn create_machine_with_progress(
             RuntimeError::Malformed(format!(
                 "Sandbox '{name}' did not remain stopped after creation."
             )),
+            cleanup_failed_create(runner, paths, name, id),
+        ));
+    }
+    if let Err(error) = configure_guest_tools(runner, paths, name) {
+        return Err(with_cleanup_error(
+            error,
             cleanup_failed_create(runner, paths, name, id),
         ));
     }
@@ -2766,6 +3015,38 @@ mod tests {
     }
 
     #[test]
+    fn github_environment_is_bound_to_runtime_home_and_explicit_command_target() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let paths = paths(&first);
+        let other = super::tests::paths(&second);
+        let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
+        cache
+            .lock()
+            .unwrap()
+            .insert((paths.home.clone(), "exec".into()), "profile-a".into());
+        cache
+            .lock()
+            .unwrap()
+            .insert((paths.home.clone(), "dev".into()), "profile-b".into());
+        let args = vec!["exec".into(), "dev".into(), "--".into(), "exec".into()];
+        assert_eq!(github_environment(&paths, &args), "profile-b");
+        assert_eq!(github_environment(&other, &args), DISABLED_GITHUB_PROFILE);
+        assert_eq!(
+            github_environment(&paths, &["list".into(), "dev".into()]),
+            DISABLED_GITHUB_PROFILE
+        );
+        assert_eq!(
+            github_environment(&paths, &["create".into(), "dev".into()]),
+            DISABLED_GITHUB_PROFILE
+        );
+        cache
+            .lock()
+            .unwrap()
+            .retain(|(home, _), _| home != &paths.home);
+    }
+
+    #[test]
     fn activity_history_survives_restart_and_marks_only_unfinished_attempts_interrupted() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -3120,14 +3401,20 @@ mod tests {
     fn create_keeps_workspace_and_runtime_on_independent_app_owned_disks() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let runner =
-            StubRunner::successful_json(vec![json!([]), json!(null), inspect(&paths, "Created")]);
+        let runner = StubRunner::successful_json(vec![
+            json!([]),
+            json!(1),
+            json!(null),
+            inspect(&paths, "Created"),
+            json!(null),
+            inspect(&paths, "Stopped"),
+        ]);
 
         create_machine(&runner, &paths, &vm()).unwrap();
 
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(&calls[1][..2], ["create", DEFAULT_IMAGE]);
-        assert!(calls[1]
+        assert_eq!(&calls[2][..2], ["create", DEFAULT_IMAGE]);
+        assert!(calls[2]
             .windows(2)
             .any(|pair| pair == ["--root-disk", "80G"]));
         let workspace = disk_path(&paths, "dev", "workspace");
@@ -3136,7 +3423,7 @@ mod tests {
             60 * 1024 * 1024 * 1024
         );
         assert!(!disk_path(&paths, "dev", "runtime").exists());
-        assert!(calls[1].windows(2).any(|pair| {
+        assert!(calls[2].windows(2).any(|pair| {
             pair[0] == "--mount-disk"
                 && pair[1]
                     == format!(
@@ -3145,12 +3432,39 @@ mod tests {
                     )
         }));
         assert_eq!(
-            calls[1].iter().filter(|arg| *arg == "--mount-disk").count(),
+            calls[2].iter().filter(|arg| *arg == "--mount-disk").count(),
             1
         );
-        assert!(calls[1]
+        assert!(calls[2]
             .windows(2)
             .any(|pair| pair == ["--label", MANAGED_LABEL]));
+    }
+
+    #[test]
+    fn guest_tool_setup_does_not_hide_failure_to_restore_stopped_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let runner = StubRunner::successful_json(vec![json!(null), inspect(&paths, "Running")]);
+        assert!(configure_guest_tools(&runner, &paths, "dev")
+            .unwrap_err()
+            .to_string()
+            .contains("stopped state"));
+    }
+
+    #[test]
+    fn create_rejects_runtime_without_secure_github_protocol_before_provisioning() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let runner = StubRunner::successful_json(vec![json!([]), json!(0)]);
+        let error = create_machine(&runner, &paths, &vm()).unwrap_err();
+        assert!(error.to_string().contains("secure GitHub access"));
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args[0] == "create"));
+        assert!(!disk_path(&paths, "dev", "workspace").exists());
     }
 
     #[test]
@@ -3159,13 +3473,14 @@ mod tests {
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![
             json!([]),
+            json!(1),
             json!(null),
             inspect(&paths, "Running"),
             json!([]),
         ]);
         let error = create_machine(&runner, &paths, &vm()).unwrap_err();
         assert!(error.to_string().contains("did not remain stopped"));
-        assert!(runner.calls.lock().unwrap()[1]
+        assert!(runner.calls.lock().unwrap()[2]
             .iter()
             .any(|arg| arg == "--no-start"));
     }
@@ -3420,126 +3735,77 @@ mod tests {
         assert!(!disk.exists());
     }
 
-    #[test]
-    fn identity_resume_reads_actual_configuration_without_mutating() {
-        let directory = tempfile::tempdir().unwrap();
-        let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let identity = WorkspaceIdentity {
+    fn test_identity() -> WorkspaceIdentity {
+        WorkspaceIdentity {
             workspace: "dev".into(),
             name: "Test User".into(),
             email: "test@example.com".into(),
             apply: true,
-        };
-        let mut actual = inspect(&paths, "Running");
-        actual["config"]["env"] = json!([
-            {"key":"GIT_AUTHOR_NAME","value":"Test User"}, {"key":"GIT_AUTHOR_EMAIL","value":"test@example.com"},
-            {"key":"GIT_COMMITTER_NAME","value":"Test User"}, {"key":"GIT_COMMITTER_EMAIL","value":"test@example.com"},
-            {"key":"JJ_USER","value":"Test User"}, {"key":"JJ_EMAIL","value":"test@example.com"}
-        ]);
-        let runner = StubRunner::successful_json(vec![actual]);
-        assert!(
-            verify_workspace_identities_with(&runner, &paths, std::slice::from_ref(&identity))
-                .unwrap()
-        );
-        assert_eq!(runner.calls.lock().unwrap().len(), 1);
-        assert_eq!(runner.calls.lock().unwrap()[0][0], "inspect");
-        let mismatch = StubRunner::successful_json(vec![inspect(&paths, "Stopped")]);
-        assert!(!verify_workspace_identities_with(
-            &mismatch,
-            &paths,
-            std::slice::from_ref(&identity)
-        )
-        .unwrap());
-        let failed = StubRunner::new(vec![Err(RuntimeError::Unavailable("missing VM".into()))]);
-        assert!(verify_workspace_identities_with(
-            &failed,
-            &paths,
-            &[WorkspaceIdentity {
-                apply: false,
-                ..identity
-            }]
-        )
-        .is_err());
-        assert!(!verify_workspace_identities_with(&StubRunner::new(vec![]), &paths, &[]).unwrap());
+        }
+    }
+
+    fn identity_output(value: &str) -> Result<CommandOutput, RuntimeError> {
+        Ok(CommandOutput {
+            stdout: value.into(),
+            stderr: String::new(),
+        })
     }
 
     #[test]
-    fn identity_requires_verified_persisted_environment() {
+    fn identity_resume_verifies_guest_files_not_boot_environment() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let identity = WorkspaceIdentity {
-            workspace: "dev".into(),
-            name: "Test User".into(),
-            email: "test@example.com".into(),
-            apply: true,
-        };
-        let mut verified = inspect(&paths, "Stopped");
-        verified["config"]["env"] = json!([
-            {"key":"GIT_AUTHOR_NAME","value":"Test User"},
-            {"key":"GIT_AUTHOR_EMAIL","value":"test@example.com"},
-            {"key":"GIT_COMMITTER_NAME","value":"Test User"},
-            {"key":"GIT_COMMITTER_EMAIL","value":"test@example.com"},
-            {"key":"JJ_USER","value":"Test User"}, {"key":"JJ_EMAIL","value":"test@example.com"}
+        let runner = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output("silo-identity-verified"),
         ]);
-        let runner =
-            StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null), verified]);
-        configure_workspace_identities_with(&runner, &paths, std::slice::from_ref(&identity))
-            .unwrap();
+        assert!(verify_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap());
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls[1][0], "modify");
-        assert!(calls[1]
-            .iter()
-            .any(|arg| arg == "GIT_AUTHOR_NAME=Test User"));
-        assert!(calls[1].iter().any(|arg| arg == "JJ_USER=Test User"));
-        assert!(calls[1]
-            .iter()
-            .any(|arg| arg == "JJ_EMAIL=test@example.com"));
-        assert!(!calls.iter().any(|args| args[0] == "start"));
-        let missing = StubRunner::successful_json(vec![
-            inspect(&paths, "Stopped"),
-            json!(null),
-            inspect(&paths, "Stopped"),
-        ]);
-        assert!(
-            configure_workspace_identities_with(&missing, &paths, &[identity])
-                .unwrap_err()
-                .to_string()
-                .contains("could not verify")
-        );
+        assert_eq!(calls[1][0], "exec");
+        assert!(!calls.iter().any(|args| args[0] == "modify"));
     }
 
     #[test]
-    fn running_identity_change_requires_stop_but_unchanged_identity_does_not() {
+    fn running_identity_change_uses_normal_config_without_restart() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let identity = WorkspaceIdentity {
-            workspace: "dev".into(),
-            name: "Test User".into(),
-            email: "test@example.com".into(),
-            apply: true,
-        };
-        let running = inspect(&paths, "Running");
-        let runner = StubRunner::successful_json(vec![running.clone()]);
-        let error =
-            configure_workspace_identities_with(&runner, &paths, std::slice::from_ref(&identity))
-                .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Stop 'dev' before changing its Git identity."
-        );
-        assert_eq!(runner.calls.lock().unwrap().len(), 1);
-        let mut unchanged = running;
-        unchanged["config"]["env"] = json!([
-            {"key":"GIT_AUTHOR_NAME","value":"Test User"}, {"key":"GIT_AUTHOR_EMAIL","value":"test@example.com"},
-            {"key":"GIT_COMMITTER_NAME","value":"Test User"}, {"key":"GIT_COMMITTER_EMAIL","value":"test@example.com"},
-            {"key":"JJ_USER","value":"Test User"}, {"key":"JJ_EMAIL","value":"test@example.com"}
+        let mut identity = test_identity();
+        identity.name = "O'Neil $(touch /tmp/unsafe)".into();
+        let runner = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output("{}"),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
         ]);
-        let runner = StubRunner::successful_json(vec![unchanged]);
         configure_workspace_identities_with(&runner, &paths, &[identity]).unwrap();
-        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        let calls = runner.calls.lock().unwrap();
+        assert!(calls[1].iter().any(|arg| arg == "--env-rm"));
+        assert_eq!(calls[2][0], "exec");
+        assert!(calls[2]
+            .iter()
+            .any(|arg| arg == "O'Neil $(touch /tmp/unsafe)"));
+        assert!(!calls
+            .iter()
+            .any(|args| ["restart", "stop", "start"].contains(&args[0].as_str())));
+    }
+
+    #[test]
+    fn identity_missing_or_failed_guest_verification_never_succeeds() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let runner = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output(""),
+        ]);
+        assert!(!verify_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap());
+        let failed = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            Err(RuntimeError::Unavailable("guest unavailable".into())),
+        ]);
+        assert!(verify_workspace_identities_with(&failed, &paths, &[test_identity()]).is_err());
     }
 
     #[test]
@@ -3682,8 +3948,11 @@ mod tests {
             }
             let runner = StubRunner::successful_json(vec![
                 json!([]),
+                json!(1),
                 json!(null),
                 inspect(&paths, "Created"),
+                json!(null),
+                inspect(&paths, "Stopped"),
                 final_state,
             ]);
             let events = Mutex::new(Vec::new());
@@ -3858,6 +4127,10 @@ mod tests {
                 stderr: String::new(),
             }),
             Ok(CommandOutput {
+                stdout: "1".into(),
+                stderr: String::new(),
+            }),
+            Ok(CommandOutput {
                 stdout: String::new(),
                 stderr: String::new(),
             }),
@@ -3866,11 +4139,23 @@ mod tests {
                 stderr: String::new(),
             }),
             Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+            Ok(CommandOutput {
+                stdout: inspect(&paths, "Stopped").to_string(),
+                stderr: String::new(),
+            }),
+            Ok(CommandOutput {
                 stdout: inspect(&paths, "Created").to_string(),
                 stderr: String::new(),
             }),
             Ok(CommandOutput {
                 stdout: "[]".into(),
+                stderr: String::new(),
+            }),
+            Ok(CommandOutput {
+                stdout: "1".into(),
                 stderr: String::new(),
             }),
             Err(RuntimeError::Failed {
@@ -3917,3 +4202,7 @@ mod tests {
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_github_tests.rs"]
+mod github_integration_tests;

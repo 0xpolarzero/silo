@@ -44,6 +44,7 @@ fn main() {
             "cancel_backup_operation",
             "dismiss_backup_operation",
             "read_application_state",
+            "push_repository",
             "read_github_state",
             "connect_github",
             "disconnect_github",

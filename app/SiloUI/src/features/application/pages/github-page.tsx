@@ -253,7 +253,7 @@ export function GitHubPage({
     <div className="flex items-center gap-3 rounded-md border border-destructive/25 bg-destructive/8 px-3 py-2 text-xs" role="alert">
       <TriangleAlert className="size-3.5 shrink-0 text-destructive" aria-hidden="true" />
       <span className="min-w-0 flex-1">{source.github.repositoryCatalogStatus.message}</span>
-      <Button type="button" variant="outline" size="xs" onClick={() => actions.retryGitHubRepositoryCatalog?.()}>Retry repositories</Button>
+      {source.github.repositoryCatalogStatus.canRetry && <Button type="button" variant="outline" size="xs" onClick={() => actions.retryGitHubRepositoryCatalog?.()}>Retry repositories</Button>}
     </div>
   ) : undefined
 

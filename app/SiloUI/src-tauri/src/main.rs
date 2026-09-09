@@ -4,6 +4,7 @@ mod backup_controller;
 mod dependencies;
 mod github;
 mod host_identity;
+mod host_push;
 mod notifications;
 mod runtime;
 mod settings;
@@ -23,6 +24,7 @@ fn main() {
             status_panel::resize_status,
             status_panel::quit_app,
             tray::update_tray,
+            host_push::push_repository,
             github::read_github_state,
             github::connect_github,
             github::disconnect_github,

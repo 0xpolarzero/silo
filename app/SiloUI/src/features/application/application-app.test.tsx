@@ -1489,6 +1489,17 @@ describe("application", () => {
     expect(catalogUnavailable.actions.retryGitHubRepositoryCatalog).toHaveBeenCalledOnce()
   })
 
+  it("keeps failed sign-in retry on Connect GitHub instead of repository refresh", async () => {
+    const source = applicationSourceForScenario("running", "disconnected")
+    source.github.repositoryCatalogStatus = { status: "unavailable", message: "GitHub connection is not configured in this build.", canRetry: false }
+    const { user } = renderApplication("running", source)
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    expect(github.getByRole("alert")).toHaveTextContent("GitHub connection is not configured in this build.")
+    expect(github.getByRole("button", { name: "Connect GitHub" })).toBeEnabled()
+    expect(github.queryByRole("button", { name: "Retry repositories" })).not.toBeInTheDocument()
+  })
+
   it("renders the native app domains in the polished Silo shell", async () => {
     const { user } = renderApplication()
     const navigation = within(appNavigation())

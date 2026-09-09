@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
@@ -25,7 +25,7 @@ const EXPECTED_MSB_SOURCE: &str = "5eca4de8bf233e57f114140f8c076ea8c96f21ab";
 const EXPECTED_MSB_SOURCE_ARCHIVE_SHA: &str =
     "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06";
 const EXPECTED_MSB_PATCH_SHA: &str =
-    "47bde23de17e34e1af4b3e8c320ca0b2047694a8ae28ad4429d9b3f11b690ec9";
+    "e6868dfbef5e7800949adbad98bda7fa501e8df47ac7146e601b50f145349ee8";
 const EXPECTED_MSB_TOOLCHAIN: &str = "1.94.0";
 const EXPECTED_MSB_FEATURES: &str = "net,ssh";
 const EXPECTED_GIT: &str = "2.53.0";
@@ -1109,6 +1109,19 @@ pub async fn read_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_in_runtime_patch_matches_packaged_build_pin() {
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(include_bytes!(
+                    "../../patches/microsandbox-create-stopped-0.6.17.patch"
+                ))
+            ),
+            EXPECTED_MSB_PATCH_SHA
+        );
+    }
 
     #[test]
     fn recovery_distinguishes_bundle_damage_from_temporary_probe_failures() {

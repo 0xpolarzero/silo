@@ -29,7 +29,7 @@ const githubStateShape = z.object({
   repositoryCatalog: z.array(z.string()).optional(),
   repositoryCatalogStatus: z.discriminatedUnion("status", [
     z.object({ status: z.literal("available") }),
-    z.object({ status: z.literal("unavailable"), message: z.string(), canRetry: z.literal(true) }),
+    z.object({ status: z.literal("unavailable"), message: z.string(), canRetry: z.boolean() }),
   ]).optional(),
   workspaces: z.array(z.object({
     workspace: z.string(), identity: z.object({ name: z.string(), email: z.string(), apply: z.boolean() }),

@@ -33,7 +33,7 @@
     "allow-start-restore",
     "allow-cancel-backup-operation",
     "allow-dismiss-backup-operation",
-    "allow-read-application-state",
+    "allow-read-application-state", "allow-push-repository",
     "allow-read-github-state",
     "allow-connect-github",
     "allow-disconnect-github",
