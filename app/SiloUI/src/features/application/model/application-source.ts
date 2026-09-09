@@ -231,7 +231,7 @@ export interface ApplicationActions {
   stopWorkspace: (workspace: string) => void
   restartWorkspace: (workspace: string) => void
   openTerminal: (workspace: string) => void
-  openEditor: (workspace: string) => void
+  openEditor: (workspace: string, path?: string) => void
   connectGitHub?: () => void
   disconnectGitHub?: () => void
   setGitHubAccessEnabled?: (enabled: boolean) => void

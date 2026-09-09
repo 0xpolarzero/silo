@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { WorkspaceFileTree } from "./workspace-file-tree"
@@ -11,6 +11,26 @@ const page = (name: string, kind: "file" | "folder" | "symlink" = "file"): Direc
 })
 
 describe("live file tree", () => {
+  it("opens and copies exact folder paths without toggling expansion", async () => {
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)
+    const onOpenEditor = vi.fn()
+    const store = createDirectoryStore(vi.fn().mockResolvedValue(page("src", "folder")))
+    render(<WorkspaceFileTree workspace={workspace} store={store} active onOpenEditor={onOpenEditor} />)
+    const folder = await screen.findByRole("button", { name: "Folder src" })
+    const row = within(folder.parentElement!)
+    await user.click(row.getByRole("button", { name: "Open in code editor" }))
+    expect(onOpenEditor).toHaveBeenCalledWith(workspace.machine.name, "/workspace/src")
+    expect(folder).toHaveAttribute("aria-expanded", "false")
+    await user.click(row.getByRole("button", { name: "Copy path" }))
+    expect(writeText).toHaveBeenCalledWith("/workspace/src")
+    expect(row.getByRole("button", { name: "Path copied" })).toBeInTheDocument()
+    expect(folder).toHaveAttribute("aria-expanded", "false")
+    const root = screen.getByRole("button", { name: workspace.machine.name })
+    await user.click(within(root.parentElement!).getByRole("button", { name: "Open in code editor" }))
+    expect(onOpenEditor).toHaveBeenLastCalledWith(workspace.machine.name, "/workspace")
+  })
+
   it("shows skeletons, lazily opens folders and immediately reuses cached contents", async () => {
     const user = userEvent.setup()
     let resolve!: (value: DirectoryPage) => void

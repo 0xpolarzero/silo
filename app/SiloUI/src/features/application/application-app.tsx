@@ -220,6 +220,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
           <OverviewPage source={applicationSource} actions={actions} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
+            onOpenEditor={actions.openEditor}
             directoryStore={directoryStore}
             active={visibleTab === "workspaces"}
             workspaces={workspaces}

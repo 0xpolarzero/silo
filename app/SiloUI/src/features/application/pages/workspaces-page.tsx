@@ -1,3 +1,4 @@
+import { FolderActions } from "@/features/application/components/folder-actions"
 import { WorkspaceFileTree } from "@/features/application/components/workspace-file-tree"
 import type { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useMemo, useState } from "react"
@@ -61,9 +62,11 @@ function Files({
   repositoryPushOperations,
   onPushRepository,
   onDismissRepositoryPush,
+  onOpenEditor,
   directoryStore,
   active,
 }: {
+  onOpenEditor: (workspace: string, path: string) => void
   directoryStore: ReturnType<typeof createDirectoryStore>
   active: boolean
   workspaces: ApplicationWorkspace[]
@@ -108,7 +111,7 @@ function Files({
                     const operation = pushOperations.get(`${workspace.machine.name}:${repository.path}`)
                     const push = () => onPushRepository(workspace.machine.name, repository.path, operation?.commitCount ?? repository.ahead)
                     return (
-                      <div key={`${workspace.machine.id}:${repository.path}`} role="listitem" aria-busy={operation?.status === "pushing" || undefined} className="transition-colors hover:bg-muted/35 focus-within:bg-muted/35">
+                      <div key={`${workspace.machine.id}:${repository.path}`} role="listitem" aria-busy={operation?.status === "pushing" || undefined} className="group/folder transition-colors hover:bg-muted/35 focus-within:bg-muted/35">
                         <ListRow
                           data-repository-header
                           icon={<ListRowIcon aria-hidden="true"><GitBranch className="size-3.5" /></ListRowIcon>}
@@ -117,7 +120,7 @@ function Files({
                             <TooltipContent className="max-w-sm break-all">{repository.path}</TooltipContent>
                           </Tooltip></TooltipProvider>}
                           detail={`${repository.branch} · ${repository.ahead} ahead, ${repository.behind} behind`}
-                          actions={<WorkspaceBadge name={workspace.machine.name} state={workspace.state} />}
+                          actions={<><FolderActions path={repository.path} onOpen={() => onOpenEditor(workspace.machine.name, repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} /></>}
                         />
                         {(operation || repository.ahead > 0) && (
                           <div className="flex min-h-6 items-start pr-2 pb-2 pl-10" data-repository-actions>
@@ -160,7 +163,7 @@ function Files({
           <CollapsibleContent className="file-pane-content-motion min-h-0 flex-1" data-files-pane-content="file-tree">
             <div className="h-full overflow-y-auto overscroll-contain px-2 pt-2" data-files-pane-scroll="file-tree">
               <ul className="grid gap-0.5" aria-label="File tree">
-                {workspaces.map((workspace) => <WorkspaceFileTree key={workspace.machine.id} workspace={workspace} store={directoryStore} active={active} />)}
+                {workspaces.map((workspace) => <WorkspaceFileTree key={workspace.machine.id} workspace={workspace} store={directoryStore} active={active} onOpenEditor={onOpenEditor} />)}
               </ul>
             </div>
           </CollapsibleContent>
@@ -439,6 +442,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
 }
 
 export function WorkspacesPage({
+  onOpenEditor,
   directoryStore,
   active,
   workspaces,
@@ -453,6 +457,7 @@ export function WorkspacesPage({
   onPushRepository,
   onDismissRepositoryPush,
 }: {
+  onOpenEditor: (workspace: string, path: string) => void
   directoryStore: ReturnType<typeof createDirectoryStore>
   active: boolean
   workspaces: ApplicationWorkspace[]
@@ -475,7 +480,7 @@ export function WorkspacesPage({
   return (
     <div className="mx-auto grid h-full min-h-0 w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6">
       <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />
-      {section === "files" && <Files directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
+      {section === "files" && <Files onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
       {section === "logs" && <Logs workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} />}
       {section === "network" && <Network workspaces={visibleWorkspaces} browser={browser} />}
       {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} />}

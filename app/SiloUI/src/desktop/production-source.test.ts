@@ -31,6 +31,14 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("passes the selected folder path to the native editor action", async () => {
+    const mock = native()
+    const store = createProductionSource(mock.bridge)
+    await store.applicationActions.openEditor("dev", "/workspace/projects/my folder")
+    expect(mock.invoke).toHaveBeenCalledWith("workspace_action", { action: "open-editor", name: "dev", path: "/workspace/projects/my folder" })
+    store.dispose()
+  })
+
   it("loads directory pages through the native bridge and validates their shape", async () => {
     const mock = native()
     const page = { snapshotId: "snapshot", entries: [{ name: "a b.txt", path: "/workspace/a b.txt", kind: "file" }], nextOffset: null }

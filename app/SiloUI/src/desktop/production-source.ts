@@ -539,7 +539,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     stopWorkspace: (name) => workspaceAction("stop", name),
     restartWorkspace: (name) => workspaceAction("restart", name),
     openTerminal: (name) => workspaceAction("open-terminal", name),
-    openEditor: (name) => workspaceAction("open-editor", name),
+    openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
     connectGitHub: () => { void githubMutation("connect_github").catch(() => {}) },
     disconnectGitHub: () => { void githubMutation("disconnect_github").catch(() => {}) },
     setGitHubAccessEnabled: (enabled) => { void githubMutation("set_github_access_enabled", { enabled }).catch(() => {}) },
