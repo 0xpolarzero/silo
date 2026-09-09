@@ -10,7 +10,9 @@ Connect in the browser through the Silo GitHub App, authorize selected/all GitHu
 repositories, return to Silo, and choose selected/all repositories for each VM.
 **All repositories** means all repositories the connected App/user can access,
 including future authorized repositories, never arbitrary private repositories.
-Default to read-only; **Allow GitHub changes** covers repository Git/API writes.
+A successful connection enables GitHub access automatically; each VM still needs
+a repository selection. Explicitly disabling access persists until another connection
+or enable action. Default to read-only; **Allow GitHub changes** covers repository Git/API writes.
 Selected mode retains per-repository write controls; all mode has an explicit
 read-only default and an all-repository write choice. No unrelated UI changes.
 
@@ -217,3 +219,22 @@ The full rationale and hostile-case test matrix are in
 - [Rate-limit handling](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
 - [Pinned MicroSandbox source](https://github.com/superradcompany/microsandbox/tree/5eca4de8bf233e57f114140f8c076ea8c96f21ab).
 - [Git LFS batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md).
+
+## Connection defaults and empty-policy regression (2026-09-09)
+
+An empty native policy array incorrectly bypassed host-author defaults. Drafts now
+resolve each VM independently: existing policy first, then the actual host Git/jj
+author. No configured author means empty fields with identity application disabled;
+repository access does not depend on inventing an author. Unfinished identity text
+is preserved locally and is not submitted by unrelated repository changes.
+
+A rejected configuration save now ends local applying feedback, preserves the
+valid repository catalog, and lets the existing Retry action resubmit that intent.
+Stale rejections cannot override newer edits; whole-configuration rejection settles
+all outstanding local VM edits included in that request.
+
+Validation: 492 frontend tests across 52 files, 35 focused native GitHub tests,
+lint/type checking, and the configured macOS debug bundle passed. The real app
+showed the host author populated for all three VMs. Its renewed Keychain approval
+was still pending before the final reconnect/All repositories interaction check;
+those interactions must not be claimed verified from this build yet.

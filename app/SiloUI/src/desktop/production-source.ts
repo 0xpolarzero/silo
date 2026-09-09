@@ -458,7 +458,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       }
       const message = `GitHub operation failed: ${errorMessage(cause)}`
       if (sequence === githubMutationSequence && snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source, github: { ...snapshot.source.github,
-        repositoryCatalogStatus: { status: "unavailable", message, canRetry: command === "refresh_github_repositories" },
+        ...(command !== "save_github_configuration" && { repositoryCatalogStatus: { status: "unavailable" as const, message, canRetry: command === "refresh_github_repositories" } }),
       } } })
       throw cause
     } finally {
@@ -492,7 +492,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     connectGitHub: () => { void githubMutation("connect_github").catch(() => {}) },
     disconnectGitHub: () => { void githubMutation("disconnect_github").catch(() => {}) },
     setGitHubAccessEnabled: (enabled) => { void githubMutation("set_github_access_enabled", { enabled }).catch(() => {}) },
-    saveGitHubConfiguration: (configuration) => { void githubMutation("save_github_configuration", { configuration }).catch(() => {}) },
+    saveGitHubConfiguration: async (configuration) => { await githubMutation("save_github_configuration", { configuration }) },
     retryGitHubConfiguration: (workspace) => { void githubMutation("retry_github_configuration", { workspace: workspace ?? null }).catch(() => {}) },
     retryGitHubRepositoryCatalog: () => { void githubMutation("refresh_github_repositories").catch(() => {}) },
   }

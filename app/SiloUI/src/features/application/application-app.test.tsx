@@ -1294,6 +1294,98 @@ describe("application", () => {
     expect(within(appNavigation()).getByRole("button", { name: "GitHub" })).toHaveAttribute("aria-busy", "true")
   })
 
+  it.each([false, true])("uses the detected host author for each sandbox missing a policy (partial=%s)", async (partial) => {
+    const source = applicationSourceForScenario("running")
+    const existing = source.github.workspaces![0]
+    source.github.workspaces = partial ? [existing] : []
+    source.github.hostIdentity = { name: "Local Author", email: "local@example.test" }
+    const { actions, user } = renderApplication("running", source)
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    expect(github.getByLabelText("Git name for playgrounds")).toHaveValue("Local Author")
+    expect(github.getByLabelText("Git email for playgrounds")).toHaveValue("local@example.test")
+    if (partial) expect(github.getByLabelText("Git name for dev")).toHaveValue(existing.identity.name)
+    await user.click(github.getByRole("checkbox", { name: "All repositories for playgrounds" }))
+    expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaces: expect.arrayContaining([expect.objectContaining({ workspace: "playgrounds", repositoryMode: "all", identity: { name: "Local Author", email: "local@example.test", apply: true } })]),
+    }))
+  })
+
+  it("allows repository selection without inventing a missing Git author", async () => {
+    const source = applicationSourceForScenario("running")
+    source.github.workspaces = []
+    source.github.hostIdentity = null
+    const { actions, user } = renderApplication("running", source)
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    expect(github.getByLabelText("Git name for dev")).toHaveValue("")
+    await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
+    expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaces: expect.arrayContaining([expect.objectContaining({ workspace: "dev", repositoryMode: "all", identity: { name: "", email: "", apply: false } })]),
+    }))
+  })
+
+  it("does not submit an incomplete author edit with repository changes", async () => {
+    const source = applicationSourceForScenario("running")
+    const originalIdentity = source.github.workspaces![0].identity
+    const { actions, user } = renderApplication("running", source)
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    await user.clear(github.getByLabelText("Git name for dev"))
+    await user.click(github.getByRole("checkbox", { name: "All repositories for playgrounds" }))
+    expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
+    expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaces: expect.arrayContaining([expect.objectContaining({ workspace: "dev", identity: originalIdentity })]),
+    }))
+    expect(github.getByLabelText("Git name for dev")).toHaveValue("")
+  })
+
+  it("stops applying and permits correction when a native GitHub save rejects", async () => {
+    const { actions, user } = renderApplication()
+    vi.mocked(actions.saveGitHubConfiguration!).mockRejectedValueOnce(new Error("Invalid Git identity settings."))
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
+    expect(await github.findByRole("alert")).toHaveTextContent("Invalid Git identity settings.")
+    expect(github.queryByText("Applying repository access…")).not.toBeInTheDocument()
+    expect(github.getByRole("button", { name: "Disable access" })).toBeEnabled()
+  })
+
+  it("ignores a rejected save once a newer repository change is pending", async () => {
+    const { actions, user } = renderApplication()
+    let rejectFirst!: (cause: Error) => void
+    vi.mocked(actions.saveGitHubConfiguration!).mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject }))
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
+    await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
+    await act(async () => rejectFirst(new Error("Older request failed")))
+    expect(github.queryByRole("alert")).not.toBeInTheDocument()
+    expect(github.getByRole("status")).toHaveTextContent("Applying repository access…")
+  })
+
+  it("settles all pending sandbox edits when the latest complete save fails, and retries that draft", async () => {
+    const { actions, user } = renderApplication()
+    vi.mocked(actions.saveGitHubConfiguration!)
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+      .mockRejectedValueOnce(new Error("Settings could not be saved"))
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
+    await user.click(github.getByRole("checkbox", { name: "All repositories for playgrounds" }))
+    expect(await github.findAllByRole("alert")).toHaveLength(2)
+    expect(github.queryByText("Applying repository access…")).not.toBeInTheDocument()
+    await user.click(github.getAllByRole("button", { name: "Retry" })[0])
+    expect(actions.saveGitHubConfiguration).toHaveBeenCalledTimes(3)
+    expect(actions.retryGitHubConfiguration).not.toHaveBeenCalled()
+    expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaces: expect.arrayContaining([
+        expect.objectContaining({ workspace: "dev", repositoryMode: "all" }),
+        expect.objectContaining({ workspace: "playgrounds", repositoryMode: "all" }),
+      ]),
+    }))
+  })
+
   it("applies repository changes immediately and commits identity fields on blur", async () => {
     const { actions, user } = renderApplication()
     await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))

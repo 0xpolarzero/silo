@@ -31,14 +31,14 @@ function draftFromSource(
   hostIdentity: ApplicationSource["github"]["hostIdentity"],
   workspaces: ApplicationSource["workspaces"],
 ): GitHubDraft {
-  const policies = policiesSnapshot ?? workspaces.map((workspace) => ({
+  const policies = workspaces.map((workspace) => policiesSnapshot?.find((policy) => policy.workspace === workspace.machine.name) ?? ({
     workspace: workspace.machine.name,
     repositoryMode: "selected" as const,
     allRepositoriesAllowChanges: false,
     identity: {
       name: hostIdentity?.name ?? "",
       email: hostIdentity?.email ?? "",
-      apply: true,
+      apply: Boolean(hostIdentity?.name.trim() && hostIdentity.email.trim()),
     },
     repositories: workspace.githubRepositories.map((repository) => ({ repository, allowPushes: false })),
   }))
@@ -71,7 +71,7 @@ function configurationFromDraft(source: ApplicationSource, draft: GitHubDraft, a
     workspaces: source.workspaces.map(({ machine }) => ({
       workspace: machine.name,
       ...(draft.access[machine.name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }),
-      identity: draft.identities[machine.name] ?? { name: "", email: "", apply: true },
+      identity: draft.identities[machine.name] ?? { name: "", email: "", apply: false },
       repositories: draft.selections[machine.name] ?? [],
     })),
   }
@@ -141,6 +141,9 @@ export function GitHubPage({
   const [workspaceOperations, setWorkspaceOperations] = useState<WorkspaceOperations>(() => operationsFromSource(source.github.workspaceOperations))
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
   const identityIntent = useRef<WorkspaceIdentities>(copyDraft(sourceDraft).identities)
+  const saveSequence = useRef(0)
+  const rejectedSaves = useRef(new Set<string>())
+  const pendingSaves = useRef(new Map<string, number>())
   const sourceDraftKey = useRef(JSON.stringify(sourceDraft))
   const sourceOperationsKey = useRef(JSON.stringify(source.github.workspaceOperations))
   const catalogAvailable = source.github.repositoryCatalogStatus?.status !== "unavailable"
@@ -206,7 +209,28 @@ export function GitHubPage({
       ...current,
       [workspace]: { workspace, status: "applying", message },
     }))
-    actions.saveGitHubConfiguration?.(configurationFromDraft(source, nextDraft, accessEnabled))
+    const sequence = ++saveSequence.current
+    rejectedSaves.current.delete(workspace)
+    pendingSaves.current.set(workspace, sequence)
+    const configuration = configurationFromDraft(source, { ...nextDraft, identities: identityIntent.current }, accessEnabled)
+    void Promise.resolve().then(() => actions.saveGitHubConfiguration?.(configuration)).then(() => {
+      for (const [name, pendingSequence] of pendingSaves.current) {
+        if (pendingSequence <= sequence) pendingSaves.current.delete(name)
+      }
+    }).catch((cause: unknown) => {
+      if (sequence !== saveSequence.current) return
+      // Each save contains the complete configuration, including earlier pending edits.
+      const failedWorkspaces = [...pendingSaves.current.keys()]
+      pendingSaves.current.clear()
+      failedWorkspaces.forEach((name) => rejectedSaves.current.add(name))
+      setWorkspaceOperations((current) => {
+        const next = { ...current }
+        for (const name of failedWorkspaces) {
+          next[name] = { workspace: name, status: "failed", message: cause instanceof Error ? cause.message : "GitHub settings could not be saved.", canRetry: true }
+        }
+        return next
+      })
+    })
   }
 
   function updateSelections(workspace: string, selections: GitHubRepositorySelection[]) {
@@ -247,6 +271,10 @@ export function GitHubPage({
   }
 
   function retryWorkspace(workspace: string) {
+    if (rejectedSaves.current.has(workspace)) {
+      applyWorkspaceDraft(workspace, draft, "Retrying GitHub access…")
+      return
+    }
     setWorkspaceOperations((current) => ({
       ...current,
       [workspace]: { workspace, status: "applying", message: "Retrying GitHub access…" },

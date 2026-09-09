@@ -229,7 +229,7 @@ export interface ApplicationActions {
   connectGitHub?: () => void
   disconnectGitHub?: () => void
   setGitHubAccessEnabled?: (enabled: boolean) => void
-  saveGitHubConfiguration?: (configuration: ApplicationGitHubConfiguration) => void
+  saveGitHubConfiguration?: (configuration: ApplicationGitHubConfiguration) => void | Promise<void>
   retryGitHubConfiguration?: (workspace?: string) => void
   retryGitHubRepositoryCatalog?: () => void
 }

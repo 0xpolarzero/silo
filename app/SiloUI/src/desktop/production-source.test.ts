@@ -140,6 +140,19 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("returns native save failures without making the available repository catalog unavailable", async () => {
+    const mock = native()
+    const original = mock.invoke.getMockImplementation()!
+    mock.invoke.mockImplementation((command, args) => command === "save_github_configuration" ? Promise.reject(new Error("Invalid Git identity settings.")) : original(command, args))
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    const catalog = store.getSnapshot().source?.github.repositoryCatalogStatus
+    await expect(store.applicationActions.saveGitHubConfiguration!({ accessEnabled: true, hostIdentity: null, workspaces: [] })).rejects.toThrow("Invalid Git identity settings.")
+    expect(store.getSnapshot().source?.github.repositoryCatalogStatus).toEqual(catalog)
+    expect(store.getSnapshot().error).toContain("Invalid Git identity settings.")
+    store.dispose()
+  })
+
   it("ignores an older settings response after a newer save completes", async () => {
     const mock = native()
     const original = mock.invoke.getMockImplementation()!

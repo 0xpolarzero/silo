@@ -1421,13 +1421,7 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
             .map_err(|_| "GitHub state is unavailable.")?
             .retain(|key, _| !key.starts_with(&prefix));
         store(&c)?;
-        d.disconnect_pending = false;
-        d.account = account;
-        d.repositories = repos;
-        d.catalog_error = None;
-        d.catalog_refresh_at = now() + 300;
-        d.revision += 1;
-        mark_pending(&mut d);
+        record_connection(&mut d, account, repos);
         save(app, &d)?;
     }
     schedule(Duration::from_millis(500));
@@ -1437,6 +1431,17 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
     }
     drop(_connecting);
     snapshot(app)
+}
+
+fn record_connection(d: &mut Document, account: Option<String>, repositories: Vec<Value>) {
+    d.access_enabled = true;
+    d.disconnect_pending = false;
+    d.account = account;
+    d.repositories = repositories;
+    d.catalog_error = None;
+    d.catalog_refresh_at = now() + 300;
+    d.revision += 1;
+    mark_pending(d);
 }
 
 fn catalog_refresh_due(d: &Document, now: u64) -> bool {
@@ -2185,6 +2190,24 @@ mod tests {
         assert!(read_ledger(&entry).is_err());
         assert_eq!(read_ledger(&entry).unwrap(), ledger);
     }
+    #[test]
+    fn connection_enables_access_without_selecting_repositories() {
+        let mut document = Document::default();
+        record_connection(&mut document, Some("account".into()), vec![]);
+        assert!(document.access_enabled);
+        assert!(document.workspaces.is_empty());
+        assert!(document.access_pending.is_empty());
+
+        document.access_enabled = false;
+        document.disconnect_pending = true;
+        document.workspaces = vec![json!({"workspace":"dev"})];
+        record_connection(&mut document, Some("account".into()), vec![]);
+        assert!(document.access_enabled);
+        assert!(!document.disconnect_pending);
+        assert_eq!(document.access_pending, vec!["dev"]);
+        assert_eq!(document.operations[0]["status"], "applying");
+    }
+
     #[test]
     fn connected_catalog_refreshes_before_token_expiry_for_every_selection_mode() {
         let mut d = Document {
