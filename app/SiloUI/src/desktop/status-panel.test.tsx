@@ -106,3 +106,22 @@ it("returns to sandbox rows when the status item is opened again", async () => {
   act(() => native.opened())
   expect(screen.getByRole("button", { name: "Quit Silo" })).toBeVisible()
 })
+
+it.each([false, true])("holds the panel size through folder navigation with Reduce Motion %s", async (reduceMotion) => {
+  const { user } = setup(createMemorySettingsStore({ reduceMotion }))
+  const panel = screen.getByRole("dialog", { name: "Silo" })
+  const page = panel.querySelector<HTMLDivElement>(".status-page")!
+  vi.spyOn(page, "getBoundingClientRect").mockReturnValue({ height: 280 } as DOMRect)
+  await user.click(screen.getByRole("button", { name: "Open dev in Visual Studio Code" }))
+  expect(panel.querySelector(".status-page")).toHaveStyle({ height: "280px" })
+  expect(screen.getByRole("button", { name: "Back to sandboxes" })).toHaveFocus()
+  expect(panel).toHaveAttribute("data-reduce-motion", String(reduceMotion))
+  await user.type(screen.getByRole("textbox", { name: "Filter folders" }), "no-matching-folder")
+  expect(panel.querySelector(".status-page")).toHaveStyle({ height: "280px" })
+  await user.click(screen.getByRole("button", { name: "Back to sandboxes" }))
+  expect(panel.querySelector(".status-page")).toHaveStyle({ height: "280px" })
+  expect(panel).toHaveFocus()
+  expect(screen.getByRole("button", { name: "Quit Silo" })).toBeVisible()
+  act(() => native.opened())
+  expect(panel.querySelector<HTMLDivElement>(".status-page")!.style.height).toBe("")
+})

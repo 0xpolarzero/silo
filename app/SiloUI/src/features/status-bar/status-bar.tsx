@@ -128,6 +128,8 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
 }
 
 export function StatusBarContent({ source, actions, focusContent, workspaceMenu: WorkspaceActions = WorkspaceMenu }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void; workspaceMenu?: ComponentType<WorkspaceMenuProps> }) {
+  const page = useRef<HTMLDivElement>(null)
+  const [navigationHeight, setNavigationHeight] = useState<number>()
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<{ workspace: string; action: "stop" | "restart" } | null>(null)
   const repair = source.runtimeRepair
@@ -135,12 +137,22 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
   const failedPushes = source.repositoryPushOperations.filter((operation) => operation.status === "failed")
   const failedConfiguration = source.sandboxConfigurationOperation?.status === "failed" ? source.sandboxConfigurationOperation : null
 
+  function openFolders(id: string) {
+    // Freeze the visible page before swapping its contents. The native window
+    // must not chase the folder list's intrinsic height through async IPC.
+    const height = page.current?.getBoundingClientRect().height
+    if (height) setNavigationHeight(height)
+    setFolderWorkspace(id)
+  }
+
   if (folders && workspaceAvailability(folders, source).canOpen) {
-    return <StatusFolderPicker workspace={folders} editor={source.preferences.editor} onBack={() => { setFolderWorkspace(null); focusContent() }} onOpen={(path) => actions.openEditor(folders.machine.name, path)} />
+    return <div key="folders" ref={page} className="status-page status-page-forward flex min-h-0 flex-auto flex-col overflow-hidden" style={{ height: navigationHeight }}>
+      <StatusFolderPicker workspace={folders} editor={source.preferences.editor} onBack={() => { setFolderWorkspace(null); focusContent() }} onOpen={(path) => actions.openEditor(folders.machine.name, path)} />
+    </div>
   }
 
   return (
-    <>
+    <div key="sandboxes" ref={page} className={cn("status-page flex min-h-0 flex-auto flex-col overflow-hidden", navigationHeight && "status-page-back")} style={{ height: navigationHeight }}>
       <div className="shrink-0 px-2 pt-2">
         {repair && <ListCard className="mb-2">
           <ListRow
@@ -169,7 +181,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
           />
         })}
       </div>
-      <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">
+      <div className="min-h-0 flex-auto overflow-y-auto overscroll-contain px-2 pb-2">
         {source.workspaces.length ? <ListCard className="border-0">
           <ol aria-label="Sandboxes" className="divide-y">
             {source.workspaces.map((workspace) => {
@@ -203,10 +215,10 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                       : workspace.freshness === "stale" ? <SandboxAction label={`Retry ${machine.name} status`} onClick={actions.refresh}><RotateCw /></SandboxAction>
                         : availability.canOpen ? <>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(machine.name)}><Terminal /></SandboxAction>
-                          <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} onClick={() => setFolderWorkspace(machine.id)}><Code /></SandboxAction>
+                          <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} onClick={() => openFolders(machine.id)}><Code /></SandboxAction>
                         </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => actions.startWorkspace(machine.name)}><Play /></SandboxAction>
                           : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: machine.name })}><SiloMark /></SandboxAction>)}
-                    <WorkspaceActions workspace={workspace} source={source} actions={actions} onFolders={() => setFolderWorkspace(machine.id)} onConfirm={(action) => setConfirmation({ workspace: machine.name, action })} />
+                    <WorkspaceActions workspace={workspace} source={source} actions={actions} onFolders={() => openFolders(machine.id)} onConfirm={(action) => setConfirmation({ workspace: machine.name, action })} />
                   </>}
                 />
                 <RepositoryPushes workspace={workspace} source={source} actions={actions} />
@@ -235,7 +247,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
         <Button variant="ghost" size="sm" className="gap-2" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
         <SandboxAction label="Quit Silo" onClick={actions.quit}><Power /></SandboxAction>
       </footer>
-    </>
+    </div>
   )
 }
 
@@ -281,7 +293,7 @@ export function StatusBar({ source, actions, defaultOpen = false }: { source: Ap
           align="end"
           sideOffset={8}
           collisionPadding={10}
-          className="silo-window flex max-h-[min(520px,var(--radix-popover-content-available-height))] w-[380px] max-w-[calc(100vw-20px)] flex-col overflow-hidden rounded-xl p-0 shadow-lg"
+          className="silo-window flex min-h-[min(280px,var(--radix-popover-content-available-height))] max-h-[min(520px,var(--radix-popover-content-available-height))] w-[380px] max-w-[calc(100vw-20px)] flex-col overflow-hidden rounded-xl p-0 shadow-lg"
           data-reduce-motion={source.preferences.reduceMotion}
           onOpenAutoFocus={(event) => { event.preventDefault(); content.current?.focus() }}
         >

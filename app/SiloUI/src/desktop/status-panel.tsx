@@ -44,7 +44,7 @@ export function StatusPanel({ source: input, actions }: { source: ApplicationSou
 
   return <TooltipProvider delayDuration={150} reduceMotion={source.preferences.reduceMotion}>
     <div ref={content} role="dialog" aria-label="Silo" tabIndex={-1}
-      className="silo-window flex max-h-[520px] w-[380px] flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground outline-none"
+      className="silo-window flex min-h-[280px] max-h-[520px] w-[380px] flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground outline-none"
       data-reduce-motion={source.preferences.reduceMotion}
       onKeyDown={(event) => {
         // Nested menus consume Escape first; the next Escape dismisses the panel.

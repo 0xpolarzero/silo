@@ -38,7 +38,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen }: {
           <p className="text-[11px] text-muted-foreground">Choose a folder to open in {editor}</p>
         </div>
       </header>
-      <div className="grid min-h-0 gap-2 overflow-y-auto p-3">
+      <div className="grid min-h-0 flex-auto content-start gap-2 overflow-y-auto p-3">
         <nav aria-label="Folder path" className="flex min-w-0 items-center gap-0.5 overflow-x-auto text-[11px]">
           {["/workspace", ...segments].map((segment, index) => (
             <span key={index} className="flex shrink-0 items-center gap-0.5">

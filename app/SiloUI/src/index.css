@@ -227,6 +227,19 @@ html.native-status body {
   background: transparent;
 }
 
+.status-page-forward { animation: status-page-forward 140ms ease-out; }
+.status-page-back { animation: status-page-back 140ms ease-out; }
+
+@keyframes status-page-forward {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes status-page-back {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
 @keyframes suppress-repository-overflow-after-tree-expand {
   from, to { overflow-y: hidden; }
 }
