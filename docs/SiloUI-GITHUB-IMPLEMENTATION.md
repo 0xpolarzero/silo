@@ -177,3 +177,36 @@ the production App, rebuild with its three public build settings, and execute th
 UI and authenticated private-repository matrix above. The removed POC is not a
 substitute for testing this implementation. Old development VMs need recreation
 for the new credential facility; no migration code was added.
+
+## Live editing and rate-limit handling
+
+Repository choices save immediately. Additions and write enablement are combined
+for 500 ms after the latest edit; no Save/Cancel controls are added. Removals and
+write disablement first detach the affected authority through local runtime IPC,
+without waiting for GitHub requests or the debounce. If that local update fails,
+Silo reports failure rather than claiming the access was removed. Starting a VM
+and updating its credentials are ordered per VM to prevent an old boot credential
+from overriding a newer choice; long guest commands do not hold that lock.
+
+Only changed owner/read/write groups obtain replacement tokens. Identical scopes
+reuse unexpired tokens, and Git/jj author changes do not request credentials.
+Superseded results cannot attach after a newer edit; issued credentials are tracked
+for reuse or retirement even when a later request fails. A read-scope replacement
+can briefly pause its owner's writes because the runtime profile pairs the owner's
+read and write credentials; the unchanged write token is retained. Applying a
+changed profile closes existing VM proxy connections, but does not restart the VM.
+
+The service forwards confirmed rate limits and safe retry metadata. Native token
+management honors Retry-After and exhausted x-ratelimit-reset, uses exponential
+backoff with positive jitter, and stops after five automatic retries. Explicit
+Retry preserves GitHub's waiting period; the shared rate deadline survives app
+relaunch. Permission errors and ambiguous token-creation/refresh failures do not
+get automatic replays. Safe reads and idempotent revocations can retry. Git pushes
+and VM write API requests are not replayed by this mechanism.
+
+The existing progress/error messages describe pending work and retry delays.
+Onboarding waits for acknowledgement of the exact saved policy revision. Older
+responses cannot replace newer UI settings or complete a superseded setup job.
+
+Sources: [GitHub best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately)
+and [GitHub rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).

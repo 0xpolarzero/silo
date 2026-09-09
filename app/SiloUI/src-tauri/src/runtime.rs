@@ -12,7 +12,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -30,10 +30,30 @@ const DEFAULT_IMAGE: &str = "registry-1.docker.io/library/ubuntu:24.04";
 pub(crate) static MUTATION_LOCK: Mutex<()> = Mutex::new(());
 const DISABLED_GITHUB_PROFILE: &str = r#"{"version":1,"owners":[]}"#;
 static GITHUB_PROFILES: OnceLock<Mutex<HashMap<(PathBuf, String), String>>> = OnceLock::new();
+type GithubRevisionLocks = HashMap<(PathBuf, String), Arc<Mutex<u64>>>;
+static GITHUB_REVISION_LOCKS: OnceLock<Mutex<GithubRevisionLocks>> = OnceLock::new();
+
+fn github_revision_lock(home: &Path, workspace: &str) -> Result<Arc<Mutex<u64>>, String> {
+    Ok(GITHUB_REVISION_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "GitHub runtime state is unavailable.")?
+        .entry((home.to_owned(), workspace.into()))
+        .or_insert_with(|| Arc::new(Mutex::new(0)))
+        .clone())
+}
+
+fn accept_github_revision(current: &mut u64, revision: u64) -> Result<(), String> {
+    if revision < *current {
+        return Err("A newer GitHub access choice has replaced this update.".into());
+    }
+    *current = revision;
+    Ok(())
+}
 
 fn github_command_workspace(args: &[String]) -> Option<&str> {
     match args.first().map(String::as_str) {
-        Some("start" | "exec" | "modify" | "restart") => args.get(1).map(String::as_str),
+        Some("start" | "modify" | "restart") => args.get(1).map(String::as_str),
         _ => None,
     }
 }
@@ -475,6 +495,65 @@ pub(crate) fn run_msb(
 }
 
 fn run_msb_with_progress(
+    paths: &RuntimePaths,
+    args: &[String],
+    timeout: Duration,
+    report: &dyn Fn(Value),
+) -> Result<CommandOutput, RuntimeError> {
+    if let Some(workspace) = args.get(1).filter(|_| {
+        matches!(
+            args.first().map(String::as_str),
+            Some("start" | "restart" | "exec")
+        )
+    }) {
+        let lock =
+            github_revision_lock(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
+        let guard = lock.lock().map_err(|_| {
+            RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
+        })?;
+        if args[0] != "exec" {
+            return run_msb_process(paths, args, timeout, report);
+        }
+        // Finish a possible boot under the same lock as live access changes,
+        // then release it before running arbitrary, possibly long guest commands.
+        let state = inspect_workspace(&ProcessRunner, paths, workspace)?;
+        let temporary_boot = matches!(state.status.as_str(), "Created" | "Stopped" | "Crashed");
+        if temporary_boot {
+            run_msb_process(
+                paths,
+                &["start".into(), workspace.clone()],
+                MUTATION_TIMEOUT,
+                report,
+            )?;
+        }
+        drop(guard);
+        let result = run_msb_process(paths, args, timeout, report);
+        if temporary_boot {
+            // Preserve msb exec's temporary-boot behavior even on guest failure.
+            let _guard = lock.lock().map_err(|_| {
+                RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
+            })?;
+            let stopped = run_msb_process(
+                paths,
+                &["stop".into(), workspace.clone()],
+                STOP_TIMEOUT,
+                &|_| {},
+            );
+            return match (result, stopped) {
+                (Ok(output), Ok(_)) => Ok(output),
+                (Err(error), Ok(_)) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+                (Err(error), Err(cleanup)) => Err(RuntimeError::Unavailable(format!(
+                    "{error} Stopping the temporary sandbox also failed: {cleanup}"
+                ))),
+            };
+        }
+        return result;
+    }
+    run_msb_process(paths, args, timeout, report)
+}
+
+fn run_msb_process(
     paths: &RuntimePaths,
     args: &[String],
     timeout: Duration,
@@ -1100,17 +1179,28 @@ pub(crate) fn scoped_cached_tokens(
 pub(crate) fn apply_github_policy(
     app: &AppHandle,
     workspace: &str,
-    _revision: u64,
+    revision: u64,
     profiles: &Value,
 ) -> Result<(), String> {
-    let _guard = MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| RuntimeError::Busy.to_string())?;
     validate_name(workspace).map_err(|error| error.to_string())?;
     if profiles["version"] != 1 || !profiles["owners"].is_array() {
         return Err("Invalid GitHub access profile.".into());
     }
     let paths = runtime_paths(app)?;
+    // GitHub policy updates must not wait for VM lifecycle or network operations.
+    // Serialize only this VM's local updates and reject delayed older revisions.
+    let revision_lock = github_revision_lock(&paths.home, workspace)?;
+    let mut current_revision = revision_lock
+        .lock()
+        .map_err(|_| "GitHub runtime state is unavailable.")?;
+    accept_github_revision(&mut current_revision, revision)?;
+    // Even a failed runtime update must not leave a stale credential available
+    // for the next start. Active-connection acknowledgement is checked below.
+    let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
+    cache
+        .lock()
+        .map_err(|_| "GitHub runtime state is unavailable.")?
+        .remove(&(paths.home.clone(), workspace.into()));
     let capability =
         run_msb(&paths, &["--silo-github-protocol".into()], READ_TIMEOUT).map_err(|_| {
             "This Silo runtime must be updated before GitHub access can be enabled.".to_string()
@@ -3015,6 +3105,27 @@ mod tests {
     }
 
     #[test]
+    fn github_revisions_reject_delayed_updates_but_allow_same_revision_completion() {
+        let mut revision = 4;
+        assert!(accept_github_revision(&mut revision, 5).is_ok());
+        assert!(accept_github_revision(&mut revision, 4).is_err());
+        assert_eq!(revision, 5);
+        assert!(accept_github_revision(&mut revision, 5).is_ok());
+    }
+
+    #[test]
+    fn github_updates_are_independent_of_other_vms_and_lifecycle_operations() {
+        let home = tempfile::tempdir().unwrap();
+        let a = github_revision_lock(home.path(), "a").unwrap();
+        let same = github_revision_lock(home.path(), "a").unwrap();
+        let b = github_revision_lock(home.path(), "b").unwrap();
+        let _first = a.lock().unwrap();
+        let _lifecycle = MUTATION_LOCK.lock().unwrap();
+        assert!(same.try_lock().is_err());
+        assert!(b.try_lock().is_ok());
+    }
+
+    #[test]
     fn github_environment_is_bound_to_runtime_home_and_explicit_command_target() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
@@ -3029,9 +3140,15 @@ mod tests {
             .lock()
             .unwrap()
             .insert((paths.home.clone(), "dev".into()), "profile-b".into());
-        let args = vec!["exec".into(), "dev".into(), "--".into(), "exec".into()];
+        let args = vec!["start".into(), "dev".into()];
         assert_eq!(github_environment(&paths, &args), "profile-b");
         assert_eq!(github_environment(&other, &args), DISABLED_GITHUB_PROFILE);
+        // An exec that races a stop must never implicitly boot with a captured
+        // old token. Explicit boot preparation above owns credential injection.
+        assert_eq!(
+            github_environment(&paths, &["exec".into(), "dev".into()]),
+            DISABLED_GITHUB_PROFILE
+        );
         assert_eq!(
             github_environment(&paths, &["list".into(), "dev".into()]),
             DISABLED_GITHUB_PROFILE

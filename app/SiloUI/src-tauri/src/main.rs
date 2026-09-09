@@ -3,6 +3,7 @@ mod backup;
 mod backup_controller;
 mod dependencies;
 mod github;
+mod github_http;
 mod host_identity;
 mod host_push;
 mod notifications;
