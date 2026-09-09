@@ -375,7 +375,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
                       tone={presentation?.tone}
                       detail={presentation?.detail ?? machineSummary(machine)}
                       detailClassName={presentation?.detailClassName}
-                      leading={presentation?.suppressInteractions ? undefined : <span
+                      leading={presentation?.suppressInteractions ? <span className="size-7 shrink-0" aria-hidden="true" /> : <span
                         role="button"
                         tabIndex={interactionDisabled ? -1 : 0}
                         draggable={!editor && !interactionDisabled}

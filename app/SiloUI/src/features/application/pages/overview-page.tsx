@@ -256,7 +256,7 @@ export function OverviewPage({
               badge,
               busy: Boolean(lifecycle),
               suppressInteractions: Boolean(lifecycle),
-              icon: lifecycle ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : undefined,
+              icon: lifecycle ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
               iconState: visualState,
               tone: lifecycle ? "starting" as const : workspaceRowTone(workspace),
               detail: (
