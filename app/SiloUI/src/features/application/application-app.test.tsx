@@ -1277,6 +1277,23 @@ describe("application", () => {
     expect(github.getByRole("group", { name: "Git identity for playgrounds" })).toBeVisible()
   })
 
+  it("preserves unsaved Git identity and pending repository choices during source polling", async () => {
+    const source = applicationSourceForScenario("running")
+    const { actions, user, rerender } = renderApplication("running", source)
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    const name = github.getByLabelText("Git name for dev")
+    await user.clear(name)
+    await user.type(name, "Unfinished Author")
+    rerender(<ApplicationPreview source={structuredClone(source)} actions={actions} />)
+    expect(name).toHaveValue("Unfinished Author")
+    expect(actions.saveGitHubConfiguration).not.toHaveBeenCalled()
+    await user.click(github.getByRole("checkbox", { name: "All repositories for playgrounds" }))
+    rerender(<ApplicationPreview source={structuredClone(source)} actions={actions} />)
+    expect(github.getByRole("checkbox", { name: "All repositories for playgrounds" })).toBeChecked()
+    expect(within(appNavigation()).getByRole("button", { name: "GitHub" })).toHaveAttribute("aria-busy", "true")
+  })
+
   it("applies repository changes immediately and commits identity fields on blur", async () => {
     const { actions, user } = renderApplication()
     await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))

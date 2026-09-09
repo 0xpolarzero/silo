@@ -27,7 +27,7 @@ async function setup(savedActivity: SiloProgressEvent[] = []) {
     if (command === "read_setup_activity") return savedActivity
     if (command === "save_machine_configuration") return machines()
     if (command === "configure_workspace_identities") return identities()
-    if (command === "save_github_configuration" || command === "read_github_state") return github()
+    if (command === "save_github_configuration" || command === "read_github_state" || command === "retry_github_configuration") return github()
     throw new Error(`Unexpected command ${command}`)
   })
   const bridge = { invoke, listen: async (name: string, handler: (event?: { payload: unknown }) => void) => { events.set(name, handler); return () => events.delete(name) } } as ProductionBridge
@@ -208,6 +208,22 @@ describe("production setup queue", () => {
     await outcome
     expect(markComplete).toHaveBeenCalledTimes(status === "succeeded" ? 1 : 0)
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "identityVerify")?.status).toBe("succeeded")
+    store.dispose()
+  })
+
+  it("explicitly retries a failed unchanged GitHub policy without rerunning identity", async () => {
+    const { store, github, identities, invoke } = await setup()
+    const selected = structuredClone(request)
+    selected.github.connectionState = "connected"
+    const workspace = selected.github.workspaces[0].workspace
+    const failed = { ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status: "failed", message: "Policy rejected", canRetry: true }] }
+    github.mockResolvedValueOnce(failed).mockResolvedValueOnce(failed).mockResolvedValueOnce({ ...application.github, policyRevision: 8, workspaceOperations: [{ workspace, status: "succeeded", message: "Applied" }] })
+    const markComplete = vi.fn(async () => {})
+    await expect(store.finishSetup(selected, markComplete)).rejects.toThrow("Policy rejected")
+    await store.finishSetup(selected, markComplete)
+    expect(invoke).toHaveBeenCalledWith("retry_github_configuration", undefined)
+    expect(identities).toHaveBeenCalledOnce()
+    expect(markComplete).toHaveBeenCalledOnce()
     store.dispose()
   })
 

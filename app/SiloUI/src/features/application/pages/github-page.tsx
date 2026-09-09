@@ -141,6 +141,8 @@ export function GitHubPage({
   const [workspaceOperations, setWorkspaceOperations] = useState<WorkspaceOperations>(() => operationsFromSource(source.github.workspaceOperations))
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
   const identityIntent = useRef<WorkspaceIdentities>(copyDraft(sourceDraft).identities)
+  const sourceDraftKey = useRef(JSON.stringify(sourceDraft))
+  const sourceOperationsKey = useRef(JSON.stringify(source.github.workspaceOperations))
   const catalogAvailable = source.github.repositoryCatalogStatus?.status !== "unavailable"
   const applying = Object.values(workspaceOperations).some((operation) => operation.status === "applying")
   const busy = connectionState === "connecting" || applying
@@ -150,9 +152,19 @@ export function GitHubPage({
   }, [busy, onBusyChange])
 
   useEffect(() => {
-    // The bridge-provided snapshot is authoritative after a completed mutation.
+    const key = JSON.stringify(sourceDraft)
+    if (sourceDraftKey.current === key) return
+    sourceDraftKey.current = key
+    const submittedIdentities = identityIntent.current
+    // Preserve text still being edited; blur submits it separately.
     // oxlint-disable-next-line react/set-state-in-effect
-    setDraft(copyDraft(sourceDraft))
+    setDraft((current) => {
+      const next = copyDraft(sourceDraft)
+      for (const [workspace, identity] of Object.entries(current.identities)) {
+        if (next.identities[workspace] && !sameIdentity(submittedIdentities[workspace], identity)) next.identities[workspace] = identity
+      }
+      return next
+    })
     identityIntent.current = copyDraft(sourceDraft).identities
   }, [sourceDraft])
 
@@ -163,9 +175,12 @@ export function GitHubPage({
     setAccessEnabled(source.github.accessEnabled ?? true)
     // oxlint-disable-next-line react/set-state-in-effect
     setConfirmingDisconnect(false)
-  }, [source.github])
+  }, [source.github.state, source.github.accessEnabled])
 
   useEffect(() => {
+    const key = JSON.stringify(source.github.workspaceOperations)
+    if (sourceOperationsKey.current === key) return
+    sourceOperationsKey.current = key
     // A native replacement publishes the latest desired-versus-runtime state per workspace.
     // oxlint-disable-next-line react/set-state-in-effect
     setWorkspaceOperations(operationsFromSource(source.github.workspaceOperations))
