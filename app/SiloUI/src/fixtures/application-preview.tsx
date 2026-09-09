@@ -18,7 +18,6 @@ const inactiveApplicationActions: ApplicationActions = {
   retryMachineConfiguration: () => undefined,
   pushRepository: () => undefined,
   startWorkspace: () => undefined,
-  pauseWorkspace: () => undefined,
   stopWorkspace: () => undefined,
   restartWorkspace: () => undefined,
   openTerminal: () => undefined,

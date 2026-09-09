@@ -1,4 +1,4 @@
-import { Activity, Bell, Boxes, CircleAlert, Code, File, GitFork, HardDrive, KeyRound, Network, Pause, Play, RotateCw, Settings2, Square, Terminal, type LucideIcon } from "lucide-react"
+import { Activity, Bell, Boxes, CircleAlert, Code, File, GitFork, HardDrive, KeyRound, Network, Play, RotateCw, Settings2, Square, Terminal, type LucideIcon } from "lucide-react"
 
 import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
@@ -54,7 +54,6 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
     }
     const lifecycle = [
       { label: "Start", icon: Play, available: availability.canStart, run: actions.startWorkspace },
-      { label: "Pause", icon: Pause, available: availability.canStop, run: actions.pauseWorkspace },
       { label: "Stop", icon: Square, available: availability.canStop, run: actions.stopWorkspace },
       { label: "Restart", icon: RotateCw, available: availability.canRestart, run: actions.restartWorkspace },
     ]

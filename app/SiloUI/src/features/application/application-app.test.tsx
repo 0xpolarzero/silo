@@ -16,7 +16,6 @@ function renderApplication(scenario: Parameters<typeof applicationSourceForScena
     retryMachineConfiguration: vi.fn(),
     pushRepository: vi.fn(),
     startWorkspace: vi.fn(),
-    pauseWorkspace: vi.fn(),
     stopWorkspace: vi.fn(),
     restartWorkspace: vi.fn(),
     openTerminal: vi.fn(),
@@ -912,10 +911,13 @@ describe("application", () => {
       if (mode === "error") expect(overview.getAllByText(/Candidate networking did not become ready/)).toHaveLength(3)
       const devRow = rows.find((row) => row.getAttribute("data-sandbox-name") === "dev") as HTMLElement
       const controls = within(devRow).getByLabelText("Controls for dev")
-      const stop = within(controls).getByRole("button", { name: "Stop dev" })
+      const stop = within(controls).queryByRole("button", { name: "Stop dev" })
       const restart = within(controls).getByRole("button", { name: "Restart dev" })
       if (stopEnabled) expect(stop).toBeEnabled()
-      else expect(stop).toBeDisabled()
+      else {
+        expect(stop).not.toBeInTheDocument()
+        expect(within(controls).getByRole("button", { name: "Start dev" })).toBeEnabled()
+      }
       if (restartEnabled) expect(restart).toBeEnabled()
       else expect(restart).toBeDisabled()
       application.unmount()
@@ -1115,20 +1117,19 @@ describe("application", () => {
 
     expect(overview.queryByText("Silo is ready")).not.toBeInTheDocument()
     expect(overview.queryByText(/items? need attention/)).not.toBeInTheDocument()
-    await running.user.click(within(devControls).getByRole("button", { name: "Pause dev" }))
-    expect(running.actions.pauseWorkspace).toHaveBeenCalledWith("dev")
+    expect(within(devControls).queryByRole("button", { name: "Pause dev" })).not.toBeInTheDocument()
+    expect(within(devControls).queryByRole("button", { name: "Start dev" })).not.toBeInTheDocument()
     await running.user.click(within(devControls).getByRole("button", { name: "Stop dev" }))
     expect(running.actions.stopWorkspace).toHaveBeenCalledWith("dev")
     await running.user.click(within(devControls).getByRole("button", { name: "Restart dev" }))
     expect(running.actions.restartWorkspace).toHaveBeenCalledWith("dev")
     const startPlaygrounds = within(playgroundsControls).getByRole("button", { name: "Start playgrounds" })
-    const stopPlaygrounds = within(playgroundsControls).getByRole("button", { name: "Stop playgrounds" })
+    const stopPlaygrounds = within(playgroundsControls).queryByRole("button", { name: "Stop playgrounds" })
     const restartPlaygrounds = within(playgroundsControls).getByRole("button", { name: "Restart playgrounds" })
     expect(startPlaygrounds).toBeEnabled()
-    expect(stopPlaygrounds).toBeDisabled()
+    expect(stopPlaygrounds).not.toBeInTheDocument()
     expect(restartPlaygrounds).toBeDisabled()
     await running.user.click(startPlaygrounds)
-    await running.user.click(stopPlaygrounds)
     await running.user.click(restartPlaygrounds)
     expect(running.actions.startWorkspace).toHaveBeenCalledWith("playgrounds")
     expect(running.actions.stopWorkspace).not.toHaveBeenCalledWith("playgrounds")

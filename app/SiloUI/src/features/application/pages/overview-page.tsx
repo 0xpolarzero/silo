@@ -1,4 +1,4 @@
-import { CircleAlert, Loader2, Pause, Play, RotateCw, Square, TriangleAlert } from "lucide-react"
+import { CircleAlert, Loader2, Play, RotateCw, Square, TriangleAlert } from "lucide-react"
 import { useState } from "react"
 
 import { ListRowIcon } from "@/components/list-row"
@@ -167,36 +167,13 @@ function ConfigurationDetail({ view }: { view: ConfigurationRowView }) {
 }
 
 function WorkspaceActions({ machine, state, actions, disabled = false }: { machine: SetupMachineConfiguration; state: WorkspaceState; actions: ApplicationActions; disabled?: boolean }) {
-  if (state === "running") {
-    return (
-      <>
-        <SandboxAction label={`Pause ${machine.name}`} disabled={disabled} onClick={() => actions.pauseWorkspace(machine.name)}><Pause /></SandboxAction>
-        <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={() => actions.stopWorkspace(machine.name)}><Square /></SandboxAction>
-        <SandboxAction label={`Restart ${machine.name}`} disabled={disabled} onClick={() => actions.restartWorkspace(machine.name)}><RotateCw /></SandboxAction>
-      </>
-    )
-  }
-  if (state === "starting") {
-    return (
-      <>
-        <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={() => actions.stopWorkspace(machine.name)}><Square /></SandboxAction>
-        <SandboxAction label={`Restart ${machine.name}`} disabled onClick={() => actions.restartWorkspace(machine.name)}><RotateCw /></SandboxAction>
-      </>
-    )
-  }
-  if (state === "failed") {
-    return (
-      <>
-        <SandboxAction label={`Stop ${machine.name}`} disabled onClick={() => actions.stopWorkspace(machine.name)}><Square /></SandboxAction>
-        <SandboxAction label={`Restart ${machine.name}`} disabled={disabled} onClick={() => actions.restartWorkspace(machine.name)}><RotateCw /></SandboxAction>
-      </>
-    )
-  }
+  const canStop = state === "running" || state === "starting"
   return (
     <>
-      <SandboxAction label={`Start ${machine.name}`} disabled={disabled} onClick={() => actions.startWorkspace(machine.name)}><Play /></SandboxAction>
-      <SandboxAction label={`Stop ${machine.name}`} disabled onClick={() => actions.stopWorkspace(machine.name)}><Square /></SandboxAction>
-      <SandboxAction label={`Restart ${machine.name}`} disabled onClick={() => actions.restartWorkspace(machine.name)}><RotateCw /></SandboxAction>
+      {canStop
+        ? <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={() => actions.stopWorkspace(machine.name)}><Square /></SandboxAction>
+        : <SandboxAction label={`Start ${machine.name}`} disabled={disabled} onClick={() => actions.startWorkspace(machine.name)}><Play /></SandboxAction>}
+      <SandboxAction label={`Restart ${machine.name}`} disabled={disabled || (state !== "running" && state !== "failed")} onClick={() => actions.restartWorkspace(machine.name)}><RotateCw /></SandboxAction>
     </>
   )
 }
@@ -290,7 +267,6 @@ export function OverviewPage({
                   else if (source.resourceNotice?.kind === "start-memory" && source.resourceNotice.sandbox === name) setPendingStart(name)
                   else actions.startWorkspace(name)
                 },
-                pauseWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.pauseWorkspace(name),
                 stopWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
                 restartWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
               }} disabled={configurationLocked} />,

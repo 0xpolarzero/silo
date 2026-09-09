@@ -508,7 +508,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       })
     },
     startWorkspace: (name) => workspaceAction("start", name),
-    pauseWorkspace: (name) => workspaceAction("pause", name),
     stopWorkspace: (name) => workspaceAction("stop", name),
     restartWorkspace: (name) => workspaceAction("restart", name),
     openTerminal: (name) => workspaceAction("open-terminal", name),

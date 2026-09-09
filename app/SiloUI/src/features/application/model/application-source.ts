@@ -221,7 +221,6 @@ export interface ApplicationActions {
   retryMachineConfiguration: (workspace: string) => void
   pushRepository: (workspace: string, repositoryPath: string) => void
   startWorkspace: (workspace: string) => void
-  pauseWorkspace: (workspace: string) => void
   stopWorkspace: (workspace: string) => void
   restartWorkspace: (workspace: string) => void
   openTerminal: (workspace: string) => void

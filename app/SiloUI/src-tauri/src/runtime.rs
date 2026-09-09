@@ -2298,10 +2298,6 @@ fn workspace_action_with(
             "start" => ("start", MUTATION_TIMEOUT),
             "stop" => ("stop", STOP_TIMEOUT),
             "restart" => ("restart", MUTATION_TIMEOUT),
-            "pause" => return Err(RuntimeError::Invalid(
-                "Pause is not supported by bundled MicroSandbox 0.6.17. Stop the sandbox instead."
-                    .into(),
-            )),
             _ => {
                 return Err(RuntimeError::Invalid(format!(
                     "Unknown sandbox action '{action}'. No sandbox operation was performed."
