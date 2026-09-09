@@ -263,15 +263,29 @@ fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
 }
 
 pub fn snapshot(app: &tauri::AppHandle) -> Result<Value, String> {
-    let mut d = load(app)?;
-    let connected = credential()?.is_some_and(|c| c.expires_at > now());
+    Ok(public_snapshot(
+        load(app)?,
+        credential(),
+        crate::host_identity::read(),
+    ))
+}
+fn public_snapshot(
+    mut d: Document,
+    stored: Result<Option<Credential>, String>,
+    identity: Option<crate::host_identity::HostIdentity>,
+) -> Value {
+    let connected = match stored {
+        Ok(credential) => credential.is_some_and(|c| c.expires_at > now()),
+        Err(message) => {
+            d.catalog_error = Some(message);
+            false
+        }
+    };
     if d.session != session() {
         d.operations = d.workspaces.iter().map(|w|json!({"workspace":w["workspace"],"status":"failed","message":"GitHub access must be verified for this app session.","canRetry":true})).collect();
     }
 
-    Ok(
-        json!({"state":if CONNECTING.load(Ordering::SeqCst){"connecting"}else if connected{"connected"}else{"disconnected"},"account":d.account,"accessEnabled":d.access_enabled,"hostIdentity":crate::host_identity::read(),"repositoryCatalog":d.repositories.iter().filter_map(|r|r["name"].as_str()).collect::<Vec<_>>(),"repositoryCatalogStatus":match &d.catalog_error { Some(message)=>json!({"status":"unavailable","message":message,"canRetry":true}),None=>json!({"status":"available"})},"workspaces":d.workspaces,"workspaceOperations":d.operations}),
-    )
+    json!({"state":if CONNECTING.load(Ordering::SeqCst){"connecting"}else if connected{"connected"}else{"disconnected"},"account":d.account,"accessEnabled":d.access_enabled,"hostIdentity":identity,"repositoryCatalog":d.repositories.iter().filter_map(|r|r["name"].as_str()).collect::<Vec<_>>(),"repositoryCatalogStatus":match &d.catalog_error { Some(message)=>json!({"status":"unavailable","message":message,"canRetry":true}),None=>json!({"status":"available"})},"workspaces":d.workspaces,"workspaceOperations":d.operations})
 }
 type TokenLedger = std::collections::HashMap<String, Vec<String>>;
 fn ledger_entry() -> Result<keyring::Entry, String> {
@@ -364,13 +378,15 @@ fn retire_previous(app: &tauri::AppHandle, workspace: &str, revision: u64) -> Re
     tokens.dedup();
     let deadline = Instant::now() + Duration::from_secs(45);
     let mut first_failure = ledger.as_ref().err().cloned();
+    let mut network_failed = false;
     let mut remaining = Vec::new();
     for token in tokens {
-        if first_failure.is_none() && Instant::now() < deadline {
+        if !network_failed && Instant::now() < deadline {
             if service("/v1/tokens/revoke", json!({"accessToken":&token})).is_ok() {
                 continue;
             }
         }
+        network_failed = true;
         first_failure=Some("GitHub could not confirm that previous access was revoked. Access remains pending; retry when connected.".to_string());
         remaining.push(token);
     }
@@ -900,6 +916,15 @@ pub fn install(app: &tauri::AppHandle) {
     std::thread::spawn(move || loop {
         if let Ok(_guard) = OPERATION.try_lock() {
             if let Ok(mut d) = load(&app) {
+                // Account renewal also works before the user creates their first sandbox.
+                if d.account.is_some()
+                    && credential().is_ok_and(|c| c.is_some_and(|c| c.expires_at <= now() + 120))
+                {
+                    if let Err(message) = active_credential() {
+                        d.catalog_error = Some(message);
+                        let _ = save(&app, &d);
+                    }
+                }
                 // All repositories includes newly authorized owners as well as new repos.
                 // Refresh the catalog independently of token expiry; unchanged catalogs do not interrupt connections.
                 if catalog_refresh_due(&d, now()) && credential().is_ok_and(|c| c.is_some()) {
@@ -1064,6 +1089,22 @@ pub async fn retry_github_configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn optional_github_keeps_verified_setup_when_secure_store_is_unavailable() {
+        let d = Document {
+            session: session().into(),
+            operations: vec![json!({"workspace":"dev","status":"succeeded"})],
+            ..Default::default()
+        };
+        let state = public_snapshot(
+            d,
+            Err("The system credential store is unavailable.".into()),
+            None,
+        );
+        assert_eq!(state["state"], "disconnected");
+        assert_eq!(state["repositoryCatalogStatus"]["status"], "unavailable");
+        assert_eq!(state["workspaceOperations"][0]["status"], "succeeded");
+    }
     #[test]
     fn runtime_token_ledger_survives_reload_only_in_secure_store() {
         let entry =
