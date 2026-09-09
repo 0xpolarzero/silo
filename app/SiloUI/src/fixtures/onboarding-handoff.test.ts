@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest"
 
 import { applicationPreviewAfterSetup } from "./onboarding-handoff"
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 import type { OnboardingCompletionRequest } from "@/features/onboarding/model/onboarding-source"
 
 const request: OnboardingCompletionRequest = {
   machineConfiguration: { schemaVersion: 1, machines: [
-    { ...productionMachineDefaults[0], name: "build" },
+    { ...fixtureMachineDefaults[0], name: "build" },
     { id: "remote-test", kind: "ssh", name: "remote", host: "example.test", user: "dev", port: 2222 },
   ] },
   applications: { terminal: "Warp", editor: "Zed", browser: "Firefox" },

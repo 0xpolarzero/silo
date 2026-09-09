@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
 import {
   createSystemIntegrationStore,
@@ -27,7 +27,7 @@ function view(runtime: SystemIntegrations) {
   const integrations = createSystemIntegrationStore(service, settings, runtime)
   render(<SettingsProvider store={settings}>
     <SystemIntegrationProvider store={integrations}>
-      <SetupComplete machines={productionMachineDefaults} githubSummary="GitHub connected" />
+      <SetupComplete machines={fixtureMachineDefaults} githubSummary="GitHub connected" />
     </SystemIntegrationProvider>
   </SettingsProvider>)
   return service

@@ -4,7 +4,7 @@ import {
   type SiloProgressEvent,
 } from "@/contracts/silo"
 import { parseOnboardingSource, type OnboardingSource } from "@/features/onboarding/model/onboarding-source"
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 
 export const scenarioNames = ["running", "complete", "dependency-failure", "bootstrap-failure", "stress-running"] as const
 export type ScenarioName = (typeof scenarioNames)[number]
@@ -42,7 +42,7 @@ const stressBootstrapConfiguration = {
 
 const bootstrapConfiguration = {
   schemaVersion: 1,
-  workspaces: productionMachineDefaults.map((machine) => ({
+  workspaces: fixtureMachineDefaults.map((machine) => ({
     name: machine.name,
     cpu: machine.cpus,
     cpuCeiling: machine.maxCPUs,
@@ -119,7 +119,7 @@ const completeEvents = bootstrapConfiguration.workspaces.flatMap(({ name }) => [
 ]) satisfies SiloProgressEvent[]
 
 const runningSource = {
-  machineConfigurations: productionMachineDefaults.map((machine) => ({ ...machine })),
+  machineConfigurations: fixtureMachineDefaults.map((machine) => ({ ...machine })),
   bootstrapConfiguration,
   bootstrapState: {
     phase: "workspaces",

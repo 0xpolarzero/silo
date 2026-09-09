@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 import { onboardingScenarios, scenarioFromSearch, scenarioNames } from "@/fixtures/scenarios"
 
 // Fixtures must exercise the UI with the same machines that progress describes.
@@ -24,7 +24,7 @@ describe("onboarding scenario coherence", () => {
       if (event.workspace) expect(names).toContain(event.workspace)
     }
     if (source.error?.workspace) expect(names).toContain(source.error.workspace)
-    if (name !== "stress-running") expect(source.machineConfigurations).toEqual(productionMachineDefaults)
+    if (name !== "stress-running") expect(source.machineConfigurations).toEqual(fixtureMachineDefaults)
   })
 
   it("shows the default three machines and an unfinished verification", () => {

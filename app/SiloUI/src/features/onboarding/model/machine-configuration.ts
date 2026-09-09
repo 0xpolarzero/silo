@@ -13,8 +13,7 @@ export const supportedMemoryGiB = [16, 32, 48] as const
 export const supportedStorageGiB = [60, 80, 100, 120] as const
 export const maximumMachineCount = 64
 
-// Exact values from the production native source of truth:
-// app/Silo/Sources/SiloModels.swift, SetupWorkspaceConfiguration.defaults.
+// Fresh onboarding offers one dev VM; creation waits for Continue.
 export const productionMachineDefaults: readonly SetupVirtualMachineConfiguration[] = [
   {
     id: "00000000-0000-4000-8000-000000000001",
@@ -26,28 +25,6 @@ export const productionMachineDefaults: readonly SetupVirtualMachineConfiguratio
     maxMemoryGiB: 48,
     workspaceStorageGiB: 120,
     runtimeStorageGiB: 100,
-  },
-  {
-    id: "00000000-0000-4000-8000-000000000002",
-    kind: "vm",
-    name: "playgrounds",
-    cpus: 4,
-    maxCPUs: 12,
-    memoryGiB: 32,
-    maxMemoryGiB: 48,
-    workspaceStorageGiB: 60,
-    runtimeStorageGiB: 60,
-  },
-  {
-    id: "00000000-0000-4000-8000-000000000003",
-    kind: "vm",
-    name: "personal",
-    cpus: 6,
-    maxCPUs: 12,
-    memoryGiB: 16,
-    maxMemoryGiB: 32,
-    workspaceStorageGiB: 100,
-    runtimeStorageGiB: 80,
   },
 ] as const
 

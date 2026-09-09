@@ -7,7 +7,7 @@ import {
   siloProgressEventSchema,
 } from "@/contracts/silo"
 import { onboardingSourceSchema } from "@/features/onboarding/model/onboarding-source"
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 import { onboardingScenarios, scenarioNames } from "@/fixtures/scenarios"
 
 describe("Silo contract fixtures", () => {
@@ -76,7 +76,7 @@ describe("Silo contract fixtures", () => {
     const request = setupMachineConfigurationRequestSchema.parse({
       schemaVersion: 1,
       machines: [
-        productionMachineDefaults[1],
+        fixtureMachineDefaults[1],
         {
           id: "00000000-0000-4000-8000-000000000100",
           kind: "ssh",

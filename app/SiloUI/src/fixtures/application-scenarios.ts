@@ -9,7 +9,7 @@ import type {
   SandboxConfigurationOperation,
   WorkspaceState,
 } from "@/features/application/model/application-source"
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 import { repositoryFixtures, type GitHubFixtureState, type ScenarioName } from "@/fixtures/scenarios"
 import {
   applicationActivitiesForFixture,
@@ -17,7 +17,7 @@ import {
   type ActivityFixtureMode,
 } from "@/fixtures/application-activity"
 
-const [devMachine, playgroundsMachine, personalMachine] = productionMachineDefaults
+const [devMachine, playgroundsMachine, personalMachine] = fixtureMachineDefaults
 
 export const workspaceFixtureModes = ["running", "starting", "stopped", "warning", "error"] as const
 export type WorkspaceFixtureMode = (typeof workspaceFixtureModes)[number]

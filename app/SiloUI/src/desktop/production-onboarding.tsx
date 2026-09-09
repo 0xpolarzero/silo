@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
+import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+
 import type { DependencyRuntime } from "@/desktop/dependencies"
 import { useProductionSource, type ProductionSnapshot, type ProductionSource } from "@/desktop/production-source"
 import type { SetupMachineConfiguration, SiloBootstrapConfiguration } from "@/contracts/silo"
@@ -26,7 +28,7 @@ function bootstrapConfiguration(machines: readonly SetupMachineConfiguration[]):
 // oxlint-disable-next-line react/only-export-components
 export function productionOnboardingSource(application: ApplicationSource | null, dependencies: DependencyRuntime, applicationPreferences: OnboardingSource["applicationPreferences"], setup?: ProductionSnapshot): OnboardingSource {
   const operation = application?.sandboxConfigurationOperation
-  const machines = setup?.setupCandidate?.machines ?? operation?.candidate.machines ?? application?.workspaces.map(({ machine }) => machine) ?? []
+  const machines = setup?.setupCandidate?.machines ?? operation?.candidate.machines ?? (application?.workspaces.length ? application.workspaces.map(({ machine }) => machine) : productionMachineDefaults)
   const configured = (application?.workspaces.length ?? 0) > 0 && application!.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
   const completedPhases = configured ? ["preflight", "toolchain", "hostIntegration", "workspaces"] as const : []
   return {

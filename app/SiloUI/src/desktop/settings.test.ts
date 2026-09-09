@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen }))
 
 import { connectSettingsLifecycle, createDesktopSettingsStore } from "./settings"
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 import type { OnboardingDraft } from "@/features/onboarding/model/onboarding-draft"
 
 const cleanups: (() => void)[] = []
@@ -234,7 +234,7 @@ describe("native settings transport", () => {
     vi.spyOn(console, "error").mockImplementation(() => {})
     const savedDraft: OnboardingDraft = {
       currentStep: "github",
-      machines: [...productionMachineDefaults],
+      machines: [...fixtureMachineDefaults],
       unfinishedMachineEditor: null,
       workspaceSelections: {},
       workspaceIdentities: { dev: { name: "Saved author", email: "saved@example.com", apply: true } },

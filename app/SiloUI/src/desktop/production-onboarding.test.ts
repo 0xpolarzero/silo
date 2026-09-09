@@ -18,6 +18,14 @@ describe("production onboarding", () => {
     expect(source.readyToFinish).toBe(true)
   })
 
+  it("offers only dev on a fresh install without claiming it has been created", () => {
+    const source = productionOnboardingSource({ ...application, workspaces: [] }, { checks: [], retry: vi.fn() }, application.preferences)
+    expect(source.machineConfigurations).toEqual([expect.objectContaining({ name: "dev", cpus: 8, memoryGiB: 32, workspaceStorageGiB: 120, runtimeStorageGiB: 100 })])
+    expect(source.readyToFinish).toBe(false)
+    expect(source.bootstrapResult).toBeNull()
+    expect(source.progressEvents).toEqual([])
+  })
+
   it("enables Finish after a real VM is configured without inventing progress events", () => {
     const native = { ...application, workspaces: [application.workspaces[0]] }
     const dependencies = { checks: onboardingScenarios.complete.preflightChecks, retry: vi.fn() }
@@ -35,7 +43,7 @@ describe("production onboarding", () => {
     const checks = [{ id: "runtime-microsandbox", title: "MicroSandbox", status: "failed" as const, detail: "Bundled runtime missing", remediation: null }]
     const source = productionOnboardingSource(null, { checks, retry: vi.fn() }, application.preferences)
     expect(source.preflightChecks).toBe(checks)
-    expect(source.machineConfigurations).toEqual([])
+    expect(source.machineConfigurations.map(({ name }) => name)).toEqual(["dev"])
     expect(source.bootstrapResult).toBeNull()
   })
 

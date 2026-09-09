@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { Button } from "@/components/ui/button"
 import { SetupNotice } from "@/features/onboarding/components/setup-notice"
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 import type { ReviewQueueItemView, WorkspaceProgressView } from "@/features/onboarding/model/onboarding-state"
 import { ReviewStep } from "@/features/onboarding/steps/review-step"
 import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
@@ -31,14 +31,14 @@ const queueItems: ReviewQueueItemView[] = [
 ]
 
 function renderReview(onEditStep = vi.fn()) {
-  render(<ReviewStep machines={productionMachineDefaults} queueItems={queueItems} workspaces={progress.workspaces} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="2 repositories selected" onRetryWorkspaceSetup={vi.fn()} onEditStep={onEditStep} />)
+  render(<ReviewStep machines={fixtureMachineDefaults} queueItems={queueItems} workspaces={progress.workspaces} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="2 repositories selected" onRetryWorkspaceSetup={vi.fn()} onEditStep={onEditStep} />)
   return onEditStep
 }
 
 describe("setup progress and review presentation", () => {
   it("keeps activity collapsed until requested and preserves the list while opening it", async () => {
     const user = userEvent.setup()
-    render(<WorkspacesStep machines={productionMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} />)
+    render(<WorkspacesStep machines={fixtureMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} />)
     const machines = screen.getByRole("list", { name: "Configured sandboxes" })
     expect(screen.queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Expand activity" }))
@@ -50,7 +50,7 @@ describe("setup progress and review presentation", () => {
   })
 
   it("distinguishes each sandbox status without replacing the busy machine icon", () => {
-    render(<WorkspacesStep machines={productionMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} />)
+    render(<WorkspacesStep machines={fixtureMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} />)
     const rows = within(screen.getByRole("list", { name: "Configured sandboxes" })).getAllByRole("listitem")
     expect(within(rows[0]).getByText("Complete")).toBeVisible()
     expect(within(rows[1]).getByText("In progress")).toBeVisible()
@@ -64,7 +64,7 @@ describe("setup progress and review presentation", () => {
   it("keeps recovery and retry beside the failed operation", async () => {
     const user = userEvent.setup()
     const retry = vi.fn()
-    render(<WorkspacesStep machines={productionMachineDefaults} progress={{ ...progress, status: "failed", retryable: true, currentMessage: "The sandbox could not be reached.", recovery: "Check the network connection, then retry setup.", workspaces: [{ name: "playgrounds", status: "failed", detail: "The sandbox could not be reached." }] }} onMachinesChange={vi.fn()} onRetry={retry} />)
+    render(<WorkspacesStep machines={fixtureMachineDefaults} progress={{ ...progress, status: "failed", retryable: true, currentMessage: "The sandbox could not be reached.", recovery: "Check the network connection, then retry setup.", workspaces: [{ name: "playgrounds", status: "failed", detail: "The sandbox could not be reached." }] }} onMachinesChange={vi.fn()} onRetry={retry} />)
     const status = screen.getByRole("alert")
     expect(status).toHaveTextContent("The sandbox could not be reached.")
     expect(status.parentElement).toHaveTextContent("Check the network connection, then retry setup.")
@@ -96,7 +96,7 @@ describe("setup progress and review presentation", () => {
     ["succeeded", "Complete"],
     ["failed", "Failed"],
   ] as const)("shows %s Git validation on the author card", (status, label) => {
-    render(<ReviewStep machines={productionMachineDefaults} workspaces={progress.workspaces} queueItems={[
+    render(<ReviewStep machines={fixtureMachineDefaults} workspaces={progress.workspaces} queueItems={[
       { id: "githubRun", label: "Save GitHub", status: "succeeded" },
       { id: "githubVerify", label: "Verify GitHub", status },
       { id: "identityRun", label: "Save Git identities", status: "succeeded" },
@@ -112,7 +112,7 @@ describe("setup progress and review presentation", () => {
   })
 
   it("keeps sandbox failures on the affected sandbox and never validates missing results", () => {
-    render(<ReviewStep machines={productionMachineDefaults} workspaces={[
+    render(<ReviewStep machines={fixtureMachineDefaults} workspaces={[
       { name: "dev", status: "failed", detail: "Sandbox could not be verified." },
     ]} queueItems={[]} workspaceRetryable={false} identitySummary="No Git author" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
     const sandboxes = within(screen.getByRole("list", { name: "Sandboxes" })).getAllByRole("listitem")
