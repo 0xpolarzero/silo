@@ -65,6 +65,9 @@ fn waiting(until: u64, at: u64) -> String {
     )
 }
 impl Gates {
+    fn restore_floor(&mut self, until: u64) {
+        self.rate_until = self.rate_until.max(until);
+    }
     fn check(&self, key: &str, at: u64) -> Result<(), String> {
         if self.rate_until > at {
             return Err(waiting(self.rate_until, at));
@@ -119,6 +122,16 @@ impl Gates {
         );
         message
     }
+}
+/// Restore only a server-imposed shared deadline, never request credentials or
+/// per-request hashes. Relaunch must not bypass GitHub's requested waiting time.
+pub(crate) fn restore_retry_floor(until: u64) {
+    if let Ok(mut g) = gates().lock() {
+        g.restore_floor(until);
+    }
+}
+pub(crate) fn retry_floor() -> u64 {
+    gates().lock().map(|g| g.rate_until).unwrap_or(u64::MAX)
 }
 pub(crate) fn retry_at() -> u64 {
     gates()
@@ -312,6 +325,16 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restored_rate_floor_survives_relaunch_and_cannot_be_shortened() {
+        let mut g = Gates::default();
+        g.restore_floor(900);
+        g.restore_floor(500);
+        assert!(g.check("new-session-request", 899).is_err());
+        assert!(g.check("new-session-request", 900).is_ok());
+        assert_eq!(g.rate_until, 900);
+        assert!(g.requests.is_empty());
+    }
     #[test]
     fn direct_github_secondary_limits_are_distinct_from_permissions() {
         let mut headers = HeaderMap::new();
