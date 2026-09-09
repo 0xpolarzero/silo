@@ -166,14 +166,16 @@ cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml \
 
 ### Remaining release verification
 
-The production service URL, GitHub App client ID/slug and server secret have not
-been configured. The app reports this honestly when Connect is pressed. No live
+The production service URL and server secret have not been configured. The existing
+GitHub App is `microsandbox-workspaces`, owned by `0xpolarzero` (App ID
+4605731, public client ID `Iv23liEjp3VnGe0sw2LU`). Its settings were inspected
+in the authenticated browser: no client secret or callback URI is configured. The app reports this honestly when Connect is pressed. No live
 OAuth success, GitHub-authenticated VM/host Push, child-token versus parent-token
 revocation proof, complete GitHub command compatibility, Linux runtime execution,
 or absolute credential-exfiltration guarantee is claimed from these tests.
 
-Configure and deploy the service using `services/github-auth/README.md`, register
-the production App, rebuild with its three public build settings, and execute the
+Configure and deploy the service using `services/github-auth/README.md`, reuse
+the existing App, rebuild with its three public build settings, and execute the
 UI and authenticated private-repository matrix above. The removed POC is not a
 substitute for testing this implementation. Old development VMs need recreation
 for the new credential facility; no migration code was added.
@@ -221,3 +223,59 @@ Its first run exposed a temporary-boot cleanup regression; restoring the origina
 stopped-state behavior fixed it. The regular native suite required filesystem
 permission for its existing storage-alias test; the permitted rerun passed.
 No authenticated GitHub connection or Linux execution was performed in this pass.
+
+
+## Startup wiring and completion verification (2026-09-09)
+
+Fixed production Start/Restart argument ordering so the runtime attaches the
+GitHub profile to the selected VM. The actual production lifecycle path is now
+covered by the hardware regression; its synthetic credential reaches GitHub and
+receives the expected 401 response. Live changes preserve the VM boot ID.
+
+Native configuration saves and OAuth state transitions now notify the frontend.
+The bridge accepts connection progress during OAuth and reloads authoritative
+state after cancellation or failure. Background policy completion reaches the UI
+without requiring focus changes. A shared native/frontend contract fixture checks
+all supported operation states without introducing fixture UI into production.
+
+Invalid remaining repository selections now detach cached access before reporting
+the validation error, so a stale catalog cannot prevent removal. Local removal
+attempts continue for other VMs even when one operation fails. Failed runtime
+updates remain errors and do not update the acknowledged access cache.
+
+The token service rejects non-repository permission categories before issuing
+credentials. This protects reuse of an existing GitHub App; it does not filter
+Git or gh commands. Its nonroot Node24 container has a local health endpoint,
+excludes credentials from the build, and accepts secrets only at runtime.
+
+Verification:
+
+- `npm --prefix app/SiloUI test`: 484 tests passed across 52 files.
+- `npm --prefix app/SiloUI run lint`: passed.
+- `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --offline -- --test-threads=1`:
+  174 passed, 3 opt-in integration tests ignored. The full native suite ran with
+  filesystem permission required by the existing storage-alias test.
+- `npm --prefix services/github-auth test`: 34 tests passed, including actual
+  local HTTP handling and live-harness configuration checks; TypeScript passed.
+- Hardware `github_guest_bootstrap_and_live_identity`: passed in 24.50 seconds,
+  including production Start/Restart, live credentials/identity and disposable VM
+  cleanup. This uses a synthetic rejected credential, not authenticated access.
+- `npm --prefix app/SiloUI run desktop:build:debug`: passed; rebuilt the
+  ad-hoc signed macOS bundle with the packaged runtime. Not notarized.
+- Container build and isolated startup smoke passed with UID1000, read-only
+  filesystem, dropped capabilities and no external network; container removed.
+
+Permanent authenticated tests are documented in
+`services/github-auth/test/live/README.md`. They exercise the production token
+handler against explicit private fixtures: REST/GraphQL scope boundaries,
+node-based mutations, All repositories, child-token revocation, and optional real
+VM Git, gh, LFS round trips and live access removal/restoration. They fail on
+missing configuration. They have compiled but have **not run authenticated**.
+Desktop OAuth success/UI, authenticated host Push and Linux execution remain
+unverified. No absolute credential-exfiltration guarantee is asserted.
+
+Next external step: choose the service hosting destination, configure a client
+secret directly in GitHub and the host secret store, register the loopback callback
+`http://127.0.0.1/github/callback`, and build with the public service URL/client
+ID/App slug. Then run authenticated private-fixture and desktop UI verification.
+No App settings were changed and no service was deployed during this pass.

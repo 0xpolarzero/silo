@@ -14,7 +14,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 static OPERATION: Mutex<()> = Mutex::new(());
 // Never hold this lock during a GitHub/service request. It orders desired saves
@@ -109,10 +109,11 @@ impl Drop for IntentTurn<'_> {
     }
 }
 static INTENTS: IntentQueue = IntentQueue::new();
-struct Connecting;
+struct Connecting(tauri::AppHandle);
 impl Drop for Connecting {
     fn drop(&mut self) {
         CONNECTING.store(false, Ordering::SeqCst);
+        let _ = self.0.emit("silo://application-state-changed", ());
     }
 }
 const SERVICE: Option<&str> = option_env!("SILO_GITHUB_SERVICE_URL");
@@ -232,7 +233,9 @@ fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
         .map_err(|_| "Cannot save GitHub configuration.")?;
     fs::File::open(parent)
         .and_then(|f| f.sync_all())
-        .map_err(|_| "Cannot sync GitHub configuration directory.".into())
+        .map_err(|_| "Cannot sync GitHub configuration directory.".to_string())?;
+    let _ = app.emit("silo://application-state-changed", ());
+    Ok(())
 }
 fn service(route: &str, body: Value) -> Result<Value, String> {
     crate::github_http::service(
@@ -960,6 +963,7 @@ fn narrow(grants: &[RuntimeGrant], desired: &[GrantScope]) -> Vec<RuntimeGrant> 
 }
 fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
     let prefix = format!("{}:", path(app)?.display());
+    let mut failure = None;
     if d.session != session() && d.grants_issued {
         for w in &d.workspaces {
             if let Some(name) = w["workspace"].as_str() {
@@ -968,7 +972,11 @@ fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
                     .map_err(|_| "GitHub state is unavailable.")?
                     .contains_key(&active_key(app, name)?)
                 {
-                    crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[]))?;
+                    if let Err(error) =
+                        crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[]))
+                    {
+                        failure.get_or_insert(error);
+                    }
                 }
             }
         }
@@ -984,18 +992,38 @@ fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
             .iter()
             .find(|w| w["workspace"].as_str() == Some(name))
             .map(|w| scopes(d, w))
-            .transpose()?
-            .unwrap_or_default();
-        let retained = narrow(previous, &desired);
+            .transpose()
+            .map(Option::unwrap_or_default);
+        // A stale catalog or invalid other selection must never preserve access
+        // that the user just removed. Detach first, retain the validation error.
+        let (retained, validation_error) = narrow_checked(previous, desired);
+        if let Some(error) = validation_error {
+            failure.get_or_insert(error);
+        }
         if retained != *previous {
-            crate::runtime::apply_github_policy(app, name, d.revision, &profile(&retained))?;
+            if let Err(error) =
+                crate::runtime::apply_github_policy(app, name, d.revision, &profile(&retained))
+            {
+                failure.get_or_insert(error);
+                continue;
+            }
             active()
                 .lock()
                 .map_err(|_| "GitHub state is unavailable.")?
                 .insert(key.clone(), retained);
         }
     }
-    Ok(())
+    failure.map_or(Ok(()), Err)
+}
+
+fn narrow_checked(
+    previous: &[RuntimeGrant],
+    desired: Result<Vec<GrantScope>, String>,
+) -> (Vec<RuntimeGrant>, Option<String>) {
+    match desired {
+        Ok(scopes) => (narrow(previous, &scopes), None),
+        Err(error) => (Vec::new(), Some(error)),
+    }
 }
 
 /// Explicit host Push only: does not grant write access to the guest or modify its policy.
@@ -1096,7 +1124,8 @@ fn open_browser(url: &str) -> Result<(), String> {
 fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
     let generation = CANCELLATION.load(Ordering::SeqCst);
     CONNECTING.store(true, Ordering::SeqCst);
-    let _connecting = Connecting;
+    let _connecting = Connecting(app.clone());
+    let _ = app.emit("silo://application-state-changed", ());
     let client_id = CLIENT_ID.ok_or("GitHub connection is not configured in this build.")?;
     SERVICE.ok_or("GitHub connection is not configured in this build.")?;
     entry()?;
@@ -1734,6 +1763,23 @@ mod tests {
         worker.join().unwrap();
     }
     #[test]
+    fn invalid_remaining_selection_never_preserves_removed_repository_access() {
+        let previous = test_grant();
+        let document = Document {
+            access_enabled: true,
+            account: Some("owner".into()),
+            repositories: vec![],
+            ..Default::default()
+        };
+        let policy = json!({"repositoryMode":"selected","repositories":[{"repository":"owner/no-longer-authorized","allowPushes":false}]});
+        let desired = scopes(&document, &policy);
+        assert!(desired.is_err());
+        let (retained, error) = narrow_checked(&[previous], desired);
+        assert!(retained.is_empty());
+        assert!(error.is_some());
+    }
+
+    #[test]
     fn unchanged_scopes_do_not_issue_or_refresh_credentials() {
         let grants = reconcile_grants(
             &[test_scope()],
@@ -2048,5 +2094,35 @@ mod tests {
     #[test]
     fn missing_token_response_is_error() {
         assert!(from_response(json!({})).is_err());
+    }
+    #[test]
+    fn public_github_state_matches_frontend_contract() {
+        let states: Vec<Value> =
+            serde_json::from_str(include_str!("../../src/test/contracts/github-state.json"))
+                .unwrap();
+        for expected in states {
+            let d = Document {
+                revision: 7,
+                access_enabled: true,
+                account: Some("test-account".into()),
+                session: session().into(),
+                workspaces: expected["workspaces"].as_array().unwrap().clone(),
+                repositories: vec![json!({"id":1,"ownerId":2,"name":"test-owner/repo"})],
+                operations: expected["workspaceOperations"].as_array().unwrap().clone(),
+                ..Default::default()
+            };
+            let stored = if expected["state"] == "connected" {
+                Some(Credential {
+                    access_token: "contract-token-not-real".into(),
+                    refresh_token: None,
+                    expires_at: now() + 600,
+                })
+            } else {
+                None
+            };
+            let actual = public_snapshot(d, Ok(stored), None);
+            assert_eq!(actual, expected);
+            assert!(!actual.to_string().contains("contract-token-not-real"));
+        }
     }
 }

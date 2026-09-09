@@ -223,3 +223,230 @@ fn github_guest_bootstrap_and_live_identity() {
     assert!(stopped.is_ok(), "Disposable VM could not be stopped");
     assert!(removed.is_ok(), "Disposable VM could not be removed");
 }
+
+/// Invoked by services/github-auth/test/live/authorized-github.ts --vm.
+/// Credentials are supplied only in the host environment, never test output.
+#[test]
+#[ignore = "requires explicitly authorized private test repositories and live scoped GitHub credentials"]
+fn github_authenticated_guest_workflow() {
+    let required = |key: &str| std::env::var(key).unwrap_or_else(|_| panic!("set {key}"));
+    let raw_profile = required("SILO_TEST_GITHUB_PROFILE_JSON");
+    let profile: Value = serde_json::from_str(&raw_profile).expect("invalid test profile");
+    let read_repo = required("SILO_GITHUB_TEST_READ_REPO");
+    let write_repo = required("SILO_GITHUB_TEST_WRITE_REPO");
+    let denied_repo = required("SILO_GITHUB_TEST_DENIED_REPO");
+    for repo in [&read_repo, &write_repo, &denied_repo] {
+        assert!(
+            repo.split('/').count() == 2
+                && repo.split('/').all(|part| !part.is_empty()
+                    && part
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))),
+            "invalid fixture repository"
+        );
+    }
+    assert!(read_repo != write_repo && read_repo != denied_repo && write_repo != denied_repo);
+    let secret_values: Vec<String> = profile["owners"]
+        .as_array()
+        .expect("missing profile owners")
+        .iter()
+        .flat_map(|owner| [owner["readToken"].as_str(), owner["writeToken"].as_str()])
+        .flatten()
+        .map(str::to_owned)
+        .collect();
+    assert!(secret_values.len() >= 2, "missing scoped test credentials");
+    let directory = tempfile::Builder::new()
+        .prefix("silo-gh-live-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let paths = RuntimePaths {
+        executable: PathBuf::from(required("SILO_TEST_MSB")),
+        library: PathBuf::from(required("SILO_TEST_LIBKRUNFW")),
+        home: directory.path().join("msb"),
+        storage_home: None,
+        metadata: directory.path().join("machines.json"),
+        volumes: directory.path().join("volumes"),
+    };
+    let name = "github-authenticated-test";
+    let branch = format!("silo-integration-{}", uuid::Uuid::new_v4().simple());
+    let runner = ProcessRunner;
+    let run = |args: &[String]| runner.run(&paths, args, MUTATION_TIMEOUT);
+    let guest = |script: &str| {
+        run(&[
+            "exec".into(),
+            name.into(),
+            "--no-tty".into(),
+            "--quiet".into(),
+            "--timeout".into(),
+            "120s".into(),
+            "--".into(),
+            "sh".into(),
+            "-c".into(),
+            script.into(),
+            "silo-test".into(),
+            read_repo.clone(),
+            write_repo.clone(),
+            denied_repo.clone(),
+            branch.clone(),
+        ])
+    };
+    let install = |value: &Value| -> Result<(), String> {
+        GITHUB_PROFILES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert((paths.home.clone(), name.into()), value.to_string());
+        run(&[
+            "modify".into(),
+            name.into(),
+            "--secret".into(),
+            "SILO_GITHUB@github.com,api.github.com,uploads.github.com".into(),
+            "--format".into(),
+            "json".into(),
+        ])
+        .map(|_| ())
+        .map_err(|_| "Live test credential update failed.".into())
+    };
+    let mut created = false;
+    let result = (|| -> Result<(), String> {
+        create_disposable_test_machine(&paths, name)
+            .map_err(|_| "Live test VM bootstrap failed.")?;
+        created = true;
+        GITHUB_PROFILES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert((paths.home.clone(), name.into()), raw_profile.clone());
+        workspace_action_with(
+            &runner,
+            &paths,
+            &host_resources().map_err(|_| "Cannot measure host resources.")?,
+            "start",
+            name,
+        )
+        .map_err(|_| "Production Start failed for authenticated test VM.")?;
+        apply_disposable_test_identity(&paths, name)
+            .map_err(|_| "Live test identity setup failed.")?;
+        let exposed = guest("env; git config --list --show-origin; printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill")
+            .map_err(|_| "Guest credential boundary check failed.")?.stdout;
+        if secret_values.iter().any(|secret| exposed.contains(secret)) {
+            return Err("A real credential was exposed inside the guest.".into());
+        }
+        let boot = guest("cat /proc/sys/kernel/random/boot_id")
+            .map_err(|_| "Cannot read test boot ID.")?
+            .stdout;
+        guest(
+            r#"set -eu
+mkdir -p /workspace/silo-live
+cd /workspace/silo-live
+git clone "https://github.com/$1.git" read >/dev/null 2>&1
+git clone "https://github.com/$2.git" write >/dev/null 2>&1
+if git ls-remote "https://github.com/$3.git" >/dev/null 2>&1; then exit 1; fi
+gh api "repos/$1" >/dev/null
+if gh api "repos/$3" >/dev/null 2>&1; then exit 1; fi
+cd read
+git checkout -b "$4" >/dev/null 2>&1
+git commit --allow-empty -m 'Silo read-only boundary test' >/dev/null
+if git push origin "HEAD:refs/heads/$4" >/dev/null 2>&1; then
+ git push origin --delete "$4" >/dev/null 2>&1 || true
+ exit 1
+fi
+cd ../write
+git checkout -b "$4" >/dev/null 2>&1
+git lfs track silo-live.bin >/dev/null
+head -c 1048576 /dev/urandom >silo-live.bin
+sha256sum silo-live.bin >/workspace/silo-live/expected.sha256
+git add .gitattributes silo-live.bin
+git commit -m 'Silo isolated Git LFS integration test' >/dev/null
+git push origin "HEAD:refs/heads/$4" >/dev/null 2>&1
+cd ..
+git clone --branch "$4" "https://github.com/$2.git" roundtrip >/dev/null 2>&1
+cd roundtrip
+sha256sum -c /workspace/silo-live/expected.sha256 >/dev/null
+"#,
+        )
+        .map_err(|_| "Authenticated Git, gh, LFS, or repository boundary test failed.")?;
+        let mut readonly = profile.clone();
+        for owner in readonly["owners"]
+            .as_array_mut()
+            .ok_or("Missing test profile owners.")?
+        {
+            owner["writeToken"] = Value::Null;
+        }
+        install(&readonly)?;
+        guest(
+            r#"set -eu
+cd /workspace/silo-live/write
+git fetch origin >/dev/null 2>&1
+git commit --allow-empty -m 'Silo live write removal test' >/dev/null
+if git push origin "HEAD:refs/heads/$4" >/dev/null 2>&1; then exit 1; fi
+"#,
+        )
+        .map_err(|_| "Live write removal was not enforced.")?;
+        install(&json!({"version":1,"owners":[]}))?;
+        guest(
+            r#"set -eu
+if git ls-remote "https://github.com/$1.git" >/dev/null 2>&1; then exit 1; fi
+if gh api "repos/$2" >/dev/null 2>&1; then exit 1; fi
+"#,
+        )
+        .map_err(|_| "Live access disablement was not enforced.")?;
+        install(&profile)?;
+        guest(
+            r#"set -eu
+git ls-remote "https://github.com/$1.git" >/dev/null 2>&1
+gh api "repos/$2" >/dev/null
+"#,
+        )
+        .map_err(|_| "Live access restoration failed.")?;
+        if guest("cat /proc/sys/kernel/random/boot_id")
+            .map_err(|_| "Cannot verify boot ID.")?
+            .stdout
+            != boot
+        {
+            return Err("Live access changes restarted the test VM.".into());
+        }
+        Ok(())
+    })();
+    // Remove only our random branch; never modify the default branch. LFS test
+    // objects can remain in GitHub storage after branch deletion, as documented.
+    let cleanup = if created {
+        install(&profile).and_then(|_| {
+            guest(
+                r#"set -eu
+cleanup_failed=0
+for directory in /workspace/silo-live/read /workspace/silo-live/write; do
+ [ -d "$directory/.git" ] || continue
+ if ! remote_branch=$(git -C "$directory" ls-remote origin "refs/heads/$4" 2>/dev/null); then
+  cleanup_failed=1
+ elif [ -n "$remote_branch" ]; then
+  git -C "$directory" push origin --delete "$4" >/dev/null 2>&1 || cleanup_failed=1
+ fi
+done
+exit "$cleanup_failed"
+"#,
+            )
+            .map(|_| ())
+            .map_err(|_| "Could not remove live test branch.".into())
+        })
+    } else {
+        Ok(())
+    };
+    let _ = run(&["stop".into(), name.into()]);
+    let _ = run(&["remove".into(), "--force".into(), name.into()]);
+    let absent = run(&["list".into(), "--format".into(), "json".into()])
+        .ok()
+        .and_then(|output| serde_json::from_str::<Vec<ListedSandbox>>(&output.stdout).ok())
+        .is_some_and(|sandboxes| sandboxes.iter().all(|sandbox| sandbox.name != name));
+    GITHUB_PROFILES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .remove(&(paths.home.clone(), name.into()));
+    assert!(
+        cleanup.is_ok() && absent,
+        "Live test cleanup failed. Inspect both explicit fixture repositories for the unique test branch and the disposable VM. Main workflow passed: {}",
+        result.is_ok()
+    );
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+}
