@@ -305,3 +305,28 @@ both Created and Stopped before verifying Running.
 
 GitHub access now has a separate [implementation plan](SiloUI-GITHUB-IMPLEMENTATION.md).
 The previous GitHub transport proposals were removed.
+
+## Existing VM edits (2026-09-09)
+
+Existing VM names and both disk sizes remain visible but cannot be edited.
+Storage fields explain on hover or keyboard focus: “To use a different disk
+size, create a new VM and transfer your data.” New and duplicated configurations
+retain editable names and storage. Completed onboarding VM rows use the same
+restrictions.
+
+CPU and memory limits/ceilings remain editable. A running VM's editor says
+“Stop VM and save”. Native configuration updates stop a running VM, inspect it
+again, and refuse to modify settings unless it is stopped. Saving does not start
+it again. Existing rename and disk-size validation remains in the backend.
+
+Verification: 126 focused frontend tests passed; 56 runtime tests passed in the
+restricted environment, with the filesystem-alias test requiring a separate
+permission-enabled run. Tests cover read-only fields and tooltips, creation and
+duplication, resource edits preserving GitHub settings, stop-before-modify ordering,
+and no settings mutation when stopping cannot be verified.
+
+The filesystem-alias test passed with its required filesystem permission, bringing
+runtime coverage to 57 passing tests. The rebuilt production macOS app showed the
+name without edit capability, both storage controls disabled, unchanged CPU/RAM
+controls, and the explanatory tooltip on keyboard focus. No real VM settings were
+changed during this UI check; the running-VM stop/save path has automated coverage.

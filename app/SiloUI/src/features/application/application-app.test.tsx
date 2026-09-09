@@ -1046,11 +1046,15 @@ describe("application", () => {
 
     await user.click(overview.getByRole("button", { name: "Edit dev" }))
     const name = overview.getByRole("textbox", { name: "Machine name" })
-    await user.clear(name)
-    await user.type(name, "development")
-    await user.click(overview.getByRole("button", { name: "Save" }))
+    expect(name).toHaveAttribute("readonly")
+    expect(overview.getByRole("combobox", { name: "Workspace storage" })).toBeDisabled()
+    expect(overview.getByRole("combobox", { name: "Runtime storage" })).toBeDisabled()
+    await user.hover(overview.getByLabelText(/Workspace storage: .*read-only/))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("To use a different disk size, create a new VM and transfer your data.")
+    await user.selectOptions(overview.getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.click(overview.getByRole("button", { name: "Stop VM and save" }))
 
-    const developmentRow = overview.getByText("development").closest("li") as HTMLElement
+    const developmentRow = overview.getByText("dev").closest("li") as HTMLElement
     expect(developmentRow).toHaveAttribute("aria-busy", "true")
     expect(within(developmentRow).getByRole("status")).toHaveTextContent("Preparing sandbox configuration.")
     expect(overview.getByRole("button", { name: "Add" })).toBeDisabled()
@@ -1067,7 +1071,7 @@ describe("application", () => {
     await user.click(settings.getByRole("switch", { name: "Start sandboxes at launch" }))
     expect(settings.getByRole("button", { name: "Remove dev" })).toBeVisible()
     expect(actions.saveMachineConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-      machines: expect.arrayContaining([expect.objectContaining({ name: "development" })]),
+      machines: expect.arrayContaining([expect.objectContaining({ name: "dev", cpus: 4 })]),
     }))
   })
 

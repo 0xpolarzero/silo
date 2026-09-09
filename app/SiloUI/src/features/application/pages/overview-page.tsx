@@ -201,6 +201,8 @@ export function OverviewPage({
       <div className="min-h-0 flex-1">
         <MachineList
           machines={machines}
+          isMachineCreated={(machine) => committedWorkspaces.has(machine.id)}
+          isMachineRunning={(machine) => workspaces.get(machine.id)?.state === "running"}
           onMachinesChange={(next) => {
             if (source.vmOperationsUnavailable) setOperationUnavailable(true)
             else onMachinesChange(next)

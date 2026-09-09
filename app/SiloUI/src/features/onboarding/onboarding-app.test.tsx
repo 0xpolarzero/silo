@@ -835,20 +835,19 @@ describe("onboarding", () => {
     await user.click(screen.getByRole("button", { name: "Edit dev" }))
     const name = screen.getByRole("textbox", { name: "Machine name" })
     expect(name).toHaveFocus()
-    await user.clear(name)
-    await user.type(name, "changed")
+    expect(name).toHaveAttribute("readonly")
+    expect(screen.getByRole("combobox", { name: "Workspace storage" })).toBeDisabled()
+    expect(screen.getByRole("combobox", { name: "Runtime storage" })).toBeDisabled()
     await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "16")
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
     expect(screen.getByRole("button", { name: "Edit dev" })).toBeVisible()
 
     await user.click(screen.getByRole("button", { name: "Edit dev" }))
-    await user.clear(screen.getByRole("textbox", { name: "Machine name" }))
-    await user.type(screen.getByRole("textbox", { name: "Machine name" }), "development")
     await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "16")
     await user.click(screen.getByRole("button", { name: "Save" }))
-    expect(saveMachineConfiguration.mock.lastCall?.[0].machines[0]).toMatchObject({ name: "development", memoryGiB: 16 })
-    expect(screen.getByRole("button", { name: "Edit development" })).toBeVisible()
+    expect(saveMachineConfiguration.mock.lastCall?.[0].machines[0]).toMatchObject({ name: "dev", memoryGiB: 16 })
+    expect(screen.getByRole("button", { name: "Edit dev" })).toBeVisible()
   })
 
   it("keeps machine actions on one custom tooltip and the drag handle tooltip-free", async () => {
@@ -896,7 +895,7 @@ describe("onboarding", () => {
     expect(screen.getAllByRole("tooltip")).toHaveLength(1)
   })
 
-  it("preserves GitHub policy and identity settings when a stable machine is renamed", async () => {
+  it("preserves GitHub policy and identity settings when VM resources change", async () => {
     const user = userEvent.setup()
     renderScenario("running", "connected")
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
@@ -906,13 +905,12 @@ describe("onboarding", () => {
 
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     await user.click(screen.getByRole("button", { name: "Edit dev" }))
-    await user.clear(screen.getByRole("textbox", { name: "Machine name" }))
-    await user.type(screen.getByRole("textbox", { name: "Machine name" }), "development")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
-    expect(screen.getByLabelText("Git name for development")).toHaveValue("Renamed Author")
-    expect(within(screen.getByRole("table", { name: "Selected repositories for development" })).getByText("acme/silo")).toBeVisible()
+    expect(screen.getByLabelText("Git name for dev")).toHaveValue("Renamed Author")
+    expect(within(screen.getByRole("table", { name: "Selected repositories for dev" })).getByText("acme/silo")).toBeVisible()
   })
 
   it("duplicates after the source, cancels drafts, and generates collision-free copy names", async () => {
@@ -1000,7 +998,7 @@ describe("onboarding", () => {
 
   it("blocks duplicate names and invalid VM resource ranges", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
-    await user.click(screen.getByRole("button", { name: "Edit dev" }))
+    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
     await user.clear(screen.getByRole("textbox", { name: "Machine name" }))
     await user.type(screen.getByRole("textbox", { name: "Machine name" }), "personal")
     await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "12")

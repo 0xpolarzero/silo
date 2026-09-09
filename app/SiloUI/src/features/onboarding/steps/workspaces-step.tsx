@@ -74,6 +74,7 @@ export function WorkspacesStep({ machines, progress, onMachinesChange, onRetry, 
 
       <div className="min-h-48 flex-1">
         <MachineList
+          isMachineCreated={(machine) => progress.workspaces.some((workspace) => workspace.name === machine.name && workspace.status === "ready")}
           machines={machines}
           onMachinesChange={onMachinesChange}
           initialEditorDraft={initialEditorDraft}

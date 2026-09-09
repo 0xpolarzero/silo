@@ -3,6 +3,7 @@ import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Server, Trash2, X
 
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { SetupMachineConfiguration, SetupVirtualMachineConfiguration } from "@/contracts/silo"
@@ -45,24 +46,28 @@ interface MachineListProps {
   footer?: ReactNode
   initialEditorDraft?: MachineEditorDraft | null
   onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
+  isMachineCreated?: (machine: SetupMachineConfiguration) => boolean
+  isMachineRunning?: (machine: SetupMachineConfiguration) => boolean
   validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean) => string | undefined
 }
 
-function SelectField({ label, value, values, suffix, error, onChange }: {
+function SelectField({ label, value, values, suffix, error, readOnly = false, onChange }: {
   label: string
   value: number
   values: readonly number[]
   suffix: string
+  readOnly?: boolean
   error?: string
   onChange: (value: number) => void
 }) {
-  return (
+  const field = (
     <label className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
       {label}
       <select
+        disabled={readOnly}
         aria-label={label}
         aria-invalid={Boolean(error)}
-        className="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive"
+        className="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground disabled:cursor-default disabled:opacity-60 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive"
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       >
@@ -71,6 +76,11 @@ function SelectField({ label, value, values, suffix, error, onChange }: {
       {error && <span className="text-destructive">{error}</span>}
     </label>
   )
+  return readOnly ? (
+    <TooltipProvider><Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`}>{field}</span></TooltipTrigger>
+      <TooltipContent>To use a different disk size, create a new VM and transfer your data.</TooltipContent>
+    </Tooltip></TooltipProvider>
+  ) : field
 }
 
 function TextField({ label, value, error, firstField = false, inputRef, ...props }: {
@@ -89,8 +99,10 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange }: {
+function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange, created, running }: {
   editor: MachineEditorDraft
+  created: boolean
+  running: boolean
   machines: readonly SetupMachineConfiguration[]
   onCancel: () => void
   onSave: (machine: SetupMachineConfiguration) => void
@@ -134,6 +146,8 @@ function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange }: {
         inputRef={firstField}
         label="Machine name"
         value={draft.name}
+        readOnly={created}
+        className={created ? "opacity-60" : undefined}
         error={errors.name}
         autoComplete="off"
         maxLength={32}
@@ -146,8 +160,8 @@ function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange }: {
           <SelectField label="CPU ceiling" value={draft.maxCPUs} values={supportedCPUs} suffix="CPU" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
           <SelectField label="Memory limit" value={draft.memoryGiB} values={supportedMemoryGiB} suffix="GB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
           <SelectField label="Memory ceiling" value={draft.maxMemoryGiB} values={supportedMemoryGiB} suffix="GB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField label="Workspace storage" value={draft.workspaceStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField label="Runtime storage" value={draft.runtimeStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField readOnly={created} label="Workspace storage" value={draft.workspaceStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField readOnly={created} label="Runtime storage" value={draft.runtimeStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
         </div>
       ) : (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem]">
@@ -172,14 +186,14 @@ function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange }: {
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
-        <Button type="button" size="sm" onClick={save}>Save</Button>
+        <Button type="button" size="sm" onClick={save}>{running ? "Stop VM and save" : "Save"}</Button>
       </div>
       {errors.form && <p className="text-xs text-destructive" role="alert">{errors.form}</p>}
     </div>
   )
 }
 
-export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation }: MachineListProps) {
+export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
   const [addOpen, setAddOpen] = useState(false)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
@@ -364,7 +378,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
                   onDrop={(event) => drop(event, index)}
                 >
                   {isEditing && editor ? (
-                    <MachineEditor editor={editor} machines={machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} />
+                    <MachineEditor created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} machines={machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} />
                   ) : (
                     <SandboxListRow
                       name={machine.name}

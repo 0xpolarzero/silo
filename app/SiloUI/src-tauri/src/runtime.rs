@@ -2870,6 +2870,24 @@ fn update_machine(
             }
             let inspected = inspect_workspace(runner, paths, name)?;
             ensure_managed(&inspected)?;
+            if inspected.status == "Running" {
+                runner.run(
+                    paths,
+                    &["stop".into(), name.clone(), "--quiet".into()],
+                    STOP_TIMEOUT,
+                )?;
+                let stopped = inspect_workspace(runner, paths, name)?;
+                ensure_managed(&stopped)?;
+                if stopped.status != "Stopped" {
+                    return Err(RuntimeError::Invalid(format!(
+                        "{name} did not stop. Its settings were not changed. Retry after checking its state."
+                    )));
+                }
+            } else if !matches!(inspected.status.as_str(), "Stopped" | "Created") {
+                return Err(RuntimeError::Invalid(format!(
+                    "{name} is not ready for editing. Stop it before saving changes."
+                )));
+            }
             runner.run(
                 paths,
                 &[
@@ -3734,6 +3752,36 @@ mod tests {
 
         assert!(error.to_string().contains("cannot be resized in place"));
         assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn edit_stops_running_vm_before_modifying_and_does_not_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = vm();
+        let mut changed = previous.clone();
+        if let MachineConfiguration::Vm { cpus, .. } = &mut changed { *cpus = 2; }
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Running"), json!(null), inspect(&paths, "Stopped"), json!(null),
+        ]);
+        update_machine(&runner, &paths, &previous, &changed).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls[1], vec!["stop", "dev", "--quiet"]);
+        assert_eq!(calls[3][0], "modify");
+        assert!(!calls.iter().any(|call| matches!(call[0].as_str(), "start" | "restart")));
+    }
+
+    #[test]
+    fn edit_does_not_modify_when_stop_is_unverified() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = vm();
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Running"), json!(null), inspect(&paths, "Running"),
+        ]);
+        let error = update_machine(&runner, &paths, &previous, &previous).unwrap_err();
+        assert!(error.to_string().contains("did not stop"));
+        assert!(!runner.calls.lock().unwrap().iter().any(|call| call[0] == "modify"));
     }
 
     #[test]
