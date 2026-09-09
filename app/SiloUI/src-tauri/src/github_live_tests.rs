@@ -4,7 +4,7 @@ use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::{collections::HashMap, time::Duration};
 
-type Check<T> = Result<T, &'static str>;
+type Check<T> = Result<T, String>;
 struct Repository {
     name: String,
     id: u64,
@@ -18,7 +18,7 @@ fn required(env: &HashMap<String, String>, name: &str) -> Check<String> {
     env.get(name)
         .filter(|v| !v.is_empty() && !v.bytes().any(|c| c <= 32 || c == 127))
         .cloned()
-        .ok_or("Missing or invalid regression configuration.")
+        .ok_or_else(|| "Missing or invalid regression configuration.".into())
 }
 fn configuration(env: &HashMap<String, String>) -> Check<Fixture> {
     ensure(
@@ -83,7 +83,19 @@ fn ensure(value: bool, message: &'static str) -> Check<()> {
     if value {
         Ok(())
     } else {
-        Err(message)
+        Err(message.into())
+    }
+}
+// Never format reqwest errors: they can contain credential-bearing URLs.
+fn transport_failure(error: reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "GitHub request timed out; mutations were not retried."
+    } else if error.is_connect() {
+        "GitHub connection failed; mutations were not retried."
+    } else if error.is_decode() {
+        "GitHub response was invalid."
+    } else {
+        "GitHub request failed; mutations were not retried."
     }
 }
 struct Api {
@@ -105,13 +117,9 @@ impl Api {
         } else {
             builder
         };
-        let response = builder
-            .send()
-            .map_err(|_| "GitHub request failed; mutations were not retried.")?;
+        let response = builder.send().map_err(transport_failure)?;
         let status = response.status().as_u16();
-        let data = response
-            .json()
-            .map_err(|_| "GitHub response was invalid.")?;
+        let data = response.json().map_err(transport_failure)?;
         Ok((status, data))
     }
     fn graph(&self, token: &str, query: &str, variables: Value) -> Check<(u16, Value)> {
@@ -122,15 +130,78 @@ impl Api {
         )
     }
 }
+fn repository_denied(response: &(u16, Value)) -> bool {
+    matches!(
+        (response.0, response.1["message"].as_str()),
+        (404, Some("Not Found"))
+            | (403, Some("Resource not accessible by integration"))
+            | (
+                403,
+                Some("Resource not accessible by personal access token")
+            )
+    )
+}
+fn escalation_denied(operation: &str, response: &(u16, Value)) -> bool {
+    repository_denied(response)
+        || (operation == "token/scoped"
+            && response.0 == 401
+            && response.1["message"].as_str()
+                == Some("A scoped token cannot create another scoped token."))
+}
+// Categories aid diagnosis without emitting untrusted response text.
+// They never determine whether a permission assertion passes.
+fn failure_category(data: &Value) -> &'static str {
+    match data["message"].as_str() {
+        Some("Bad credentials") => "bad credentials",
+        Some("Validation Failed") => "validation failure",
+        Some("Not Found") => "not found",
+        Some(message) => {
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("rate limit") {
+                "rate limit"
+            } else if lower.contains("scop") && lower.contains("token") {
+                "token scope restriction"
+            } else if lower.contains("token") {
+                "other token error"
+            } else {
+                "unrecognized error"
+            }
+        }
+        None => "missing error message",
+    }
+}
+fn safe_failure_message(data: &Value) -> String {
+    let message = data["message"].as_str().unwrap_or("");
+    let mut safe = String::new();
+    for chunk in message.split_whitespace().take(200) {
+        let word = if (1..=14).contains(&chunk.len())
+            && chunk.bytes().all(|byte| byte.is_ascii_alphabetic())
+        {
+            chunk
+        } else {
+            "[redacted]"
+        };
+        if !safe.is_empty() {
+            safe.push(' ');
+        }
+        safe.push_str(word);
+        if safe.len() >= 200 {
+            safe.truncate(200);
+            break;
+        }
+    }
+    safe
+}
 fn graph_ok(response: &(u16, Value)) -> bool {
     response.0 == 200 && response.1.get("errors").is_none()
 }
 fn graph_denied(response: &(u16, Value)) -> bool {
     response.0 == 200
         && response.1["errors"].as_array().is_some_and(|errors| {
-            errors
-                .iter()
-                .any(|e| matches!(e["type"].as_str(), Some("FORBIDDEN" | "NOT_FOUND")))
+            !errors.is_empty()
+                && errors
+                    .iter()
+                    .all(|e| matches!(e["type"].as_str(), Some("FORBIDDEN" | "NOT_FOUND")))
         })
 }
 fn scope(
@@ -141,7 +212,11 @@ fn scope(
     write: bool,
     children: &mut Vec<String>,
 ) -> Check<(String, u64)> {
-    let value = execute(app, Operation::Scope, json!({"accessToken":parent,"ownerId":owner,"repositoryIds":ids,"allRepositories":ids.is_empty(),"allowChanges":write})).map_err(|_| "Native scoped-token operation failed.")?;
+    let value = execute(
+        app,
+        Operation::Scope,
+        json!({"accessToken":parent,"ownerId":owner,"repositoryIds":ids,"allRepositories":ids.is_empty(),"allowChanges":write}),
+    )?;
     let token = value["accessToken"]
         .as_str()
         .filter(|s| !s.is_empty())
@@ -175,6 +250,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
     };
     let mut children = Vec::new();
     let mut issue_id = None;
+    let mut stage = "fixture preflight";
     let result = (|| -> Check<()> {
         let mut repositories = Vec::new();
         for repo in &f.repos {
@@ -200,6 +276,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
                 && repositories[1]["has_issues"] == true,
             "Fixture owner or Issues preflight failed.",
         )?;
+        stage = "create read token";
         let (read, read_expiry) = scope(
             &f.app,
             &f.parent,
@@ -208,6 +285,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             false,
             &mut children,
         )?;
+        stage = "create write token";
         let (write, write_expiry) = scope(
             &f.app,
             &f.parent,
@@ -216,13 +294,24 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             true,
             &mut children,
         )?;
-        for (token, allowed) in [(&read, [true, true, false]), (&write, [false, true, false])] {
-            for (repo, allowed) in f.repos.iter().zip(allowed) {
-                ensure(
-                    api.call(token, &format!("/repos/{}", repo.name), None)?.0
-                        == if allowed { 200 } else { 404 },
-                    "REST repository boundary failed.",
-                )?;
+        stage = "REST and GraphQL repository boundaries";
+        for (grant, token, allowed) in [
+            ("read", &read, [true, true, false]),
+            ("write", &write, [false, true, false]),
+        ] {
+            for ((fixture, repo), allowed) in ["read", "write", "denied"]
+                .into_iter()
+                .zip(&f.repos)
+                .zip(allowed)
+            {
+                let response = api.call(token, &format!("/repos/{}", repo.name), None)?;
+                let actual = response.0;
+                let expected = if allowed { "200" } else { "403 authorization denial or 404 Not Found" };
+                if !(if allowed { actual == 200 } else { repository_denied(&response) }) {
+                    return Err(format!(
+                        "REST repository boundary failed: {grant} grant, {fixture} fixture, HTTP {actual}, expected {expected}."
+                    ));
+                }
                 let parts: Vec<_> = repo.name.split('/').collect();
                 let response =
                     api.graph(token, QUERY, json!({"owner":parts[0],"name":parts[1]}))?;
@@ -236,9 +325,13 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
                         graph_denied(&response) && response.1["data"]["repository"].is_null()
                     },
                     "GraphQL repository boundary failed.",
-                )?;
+                ).map_err(|_| format!(
+                    "GraphQL repository boundary failed: {grant} grant, {fixture} fixture, HTTP {}, expected access {}.",
+                    response.0, if allowed { "allowed" } else { "denied" }
+                ))?;
             }
         }
+        stage = "denied GraphQL node read";
         let node = api.graph(
             &read,
             "query($id:ID!){node(id:$id){... on Repository{id nameWithOwner}}}",
@@ -248,6 +341,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             graph_denied(&node) && node.1["data"]["node"].is_null(),
             "GraphQL node ID exposed denied repository.",
         )?;
+        stage = "create fixture issue";
         let marker = format!("Silo authenticated regression {}", uuid::Uuid::new_v4());
         let created = api.graph(&write, "mutation($input:CreateIssueInput!){createIssue(input:$input){issue{id number title}}}", json!({"input":{"repositoryId":repositories[1]["node_id"],"title":marker,"body":"Permanent Silo integration test; closed during cleanup."}}))?;
         issue_id = created.1["data"]["createIssue"]["issue"]["id"]
@@ -260,6 +354,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
         let number = created.1["data"]["createIssue"]["issue"]["number"]
             .as_u64()
             .ok_or("Missing fixture issue number.")?;
+        stage = "denied GraphQL write";
         let denied = api.graph(
             &read,
             UPDATE,
@@ -269,6 +364,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             graph_denied(&denied) && denied.1["data"]["updateIssue"]["issue"].is_null(),
             "Read token performed a node-ID write.",
         )?;
+        stage = "denied REST write";
         let rest_denied = api
             .client
             .patch(format!(
@@ -280,11 +376,14 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             .header("X-GitHub-Api-Version", "2022-11-28")
             .json(&json!({"title":"unexpected REST read mutation"}))
             .send()
-            .map_err(|_| "REST write probe failed.")?;
+            .map_err(transport_failure)?;
+        let status = rest_denied.status().as_u16();
+        let data = rest_denied.json().map_err(transport_failure)?;
         ensure(
-            matches!(rest_denied.status().as_u16(), 403 | 404),
+            repository_denied(&(status, data)),
             "Read token performed REST write or returned inconclusive response.",
         )?;
+        stage = "verify denied writes left issue unchanged";
         let unchanged = api.call(
             &f.parent,
             &format!("/repos/{}/issues/{number}", f.repos[1].name),
@@ -294,6 +393,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             unchanged.0 == 200 && unchanged.1["title"] == marker,
             "Denied mutation changed issue.",
         )?;
+        stage = "allowed GraphQL write";
         let updated = api.graph(
             &write,
             UPDATE,
@@ -302,11 +402,14 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
         ensure(graph_ok(&updated), "Allowed node-ID write failed.")?;
         // Ask GitHub to widen a child, as an attacker knowing the App client secret could.
         // Either refusal or an equally restricted result is safe. Track any issued token.
+        stage = "child token escalation through native scope";
         let attempted = execute(
             &f.app,
             Operation::Scope,
             json!({"accessToken":read,"ownerId":owner,"repositoryIds":[],"allRepositories":true,"allowChanges":true}),
         );
+        // A native error is not authorization evidence: the mandatory direct API
+        // probes below independently verify that GitHub rejects escalation.
         if let Ok(value) = attempted {
             let token = value["accessToken"]
                 .as_str()
@@ -314,9 +417,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
                 .to_owned();
             children.push(token.clone());
             ensure(
-                api.call(&token, &format!("/repos/{}", f.repos[2].name), None)?
-                    .0
-                    == 404,
+                repository_denied(&api.call(&token, &format!("/repos/{}", f.repos[2].name), None)?),
                 "Child re-scope expanded repository access.",
             )?;
             ensure(
@@ -328,6 +429,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
                 "Child re-scope expanded write access.",
             )?;
         }
+        stage = "create escalation probe token";
         let (probe_read, _) = scope(
             &f.app,
             &f.parent,
@@ -337,6 +439,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             &mut children,
         )?;
         // Bypass Silo's scope preparation: GitHub itself must enforce parent bounds.
+        stage = "direct child scope and reset escalation";
         for (method, suffix, body) in [
             (
                 reqwest::Method::POST,
@@ -363,11 +466,11 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
                 .header("X-GitHub-Api-Version", "2022-11-28")
                 .json(&body)
                 .send()
-                .map_err(|_| "Child escalation probe transport failed.")?;
+                .map_err(transport_failure)?;
             let status = response.status().as_u16();
             let data: Value = response
                 .json()
-                .map_err(|_| "Child escalation probe response invalid.")?;
+                .map_err(transport_failure)?;
             if status == 201 || status == 200 {
                 let token = data["token"]
                     .as_str()
@@ -376,26 +479,30 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
                     .to_owned();
                 children.push(token.clone());
                 ensure(
-                    api.call(&token, &format!("/repos/{}", f.repos[2].name), None)?
-                        .0
-                        == 404,
+                    repository_denied(&api.call(&token, &format!("/repos/{}", f.repos[2].name), None)?),
                     "GitHub child re-scope or reset expanded repository access.",
                 )?;
                 ensure(graph_denied(&api.graph(&token, UPDATE, json!({"input":{"id":issue_id,"title":"unexpected direct child escalation"}}))?), "GitHub child re-scope or reset expanded write access.")?;
             } else {
-                ensure(
-                    matches!(status, 403 | 404 | 422),
-                    "Escalation probe did not produce a conclusive permission refusal.",
-                )?;
+                let category = failure_category(&data);
+                let message = safe_failure_message(&data);
+                if !escalation_denied(suffix, &(status, data)) {
+                    return Err(format!(
+                        "Escalation probe {suffix}: HTTP {status}, {category}, {message}; permission refusal unconfirmed."
+                    ));
+                }
             }
         }
+        stage = "create all-repositories token";
         let (all, _) = scope(&f.app, &f.parent, owner, &[], false, &mut children)?;
+        stage = "all-repositories boundaries";
         for repo in &f.repos {
             ensure(
                 api.call(&all, &format!("/repos/{}", repo.name), None)?.0 == 200,
                 "All repositories excluded authorized fixture.",
             )?;
         }
+        stage = "child revocation";
         execute(&f.app, Operation::RevokeToken, json!({"accessToken":all}))
             .map_err(|_| "Child revocation failed.")?;
         ensure(
@@ -408,6 +515,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             "Child revocation affected parent or sibling.",
         )?;
         children.retain(|token| token != &all);
+        stage = "authenticated VM workflow";
         if vm {
             run_vm(
                 &f,
@@ -415,7 +523,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             )?;
         }
         Ok(())
-    })();
+    })().map_err(|error| format!("{stage}: {error}"));
     let mut cleanup_failed = false;
     if let Some(id) = issue_id {
         cleanup_failed |= !api
@@ -486,7 +594,9 @@ fn github_authenticated_native_workflow() {
     assert!(
         result.is_ok(),
         "{}",
-        result.err().unwrap_or("Authenticated regression failed.")
+        result
+            .err()
+            .unwrap_or_else(|| "Authenticated regression failed.".into())
     );
 }
 #[test]
@@ -540,8 +650,103 @@ fn live_denial_requires_github_permission_evidence() {
         (429, json!({"errors":[{"type":"FORBIDDEN"}]})),
         (500, json!({"errors":[{"type":"FORBIDDEN"}]})),
         (200, json!({"errors":[{"type":"RATE_LIMITED"}]})),
+        (
+            200,
+            json!({"errors":[{"type":"FORBIDDEN"},{"type":"RATE_LIMITED"}]}),
+        ),
+        (200, json!({"errors":[]})),
         (200, json!({"data":{"repository":null}})),
     ] {
         assert!(!graph_denied(&response));
     }
+}
+
+#[test]
+fn live_transport_diagnostics_do_not_format_request_errors() {
+    let error = Client::new()
+        .get("http://user:fixture-secret@[invalid")
+        .build()
+        .expect_err("invalid destination must fail before sending");
+    assert_eq!(
+        transport_failure(error),
+        "GitHub request failed; mutations were not retried."
+    );
+}
+
+#[test]
+fn live_rest_denial_requires_github_permission_evidence() {
+    for (status, message) in [
+        (404, "Not Found"),
+        (403, "Resource not accessible by integration"),
+        (403, "Resource not accessible by personal access token"),
+    ] {
+        assert!(repository_denied(&(status, json!({"message": message}))));
+    }
+    for (status, message) in [
+        (403, "API rate limit exceeded"),
+        (403, "You have exceeded a secondary rate limit"),
+        (403, "Forbidden"),
+        (403, "Not Found"),
+        (404, "Unknown failure"),
+        (429, "Resource not accessible by integration"),
+        (500, "Resource not accessible by integration"),
+        (200, "Resource not accessible by integration"),
+    ] {
+        assert!(!repository_denied(&(status, json!({"message": message}))));
+    }
+    assert!(!repository_denied(&(403, json!({}))));
+    assert!(!repository_denied(&(404, json!({}))));
+}
+
+#[test]
+fn live_error_categories_never_include_response_text() {
+    assert_eq!(
+        failure_category(&json!({"message":"fixture-secret token cannot be scoped"})),
+        "token scope restriction"
+    );
+    assert_eq!(
+        failure_category(&json!({"message":"fixture-secret rate limit"})),
+        "rate limit"
+    );
+    assert_eq!(
+        failure_category(&json!({"message":"fixture-secret"})),
+        "unrecognized error"
+    );
+    assert_eq!(
+        failure_category(&json!({"token":"fixture-secret"})),
+        "missing error message"
+    );
+}
+
+#[test]
+fn live_failure_message_redacts_tokens_urls_and_long_values() {
+    let value = json!({"message":"This token cannot be scoped ghu_0123456789abcdef0123456789abcdef https://user:secret@example.com/secret ABCDEFGHIJKLMNOP 123456 secret=value"});
+    assert_eq!(
+        safe_failure_message(&value),
+        "This token cannot be scoped [redacted] [redacted] [redacted] [redacted] [redacted]"
+    );
+    assert_eq!(
+        safe_failure_message(&json!({"message":"word ".repeat(1000)})).len(),
+        200
+    );
+    assert_eq!(safe_failure_message(&json!({"token":"secret"})), "");
+}
+
+#[test]
+fn live_scoped_parent_refusal_requires_exact_operation_status_and_message() {
+    let refusal = json!({"message":"A scoped token cannot create another scoped token."});
+    assert!(escalation_denied("token/scoped", &(401, refusal.clone())));
+    assert!(!escalation_denied("token", &(401, refusal.clone())));
+    assert!(!escalation_denied("token/scoped", &(403, refusal)));
+    assert!(!escalation_denied(
+        "token/scoped",
+        &(401, json!({"message":"Bad credentials"}))
+    ));
+    assert!(!escalation_denied(
+        "token/scoped",
+        &(
+            401,
+            json!({"message":"A scoped token cannot create another scoped credential."})
+        )
+    ));
 }

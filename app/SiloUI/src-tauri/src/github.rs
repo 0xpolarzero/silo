@@ -128,6 +128,41 @@ struct Credential {
     refresh_token: Option<String>,
     expires_at: u64,
 }
+// Snapshot reads never open the credential store or wait for its permission UI.
+// This observation contains public lifetime/error metadata only, never a token.
+type CredentialObservation = Option<Result<Option<u64>, String>>;
+static CREDENTIAL_OBSERVATION: Mutex<CredentialObservation> = Mutex::new(None);
+static OBSERVATION_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+fn publish_credential_observation(value: Result<Option<u64>, String>) {
+    if let Ok(mut observed) = CREDENTIAL_OBSERVATION.lock() {
+        if observed.as_ref() == Some(&value) {
+            return;
+        }
+        *observed = Some(value);
+    }
+    if let Some(app) = OBSERVATION_APP.get() {
+        let _ = app.emit("silo://application-state-changed", ());
+    }
+}
+fn observe_credential_read(
+    read: impl FnOnce() -> Result<Option<Credential>, String>,
+    publish: impl FnOnce(Result<Option<u64>, String>),
+) -> Result<Option<Credential>, String> {
+    let result = read();
+    publish(
+        result
+            .as_ref()
+            .map(|c| c.as_ref().map(|c| c.expires_at))
+            .map_err(Clone::clone),
+    );
+    result
+}
+fn observed_credential() -> CredentialObservation {
+    CREDENTIAL_OBSERVATION
+        .lock()
+        .map(|state| state.clone())
+        .unwrap_or_else(|_| Some(Err("GitHub credential state is unavailable.".into())))
+}
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Document {
@@ -175,9 +210,15 @@ fn delete_account_credential() -> Result<(), String> {
             *PENDING_REFRESH
                 .lock()
                 .map_err(|_| "GitHub credential state is unavailable.")? = None;
+            publish_credential_observation(Ok(None));
             Ok(())
         }
-        Err(_) => Err("Cannot remove GitHub credentials from the system credential store.".into()),
+        Err(_) => {
+            let message =
+                "Cannot remove GitHub credentials from the system credential store.".to_string();
+            publish_credential_observation(Err(message.clone()));
+            Err(message)
+        }
     }
 }
 fn entry() -> Result<keyring::Entry, String> {
@@ -185,7 +226,7 @@ fn entry() -> Result<keyring::Entry, String> {
         .map_err(|_| "The system credential store is unavailable.".into())
 }
 fn credential() -> Result<Option<Credential>, String> {
-    read_entry(&entry()?)
+    observe_credential_read(|| read_entry(&entry()?), publish_credential_observation)
 }
 fn read_entry(entry: &keyring::Entry) -> Result<Option<Credential>, String> {
     match entry.get_password() {
@@ -197,7 +238,14 @@ fn read_entry(entry: &keyring::Entry) -> Result<Option<Credential>, String> {
     }
 }
 fn store(c: &Credential) -> Result<(), String> {
-    store_entry(&entry()?, c)
+    let result = entry().and_then(|entry| store_entry(&entry, c));
+    publish_credential_observation(
+        result
+            .as_ref()
+            .map(|_| Some(c.expires_at))
+            .map_err(Clone::clone),
+    );
+    result
 }
 fn store_entry(entry: &keyring::Entry, c: &Credential) -> Result<(), String> {
     entry
@@ -403,19 +451,36 @@ fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
 }
 
 pub fn snapshot(app: &tauri::AppHandle) -> Result<Value, String> {
-    Ok(public_snapshot(
+    Ok(observed_snapshot(
         load(app)?,
-        credential(),
+        observed_credential(),
         crate::host_identity::read(),
     ))
 }
+fn observed_snapshot(
+    document: Document,
+    observed: CredentialObservation,
+    identity: Option<crate::host_identity::HostIdentity>,
+) -> Value {
+    let waiting = observed.is_none();
+    let mut value = public_snapshot(
+        document,
+        observed
+            .unwrap_or_else(|| Err("Waiting for access to the system credential store.".into())),
+        identity,
+    );
+    if waiting {
+        value["repositoryCatalogStatus"]["canRetry"] = json!(false);
+    }
+    value
+}
 fn public_snapshot(
     mut d: Document,
-    stored: Result<Option<Credential>, String>,
+    stored: Result<Option<u64>, String>,
     identity: Option<crate::host_identity::HostIdentity>,
 ) -> Value {
     let connected = match stored {
-        Ok(credential) => credential.is_some_and(|c| c.expires_at > now()),
+        Ok(expires_at) => expires_at.is_some_and(|expiry| expiry > now()),
         Err(message) => {
             d.catalog_error = Some(message);
             false
@@ -1375,15 +1440,12 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
 }
 
 fn catalog_refresh_due(d: &Document, now: u64) -> bool {
-    d.access_enabled
-        && now >= d.catalog_refresh_at
-        && d.workspaces
-            .iter()
-            .any(|w| w["repositoryMode"].as_str() == Some("all"))
+    d.access_enabled && d.account.is_some() && !d.disconnect_pending && now >= d.catalog_refresh_at
 }
 
 /// Re-establish host-only grants after relaunch and renew them before expiry.
 pub fn install(app: &tauri::AppHandle) {
+    let _ = OBSERVATION_APP.set(app.clone());
     if let Ok(document) = load(app) {
         crate::github_http::restore_retry_floor(document.rate_retry_at);
     }
@@ -1503,6 +1565,7 @@ pub fn install(app: &tauri::AppHandle) {
                             }
                         }
                     }
+                    let account_credential = credential();
                     if let Ok(_state) = STATE.lock() {
                         if let Ok(mut current) = load(&app) {
                             current.session = session().into();
@@ -1520,7 +1583,7 @@ pub fn install(app: &tauri::AppHandle) {
                                     now() + 300
                                 });
                             }
-                            if let Ok(Some(c)) = credential() {
+                            if let Ok(Some(c)) = account_credential {
                                 current.refresh_at = current
                                     .refresh_at
                                     .min(c.expires_at.saturating_sub(120).max(now() + 30));
@@ -1868,6 +1931,7 @@ mod tests {
         let d = Document {
             session: session().into(),
             access_enabled: true,
+            account: Some("owner".into()),
             refresh_at: 3600,
             catalog_refresh_at: 300,
             workspaces: vec![json!({"repositoryMode":"all"})],
@@ -2122,9 +2186,11 @@ mod tests {
         assert_eq!(read_ledger(&entry).unwrap(), ledger);
     }
     #[test]
-    fn all_repositories_refreshes_new_owners_before_token_expiry() {
+    fn connected_catalog_refreshes_before_token_expiry_for_every_selection_mode() {
         let mut d = Document {
+            session: session().into(),
             access_enabled: true,
+            account: Some("owner".into()),
             workspaces: vec![json!({"repositoryMode":"all"})],
             catalog_refresh_at: 100,
             refresh_at: 3600,
@@ -2133,9 +2199,16 @@ mod tests {
         assert!(!catalog_refresh_due(&d, 99));
         assert!(catalog_refresh_due(&d, 100));
         d.workspaces[0]["repositoryMode"] = json!("selected");
-        assert!(!catalog_refresh_due(&d, 100));
-        d.workspaces[0]["repositoryMode"] = json!("all");
+        assert!(worker_due(&d, None, 100, Instant::now()));
+        d.workspaces.clear();
+        assert!(worker_due(&d, None, 100, Instant::now()));
         d.access_enabled = false;
+        assert!(!catalog_refresh_due(&d, 100));
+        d.access_enabled = true;
+        d.account = None;
+        assert!(!catalog_refresh_due(&d, 100));
+        d.account = Some("owner".into());
+        d.disconnect_pending = true;
         assert!(!catalog_refresh_due(&d, 100));
     }
     #[test]
@@ -2331,6 +2404,79 @@ mod tests {
     }
 
     #[test]
+    fn blocked_credential_read_never_blocks_public_snapshot() {
+        for previous in [None, Some(Ok(Some(now() + 600)))] {
+            let observation = std::sync::Arc::new(Mutex::new(previous.clone()));
+            let observed = observation.clone();
+            let (started, reading) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let (published, update) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                observe_credential_read(
+                    || {
+                        started.send(()).unwrap();
+                        released.recv().unwrap();
+                        Err(
+                            "Cannot read GitHub credentials from the system credential store."
+                                .into(),
+                        )
+                    },
+                    |value| {
+                        *observed.lock().unwrap() = Some(value);
+                        published.send(()).unwrap();
+                    },
+                )
+            });
+            reading.recv_timeout(Duration::from_secs(1)).unwrap();
+            // A pending OS permission prompt cannot hold the snapshot state lock.
+            let state = observation.try_lock().unwrap().clone();
+            let snapshot = observed_snapshot(Document::default(), state, None);
+            assert_eq!(
+                snapshot["state"],
+                if previous.is_some() {
+                    "connected"
+                } else {
+                    "disconnected"
+                }
+            );
+            if previous.is_none() {
+                assert_eq!(snapshot["repositoryCatalogStatus"]["status"], "unavailable");
+                assert_eq!(snapshot["repositoryCatalogStatus"]["canRetry"], false);
+            }
+            assert!(update.try_recv().is_err());
+            release.send(()).unwrap();
+            update.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert!(reader.join().unwrap().is_err());
+            let snapshot = observed_snapshot(
+                Document::default(),
+                observation.lock().unwrap().clone(),
+                None,
+            );
+            assert_eq!(snapshot["state"], "disconnected");
+            assert_eq!(snapshot["repositoryCatalogStatus"]["status"], "unavailable");
+            assert_eq!(snapshot["repositoryCatalogStatus"]["canRetry"], true);
+        }
+    }
+    #[test]
+    fn credential_observation_exposes_only_lifetime_and_absence() {
+        let expiry = now() + 600;
+        let mut observed = None;
+        let result = observe_credential_read(
+            || {
+                Ok(Some(Credential {
+                    access_token: "private-access".into(),
+                    refresh_token: Some("private-refresh".into()),
+                    expires_at: expiry,
+                }))
+            },
+            |value| observed = Some(value),
+        );
+        assert!(result.unwrap().is_some());
+        assert_eq!(observed, Some(Ok(Some(expiry))));
+        observe_credential_read(|| Ok(None), |value| observed = Some(value)).unwrap();
+        assert_eq!(observed, Some(Ok(None)));
+    }
+    #[test]
     fn missing_token_response_is_error() {
         assert!(from_response(json!({})).is_err());
     }
@@ -2351,11 +2497,7 @@ mod tests {
                 ..Default::default()
             };
             let stored = if expected["state"] == "connected" {
-                Some(Credential {
-                    access_token: "contract-token-not-real".into(),
-                    refresh_token: None,
-                    expires_at: now() + 600,
-                })
+                Some(now() + 600)
             } else {
                 None
             };

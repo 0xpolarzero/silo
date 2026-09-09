@@ -64,7 +64,10 @@ reuse unexpired tokens. Superseded network results cannot attach to a newer poli
 Starting a VM and replacing its profile are ordered per VM. Applying a new profile
 closes existing proxy connections without rebooting the VM. A read-token change
 can briefly pause writes for the same owner while its paired profile is rebuilt.
-Git identity changes do not request tokens or wait for GitHub.
+Git identity changes do not request tokens or wait for GitHub. The repository
+catalog refreshes every five minutes for all connected, enabled accounts, including
+selected mode and accounts with no VM grants yet. Previously it refreshed only for
+All repositories, leaving newly authorized repositories absent from the picker.
 
 Confirmed rate limits honor Retry-After and exhausted x-ratelimit-reset with
 exponential backoff and positive jitter. Automatic retries are bounded at five;
@@ -77,6 +80,14 @@ in host memory for storage retry, tied to the original account token. The consum
 refresh token is not submitted again. Disconnect uses the renewed credential if
 necessary. If the process dies before that credential can be saved, reconnect can
 be required; no plaintext fallback is used.
+
+Public snapshots never read Keychain/Secret Service. They use only a process-local
+observation of credential expiry, absence or a safe error. The existing worker
+performs secure-store operations and publishes changes; no token bytes enter that
+observation. Initial permission waiting uses the existing unavailable notice and
+disables retry. Routine reads retain previously verified unexpired state until a
+result arrives. This prevents a Keychain permission dialog from freezing the entire
+app's initial state load. A blocked-reader regression verifies the boundary.
 
 The callback parser reads bounded complete headers across fragmented input and
 ignores unrelated local traffic. Invalid authenticated responses, empty codes,
@@ -94,7 +105,9 @@ Reuse **microsandbox-workspaces**, owned by **0xpolarzero**:
 - Repository permissions only; organization/account permissions remain absent.
 
 The callback and Device Flow changes were saved and verified in authenticated Zen
-on 2026-09-09. No client secret was generated; that manual App setup step remains.
+on 2026-09-09. The user generated the client secret; the native macOS build was
+configured and real browser sign-in succeeded as the existing account. The value
+was not committed or written to test output.
 No private key is required and none must be bundled.
 
 Release builds supply `SILO_GITHUB_CLIENT_ID`, `SILO_GITHUB_CLIENT_SECRET` and
@@ -111,15 +124,18 @@ Latest completed checks for the server-free conversion:
 - `npm --prefix app/SiloUI test`: 484 passed across 52 files.
 - `npm --prefix app/SiloUI run lint`: passed.
 - `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --offline -- --test-threads=1`:
-  191 passed, 4 ignored, including the final refresh-storage and disconnect changes.
+  198 passed, 4 ignored, including permission-denial and blocked-Keychain regressions.
+  The final worker lock adjustment also passed all 34 focused GitHub tests.
 - Direct native operations: 8 contract tests and 12 transport/retry tests,
   including actual private-loopback HTTP responses.
-- The opt-in native authenticated harness compiled; 2 fixture safety tests passed.
-  It has not been run authenticated because the App client secret is missing.
-- `npm --prefix app/SiloUI run desktop:build:debug`, with the public client ID
-  and App slug: final ad-hoc signed macOS bundle built successfully. Connect still
-  reports missing configuration until rebuilt with the client secret. Existing
-  bundle-size and unused-function warnings remain; notarization was not requested.
+- The authenticated native harness and nested real-VM regression passed together
+  in 68.91 seconds, then again in 71.02 seconds with stricter denial assertions.
+  Three private synthetic fixtures were explicitly authorized for the existing App.
+  No working repository was used for mutations.
+- `npm --prefix app/SiloUI run desktop:build:debug`, with native App configuration:
+  the ad-hoc signed macOS bundle built successfully and completed browser sign-in.
+  Existing bundle-size and unused-function warnings remain; notarization was not
+  requested.
 
 The existing hardware regression previously passed through actual production
 Start/Restart in 24.50 seconds using a synthetic rejected credential and removed
@@ -127,7 +143,7 @@ its own VM. The runtime patch has not changed during this conversion, so that is
 retained evidence rather than a newly claimed hardware run. Patch SHA:
 `e6868dfbef5e7800949adbad98bda7fa501e8df47ac7146e601b50f145349ee8`.
 
-### Required authenticated run
+### Authenticated evidence and repeatable run
 
 Follow `app/SiloUI/tests/live/README.md`. The native test uses actual production
 operations against three explicit private fixtures: read A, write B, deny C.
@@ -136,10 +152,41 @@ All repositories and individual-token revocation without losing the parent.
 Optional VM execution tests real Git, gh, LFS bytes and live access changes using
 only scoped credentials in the native child process.
 
-Also verify normal browser Connect/return, cancellation, PKCE verifier rejection,
-refresh, disconnect/reconnect and secure-store failures. Neither a compiled ignored
-test nor a synthetic 401 is proof of authenticated success. Host Push against
-GitHub and Linux hardware execution still need their explicit checks.
+Observed with real GitHub on 2026-09-09:
+
+- Browser Connect/return completed and showed the real connected account.
+- Final configured macOS bundle reopened normally with the real dev/playgrounds
+  VMs running and personal stopped. GitHub showed Connected as @0xpolarzero;
+  the personal repository picker listed all six authorized repositories, including
+  the three new private fixtures. No sandbox grant was selected during UI checks.
+  The app was left open on GitHub. The earlier instance was closed through its
+  Quit menu and its process exit verified before relaunch.
+- The prior rebuilt instance's loading stall was traced to Keychain with a brief
+  process stack sample. The final build loaded normally; the deterministic blocked
+  credential regression separately verifies pending authorization cannot block
+  public snapshots. No system permission was bypassed.
+- Read tokens accessed fixtures A/B and received explicit permission denial for C.
+  Write tokens accessed B and were denied A/C. REST and GraphQL were checked,
+  including opaque node IDs and unchanged issue data after denied writes.
+- GitHub refused child-token minting with HTTP 401 and the exact message
+  “A scoped token cannot create another scoped token.” Token reset did not expand
+  access. Rate limits, transport failures and unknown responses were not proof.
+- All-repositories tokens accessed all three authorized fixtures. Retiring one
+  child left the parent and sibling usable. Every tracked test child was revoked.
+- The actual VM cloned/fetched/pushed Git, used gh and round-tripped 1 MiB through
+  Git LFS. Real bearer tokens were absent from guest environment/Git configuration.
+  Write removal, full removal and restoration took effect with unchanged boot ID.
+- Both passing runs removed their disposable VM and branch. Four marked test
+  issues, including diagnostic runs, were closed; only the main branch remained.
+  Private fixture repositories and uploaded LFS test objects remain for evidence.
+
+The first run timed out and was not counted as success. Subsequent diagnostic
+runs exposed incorrect test assumptions about GitHub's 403 repository denial and
+401 scoped-parent refusal; predicates now require exact permission errors.
+
+Browser cancellation, PKCE rejection, refresh rotation/storage failure and other
+error handling have focused automated coverage; real expiry-driven refresh,
+Host Push against GitHub and Linux hardware still need explicit live checks.
 
 ### Exact UI verification after App setup
 
