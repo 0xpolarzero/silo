@@ -127,11 +127,11 @@ preventing a build from rejecting its own correctly packaged runtime.
 
 ### Checks completed
 
-- `npm --prefix app/SiloUI test`: 465 tests passed across 52 files.
+- `npm --prefix app/SiloUI test`: 472 tests passed across 52 files.
 - `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --offline -- --test-threads=1`:
-  144 tests passed; two hardware-dependent tests were excluded from the normal run.
+  169 tests passed; two hardware-dependent tests were excluded from the normal run.
   The GitHub hardware test was subsequently run explicitly and passed.
-- `npm --prefix services/github-auth test`: 16 service tests passed, including
+- `npm --prefix services/github-auth test`: 24 service tests passed, including
   outbound PKCE, scoped permissions and individual-token deletion semantics.
 - After the final account-error UI correction, all 68 application-page tests
   passed, including a regression that keeps failed sign-in retry on Connect.
@@ -210,3 +210,14 @@ responses cannot replace newer UI settings or complete a superseded setup job.
 
 Sources: [GitHub best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately)
 and [GitHub rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
+
+Verification after these changes: 25 focused policy tests cover exact token-request
+counts, removal, obsolete results, partial issuance, debounce and FIFO local edits;
+10 transport tests cover rate limits, backoff, exhaustion and relaunch deadlines.
+The full test counts above include those tests. Typecheck, lint and formatting
+checks passed. The macOS application was rebuilt successfully. The explicit
+hardware regression passed in 23.24 seconds and removed its disposable VM.
+Its first run exposed a temporary-boot cleanup regression; restoring the original
+stopped-state behavior fixed it. The regular native suite required filesystem
+permission for its existing storage-alias test; the permitted rerun passed.
+No authenticated GitHub connection or Linux execution was performed in this pass.
