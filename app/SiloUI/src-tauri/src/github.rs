@@ -10,21 +10,105 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Mutex, OnceLock,
+        Condvar, Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
 
 static OPERATION: Mutex<()> = Mutex::new(());
-static SESSION: OnceLock<String> = OnceLock::new();
-static PENDING_RETIREMENTS: OnceLock<Mutex<std::collections::HashMap<String, Vec<String>>>> =
+// Never hold this lock during a GitHub/service request. It orders desired saves
+// and local profile attachment so an older network result cannot restore access.
+static STATE: Mutex<()> = Mutex::new(());
+static ACTIVE: OnceLock<Mutex<std::collections::HashMap<String, Vec<RuntimeGrant>>>> =
     OnceLock::new();
+#[derive(Clone)]
+struct IssuedToken {
+    owner: u64,
+    all: bool,
+    write: bool,
+    ids: Vec<u64>,
+    token: String,
+    expires_at: u64,
+}
+static ISSUED: OnceLock<Mutex<std::collections::HashMap<String, Vec<IssuedToken>>>> =
+    OnceLock::new();
+fn issued() -> &'static Mutex<std::collections::HashMap<String, Vec<IssuedToken>>> {
+    ISSUED.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+fn issued_matches(token: &IssuedToken, scope: &GrantScope, write: bool) -> bool {
+    token.owner == scope.owner
+        && token.all == scope.all
+        && token.write == write
+        && (scope.all
+            || token.ids
+                == if write {
+                    scope.writes.clone()
+                } else {
+                    scope.ids.clone()
+                })
+        && token.expires_at > now() + 120
+}
+static PENDING: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+fn schedule(delay: Duration) {
+    if let Ok(mut pending) = PENDING.get_or_init(|| Mutex::new(None)).lock() {
+        *pending = Some(Instant::now() + delay);
+    }
+}
+fn active() -> &'static Mutex<std::collections::HashMap<String, Vec<RuntimeGrant>>> {
+    ACTIVE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+fn active_key(app: &tauri::AppHandle, workspace: &str) -> Result<String, String> {
+    Ok(format!("{}:{workspace}", path(app)?.display()))
+}
+static SESSION: OnceLock<String> = OnceLock::new();
 fn session() -> &'static str {
     SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
 static CONNECTING: AtomicBool = AtomicBool::new(false);
 static CANCELLATION: AtomicU64 = AtomicU64::new(0);
+// Policy edits keep their submission order even if spawn_blocking starts its
+// jobs out of order. This queue contains local updates only, never HTTP calls.
+struct IntentQueue {
+    issued: AtomicU64,
+    turn: Mutex<u64>,
+    ready: Condvar,
+}
+impl IntentQueue {
+    const fn new() -> Self {
+        Self {
+            issued: AtomicU64::new(0),
+            turn: Mutex::new(1),
+            ready: Condvar::new(),
+        }
+    }
+    fn ticket(&self) -> u64 {
+        self.issued.fetch_add(1, Ordering::SeqCst) + 1
+    }
+    fn wait(&self, ticket: u64) -> Result<IntentTurn<'_>, String> {
+        let mut turn = self
+            .turn
+            .lock()
+            .map_err(|_| "GitHub settings queue is unavailable.")?;
+        while *turn != ticket {
+            turn = self
+                .ready
+                .wait(turn)
+                .map_err(|_| "GitHub settings queue is unavailable.")?;
+        }
+        Ok(IntentTurn(self))
+    }
+}
+struct IntentTurn<'a>(&'a IntentQueue);
+impl Drop for IntentTurn<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut turn) = self.0.turn.lock() {
+            *turn += 1;
+            self.0.ready.notify_all();
+        }
+    }
+}
+static INTENTS: IntentQueue = IntentQueue::new();
 struct Connecting;
 impl Drop for Connecting {
     fn drop(&mut self) {
@@ -42,7 +126,7 @@ struct Credential {
     refresh_token: Option<String>,
     expires_at: u64,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Document {
     revision: u64,
@@ -66,12 +150,28 @@ struct Document {
     grants_issued: bool,
     #[serde(default)]
     identity_errors: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    identity_pending: Vec<String>,
+    #[serde(default)]
+    access_pending: Vec<String>,
+    #[serde(default)]
+    access_errors: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    disconnect_pending: bool,
+    #[serde(default)]
+    rate_retry_at: u64,
 }
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+fn delete_account_credential() -> Result<(), String> {
+    match entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err("Cannot remove GitHub credentials from the system credential store.".into()),
+    }
 }
 fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new("org.silo.Silo.github", "account")
@@ -115,6 +215,9 @@ fn load(app: &tauri::AppHandle) -> Result<Document, String> {
     }
 }
 fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
+    let mut saved = d.clone();
+    saved.rate_retry_at = saved.rate_retry_at.max(crate::github_http::retry_floor());
+    let d = &saved;
     let p = path(app)?;
     let parent = p.parent().ok_or("Missing configuration directory.")?;
     fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory.")?;
@@ -131,38 +234,12 @@ fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
         .and_then(|f| f.sync_all())
         .map_err(|_| "Cannot sync GitHub configuration directory.".into())
 }
-fn client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("Silo")
-        .build()
-        .map_err(|_| "Cannot initialize GitHub connection.".into())
-}
 fn service(route: &str, body: Value) -> Result<Value, String> {
-    let root = SERVICE.ok_or("GitHub connection is not configured in this build.")?;
-    let url = reqwest::Url::parse(root).map_err(|_| "GitHub service URL is invalid.")?;
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err("GitHub service requires a configured HTTPS URL.".into());
-    };
-    let r = client()?
-        .post(format!("{}{}", root.trim_end_matches('/'), route))
-        .json(&body)
-        .send()
-        .map_err(|_| "Cannot reach the GitHub authentication service.")?;
-    if !r.status().is_success() {
-        return Err(format!(
-            "GitHub authentication service refused the request ({}).",
-            r.status().as_u16()
-        ));
-    };
-    r.json()
-        .map_err(|_| "GitHub authentication service returned an invalid response.".into())
+    crate::github_http::service(
+        SERVICE.ok_or("GitHub connection is not configured in this build.")?,
+        route,
+        body,
+    )
 }
 fn from_response(v: Value) -> Result<Credential, String> {
     let token = v["accessToken"]
@@ -198,21 +275,7 @@ fn active_credential() -> Result<Credential, String> {
     Ok(renewed)
 }
 fn github(token: &str, path: &str) -> Result<Value, String> {
-    let r = client()?
-        .get(format!("https://api.github.com{path}"))
-        .bearer_auth(token)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .send()
-        .map_err(|_| "Cannot reach GitHub.")?;
-    if !r.status().is_success() {
-        return Err(format!(
-            "GitHub refused the request ({}).",
-            r.status().as_u16()
-        ));
-    };
-    r.json()
-        .map_err(|_| "GitHub returned an invalid response.".into())
+    crate::github_http::github(token, path)
 }
 fn catalog(c: &Credential) -> Result<Vec<Value>, String> {
     Ok(catalog_installations(c)?.0)
@@ -287,7 +350,7 @@ fn public_snapshot(
         d.operations = d.workspaces.iter().map(|w|json!({"workspace":w["workspace"],"status":"failed","message":"GitHub access must be verified for this app session.","canRetry":true})).collect();
     }
 
-    json!({"state":if CONNECTING.load(Ordering::SeqCst){"connecting"}else if connected{"connected"}else{"disconnected"},"account":d.account,"accessEnabled":d.access_enabled,"hostIdentity":identity,"repositoryCatalog":d.repositories.iter().filter_map(|r|r["name"].as_str()).collect::<Vec<_>>(),"repositoryCatalogStatus":match &d.catalog_error { Some(message)=>json!({"status":"unavailable","message":message,"canRetry":true}),None=>json!({"status":"available"})},"workspaces":d.workspaces,"workspaceOperations":d.operations})
+    json!({"policyRevision":d.revision,"state":if CONNECTING.load(Ordering::SeqCst){"connecting"}else if connected{"connected"}else{"disconnected"},"account":d.account,"accessEnabled":d.access_enabled,"hostIdentity":identity,"repositoryCatalog":d.repositories.iter().filter_map(|r|r["name"].as_str()).collect::<Vec<_>>(),"repositoryCatalogStatus":match &d.catalog_error { Some(message)=>json!({"status":"unavailable","message":message,"canRetry":true}),None=>json!({"status":"available"})},"workspaces":d.workspaces,"workspaceOperations":d.operations})
 }
 type TokenLedger = std::collections::HashMap<String, Vec<String>>;
 fn ledger_entry() -> Result<keyring::Entry, String> {
@@ -314,120 +377,82 @@ fn save_ledger(entry: &keyring::Entry, ledger: &TokenLedger) -> Result<(), Strin
             "Cannot save GitHub runtime credentials in the system credential store.".into()
         })
 }
-fn remember_grants(
-    app: &tauri::AppHandle,
-    workspace: &str,
-    grants: &[RuntimeGrant],
-) -> Result<(), String> {
-    if grants.is_empty() {
-        return Ok(());
-    }
+// Record each successful issuance before making another network request. A
+// later partial failure must not lose the only copy needed for revocation.
+fn remember_token(app: &tauri::AppHandle, workspace: &str, token: &str) -> Result<(), String> {
     let entry = ledger_entry()?;
     let mut ledger = read_ledger(&entry)?;
     let tokens = ledger.entry(workspace.into()).or_default();
-    for grant in grants {
-        tokens.push(grant.read_token.clone());
-        if let Some(write) = &grant.write_token {
-            tokens.push(write.clone());
-        }
+    if !tokens.iter().any(|previous| previous == token) {
+        tokens.push(token.into());
     }
-    tokens.sort();
-    tokens.dedup();
     save_ledger(&entry, &ledger)?;
+    let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
     let mut document = load(app)?;
     document.grants_issued = true;
     save(app, &document)
 }
-
-fn retire_previous(app: &tauri::AppHandle, workspace: &str, revision: u64) -> Result<(), String> {
-    let pending = PENDING_RETIREMENTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-    let mut tokens = crate::runtime::scoped_cached_tokens(app, workspace)?;
-    if tokens.is_empty()
-        && !load(app)?.grants_issued
-        && pending
-            .lock()
-            .map_err(|_| "GitHub revocation state is unavailable.")?
-            .get(workspace)
-            .is_none()
-    {
-        // GitHub is optional. A sandbox that has never received credentials does not need a keyring to stay disabled.
-        return crate::runtime::apply_github_policy(
-            app,
-            workspace,
-            revision,
-            &json!({"version":1,"owners":[]}),
-        );
-    }
-    let ledger_entry = ledger_entry();
-    let mut ledger = ledger_entry
-        .as_ref()
-        .map_err(Clone::clone)
-        .and_then(read_ledger);
-    if let Ok(stored) = &ledger {
-        if let Some(previous) = stored.get(workspace) {
-            tokens.extend(previous.iter().cloned());
-        }
-    }
-
-    if let Some(previous) = pending
+fn profile(grants: &[RuntimeGrant]) -> Value {
+    json!({"version":1,"owners":grants.iter().filter(|g| !g.read_token.is_empty()).map(|g|json!({"login":g.owner_login,"repositoryIds":g.repository_ids,"readToken":g.read_token,"writeToken":g.write_token,"expiresAt":g.expires_at})).collect::<Vec<_>>()})
+}
+fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> {
+    let key = active_key(app, workspace)?;
+    let retained: Vec<String> = active()
         .lock()
-        .map_err(|_| "GitHub revocation state is unavailable.")?
-        .get(workspace)
+        .map_err(|_| "GitHub state is unavailable.")?
+        .get(&key)
+        .into_iter()
+        .flatten()
+        .flat_map(|g| std::iter::once(g.read_token.clone()).chain(g.write_token.clone()))
+        .collect();
+    let mut live = crate::runtime::scoped_cached_tokens(app, workspace)?;
+    live.extend(retained);
+    let d = load(app)?;
+    let scopes = d
+        .workspaces
+        .iter()
+        .find(|w| w["workspace"].as_str() == Some(workspace))
+        .and_then(|w| scopes(&d, w).ok())
+        .unwrap_or_default();
+    if let Some(tokens) = issued()
+        .lock()
+        .map_err(|_| "GitHub state is unavailable.")?
+        .get_mut(&key)
     {
-        tokens.extend(previous.iter().cloned());
+        tokens.retain(|token| {
+            scopes.iter().any(|scope| {
+                issued_matches(token, scope, token.write)
+                    && (!token.write || !scope.writes.is_empty())
+            })
+        });
+        live.extend(tokens.iter().map(|token| token.token.clone()));
     }
-    tokens.sort();
-    tokens.dedup();
-    let deadline = Instant::now() + Duration::from_secs(45);
-    let mut first_failure = ledger.as_ref().err().cloned();
-    let mut network_failed = false;
+    let entry = ledger_entry()?;
+    let mut ledger = read_ledger(&entry)?;
+    let tokens = ledger.get(workspace).cloned().unwrap_or_default();
+    let mut failure = None;
     let mut remaining = Vec::new();
     for token in tokens {
-        if !network_failed && Instant::now() < deadline {
-            if service("/v1/tokens/revoke", json!({"accessToken":&token})).is_ok() {
-                continue;
-            }
+        if live.contains(&token) {
+            remaining.push(token);
+            continue;
         }
-        network_failed = true;
-        first_failure=Some("GitHub could not confirm that previous access was revoked. Access remains pending; retry when connected.".to_string());
-        remaining.push(token);
-    }
-    if let (Ok(entry), Ok(stored)) = (&ledger_entry, &mut ledger) {
-        let previous = stored.clone();
-        if remaining.is_empty() {
-            stored.remove(workspace);
-        } else {
-            stored.insert(workspace.into(), remaining.clone());
-        }
-        if previous != *stored {
-            if let Err(message) = save_ledger(entry, stored) {
-                first_failure = Some(message);
+        match service("/v1/tokens/revoke", json!({"accessToken":token})) {
+            Ok(_) => {}
+            Err(message) => {
+                failure = Some(message);
+                remaining.push(token);
             }
         }
     }
-    let mut state = pending
-        .lock()
-        .map_err(|_| "GitHub revocation state is unavailable.")?;
     if remaining.is_empty() {
-        state.remove(workspace);
+        ledger.remove(workspace);
     } else {
-        state.insert(workspace.into(), remaining);
+        ledger.insert(workspace.into(), remaining);
     }
-    drop(state);
-    // Always disable locally too, even when GitHub is offline. Never lose the failed-token retry list.
-    let local = crate::runtime::apply_github_policy(
-        app,
-        workspace,
-        revision,
-        &json!({"version":1,"owners":[]}),
-    );
-    match (first_failure, local) {
-        (None, Ok(())) => Ok(()),
-        (Some(message), _) => Err(message),
-        (None, Err(message)) => Err(message),
-    }
+    save_ledger(&entry, &ledger)?;
+    failure.map_or(Ok(()), Err)
 }
-
 fn finish_application(
     grants: Result<(), String>,
     explicit: bool,
@@ -448,15 +473,27 @@ fn finish_application(
     (combined, identity)
 }
 
+fn access_update_due(d: &Document, name: &str, at: u64) -> bool {
+    d.access_pending.iter().any(|n| n == name) || d.session != session() || at >= d.refresh_at
+}
+fn worker_due(d: &Document, pending: Option<Instant>, at: u64, instant: Instant) -> bool {
+    match pending {
+        Some(deadline) => instant >= deadline,
+        None => d.session != session() || at >= d.refresh_at || catalog_refresh_due(d, at),
+    }
+}
 fn apply(
     app: &tauri::AppHandle,
-    d: &mut Document,
+    _document: &mut Document,
     workspace: Option<&str>,
     apply_identity: bool,
 ) -> Result<(), String> {
-    let generation = CANCELLATION.load(Ordering::SeqCst);
-    let mut refresh_at = if workspace.is_some() {
-        d.refresh_at.min(now() + 3600)
+    let d = {
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        load(app)?
+    };
+    let mut refresh_at = if now() < d.refresh_at {
+        d.refresh_at
     } else {
         now() + 3600
     };
@@ -465,56 +502,112 @@ fn apply(
         if workspace.is_some_and(|target| target != name) {
             continue;
         }
-        // Revoke old authority before fetching replacements. A network/store failure must not keep old writes active.
-        let result = retire_previous(app,name,d.revision)
-        .and_then(|_| { if CANCELLATION.load(Ordering::SeqCst)!=generation {Err("GitHub access changed during this operation. Applying the latest choice.".into())} else {runtime_grants(app,name)} }).and_then(|grants| {
-            if CANCELLATION.load(Ordering::SeqCst)!=generation {return Err("GitHub access changed during this operation. Applying the latest choice.".into());}
-            if let Some(expiry)=grants.iter().map(|g|g.expires_at).min() { refresh_at=refresh_at.min(expiry.saturating_sub(120)); }
-            remember_grants(app,name,&grants)?;
-            let profiles=json!({"version":1,"owners":grants.into_iter().map(|g|json!({"login":g.owner_login,"repositoryIds":g.repository_ids,"readToken":g.read_token,"writeToken":g.write_token,"expiresAt":g.expires_at})).collect::<Vec<_>>()});
-            crate::runtime::apply_github_policy(app,name,d.revision,&profiles)
-        });
-        if result.is_err() {
-            refresh_at = refresh_at.min(now() + 60);
-        }
-        let (result, identity_result) = finish_application(
-            result,
-            apply_identity,
-            d.identity_errors.get(name).map(String::as_str),
-            || crate::runtime::apply_github_identity(app, name, &w["identity"]),
-        );
-        if apply_identity {
-            match &identity_result {
+        // Identity changes are independent of token issuance, including offline edits.
+        let identity_requested = apply_identity || d.identity_pending.iter().any(|n| n == name);
+        if identity_requested {
+            let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+            if load(app)?.revision != d.revision {
+                schedule(Duration::from_millis(500));
+                return Ok(());
+            }
+            let result = crate::runtime::apply_github_identity(app, name, &w["identity"]);
+            let mut current = load(app)?;
+            current.identity_pending.retain(|n| n != name);
+            match result {
                 Ok(()) => {
-                    d.identity_errors.remove(name);
+                    current.identity_errors.remove(name);
                 }
-                Err(message) => {
-                    d.identity_errors.insert(name.into(), message.clone());
+                Err(error) => {
+                    current.identity_errors.insert(name.into(), error);
+                }
+            }
+            save(app, &current)?;
+        }
+        let key = active_key(app, name)?;
+        let previous = active()
+            .lock()
+            .map_err(|_| "GitHub state is unavailable.")?
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let access_requested = access_update_due(&d, name, now());
+        let result = if access_requested {
+            let result = runtime_grants_for(app, &d, w, &previous).and_then(|grants| {
+                let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+                if load(app)?.revision != d.revision {
+                    return Err("GitHub access changed. Applying your latest choices.".into());
+                }
+                if let Some(expiry) = grants.iter().map(|g| g.expires_at).min() {
+                    refresh_at = refresh_at.min(expiry.saturating_sub(120));
+                }
+                // Comparing credentials too avoids reconnecting unchanged sessions.
+                if grants != previous || d.session != session() {
+                    crate::runtime::apply_github_policy(app, name, d.revision, &profile(&grants))?;
+                    active()
+                        .lock()
+                        .map_err(|_| "GitHub state is unavailable.")?
+                        .insert(key, grants);
+                }
+                Ok(())
+            });
+            let retirement = if d.grants_issued || load(app)?.grants_issued {
+                retire_unused(app, name)
+            } else {
+                Ok(())
+            };
+            result.and(retirement)
+        } else {
+            d.access_errors
+                .get(name)
+                .map_or(Ok(()), |message| Err(message.clone()))
+        };
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let mut current = load(app)?;
+        if current.revision != d.revision {
+            schedule(Duration::from_millis(500));
+            return Ok(());
+        }
+        if access_requested {
+            current.access_pending.retain(|n| n != name);
+            match &result {
+                Ok(()) => {
+                    current.access_errors.remove(name);
+                }
+                Err(error) => {
+                    current.access_errors.insert(name.into(), error.clone());
                 }
             }
         }
+        let result = finish_application(
+            result,
+            false,
+            current.identity_errors.get(name).map(String::as_str),
+            || Ok(()),
+        )
+        .0;
         let operation = match result {
             Ok(()) => {
-                json!({"workspace": name,"status":"succeeded","message":"GitHub access verified."})
+                json!({"workspace":name,"status":"succeeded","message":"GitHub access verified."})
             }
             Err(message) => {
+                let retry = crate::github_http::retry_at();
+                refresh_at = refresh_at.min(if retry > 0 {
+                    retry.max(now() + 1)
+                } else {
+                    now() + 300
+                });
                 json!({"workspace":name,"status":"failed","message":message,"canRetry":true})
             }
         };
-        d.operations
+        current
+            .operations
             .retain(|op| op["workspace"].as_str() != Some(name));
-        d.operations.push(operation);
+        current.operations.push(operation);
+        current.session = session().into();
+        current.refresh_at = refresh_at;
+        save(app, &current)?;
     }
-    // Grant issuance refreshes the authorized catalog. Retain that observation
-    // instead of overwriting it with this operation's earlier policy snapshot.
-    let latest = load(app)?;
-    d.repositories = latest.repositories;
-    d.catalog_error = latest.catalog_error;
-    d.catalog_refresh_at = latest.catalog_refresh_at;
-    d.grants_issued = latest.grants_issued;
-    d.session = session().into();
-    d.refresh_at = refresh_at;
-    save(app, d)
+    Ok(())
 }
 
 fn validate(workspaces: &[Value]) -> Result<(), String> {
@@ -601,7 +694,7 @@ fn validate(workspaces: &[Value]) -> Result<(), String> {
 }
 
 /// Only the host runtime IPC may serialize these short-lived credentials.
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeGrant {
     pub owner_id: u64,
@@ -611,6 +704,9 @@ pub(crate) struct RuntimeGrant {
     pub write_token: Option<String>,
     pub write_repository_ids: Vec<u64>,
     pub expires_at: u64,
+    pub read_expires_at: u64,
+    pub write_expires_at: u64,
+    pub all_repositories: bool,
 }
 fn token_expiry(response: &Value) -> Result<u64, String> {
     let raw = response["expiresAt"]
@@ -625,26 +721,18 @@ fn token_expiry(response: &Value) -> Result<u64, String> {
     }
     Ok(seconds)
 }
-pub(crate) fn runtime_grants(
-    app: &tauri::AppHandle,
-    workspace: &str,
-) -> Result<Vec<RuntimeGrant>, String> {
-    let mut d = load(app)?;
-    if !d.access_enabled || credential()?.is_none() {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GrantScope {
+    owner: u64,
+    login: String,
+    ids: Vec<u64>,
+    writes: Vec<u64>,
+    all: bool,
+}
+fn scopes(d: &Document, policy: &Value) -> Result<Vec<GrantScope>, String> {
+    if !d.access_enabled {
         return Ok(Vec::new());
     }
-    let policy = d
-        .workspaces
-        .iter()
-        .find(|w| w["workspace"].as_str() == Some(workspace))
-        .cloned()
-        .ok_or("No GitHub policy exists for this sandbox.")?;
-    validate(std::slice::from_ref(&policy))?;
-    let c = active_credential()?;
-    d.repositories = catalog(&c)?;
-    d.catalog_error = None;
-    d.catalog_refresh_at = now() + 300;
-    save(app, &d)?;
     let all = policy["repositoryMode"].as_str() == Some("all");
     let selected = policy["repositories"]
         .as_array()
@@ -658,7 +746,7 @@ pub(crate) fn runtime_grants(
             "A selected repository is no longer authorized by GitHub. Update the selection.".into(),
         );
     }
-    let mut groups = std::collections::BTreeMap::<u64, (String, Vec<u64>, Vec<u64>)>::new();
+    let mut groups = std::collections::BTreeMap::<u64, GrantScope>::new();
     for repo in &d.repositories {
         let selection = selected.iter().find(|s| s["repository"] == repo["name"]);
         if !all && selection.is_none() {
@@ -672,59 +760,242 @@ pub(crate) fn runtime_grants(
             .ok_or("Invalid GitHub repository identifier.")?;
         let login = repo["name"]
             .as_str()
-            .and_then(|n| n.split('/').next())
-            .ok_or("Invalid GitHub repository name.")?;
-        let group = groups
-            .entry(owner)
-            .or_insert_with(|| (login.to_string(), vec![], vec![]));
-        group.1.push(id);
+            .and_then(|s| s.split('/').next())
+            .ok_or("Invalid repository name.")?;
+        let group = groups.entry(owner).or_insert_with(|| GrantScope {
+            owner,
+            login: login.into(),
+            ids: vec![],
+            writes: vec![],
+            all,
+        });
+        group.ids.push(id);
         if if all {
-            policy["allRepositoriesAllowChanges"].as_bool() == Some(true)
+            policy["allRepositoriesAllowChanges"] == true
         } else {
-            selection.is_some_and(|s| s["allowPushes"].as_bool() == Some(true))
+            selection.is_some_and(|s| s["allowPushes"] == true)
         } {
-            group.2.push(id)
+            group.writes.push(id);
         }
     }
-    let mut grants = Vec::new();
-    for (owner, (login, read_ids, write_ids)) in groups {
-        let read = service(
-            "/v1/tokens/scope",
-            json!({"accessToken":c.access_token,"ownerId":owner,"repositoryIds":if all {vec![]} else {read_ids.clone()},"allRepositories":all,"allowChanges":false}),
-        )?;
-        let read_token = read["accessToken"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .ok_or("GitHub returned no restricted read credential.")?
-            .to_string();
-        let mut expiry = token_expiry(&read)?;
-        let write_token = if write_ids.is_empty() {
-            None
-        } else {
-            let response = service(
-                "/v1/tokens/scope",
-                json!({"accessToken":c.access_token,"ownerId":owner,"repositoryIds":if all {vec![]} else {write_ids.clone()},"allRepositories":all,"allowChanges":true}),
-            )?;
-            expiry = expiry.min(token_expiry(&response)?);
-            Some(
-                response["accessToken"]
+    for group in groups.values_mut() {
+        group.ids.sort_unstable();
+        group.ids.dedup();
+        group.writes.sort_unstable();
+        group.writes.dedup();
+    }
+    Ok(groups.into_values().collect())
+}
+fn read_matches(g: &RuntimeGrant, s: &GrantScope) -> bool {
+    g.owner_id == s.owner
+        && g.all_repositories == s.all
+        && (s.all || g.repository_ids == s.ids)
+        && g.read_expires_at > now() + 120
+        && !g.read_token.is_empty()
+}
+fn write_matches(g: &RuntimeGrant, s: &GrantScope) -> bool {
+    g.owner_id == s.owner
+        && g.all_repositories == s.all
+        && (s.all || g.write_repository_ids == s.writes)
+        && g.write_expires_at > now() + 120
+        && g.write_token.is_some()
+}
+fn runtime_grants_for(
+    app: &tauri::AppHandle,
+    d: &Document,
+    policy: &Value,
+    previous: &[RuntimeGrant],
+) -> Result<Vec<RuntimeGrant>, String> {
+    if !d.access_enabled || d.account.is_none() {
+        return Ok(Vec::new());
+    }
+    let desired = scopes(d, policy)?;
+    let mut credential = None;
+    reconcile_grants(
+        &desired,
+        previous,
+        |scope, write| {
+            if credential.is_none() {
+                credential = Some(active_credential()?);
+            }
+            mint(
+                app,
+                policy["workspace"]
                     .as_str()
-                    .filter(|s| !s.is_empty())
-                    .ok_or("GitHub returned no restricted write credential.")?
-                    .to_string(),
+                    .ok_or("Invalid sandbox policy.")?,
+                credential.as_ref().ok_or("Connect GitHub first.")?,
+                scope,
+                write,
             )
+        },
+        || load(app).is_ok_and(|current| current.revision == d.revision),
+    )
+}
+fn reconcile_grants(
+    desired: &[GrantScope],
+    previous: &[RuntimeGrant],
+    mut issue: impl FnMut(&GrantScope, bool) -> Result<(String, u64), String>,
+    current: impl Fn() -> bool,
+) -> Result<Vec<RuntimeGrant>, String> {
+    let mut grants = Vec::new();
+    for s in desired {
+        if !current() {
+            return Err("GitHub access changed. Applying your latest choices.".into());
+        }
+        let prior = previous.iter().find(|g| g.owner_id == s.owner);
+        let (read_token, read_expiry) = if let Some(g) = prior.filter(|g| read_matches(g, s)) {
+            (g.read_token.clone(), g.read_expires_at)
+        } else {
+            issue(s, false)?
+        };
+        if !current() {
+            return Err("GitHub access changed. Applying your latest choices.".into());
+        }
+        let (write_token, write_expiry) = if s.writes.is_empty() {
+            (None, u64::MAX)
+        } else if let Some(g) = prior.filter(|g| write_matches(g, s)) {
+            (g.write_token.clone(), g.write_expires_at)
+        } else {
+            let (token, expiry) = issue(s, true)?;
+            (Some(token), expiry)
         };
         grants.push(RuntimeGrant {
-            owner_id: owner,
-            owner_login: login,
-            repository_ids: read_ids,
+            owner_id: s.owner,
+            owner_login: s.login.clone(),
+            repository_ids: s.ids.clone(),
             read_token,
             write_token,
-            write_repository_ids: write_ids,
-            expires_at: expiry,
+            write_repository_ids: s.writes.clone(),
+            expires_at: read_expiry.min(write_expiry),
+            read_expires_at: read_expiry,
+            write_expires_at: write_expiry,
+            all_repositories: s.all,
         });
     }
     Ok(grants)
+}
+
+fn mint(
+    app: &tauri::AppHandle,
+    workspace: &str,
+    c: &Credential,
+    s: &GrantScope,
+    write: bool,
+) -> Result<(String, u64), String> {
+    let key = active_key(app, workspace)?;
+    if let Some(token) = issued()
+        .lock()
+        .map_err(|_| "GitHub state is unavailable.")?
+        .get(&key)
+        .and_then(|tokens| tokens.iter().find(|token| issued_matches(token, s, write)))
+        .cloned()
+    {
+        return Ok((token.token, token.expires_at));
+    }
+    let response = service(
+        "/v1/tokens/scope",
+        json!({"accessToken":c.access_token,"ownerId":s.owner,"repositoryIds":if s.all{vec![]}else if write{s.writes.clone()}else{s.ids.clone()},"allRepositories":s.all,"allowChanges":write}),
+    )?;
+    let token = response["accessToken"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("GitHub returned no restricted credential.")?
+        .to_owned();
+    if let Err(error) = remember_token(app, workspace, &token) {
+        let _ = service("/v1/tokens/revoke", json!({"accessToken":token}));
+        return Err(error);
+    }
+    let expiry = token_expiry(&response)?;
+    issued()
+        .lock()
+        .map_err(|_| "GitHub state is unavailable.")?
+        .entry(key)
+        .or_default()
+        .push(IssuedToken {
+            owner: s.owner,
+            all: s.all,
+            write,
+            ids: if write {
+                s.writes.clone()
+            } else {
+                s.ids.clone()
+            },
+            token: token.clone(),
+            expires_at: expiry,
+        });
+    Ok((token, expiry))
+}
+// Dropping an entire affected token is necessary: its GitHub scope cannot be
+// narrowed locally by changing routing hints, especially for GraphQL requests.
+fn narrow(grants: &[RuntimeGrant], desired: &[GrantScope]) -> Vec<RuntimeGrant> {
+    grants
+        .iter()
+        .filter_map(|g| {
+            let s = desired.iter().find(|s| s.owner == g.owner_id)?;
+            let read_safe = (!g.all_repositories || s.all)
+                && (s.all || g.repository_ids.iter().all(|id| s.ids.contains(id)));
+            let mut retained = g.clone();
+            if !read_safe {
+                retained.read_token.clear();
+                retained.repository_ids.clear();
+                retained.read_expires_at = 0;
+            }
+            let write_safe = (!g.all_repositories || s.all)
+                && (if s.all {
+                    !s.writes.is_empty()
+                } else {
+                    g.write_repository_ids
+                        .iter()
+                        .all(|id| s.writes.contains(id))
+                });
+            if !write_safe {
+                retained.write_token = None;
+                retained.write_repository_ids.clear();
+                retained.write_expires_at = u64::MAX;
+                retained.expires_at = retained.read_expires_at;
+            }
+            Some(retained)
+        })
+        .collect()
+}
+fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
+    let prefix = format!("{}:", path(app)?.display());
+    if d.session != session() && d.grants_issued {
+        for w in &d.workspaces {
+            if let Some(name) = w["workspace"].as_str() {
+                if !active()
+                    .lock()
+                    .map_err(|_| "GitHub state is unavailable.")?
+                    .contains_key(&active_key(app, name)?)
+                {
+                    crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[]))?;
+                }
+            }
+        }
+    }
+    let cached = active()
+        .lock()
+        .map_err(|_| "GitHub state is unavailable.")?
+        .clone();
+    for (key, previous) in cached.iter().filter(|(key, _)| key.starts_with(&prefix)) {
+        let name = &key[prefix.len()..];
+        let desired = d
+            .workspaces
+            .iter()
+            .find(|w| w["workspace"].as_str() == Some(name))
+            .map(|w| scopes(d, w))
+            .transpose()?
+            .unwrap_or_default();
+        let retained = narrow(previous, &desired);
+        if retained != *previous {
+            crate::runtime::apply_github_policy(app, name, d.revision, &profile(&retained))?;
+            active()
+                .lock()
+                .map_err(|_| "GitHub state is unavailable.")?
+                .insert(key.clone(), retained);
+        }
+    }
+    Ok(())
 }
 
 /// Explicit host Push only: does not grant write access to the guest or modify its policy.
@@ -896,8 +1167,7 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
         json!({"code":code,"codeVerifier":verifier,"redirectUri":redirect}),
     )?)?;
     let user = github(&c.access_token, "/user")?;
-    let mut d = load(app)?;
-    d.account = Some(
+    let account = Some(
         user["login"]
             .as_str()
             .ok_or("GitHub account name is missing.")?
@@ -926,16 +1196,42 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
             }
         }
     }
-    d.repositories = repos;
-    d.catalog_error = None;
-    d.catalog_refresh_at = now() + 300;
     if CANCELLATION.load(Ordering::SeqCst) != generation {
         return Err("GitHub connection cancelled.".into());
     }
-    store(&c)?;
-    d.revision += 1;
-    save(app, &d)?;
-    apply(app, &mut d, None, false)?;
+    {
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        if CANCELLATION.load(Ordering::SeqCst) != generation {
+            return Err("GitHub connection cancelled.".into());
+        }
+        let mut d = load(app)?;
+        // Reconnecting creates a new account authorization. Never reuse old
+        // grants, even if the account name and repository choices are identical.
+        let prefix = format!("{}:", path(app)?.display());
+        for w in &d.workspaces {
+            if let Some(name) = w["workspace"].as_str() {
+                crate::runtime::apply_github_policy(app, name, d.revision + 1, &profile(&[]))?;
+            }
+        }
+        active()
+            .lock()
+            .map_err(|_| "GitHub state is unavailable.")?
+            .retain(|key, _| !key.starts_with(&prefix));
+        issued()
+            .lock()
+            .map_err(|_| "GitHub state is unavailable.")?
+            .retain(|key, _| !key.starts_with(&prefix));
+        store(&c)?;
+        d.disconnect_pending = false;
+        d.account = account;
+        d.repositories = repos;
+        d.catalog_error = None;
+        d.catalog_refresh_at = now() + 300;
+        d.revision += 1;
+        mark_pending(&mut d);
+        save(app, &d)?;
+    }
+    schedule(Duration::from_millis(500));
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -954,44 +1250,151 @@ fn catalog_refresh_due(d: &Document, now: u64) -> bool {
 
 /// Re-establish host-only grants after relaunch and renew them before expiry.
 pub fn install(app: &tauri::AppHandle) {
+    if let Ok(document) = load(app) {
+        crate::github_http::restore_retry_floor(document.rate_retry_at);
+    }
     let app = app.clone();
     std::thread::spawn(move || loop {
-        if let Ok(_guard) = OPERATION.try_lock() {
-            if let Ok(mut d) = load(&app) {
-                // Account renewal also works before the user creates their first sandbox.
-                if d.account.is_some()
-                    && credential().is_ok_and(|c| c.is_some_and(|c| c.expires_at <= now() + 120))
-                {
-                    if let Err(message) = active_credential() {
-                        d.catalog_error = Some(message);
-                        let _ = save(&app, &d);
+        let pending_deadline = PENDING
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .ok()
+            .and_then(|p| *p);
+        let pending_due = pending_deadline.is_some_and(|time| Instant::now() >= time);
+        if let Ok(_network) = OPERATION.try_lock() {
+            let observed = {
+                let _state = STATE.lock().ok();
+                load(&app)
+            };
+            if let Ok(mut d) = observed {
+                let due = worker_due(&d, pending_deadline, now(), Instant::now());
+                if due {
+                    if pending_due {
+                        if let Ok(mut pending) = PENDING.get_or_init(|| Mutex::new(None)).lock() {
+                            *pending = None;
+                        }
                     }
-                }
-                // All repositories includes newly authorized owners as well as new repos.
-                // Refresh the catalog independently of token expiry; unchanged catalogs do not interrupt connections.
-                if catalog_refresh_due(&d, now()) && credential().is_ok_and(|c| c.is_some()) {
-                    match active_credential().and_then(|c| catalog(&c)) {
-                        Ok(repositories) => {
-                            if d.repositories != repositories {
-                                d.refresh_at = 0;
+                    // Refresh account/catalog independently. Never overwrite a newer desired document.
+                    if !d.disconnect_pending
+                        && d.account.is_some()
+                        && credential()
+                            .is_ok_and(|c| c.is_some_and(|c| c.expires_at <= now() + 120))
+                    {
+                        if let Err(message) = active_credential() {
+                            if let Ok(_state) = STATE.lock() {
+                                if let Ok(mut current) = load(&app) {
+                                    current.catalog_error = Some(message);
+                                    let _ = save(&app, &current);
+                                }
                             }
-                            d.repositories = repositories;
-                            d.catalog_error = None;
-                            d.catalog_refresh_at = now() + 300;
-                        }
-                        Err(message) => {
-                            d.catalog_error = Some(message);
-                            d.catalog_refresh_at = now() + 60;
                         }
                     }
-                    let _ = save(&app, &d);
-                }
-                if !d.workspaces.is_empty() && (d.session != session() || now() >= d.refresh_at) {
+                    if catalog_refresh_due(&d, now()) && credential().is_ok_and(|c| c.is_some()) {
+                        let result = active_credential().and_then(|c| catalog(&c));
+                        if let Ok(_state) = STATE.lock() {
+                            if let Ok(mut current) = load(&app) {
+                                match result {
+                                    Ok(repos) => {
+                                        if current.repositories != repos {
+                                            current.access_pending = current
+                                                .workspaces
+                                                .iter()
+                                                .filter_map(|w| {
+                                                    w["workspace"].as_str().map(str::to_owned)
+                                                })
+                                                .collect();
+                                        }
+                                        current.repositories = repos;
+                                        current.catalog_error = None;
+                                        current.catalog_refresh_at = now() + 300;
+                                    }
+                                    Err(message) => {
+                                        current.catalog_error = Some(message);
+                                        current.catalog_refresh_at =
+                                            crate::github_http::retry_at().max(now() + 30);
+                                    }
+                                }
+                                // A catalog can remove authority too; narrow before doing network work.
+                                if let Err(message) = narrow_now(&app, &mut current) {
+                                    current.catalog_error = Some(message);
+                                }
+                                let _ = save(&app, &current);
+                                d = current;
+                            }
+                        }
+                    }
+                    if d.disconnect_pending {
+                        let result = credential().and_then(|c| {
+                            c.map_or(Ok(()), |c| {
+                                service("/v1/oauth/revoke", json!({"accessToken":c.access_token}))
+                                    .map(|_| ())
+                            })
+                        });
+                        if let Ok(_state) = STATE.lock() {
+                            if let Ok(mut current) = load(&app) {
+                                match result {
+                                    Ok(()) => match delete_account_credential() {
+                                        Ok(()) => {
+                                            current.disconnect_pending = false;
+                                            current.account = None;
+                                            current.repositories.clear();
+                                            current.catalog_error = None;
+                                        }
+                                        Err(error) => {
+                                            current.catalog_error = Some(error);
+                                        }
+                                    },
+                                    Err(message) => {
+                                        current.catalog_error = Some(message);
+                                    }
+                                }
+                                let _ = save(&app, &current);
+                                d = current;
+                            }
+                        }
+                    }
                     let _ = apply(&app, &mut d, None, false);
+                    // Removed sandboxes still have a durable retirement ledger.
+                    if let Ok(ledger) = ledger_entry().and_then(|entry| read_ledger(&entry)) {
+                        for name in ledger.keys() {
+                            if !d
+                                .workspaces
+                                .iter()
+                                .any(|w| w["workspace"].as_str() == Some(name))
+                            {
+                                let _ = retire_unused(&app, name);
+                            }
+                        }
+                    }
+                    if let Ok(_state) = STATE.lock() {
+                        if let Ok(mut current) = load(&app) {
+                            current.session = session().into();
+                            if current.workspaces.is_empty() {
+                                current.refresh_at = now() + 3600;
+                            }
+                            let retry = crate::github_http::retry_at();
+                            if retry > 0 {
+                                current.refresh_at = current.refresh_at.min(retry.max(now() + 1));
+                            }
+                            if current.disconnect_pending {
+                                current.refresh_at = current.refresh_at.min(if retry > 0 {
+                                    retry.max(now() + 1)
+                                } else {
+                                    now() + 300
+                                });
+                            }
+                            if let Ok(Some(c)) = credential() {
+                                current.refresh_at = current
+                                    .refresh_at
+                                    .min(c.expires_at.saturating_sub(120).max(now() + 30));
+                            }
+                            let _ = save(&app, &current);
+                        }
+                    }
                 }
             }
         }
-        std::thread::sleep(Duration::from_secs(30));
+        std::thread::sleep(Duration::from_millis(100));
     });
 }
 
@@ -1018,96 +1421,187 @@ pub async fn connect_github(app: tauri::AppHandle) -> Result<Value, String> {
 }
 #[tauri::command]
 pub async fn refresh_github_repositories(app: tauri::AppHandle) -> Result<Value, String> {
+    crate::github_http::reset_retries();
     run(app, |app| {
-        let c = active_credential()?;
+        let result = active_credential().and_then(|c| catalog(&c));
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(app)?;
-        match catalog(&c) {
+        match result {
             Ok(repos) => {
+                if d.repositories != repos {
+                    mark_pending(&mut d);
+                }
                 d.repositories = repos;
                 d.catalog_error = None;
+                d.catalog_refresh_at = now() + 300;
             }
             Err(message) => {
                 d.catalog_error = Some(message);
-                save(app, &d)?;
-                return snapshot(app);
             }
         }
+        if let Err(message) = narrow_now(app, &mut d) {
+            d.catalog_error = Some(message);
+        }
         save(app, &d)?;
-        apply(app, &mut d, None, false)?;
+        schedule(Duration::from_millis(500));
         snapshot(app)
     })
     .await
 }
 #[tauri::command]
 pub async fn disconnect_github(app: tauri::AppHandle) -> Result<Value, String> {
+    let ticket = INTENTS.ticket();
     CANCELLATION.fetch_add(1, Ordering::SeqCst);
-    run(app, |app| {
-        let mut d = load(app)?;
-        d.access_enabled = false;
-        d.revision += 1;
-        save(app, &d)?;
-        apply(app, &mut d, None, false)?;
-        if let Some(c) = credential()? {
-            service("/v1/oauth/revoke", json!({"accessToken":c.access_token}))?;
-            entry()?
-                .delete_credential()
-                .map_err(|_| "Cannot remove GitHub credentials from the system credential store.")?
-        };
-        d.account = None;
-        d.repositories.clear();
-        save(app, &d)?;
-        snapshot(app)
-    })
-    .await
-}
-#[tauri::command]
-pub async fn set_github_access_enabled(
-    app: tauri::AppHandle,
-    enabled: bool,
-) -> Result<Value, String> {
-    if !enabled {
-        CANCELLATION.fetch_add(1, Ordering::SeqCst);
-    }
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+        let _turn = INTENTS.wait(ticket)?;
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
-        d.access_enabled = enabled;
+        d.access_enabled = false;
+        d.disconnect_pending = true;
         d.revision += 1;
+        mark_pending(&mut d);
         save(&app, &d)?;
-        apply(&app, &mut d, None, false)?;
+        let result = narrow_now(&app, &mut d);
+        schedule(Duration::ZERO);
+        result?;
         snapshot(&app)
     })
     .await
     .map_err(|_| "GitHub operation failed.")?
 }
 #[tauri::command]
+pub async fn set_github_access_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<Value, String> {
+    let ticket = INTENTS.ticket();
+    if !enabled {
+        CANCELLATION.fetch_add(1, Ordering::SeqCst);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _turn = INTENTS.wait(ticket)?;
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let mut d = load(&app)?;
+        if d.access_enabled == enabled {
+            return snapshot(&app);
+        }
+        d.access_enabled = enabled;
+        d.revision += 1;
+        mark_pending(&mut d);
+        save(&app, &d)?;
+        let result = narrow_now(&app, &mut d);
+        schedule(Duration::from_millis(500));
+        result?;
+        snapshot(&app)
+    })
+    .await
+    .map_err(|_| "GitHub operation failed.")?
+}
+fn access_choice(policy: &Value) -> Value {
+    let all = policy["repositoryMode"] == "all";
+    let mut repos = policy["repositories"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    repos.sort_by(|a, b| a["repository"].as_str().cmp(&b["repository"].as_str()));
+    if all {
+        json!({"all":true,"changes":policy["allRepositoriesAllowChanges"]})
+    } else {
+        json!({"all":false,"repositories":repos})
+    }
+}
+fn mark_pending_for(d: &mut Document, names: &[String]) {
+    for name in names {
+        d.operations
+            .retain(|op| op["workspace"].as_str() != Some(name));
+        d.operations.push(
+            json!({"workspace":name,"status":"applying","message":"Applying GitHub settings."}),
+        );
+    }
+}
+fn mark_pending(d: &mut Document) {
+    d.access_pending = d
+        .workspaces
+        .iter()
+        .filter_map(|w| w["workspace"].as_str().map(str::to_owned))
+        .collect();
+    mark_pending_for(d, &d.access_pending.clone());
+}
+#[tauri::command]
 pub async fn save_github_configuration(
     app: tauri::AppHandle,
     configuration: Value,
 ) -> Result<Value, String> {
-    CANCELLATION.fetch_add(1, Ordering::SeqCst);
+    let ws = configuration["workspaces"]
+        .as_array()
+        .ok_or("Missing sandbox policies.")?;
+    validate(ws)?;
+    configuration["accessEnabled"]
+        .as_bool()
+        .ok_or("Missing GitHub access choice.")?;
+    let ticket = INTENTS.ticket();
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
         let ws = configuration["workspaces"]
             .as_array()
             .ok_or("Missing sandbox policies.")?;
         validate(ws)?;
+        let enabled = configuration["accessEnabled"]
+            .as_bool()
+            .ok_or("Missing GitHub access choice.")?;
+        let _turn = INTENTS.wait(ticket)?;
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
-        for previous in &d.workspaces {
-            let name = previous["workspace"]
-                .as_str()
-                .ok_or("Invalid saved sandbox policy.")?;
-            if !ws.iter().any(|w| w["workspace"].as_str() == Some(name)) {
-                retire_previous(&app, name, d.revision + 1)?;
+        if d.workspaces == *ws && d.access_enabled == enabled {
+            return snapshot(&app);
+        }
+        CANCELLATION.fetch_add(1, Ordering::SeqCst);
+        let mut access_changed = d.access_pending.clone();
+        for w in ws {
+            let previous = d
+                .workspaces
+                .iter()
+                .find(|old| old["workspace"] == w["workspace"]);
+            if d.access_enabled != enabled
+                || previous.is_none_or(|old| access_choice(old) != access_choice(w))
+            {
+                if let Some(name) = w["workspace"].as_str() {
+                    if !access_changed.iter().any(|n| n == name) {
+                        access_changed.push(name.into());
+                    }
+                }
+            }
+            if previous.is_none_or(|old| old["identity"] != w["identity"]) {
+                let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
+                if !d.identity_pending.iter().any(|n| n == name) {
+                    d.identity_pending.push(name.into());
+                }
             }
         }
         d.workspaces = ws.clone();
-        d.access_enabled = configuration["accessEnabled"]
-            .as_bool()
-            .ok_or("Missing GitHub access choice.")?;
+        d.access_enabled = enabled;
         d.revision += 1;
+        let mut changed = access_changed.clone();
+        changed.extend(d.identity_pending.iter().cloned());
+        changed.sort();
+        changed.dedup();
+        mark_pending_for(&mut d, &changed);
+        d.access_pending = access_changed;
+        // Persist first so a worker completing concurrently cannot publish old choices.
         save(&app, &d)?;
-        apply(&app, &mut d, None, true)?;
+        let result = narrow_now(&app, &mut d);
+        schedule(Duration::from_millis(500));
+        if let Err(message) = result {
+            for op in d.operations.iter_mut().filter(|op| {
+                op["workspace"]
+                    .as_str()
+                    .is_some_and(|name| changed.iter().any(|changed| changed == name))
+            }) {
+                op["status"] = json!("failed");
+                op["message"] = json!(&message);
+                op["canRetry"] = json!(true);
+            }
+            save(&app, &d)?;
+        }
         snapshot(&app)
     })
     .await
@@ -1118,10 +1612,28 @@ pub async fn retry_github_configuration(
     app: tauri::AppHandle,
     workspace: Option<String>,
 ) -> Result<Value, String> {
+    let ticket = INTENTS.ticket();
+    crate::github_http::reset_retries();
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+        let _turn = INTENTS.wait(ticket)?;
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
-        apply(&app, &mut d, workspace.as_deref(), true)?;
+        for w in &d.workspaces {
+            if let Some(name) = w["workspace"].as_str() {
+                if workspace.as_deref().is_none_or(|target| target == name)
+                    && d.identity_errors.contains_key(name)
+                    && !d.identity_pending.iter().any(|n| n == name)
+                {
+                    d.identity_pending.push(name.into());
+                }
+            }
+        }
+        mark_pending(&mut d);
+        if let Some(target) = &workspace {
+            d.access_pending.retain(|name| name == target);
+        }
+        save(&app, &d)?;
+        schedule(Duration::ZERO);
         snapshot(&app)
     })
     .await
@@ -1131,6 +1643,244 @@ pub async fn retry_github_configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_scope() -> GrantScope {
+        GrantScope {
+            owner: 1,
+            login: "owner".into(),
+            ids: vec![1, 2, 3],
+            writes: vec![2],
+            all: false,
+        }
+    }
+    fn test_grant() -> RuntimeGrant {
+        RuntimeGrant {
+            owner_id: 1,
+            owner_login: "owner".into(),
+            repository_ids: vec![1, 2, 3],
+            read_token: "read".into(),
+            write_token: Some("write".into()),
+            write_repository_ids: vec![2],
+            expires_at: now() + 1000,
+            read_expires_at: now() + 1000,
+            write_expires_at: now() + 1000,
+            all_repositories: false,
+        }
+    }
+    #[test]
+    fn rapid_edits_delay_network_until_latest_half_second_deadline() {
+        let d = Document {
+            session: session().into(),
+            refresh_at: 0,
+            ..Default::default()
+        };
+        let first = Instant::now();
+        let latest = first + Duration::from_millis(400);
+        assert!(!worker_due(
+            &d,
+            Some(latest + Duration::from_millis(500)),
+            100,
+            first + Duration::from_millis(500)
+        ));
+        assert!(worker_due(
+            &d,
+            Some(latest + Duration::from_millis(500)),
+            100,
+            first + Duration::from_millis(900)
+        ));
+    }
+    #[test]
+    fn identity_only_edit_does_not_request_access_or_postpone_renewal() {
+        let d = Document {
+            session: session().into(),
+            refresh_at: 160,
+            identity_pending: vec!["dev".into()],
+            ..Default::default()
+        };
+        assert!(!access_update_due(&d, "dev", 100));
+        assert!(access_update_due(&d, "dev", 160));
+        assert_eq!(d.refresh_at, 160);
+    }
+    #[test]
+    fn repository_catalog_has_independent_refresh_deadline() {
+        let d = Document {
+            session: session().into(),
+            access_enabled: true,
+            refresh_at: 3600,
+            catalog_refresh_at: 300,
+            workspaces: vec![json!({"repositoryMode":"all"})],
+            ..Default::default()
+        };
+        assert!(!worker_due(&d, None, 299, Instant::now()));
+        assert!(worker_due(&d, None, 300, Instant::now()));
+    }
+    #[test]
+    fn local_edits_preserve_submission_order_without_holding_network_lock() {
+        let queue = std::sync::Arc::new(IntentQueue::new());
+        let first = queue.ticket();
+        let second = queue.ticket();
+        let first_turn = queue.wait(first).unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let other = queue.clone();
+        let worker = std::thread::spawn(move || {
+            let _turn = other.wait(second).unwrap();
+            sent.send("second applied").unwrap();
+        });
+        assert!(received.try_recv().is_err());
+        drop(first_turn);
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "second applied"
+        );
+        worker.join().unwrap();
+    }
+    #[test]
+    fn unchanged_scopes_do_not_issue_or_refresh_credentials() {
+        let grants = reconcile_grants(
+            &[test_scope()],
+            &[test_grant()],
+            |_, _| panic!("unchanged scope made a network call"),
+            || true,
+        )
+        .unwrap();
+        assert_eq!(grants[0].read_token, "read");
+        assert_eq!(grants[0].write_token.as_deref(), Some("write"));
+    }
+    #[test]
+    fn adding_read_repository_only_replaces_read_group() {
+        let mut scope = test_scope();
+        scope.ids.push(4);
+        let mut calls = Vec::new();
+        let grants = reconcile_grants(
+            &[scope],
+            &[test_grant()],
+            |s, write| {
+                calls.push((s.owner, write));
+                Ok(("new-read".into(), now() + 1000))
+            },
+            || true,
+        )
+        .unwrap();
+        assert_eq!(calls, vec![(1, false)]);
+        assert_eq!(grants[0].write_token.as_deref(), Some("write"));
+    }
+    #[test]
+    fn removing_read_repository_detaches_old_read_but_reuses_safe_write() {
+        let mut scope = test_scope();
+        scope.ids = vec![1, 2];
+        let old = test_grant();
+        let retained = narrow(&[old], &[scope.clone()]);
+        assert!(profile(&retained)["owners"].as_array().unwrap().is_empty());
+        assert_eq!(retained[0].write_token.as_deref(), Some("write"));
+        let mut calls = vec![];
+        let grants = reconcile_grants(
+            &[scope],
+            &retained,
+            |_, write| {
+                calls.push(write);
+                Ok(("narrow-read".into(), now() + 1000))
+            },
+            || true,
+        )
+        .unwrap();
+        assert_eq!(calls, vec![false]);
+        assert_eq!(grants[0].write_token.as_deref(), Some("write"));
+    }
+    #[test]
+    fn disabling_writes_detaches_write_without_reminting_read() {
+        let mut scope = test_scope();
+        scope.writes.clear();
+        let retained = narrow(&[test_grant()], &[scope.clone()]);
+        assert_eq!(retained[0].write_token, None);
+        let grants = reconcile_grants(
+            &[scope],
+            &retained,
+            |_, _| panic!("write removal minted a token"),
+            || true,
+        )
+        .unwrap();
+        assert_eq!(grants[0].read_token, "read");
+        assert_eq!(grants[0].write_token, None);
+    }
+    #[test]
+    fn obsolete_read_result_never_causes_write_issuance() {
+        let current = std::cell::Cell::new(true);
+        let mut calls = 0;
+        let result = reconcile_grants(
+            &[test_scope()],
+            &[],
+            |_, write| {
+                assert!(!write);
+                calls += 1;
+                current.set(false);
+                Ok(("read".into(), now() + 1000))
+            },
+            || current.get(),
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+    #[test]
+    fn all_to_selected_never_reuses_all_repository_tokens() {
+        let mut old = test_grant();
+        old.all_repositories = true;
+        let retained = narrow(&[old], &[test_scope()]);
+        assert!(retained[0].read_token.is_empty());
+        assert!(retained[0].write_token.is_none());
+        let mut calls = vec![];
+        reconcile_grants(
+            &[test_scope()],
+            &retained,
+            |_, write| {
+                calls.push(write);
+                Ok(("new".into(), now() + 1000))
+            },
+            || true,
+        )
+        .unwrap();
+        assert_eq!(calls, vec![false, true]);
+    }
+    #[test]
+    fn unrelated_owner_and_vm_status_stays_unchanged() {
+        let mut d = Document {
+            operations: vec![
+                json!({"workspace":"dev","status":"succeeded"}),
+                json!({"workspace":"other","status":"succeeded"}),
+            ],
+            ..Default::default()
+        };
+        mark_pending_for(&mut d, &["dev".into()]);
+        assert_eq!(
+            d.operations
+                .iter()
+                .find(|op| op["workspace"] == "other")
+                .unwrap()["status"],
+            "succeeded"
+        );
+    }
+    #[test]
+    fn identity_and_inactive_selection_changes_do_not_change_access_choice() {
+        let mut first = json!({"repositoryMode":"all","allRepositoriesAllowChanges":false,"repositories":[],"identity":{"name":"Old"}});
+        let choice = access_choice(&first);
+        first["identity"] = json!({"name":"New"});
+        first["repositories"] = json!([{"repository":"owner/other","allowPushes":true}]);
+        assert_eq!(access_choice(&first), choice);
+    }
+    #[test]
+    fn partially_issued_read_is_reusable_only_for_its_exact_scope() {
+        let token = IssuedToken {
+            owner: 1,
+            all: false,
+            write: false,
+            ids: vec![1, 2, 3],
+            token: "temporary".into(),
+            expires_at: now() + 1000,
+        };
+        assert!(issued_matches(&token, &test_scope(), false));
+        assert!(!issued_matches(&token, &test_scope(), true));
+        let mut other = test_scope();
+        other.ids.push(4);
+        assert!(!issued_matches(&token, &other, false));
+    }
     #[test]
     fn background_grant_refresh_never_writes_git_identity() {
         let (result, _) = finish_application(Ok(()), false, None, || {
