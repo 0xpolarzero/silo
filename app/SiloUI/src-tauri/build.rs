@@ -1,6 +1,6 @@
 fn main() {
     for key in [
-        "SILO_GITHUB_SERVICE_URL",
+        "SILO_GITHUB_CLIENT_SECRET",
         "SILO_GITHUB_CLIENT_ID",
         "SILO_GITHUB_APP_SLUG",
     ] {

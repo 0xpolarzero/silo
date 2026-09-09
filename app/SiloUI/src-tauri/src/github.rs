@@ -1,4 +1,5 @@
 //! Host-only GitHub account and durable desired policy. No credential is exposed by a command.
+use crate::github_tokens::{Configuration, Operation};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -17,7 +18,7 @@ use std::{
 use tauri::{Emitter, Manager};
 
 static OPERATION: Mutex<()> = Mutex::new(());
-// Never hold this lock during a GitHub/service request. It orders desired saves
+// Never hold this lock during a GitHub request. It orders desired saves
 // and local profile attachment so an older network result cannot restore access.
 static STATE: Mutex<()> = Mutex::new(());
 static ACTIVE: OnceLock<Mutex<std::collections::HashMap<String, Vec<RuntimeGrant>>>> =
@@ -116,11 +117,11 @@ impl Drop for Connecting {
         let _ = self.0.emit("silo://application-state-changed", ());
     }
 }
-const SERVICE: Option<&str> = option_env!("SILO_GITHUB_SERVICE_URL");
+const CLIENT_SECRET: Option<&str> = option_env!("SILO_GITHUB_CLIENT_SECRET");
 const CLIENT_ID: Option<&str> = option_env!("SILO_GITHUB_CLIENT_ID");
 const APP_SLUG: Option<&str> = option_env!("SILO_GITHUB_APP_SLUG");
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Credential {
     access_token: String,
@@ -170,7 +171,12 @@ fn now() -> u64 {
 }
 fn delete_account_credential() -> Result<(), String> {
     match entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(keyring::Error::NoEntry) => {
+            *PENDING_REFRESH
+                .lock()
+                .map_err(|_| "GitHub credential state is unavailable.")? = None;
+            Ok(())
+        }
         Err(_) => Err("Cannot remove GitHub credentials from the system credential store.".into()),
     }
 }
@@ -237,12 +243,20 @@ fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
     let _ = app.emit("silo://application-state-changed", ());
     Ok(())
 }
-fn service(route: &str, body: Value) -> Result<Value, String> {
-    crate::github_http::service(
-        SERVICE.ok_or("GitHub connection is not configured in this build.")?,
-        route,
-        body,
-    )
+fn token_configuration() -> Result<Configuration, String> {
+    Ok(Configuration {
+        client_id: CLIENT_ID
+            .filter(|v| !v.is_empty())
+            .ok_or("GitHub connection is not configured in this build.")?
+            .into(),
+        client_secret: CLIENT_SECRET
+            .filter(|v| !v.is_empty())
+            .ok_or("GitHub connection is not configured in this build.")?
+            .into(),
+    })
+}
+fn token_operation(operation: Operation, body: Value) -> Result<Value, String> {
+    crate::github_tokens::execute(&token_configuration()?, operation, body)
 }
 fn from_response(v: Value) -> Result<Credential, String> {
     let token = v["accessToken"]
@@ -262,21 +276,79 @@ fn from_response(v: Value) -> Result<Credential, String> {
             .ok_or("GitHub credential expiration overflow.")?,
     })
 }
-fn active_credential() -> Result<Credential, String> {
-    let c = credential()?.ok_or("Connect GitHub first.")?;
-    if c.expires_at > now() + 120 {
-        return Ok(c);
-    };
-    let refresh = c
-        .refresh_token
-        .ok_or("GitHub access expired. Reconnect GitHub.")?;
-    let renewed = from_response(service(
-        "/v1/oauth/refresh",
-        json!({"refreshToken":refresh}),
-    )?)?;
-    store(&renewed)?;
-    Ok(renewed)
+struct PendingRefresh {
+    previous_access: String,
+    renewed: Credential,
 }
+static PENDING_REFRESH: Mutex<Option<PendingRefresh>> = Mutex::new(None);
+
+fn revocation_credential() -> Result<Option<Credential>, String> {
+    let current = credential()?;
+    let pending = PENDING_REFRESH
+        .lock()
+        .map_err(|_| "GitHub credential state is unavailable.")?;
+    Ok(current.map(|current| {
+        pending
+            .as_ref()
+            .filter(|p| p.previous_access == current.access_token)
+            .map_or(current, |p| p.renewed.clone())
+    }))
+}
+
+fn active_credential() -> Result<Credential, String> {
+    let current = credential()?.ok_or("Connect GitHub first.")?;
+    let mut pending = PENDING_REFRESH
+        .lock()
+        .map_err(|_| "GitHub credential state is unavailable.")?;
+    refresh_credential_with(
+        current,
+        &mut pending,
+        now(),
+        |refresh| {
+            from_response(token_operation(
+                Operation::Refresh,
+                json!({"refreshToken":refresh}),
+            )?)
+        },
+        store,
+    )
+}
+
+fn refresh_credential_with(
+    current: Credential,
+    pending: &mut Option<PendingRefresh>,
+    at: u64,
+    renew: impl FnOnce(&str) -> Result<Credential, String>,
+    mut persist: impl FnMut(&Credential) -> Result<(), String>,
+) -> Result<Credential, String> {
+    if pending
+        .as_ref()
+        .is_some_and(|p| p.previous_access != current.access_token)
+    {
+        *pending = None;
+    }
+    if let Some(refresh) = pending.as_ref() {
+        // GitHub already rotated the credential. Retry secure storage only,
+        // never submit the consumed refresh token to GitHub a second time.
+        persist(&refresh.renewed)?;
+        return Ok(pending.take().unwrap().renewed);
+    }
+    if current.expires_at > at + 120 {
+        return Ok(current);
+    }
+    let token = current
+        .refresh_token
+        .as_deref()
+        .ok_or("GitHub access expired. Reconnect GitHub.")?;
+    let renewed = renew(token)?;
+    *pending = Some(PendingRefresh {
+        previous_access: current.access_token,
+        renewed,
+    });
+    persist(&pending.as_ref().unwrap().renewed)?;
+    Ok(pending.take().unwrap().renewed)
+}
+
 fn github(token: &str, path: &str) -> Result<Value, String> {
     crate::github_http::github(token, path)
 }
@@ -440,7 +512,7 @@ fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> 
             remaining.push(token);
             continue;
         }
-        match service("/v1/tokens/revoke", json!({"accessToken":token})) {
+        match token_operation(Operation::RevokeToken, json!({"accessToken":token})) {
             Ok(_) => {}
             Err(message) => {
                 failure = Some(message);
@@ -895,8 +967,8 @@ fn mint(
     {
         return Ok((token.token, token.expires_at));
     }
-    let response = service(
-        "/v1/tokens/scope",
+    let response = token_operation(
+        Operation::Scope,
         json!({"accessToken":c.access_token,"ownerId":s.owner,"repositoryIds":if s.all{vec![]}else if write{s.writes.clone()}else{s.ids.clone()},"allRepositories":s.all,"allowChanges":write}),
     )?;
     let token = response["accessToken"]
@@ -905,7 +977,7 @@ fn mint(
         .ok_or("GitHub returned no restricted credential.")?
         .to_owned();
     if let Err(error) = remember_token(app, workspace, &token) {
-        let _ = service("/v1/tokens/revoke", json!({"accessToken":token}));
+        let _ = token_operation(Operation::RevokeToken, json!({"accessToken":token}));
         return Err(error);
     }
     let expiry = token_expiry(&response)?;
@@ -1064,8 +1136,8 @@ pub(crate) fn host_push_credential(
     let id = repo["id"]
         .as_u64()
         .ok_or("Invalid repository identifier.")?;
-    let response = service(
-        "/v1/tokens/scope",
+    let response = token_operation(
+        Operation::Scope,
         json!({"accessToken":c.access_token,"ownerId":owner,"repositoryIds":[id],"allowChanges":true}),
     )?;
     token_expiry(&response)?;
@@ -1077,13 +1149,21 @@ pub(crate) fn host_push_credential(
 }
 
 fn callback(request: &str, state: &str) -> Result<Option<String>, String> {
-    let line = request.lines().next().ok_or("Invalid OAuth callback.")?;
+    let Some(line) = request.lines().next() else {
+        return Ok(None);
+    };
     let parts: Vec<_> = line.split_whitespace().collect();
-    if parts.len() != 3 || parts[0] != "GET" {
+    if parts.len() != 3
+        || parts[0] != "GET"
+        || !matches!(parts[2], "HTTP/1.0" | "HTTP/1.1")
+        || !parts[1].starts_with('/')
+        || parts[1].starts_with("//")
+    {
         return Ok(None);
     }
-    let url = reqwest::Url::parse(&format!("http://127.0.0.1{}", parts[1]))
-        .map_err(|_| "Invalid OAuth callback.")?;
+    let Ok(url) = reqwest::Url::parse(&format!("http://127.0.0.1{}", parts[1])) else {
+        return Ok(None);
+    };
     if url.path() != "/github/callback" {
         return Ok(None);
     };
@@ -1099,10 +1179,35 @@ fn callback(request: &str, state: &str) -> Result<Option<String>, String> {
     if pairs.iter().filter(|(k, _)| k == "code").count() != 1 {
         return Err("Invalid GitHub authorization response.".into());
     };
-    Ok(pairs
+    let code = pairs
         .iter()
         .find(|(k, _)| k == "code")
-        .map(|(_, v)| v.to_string()))
+        .map(|(_, v)| v.as_ref())
+        .unwrap_or_default();
+    if code.is_empty() || code.len() > 1024 || !code.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err("Invalid GitHub authorization response.".into());
+    }
+    Ok(Some(code.into()))
+}
+
+// An unauthenticated local connection is not an OAuth result. Read a complete,
+// bounded header before parsing it; ignore incomplete or malformed traffic.
+fn read_callback_request(reader: &mut impl Read) -> Option<String> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 1024];
+    while bytes.len() < 8192 && Instant::now() < deadline {
+        let remaining = (8192 - bytes.len()).min(chunk.len());
+        let length = reader.read(&mut chunk[..remaining]).ok()?;
+        if length == 0 {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk[..length]);
+        if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            return String::from_utf8(bytes[..end + 4].to_vec()).ok();
+        }
+    }
+    None
 }
 fn open_browser(url: &str) -> Result<(), String> {
     let opener = if cfg!(target_os = "macos") {
@@ -1126,8 +1231,8 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
     CONNECTING.store(true, Ordering::SeqCst);
     let _connecting = Connecting(app.clone());
     let _ = app.emit("silo://application-state-changed", ());
-    let client_id = CLIENT_ID.ok_or("GitHub connection is not configured in this build.")?;
-    SERVICE.ok_or("GitHub connection is not configured in this build.")?;
+    let configuration = token_configuration()?;
+    let client_id = &configuration.client_id;
     entry()?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|_| "Cannot start the GitHub callback listener.")?;
@@ -1171,9 +1276,9 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
         match listener.accept() {
             Ok((mut stream, _)) => {
                 stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
-                let mut bytes = [0; 8192];
-                let n = stream.read(&mut bytes).unwrap_or(0);
-                let result = callback(&String::from_utf8_lossy(&bytes[..n]), &state);
+                let result = read_callback_request(&mut stream)
+                    .map(|request| callback(&request, &state))
+                    .unwrap_or(Ok(None));
                 let valid = matches!(&result, Ok(Some(_)));
                 let text = if valid {
                     "GitHub authorization received. Return to Silo."
@@ -1191,8 +1296,8 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
             Err(_) => return Err("GitHub callback listener failed.".into()),
         }
     };
-    let c = from_response(service(
-        "/v1/oauth/exchange",
+    let c = from_response(token_operation(
+        Operation::Exchange,
         json!({"code":code,"codeVerifier":verifier,"redirectUri":redirect}),
     )?)?;
     let user = github(&c.access_token, "/user")?;
@@ -1353,10 +1458,13 @@ pub fn install(app: &tauri::AppHandle) {
                         }
                     }
                     if d.disconnect_pending {
-                        let result = credential().and_then(|c| {
+                        let result = revocation_credential().and_then(|c| {
                             c.map_or(Ok(()), |c| {
-                                service("/v1/oauth/revoke", json!({"accessToken":c.access_token}))
-                                    .map(|_| ())
+                                token_operation(
+                                    Operation::RevokeAuthorization,
+                                    json!({"accessToken":c.access_token}),
+                                )
+                                .map(|_| ())
                             })
                         });
                         if let Ok(_state) = STATE.lock() {
@@ -1427,6 +1535,14 @@ pub fn install(app: &tauri::AppHandle) {
     });
 }
 
+fn require_main(label: &str) -> Result<(), String> {
+    if label == "main" {
+        Ok(())
+    } else {
+        Err("Only the main window can manage GitHub access.".into())
+    }
+}
+
 async fn run(
     app: tauri::AppHandle,
     f: fn(&tauri::AppHandle) -> Result<Value, String>,
@@ -1445,11 +1561,19 @@ pub async fn read_github_state(app: tauri::AppHandle) -> Result<Value, String> {
         .map_err(|_| "GitHub state could not be read.")?
 }
 #[tauri::command]
-pub async fn connect_github(app: tauri::AppHandle) -> Result<Value, String> {
+pub async fn connect_github(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Value, String> {
+    require_main(window.label())?;
     run(app, connect).await
 }
 #[tauri::command]
-pub async fn refresh_github_repositories(app: tauri::AppHandle) -> Result<Value, String> {
+pub async fn refresh_github_repositories(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Value, String> {
+    require_main(window.label())?;
     crate::github_http::reset_retries();
     run(app, |app| {
         let result = active_credential().and_then(|c| catalog(&c));
@@ -1478,7 +1602,11 @@ pub async fn refresh_github_repositories(app: tauri::AppHandle) -> Result<Value,
     .await
 }
 #[tauri::command]
-pub async fn disconnect_github(app: tauri::AppHandle) -> Result<Value, String> {
+pub async fn disconnect_github(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Value, String> {
+    require_main(window.label())?;
     let ticket = INTENTS.ticket();
     CANCELLATION.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
@@ -1501,8 +1629,10 @@ pub async fn disconnect_github(app: tauri::AppHandle) -> Result<Value, String> {
 #[tauri::command]
 pub async fn set_github_access_enabled(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     enabled: bool,
 ) -> Result<Value, String> {
+    require_main(window.label())?;
     let ticket = INTENTS.ticket();
     if !enabled {
         CANCELLATION.fetch_add(1, Ordering::SeqCst);
@@ -1559,8 +1689,10 @@ fn mark_pending(d: &mut Document) {
 #[tauri::command]
 pub async fn save_github_configuration(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     configuration: Value,
 ) -> Result<Value, String> {
+    require_main(window.label())?;
     let ws = configuration["workspaces"]
         .as_array()
         .ok_or("Missing sandbox policies.")?;
@@ -1639,8 +1771,10 @@ pub async fn save_github_configuration(
 #[tauri::command]
 pub async fn retry_github_configuration(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     workspace: Option<String>,
 ) -> Result<Value, String> {
+    require_main(window.label())?;
     let ticket = INTENTS.ticket();
     crate::github_http::reset_retries();
     tauri::async_runtime::spawn_blocking(move || {
@@ -2046,6 +2180,111 @@ mod tests {
         assert!(from_response(json!({"accessToken":"test-only"})).is_err());
         assert!(token_expiry(&json!({"expiresAt":"2020-01-01T00:00:00Z"})).is_err());
         assert!(token_expiry(&json!({"expiresAt":"not-a-date"})).is_err());
+    }
+    #[test]
+    fn refresh_storage_retry_never_reuses_a_consumed_refresh_token() {
+        let old = Credential {
+            access_token: "old".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: 100,
+        };
+        let mut pending = None;
+        let result = refresh_credential_with(
+            old.clone(),
+            &mut pending,
+            100,
+            |_| {
+                Ok(Credential {
+                    access_token: "new".into(),
+                    refresh_token: Some("new-refresh".into()),
+                    expires_at: 1000,
+                })
+            },
+            |_| Err("secure store locked".into()),
+        );
+        assert!(result.is_err());
+        let restored = refresh_credential_with(
+            old,
+            &mut pending,
+            101,
+            |_| panic!("a consumed refresh token was replayed"),
+            |credential| {
+                assert_eq!(credential.access_token, "new");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(restored.refresh_token.as_deref(), Some("new-refresh"));
+        assert!(pending.is_none());
+    }
+    #[test]
+    fn new_login_does_not_restore_another_accounts_pending_refresh() {
+        let mut pending = Some(PendingRefresh {
+            previous_access: "old-account".into(),
+            renewed: Credential {
+                access_token: "old-renewed".into(),
+                refresh_token: None,
+                expires_at: 1000,
+            },
+        });
+        let new = Credential {
+            access_token: "new-account".into(),
+            refresh_token: None,
+            expires_at: 1000,
+        };
+        let result = refresh_credential_with(
+            new,
+            &mut pending,
+            100,
+            |_| panic!("unneeded refresh"),
+            |_| panic!("stale credential persisted"),
+        )
+        .unwrap();
+        assert_eq!(result.access_token, "new-account");
+        assert!(pending.is_none());
+    }
+    #[test]
+    fn only_main_window_can_manage_github() {
+        assert!(require_main("main").is_ok());
+        for label in ["status", "other", ""] {
+            assert!(require_main(label).is_err());
+        }
+    }
+    #[test]
+    fn callback_ignores_unrelated_traffic_and_rejects_empty_authenticated_code() {
+        for request in [
+            "",
+            "garbage",
+            "GET //evil/github/callback?state=right&code=x HTTP/1.1",
+            "GET /github/callback?state=wrong&error=denied HTTP/1.1",
+        ] {
+            assert_eq!(callback(request, "right").unwrap(), None);
+        }
+        for request in [
+            "GET /github/callback?state=right&code= HTTP/1.1",
+            "GET /github/callback?state=right&code=%20 HTTP/1.1",
+            "GET /github/callback?state=right&error=denied HTTP/1.1",
+        ] {
+            assert!(callback(request, "right").is_err());
+        }
+    }
+    #[test]
+    fn callback_requires_complete_bounded_headers_across_fragments() {
+        struct Fragmented<'a>(&'a [u8]);
+        impl Read for Fragmented<'_> {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                let length = target.len().min(3).min(self.0.len());
+                target[..length].copy_from_slice(&self.0[..length]);
+                self.0 = &self.0[length..];
+                Ok(length)
+            }
+        }
+        let request =
+            b"GET /github/callback?state=right&code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let complete = read_callback_request(&mut Fragmented(request)).unwrap();
+        assert_eq!(callback(&complete, "right").unwrap(), Some("x".into()));
+        assert!(read_callback_request(&mut Fragmented(&request[..request.len() - 2])).is_none());
+        assert!(read_callback_request(&mut Fragmented(&vec![b'a'; 9000])).is_none());
     }
     #[test]
     fn callback_rejects_wrong_state_and_duplicate_code() {

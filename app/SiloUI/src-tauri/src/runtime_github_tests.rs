@@ -1,5 +1,6 @@
 //! Explicit hardware integration test. Uses only a disposable managed VM and
-//! synthetic credentials. Run with signed SILO_TEST_MSB and SILO_TEST_LIBKRUNFW.
+//! synthetic or explicitly authorized scoped test credentials. Run with signed
+//! SILO_TEST_MSB and SILO_TEST_LIBKRUNFW.
 use super::*;
 
 #[test]
@@ -224,7 +225,7 @@ fn github_guest_bootstrap_and_live_identity() {
     assert!(removed.is_ok(), "Disposable VM could not be removed");
 }
 
-/// Invoked by services/github-auth/test/live/authorized-github.ts --vm.
+/// Invoked by github_live_tests with SILO_GITHUB_TEST_VM=1.
 /// Credentials are supplied only in the host environment, never test output.
 #[test]
 #[ignore = "requires explicitly authorized private test repositories and live scoped GitHub credentials"]

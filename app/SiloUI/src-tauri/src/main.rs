@@ -4,6 +4,9 @@ mod backup_controller;
 mod dependencies;
 mod github;
 mod github_http;
+#[cfg(test)]
+mod github_live_tests;
+mod github_tokens;
 mod host_identity;
 mod host_push;
 mod notifications;
