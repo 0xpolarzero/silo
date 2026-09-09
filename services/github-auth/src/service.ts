@@ -9,7 +9,7 @@ function object(value:unknown):ObjectValue{if(!value||typeof value!=='object'||A
 function string(value:unknown,max=1024):string{if(typeof value!=='string'||!value.length||value.length>max||/[\x00-\x20\x7f]/.test(value))throw invalid();return value;}
 function positiveId(value:unknown):number{if(typeof value!=='number'||!Number.isSafeInteger(value)||value<=0)throw invalid();return value;}
 function boolean(value:unknown):boolean{if(typeof value!=='boolean')throw invalid();return value;}
-function reply(status:number,data:unknown):Response{return new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Pragma':'no-cache','X-Content-Type-Options':'nosniff'}});}
+function reply(status:number,data:unknown,headers:Record<string,string>={}):Response{return new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Pragma':'no-cache','X-Content-Type-Options':'nosniff',...headers}});}
 function callback(value:unknown):string{
  const text=string(value);let url:URL;try{url=new URL(text);}catch{throw invalid();}
  if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||!url.port||Number(url.port)<1024||url.username||url.password||url.pathname!=='/github/callback'||url.search||url.hash)throw invalid();
@@ -27,6 +27,9 @@ export function createHandler(config:Configuration,fetchImplementation:typeof fe
   }
  }});
  return async function handle(req:Request):Promise<Response>{
+  // Only a failed read or idempotent revocation is safe to repeat after an
+  // ambiguous transport failure. Token mint/exchange/refresh may have succeeded.
+  let retryable=false;
   try{
    const operation=request.defaults({request:{signal:AbortSignal.any([req.signal,AbortSignal.timeout(60000)])}});
    const auth={clientType:'github-app' as const,clientId:config.clientId,clientSecret:config.clientSecret,request:operation};
@@ -51,10 +54,12 @@ export function createHandler(config:Configuration,fetchImplementation:typeof fe
     return reply(200,session(result.data));
    }
    if(url.pathname==='/v1/oauth/revoke'){
+    retryable=true;
     try{await deleteAuthorization({...auth,token:string(input.accessToken)});}catch(error){if(objectStatus(error)!==404)throw error;}
     return reply(200,{revoked:true});
    }
    if(url.pathname==='/v1/tokens/revoke'){
+    retryable=true;
     try{await deleteToken({...auth,token:string(input.accessToken)});}catch(error){if(objectStatus(error)!==404)throw error;}
     return reply(200,{revoked:true});
    }
@@ -66,6 +71,7 @@ export function createHandler(config:Configuration,fetchImplementation:typeof fe
    // The user-token endpoint lists only this App's installations. Match the
    // owner and client ID as well; never inherit another App's permission map.
    let permissions:Record<string,'read'|'write'|'admin'>|undefined;
+   retryable=true;
    for(let page=1;page<=20;page++){
     const result=await operation('GET /user/installations',{headers:{authorization:`Bearer ${token}`},per_page:100,page});
     for(const item of result.data.installations){
@@ -83,6 +89,7 @@ export function createHandler(config:Configuration,fetchImplementation:typeof fe
     if(page===20)throw new ServiceError(422,'Too many GitHub installations to resolve safely.');
    }
    if(!permissions)throw new ServiceError(403,'This GitHub owner is not authorized for Silo.');
+   retryable=false;
    const result=await scopeToken({...auth,token,target_id:ownerId,permissions,...(!allRepositories?{repository_ids:repositoryIds}:{})});
    const d=object(result.data),expiresAt=string(d.expires_at);
    if(!Number.isFinite(Date.parse(expiresAt))||Date.parse(expiresAt)<=Date.now())throw new ServiceError(502,'GitHub returned an invalid token expiration.');
@@ -91,11 +98,38 @@ export function createHandler(config:Configuration,fetchImplementation:typeof fe
    if(error instanceof ServiceError)return reply(error.status,{error:error.publicMessage});
    const status=objectStatus(error);
    if(status===401||status===404)return reply(401,{error:'GitHub authorization expired or was revoked. Reconnect GitHub.'});
-   if(status===403)return reply(403,{error:'GitHub refused this request. Check App access and try again later.'});
+   const limit=rateLimit(error,status);
+   if(limit)return reply(429,{error:'GitHub is temporarily limiting requests.',code:'rate_limited',retryable:true,retryAfterSeconds:limit.seconds},limit.headers);
+   if(status===403)return reply(403,{error:'GitHub refused this request. Check App access.',code:'permission_denied',retryable:false});
    if(status===400||status===422)return reply(400,{error:'GitHub rejected the authorization request.'});
-   if(status===429)return reply(429,{error:'GitHub is temporarily limiting requests. Try again later.'});
-   return reply(502,{error:'GitHub could not be reached. Try again.'});
+   return reply(502,{error:'GitHub could not be reached. Try again.',code:'upstream_error',retryable});
   }
  };
 }
 function objectStatus(error:unknown):number|undefined{return typeof error==='object'&&error!==null&&'status'in error&&typeof error.status==='number'?error.status:undefined;}
+
+/** GitHub uses 403 for both authorization failures and rate limits. Forward only
+ * validated timing fields, never upstream error text or arbitrary headers. */
+function rateLimit(error:unknown,status:number|undefined):{seconds:number;headers:Record<string,string>}|undefined{
+ if(status!==403&&status!==429)return;
+ const response=(error as {response?:{headers?:Record<string,unknown>;data?:{message?:unknown}}}).response;
+ const source=response?.headers??{};
+ const integer=(value:unknown):number|undefined=>{
+  if(typeof value!=='string'||!/^\d+$/.test(value))return;
+  const parsed=Number(value);return Number.isSafeInteger(parsed)?parsed:undefined;
+ };
+ const remaining=integer(source['x-ratelimit-remaining']);
+ const reset=integer(source['x-ratelimit-reset']);
+ const rawRetry=source['retry-after'];
+ const dateRetry=typeof rawRetry==='string'&&/^[A-Za-z]{3},/.test(rawRetry)?Date.parse(rawRetry):NaN;
+ const retry=integer(rawRetry)??(Number.isFinite(dateRetry)?Math.max(0,Math.ceil((dateRetry-Date.now())/1000)):undefined);
+ const message=response?.data?.message;
+ const secondary=typeof message==='string'&&/secondary rate limit|API rate limit exceeded|abuse detection/i.test(message);
+ if(status!==429&&remaining!==0&&retry===undefined&&!secondary)return;
+ const resetWait=remaining===0&&reset!==undefined?Math.max(0,reset-Math.floor(Date.now()/1000)):undefined;
+ const seconds=Math.max(1,retry??0,resetWait??0,...(retry===undefined&&resetWait===undefined?[60]:[]));
+ const headers:Record<string,string>={'Retry-After':String(seconds)};
+ if(remaining!==undefined)headers['X-RateLimit-Remaining']=String(remaining);
+ if(reset!==undefined)headers['X-RateLimit-Reset']=String(reset);
+ return {seconds,headers};
+}

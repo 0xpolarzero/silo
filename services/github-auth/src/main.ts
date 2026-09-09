@@ -9,7 +9,7 @@ if(!Number.isInteger(port)||port<1||port>65535)throw Error('Invalid PORT.');
 let active=0;
 const server=createServer({maxHeaderSize:8192,requestTimeout:30000,headersTimeout:10000},async(req,res)=>{
  res.setHeader('Cache-Control','no-store');
- if(active>=32){res.writeHead(503);res.end();return;}
+ if(active>=32){res.writeHead(503,{'Content-Type':'application/json','Retry-After':'5'});res.end(JSON.stringify({error:'GitHub sign-in service is busy.',code:'service_busy',retryable:true,retryAfterSeconds:5}));return;}
  active++;
  const abort=new AbortController();
  res.on('close',()=>abort.abort());

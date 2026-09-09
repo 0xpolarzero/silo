@@ -124,3 +124,60 @@ test('restricted token revocation is idempotent but does not hide a network fail
  const failed=createHandler(config,async()=>{throw Error('network unavailable');});
  assert.equal((await failed(post('/v1/tokens/revoke',{accessToken:'restricted-token'}))).status,502);
 });
+
+test('primary rate limits preserve reset and the longer requested wait without replay',async()=>{
+ const reset=Math.floor(Date.now()/1000)+120;let calls=0;
+ const handle=createHandler(config,async()=>{calls++;return new Response(JSON.stringify({message:'secret echoed upstream'}),{status:403,headers:{'Content-Type':'application/json','Retry-After':'240','X-RateLimit-Remaining':'0','X-RateLimit-Reset':String(reset)}});});
+ const result=await handle(post('/v1/oauth/refresh',{refreshToken:'t'}));
+ assert.equal(result.status,429);assert.equal(calls,1);
+ assert.equal(result.headers.get('retry-after'),'240');assert.equal(result.headers.get('x-ratelimit-reset'),String(reset));
+ assert.deepEqual(await result.json(),{error:'GitHub is temporarily limiting requests.',code:'rate_limited',retryable:true,retryAfterSeconds:240});
+});
+test('exhausted primary reset is honored when Retry-After is shorter',async()=>{
+ const reset=Math.floor(Date.now()/1000)+3600;
+ const handle=createHandler(config,async()=>new Response('{}',{status:403,headers:{'Content-Type':'application/json','Retry-After':'5','X-RateLimit-Remaining':'0','X-RateLimit-Reset':String(reset)}}));
+ const result=await handle(post('/v1/oauth/refresh',{refreshToken:'t'}));
+ assert.equal(result.status,429);assert.ok(Number(result.headers.get('retry-after'))>=3598);
+});
+test('headerless secondary limits and 429 use a sixty-second minimum',async()=>{
+ for(const [status,message]of [[403,'You have exceeded a secondary rate limit.'],[429,'Too many requests']]as const){
+  const handle=createHandler(config,async()=>json({message},status));
+  const result=await handle(post('/v1/oauth/refresh',{refreshToken:'t'}));
+  assert.equal(result.status,429);assert.equal(result.headers.get('retry-after'),'60');
+ }
+});
+test('403 permission failures never become automatic rate-limit retries',async()=>{
+ const handle=createHandler(config,async()=>new Response(JSON.stringify({message:'Resource not accessible by integration'}),{status:403,headers:{'Content-Type':'application/json','X-RateLimit-Remaining':'42','X-RateLimit-Reset':'9999999999'}}));
+ const result=await handle(post('/v1/oauth/refresh',{refreshToken:'t'}));
+ assert.equal(result.status,403);assert.equal(result.headers.get('retry-after'),null);
+ assert.equal((await result.json()).retryable,false);
+});
+test('invalid rate-limit headers never leak or request unsafe numeric delays',async()=>{
+ const handle=createHandler(config,async()=>new Response('{}',{status:429,headers:{'Content-Type':'application/json','Retry-After':'server-only-secret','X-RateLimit-Remaining':'NaN','X-RateLimit-Reset':'9007199254740992'}}));
+ const result=await handle(post('/v1/oauth/refresh',{refreshToken:'t'}));
+ assert.equal(result.headers.get('retry-after'),'60');assert.equal(result.headers.get('x-ratelimit-reset'),null);
+ assert.equal((await result.text()).includes('server-only-secret'),false);
+});
+test('Retry-After HTTP dates become a safe remaining delay',async()=>{
+ const handle=createHandler(config,async()=>new Response('{}',{status:429,headers:{'Content-Type':'application/json','Retry-After':new Date(Date.now()+180000).toUTCString()}}));
+ const result=await handle(post('/v1/oauth/refresh',{refreshToken:'t'}));
+ assert.ok(Number(result.headers.get('retry-after'))>=178);
+});
+test('ambiguous token operations are never replayed or marked retryable',async()=>{
+ for(const path of ['/v1/oauth/exchange','/v1/oauth/refresh','/v1/tokens/scope']){
+  let writes=0;
+  const handle=createHandler(config,async(input)=>{
+   if(String(input).includes('/user/installations'))return json({installations:[{account:{id:7},client_id:config.clientId,permissions:{contents:'read'}}]});
+   writes++;throw Error('response lost after upstream success');
+  });
+  const result=await handle(post(path,{code:'c',codeVerifier:'a'.repeat(43),redirectUri:'http://127.0.0.1:49152/github/callback',refreshToken:'t',accessToken:'t',ownerId:7,repositoryIds:[11],allowChanges:false}));
+  assert.equal(result.status,502);assert.equal((await result.json()).retryable,false);assert.equal(writes,1);
+ }
+});
+test('failed installation reads and idempotent revocations permit native backoff',async()=>{
+ for(const path of ['/v1/tokens/scope','/v1/tokens/revoke','/v1/oauth/revoke']){
+  let calls=0;const handle=createHandler(config,async()=>{calls++;throw Error('network');});
+  const result=await handle(post(path,{accessToken:'t',ownerId:7,repositoryIds:[11],allowChanges:false}));
+  assert.equal(result.status,502);assert.equal((await result.json()).retryable,true);assert.equal(calls,1);
+ }
+});

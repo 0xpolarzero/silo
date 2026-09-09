@@ -79,6 +79,33 @@ passes the official `code_verifier` parameter using Octokit request defaults.
 A regression test checks the actual outgoing request body. No custom OAuth/token
 implementation replaces Octokit.
 
+## Rate limits and retries
+
+The service makes one upstream attempt per operation. The native app owns the
+retry schedule, so obsolete settings can cancel pending retries. The service
+never automatically repeats token creation, code exchange, or refresh after an
+ambiguous timeout or server failure: GitHub may already have completed it.
+
+Confirmed GitHub rate limits return HTTP 429 with `code: "rate_limited"`,
+`retryable: true`, `retryAfterSeconds`, and `Retry-After`. A GitHub 403 is classified
+as a limit only when its headers or documented rate-limit message identify one;
+ordinary permission failures remain 403 and are not automatically retried.
+Validated `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers are preserved.
+The delay honors both `Retry-After` and an exhausted primary reset, using the
+longer wait. A secondary limit without timing information waits at least 60
+seconds. The native scheduler increases delays with jitter for repeated failures
+and stops after its retry budget; this service does not sleep or retain tokens.
+
+A transport/server failure returns 502 with `code: "upstream_error"` and
+`retryable: false` for token writes. It sets `retryable: true` only if the failed
+step was a safe installation read or idempotent revocation. Local overload returns
+503 with `code: "service_busy"`, `retryable: true`, and a five-second `Retry-After`;
+no upstream request has started. No raw upstream message or arbitrary header is
+returned. These rules do not replay Git pushes or guest API requests.
+
+This follows GitHub's [rate-limit response rules](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+and [bounded exponential retry guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api).
+
 ## References
 
 - [GitHub scoped tokens](https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token)
