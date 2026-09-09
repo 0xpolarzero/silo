@@ -335,7 +335,7 @@ describe("application", () => {
     expect(within(overview).getByRole("status", { name: label })).toHaveTextContent(count)
   })
 
-  it("shows spinners on every sidebar destination with active work", () => {
+  it("shows spinners on sidebar destinations that own active work", () => {
     const cases: Array<{
       label: string
       source: ApplicationSource
@@ -345,7 +345,6 @@ describe("application", () => {
       { label: "Overview", source: applicationSourceForScenario("running", undefined, undefined, "add-verifying"), section: "workspace" },
       { label: "Files", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "pushing"), section: "workspace" },
       { label: "Files", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "git-live"), section: "workspace" },
-      { label: "Activity", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "backup-live"), section: "workspace" },
       { label: "GitHub", source: applicationSourceForScenario("running", "connecting") },
       { label: "GitHub", source: applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "applying") },
       { label: "Secrets", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "secrets-live") },
@@ -368,6 +367,13 @@ describe("application", () => {
       expect(icons[1]).toHaveClass("animate-spin")
       application.unmount()
     }
+  })
+
+  it("keeps Activity static while background work is running", () => {
+    renderApplication("running", applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "backup-live"))
+    const activity = within(appNavigation()).getByRole("button", { name: "Activity" })
+    expect(activity).not.toHaveAttribute("aria-busy")
+    expect(activity.querySelector("[data-navigation-loading-indicator]")).toBeNull()
   })
 
   it("keeps idle and completed sidebar destinations static", () => {

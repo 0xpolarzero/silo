@@ -45,7 +45,6 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
   const runningCategories = new Set(source.activities
     .filter(({ status }) => status === "running")
     .map(({ category }) => category))
-  const activityBusy = runningCategories.size > 0
   const githubSourceBusy = source.github.state === "connecting"
     || (source.github.workspaceOperations ?? []).some(({ status }) => status === "applying")
 
@@ -62,7 +61,6 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
         || runningCategories.has("sandbox"),
       files: source.repositoryPushOperations.some(({ status }) => status === "pushing")
         || runningCategories.has("git"),
-      activity: activityBusy,
     },
   }
 }
