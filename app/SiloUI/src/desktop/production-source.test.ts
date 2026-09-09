@@ -43,6 +43,20 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("reports a failed account connection once without inventing sandbox failures", async () => {
+    const mock = native()
+    const original = mock.invoke.getMockImplementation()!
+    mock.invoke.mockImplementation((command, args) => command === "connect_github" ? Promise.reject(new Error("GitHub is not configured in this build")) : original(command, args))
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    const before = store.getSnapshot().source!.github
+    store.applicationActions.connectGitHub!()
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.repositoryCatalogStatus).toEqual({ status: "unavailable", message: "GitHub operation failed: GitHub is not configured in this build", canRetry: true }))
+    expect(store.getSnapshot().source?.github.workspaceOperations).toEqual(before.workspaceOperations)
+    expect(store.getSnapshot().source?.github.account).toEqual(before.account)
+    store.dispose()
+  })
+
   it("keeps all-repository intent and waits for native acknowledgment before showing changed access", async () => {
     let resolveMutation!: (value: unknown) => void
     const request = { accessEnabled: false, hostIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }

@@ -632,7 +632,7 @@ pub(crate) fn verify_disposable_binary_transfer(
     let temporary =
         tempfile::tempdir().map_err(|_| "Cannot prepare binary transfer verification.")?;
     let target = temporary.path().join("binary");
-    let mut remaining = 1024;
+    let mut remaining = 64 * 1024 * 1024;
     copy(
         paths,
         name,
@@ -642,7 +642,7 @@ pub(crate) fn verify_disposable_binary_transfer(
     )?;
     if fs::read(&target).map_err(|_| "Cannot read binary transfer verification.")?
         != [0, 255, 1, 254]
-        || remaining != 1020
+        || remaining != 64 * 1024 * 1024 - 4
     {
         return Err("VM binary transfer changed bytes or did not account for their size.".into());
     }
