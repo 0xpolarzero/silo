@@ -33,6 +33,7 @@ struct Configuration {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Port {
+    configured_host_port: Option<u16>,
     port: u16,
     host_port: Option<u16>,
     scheme: Option<String>,
@@ -259,6 +260,7 @@ fn configured_vm(paths: &RuntimePaths, name: &str) -> Result<runtime::InspectedS
 }
 fn pending(mapping: &Mapping, message: Option<String>, state: &'static str) -> Port {
     Port {
+        configured_host_port: mapping.host_port,
         port: mapping.port,
         host_port: None,
         scheme: mapping.scheme.clone(),
@@ -333,6 +335,7 @@ fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Wor
                 .unwrap_or_default()
                 .keys()
                 .map(|port| Port {
+                    configured_host_port: None,
                     port: *port,
                     host_port: None,
                     scheme: None,
@@ -438,6 +441,7 @@ fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Wor
             (
                 *port,
                 Port {
+                    configured_host_port: None,
                     port: *port,
                     host_port: None,
                     scheme: None,
@@ -482,6 +486,7 @@ fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Wor
         rows.insert(
             mapping.port,
             Port {
+                configured_host_port: mapping.host_port,
                 port: mapping.port,
                 host_port: active.map(|p| p.host_port),
                 scheme: mapping.scheme.clone(),

@@ -32,7 +32,11 @@ of three. No extra Silo proxy or database is introduced.
 Network retains cached rows during five-second refreshes and uses skeletons for
 the first load. Add port chooses a VM, guest port, optional local port, and HTTP,
 HTTPS, or TCP. Adding a port exposes a service; it does not start a service.
-Discovered services can be exposed directly. Addresses use actual host ports.
+Discovered services show VM only. Their + action connects immediately with an
+automatic local port and HTTP as the initial protocol. Edit changes the protocol
+or local port with Save/Cancel; sandbox and guest port stay fixed. The response
+includes configuredHostPort separately from the actual endpoint so editing the
+protocol preserves Automatic or an explicit local override. Addresses use actual host ports.
 Waiting, not exposed, and unknown states remain distinct. Errors stay compact;
 removal uses the existing inline Cancel/Remove confirmation pattern.
 

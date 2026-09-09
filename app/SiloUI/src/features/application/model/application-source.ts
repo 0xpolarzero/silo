@@ -73,6 +73,7 @@ export interface ApplicationLog {
 }
 
 export interface NetworkPort {
+  configuredHostPort?: number | null
   port: number
   hostPort: number | null
   scheme: "http" | "https" | null
