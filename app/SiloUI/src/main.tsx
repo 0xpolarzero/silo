@@ -36,10 +36,13 @@ async function start() {
   const systemIntegrations = createDesktopSystemIntegrationStore(settings)
   if (!statusPanel) await systemIntegrations.initialize()
   const stopSystemLifecycle = !statusPanel ? connectSystemIntegrationLifecycle(systemIntegrations) : () => {}
-  const applicationService = !statusPanel ? createApplicationService(settings) : undefined
-  const applicationCatalog = applicationService
-    ? await applicationService.read().catch((error: unknown) => { console.error("Silo applications:", error); return emptyApplicationCatalog })
-    : emptyApplicationCatalog
+  // Resolved defaults are local to each webview's store, not saved settings.
+  // Both windows must discover them; the provider refreshes them on focus.
+  const applicationService = createApplicationService(settings)
+  const applicationCatalog = await applicationService.read().catch((error: unknown) => {
+    console.error("Silo applications:", error)
+    return emptyApplicationCatalog
+  })
   const stopTheme = initializeTheme(settings)
   void production.initialize().catch((error: unknown) => console.error("Silo live updates:", error))
 

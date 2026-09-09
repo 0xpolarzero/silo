@@ -155,6 +155,25 @@ the flag and retains the old label/path; resolved labels and paths follow the
 current catalog in both windows. Selecting an app saves its label/path together
 with a false flag. Refreshing discovery never writes settings.
 
+Both production webviews initialize application discovery before rendering and
+refresh it on window focus. Resolved defaults live in each webview's settings
+store; `settings:changed` carries saved choices, not the discovered catalog.
+Skipping discovery in the status entry therefore leaves its fallback labels
+(for example, Visual Studio Code) even when the main window resolves Zed.
+The shared resolved preferences feed the main window, command palette, status
+shortcuts, native workspace menu, and folder-picker label.
+
+Regression verification (2026-09-09): `application-startup.test.tsx` imports the
+actual production entry as the status window. It reproduced the VS Code fallback
+before the fix and now checks Zed/Zen discovery, editor refresh on focus, retained
+terminal overrides, and no settings writes. The focused application/preferences
+suite passed 170 tests; status/settings/onboarding follow-up checks passed 33
+tests, including native menu and open folder-picker updates. Typecheck and lint
+passed. These are mocked discovery and UI checks, not native app launch evidence.
+The runtime currently rejects `open-editor`, `open-terminal`, and `open-site` as
+unknown workspace actions; preference propagation does not implement those
+separate launch handlers.
+
 Browser and explicit native fixtures use a fixed catalog and disable the native
 picker. Native fixture storage is checked before consulting host applications or
 opening a dialog. Both native windows can read the catalog to resolve the same
