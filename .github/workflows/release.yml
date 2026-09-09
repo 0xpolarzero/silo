@@ -1,0 +1,129 @@
+name: Release latest
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Serialize publication so an older run cannot overwrite a newer release.
+concurrency:
+  group: release-latest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            asset: macos-arm64
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb
+            asset: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: deb
+            asset: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: app/SiloUI
+        shell: bash
+    env:
+      SILO_GITHUB_APP_SLUG: ${{ secrets.SILO_GITHUB_APP_SLUG }}
+      SILO_GITHUB_CLIENT_ID: ${{ secrets.SILO_GITHUB_CLIENT_ID }}
+      SILO_GITHUB_CLIENT_SECRET: ${{ secrets.SILO_GITHUB_CLIENT_SECRET }}
+      APPLE_SIGNING_IDENTITY: '-'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require GitHub App configuration
+        run: |
+          for key in SILO_GITHUB_APP_SLUG SILO_GITHUB_CLIENT_ID SILO_GITHUB_CLIENT_SECRET; do
+            if [[ -z "${!key//[[:space:]]/}" ]]; then
+              echo "::error::Missing Actions secret $key. See docs/SiloUI-RELEASES.md."
+              exit 1
+            fi
+          done
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/SiloUI/package-lock.json
+      - name: Install native Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libclang-dev cmake
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal
+          rustup default 1.94.0
+          test "$(rustc --print host-tuple)" = '${{ matrix.target }}'
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - name: Prepare native resources
+        run: npm run runtime:prepare
+      - name: Test build configuration and native behavior
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
+      - name: Free test products before release compilation
+        run: cargo clean --manifest-path src-tauri/Cargo.toml --profile dev
+      - name: Build release bundles
+        run: npm run desktop:build -- --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --ci
+      - name: Collect and verify macOS assets
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p release-assets
+          bundle='src-tauri/target/${{ matrix.target }}/release/bundle'
+          codesign --verify --deep --strict "$bundle/macos/Silo.app"
+          tar -czf release-assets/Silo-macos-arm64.app.tar.gz -C "$bundle/macos" Silo.app
+          dmgs=("$bundle"/dmg/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          cp "${dmgs[0]}" release-assets/Silo-macos-arm64.dmg
+      - name: Collect and verify Linux assets
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p release-assets
+          packages=(src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb)
+          test "${#packages[@]}" -eq 1
+          dpkg-deb --info "${packages[0]}"
+          cp "${packages[0]}" 'release-assets/Silo-${{ matrix.asset }}.deb'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset }}
+          path: app/SiloUI/release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+      - name: Test release publication
+        run: python3 -m unittest discover -s app/SiloUI/scripts -p 'test_publish_release.py'
+      - name: Publish rolling latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 app/SiloUI/scripts/publish-release.py

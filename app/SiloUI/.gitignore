@@ -13,6 +13,7 @@ dist-ssr
 coverage
 .vite
 *.local
+github-build.local.json
 src-tauri/binaries/
 src-tauri/runtime/
 

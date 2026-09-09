@@ -112,9 +112,12 @@ configured and real browser sign-in succeeded as the existing account. The value
 was not committed or written to test output.
 No private key is required and none must be bundled.
 
-Release builds supply `SILO_GITHUB_CLIENT_ID`, `SILO_GITHUB_CLIENT_SECRET` and
-`SILO_GITHUB_APP_SLUG` in their environment before invoking the normal desktop
-build. These are native compile-time settings. `build.rs` tracks changes to them.
+Native builds load `SILO_GITHUB_CLIENT_ID`, `SILO_GITHUB_CLIENT_SECRET` and
+`SILO_GITHUB_APP_SLUG` from the ignored `app/SiloUI/github-build.local.json`.
+Explicit environment variables override the file; the rolling release workflow
+supplies them through repository Actions secrets. These are native compile-time
+settings. `build.rs` tracks both the file and environment changes and rejects
+missing or invalid values. See [local setup and release configuration](SiloUI-RELEASES.md).
 The client-secret value is extractable from a distributed native binary and is
 not treated as a confidential security boundary. Do not commit actual values to
 source or confuse them with users' bearer tokens. There is no service URL setting.

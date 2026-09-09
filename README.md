@@ -98,6 +98,7 @@ A service must listen on `0.0.0.0` inside the VM or container. The common develo
 
 - [Complete setup guide](docs/SETUP-GUIDE.md)
 - [GitHub permissions and push guide](docs/GITHUB-SETUP.md)
+- [Desktop build configuration and rolling releases](docs/SiloUI-RELEASES.md)
 - [Command cheatsheet](docs/Silo-CHEATSHEET.md)
 - [Test report](docs/TEST-REPORT.md)
 

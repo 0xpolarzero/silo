@@ -1,10 +1,17 @@
+mod github_build;
+
 fn main() {
-    for key in [
-        "SILO_GITHUB_CLIENT_SECRET",
-        "SILO_GITHUB_CLIENT_ID",
-        "SILO_GITHUB_APP_SLUG",
-    ] {
+    let config =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../github-build.local.json");
+    println!("cargo:rerun-if-changed={}", config.display());
+    println!("cargo:rerun-if-changed=github_build.rs");
+    for key in github_build::KEYS {
         println!("cargo:rerun-if-env-changed={key}");
+    }
+    let values = github_build::configuration(&config, |key| std::env::var(key).ok())
+        .unwrap_or_else(|message| panic!("{message}"));
+    for (key, value) in values {
+        println!("cargo:rustc-env={key}={value}");
     }
     // objc2-user-notifications declares a normal framework dependency. The
     // app still supports macOS 10.13, so override it at the final link step and
