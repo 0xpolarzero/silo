@@ -122,8 +122,9 @@ export function SandboxListRow({
   )
 }
 
-export function SandboxAction({ label, destructive = false, children, ...props }: {
+export function SandboxAction({ label, tooltip, destructive = false, children, ...props }: {
   label: string
+  tooltip?: string
   destructive?: boolean
   children: ReactNode
 } & Omit<ComponentProps<typeof Button>, "children" | "aria-label">) {
@@ -140,7 +141,7 @@ export function SandboxAction({ label, destructive = false, children, ...props }
           {children}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>{tooltip ?? label}</TooltipContent>
     </Tooltip>
   )
 }
