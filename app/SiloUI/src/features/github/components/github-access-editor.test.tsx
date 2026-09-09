@@ -5,6 +5,30 @@ import { describe, expect, it, vi } from "vitest"
 import { GitHubAccessEditor } from "@/features/github/components/github-access-editor"
 
 describe("GitHubAccessEditor", () => {
+  it("chooses all current and future authorized repositories with changes off by default", async () => {
+    const user = userEvent.setup()
+    const onAccess = vi.fn()
+    const props = {
+      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/silo"], workspaceSelections: { dev: [{ repository: "acme/silo", allowPushes: true }] },
+      workspaceIdentities: {}, currentHostGitIdentity: null,
+      onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(), onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
+      onWorkspaceRepositoryAccessChange: onAccess,
+    }
+    const { rerender } = render(<GitHubAccessEditor {...props} />)
+    await user.click(screen.getByRole("checkbox", { name: "All repositories for dev" }))
+    expect(onAccess).toHaveBeenLastCalledWith("dev", { repositoryMode: "all", allRepositoriesAllowChanges: false })
+    rerender(<GitHubAccessEditor {...props} workspaceRepositoryAccess={{ dev: { repositoryMode: "all", allRepositoriesAllowChanges: false } }} />)
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+    expect(screen.queryByRole("table")).not.toBeInTheDocument()
+    expect(screen.getByText("All repositories authorized on GitHub, including future additions.")).toBeVisible()
+    await user.click(screen.getByRole("checkbox", { name: "Allow GitHub changes for all repositories in dev" }))
+    expect(onAccess).toHaveBeenLastCalledWith("dev", { repositoryMode: "all", allRepositoriesAllowChanges: true })
+    expect(props.onWorkspaceSelectionsChange).not.toHaveBeenCalled()
+    rerender(<GitHubAccessEditor {...props} workspaceRepositoryAccess={{ dev: { repositoryMode: "selected", allRepositoriesAllowChanges: false } }} />)
+    expect(screen.getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).toBeChecked()
+  })
+
   it("supports app extensions and makes a disabled editor readable but immutable", () => {
     render(
       <GitHubAccessEditor
@@ -41,7 +65,7 @@ describe("GitHubAccessEditor", () => {
     expect(within(editor).getByRole("checkbox", { name: "Apply Git identity to dev" })).toBeDisabled()
     expect(within(editor).getByRole("button", { name: "Reset Git identity for dev" })).toBeDisabled()
     expect(within(editor).getByRole("combobox", { name: "Add repository to dev" })).toBeDisabled()
-    expect(within(editor).getByRole("checkbox", { name: "Allow pushes for acme/silo" })).toBeDisabled()
+    expect(within(editor).getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).toBeDisabled()
     expect(within(editor).getByRole("button", { name: "Clear repositories from dev" })).toBeDisabled()
     expect(within(editor).getByRole("button", { name: "Remove acme/silo from dev" })).toBeDisabled()
   })

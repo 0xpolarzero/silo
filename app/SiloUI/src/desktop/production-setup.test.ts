@@ -19,6 +19,7 @@ function deferred<T>() {
 async function setup(savedActivity: SiloProgressEvent[] = []) {
   const machines = vi.fn<() => Promise<unknown>>().mockResolvedValue(application)
   const identities = vi.fn<() => Promise<unknown>>().mockResolvedValue(undefined)
+  const github = vi.fn<() => Promise<unknown>>().mockResolvedValue({ ...application.github, workspaceOperations: [{ workspace: request.github.workspaces[0].workspace, status: "failed", message: "Runtime did not acknowledge access", canRetry: true }] })
   const events = new Map<string, (event?: { payload: unknown }) => void>()
   const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) => {
     if (command === "read_application_state") return application
@@ -26,12 +27,13 @@ async function setup(savedActivity: SiloProgressEvent[] = []) {
     if (command === "read_setup_activity") return savedActivity
     if (command === "save_machine_configuration") return machines()
     if (command === "configure_workspace_identities") return identities()
+    if (command === "save_github_configuration") return github()
     throw new Error(`Unexpected command ${command}`)
   })
   const bridge = { invoke, listen: async (name: string, handler: (event?: { payload: unknown }) => void) => { events.set(name, handler); return () => events.delete(name) } } as ProductionBridge
   const store = createProductionSource(bridge)
   await store.initialize()
-  return { store, machines, identities, invoke, emit: (payload: unknown) => events.get("silo://machine-configuration-progress")?.({ payload }) }
+  return { store, machines, identities, github, invoke, emit: (payload: unknown) => events.get("silo://machine-configuration-progress")?.({ payload }) }
 }
 
 describe("production setup queue", () => {
@@ -174,16 +176,32 @@ describe("production setup queue", () => {
     store.dispose()
   })
 
-  it("rejects connected repository selections before changing any VM", async () => {
+  it("does not finish connected setup without native repository acknowledgment", async () => {
     const { store, machines, identities } = await setup()
     const selected = structuredClone(request)
     selected.github.connectionState = "connected"
     selected.github.workspaces[0].repositories = [{ repository: "owner/repo", allowPushes: false }]
     const markComplete = vi.fn(async () => {})
-    await expect(store.finishSetup(selected, markComplete)).rejects.toThrow("Repository setup is not available")
-    expect(machines).not.toHaveBeenCalled()
-    expect(identities).not.toHaveBeenCalled()
+    await expect(store.finishSetup(selected, markComplete)).rejects.toThrow("Runtime did not acknowledge access")
+    expect(machines).toHaveBeenCalledOnce()
+    expect(identities).toHaveBeenCalledOnce()
     expect(markComplete).not.toHaveBeenCalled()
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "identityVerify")?.status).toBe("succeeded")
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubVerify")?.status).toBe("failed")
+    store.dispose()
+  })
+
+  it("finishes connected all-repository setup only after the runtime acknowledges every sandbox", async () => {
+    const { store, github, invoke } = await setup()
+    const selected = structuredClone(request)
+    selected.github.connectionState = "connected"
+    selected.github.workspaces[0].repositoryMode = "all"
+    selected.github.workspaces[0].allRepositoriesAllowChanges = false
+    github.mockResolvedValue({ ...application.github, workspaceOperations: [{ workspace: selected.github.workspaces[0].workspace, status: "succeeded", message: "Verified" }] })
+    const markComplete = vi.fn(async () => {})
+    await store.finishSetup(selected, markComplete)
+    expect(invoke).toHaveBeenCalledWith("save_github_configuration", { configuration: { accessEnabled: true, hostIdentity: application.github.hostIdentity ?? null, workspaces: selected.github.workspaces } })
+    expect(markComplete).toHaveBeenCalledOnce()
     store.dispose()
   })
 

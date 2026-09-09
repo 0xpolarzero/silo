@@ -31,6 +31,24 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("keeps all-repository intent and waits for native acknowledgment before showing changed access", async () => {
+    let resolveMutation!: (value: unknown) => void
+    const request = { accessEnabled: false, hostIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }
+    const mock = native()
+    const original = mock.invoke.getMockImplementation()!
+    mock.invoke.mockImplementation((command, args) => command === "save_github_configuration" ? new Promise((resolve) => { resolveMutation = resolve }) : original(command, args))
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    const before = store.getSnapshot().source?.github
+    store.applicationActions.saveGitHubConfiguration!(request)
+    expect(mock.invoke).toHaveBeenCalledWith("save_github_configuration", { configuration: request })
+    expect(store.getSnapshot().source?.github).toBe(before)
+    resolveMutation({ ...before, ...request, workspaceOperations: [{ workspace: "dev", status: "failed", message: "Runtime did not acknowledge access", canRetry: true }] })
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.workspaceOperations?.[0].status).toBe("failed"))
+    expect(store.getSnapshot().source?.github.workspaces?.[0].repositoryMode).toBe("all")
+    store.dispose()
+  })
+
   it("accepts activity serialized by the native journal", () => {
     const events = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../test/contracts/setup-activity.json"), "utf8")) as unknown[]
     expect(events.map((event) => siloProgressEventSchema.parse(event))).toEqual(events)

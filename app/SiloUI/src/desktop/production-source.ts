@@ -21,6 +21,28 @@ const bridge: ProductionBridge = {
   listen: (event, handler) => listen(event, handler),
 }
 
+const githubStateShape = z.object({
+  state: z.enum(["disconnected", "connecting", "connected"]),
+  account: z.string().nullish().transform((value) => value ?? undefined),
+  accessEnabled: z.boolean().optional(),
+  hostIdentity: z.object({ name: z.string(), email: z.string() }).nullable().optional(),
+  repositoryCatalog: z.array(z.string()).optional(),
+  repositoryCatalogStatus: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("available") }),
+    z.object({ status: z.literal("unavailable"), message: z.string(), canRetry: z.literal(true) }),
+  ]).optional(),
+  workspaces: z.array(z.object({
+    workspace: z.string(), identity: z.object({ name: z.string(), email: z.string(), apply: z.boolean() }),
+    repositoryMode: z.enum(["selected", "all"]).default("selected"), allRepositoriesAllowChanges: z.boolean().default(false),
+    repositories: z.array(z.object({ repository: z.string(), allowPushes: z.boolean() })),
+  })).optional(),
+  workspaceOperations: z.array(z.discriminatedUnion("status", [
+    z.object({ workspace: z.string(), status: z.literal("applying"), message: z.string() }),
+    z.object({ workspace: z.string(), status: z.literal("succeeded"), message: z.string() }),
+    z.object({ workspace: z.string(), status: z.literal("failed"), message: z.string(), canRetry: z.literal(true), diagnosticDetails: z.string().optional() }),
+  ])).optional(),
+})
+
 const applicationSourceShape = z.object({
   runtimeRepair: z.unknown().nullable(),
   workspaces: z.array(z.object({
@@ -36,7 +58,7 @@ const applicationSourceShape = z.object({
   activities: z.array(z.unknown()),
   sandboxConfigurationOperation: z.unknown().nullable(),
   repositoryPushOperations: z.array(z.unknown()),
-  github: z.object({ state: z.enum(["disconnected", "connecting", "connected"]), hostIdentity: z.object({ name: z.string(), email: z.string() }).nullable().optional() }).passthrough(),
+  github: githubStateShape,
   secrets: z.array(z.unknown()),
   backup: z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() }),
   preferences: z.object({
@@ -96,7 +118,7 @@ export interface ProductionSnapshot {
 
 export function createProductionSource(native: ProductionBridge = bridge) {
   let snapshot: ProductionSnapshot = {
-    setupQueue: ["workspaceRun", "workspaceVerify", "identityRun", "identityVerify", "completion"].map((id) => ({ id: id as SetupQueueItemID, status: "idle" })),
+    setupQueue: ["workspaceRun", "workspaceVerify", "identityRun", "identityVerify", "githubRun", "githubVerify", "completion"].map((id) => ({ id: id as SetupQueueItemID, status: "idle" })),
     setupEvents: [],
     source: null,
     backup: unavailableBackup("Backup state has not loaded. No sandbox data changed."),
@@ -112,6 +134,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let lastMachineJob: { key: string; promise: Promise<ApplicationSource> } | undefined
   let identityVerificationSequence = 0
   let lastVerificationKey: string | undefined
+  let lastGitHubJob: { key: string; promise: Promise<void> } | undefined
   let lastIdentityJob: { key: string; promise: Promise<void> } | undefined
   let activeConfiguration: ApplicationSource["sandboxConfigurationOperation"] = null
   let activeRequestId: string | null = null
@@ -283,10 +306,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     ++identityVerificationSequence
     lastVerificationKey = undefined
     lastIdentityJob = undefined
-    setSetupStatus(["identityRun", "identityVerify", "completion"], "idle")
+    lastGitHubJob = undefined
+    setSetupStatus(["identityRun", "identityVerify", "githubRun", "githubVerify", "completion"], "idle")
     const promise = enqueueSetup(["workspaceRun", "workspaceVerify"], async (job) => {
       activeMachineJob = job
-      setSetupStatus(["identityRun", "identityVerify", "completion"], "idle")
+      setSetupStatus(["identityRun", "identityVerify", "githubRun", "githubVerify", "completion"], "idle")
       ++operationSequence
       const requestId = crypto.randomUUID()
       activeRequestId = requestId
@@ -349,22 +373,32 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
     ++identityVerificationSequence
     lastVerificationKey = undefined
-    if (step === "github" && request.github.connectionState === "connected" && request.github.workspaces.some(({ repositories }) => repositories.length > 0)) {
-      const error = new Error("Repository setup is not available yet. Remove the repository selections before continuing.")
-      setSetupStatus(["identityRun", "identityVerify"], "failed", error.message)
-      return Promise.reject(error)
-    }
     const machineJob = configureMachines(request.machineConfiguration)
     if (step === "workspaces") return machineJob
     const identities = request.github.workspaces.map(({ workspace, identity }) => ({ workspace, ...identity }))
-    const key = JSON.stringify([request.machineConfiguration, identities])
-    if (lastIdentityJob?.key === key) return lastIdentityJob.promise
-    const promise = enqueueSetup(["identityRun", "identityVerify"], async () => {
-      await machineJob
-      await native.invoke("configure_workspace_identities", { identities })
+    const identityKey = JSON.stringify([request.machineConfiguration, identities])
+    if (lastIdentityJob?.key !== identityKey) {
+      const promise = enqueueSetup(["identityRun", "identityVerify"], async () => {
+        await machineJob
+        await native.invoke("configure_workspace_identities", { identities })
+      })
+      lastIdentityJob = { key: identityKey, promise }
+      void promise.catch(() => { if (lastIdentityJob?.promise === promise) lastIdentityJob = undefined })
+    }
+    const identityJob = lastIdentityJob.promise
+    const key = JSON.stringify([request.machineConfiguration, request.github])
+    if (lastGitHubJob?.key === key) return lastGitHubJob.promise
+    const promise = enqueueSetup(["githubRun", "githubVerify"], async () => {
+      await identityJob
+      if (request.github.connectionState === "connected") {
+        const github = await githubMutation("save_github_configuration", { configuration: { accessEnabled: true, hostIdentity: snapshot.source?.github.hostIdentity ?? null, workspaces: request.github.workspaces.map((policy) => ({ repositoryMode: "selected", allRepositoriesAllowChanges: false, ...policy })) } })
+        const unsettled = github.workspaceOperations?.find(({ status }) => status !== "succeeded")
+        if (unsettled) throw new Error(unsettled.message)
+        if (request.github.workspaces.some(({ workspace }) => !github.workspaceOperations?.some((operation) => operation.workspace === workspace && operation.status === "succeeded"))) throw new Error("GitHub access has not been verified in every sandbox.")
+      }
     })
-    lastIdentityJob = { key, promise }
-    void promise.catch(() => { if (lastIdentityJob?.promise === promise) lastIdentityJob = undefined })
+    lastGitHubJob = { key, promise }
+    void promise.catch(() => { if (lastGitHubJob?.promise === promise) lastGitHubJob = undefined })
     return promise
   }
 
@@ -384,6 +418,21 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     void configureMachines(request).catch(() => {})
   }
 
+  async function githubMutation(command: string, arguments_?: Record<string, unknown>) {
+    try {
+      const github = githubStateShape.parse(await native.invoke(command, arguments_))
+      if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, github }, error: null })
+      return github
+    } catch (cause) {
+      const message = `GitHub operation failed: ${errorMessage(cause)}`
+      if (snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source, github: { ...snapshot.source.github,
+        repositoryCatalogStatus: { status: "unavailable", message, canRetry: true },
+        workspaceOperations: snapshot.source.workspaces.map(({ machine }) => ({ workspace: machine.name, status: "failed", message, canRetry: true })),
+      } } })
+      throw cause
+    }
+  }
+
   const applicationActions: ApplicationActions = {
     saveSecret: (_request: SecretConfigurationRequest) => reportUnavailable("Secret changes are not available in this Silo build. No secret was saved."),
     removeSecret: () => reportUnavailable("Secret changes are not available in this Silo build. No secret was removed."),
@@ -400,12 +449,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     restartWorkspace: (name) => workspaceAction("restart", name),
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name) => workspaceAction("open-editor", name),
-    connectGitHub: () => reportUnavailable("GitHub changes are not available in this Silo build. No account was connected."),
-    disconnectGitHub: () => reportUnavailable("GitHub changes are not available in this Silo build. No account was disconnected."),
-    setGitHubAccessEnabled: () => reportUnavailable("GitHub changes are not available in this Silo build. Repository access did not change."),
-    saveGitHubConfiguration: () => reportUnavailable("GitHub changes are not available in this Silo build. Repository access did not change."),
-    retryGitHubConfiguration: () => reportUnavailable("GitHub changes are not available in this Silo build. Repository access did not change."),
-    retryGitHubRepositoryCatalog: () => reportUnavailable("GitHub repository refresh is not available in this Silo build."),
+    connectGitHub: () => { void githubMutation("connect_github").catch(() => {}) },
+    disconnectGitHub: () => { void githubMutation("disconnect_github").catch(() => {}) },
+    setGitHubAccessEnabled: (enabled) => { void githubMutation("set_github_access_enabled", { enabled }).catch(() => {}) },
+    saveGitHubConfiguration: (configuration) => { void githubMutation("save_github_configuration", { configuration }).catch(() => {}) },
+    retryGitHubConfiguration: (workspace) => { void githubMutation("retry_github_configuration", { workspace: workspace ?? null }).catch(() => {}) },
+    retryGitHubRepositoryCatalog: () => { void githubMutation("refresh_github_repositories").catch(() => {}) },
   }
 
   function backupFailure(operation: "backup" | "restore", archive: BackupArchive, message: string, targetName?: string): BackupOperation {

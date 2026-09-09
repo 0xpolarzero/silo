@@ -122,6 +122,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     onOpenApp={onOpenApp}
     githubConnectionState={application?.github.state ?? "disconnected"}
     repositoryOptions={application?.github.repositoryCatalog}
+    repositoryPolicies={application?.github.workspaces}
     onRetryDependencies={dependencies.retry}
     actions={{
       submitStep: (step, request) => {

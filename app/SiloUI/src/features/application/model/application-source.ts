@@ -149,6 +149,8 @@ export interface ApplicationGitHubRepositoryPolicy {
 }
 
 export interface ApplicationGitHubWorkspacePolicy {
+  repositoryMode?: "selected" | "all"
+  allRepositoriesAllowChanges?: boolean
   workspace: string
   identity: ApplicationWorkspaceGitIdentity
   repositories: readonly ApplicationGitHubRepositoryPolicy[]

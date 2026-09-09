@@ -132,7 +132,7 @@ describe("onboarding restart recovery", () => {
     await user.clear(screen.getByLabelText("Git email for dev"))
     await user.type(screen.getByLabelText("Git email for dev"), "unfinished@")
     await user.click(screen.getByRole("checkbox", { name: "Apply Git identity to dev" }))
-    const pushes = within(screen.getByRole("table", { name: "Selected repositories for dev" })).getByRole("checkbox", { name: "Allow pushes for acme/silo" })
+    const pushes = within(screen.getByRole("table", { name: "Selected repositories for dev" })).getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })
     if (pushes.getAttribute("aria-checked") === "false") await user.click(pushes)
 
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
@@ -162,7 +162,7 @@ describe("onboarding restart recovery", () => {
     expect(screen.getByLabelText("Git email for development")).toHaveValue("unfinished@")
     expect(screen.getByRole("checkbox", { name: "Apply Git identity to development" })).not.toBeChecked()
     restored.rerender(onboarding(second, handlers))
-    expect(within(screen.getByRole("table", { name: "Selected repositories for development" })).getByRole("checkbox", { name: "Allow pushes for acme/silo" })).toBeChecked()
+    expect(within(screen.getByRole("table", { name: "Selected repositories for development" })).getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).toBeChecked()
     expect(second.getSnapshot().onboardingDraft?.unfinishedMachineEditor).toBeNull()
   })
 

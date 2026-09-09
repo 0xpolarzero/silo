@@ -1263,11 +1263,11 @@ describe("application", () => {
     const repositories = github.getByRole("table", { name: "Selected repositories for dev" })
     expect(within(repositories).getAllByRole("columnheader").map(({ textContent }) => textContent)).toEqual([
       "Repository",
-      "Allow pushes",
+      "Allow GitHub changes",
       "",
     ])
-    expect(within(repositories).getByRole("checkbox", { name: "Allow pushes for acme/silo" })).toBeChecked()
-    expect(within(repositories).getByRole("checkbox", { name: "Allow pushes for acme/design-system" })).not.toBeChecked()
+    expect(within(repositories).getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).toBeChecked()
+    expect(within(repositories).getByRole("checkbox", { name: "Allow GitHub changes for acme/design-system" })).not.toBeChecked()
     expect(within(repositories).getByRole("button", { name: "Remove acme/silo from dev" })).toBeVisible()
 
     const devDisclosure = github.getByRole("button", { name: "Collapse dev" })
@@ -1301,7 +1301,7 @@ describe("application", () => {
     expect(screen.queryByRole("option", { name: "acme/design-system" })).not.toBeInTheDocument()
 
     const selected = github.getByRole("table", { name: "Selected repositories for playgrounds" })
-    const pushes = within(selected).getByRole("checkbox", { name: "Allow pushes for acme/platform-tools" })
+    const pushes = within(selected).getByRole("checkbox", { name: "Allow GitHub changes for acme/platform-tools" })
     await user.click(pushes)
     expect(pushes).toBeChecked()
     expect(actions.saveGitHubConfiguration).toHaveBeenCalledTimes(3)
@@ -1368,14 +1368,10 @@ describe("application", () => {
     await user.click(github.getByRole("button", { name: "Disconnect" }))
     await user.click(github.getByRole("button", { name: "Disconnect" }))
     expect(actions.disconnectGitHub).toHaveBeenCalledOnce()
-    expect(github.getByRole("heading", { name: "Not connected" })).toBeVisible()
-    expect(github.queryByText("Connected as @taylor")).not.toBeInTheDocument()
-    expect(github.getByLabelText("Git name for dev")).toBeEnabled()
-    expect(github.queryByRole("combobox", { name: "Add repository to dev" })).not.toBeInTheDocument()
+    // A request alone must not claim that host access was revoked.
+    expect(github.getByText("Connected as @taylor")).toBeVisible()
+    expect(github.queryByRole("heading", { name: "Not connected" })).not.toBeInTheDocument()
 
-    await user.click(github.getByRole("button", { name: "Connect GitHub" }))
-    expect(actions.connectGitHub).toHaveBeenCalledOnce()
-    expect(github.getByRole("status")).toHaveTextContent("Connecting to GitHub…")
   })
 
   it("applies access toggles immediately and confirms clearing one sandbox's repositories", async () => {

@@ -368,7 +368,7 @@ fn valid_draft(value: &Value) -> bool {
                 "workspaceSelections",
                 "workspaceIdentities",
             ],
-            &[],
+            &["workspaceRepositoryAccess"],
         )
     {
         return false;
@@ -406,6 +406,25 @@ fn valid_draft(value: &Value) -> bool {
         {
             return false;
         }
+    }
+    if draft
+        .get("workspaceRepositoryAccess")
+        .is_some_and(|access| {
+            !access.as_object().is_some_and(|workspaces| {
+                workspaces.values().all(|value| {
+                    value.as_object().is_some_and(|policy| {
+                        only_fields(
+                            policy,
+                            &["repositoryMode", "allRepositoriesAllowChanges"],
+                            &[],
+                        ) && matches!(policy["repositoryMode"].as_str(), Some("selected" | "all"))
+                            && policy["allRepositoriesAllowChanges"].is_boolean()
+                    })
+                })
+            })
+        })
+    {
+        return false;
     }
     let Some(selections) = draft["workspaceSelections"].as_object() else {
         return false;
@@ -915,6 +934,30 @@ mod tests {
             }, "workspaceSelections":{"dev":[{"repository":"owner/repo", "allowPushes":false}]},
             "workspaceIdentities":{"dev":{"name":"", "email":"unfinished@", "apply":false}}
         })
+    }
+
+    #[test]
+    fn all_repository_intent_survives_restart_and_rejects_malformed_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(path.clone()));
+        let mut draft = unfinished_draft();
+        draft["workspaceRepositoryAccess"] =
+            json!({"dev":{"repositoryMode":"all","allRepositoriesAllowChanges":false}});
+        store.update_draft(draft.clone()).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(path)).snapshot().onboarding_draft,
+            draft.clone()
+        );
+        for invalid in [
+            json!(null),
+            json!({"dev":{"repositoryMode":"unknown","allRepositoriesAllowChanges":false}}),
+            json!({"dev":{"repositoryMode":"all","allRepositoriesAllowChanges":"yes"}}),
+            json!({"dev":{"repositoryMode":"all","allRepositoriesAllowChanges":false,"token":"secret"}}),
+        ] {
+            draft["workspaceRepositoryAccess"] = invalid;
+            assert!(!valid_draft(&draft));
+        }
     }
 
     #[test]

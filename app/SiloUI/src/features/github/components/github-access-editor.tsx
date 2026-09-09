@@ -19,6 +19,11 @@ export interface GitHubRepositorySelection {
   allowPushes: boolean
 }
 
+export interface GitHubRepositoryAccess {
+  repositoryMode: "selected" | "all"
+  allRepositoriesAllowChanges: boolean
+}
+
 export interface GitHubIdentity {
   name: string
   email: string
@@ -56,7 +61,7 @@ function WorkspaceDisclosure({ name, actions, children }: { name: string; action
   )
 }
 
-const repositoryGridColumns = "grid-cols-[minmax(0,1fr)_6.75rem_1.5rem]"
+const repositoryGridColumns = "grid-cols-[minmax(0,1fr)_10rem_1.5rem]"
 
 function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories, disabled = false, onAdd }: RepositoryComboboxProps) {
   const listboxId = useId()
@@ -155,6 +160,8 @@ export interface GitHubAccessEditorProps {
   connectionState: GitHubConnectionState
   repositoryOptions: readonly string[]
   workspaceSelections: Readonly<Record<string, readonly GitHubRepositorySelection[]>>
+  workspaceRepositoryAccess?: Readonly<Record<string, GitHubRepositoryAccess>>
+  onWorkspaceRepositoryAccessChange?: (workspace: string, access: GitHubRepositoryAccess) => void
   workspaceIdentities: Readonly<Record<string, GitHubIdentity>>
   currentHostGitIdentity: { name: string; email: string } | null
   onConnect: () => void
@@ -182,6 +189,8 @@ export function GitHubAccessEditor({
   repositoryOptions,
   workspaceSelections,
   workspaceIdentities,
+  workspaceRepositoryAccess = {},
+  onWorkspaceRepositoryAccessChange,
   currentHostGitIdentity,
   onConnect,
   onWorkspaceSelectionsChange,
@@ -223,7 +232,7 @@ export function GitHubAccessEditor({
             </ListRowIcon>
           }
           title={<h3 className={compactConnection ? undefined : "text-sm"}>{connectionState === "connected" ? connectedTitle : connectionState === "connecting" ? "Connecting to GitHub…" : "Not connected"}</h3>}
-          detail={connectionState === "connected" ? connectedDetail : connectionState === "connecting" ? "Completing the secure browser authorization." : "Connect to select private repositories and push permissions."}
+          detail={connectionState === "connected" ? connectedDetail : connectionState === "connecting" ? "Completing the secure browser authorization." : "Connect to choose repositories and allow GitHub changes."}
           detailClassName={compactConnection ? "whitespace-normal" : "mt-0.5 whitespace-normal text-xs"}
           actions={connectionState !== "connecting" && (
             <div className={`col-start-2 flex shrink-0 flex-wrap items-center ${compactConnection ? "gap-1" : "gap-2"}`}>
@@ -246,6 +255,7 @@ export function GitHubAccessEditor({
           {workspaces.map((workspace) => {
             const { name } = workspace
             const selections = workspaceSelections[name] ?? []
+            const access = workspaceRepositoryAccess[name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }
             const identity = workspaceIdentities[name] ?? { name: "", email: "", apply: true }
             const workspaceActions = renderWorkspaceActions?.(workspace)
             const workspaceNotice = renderWorkspaceNotice?.(workspace)
@@ -339,7 +349,22 @@ export function GitHubAccessEditor({
                     </div>
                     {connectionState === "connected" && (
                       <>
-                        {repositoryControlsAvailable && (
+                        {onWorkspaceRepositoryAccessChange && (
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                            <label className="flex items-center gap-2">
+                              <Checkbox aria-label={`All repositories for ${name}`} checked={access.repositoryMode === "all"} disabled={workspaceDisabled || !repositoryControlsAvailable}
+                                onCheckedChange={(checked) => onWorkspaceRepositoryAccessChange(name, { repositoryMode: checked === true ? "all" : "selected", allRepositoriesAllowChanges: false })} />
+                              All repositories
+                            </label>
+                            {access.repositoryMode === "all" && <label className="flex items-center gap-2">
+                              <Checkbox aria-label={`Allow GitHub changes for all repositories in ${name}`} checked={access.allRepositoriesAllowChanges} disabled={workspaceDisabled || !repositoryControlsAvailable}
+                                onCheckedChange={(checked) => onWorkspaceRepositoryAccessChange(name, { ...access, allRepositoriesAllowChanges: checked === true })} />
+                              Allow GitHub changes
+                            </label>}
+                          </div>
+                        )}
+                        {access.repositoryMode === "all" && <p className="text-xs text-muted-foreground">All repositories authorized on GitHub, including future additions.</p>}
+                        {access.repositoryMode !== "all" && repositoryControlsAvailable && (
                           <RepositoryCombobox
                             workspace={name}
                             repositoryOptions={repositoryOptions}
@@ -348,20 +373,20 @@ export function GitHubAccessEditor({
                             onAdd={(repository) => onWorkspaceSelectionsChange(name, [...selections, { repository, allowPushes: false }])}
                           />
                         )}
-                        {selections.length > 0 && (
+                        {access.repositoryMode !== "all" && selections.length > 0 && (
                           <div role="table" aria-label={`Selected repositories for ${name}`} className="overflow-hidden rounded-md border border-border">
                             <div role="row" className={`grid ${repositoryGridColumns} items-center gap-2 bg-muted/50 px-2 py-1.5 text-left text-[11px] font-medium text-muted-foreground`}>
                               <span role="columnheader">Repository</span>
                               <span role="columnheader" className="flex items-center justify-start gap-0.5 text-left">
-                                Allow pushes
+                                Allow GitHub changes
                                 <TooltipProvider delayDuration={150}>
                                   <Tooltip>
                                     <TooltipTrigger asChild>
-                                      <Button type="button" variant="ghost" size="icon-xs" className="size-5" aria-label="About Allow pushes">
+                                      <Button type="button" variant="ghost" size="icon-xs" className="size-5" aria-label="About Allow GitHub changes">
                                         <Info aria-hidden="true" className="size-3" />
                                       </Button>
                                     </TooltipTrigger>
-                                    <TooltipContent>Allow pushing to this repo from inside this VM.</TooltipContent>
+                                    <TooltipContent>Allow Git pushes and GitHub changes, such as issues and pull requests, from this VM.</TooltipContent>
                                   </Tooltip>
                                 </TooltipProvider>
                               </span>
@@ -405,7 +430,7 @@ export function GitHubAccessEditor({
                                 <span role="cell" className="min-w-0 break-all text-xs">{selection.repository}</span>
                                 <span role="cell" className="flex justify-start">
                                   <Checkbox
-                                    aria-label={`Allow pushes for ${selection.repository}`}
+                                    aria-label={`Allow GitHub changes for ${selection.repository}`}
                                     checked={selection.allowPushes}
                                     disabled={workspaceDisabled || !repositoryControlsAvailable}
                                     onCheckedChange={(checked) => onWorkspaceSelectionsChange(name, selections.map((item) => (

@@ -199,7 +199,7 @@ describe("onboarding", () => {
     await user.click(continueButton)
 
     expectHiddenPanelHeading("Review setup")
-    expect(screen.getByText("0 repositories across 0 of 3 sandboxes · 0 push-enabled repositories")).toBeVisible()
+    expect(screen.getByText("0 repositories across 0 of 3 sandboxes · 0 repositories allowing GitHub changes")).toBeVisible()
   })
 
   it("renders stable disconnected, connecting, and connected GitHub states", async () => {
@@ -258,8 +258,8 @@ describe("onboarding", () => {
     const selected = screen.getByRole("table", { name: "Selected repositories for dev" })
     expect(within(selected).getByText("acme/silo")).toBeVisible()
     expect(within(selected).getByText("acme/design-system")).toBeVisible()
-    expect(within(selected).getByRole("checkbox", { name: "Allow pushes for acme/silo" })).not.toBeChecked()
-    expect(within(selected).getByRole("checkbox", { name: "Allow pushes for acme/design-system" })).toBeChecked()
+    expect(within(selected).getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).not.toBeChecked()
+    expect(within(selected).getByRole("checkbox", { name: "Allow GitHub changes for acme/design-system" })).toBeChecked()
 
     await user.click(screen.getByLabelText("Add repository to playgrounds"))
     expect(screen.getAllByRole("option").map(({ textContent }) => textContent)).toEqual(["acme/silo", "acme/design-system"])
@@ -292,7 +292,7 @@ describe("onboarding", () => {
     const selected = screen.getByRole("table", { name: "Selected repositories for playgrounds" })
     expect(within(selected).getByText("acme/design-system")).toBeVisible()
     expect(within(selected).getByText("acme/platform-tools")).toBeVisible()
-    const pushes = within(selected).getByRole("checkbox", { name: "Allow pushes for acme/platform-tools" })
+    const pushes = within(selected).getByRole("checkbox", { name: "Allow GitHub changes for acme/platform-tools" })
     expect(pushes).not.toBeChecked()
     await user.click(pushes)
     expect(pushes).toBeChecked()
@@ -303,10 +303,10 @@ describe("onboarding", () => {
     const retained = screen.getByRole("table", { name: "Selected repositories for playgrounds" })
     expect(within(retained).getByText("acme/design-system")).toBeVisible()
     expect(within(retained).getByText("acme/platform-tools")).toBeVisible()
-    expect(within(retained).getByRole("checkbox", { name: "Allow pushes for acme/platform-tools" })).toBeChecked()
+    expect(within(retained).getByRole("checkbox", { name: "Allow GitHub changes for acme/platform-tools" })).toBeChecked()
 
     await user.click(screen.getByRole("tab", { name: /Review/ }))
-    expect(screen.getByText("3 repositories across 2 of 3 sandboxes · 1 push-enabled repository")).toBeVisible()
+    expect(screen.getByText("3 repositories across 2 of 3 sandboxes · 1 repository allowing GitHub changes")).toBeVisible()
     expect(screen.getByText("Taylor Example <taylor@example.com> → dev, personal; Morgan Example <taylor@example.com> → playgrounds")).toBeVisible()
   })
 
@@ -352,22 +352,22 @@ describe("onboarding", () => {
     expect(screen.queryByRole("table", { name: "Selected repositories for dev" })).not.toBeInTheDocument()
     await user.click(screen.getByRole("tab", { name: /Review/ }))
 
-    expect(screen.getByText("0 repositories across 0 of 3 sandboxes · 0 push-enabled repositories")).toBeVisible()
+    expect(screen.getByText("0 repositories across 0 of 3 sandboxes · 0 repositories allowing GitHub changes")).toBeVisible()
   })
 
-  it("exposes the Allow pushes explanation to keyboard users", async () => {
+  it("exposes the Allow GitHub changes explanation to keyboard users", async () => {
     const user = userEvent.setup()
     renderScenario("running", "connected")
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
 
-    const tooltipTrigger = screen.getByRole("button", { name: "About Allow pushes" })
-    screen.getByRole("checkbox", { name: "Allow pushes for acme/silo" }).focus()
+    const tooltipTrigger = screen.getByRole("button", { name: "About Allow GitHub changes" })
+    screen.getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" }).focus()
     await user.tab({ shift: true })
     expect(screen.getByRole("button", { name: "Clear repositories from dev" })).toHaveFocus()
     await user.tab({ shift: true })
 
     expect(tooltipTrigger).toHaveFocus()
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Allow pushing to this repo from inside this VM.")
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Allow Git pushes and GitHub changes, such as issues and pull requests, from this VM.")
   })
 
   it("prefills and enables every workspace identity from the optional host identity", async () => {
@@ -688,7 +688,7 @@ describe("onboarding", () => {
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
     await user.click(screen.getByRole("button", { name: "Remove acme/silo from dev" }))
     await user.click(screen.getByRole("button", { name: "Continue" }))
-    expect(screen.getByText("0 repositories across 0 of 3 sandboxes · 0 push-enabled repositories")).toBeVisible()
+    expect(screen.getByText("0 repositories across 0 of 3 sandboxes · 0 repositories allowing GitHub changes")).toBeVisible()
     await user.click(screen.getByRole("button", { name: "Finish" }))
 
     expect(finishSetup).toHaveBeenCalledOnce()

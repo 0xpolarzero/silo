@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 
 import { TabsContent } from "@/components/ui/tabs"
 import { SetupComplete } from "@/features/onboarding/components/setup-complete"
+import type { ApplicationGitHubWorkspacePolicy } from "@/features/application/model/application-source"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { OnboardingShell } from "@/features/onboarding/components/onboarding-shell"
 import type {
@@ -29,6 +30,7 @@ export interface OnboardingAppProps {
   completed: boolean
   presentationOnlyCompleted?: boolean
   repositoryOptions?: readonly string[]
+  repositoryPolicies?: readonly ApplicationGitHubWorkspacePolicy[]
   onOpenApp?: () => void
   onRetryDependencies?: () => void
 }
@@ -139,6 +141,7 @@ export function OnboardingApp({
   completed,
   presentationOnlyCompleted = false,
   repositoryOptions,
+  repositoryPolicies,
   onOpenApp,
   onRetryDependencies,
 }: OnboardingAppProps) {
@@ -148,8 +151,9 @@ export function OnboardingApp({
       currentStep: "dependencies" as const,
       machines: source.machineConfigurations.map((machine) => ({ ...machine })),
       unfinishedMachineEditor: null,
-      workspaceSelections: initialWorkspaceSelections(source),
-      workspaceIdentities: initialWorkspaceIdentities(source),
+      workspaceRepositoryAccess: Object.fromEntries((repositoryPolicies ?? []).map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }])),
+      workspaceSelections: repositoryPolicies ? Object.fromEntries(repositoryPolicies.map((policy) => [policy.workspace, [...policy.repositories]])) : initialWorkspaceSelections(source),
+      workspaceIdentities: repositoryPolicies ? { ...initialWorkspaceIdentities(source), ...Object.fromEntries(repositoryPolicies.map((policy) => [policy.workspace, { ...policy.identity }])) } : initialWorkspaceIdentities(source),
     }
     return completed ? { ...restored, currentStep: "review" } : restored
   })
@@ -247,7 +251,8 @@ export function OnboardingApp({
       return [name, current.workspaceIdentities[name] ?? (previousName ? current.workspaceIdentities[previousName] : undefined)
         ?? { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }]
     }))
-    updateDraft({ machines: request.machines, workspaceSelections: selections, workspaceIdentities: identities, unfinishedMachineEditor: null })
+    const workspaceRepositoryAccess = Object.fromEntries(request.machines.map(({ id, name }) => [name, current.workspaceRepositoryAccess?.[name] ?? current.workspaceRepositoryAccess?.[previousNameByID.get(id) ?? ""] ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
+    updateDraft({ machines: request.machines, workspaceRepositoryAccess, workspaceSelections: selections, workspaceIdentities: identities, unfinishedMachineEditor: null })
     actions.saveMachineConfiguration(request)
   }
 
@@ -273,6 +278,7 @@ export function OnboardingApp({
         connectionState: githubConnectionState,
         workspaces: currentDraft.current.machines.map(({ name }) => ({
           workspace: name,
+          ...(githubConnectionState === "connected" ? currentDraft.current.workspaceRepositoryAccess?.[name] : undefined),
           repositories: githubConnectionState === "connected" ? [...(currentDraft.current.workspaceSelections[name] ?? [])] : [],
           identity: { ...(currentDraft.current.workspaceIdentities[name] ?? { name: "", email: "", apply: false }) },
         })),
@@ -291,6 +297,8 @@ export function OnboardingApp({
   }
 
   const machineNames = machines.map(({ name }) => name)
+  const allWorkspaceCount = machineNames.filter((name) => draft.workspaceRepositoryAccess?.[name]?.repositoryMode === "all").length
+  const allWriteWorkspaceCount = machineNames.filter((name) => draft.workspaceRepositoryAccess?.[name]?.repositoryMode === "all" && draft.workspaceRepositoryAccess[name].allRepositoriesAllowChanges).length
   const configuredWorkspaceCount = machineNames.filter((name) => (workspaceSelections[name] ?? []).length > 0).length
   const repositoryCount = machineNames.reduce((total, name) => total + (workspaceSelections[name] ?? []).length, 0)
   const pushEnabledRepositoryCount = machineNames.reduce(
@@ -300,7 +308,7 @@ export function OnboardingApp({
   const repositoryLabel = repositoryCount === 1 ? "repository" : "repositories"
   const pushRepositoryLabel = pushEnabledRepositoryCount === 1 ? "repository" : "repositories"
   const githubSummary = githubConnectionState === "connected"
-    ? `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${machines.length} sandboxes · ${pushEnabledRepositoryCount} push-enabled ${pushRepositoryLabel}`
+    ? allWorkspaceCount > 0 ? `All authorized repositories in ${allWorkspaceCount} ${allWorkspaceCount === 1 ? "sandbox" : "sandboxes"} · ${allWriteWorkspaceCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${machines.length} sandboxes · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
     : "GitHub not connected"
   const identitySummary = workspaceIdentitySummary(
     workspaceIdentities,
@@ -340,6 +348,8 @@ export function OnboardingApp({
           connectionState={githubConnectionState}
           repositoryOptions={availableRepositories}
           workspaceSelections={workspaceSelections}
+          workspaceRepositoryAccess={draft.workspaceRepositoryAccess}
+          onWorkspaceRepositoryAccessChange={(workspace, access) => updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })}
           workspaceIdentities={workspaceIdentities}
           currentHostGitIdentity={source.currentHostGitIdentity}
           onConnect={actions.connectGitHub}

@@ -12,6 +12,12 @@ const draft = {
 }
 
 describe("onboarding recovery validation", () => {
+  it("persists all-repository intent without expanding it into the current catalog", () => {
+    const input = { ...draft, workspaceRepositoryAccess: { dev: { repositoryMode: "all", allRepositoriesAllowChanges: false } } }
+    expect(onboardingDraftSchema.parse(input)).toEqual(input)
+    expect(onboardingDraftSchema.safeParse({ ...input, workspaceRepositoryAccess: { dev: { repositoryMode: "all", allRepositoriesAllowChanges: "yes" } } }).success).toBe(false)
+  })
+
   it("keeps incomplete editor values without weakening saved machine validation", () => {
     const input = { ...draft, unfinishedMachineEditor: {
       draft: { id: crypto.randomUUID(), kind: "ssh", name: "", host: "", user: "not yet valid", port: 0 },

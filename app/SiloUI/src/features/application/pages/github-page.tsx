@@ -12,6 +12,7 @@ import type {
 import {
   GitHubAccessEditor,
   type GitHubIdentity,
+  type GitHubRepositoryAccess,
   type GitHubRepositorySelection,
 } from "@/features/github/components/github-access-editor"
 
@@ -20,6 +21,7 @@ type WorkspaceIdentities = Record<string, GitHubIdentity>
 type WorkspaceOperations = Record<string, GitHubWorkspaceOperation>
 
 interface GitHubDraft {
+  access: Record<string, GitHubRepositoryAccess>
   selections: WorkspaceSelections
   identities: WorkspaceIdentities
 }
@@ -31,6 +33,8 @@ function draftFromSource(
 ): GitHubDraft {
   const policies = policiesSnapshot ?? workspaces.map((workspace) => ({
     workspace: workspace.machine.name,
+    repositoryMode: "selected" as const,
+    allRepositoriesAllowChanges: false,
     identity: {
       name: hostIdentity?.name ?? "",
       email: hostIdentity?.email ?? "",
@@ -40,6 +44,7 @@ function draftFromSource(
   }))
 
   return {
+    access: Object.fromEntries(policies.map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }])),
     selections: Object.fromEntries(policies.map((policy) => [
       policy.workspace,
       policy.repositories.map((repository) => ({ ...repository })),
@@ -50,6 +55,7 @@ function draftFromSource(
 
 function copyDraft(draft: GitHubDraft): GitHubDraft {
   return {
+    access: Object.fromEntries(Object.entries(draft.access).map(([name, access]) => [name, { ...access }])),
     selections: Object.fromEntries(Object.entries(draft.selections).map(([workspace, selections]) => [
       workspace,
       selections.map((selection) => ({ ...selection })),
@@ -64,6 +70,7 @@ function configurationFromDraft(source: ApplicationSource, draft: GitHubDraft, a
     hostIdentity: source.github.hostIdentity ?? null,
     workspaces: source.workspaces.map(({ machine }) => ({
       workspace: machine.name,
+      ...(draft.access[machine.name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }),
       identity: draft.identities[machine.name] ?? { name: "", email: "", apply: true },
       repositories: draft.selections[machine.name] ?? [],
     })),
@@ -156,7 +163,7 @@ export function GitHubPage({
     setAccessEnabled(source.github.accessEnabled ?? true)
     // oxlint-disable-next-line react/set-state-in-effect
     setConfirmingDisconnect(false)
-  }, [source.github.accessEnabled, source.github.state])
+  }, [source.github])
 
   useEffect(() => {
     // A native replacement publishes the latest desired-versus-runtime state per workspace.
@@ -234,14 +241,11 @@ export function GitHubPage({
 
   function toggleAccess() {
     const nextEnabled = !accessEnabled
-    setAccessEnabled(nextEnabled)
     actions.setGitHubAccessEnabled?.(nextEnabled)
   }
 
   function disconnect() {
     setConfirmingDisconnect(false)
-    setConnectionState("disconnected")
-    setWorkspaceOperations({})
     actions.disconnectGitHub?.()
   }
 
@@ -277,6 +281,8 @@ export function GitHubPage({
         connectionState={connectionState}
         repositoryOptions={source.github.repositoryCatalog ?? []}
         workspaceSelections={draft.selections}
+        workspaceRepositoryAccess={draft.access}
+        onWorkspaceRepositoryAccessChange={(workspace, access) => applyWorkspaceDraft(workspace, { ...draft, access: { ...draft.access, [workspace]: access } }, "Applying repository access…")}
         workspaceIdentities={draft.identities}
         currentHostGitIdentity={source.github.hostIdentity ?? null}
         onConnect={() => {

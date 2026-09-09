@@ -69,6 +69,8 @@ export interface OnboardingCompletionRequest {
     connectionState: GitHubConnectionState
     workspaces: Array<{
       workspace: string
+      repositoryMode?: "selected" | "all"
+      allRepositoriesAllowChanges?: boolean
       repositories: WorkspaceRepositorySelection[]
       identity: WorkspaceGitIdentity
     }>
