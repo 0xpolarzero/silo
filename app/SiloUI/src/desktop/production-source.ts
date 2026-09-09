@@ -22,6 +22,7 @@ const bridge: ProductionBridge = {
 }
 
 const githubStateShape = z.object({
+  policyRevision: z.number().int().nonnegative().optional(),
   state: z.enum(["disconnected", "connecting", "connected"]),
   account: z.string().nullish().transform((value) => value ?? undefined),
   accessEnabled: z.boolean().optional(),
@@ -141,6 +142,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let operationSequence = 0
   let disposed = false
   let refreshSequence = 0
+  let githubMutationSequence = 0
+  let githubMutationPending = false
   const unlisten: Array<() => void> = []
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
@@ -205,6 +208,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       }
       catch (cause) { backup = unreadableBackup(`Silo returned invalid backup state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
     } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
+    if (source && snapshot.source && (githubMutationPending || (source.github.policyRevision ?? 0) < (snapshot.source.github.policyRevision ?? 0))) source = { ...source, github: snapshot.source.github }
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
     publish({ ...snapshot, source, backup, loading: false, error })
   }
@@ -392,9 +396,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       await identityJob
       if (request.github.connectionState === "connected") {
         const github = await githubMutation("save_github_configuration", { configuration: { accessEnabled: true, hostIdentity: snapshot.source?.github.hostIdentity ?? null, workspaces: request.github.workspaces.map((policy) => ({ repositoryMode: "selected", allRepositoriesAllowChanges: false, ...policy })) } })
-        const unsettled = github.workspaceOperations?.find(({ status }) => status !== "succeeded")
-        if (unsettled) throw new Error(unsettled.message)
-        if (request.github.workspaces.some(({ workspace }) => !github.workspaceOperations?.some((operation) => operation.workspace === workspace && operation.status === "succeeded"))) throw new Error("GitHub access has not been verified in every sandbox.")
+        await waitForGitHubAccess(github, request.github.workspaces.map(({ workspace }) => workspace))
       }
     })
     lastGitHubJob = { key, promise }
@@ -418,17 +420,40 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     void configureMachines(request).catch(() => {})
   }
 
+  async function waitForGitHubAccess(initial: z.infer<typeof githubStateShape>, workspaces: string[]) {
+    let github = initial
+    const revision = initial.policyRevision
+    const deadline = Date.now() + 300_000
+    while (true) {
+      if (disposed) throw new Error("Silo closed before GitHub access was verified.")
+      if (revision !== undefined && (github.policyRevision !== revision || (snapshot.source?.github.policyRevision ?? revision) > revision)) throw new Error("GitHub settings changed during setup. Continue again to verify the latest settings.")
+      const operations = workspaces.map((workspace) => github.workspaceOperations?.find((operation) => operation.workspace === workspace))
+      const failure = operations.find((operation) => operation?.status === "failed")
+      if (failure) throw new Error(failure.message)
+      if (operations.every((operation) => operation?.status === "succeeded")) return
+      if (Date.now() >= deadline) throw new Error("GitHub access has not been verified in every sandbox. Retry to check again.")
+      await new Promise((resolve) => window.setTimeout(resolve, 500))
+      github = githubStateShape.parse(await native.invoke("read_github_state"))
+      if (!githubMutationPending && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github } })
+    }
+  }
+
   async function githubMutation(command: string, arguments_?: Record<string, unknown>) {
+    const sequence = ++githubMutationSequence
+    githubMutationPending = true
+    ++refreshSequence
     try {
       const github = githubStateShape.parse(await native.invoke(command, arguments_))
-      if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, github }, error: null })
+      if (sequence === githubMutationSequence && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github }, error: null })
       return github
     } catch (cause) {
       const message = `GitHub operation failed: ${errorMessage(cause)}`
-      if (snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source, github: { ...snapshot.source.github,
+      if (sequence === githubMutationSequence && snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source, github: { ...snapshot.source.github,
         repositoryCatalogStatus: { status: "unavailable", message, canRetry: command === "refresh_github_repositories" },
       } } })
       throw cause
+    } finally {
+      if (sequence === githubMutationSequence) githubMutationPending = false
     }
   }
 

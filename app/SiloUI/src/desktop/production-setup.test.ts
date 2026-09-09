@@ -27,7 +27,7 @@ async function setup(savedActivity: SiloProgressEvent[] = []) {
     if (command === "read_setup_activity") return savedActivity
     if (command === "save_machine_configuration") return machines()
     if (command === "configure_workspace_identities") return identities()
-    if (command === "save_github_configuration") return github()
+    if (command === "save_github_configuration" || command === "read_github_state") return github()
     throw new Error(`Unexpected command ${command}`)
   })
   const bridge = { invoke, listen: async (name: string, handler: (event?: { payload: unknown }) => void) => { events.set(name, handler); return () => events.delete(name) } } as ProductionBridge
@@ -188,6 +188,38 @@ describe("production setup queue", () => {
     expect(markComplete).not.toHaveBeenCalled()
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "identityVerify")?.status).toBe("succeeded")
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubVerify")?.status).toBe("failed")
+    store.dispose()
+  })
+
+  it.each(["succeeded", "failed"] as const)("waits for asynchronous GitHub policy and handles %s acknowledgment", async (status) => {
+    const { store, github } = await setup()
+    const selected = structuredClone(request)
+    selected.github.connectionState = "connected"
+    const workspace = selected.github.workspaces[0].workspace
+    const pending = deferred<unknown>()
+    github.mockResolvedValueOnce({ ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }).mockReturnValueOnce(pending.promise)
+    const markComplete = vi.fn(async () => {})
+    const result = store.finishSetup(selected, markComplete)
+    const outcome = status === "failed" ? expect(result).rejects.toThrow("Policy rejected") : expect(result).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(github).toHaveBeenCalledTimes(2), { timeout: 1500 })
+    expect(markComplete).not.toHaveBeenCalled()
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubRun")?.status).toBe("running")
+    pending.resolve({ ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status, message: "Policy rejected", ...(status === "failed" ? { canRetry: true } : {}) }] })
+    await outcome
+    expect(markComplete).toHaveBeenCalledTimes(status === "succeeded" ? 1 : 0)
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "identityVerify")?.status).toBe("succeeded")
+    store.dispose()
+  })
+
+  it("does not complete setup using acknowledgment for a replacement GitHub policy", async () => {
+    const { store, github } = await setup()
+    const selected = structuredClone(request)
+    selected.github.connectionState = "connected"
+    const workspace = selected.github.workspaces[0].workspace
+    github.mockResolvedValueOnce({ ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }).mockResolvedValueOnce({ ...application.github, policyRevision: 8, workspaceOperations: [{ workspace, status: "succeeded", message: "Applied other settings" }] })
+    const markComplete = vi.fn(async () => {})
+    await expect(store.finishSetup(selected, markComplete)).rejects.toThrow("GitHub settings changed during setup")
+    expect(markComplete).not.toHaveBeenCalled()
     store.dispose()
   })
 

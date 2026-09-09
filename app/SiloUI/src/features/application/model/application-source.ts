@@ -182,6 +182,7 @@ export interface ApplicationSource {
   sandboxConfigurationOperation: SandboxConfigurationOperation | null
   repositoryPushOperations: RepositoryPushOperation[]
   github: {
+    policyRevision?: number
     state: "disconnected" | "connecting" | "connected"
     account?: string
     /** Optional until every native source publishes the richer management snapshot. */

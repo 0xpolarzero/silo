@@ -57,6 +57,25 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("ignores an older settings response after a newer save completes", async () => {
+    const mock = native()
+    const original = mock.invoke.getMockImplementation()!
+    const pending: Array<(value: unknown) => void> = []
+    mock.invoke.mockImplementation((command, args) => command === "save_github_configuration" ? new Promise((resolve) => { pending.push(resolve) }) : original(command, args))
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    const configuration = { accessEnabled: true, hostIdentity: null, workspaces: [] }
+    store.applicationActions.saveGitHubConfiguration!(configuration)
+    store.applicationActions.saveGitHubConfiguration!({ ...configuration, accessEnabled: false })
+    pending[1]({ ...source.github, policyRevision: 2, accessEnabled: false })
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.policyRevision).toBe(2))
+    pending[0]({ ...source.github, policyRevision: 1, accessEnabled: true })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(store.getSnapshot().source?.github.accessEnabled).toBe(false)
+    expect(store.getSnapshot().source?.github.policyRevision).toBe(2)
+    store.dispose()
+  })
+
   it("keeps all-repository intent and waits for native acknowledgment before showing changed access", async () => {
     let resolveMutation!: (value: unknown) => void
     const request = { accessEnabled: false, hostIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }
