@@ -235,6 +235,15 @@ all outstanding local VM edits included in that request.
 
 Validation: 492 frontend tests across 52 files, 35 focused native GitHub tests,
 lint/type checking, and the configured macOS debug bundle passed. The real app
-showed the host author populated for all three VMs. Its renewed Keychain approval
-was still pending before the final reconnect/All repositories interaction check;
-those interactions must not be claimed verified from this build yet.
+showed the host author populated for all three VMs. After Keychain access resolved,
+selecting All repositories for dev saved the selection without the invalid-identity
+error and settled its loading state. The existing VMs then reported real runtime
+failures: missing GitHub protocol support, old identity environment variables that
+require restart to remove, or missing guest Git. No existing VM was recreated.
+
+Automatic approval review blocked confirming Disconnect on the live account;
+the confirmation was canceled. Fresh-connect defaults have regression coverage,
+but manual reconnect was not verified. A separate fresh-VM UI check was attempted;
+the creation form disappeared before input could be applied, so no test VM was
+created and that check is not counted as passed. Earlier fresh-VM integration
+results above remain separate from this UI regression check.
