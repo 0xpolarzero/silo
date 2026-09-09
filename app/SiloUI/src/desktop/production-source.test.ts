@@ -46,6 +46,7 @@ describe("production application bridge", () => {
       command === "list_workspace_directory" ? page : mock.invoke(command, args))
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
     expect(await store.applicationActions.listWorkspaceDirectory?.("dev", "/workspace", 200, "snapshot")).toEqual(page)
+    expect(await store.statusActions.listWorkspaceDirectory?.("dev", "/workspace", 200, "snapshot")).toEqual(page)
     expect(invoke).toHaveBeenCalledWith("list_workspace_directory", { workspace: "dev", path: "/workspace", offset: 200, snapshotId: "snapshot" })
     page.entries[0].path = "/outside"
     await expect(store.applicationActions.listWorkspaceDirectory?.("dev", "/workspace", 0)).rejects.toThrow()

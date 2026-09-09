@@ -6,7 +6,7 @@ export interface StatusBarRoute {
   workspace?: string
 }
 
-export interface StatusBarActions extends Pick<ApplicationActions, "startWorkspace" | "stopWorkspace" | "restartWorkspace" | "openTerminal" | "pushRepository"> {
+export interface StatusBarActions extends Pick<ApplicationActions, "startWorkspace" | "stopWorkspace" | "restartWorkspace" | "openTerminal" | "pushRepository" | "listWorkspaceDirectory"> {
   openSilo: (route?: StatusBarRoute) => void
   quit: () => void
   refresh: () => void

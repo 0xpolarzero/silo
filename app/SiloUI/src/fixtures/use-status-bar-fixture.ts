@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { ApplicationSource, RepositoryPushOperation } from "@/features/application/model/application-source"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 import { statusBarSourceForFixture, type StatusBarFixtureMode } from "./status-bar-scenarios"
 import { useSettings } from "@/features/preferences/settings-store"
+
+import { fixtureDirectoryLoader } from "./directory-loader"
 
 interface PreviewOperation {
   name: string
@@ -143,7 +145,9 @@ export function useStatusBarFixture(source: ApplicationSource, mode: StatusBarFi
     }))
   }, [])
 
+  const listWorkspaceDirectory = useMemo(() => fixtureDirectoryLoader(snapshot.workspaces), [snapshot.workspaces])
   const actions: StatusBarActions = {
+    listWorkspaceDirectory,
     openSilo: (route) => onOpenSilo(settleOperations(), route),
     quit: () => {
       settleOperations()

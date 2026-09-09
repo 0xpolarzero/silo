@@ -143,7 +143,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
 
   if (folders && workspaceAvailability(folders, source).canOpen) {
     return <div key="folders" className="status-page status-page-forward flex max-h-[518px] shrink-0 flex-col overflow-hidden">
-      <StatusFolderPicker workspace={folders} editor={source.preferences.editor} onBack={() => { setFolderWorkspace(null); focusContent() }} onOpen={(path) => actions.openEditor(folders.machine.name, path)} />
+      <StatusFolderPicker listDirectory={actions.listWorkspaceDirectory} workspace={folders} editor={source.preferences.editor} onBack={() => { setFolderWorkspace(null); focusContent() }} onOpen={(path) => actions.openEditor(folders.machine.name, path)} />
     </div>
   }
 

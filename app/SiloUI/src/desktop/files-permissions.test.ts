@@ -27,10 +27,10 @@ describe("Files desktop permission boundary", () => {
     }
   })
 
-  it("does not grant file browsing to the status panel, including shared capabilities", () => {
+  it("grants read-only file browsing to the status panel", () => {
     const allowed = permissions("status")
     for (const command of commands) {
-      expect(allowed).not.toContain(`allow-${command.replaceAll("_", "-")}`)
+      expect(allowed).toContain(`allow-${command.replaceAll("_", "-")}`)
     }
   })
 })

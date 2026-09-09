@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react"
+import { useMemo, useState } from "react"
+import { fixtureDirectoryLoader } from "./directory-loader"
 import { useApplicationFixture } from "@/fixtures/application-state"
 import { ApplicationApp } from "@/features/application/application-app"
 import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
@@ -42,17 +43,7 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
 
 function FixtureApplicationPreview({ source, actions, backupPreviewMode, initialRoute }: Parameters<typeof ApplicationPreview>[0]) {
   const fixture = useApplicationFixture(source)
-  const listWorkspaceDirectory = useCallback(async (workspace: string, path: string, offset: number) => {
-    let entries = source.workspaces.find(({ machine }) => machine.name === workspace)?.files ?? []
-    for (const name of path.slice("/workspace".length).split("/").filter(Boolean)) {
-      entries = entries.find((entry) => entry.name === name)?.children ?? []
-    }
-    return {
-      snapshotId: `fixture:${workspace}:${path}`,
-      entries: entries.slice(offset, offset + 200).map((entry) => ({ name: entry.name, path: `${path}/${entry.name}`, kind: entry.kind })),
-      nextOffset: entries.length > offset + 200 ? offset + 200 : null,
-    }
-  }, [source.workspaces])
+  const listWorkspaceDirectory = useMemo(() => fixtureDirectoryLoader(source.workspaces), [source.workspaces])
   const backup = useBackupFixture({
     source: fixture.source,
     previewMode: backupPreviewMode,

@@ -4,12 +4,14 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
+import { fixtureDirectoryLoader } from "@/fixtures/directory-loader"
 import { StatusBar } from "./status-bar"
 import type { StatusBarActions } from "./status-bar-types"
 
 function setup(overrides: Partial<ApplicationSource> = {}) {
   const source = { ...applicationSourceForScenario("complete"), activities: [], ...overrides }
   const actions: StatusBarActions = {
+    listWorkspaceDirectory: fixtureDirectoryLoader(source.workspaces),
     openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
     startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(),
     openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(),
@@ -190,8 +192,8 @@ describe("status bar", () => {
     await user.type(screen.getByRole("textbox", { name: "Filter folders" }), "missing")
     expect(screen.getByRole("status")).toHaveTextContent("No matching folders")
     await user.clear(screen.getByRole("textbox", { name: "Filter folders" }))
-    await user.click(screen.getByRole("button", { name: "projects" }))
-    await user.click(screen.getByRole("button", { name: "silo" }))
+    await user.click(await screen.findByRole("button", { name: "projects" }))
+    await user.click(await screen.findByRole("button", { name: "silo" }))
     await user.click(screen.getByRole("button", { name: "Open in Visual Studio Code" }))
     expect(actions.openEditor).toHaveBeenCalledWith("dev", "/workspace/projects/silo")
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()

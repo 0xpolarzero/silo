@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react"
 import { ArrowLeft, ChevronRight, Code, Folder, Search } from "lucide-react"
 
 import { ListCard } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import type { ApplicationFileEntry, ApplicationWorkspace } from "@/features/application/model/application-source"
+import type { ApplicationWorkspace } from "@/features/application/model/application-source"
 
-export function StatusFolderPicker({ workspace, editor, onBack, onOpen }: {
+import { createDirectoryStore, directoryKey, type DirectoryLoader } from "@/features/application/model/directory-store"
+
+export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDirectory }: {
+  listDirectory?: DirectoryLoader
   workspace: ApplicationWorkspace
   editor: string
   onBack: () => void
@@ -17,11 +20,36 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen }: {
   const search = useRef<HTMLInputElement>(null)
   const back = useRef<HTMLButtonElement>(null)
   useEffect(() => { back.current?.focus() }, [])
-  let entries: ApplicationFileEntry[] = workspace.files
-  for (const segment of segments) entries = entries.find((entry) => entry.name === segment)?.children ?? []
-  const folders = entries.filter((entry) => entry.kind === "folder")
-  const filtered = folders.filter((entry) => entry.name.toLowerCase().includes(query.trim().toLowerCase()))
+  const [store] = useState(() => createDirectoryStore(listDirectory))
+  useLayoutEffect(() => { store.setLoader(listDirectory) }, [store, listDirectory])
   const path = ["/workspace", ...segments].join("/")
+  const key = directoryKey(workspace.machine.name, path)
+  const subscribe = useCallback((listener: () => void) => store.subscribe(key, listener), [store, key])
+  const snapshot = useSyncExternalStore(subscribe, () => store.getSnapshot(key))
+  const available = workspace.machine.kind === "vm" && workspace.state === "running" && workspace.freshness === "fresh"
+  useEffect(() => {
+    if (!available) { store.invalidateWorkspace(workspace.machine.name); return }
+    let focused = true
+    const refresh = () => {
+      if (focused && document.visibilityState !== "hidden") void store.load(workspace.machine.name, path, { refresh: true })
+    }
+    const focus = () => { focused = true; refresh() }
+    const blur = () => { focused = false }
+    refresh()
+    const timer = window.setInterval(refresh, 10_000)
+    window.addEventListener("focus", focus)
+    window.addEventListener("blur", blur)
+    document.addEventListener("visibilitychange", refresh)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener("focus", focus)
+      window.removeEventListener("blur", blur)
+      document.removeEventListener("visibilitychange", refresh)
+    }
+  }, [store, available, workspace.machine.name, path])
+  const folders = snapshot.entries?.filter((entry) => entry.kind === "folder") ?? []
+  const filtered = folders.filter((entry) => entry.name.toLowerCase().includes(query.trim().toLowerCase()))
+  const unavailable = workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this VM to browse its files." : "Files will be available when this VM is running."
 
   function navigate(next: string[]) {
     setSegments(next)
@@ -51,7 +79,8 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen }: {
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input ref={search} aria-label="Filter folders" className="pl-8" placeholder="Filter folders…" value={query} onChange={(event) => setQuery(event.target.value)} />
         </div>
-        <ListCard className="max-h-60 overflow-y-auto">
+        <ListCard className="max-h-60 overflow-y-auto" aria-busy={available && snapshot.loading || undefined}>
+          {!available ? <p role="status" className="px-3 py-6 text-center text-xs text-muted-foreground">{unavailable}</p> : <>
           {filtered.length > 0 ? <ul aria-label="Folders" className="divide-y">
             {filtered.map((entry) => (
               <li key={entry.name}>
@@ -62,11 +91,20 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen }: {
                 </button>
               </li>
             ))}
-          </ul> : <p role="status" className="px-3 py-6 text-center text-xs text-muted-foreground">{query ? "No matching folders" : "No subfolders here"}</p>}
+          </ul> : snapshot.entries !== null && !snapshot.error && snapshot.nextOffset === null ? <p role="status" className="px-3 py-6 text-center text-xs text-muted-foreground">{query ? "No matching folders" : "No subfolders here"}</p> : null}
+          {((snapshot.entries === null || snapshot.loadingMore) && !snapshot.error) && <div role="status" aria-label="Loading folders" className="grid gap-2 p-3">
+            {[60, 45, 70].map((width) => <div key={width} className="h-5 rounded bg-muted motion-safe:animate-pulse" style={{ width: `${width}%` }} />)}
+          </div>}
+          {snapshot.error && <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+            <span role="alert">{snapshot.entries && snapshot.errorOperation === "refresh" ? "Couldn’t refresh. Showing previous folders." : snapshot.error}</span>
+            <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(workspace.machine.name, path, snapshot.errorOperation === "more" ? { more: true } : { refresh: true })}>Retry</Button>
+          </div>}
+          {snapshot.nextOffset !== null && <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(workspace.machine.name, path, { more: true })}>Load more</Button>}
+          </>}
         </ListCard>
       </div>
       <footer className="flex shrink-0 items-center justify-end border-t px-3 py-2.5">
-        <Button variant="outline" size="sm" onClick={() => onOpen(path)}><Code data-icon="inline-start" /> Open in {editor}</Button>
+        <Button variant="outline" size="sm" disabled={!available || snapshot.entries === null || Boolean(snapshot.error)} onClick={() => onOpen(path)}><Code data-icon="inline-start" /> Open in {editor}</Button>
       </footer>
     </>
   )

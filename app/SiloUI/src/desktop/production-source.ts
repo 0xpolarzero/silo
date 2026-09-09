@@ -599,6 +599,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   const statusActions: StatusBarActions = {
+    listWorkspaceDirectory: applicationActions.listWorkspaceDirectory,
     startWorkspace: applicationActions.startWorkspace,
     stopWorkspace: applicationActions.stopWorkspace,
     restartWorkspace: applicationActions.restartWorkspace,
