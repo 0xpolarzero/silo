@@ -100,6 +100,46 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("shows native OAuth progress while browser login is pending, then connected state", async () => {
+    const events = new Map<string, () => void>()
+    let liveState = { ...source, github: { ...source.github, state: "disconnected" as const, account: undefined } } as typeof source
+    let finishLogin!: (value: unknown) => void
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "read_application_state") return structuredClone(liveState)
+      if (command === "read_backup_state") return structuredClone(backup)
+      if (command === "connect_github") return new Promise((resolve) => { finishLogin = resolve })
+      return []
+    })
+    const store = createProductionSource({ invoke, listen: async (event, handler) => { events.set(event, handler); return () => events.delete(event) } } as ProductionBridge)
+    await store.initialize()
+    store.applicationActions.connectGitHub!()
+    liveState = { ...liveState, github: { ...liveState.github, state: "connecting" } }
+    events.get("silo://application-state-changed")!()
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.state).toBe("connecting"))
+    finishLogin({ ...liveState.github, state: "connected", account: "test-account" })
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.state).toBe("connected"))
+    expect(store.getSnapshot().source?.github.account).toBe("test-account")
+    store.dispose()
+  })
+
+  it("restores native disconnected state after cancelled browser login", async () => {
+    const mock = native()
+    const original = mock.invoke.getMockImplementation()!
+    mock.invoke.mockImplementation((command, args) => {
+      if (command === "read_application_state") return Promise.resolve({ ...source, github: { ...source.github, state: "connecting" } })
+      if (command === "connect_github") return Promise.reject(new Error("GitHub authorization was cancelled"))
+      if (command === "read_github_state") return Promise.resolve({ ...source.github, state: "disconnected", account: null })
+      return original(command, args)
+    })
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    store.applicationActions.connectGitHub!()
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.state).toBe("disconnected"))
+    expect(store.getSnapshot().source?.github.account).toBeUndefined()
+    expect(store.getSnapshot().source?.github.repositoryCatalogStatus).toMatchObject({ status: "unavailable", canRetry: false })
+    store.dispose()
+  })
+
   it("ignores an older settings response after a newer save completes", async () => {
     const mock = native()
     const original = mock.invoke.getMockImplementation()!
@@ -135,6 +175,38 @@ describe("production application bridge", () => {
     await vi.waitFor(() => expect(store.getSnapshot().source?.github.workspaceOperations?.[0].status).toBe("failed"))
     expect(store.getSnapshot().source?.github.workspaces?.[0].repositoryMode).toBe("all")
     store.dispose()
+  })
+
+  it("updates asynchronous workspace acknowledgment from a native state event", async () => {
+    const events = new Map<string, () => void>()
+    let github = { ...source.github, policyRevision: 11, workspaceOperations: [{ workspace: "dev", status: "applying" as const, message: "Applying access" }] } as typeof source.github
+    const store = createProductionSource({
+      invoke: async (command: string) => {
+        if (command === "read_application_state") return { ...source, github }
+        if (command === "read_backup_state") return backup
+        if (command === "save_github_configuration") return github
+        return []
+      },
+      listen: async (event, handler) => { events.set(event, handler); return () => events.delete(event) },
+    } as ProductionBridge)
+    await store.initialize()
+    store.applicationActions.saveGitHubConfiguration!({ accessEnabled: true, hostIdentity: null, workspaces: [] })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(store.getSnapshot().source?.github.workspaceOperations?.[0].status).toBe("applying")
+    github = { ...github, workspaceOperations: [{ workspace: "dev", status: "succeeded", message: "Verified access" }] }
+    events.get("silo://application-state-changed")!()
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.workspaceOperations?.[0].status).toBe("succeeded"))
+    store.dispose()
+  })
+
+  it("accepts the exact native GitHub states without granting implicit all-repository writes", () => {
+    const states = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../test/contracts/github-state.json"), "utf8")) as Array<typeof source.github>
+    for (const github of states) {
+      const parsed = parseApplicationSource({ ...source, github }).github
+      expect(parsed).toEqual(github)
+      expect(parsed.workspaces?.[0]).toMatchObject({ repositoryMode: "all", allRepositoriesAllowChanges: false, repositories: [] })
+      expect(parsed.policyRevision).toBe(7)
+    }
   })
 
   it("accepts activity serialized by the native journal", () => {

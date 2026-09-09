@@ -443,13 +443,19 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   async function githubMutation(command: string, arguments_?: Record<string, unknown>) {
     const sequence = ++githubMutationSequence
-    githubMutationPending = true
+    githubMutationPending = command === "save_github_configuration"
     ++refreshSequence
     try {
       const github = githubStateShape.parse(await native.invoke(command, arguments_))
       if (sequence === githubMutationSequence && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github }, error: null })
       return github
     } catch (cause) {
+      if (command === "connect_github" && sequence === githubMutationSequence) {
+        try {
+          const github = githubStateShape.parse(await native.invoke("read_github_state"))
+          if (sequence === githubMutationSequence && snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, github } })
+        } catch { /* Keep the last verified state if reading also fails. */ }
+      }
       const message = `GitHub operation failed: ${errorMessage(cause)}`
       if (sequence === githubMutationSequence && snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source, github: { ...snapshot.source.github,
         repositoryCatalogStatus: { status: "unavailable", message, canRetry: command === "refresh_github_repositories" },

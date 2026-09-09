@@ -1,0 +1,150 @@
+[
+  {
+    "policyRevision": 7,
+    "state": "connected",
+    "account": "test-account",
+    "accessEnabled": true,
+    "hostIdentity": null,
+    "repositoryCatalog": [
+      "test-owner/repo"
+    ],
+    "repositoryCatalogStatus": {
+      "status": "available"
+    },
+    "workspaces": [
+      {
+        "workspace": "dev",
+        "repositoryMode": "all",
+        "allRepositoriesAllowChanges": false,
+        "repositories": [],
+        "identity": {
+          "name": "Test Author",
+          "email": "test@example.invalid",
+          "apply": true
+        }
+      },
+      {
+        "workspace": "personal",
+        "repositoryMode": "selected",
+        "allRepositoriesAllowChanges": false,
+        "repositories": [
+          {
+            "repository": "test-owner/repo",
+            "allowPushes": true
+          }
+        ],
+        "identity": {
+          "name": "",
+          "email": "",
+          "apply": false
+        }
+      }
+    ],
+    "workspaceOperations": [
+      {
+        "workspace": "dev",
+        "status": "applying",
+        "message": "Native contract applying"
+      }
+    ]
+  },
+  {
+    "policyRevision": 7,
+    "state": "connected",
+    "account": "test-account",
+    "accessEnabled": true,
+    "hostIdentity": null,
+    "repositoryCatalog": [
+      "test-owner/repo"
+    ],
+    "repositoryCatalogStatus": {
+      "status": "available"
+    },
+    "workspaces": [
+      {
+        "workspace": "dev",
+        "repositoryMode": "all",
+        "allRepositoriesAllowChanges": false,
+        "repositories": [],
+        "identity": {
+          "name": "Test Author",
+          "email": "test@example.invalid",
+          "apply": true
+        }
+      },
+      {
+        "workspace": "personal",
+        "repositoryMode": "selected",
+        "allRepositoriesAllowChanges": false,
+        "repositories": [
+          {
+            "repository": "test-owner/repo",
+            "allowPushes": true
+          }
+        ],
+        "identity": {
+          "name": "",
+          "email": "",
+          "apply": false
+        }
+      }
+    ],
+    "workspaceOperations": [
+      {
+        "workspace": "dev",
+        "status": "succeeded",
+        "message": "Native contract succeeded"
+      }
+    ]
+  },
+  {
+    "policyRevision": 7,
+    "state": "disconnected",
+    "account": "test-account",
+    "accessEnabled": true,
+    "hostIdentity": null,
+    "repositoryCatalog": [
+      "test-owner/repo"
+    ],
+    "repositoryCatalogStatus": {
+      "status": "available"
+    },
+    "workspaces": [
+      {
+        "workspace": "dev",
+        "repositoryMode": "all",
+        "allRepositoriesAllowChanges": false,
+        "repositories": [],
+        "identity": {
+          "name": "Test Author",
+          "email": "test@example.invalid",
+          "apply": true
+        }
+      },
+      {
+        "workspace": "personal",
+        "repositoryMode": "selected",
+        "allRepositoriesAllowChanges": false,
+        "repositories": [
+          {
+            "repository": "test-owner/repo",
+            "allowPushes": true
+          }
+        ],
+        "identity": {
+          "name": "",
+          "email": "",
+          "apply": false
+        }
+      }
+    ],
+    "workspaceOperations": [
+      {
+        "workspace": "dev",
+        "status": "failed",
+        "message": "Native contract failed",
+        "canRetry": true
+      }
+    ]
+  }
+]
