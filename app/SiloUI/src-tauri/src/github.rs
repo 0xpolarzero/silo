@@ -64,6 +64,8 @@ struct Document {
     catalog_refresh_at: u64,
     #[serde(default)]
     grants_issued: bool,
+    #[serde(default)]
+    identity_errors: std::collections::HashMap<String, String>,
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -426,7 +428,32 @@ fn retire_previous(app: &tauri::AppHandle, workspace: &str, revision: u64) -> Re
     }
 }
 
-fn apply(app: &tauri::AppHandle, d: &mut Document, workspace: Option<&str>) -> Result<(), String> {
+fn finish_application(
+    grants: Result<(), String>,
+    explicit: bool,
+    previous_error: Option<&str>,
+    write: impl FnOnce() -> Result<(), String>,
+) -> (Result<(), String>, Result<(), String>) {
+    let identity = if explicit {
+        write()
+    } else {
+        previous_error.map_or(Ok(()), |message| Err(message.into()))
+    };
+    let combined = match (grants, &identity) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(access), Err(identity)) => Err(format!("{access} Git identity: {identity}")),
+        (Err(message), Ok(())) => Err(message),
+        (Ok(()), Err(message)) => Err(message.clone()),
+    };
+    (combined, identity)
+}
+
+fn apply(
+    app: &tauri::AppHandle,
+    d: &mut Document,
+    workspace: Option<&str>,
+    apply_identity: bool,
+) -> Result<(), String> {
     let generation = CANCELLATION.load(Ordering::SeqCst);
     let mut refresh_at = if workspace.is_some() {
         d.refresh_at.min(now() + 3600)
@@ -445,11 +472,26 @@ fn apply(app: &tauri::AppHandle, d: &mut Document, workspace: Option<&str>) -> R
             if let Some(expiry)=grants.iter().map(|g|g.expires_at).min() { refresh_at=refresh_at.min(expiry.saturating_sub(120)); }
             remember_grants(app,name,&grants)?;
             let profiles=json!({"version":1,"owners":grants.into_iter().map(|g|json!({"login":g.owner_login,"repositoryIds":g.repository_ids,"readToken":g.read_token,"writeToken":g.write_token,"expiresAt":g.expires_at})).collect::<Vec<_>>()});
-            crate::runtime::apply_github_policy(app,name,d.revision,&profiles)?;
-            crate::runtime::apply_github_identity(app,name,&w["identity"])
+            crate::runtime::apply_github_policy(app,name,d.revision,&profiles)
         });
         if result.is_err() {
             refresh_at = refresh_at.min(now() + 60);
+        }
+        let (result, identity_result) = finish_application(
+            result,
+            apply_identity,
+            d.identity_errors.get(name).map(String::as_str),
+            || crate::runtime::apply_github_identity(app, name, &w["identity"]),
+        );
+        if apply_identity {
+            match &identity_result {
+                Ok(()) => {
+                    d.identity_errors.remove(name);
+                }
+                Err(message) => {
+                    d.identity_errors.insert(name.into(), message.clone());
+                }
+            }
         }
         let operation = match result {
             Ok(()) => {
@@ -893,7 +935,7 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
     store(&c)?;
     d.revision += 1;
     save(app, &d)?;
-    apply(app, &mut d, None)?;
+    apply(app, &mut d, None, false)?;
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -945,7 +987,7 @@ pub fn install(app: &tauri::AppHandle) {
                     let _ = save(&app, &d);
                 }
                 if !d.workspaces.is_empty() && (d.session != session() || now() >= d.refresh_at) {
-                    let _ = apply(&app, &mut d, None);
+                    let _ = apply(&app, &mut d, None, false);
                 }
             }
         }
@@ -991,7 +1033,7 @@ pub async fn refresh_github_repositories(app: tauri::AppHandle) -> Result<Value,
             }
         }
         save(app, &d)?;
-        apply(app, &mut d, None)?;
+        apply(app, &mut d, None, false)?;
         snapshot(app)
     })
     .await
@@ -1004,7 +1046,7 @@ pub async fn disconnect_github(app: tauri::AppHandle) -> Result<Value, String> {
         d.access_enabled = false;
         d.revision += 1;
         save(app, &d)?;
-        apply(app, &mut d, None)?;
+        apply(app, &mut d, None, false)?;
         if let Some(c) = credential()? {
             service("/v1/oauth/revoke", json!({"accessToken":c.access_token}))?;
             entry()?
@@ -1032,7 +1074,7 @@ pub async fn set_github_access_enabled(
         d.access_enabled = enabled;
         d.revision += 1;
         save(&app, &d)?;
-        apply(&app, &mut d, None)?;
+        apply(&app, &mut d, None, false)?;
         snapshot(&app)
     })
     .await
@@ -1065,7 +1107,7 @@ pub async fn save_github_configuration(
             .ok_or("Missing GitHub access choice.")?;
         d.revision += 1;
         save(&app, &d)?;
-        apply(&app, &mut d, None)?;
+        apply(&app, &mut d, None, true)?;
         snapshot(&app)
     })
     .await
@@ -1079,7 +1121,7 @@ pub async fn retry_github_configuration(
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
         let mut d = load(&app)?;
-        apply(&app, &mut d, workspace.as_deref())?;
+        apply(&app, &mut d, workspace.as_deref(), true)?;
         snapshot(&app)
     })
     .await
@@ -1089,6 +1131,30 @@ pub async fn retry_github_configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn background_grant_refresh_never_writes_git_identity() {
+        let (result, _) = finish_application(Ok(()), false, None, || {
+            panic!("background renewal must not run guest identity commands")
+        });
+        assert!(result.is_ok());
+        let (result, _) =
+            finish_application(Ok(()), false, Some("previous identity error"), || {
+                panic!("background renewal must not retry identity")
+            });
+        assert_eq!(result, Err("previous identity error".into()));
+    }
+    #[test]
+    fn explicit_identity_application_is_independent_of_github_access() {
+        let mut applied = false;
+        let (result, identity_result) =
+            finish_application(Err("GitHub is unavailable".into()), true, None, || {
+                applied = true;
+                Ok(())
+            });
+        assert_eq!(result, Err("GitHub is unavailable".into()));
+        assert!(identity_result.is_ok());
+        assert!(applied);
+    }
     #[test]
     fn optional_github_keeps_verified_setup_when_secure_store_is_unavailable() {
         let d = Document {
