@@ -181,3 +181,25 @@ test('failed installation reads and idempotent revocations permit native backoff
   assert.equal(result.status,502);assert.equal((await result.json()).retryable,true);assert.equal(calls,1);
  }
 });
+
+test('unsafe App permissions cannot escape the selected repository boundary',async()=>{
+ for(const permission of ['members','organization_administration','organization_projects','emails','gists','future_unknown_permission']){
+  for(const allowChanges of [false,true])for(const allRepositories of [false,true]){
+   let calls=0;
+   const handle=createHandler(config,async()=>{calls++;return json({installations:[{account:{id:7},client_id:config.clientId,permissions:{contents:'write',[permission]:'read'}}]});});
+   const result=await handle(post('/v1/tokens/scope',{accessToken:'t',ownerId:7,repositoryIds:allRepositories?[]:[11],allRepositories,allowChanges}));
+   assert.equal(result.status,403);assert.equal(calls,1,'must reject before minting any credential');
+   assert.match((await result.json()).error,/non-repository permissions/);
+  }
+ }
+});
+test('write-only Codespaces secrets are omitted from read scope without losing repository grants',async()=>{
+ let scoped:Record<string,unknown>|undefined;
+ const handle=createHandler(config,async(input,init)=>{
+  if(String(input).includes('/user/installations'))return json({installations:[{account:{id:7},client_id:config.clientId,permissions:{codespaces_secrets:'write',actions_variables:'write',repository_advisories:'write',contents:'read'}}]});
+  scoped=JSON.parse(String(init?.body));return json({token:'restricted-result',expires_at:'2099-01-01T00:00:00Z'});
+ });
+ const result=await handle(post('/v1/tokens/scope',{accessToken:'t',ownerId:7,repositoryIds:[11],allowChanges:false}));
+ assert.equal(result.status,200);
+ assert.deepEqual(scoped?.permissions,{actions_variables:'read',repository_advisories:'read',contents:'read',metadata:'read'});
+});

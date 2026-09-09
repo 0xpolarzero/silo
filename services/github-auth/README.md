@@ -48,6 +48,21 @@ production manifest. Manual App registration can supply the same settings.
 Review the complete repository permission set when registering the App, with all
 organization/account permissions disabled. GitHub's granted permissions determine
 which `gh` operations work; Silo does not maintain a command-name allowlist.
+Before issuing any restricted token, the service validates every granted
+installation permission against GitHub's repository permission category. Any
+organization, user, enterprise, or unknown permission rejects the operation
+before token creation. This checks the App registration, not `gh` command names.
+It applies equally to read-only, change-enabled, selected, and all-repository
+requests. Unknown future permissions require a category review before being added;
+they are never silently inherited. The existing GitHub App can be reused only
+when its permissions satisfy this check.
+
+The names come from GitHub's [App permission schema](https://github.com/github/rest-api-description/blob/main/descriptions/api.github.com/api.github.com.json)
+and official [repository permission parameter table](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#repository-permissions),
+cross-checked against its [GitHub App permission categories](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps)
+on 2026-09-09. Write-only `workflows` and `codespaces_secrets` are omitted from
+read-only grants because requesting `read` for either is invalid.
+
 Repository operations requiring an ungranted permission fail with GitHub's normal
 permission error. Account and organization administration are outside this App's
 authority even when **Allow GitHub changes** is enabled.

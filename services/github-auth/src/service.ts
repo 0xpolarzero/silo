@@ -4,6 +4,19 @@ import {exchangeWebFlowCode,refreshToken,scopeToken,deleteAuthorization,deleteTo
 export interface Configuration {clientId:string;clientSecret:string}
 type ObjectValue=Record<string,unknown>;
 class ServiceError extends Error {constructor(readonly status:number,readonly publicMessage:string){super(publicMessage);}}
+// GitHub's repository permission category, checked against its official App
+// schema and repository-permission documentation (2026-09-09). Unknown names
+// fail closed: repository_ids cannot restrict organization/account authority.
+const repositoryPermissions=new Set([
+ 'actions','administration','artifact_metadata','attestations','checks','code_quality',
+ 'codespaces','codespaces_lifecycle_admin','codespaces_metadata','codespaces_secrets',
+ 'contents','dependabot_secrets','deployments','discussions','environments','issues',
+ 'merge_queues','metadata','packages','pages','pull_requests','repository_custom_properties',
+ 'repository_hooks','repository_projects','repository_advisories','secret_scanning_alerts',
+ 'secrets','security_events','single_file','statuses','vulnerability_alerts','workflows',
+ 'actions_variables',
+]);
+const writeOnlyRepositoryPermissions=new Set(['workflows','codespaces_secrets']);
 const invalid=()=>new ServiceError(400,'Invalid GitHub authorization request.');
 function object(value:unknown):ObjectValue{if(!value||typeof value!=='object'||Array.isArray(value))throw invalid();return value as ObjectValue;}
 function string(value:unknown,max=1024):string{if(typeof value!=='string'||!value.length||value.length>max||/[\x00-\x20\x7f]/.test(value))throw invalid();return value;}
@@ -78,9 +91,10 @@ export function createHandler(config:Configuration,fetchImplementation:typeof fe
      if(item.account?.id!==ownerId||item.client_id!==config.clientId||item.suspended_at)continue;
      permissions={};
      for(const [name,level]of Object.entries(item.permissions)){
-      // GitHub defines workflows as write-only; requesting read is invalid.
+      if(!repositoryPermissions.has(name))throw new ServiceError(403,'The GitHub App has unsupported or non-repository permissions. Its administrator must remove them before Silo can grant sandbox access.');
+      // GitHub defines these repository grants as write-only; read is invalid.
       // Omit it from the explicit read grant instead of inheriting write access.
-      if(!allowChanges&&name==='workflows')continue;
+      if(!allowChanges&&writeOnlyRepositoryPermissions.has(name))continue;
       if(level==='read'||level==='write'||level==='admin')permissions[name]=allowChanges?level:'read';
      }
      permissions.metadata='read';
