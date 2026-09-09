@@ -35,7 +35,8 @@ fn github_guest_bootstrap_and_live_identity() {
         if initial.status != "Stopped" {
             return Err("Bootstrap did not restore stopped state".into());
         }
-        run(&["start", name], MUTATION_TIMEOUT).map_err(|e| e.to_string())?;
+        let host = host_resources().map_err(|e| e.to_string())?;
+        workspace_action_with(&runner, &paths, &host, "start", name).map_err(|e| e.to_string())?;
         apply_disposable_test_identity(&paths, name).map_err(|e| e.to_string())?;
         let output = run(
             &[
@@ -88,6 +89,44 @@ fn github_guest_bootstrap_and_live_identity() {
             MUTATION_TIMEOUT,
         );
         result.map_err(|e| format!("Disabled access and independent TLS check failed: {e}"))?;
+        let profile = serde_json::json!({"version":1,"owners":[{
+            "login":"silo-test","readToken":"silo_nonsecret_invalid_probe",
+            "writeToken":null,"repositoryIds":[],"expiresAt":4102444800u64
+        }]});
+        // Exercise the actual app lifecycle argument construction, not a hand-
+        // written msb command that could hide credential target wiring errors.
+        GITHUB_PROFILES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert((paths.home.clone(), name.into()), profile.to_string());
+        workspace_action_with(&runner, &paths, &host, "stop", name).map_err(|e| e.to_string())?;
+        for action in ["start", "restart"] {
+            workspace_action_with(&runner, &paths, &host, action, name)
+                .map_err(|e| e.to_string())?;
+            let response = run(
+                &[
+                    "exec",
+                    name,
+                    "--no-tty",
+                    "--quiet",
+                    "--timeout",
+                    "30s",
+                    "--",
+                    "sh",
+                    "-c",
+                    "gh api meta --include 2>&1 || true",
+                ],
+                MUTATION_TIMEOUT,
+            )
+            .map_err(|e| e.to_string())?
+            .stdout;
+            if !response.contains("HTTP/") || !response.contains("401") {
+                return Err(format!(
+                    "Production {action} did not attach the configured GitHub profile"
+                ));
+            }
+        }
         let boot_id = run(
             &[
                 "exec",
@@ -102,10 +141,6 @@ fn github_guest_bootstrap_and_live_identity() {
         )
         .map_err(|e| e.to_string())?
         .stdout;
-        let profile = serde_json::json!({"version":1,"owners":[{
-            "login":"silo-test","readToken":"silo_nonsecret_invalid_probe",
-            "writeToken":null,"repositoryIds":[],"expiresAt":4102444800u64
-        }]});
         for (profile, should_reach_github) in [
             (profile.to_string(), true),
             (DISABLED_GITHUB_PROFILE.into(), false),

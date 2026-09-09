@@ -53,7 +53,10 @@ fn accept_github_revision(current: &mut u64, revision: u64) -> Result<(), String
 
 fn github_command_workspace(args: &[String]) -> Option<&str> {
     match args.first().map(String::as_str) {
-        Some("start" | "modify" | "restart") => args.get(1).map(String::as_str),
+        Some("start" | "modify" | "restart") => args
+            .get(1)
+            .map(String::as_str)
+            .filter(|name| validate_name(name).is_ok()),
         _ => None,
     }
 }
@@ -500,11 +503,12 @@ fn run_msb_with_progress(
     timeout: Duration,
     report: &dyn Fn(Value),
 ) -> Result<CommandOutput, RuntimeError> {
-    if let Some(workspace) = args.get(1).filter(|_| {
-        matches!(
-            args.first().map(String::as_str),
-            Some("start" | "restart" | "exec")
-        )
+    if let Some(workspace) = args.get(1).filter(|workspace| {
+        validate_name(workspace).is_ok()
+            && matches!(
+                args.first().map(String::as_str),
+                Some("start" | "restart" | "exec")
+            )
     }) {
         let lock =
             github_revision_lock(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
@@ -2306,7 +2310,7 @@ fn workspace_action_with(
         };
     runner.run(
         paths,
-        &[command.into(), "--quiet".into(), name.into()],
+        &[command.into(), name.into(), "--quiet".into()],
         timeout,
     )?;
     Ok(())
@@ -3178,6 +3182,37 @@ mod tests {
     }
 
     #[test]
+    fn production_lifecycle_actions_use_the_target_vms_github_profile() {
+        let directory = tempfile::tempdir().unwrap();
+        let other_directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let other = super::tests::paths(&other_directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
+        cache
+            .lock()
+            .unwrap()
+            .insert((paths.home.clone(), "dev".into()), "dev-profile".into());
+        cache
+            .lock()
+            .unwrap()
+            .insert((paths.home.clone(), "other".into()), "other-profile".into());
+        for action in ["start", "restart"] {
+            let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null)]);
+            workspace_action_with(&runner, &paths, &generous_host(), action, "dev").unwrap();
+            let calls = runner.calls.lock().unwrap();
+            let command = &calls[1];
+            assert_eq!(github_command_workspace(command), Some("dev"));
+            assert_eq!(github_environment(&paths, command), "dev-profile");
+            assert_eq!(github_environment(&other, command), DISABLED_GITHUB_PROFILE);
+        }
+        cache
+            .lock()
+            .unwrap()
+            .retain(|(home, _), _| home != &paths.home);
+    }
+
+    #[test]
     fn activity_history_survives_restart_and_marks_only_unfinished_attempts_interrupted() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -3679,7 +3714,7 @@ mod tests {
             ]);
             start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap();
             let calls = runner.calls.lock().unwrap();
-            assert_eq!(calls[2], vec!["start", "--quiet", "dev"]);
+            assert_eq!(calls[2], vec!["start", "dev", "--quiet"]);
             assert_eq!(calls[3], vec!["inspect", "dev", "--format", "json"]);
             assert!(!calls.iter().any(|call| call[0] == "create"));
         }
@@ -3778,7 +3813,7 @@ mod tests {
 
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], vec!["inspect", "dev", "--format", "json"]);
-        assert_eq!(calls[1], vec!["start", "--quiet", "dev"]);
+        assert_eq!(calls[1], vec!["start", "dev", "--quiet"]);
     }
 
     #[test]
