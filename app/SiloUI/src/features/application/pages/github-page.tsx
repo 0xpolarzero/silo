@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Check, Loader2, TriangleAlert } from "lucide-react"
 
+import { CopyButton } from "@/components/copy-button"
+import { githubFailure } from "./github-failure"
+
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Button } from "@/components/ui/button"
 import type {
@@ -92,6 +95,8 @@ function WorkspaceSyncFeedback({
   operation: GitHubWorkspaceOperation
   onRetry: () => void
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false)
+
   if (operation.status === "applying") {
     return (
       <div className="flex min-h-8 items-center gap-2 rounded-md border border-border bg-muted/25 px-2.5 py-1.5 text-[11px]" role="status" aria-live="polite">
@@ -111,12 +116,19 @@ function WorkspaceSyncFeedback({
   }
 
   if (operation.status === "failed") {
+    const failure = githubFailure(operation.message)
     return (
       <div className="grid min-h-8 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-md border border-destructive/25 bg-destructive/[0.07] px-2.5 py-1.5 text-[11px]" role="alert">
         <TriangleAlert className="size-3.5 shrink-0 text-destructive" aria-hidden="true" />
-        <span className="text-destructive">{operation.message}</span>
-        <Button type="button" variant="outline" size="xs" onClick={onRetry}>Retry</Button>
-        {operation.diagnosticDetails && <p className="col-start-2 col-span-2 whitespace-pre-wrap text-[10px] leading-4 text-destructive/80">{operation.diagnosticDetails}</p>}
+        <span className="text-destructive">{failure.message}</span>
+        <div className="flex items-center gap-1">
+          <Button type="button" variant="ghost" size="xs" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(!detailsOpen)}>{detailsOpen ? "Hide details" : "View details"}</Button>
+          {failure.canRetry && <Button type="button" variant="outline" size="xs" onClick={onRetry}>Retry</Button>}
+        </div>
+        {detailsOpen && <div className="col-span-3 border-t border-destructive/15 pt-2 text-foreground">
+          <p className="whitespace-pre-wrap text-[11px] leading-5">{failure.details}</p>
+          <CopyButton variant="ghost" size="xs" value={failure.details} labels={{ idle: "Copy details", copied: "Details copied", failed: "Copy failed" }} text={{ idle: "Copy details", copied: "Copied", failed: "Copy failed" }} />
+        </div>}
       </div>
     )
   }

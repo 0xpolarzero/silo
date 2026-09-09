@@ -1522,7 +1522,7 @@ describe("application", () => {
     const states = [
       { mode: "applying" as const, role: "status" as const, message: "Applying repository access…", buttons: [] },
       { mode: "succeeded" as const, role: "status" as const, message: "Repository access applied.", buttons: [] },
-      { mode: "failed" as const, role: "alert" as const, message: "Repository access could not be applied.", buttons: ["Retry"] },
+      { mode: "failed" as const, role: "alert" as const, message: "GitHub settings couldn’t be applied.", buttons: ["Retry"] },
     ]
 
     for (const state of states) {
@@ -1543,6 +1543,28 @@ describe("application", () => {
       }
       application.unmount()
     }
+  })
+
+  it("keeps obsolete sandbox errors compact and copies only safe explanations", async () => {
+    const source = applicationSourceForScenario("running", "connected")
+    source.github.workspaceOperations = [{ workspace: "dev", status: "failed", canRetry: true,
+      message: 'Recreate this development sandbox to enable the new GitHub integration. Git identity: {"before":"GIT_AUTHOR_EMAIL=private@example.com","disposition":"requires restart"}',
+      diagnosticDetails: "secret runtime output",
+    }]
+    const application = renderApplication("running", source)
+    await application.user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const feedback = within(within(appPanel("GitHub")).getByRole("alert"))
+    expect(feedback.getByText("This sandbox needs a new setup for GitHub access.")).toBeVisible()
+    expect(feedback.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+    expect(feedback.queryByText(/GitHub access: this sandbox/)).not.toBeInTheDocument()
+    await application.user.click(feedback.getByRole("button", { name: "View details" }))
+    expect(feedback.getByText(/A restart alone does not resolve/)).toBeVisible()
+    const copy = vi.spyOn(navigator.clipboard, "writeText")
+    await application.user.click(feedback.getByRole("button", { name: "Copy details" }))
+    expect(copy).toHaveBeenCalledWith(expect.stringContaining("Git identity:"))
+    expect(copy.mock.calls.at(-1)?.[0]).not.toMatch(/private@example|secret runtime|GIT_AUTHOR_EMAIL/)
+    await application.user.click(feedback.getByRole("button", { name: "Hide details" }))
+    expect(feedback.queryByText(/GitHub access: this sandbox/)).not.toBeInTheDocument()
   })
 
   it("clears successful GitHub apply feedback after four seconds", () => {
