@@ -1,0 +1,14 @@
+{
+  "name": "@silo/github-auth",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "start": "node dist/src/main.js"
+  },
+  "dependencies": { "@octokit/oauth-methods": "6.0.5", "@octokit/request": "^10.0.0" },
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "~6.0.2" }
+}
