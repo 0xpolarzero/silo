@@ -2,6 +2,7 @@ mod applications;
 mod backup;
 mod backup_controller;
 mod dependencies;
+mod editor;
 mod files;
 mod github;
 mod github_http;
@@ -10,10 +11,11 @@ mod github_live_tests;
 mod github_tokens;
 mod host_identity;
 mod host_push;
+mod network;
 mod notifications;
 mod runtime;
-mod settings;
 mod secrets;
+mod settings;
 mod startup;
 mod status_panel;
 mod system_integrations;
@@ -32,6 +34,10 @@ fn main() {
             tray::update_tray,
             host_push::push_repository,
             files::list_workspace_directory,
+            network::read_network_state,
+            network::save_network_port,
+            network::remove_network_port,
+            network::open_network_port,
             secrets::read_secrets_state,
             secrets::save_secret,
             secrets::remove_secret,

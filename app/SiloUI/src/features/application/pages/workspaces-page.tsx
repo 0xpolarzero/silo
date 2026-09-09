@@ -1,8 +1,9 @@
+import { NetworkPage } from "./network-page"
 import { FolderActions } from "@/features/application/components/folder-actions"
 import { WorkspaceFileTree } from "@/features/application/components/workspace-file-tree"
 import type { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useMemo, useState } from "react"
-import { Activity, Archive, Box, Check, CircleAlert, Cloud, ExternalLink, GitBranch, KeyRound, Loader2, Search, TriangleAlert, Wrench } from "lucide-react"
+import { Activity, Archive, Box, Check, CircleAlert, Cloud, GitBranch, KeyRound, Loader2, Search, TriangleAlert, Wrench } from "lucide-react"
 
 import { CopyButton } from "@/components/copy-button"
 import { DisclosureHeader } from "@/components/disclosure-header"
@@ -16,7 +17,7 @@ import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { RepositoryPushFeedback } from "@/features/application/components/repository-push-feedback"
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
-import type { ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, WorkspaceDetailSection } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationSource, ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, WorkspaceDetailSection } from "@/features/application/model/application-source"
 import { commitLabel } from "@/features/application/model/repository-push"
 import { cn } from "@/lib/utils"
 
@@ -254,77 +255,6 @@ function Logs({ workspaces, query, onQueryChange }: { workspaces: ApplicationWor
   )
 }
 
-function Network({ workspaces, browser }: { workspaces: ApplicationWorkspace[]; browser: string }) {
-  if (workspaces.length === 0) return <EmptyState title="No sandboxes selected" description="Select at least one sandbox to see its network services." />
-  const rows = workspaces
-    .flatMap((workspace) => workspace.ports.map((port) => ({ workspace, port })))
-    .sort((left, right) => {
-      const listeningRank = (listening: boolean | null) => listening === true ? 0 : listening === null ? 1 : 2
-      const rankDifference = listeningRank(left.port.listening) - listeningRank(right.port.listening)
-      if (rankDifference !== 0) return rankDifference
-      const workspaceDifference = left.workspace.machine.name.localeCompare(right.workspace.machine.name)
-      return workspaceDifference !== 0 ? workspaceDifference : left.port.port - right.port.port
-    })
-
-  if (rows.length === 0) return <EmptyState title="No configured ports" description="Configured sandbox ports will appear here." />
-
-  return (
-    <TooltipProvider delayDuration={150}>
-      <div className="flex max-h-full min-h-0 self-start flex-col overflow-hidden rounded-lg border border-border">
-        <div role="table" aria-label="Network" className="flex min-h-0 w-full flex-col text-xs">
-          <div role="row" className="grid shrink-0 grid-cols-[3.5rem_6rem_minmax(0,1fr)_3.5rem] items-center gap-2 border-b border-border bg-muted/45 px-3 py-2 font-medium text-muted-foreground sm:grid-cols-[4rem_minmax(0,1fr)_6.5rem_7rem_3.5rem] sm:gap-3">
-            <span role="columnheader">Port</span>
-            <span role="columnheader" className="hidden sm:block">URL</span>
-            <span role="columnheader">State</span>
-            <span role="columnheader">Sandbox</span>
-            <span role="columnheader" className="sr-only">Actions</span>
-          </div>
-          <div className="min-h-0 divide-y divide-border overflow-y-auto overscroll-contain bg-card" data-table-scroll="network">
-            {rows.map(({ workspace, port }) => {
-              const url = `http://${workspace.host}:${port.port}`
-              const state = port.listening === true ? "Listening" : port.listening === false ? "Configured" : "Unknown"
-              return (
-                <div key={`${workspace.machine.id}:${port.port}`} role="row" className="grid grid-cols-[3.5rem_6rem_minmax(0,1fr)_3.5rem] items-center gap-2 px-3 py-2 transition-colors hover:bg-muted/55 focus-within:bg-muted/55 sm:grid-cols-[4rem_minmax(0,1fr)_6.5rem_7rem_3.5rem] sm:gap-3">
-                  <span role="cell" className="font-mono font-medium">{port.port}</span>
-                  <span role="cell" className="hidden truncate font-mono text-muted-foreground sm:block">{url}</span>
-                  <span role="cell" className="inline-flex items-center gap-1.5">
-                    <span className={cn("size-2 rounded-full", port.listening === true ? "bg-emerald-500" : port.listening === null ? "bg-amber-500" : "bg-muted-foreground/45")} aria-hidden="true" />
-                    <span className={port.listening === true ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}>{state}</span>
-                  </span>
-                  <span role="cell"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} /></span>
-                  <span role="cell" className="flex justify-end gap-1">
-                    {port.listening === true && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button variant="ghost" size="icon-xs" aria-label={`Open ${url} in ${browser}`}>
-                            <ExternalLink aria-hidden="true" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>{`Open in ${browser}`}</TooltipContent>
-                      </Tooltip>
-                    )}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <CopyButton
-                          variant="ghost"
-                          size="icon-xs"
-                          value={url}
-                          labels={{ idle: `Copy ${url}`, copied: "URL copied", failed: "Copy URL failed" }}
-                        />
-                      </TooltipTrigger>
-                      <TooltipContent>Copy URL</TooltipContent>
-                    </Tooltip>
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      </div>
-    </TooltipProvider>
-  )
-}
-
 const activityCategoryOptions: ReadonlyArray<FilterOption<ApplicationActivityCategory>> = [
   { value: "sandbox", label: "Sandbox" },
   { value: "git", label: "Git" },
@@ -444,6 +374,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
 }
 
 export function WorkspacesPage({
+  network, networkError, networkActions,
   editor,
   onOpenEditor,
   directoryStore,
@@ -460,6 +391,9 @@ export function WorkspacesPage({
   onPushRepository,
   onDismissRepositoryPush,
 }: {
+  network?: ApplicationSource["network"]
+  networkError?: string | null
+  networkActions: ApplicationActions
   editor: string
   onOpenEditor: (workspace: string, path: string) => void
   directoryStore: ReturnType<typeof createDirectoryStore>
@@ -486,7 +420,7 @@ export function WorkspacesPage({
       <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />
       {section === "files" && <Files editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
       {section === "logs" && <Logs workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} />}
-      {section === "network" && <Network workspaces={visibleWorkspaces} browser={browser} />}
+      {section === "network" && <NetworkPage workspaces={visibleWorkspaces} browser={browser} network={network} error={networkError} actions={networkActions} active={active} />}
       {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} />}
     </div>
   )

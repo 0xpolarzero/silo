@@ -31,6 +31,41 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("keeps network mappings across application refresh and shares only reachable sites", async () => {
+    const mock = native()
+    const state = { workspaces: [{ workspace: "dev", error: null, ports: [{port:3000,hostPort:43000,scheme:"http",state:"reachable",configured:true}] }] }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "read_network_state" || command === "save_network_port" ? state : mock.invoke(command,args))
+    const store = createProductionSource({...mock.bridge,invoke} as ProductionBridge)
+    await store.initialize()
+    await store.applicationActions.refreshNetwork?.()
+    expect(store.getSnapshot().source?.workspaces[0].ports).toEqual([{port:3000,hostPort:43000,scheme:"http",configured:true,listening:true}])
+    await store.refresh()
+    expect(store.getSnapshot().source?.network).toEqual(state)
+    await store.applicationActions.saveNetworkPort?.({workspace:"dev",port:3000,hostPort:null,scheme:"http"})
+    expect(invoke).toHaveBeenCalledWith("save_network_port",{workspace:"dev",port:3000,hostPort:null,scheme:"http"})
+    store.statusActions.openSite("dev",3000)
+    expect(invoke).toHaveBeenCalledWith("open_network_port",{workspace:"dev",port:3000})
+    store.dispose()
+  })
+
+  it("keeps cached rows after failed network checks but revokes reachable status", async () => {
+    const mock = native()
+    let failed = false
+    const state = { workspaces: [{ workspace:"dev",error:null,ports:[{port:3000,hostPort:43000,scheme:"http",state:"reachable",configured:true}] }] }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if(command === "read_network_state") { if(failed) throw new Error("raw runtime output"); return state }
+      return mock.invoke(command,args)
+    })
+    const store = createProductionSource({...mock.bridge,invoke} as ProductionBridge)
+    await store.initialize(); await store.applicationActions.refreshNetwork?.()
+    failed = true
+    await store.applicationActions.refreshNetwork?.()
+    expect(store.getSnapshot().source?.network).toEqual(state)
+    expect(store.getSnapshot().source?.networkError).toBe("Could not check network services.")
+    expect(store.getSnapshot().source?.workspaces[0].ports[0].listening).toBe(false)
+    store.dispose()
+  })
+
   it("passes the selected folder path to the native editor action", async () => {
     const mock = native()
     const store = createProductionSource(mock.bridge)

@@ -1386,7 +1386,7 @@ pub(crate) async fn retry_workspace_start(
     controller: State<'_, Arc<Controller>>,
     name: String,
 ) -> Result<runtime::ApplicationSource, String> {
-    let source = runtime::workspace_action(app.clone(), "start".into(), name.clone()).await?;
+    let source = runtime::workspace_action(app.clone(), "start".into(), name.clone(), None).await?;
     let paths = runtime::runtime_paths(&app)?;
     if inspect(&paths, &name)?.status != "Running" {
         return Err(format!(

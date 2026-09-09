@@ -39,7 +39,7 @@ export interface WorkspaceMenuProps {
 function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: WorkspaceMenuProps) {
   const { machine } = workspace
   const { canOpen, canStart, canStop, canRestart } = workspaceAvailability(workspace, source)
-  const sites = workspace.ports.filter(({ listening }) => listening === true).sort((a, b) => a.port - b.port)
+  const sites = workspace.ports.filter(({ listening, configured, scheme, hostPort }) => listening === true && configured === true && scheme != null && hostPort != null).sort((a, b) => a.port - b.port)
   return (
     <DropdownMenu.Root modal={false}>
       <DropdownMenu.Trigger asChild>
@@ -56,21 +56,21 @@ function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: Wor
           <MenuItem icon={<Terminal />} disabled={!canOpen} onSelect={() => actions.openTerminal(machine.name)}>Open in {source.preferences.terminal}</MenuItem>
           <MenuItem icon={<Code />} disabled={!canOpen} onSelect={onFolders}>Open in {source.preferences.editor}…</MenuItem>
           <DropdownMenu.Sub>
-            <DropdownMenu.SubTrigger className={menuItemClass} disabled={!canOpen || !workspace.host}><Globe /> Open site <ChevronRight className="ml-auto" /></DropdownMenu.SubTrigger>
+            <DropdownMenu.SubTrigger className={menuItemClass} disabled={!canOpen}><Globe /> Open site <ChevronRight className="ml-auto" /></DropdownMenu.SubTrigger>
             <DropdownMenu.Portal>
               <DropdownMenu.SubContent className={menuClass} data-reduce-motion={source.preferences.reduceMotion} sideOffset={4} collisionPadding={10}>
                 {sites.length ? sites.map(({ port }) => <MenuItem key={port} icon={<ExternalLink />} onSelect={() => actions.openSite(machine.name, port)}>Port {port}</MenuItem>) : <DropdownMenu.Item disabled className={menuItemClass}>No active sites</DropdownMenu.Item>}
-                <DropdownMenu.Separator className="my-1 border-t" />
-                <DropdownMenu.Item asChild onSelect={(event) => event.preventDefault()}>
+                {sites.length > 0 && <DropdownMenu.Separator className="my-1 border-t" />}
+                {sites.map(site => <DropdownMenu.Item key={`copy:${site.port}`} asChild onSelect={(event) => event.preventDefault()}>
                   <CopyButton
-                    value={`http://${workspace.host}`}
-                    labels={{ idle: "Copy base URL", copied: "Base URL copied", failed: "Couldn't copy base URL" }}
-                    text={{ idle: "Copy base URL", copied: "Copied", failed: "Copy failed" }}
+                    value={`${site.scheme}://127.0.0.1:${site.hostPort}`}
+                    labels={{ idle: `Copy port ${site.port} address`, copied: `Port ${site.port} address copied`, failed: `Couldn't copy port ${site.port} address` }}
+                    text={{ idle: `Copy port ${site.port} address`, copied: "Copied", failed: "Copy failed" }}
                     variant="ghost"
                     size="sm"
                     className={cn(menuItemClass, "w-full justify-start font-normal")}
                   />
-                </DropdownMenu.Item>
+                </DropdownMenu.Item>)}
               </DropdownMenu.SubContent>
             </DropdownMenu.Portal>
           </DropdownMenu.Sub>

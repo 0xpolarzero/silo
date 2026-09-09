@@ -72,7 +72,21 @@ export interface ApplicationLog {
   occurredAt: string
 }
 
+export interface NetworkPort {
+  port: number
+  hostPort: number | null
+  scheme: "http" | "https" | null
+  state: "reachable" | "waiting" | "unpublished" | "unknown"
+  configured: boolean
+  message?: string | null
+}
+export interface NetworkState { workspaces: { workspace: string; ports: NetworkPort[]; error: string | null }[] }
+export interface NetworkPortRequest { workspace: string; port: number; hostPort: number | null; scheme: "http" | "https" | null }
+
 export interface ApplicationPort {
+  hostPort?: number | null
+  scheme?: "http" | "https" | null
+  configured?: boolean
   port: number
   listening: boolean | null
 }
@@ -181,6 +195,8 @@ export type GitHubRepositoryCatalogStatus =
   | { status: "unavailable"; message: string; canRetry: boolean }
 
 export interface ApplicationSource {
+  network?: NetworkState
+  networkError?: string | null
   runtimeRepair: RuntimeRepairPresentation | null
   workspaces: ApplicationWorkspace[]
   activities: ApplicationActivity[]
@@ -219,6 +235,10 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
+  refreshNetwork?: () => Promise<void>
+  saveNetworkPort?: (request: NetworkPortRequest) => Promise<void>
+  removeNetworkPort?: (workspace: string, port: number) => Promise<void>
+  openNetworkPort?: (workspace: string, port: number) => Promise<void>
   listWorkspaceDirectory?: DirectoryLoader
   saveSecret: (request: SecretConfigurationRequest) => Promise<void> | void
   removeSecret: (id: string) => Promise<void> | void

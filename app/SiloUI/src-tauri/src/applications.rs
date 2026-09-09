@@ -36,6 +36,74 @@ pub enum ApplicationKind {
     Browser,
 }
 
+/// Open a web address with the current browser preference. Call from a worker.
+pub(crate) fn open_browser(app: &AppHandle, url: &str) -> Result<(), String> {
+    let url = browser_url(url)?;
+    let settings = crate::settings::current_settings(app)?;
+    let selection = browser_selection(&settings)?;
+    platform::open_browser(selection, &url)
+}
+
+fn browser_url(value: &str) -> Result<String, String> {
+    if value.len() > 8192 || value.chars().any(char::is_control) {
+        return Err("The website address is invalid.".into());
+    }
+    let url = reqwest::Url::parse(value).map_err(|_| "The website address is invalid.")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("Only HTTP and HTTPS website addresses can be opened.".into());
+    }
+    Ok(url.into())
+}
+
+fn browser_selection(
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<&Path>, String> {
+    if settings
+        .get("browserUseSystemDefault")
+        .and_then(|value| value.as_bool())
+        .unwrap_or_else(|| {
+            !settings.contains_key("browser") && !settings.contains_key("browserPath")
+        })
+    {
+        return Ok(None);
+    }
+    let path = settings
+        .get("browserPath")
+        .and_then(|value| value.as_str())
+        .filter(|path| Path::new(path).is_absolute())
+        .ok_or("Choose an available browser in Settings.")?;
+    Ok(Some(Path::new(path)))
+}
+
+pub(crate) fn selected_editor(app: &AppHandle) -> Result<Application, String> {
+    let settings = crate::settings::current_settings(app)?;
+    let path = if settings
+        .get("editorUseSystemDefault")
+        .and_then(|value| value.as_bool())
+        .unwrap_or_else(|| !settings.contains_key("editor") && !settings.contains_key("editorPath"))
+    {
+        platform::discover()?.defaults.remove("editor")
+    } else {
+        settings
+            .get("editorPath")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+    }
+    .ok_or("Choose an available code editor in Settings.")?;
+    platform::application_at(Path::new(&path))
+        .ok_or_else(|| "The selected editor is unavailable. Choose another in Settings.".into())
+}
+
+pub(crate) fn editor_command(
+    application: &Application,
+) -> Result<(std::path::PathBuf, bool), String> {
+    platform::editor_command(application)
+}
+
 fn include_selections(
     catalog: &mut ApplicationCatalog,
     selections: BTreeMap<String, String>,
@@ -156,6 +224,45 @@ pub async fn choose_application(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_addresses_are_web_only_without_embedded_credentials() {
+        for invalid in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "https://user:secret@localhost/",
+            "http://localhost/\n",
+            "--args",
+        ] {
+            assert!(browser_url(invalid).is_err());
+        }
+        assert_eq!(
+            browser_url("http://127.0.0.1:3000/a?x=$(touch)").unwrap(),
+            "http://127.0.0.1:3000/a?x=$(touch)"
+        );
+    }
+
+    #[test]
+    fn browser_preference_honors_default_and_requires_explicit_available_selection() {
+        let settings =
+            serde_json::json!({"browserUseSystemDefault": true, "browserPath": "/old/browser.app"});
+        assert_eq!(
+            browser_selection(settings.as_object().unwrap()).unwrap(),
+            None
+        );
+        let settings = serde_json::json!({"browserUseSystemDefault": false, "browserPath": "/Applications/Selected.app"});
+        assert_eq!(
+            browser_selection(settings.as_object().unwrap()).unwrap(),
+            Some(Path::new("/Applications/Selected.app"))
+        );
+        let settings = serde_json::json!({"browserUseSystemDefault": false});
+        assert!(browser_selection(settings.as_object().unwrap()).is_err());
+        let settings = serde_json::json!({"browserPath": "/Applications/Selected.app"});
+        assert_eq!(
+            browser_selection(settings.as_object().unwrap()).unwrap(),
+            Some(Path::new("/Applications/Selected.app"))
+        );
+    }
 
     #[test]
     fn custom_choices_survive_discovery_without_offering_removed_apps() {

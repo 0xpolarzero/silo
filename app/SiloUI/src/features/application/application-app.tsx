@@ -220,6 +220,9 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
           <OverviewPage source={applicationSource} actions={actions} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
+            network={source.network}
+            networkError={source.networkError}
+            networkActions={actions}
             onOpenEditor={actions.openEditor}
             editor={applicationPreferences.editor}
             directoryStore={directoryStore}

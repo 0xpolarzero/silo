@@ -12,6 +12,7 @@ import { SystemIntegrationProvider } from "@/features/preferences/system-integra
 import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
 
 const inactiveApplicationActions: ApplicationActions = {
+  openNetworkPort: async () => undefined,
   saveSecret: () => undefined,
   removeSecret: () => undefined,
   retryRuntimeChecks: () => undefined,
@@ -52,7 +53,7 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
   })
 
   return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp
-    source={fixture.source}
+    source={{ ...fixture.source, network: fixture.source.network ?? { workspaces: fixture.source.workspaces.map(w => ({ workspace:w.machine.name,error:null,ports:w.ports.map(p => ({port:p.port,hostPort:p.port,scheme:"http" as const,state:p.listening === true ? "reachable" as const : p.listening === false ? "waiting" as const : "unknown" as const,configured:true})) })) } }}
     initialRoute={initialRoute}
     routeRequest={initialRoute}
     backup={backup}

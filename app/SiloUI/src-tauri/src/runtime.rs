@@ -522,13 +522,21 @@ fn run_msb_with_progress(
             RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
         })?;
         if args[0] == "exec"
-            && args.iter().take_while(|arg| arg.as_str() != "--").any(|arg| arg == "--no-start")
+            && args
+                .iter()
+                .take_while(|arg| arg.as_str() != "--")
+                .any(|arg| arg == "--no-start")
         {
             drop(guard);
             return run_msb_process(paths, args, timeout, report);
         }
         if args[0] != "exec" {
-            return run_msb_process(paths, args, timeout, report);
+            let result = run_msb_process(paths, args, timeout, report);
+            drop(guard);
+            if result.is_ok() {
+                crate::network::reconcile_started(paths, workspace);
+            }
+            return result;
         }
         // Finish a possible boot under the same lock as live access changes,
         // then release it before running arbitrary, possibly long guest commands.
@@ -543,6 +551,9 @@ fn run_msb_with_progress(
             )?;
         }
         drop(guard);
+        if temporary_boot {
+            crate::network::reconcile_started(paths, workspace);
+        }
         let result = run_msb_process(paths, args, timeout, report);
         if temporary_boot {
             // Preserve msb exec's temporary-boot behavior even on guest failure.
@@ -1466,7 +1477,17 @@ pub async fn workspace_action(
     app: AppHandle,
     action: String,
     name: String,
+    path: Option<String>,
 ) -> Result<ApplicationSource, String> {
+    if action == "open-editor" {
+        return tauri::async_runtime::spawn_blocking(move || {
+            crate::editor::open(&app, &name, path.as_deref())?;
+            let paths = runtime_paths(&app)?;
+            read_application_state_with(&ProcessRunner, &paths).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "The editor worker failed.".to_string())?;
+    }
     let worker_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let app = worker_app;

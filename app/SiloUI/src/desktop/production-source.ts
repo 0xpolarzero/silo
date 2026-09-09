@@ -5,7 +5,7 @@ import { z } from "zod"
 
 import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
-import type { ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
+import type { NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 
@@ -97,6 +97,14 @@ const backupStateShape = z.object({
 }).strict()
 const archiveInspectionShape = z.object({ archive: backupArchiveShape, valid: z.boolean(), reason: z.string().optional() }).strict()
 
+const networkStateShape = z.object({ workspaces: z.array(z.object({
+  workspace: z.string(), error: z.string().nullable(), ports: z.array(z.object({
+    port: z.number().int().min(1).max(65535), hostPort: z.number().int().min(1).max(65535).nullable(),
+    scheme: z.enum(["http", "https"]).nullable(), state: z.enum(["reachable", "waiting", "unpublished", "unknown"]),
+    configured: z.boolean(), message: z.string().nullable().optional(),
+  })),
+})) })
+
 export function parseApplicationSource(input: unknown): ApplicationSource {
   return applicationSourceShape.parse(input) as unknown as ApplicationSource
 }
@@ -153,6 +161,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let activeConfiguration: ApplicationSource["sandboxConfigurationOperation"] = null
   let activeRequestId: string | null = null
   let operationSequence = 0
+  let network: NetworkState | undefined
+  let networkError: string | null = null
+  let networkRequest: Promise<void> | undefined
+  let networkRevision = 0
   let disposed = false
   let refreshSequence = 0
   let githubMutationSequence = 0
@@ -164,6 +176,30 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let pendingBackupOperation = false
   let requestedOperation: { operation: "backup" | "restore"; archive: BackupArchive; targetName?: string } | null = null
 
+  function refreshNetwork(): Promise<void> {
+    if (networkRequest) return networkRequest
+    const revision = networkRevision
+    networkRequest = (async () => {
+      try {
+        const result = networkStateShape.parse(await native.invoke("read_network_state"))
+        if (revision !== networkRevision || disposed) return
+        network = result; networkError = null
+      } catch {
+        if (revision !== networkRevision || disposed) return
+        networkError = "Could not check network services."
+      }
+      publish({ ...snapshot })
+    })().finally(() => { networkRequest = undefined })
+    return networkRequest
+  }
+  async function changeNetwork(command: string, arguments_: Record<string, unknown>) {
+    const revision = ++networkRevision
+    const result = networkStateShape.parse(await native.invoke(command, arguments_))
+    if (revision !== networkRevision || disposed) return
+    network = result; networkError = null
+    publish({ ...snapshot })
+  }
+
   async function changeSecret(command: string, arguments_: Record<string, unknown>) {
     const secrets = z.array(secretShape).parse(await native.invoke(command, arguments_))
     if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
@@ -172,6 +208,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   function publish(next: ProductionSnapshot) {
     if (disposed) return
+    if (next.source) next = { ...next, source: { ...next.source, network, networkError,
+      workspaces: next.source.workspaces.map(workspace => ({ ...workspace, ports: (network?.workspaces.find(item => item.workspace === workspace.machine.name)?.ports ?? []).map(port => ({ port: port.port, listening: !networkError && !network?.workspaces.find(item => item.workspace === workspace.machine.name)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })) }))
+    } }
     snapshot = next.source ? { ...next, source: { ...next.source, workspaces: next.source.workspaces.map(({ lifecycleAction: _previous, ...workspace }) => ({ ...workspace, ...(pendingLifecycle.has(workspace.machine.name) && { lifecycleAction: pendingLifecycle.get(workspace.machine.name) }) })) } } : next
     listeners.forEach((listener) => listener())
   }
@@ -231,10 +270,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (source && snapshot.source && (githubMutationPending || (source.github.policyRevision ?? 0) < (snapshot.source.github.policyRevision ?? 0))) source = { ...source, github: snapshot.source.github }
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
     publish({ ...snapshot, source, backup, loading: false, error })
+    void refreshNetwork()
   }
 
   async function initialize() {
     try {
+      unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
       unlisten.push(await native.listen("silo://application-state-changed", () => { void refresh() }))
       unlisten.push(await native.listen("desktop:status-opened", () => { void refresh() }))
       unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
@@ -520,6 +561,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     saveSecret: (request: SecretConfigurationRequest) => changeSecret("save_secret", { request }),
     removeSecret: (id: string) => changeSecret("remove_secret", { id }),
     retrySecret: (id: string) => changeSecret("retry_secret", { id }),
+    refreshNetwork,
+    saveNetworkPort: request => changeNetwork("save_network_port", { ...request }),
+    removeNetworkPort: (workspace, port) => changeNetwork("remove_network_port", { workspace, port }),
+    openNetworkPort: (workspace, port) => native.invoke<void>("open_network_port", { workspace, port }),
     listWorkspaceDirectory: async (workspace, path, offset, snapshotId) => directoryPageShape.parse(await native.invoke("list_workspace_directory", { workspace, path, offset, snapshotId: snapshotId ?? null })),
     retryRuntimeChecks: () => { void refresh() },
     saveMachineConfiguration,
@@ -609,7 +654,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     quit: () => { void native.invoke("quit_app") },
     refresh: () => { void refresh() },
     openEditor: (name, path) => workspaceAction("open-editor", name, { path }),
-    openSite: (name, port) => workspaceAction("open-site", name, { port }),
+    openSite: (workspace, port) => { void native.invoke("open_network_port", { workspace, port }).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
     dismissRepositoryPush: () => {},
   }
 

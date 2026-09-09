@@ -99,9 +99,9 @@ const baseWorkspaces: ApplicationWorkspace[] = [
       { name: ".gitconfig", kind: "file" },
     ],
     ports: [
-      { port: 3000, listening: true },
-      { port: 5173, listening: false },
-      { port: 8080, listening: false },
+      { port: 3000, listening: true, configured: true, hostPort: 3000, scheme: "http" },
+      { port: 5173, listening: false, configured: true, hostPort: 5173, scheme: "http" },
+      { port: 8080, listening: false, configured: true, hostPort: 8080, scheme: "http" },
     ],
     logs: [
       { line: "19:18:42  web       Ready on http://0.0.0.0:3000", occurredAt: "2026-09-04T19:18:42Z" },
@@ -155,7 +155,7 @@ function workspacesForScenario(scenario: ScenarioName): ApplicationWorkspace[] {
       ...workspace,
       state: "running",
       stateDetail: "Running and verified",
-      ports: workspace.ports.length > 0 ? workspace.ports : [{ port: 3000, listening: true }],
+      ports: workspace.ports.length > 0 ? workspace.ports : [{ port: 3000, listening: true, configured: true, hostPort: 3000, scheme: "http" }],
     }))
   }
   if (scenario === "bootstrap-failure") {

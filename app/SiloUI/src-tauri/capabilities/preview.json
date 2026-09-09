@@ -35,7 +35,7 @@
     "allow-dismiss-backup-operation",
     "allow-read-application-state", "allow-push-repository",
     "allow-read-machine-configuration",
-    "allow-list-workspace-directory",
+    "allow-list-workspace-directory", "allow-read-network-state", "allow-save-network-port", "allow-remove-network-port", "allow-open-network-port",
     "allow-read-secrets-state",
     "allow-save-secret",
     "allow-remove-secret",

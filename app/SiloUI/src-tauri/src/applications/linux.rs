@@ -10,6 +10,39 @@ use gtk::prelude::IconThemeExt;
 
 use super::{Application, ApplicationCatalog};
 
+pub fn editor_command(application: &Application) -> Result<(std::path::PathBuf, bool), String> {
+    let info =
+        desktop_at(Path::new(&application.path)).ok_or("The selected editor is unavailable.")?;
+    let executable = info.executable();
+    let name = executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let zed = match name {
+        "zed" | "zeditor" => true,
+        "code" | "code-insiders" => false,
+        _ => return Err(
+            "Remote folders currently support Zed and Visual Studio Code. Choose one in Settings."
+                .into(),
+        ),
+    };
+    Ok((executable, zed))
+}
+
+pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
+    // GIO parses desktop Exec field codes; never execute them through a shell.
+    let result = if let Some(path) = selection {
+        let application = desktop_at(path)
+            .ok_or("The selected browser is unavailable. Choose another in Settings.")?;
+        application.launch_uris(&[url], None::<&gio::AppLaunchContext>)
+    } else {
+        AppInfo::launch_default_for_uri(url, None::<&gio::AppLaunchContext>)
+    };
+    result.map_err(|_| {
+        "The browser could not be opened. Check your browser selection in Settings.".into()
+    })
+}
+
 pub fn discover() -> Result<ApplicationCatalog, String> {
     let mut catalog = ApplicationCatalog::default();
     // GIO owns XDG precedence, hidden overrides, and desktop-entry parsing.

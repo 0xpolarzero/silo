@@ -3,5 +3,5 @@
   "identifier": "status",
   "description": "The status panel can read shared preferences, resize and dismiss itself, open the main window, update the tray, and quit Silo. It cannot change settings or read onboarding drafts.",
   "windows": ["status"],
-  "permissions": ["core:menu:allow-new", "core:menu:allow-popup", "core:resources:allow-close", "allow-open-main", "allow-hide-status", "allow-resize-status", "allow-quit-app", "allow-update-tray", "allow-read-settings", "allow-list-applications", "allow-read-application-state", "allow-read-machine-configuration", "allow-list-workspace-directory", "allow-push-repository", "allow-read-backup-state", "allow-workspace-action", "allow-retry-workspace-start"]
+  "permissions": ["core:menu:allow-new", "core:menu:allow-popup", "core:resources:allow-close", "allow-open-main", "allow-hide-status", "allow-resize-status", "allow-quit-app", "allow-update-tray", "allow-read-settings", "allow-list-applications", "allow-read-application-state", "allow-read-machine-configuration", "allow-list-workspace-directory", "allow-read-network-state", "allow-open-network-port", "allow-push-repository", "allow-read-backup-state", "allow-workspace-action", "allow-retry-workspace-start"]
 }

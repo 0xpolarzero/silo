@@ -14,6 +14,53 @@ use objc2_foundation::{
 };
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
+pub fn editor_command(application: &Application) -> Result<(std::path::PathBuf, bool), String> {
+    let root = Path::new(&application.path);
+    // Reuse Launch Services bundle identity, not an arbitrary app display name.
+    let id = autoreleasepool(|_| {
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&application.path));
+        NSBundle::bundleWithURL(&url)
+            .and_then(|bundle| bundle.bundleIdentifier())
+            .map(|id| id.to_string())
+    });
+    let (relative, zed) = match id.as_deref() {
+        Some("dev.zed.Zed" | "dev.zed.Zed-Preview") => ("Contents/MacOS/cli", true),
+        Some("com.microsoft.VSCode" | "com.microsoft.VSCodeInsiders") => {
+            ("Contents/Resources/app/bin/code", false)
+        }
+        _ => return Err(
+            "Remote folders currently support Zed and Visual Studio Code. Choose one in Settings."
+                .into(),
+        ),
+    };
+    let path = root.join(relative);
+    if !path.is_file() {
+        return Err("The selected editor's command is unavailable.".into());
+    }
+    Ok((path, zed))
+}
+
+pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
+    let mut command = std::process::Command::new("/usr/bin/open");
+    if let Some(path) = selection {
+        application_at(path)
+            .ok_or("The selected browser is unavailable. Choose another in Settings.")?;
+        command.arg("-a").arg(path);
+    }
+    let status = command
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|_| "The browser could not be opened.")?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("The browser could not be opened. Check your browser selection in Settings.".into())
+    }
+}
+
 // Launch Services also advertises editors for shell scripts. Only known terminal
 // applications enter that list; Choose… can select any valid application bundle.
 const TERMINAL_IDS: &[&str] = &[
