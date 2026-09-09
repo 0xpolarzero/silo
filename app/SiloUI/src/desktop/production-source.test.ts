@@ -31,6 +31,42 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("saves secret values only in the native request and publishes value-free metadata", async () => {
+    const mock = native()
+    const request = { operation: "add" as const, name: "API_TOKEN", value: "private-test-value", workspaces: ["dev"], allowedDomains: ["api.example.test"] }
+    const saved = { id: "api-token", name: request.name, workspaces: request.workspaces, allowedDomains: request.allowedDomains, state: "restart-required" as const, pendingWorkspaces: ["dev"], value: request.value }
+    const invoke = vi.fn(async (name: string, args?: Record<string, unknown>) => {
+      if (name === "save_secret" || name === "retry_secret") return [saved]
+      if (name === "remove_secret") return []
+      if (name === "read_application_state") return { ...source, secrets: [saved] }
+      return mock.invoke(name, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    await store.applicationActions.saveSecret(request)
+    expect(invoke).toHaveBeenCalledWith("save_secret", { request })
+    expect(store.getSnapshot().source?.secrets[0]).toEqual(expect.objectContaining({ pendingWorkspaces: ["dev"] }))
+    expect(JSON.stringify(store.getSnapshot())).not.toContain(request.value)
+    await store.applicationActions.retrySecret?.("api-token")
+    expect(invoke).toHaveBeenCalledWith("retry_secret", { id: "api-token" })
+    await store.applicationActions.removeSecret("api-token")
+    expect(invoke).toHaveBeenCalledWith("remove_secret", { id: "api-token" })
+    store.dispose()
+  })
+
+  it("propagates rejected secret saves so the editor can preserve the draft", async () => {
+    const mock = native()
+    const invoke = vi.fn(async (name: string, args?: Record<string, unknown>) => {
+      if (name === "save_secret") throw new Error("Credential storage is locked.")
+      return mock.invoke(name, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    await expect(store.applicationActions.saveSecret({ operation: "add", name: "API_TOKEN", value: "private-test-value", workspaces: ["dev"], allowedDomains: ["api.example.test"] })).rejects.toThrow("Credential storage is locked.")
+    expect(store.getSnapshot().source?.secrets).toEqual(source.secrets)
+    store.dispose()
+  })
+
   it("shows restart immediately, keeps it through refresh, and blocks conflicting actions", async () => {
     let finish!: (value: unknown) => void
     const command = new Promise((resolve) => { finish = resolve })

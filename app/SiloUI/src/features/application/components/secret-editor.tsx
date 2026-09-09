@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react"
-import { KeyRound } from "lucide-react"
+import { KeyRound, LoaderCircle } from "lucide-react"
 
 import { FilterCombobox } from "@/components/filter-combobox"
 import { Button } from "@/components/ui/button"
@@ -8,11 +8,13 @@ import { Input } from "@/components/ui/input"
 import type { ApplicationSecret, ApplicationSource, SecretConfigurationRequest } from "../model/application-source"
 import { secretConfiguration, type SecretDraft, type SecretValidationErrors } from "../model/secret-configuration"
 
-export function SecretEditor({ secret, source, onSave, onCancel }: {
+export function SecretEditor({ secret, source, onSave, onCancel, saving = false, saveError }: {
   secret?: ApplicationSecret
   source: ApplicationSource
   onSave: (request: SecretConfigurationRequest) => void
   onCancel: () => void
+  saving?: boolean
+  saveError?: string
 }) {
   const [draft, setDraft] = useState<SecretDraft>(() => ({
     name: secret?.name ?? "", value: "", workspaces: secret?.workspaces ?? [],
@@ -43,6 +45,7 @@ export function SecretEditor({ secret, source, onSave, onCancel }: {
 
   return <form ref={formRef} aria-label={title} className="grid min-w-0 gap-3 p-3" noValidate onSubmit={(event) => {
     event.preventDefault()
+    if (saving) return
     const result = secretConfiguration(draft, source.secrets, workspaces.map(({ machine }) => machine.name), secret)
     if (result.errors) {
       setErrors(result.errors)
@@ -55,13 +58,14 @@ export function SecretEditor({ secret, source, onSave, onCancel }: {
     if (unchanged) onCancel()
     else onSave(request)
   }} onKeyDown={(event) => {
-    if (event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+    if (!saving && event.key === "Escape" && !event.defaultPrevented && !event.nativeEvent.isComposing) {
       event.preventDefault()
       event.stopPropagation()
       onCancel()
     }
   }}>
     <h3 className="flex min-w-0 items-center gap-2 text-xs font-semibold"><KeyRound className="size-4 shrink-0" aria-hidden="true" /><span className="break-all">{title}</span></h3>
+    <fieldset disabled={saving} className="grid min-w-0 gap-3">
     <div className="grid min-w-0 gap-3 sm:grid-cols-2">
       <div className="grid content-start gap-1">
         <label htmlFor={`${id}-name`} className="text-[11px] font-medium text-muted-foreground">Name</label>
@@ -103,9 +107,11 @@ export function SecretEditor({ secret, source, onSave, onCancel }: {
       <label className="flex items-center gap-2"><Checkbox checked={draft.allowAnyDomain} aria-invalid={Boolean(errors.allowAnyDomain)} aria-describedby={errors.allowAnyDomain ? `${id}-allowAnyDomain-error` : undefined} onCheckedChange={(checked) => update({ allowAnyDomain: checked === true })} />Allow any HTTPS destination</label>
       {fieldError("allowAnyDomain")}
     </div>}
+    </fieldset>
+    {saveError && <p role="alert" className="text-[11px] text-destructive">{saveError}</p>}
     <div className="flex justify-end gap-2">
-      <Button type="button" variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
-      <Button type="submit" size="sm">Save</Button>
+      <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>
+      <Button type="submit" size="sm" disabled={saving}>{saving && <LoaderCircle className="animate-spin" aria-hidden="true" />}{saving ? "Saving…" : saveError ? "Retry" : "Save"}</Button>
     </div>
   </form>
 }

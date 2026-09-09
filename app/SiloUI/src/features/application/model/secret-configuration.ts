@@ -10,7 +10,7 @@ export interface SecretDraft {
 
 export type SecretValidationErrors = Partial<Record<keyof SecretDraft, string>>
 
-// Name grammar and reserved variables come from secret-plan in bin/silo.
+// Keep name validation aligned with the native secrets controller.
 const reservedNames = new Set([
   "GH_TOKEN", "GITHUB_TOKEN", "PATH", "HOME", "SHELL", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP",
   "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "IFS", "CDPATH", "GLOBIGNORE", "HOSTNAME", "HOSTALIASES",
@@ -35,7 +35,7 @@ export function secretConfiguration(draft: SecretDraft, secrets: readonly Applic
 
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) {
     errors.name = "Use up to 128 letters, digits, or underscores, starting with a letter or underscore."
-  } else if (reservedNames.has(name) || /^(DYLD_|LD_|SILO_)/.test(name)) {
+  } else if (reservedNames.has(name.toUpperCase()) || /^(DYLD_|LD_|SILO_|MSB_|RUST_)/.test(name.toUpperCase())) {
     errors.name = "This name is reserved. Choose another name."
   } else if (secrets.some((secret) => secret.id !== original?.id && secret.name === name)) {
     errors.name = "A secret with this name already exists."

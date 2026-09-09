@@ -12,6 +12,7 @@ mod host_push;
 mod notifications;
 mod runtime;
 mod settings;
+mod secrets;
 mod startup;
 mod status_panel;
 mod system_integrations;
@@ -29,6 +30,10 @@ fn main() {
             status_panel::quit_app,
             tray::update_tray,
             host_push::push_repository,
+            secrets::read_secrets_state,
+            secrets::save_secret,
+            secrets::remove_secret,
+            secrets::retry_secret,
             github::read_github_state,
             github::connect_github,
             github::disconnect_github,
@@ -71,6 +76,7 @@ fn main() {
         ])
         .setup(|app| {
             settings::install(app.handle());
+            secrets::install(app.handle())?;
             github::install(app.handle());
             backup_controller::install(app.handle())?;
             status_panel::install(app.handle())?;

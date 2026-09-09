@@ -44,6 +44,12 @@ const githubStateShape = z.object({
   ])).optional(),
 })
 
+const secretShape = z.object({
+  id: z.string(), name: z.string(), workspaces: z.array(z.string()), allowedDomains: z.array(z.string()),
+  state: z.enum(["active", "restart-required"]), pendingWorkspaces: z.array(z.string()).optional(),
+  error: z.string().nullish().transform((value) => value ?? undefined), removing: z.boolean().optional(),
+})
+
 const applicationSourceShape = z.object({
   runtimeRepair: z.unknown().nullable(),
   workspaces: z.array(z.object({
@@ -60,7 +66,7 @@ const applicationSourceShape = z.object({
   sandboxConfigurationOperation: z.unknown().nullable(),
   repositoryPushOperations: z.array(z.unknown()),
   github: githubStateShape,
-  secrets: z.array(z.unknown()),
+  secrets: z.array(secretShape),
   backup: z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() }),
   preferences: z.object({
     terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
@@ -151,6 +157,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const pendingLifecycle = new Map<string, "start" | "stop" | "restart">()
   let pendingBackupOperation = false
   let requestedOperation: { operation: "backup" | "restore"; archive: BackupArchive; targetName?: string } | null = null
+
+  async function changeSecret(command: string, arguments_: Record<string, unknown>) {
+    const secrets = z.array(secretShape).parse(await native.invoke(command, arguments_))
+    if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
+    void refresh()
+  }
 
   function publish(next: ProductionSnapshot) {
     if (disposed) return
@@ -499,8 +511,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   const applicationActions: ApplicationActions = {
-    saveSecret: (_request: SecretConfigurationRequest) => reportUnavailable("Secret changes are not available in this Silo build. No secret was saved."),
-    removeSecret: () => reportUnavailable("Secret changes are not available in this Silo build. No secret was removed."),
+    saveSecret: (request: SecretConfigurationRequest) => changeSecret("save_secret", { request }),
+    removeSecret: (id: string) => changeSecret("remove_secret", { id }),
+    retrySecret: (id: string) => changeSecret("retry_secret", { id }),
     retryRuntimeChecks: () => { void refresh() },
     saveMachineConfiguration,
     retryMachineConfiguration: () => {

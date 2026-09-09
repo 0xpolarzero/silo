@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { act, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -13,6 +13,62 @@ function SecretsPreview({ source }: { source: ApplicationSource }) {
 }
 
 describe("SecretsPage", () => {
+  it("keeps a failed save draft across native refresh, then closes after successful retry", async () => {
+    const user = userEvent.setup()
+    let reject!: (error: Error) => void
+    const save = vi.fn().mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail })).mockResolvedValue(undefined)
+    const source = applicationSourceForScenario("running")
+    const { rerender } = render(<SecretsPage source={source} onSaveSecret={save} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    await user.type(screen.getByLabelText("Replacement value"), "private-test-value")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled()
+    expect(screen.getByLabelText("Replacement value")).toBeDisabled()
+    rerender(<SecretsPage source={structuredClone(source)} onSaveSecret={save} onRemoveSecret={vi.fn()} />)
+    expect(screen.getByRole("form")).toBeVisible()
+    await act(async () => reject(new Error("private-test-value")))
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t save this secret.")
+    expect(screen.getByRole("alert")).not.toHaveTextContent("private-test-value")
+    expect(screen.getByLabelText("Replacement value")).toHaveValue("private-test-value")
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole("form")).not.toBeInTheDocument()
+  })
+
+  it("explains when credential storage needs to be unlocked", async () => {
+    const user = userEvent.setup()
+    const save = vi.fn().mockRejectedValue("Cannot access secrets in the system credential store. Unlock it and retry.")
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={save} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    await user.type(screen.getByLabelText("Replacement value"), "test-value")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Unlock it and retry.")
+    expect(screen.getByRole("form")).toBeVisible()
+  })
+
+  it("retries a failed removal without claiming the secret disappeared", async () => {
+    const user = userEvent.setup()
+    const remove = vi.fn().mockRejectedValueOnce(new Error("private failure")).mockResolvedValue(undefined)
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={vi.fn()} onRemoveSecret={remove} />)
+    await user.click(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
+    await user.click(screen.getByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" }))
+    expect(screen.getByText("PACKAGE_TOKEN")).toBeVisible()
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t update this secret.")
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    expect(remove).toHaveBeenCalledTimes(2)
+  })
+
+  it("shows the affected sandboxes and retries partial runtime application", async () => {
+    const user = userEvent.setup()
+    const source = structuredClone(applicationSourceForScenario("running"))
+    source.secrets[0] = { ...source.secrets[0], state: "restart-required", pendingWorkspaces: ["dev"], error: "Couldn’t apply access to playgrounds." }
+    const retry = vi.fn().mockResolvedValue(undefined)
+    render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={vi.fn()} onRetrySecret={retry} />)
+    expect(screen.getByText("Restart to apply: dev")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    expect(retry).toHaveBeenCalledExactlyOnceWith("package-token")
+  })
+
   it.each(["Save", "Cancel", "Escape"])("restores focus after %s without reopening the Edit tooltip", async (action) => {
     const user = userEvent.setup()
     render(<SecretsPreview source={applicationSourceForScenario("running")} />)

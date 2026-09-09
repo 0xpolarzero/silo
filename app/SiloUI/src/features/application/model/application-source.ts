@@ -126,6 +126,9 @@ export interface ApplicationSecret {
   workspaces: string[]
   allowedDomains: string[]
   state: "active" | "restart-required"
+  pendingWorkspaces?: string[]
+  error?: string
+  removing?: boolean
 }
 
 // Values travel only with a save request, never in the published secret metadata.
@@ -215,8 +218,9 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
-  saveSecret: (request: SecretConfigurationRequest) => void
-  removeSecret: (id: string) => void
+  saveSecret: (request: SecretConfigurationRequest) => Promise<void> | void
+  removeSecret: (id: string) => Promise<void> | void
+  retrySecret?: (id: string) => Promise<void> | void
   retryRuntimeChecks: () => void
   saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void
   retryMachineConfiguration: (workspace: string) => void

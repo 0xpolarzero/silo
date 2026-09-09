@@ -221,7 +221,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       <section id="application-panel-github" role="region" aria-labelledby="application-nav-github" hidden={visibleTab !== "github"} className="h-full min-h-0 overflow-hidden">
         <GitHubPage source={applicationSource} actions={actions} onBusyChange={setGitHubBusy} />
       </section>
-      <section id="application-panel-secrets" role="region" aria-labelledby="application-nav-secrets" hidden={visibleTab !== "secrets"}><SecretsPage source={applicationSource} onSaveSecret={actions.saveSecret} onRemoveSecret={actions.removeSecret} /></section>
+      <section id="application-panel-secrets" role="region" aria-labelledby="application-nav-secrets" hidden={visibleTab !== "secrets"}><SecretsPage source={applicationSource} onSaveSecret={actions.saveSecret} onRemoveSecret={actions.removeSecret} onRetrySecret={actions.retrySecret} /></section>
       <section id="application-panel-backup" role="region" aria-labelledby="application-nav-backup" hidden={visibleTab !== "backup"}><BackupPage source={applicationSource} backup={backup} onBusyChange={setBackupBusy} /></section>
       {activeRuntimeRepair && (
         <section id="application-panel-system" role="region" aria-labelledby="application-nav-system" hidden={visibleTab !== "system"}>

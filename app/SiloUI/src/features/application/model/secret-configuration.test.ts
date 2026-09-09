@@ -5,7 +5,7 @@ import { secretConfiguration, type SecretDraft } from "./secret-configuration"
 const draft: SecretDraft = { name: "SERVICE_TOKEN", value: "fixture-token", workspaces: ["dev"], domains: "api.example.test", allowAnyDomain: false }
 
 describe("secret configuration", () => {
-  it.each(["9TOKEN", "SERVICE-TOKEN", "TOKEN".repeat(26), "PATH", "SSL_CERT_FILE", "http_proxy", "SILO_TOKEN", "DYLD_INSERT_LIBRARIES"])("rejects invalid or reserved name %s", (name) => {
+  it.each(["9TOKEN", "SERVICE-TOKEN", "TOKEN".repeat(26), "PATH", "SSL_CERT_FILE", "http_proxy", "SILO_TOKEN", "MSB_TOKEN", "msb_token", "rust_log", "path", "DYLD_INSERT_LIBRARIES"])("rejects invalid or reserved name %s", (name) => {
     expect(secretConfiguration({ ...draft, name }, [], ["dev"]).errors?.name).toBeDefined()
   })
 

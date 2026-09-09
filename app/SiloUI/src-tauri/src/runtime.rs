@@ -1,5 +1,7 @@
 #[path = "runtime_activity.rs"]
 mod runtime_activity;
+#[path = "secrets_runtime.rs"]
+mod secrets_runtime;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
@@ -294,6 +296,8 @@ pub(crate) struct InspectedSandbox {
     pub(crate) name: String,
     pub(crate) status: String,
     pub(crate) config: Value,
+    #[serde(default)]
+    pub(crate) active_config: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -576,6 +580,16 @@ fn run_msb_process(
         }
     }
     prepare_runtime_home(&paths.home, paths.storage_home.as_deref())?;
+    let mut secret_revision = None;
+    let general_secrets = if let Some(workspace) = github_command_workspace(args) {
+        secret_revision = Some(crate::secrets::workspace_revision(workspace).map_err(RuntimeError::Unavailable)?);
+        let material = crate::secrets::runtime_material(workspace).map_err(RuntimeError::Unavailable)?;
+        secrets_runtime::validate_material(&material).map_err(RuntimeError::Invalid)?;
+        if matches!(args[0].as_str(), "start" | "restart") {
+            secrets_runtime::apply(paths, workspace, &material, true).map_err(RuntimeError::Unavailable)?;
+        }
+        material
+    } else { Vec::new() };
     let stdout_file = tempfile::NamedTempFile::new().map_err(|error| {
         RuntimeError::Unavailable(format!("Silo could not capture runtime output: {error}"))
     })?;
@@ -584,6 +598,7 @@ fn run_msb_process(
     })?;
     let mut child = Command::new(&paths.executable)
         .args(args)
+        .envs(general_secrets.iter().map(|(name,value,_)| (name,value)))
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)
         .env("MSB_LIBKRUNFW_PATH", &paths.library)
@@ -715,6 +730,12 @@ fn run_msb_process(
                 clean_detail(raw_detail, &paths.home)
             ),
         });
+    }
+    if let Some(workspace) = github_command_workspace(args).filter(|_| matches!(args[0].as_str(), "start" | "restart")) {
+        let inspected = inspect_workspace(&ProcessRunner, paths, workspace)?;
+        if inspected.status == "Running" {
+            crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default()).map_err(RuntimeError::Unavailable)?;
+        }
     }
     Ok(CommandOutput { stdout, stderr })
 }
@@ -1239,7 +1260,10 @@ pub(crate) fn apply_github_policy(
         .lock()
         .map_err(|_| "GitHub runtime state is unavailable.".to_string())?
         .remove(&(paths.home.clone(), workspace.into()));
+    let general_secrets = crate::secrets::runtime_material(workspace)?;
+    secrets_runtime::validate_material(&general_secrets)?;
     let mut child = Command::new(&paths.executable)
+        .envs(general_secrets.iter().map(|(name,value,_)| (name,value)))
         .args([
             "modify",
             workspace,
@@ -1989,6 +2013,15 @@ fn read_application_state_with(
             }),
         }
     }
+    let secrets = crate::secrets::snapshot().map_err(RuntimeError::Unavailable)?;
+    for workspace in &mut workspaces {
+        workspace.secret_names = secrets.iter().filter(|secret| secret["removing"] != true && secret["workspaces"].as_array().is_some_and(|names| names.iter().any(|name| name.as_str() == Some(workspace.machine.name()))))
+            .filter_map(|secret| secret["name"].as_str().map(str::to_owned)).collect();
+    }
+    let mut activities = runtime_activity::read(paths)?;
+    activities.extend(crate::secrets::activities().map_err(RuntimeError::Unavailable)?);
+    activities.sort_by(|a,b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
+    activities.truncate(200);
     let startup_workspace_ids = workspaces
         .first()
         .map(|workspace| vec![workspace.machine.id().to_string()])
@@ -1996,11 +2029,11 @@ fn read_application_state_with(
     Ok(ApplicationSource {
         runtime_repair: None,
         workspaces,
-        activities: runtime_activity::read(&paths)?,
+        activities,
         sandbox_configuration_operation: None,
         repository_push_operations: Vec::new(),
         github: serde_json::json!({"state": "disconnected"}),
-        secrets: Vec::new(),
+        secrets,
         backup: BackupSummary {
             last_archive: "No backups yet".into(),
             completed_label: String::new(),
@@ -2414,6 +2447,7 @@ fn save_machine_configuration_with_progress(
                 .machines
                 .retain(|existing| existing.id() != machine.id());
             write_metadata(&paths.metadata, &applied)?;
+            crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             remove_machine_volumes(paths, machine)?;
             progress("workspace-removal", machine.name(), 1);
         }
@@ -4409,3 +4443,27 @@ mod tests {
 #[cfg(test)]
 #[path = "runtime_github_tests.rs"]
 mod github_integration_tests;
+
+/// Apply secret policy under the same per-VM lock as GitHub updates and boot.
+pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(String,String,Vec<String>)>) -> Result<Vec<String>,String> {
+    validate_name(workspace).map_err(|error| error.to_string())?;
+    let _mutation = MUTATION_LOCK.try_lock().map_err(|_| RuntimeError::Busy.to_string())?;
+    let paths = runtime_paths(app)?;
+    let lock = github_revision_lock(&paths.home, workspace)?;
+    let _guard = lock.lock().map_err(|_| "Sandbox access state is unavailable.".to_string())?;
+    secrets_runtime::apply(&paths, workspace, &desired, false)
+}
+
+pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String]) -> Result<(),String> {
+    let paths = runtime_paths(app)?;
+    let metadata = read_metadata(&paths.metadata).map_err(|_| "Sandbox settings could not be read.".to_string())?;
+    for workspace in workspaces {
+        validate_name(workspace).map_err(|_| "Invalid sandbox selection.".to_string())?;
+        if !metadata.machines.iter().any(|machine| machine.is_vm() && machine.name() == workspace) {
+            return Err("Secrets can only be assigned to local Silo sandboxes.".into());
+        }
+        let inspected = inspect_workspace(&ProcessRunner,&paths,workspace).map_err(|_| "Could not verify the selected sandbox.".to_string())?;
+        ensure_managed(&inspected).map_err(|_| "Secrets can only be assigned to managed Silo sandboxes.".to_string())?;
+    }
+    Ok(())
+}
