@@ -121,12 +121,41 @@ const CLIENT_SECRET: Option<&str> = option_env!("SILO_GITHUB_CLIENT_SECRET");
 const CLIENT_ID: Option<&str> = option_env!("SILO_GITHUB_CLIENT_ID");
 const APP_SLUG: Option<&str> = option_env!("SILO_GITHUB_APP_SLUG");
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Credential {
     access_token: String,
     refresh_token: Option<String>,
     expires_at: u64,
+}
+// One serialized Keychain read per entry per app session. Cache denials too:
+// background reconciliation must never reopen a dismissed permission dialog.
+struct SessionSecret<T>(Mutex<Option<Result<T, String>>>);
+impl<T: Clone + PartialEq> SessionSecret<T> {
+    const fn new() -> Self { Self(Mutex::new(None)) }
+    fn read(&self, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
+        state.get_or_insert_with(read).clone()
+    }
+    fn write(&self, value: T, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
+        if let Some(Err(error)) = state.as_ref() { return Err(error.clone()); }
+        if matches!(state.as_ref(), Some(Ok(current)) if current == &value) { return Ok(()); }
+        let result = write();
+        *state = Some(result.clone().map(|_| value));
+        result
+    }
+    fn retry(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            if matches!(state.as_ref(), Some(Err(_))) { *state = None; }
+        }
+    }
+}
+static ACCOUNT_SECRET: SessionSecret<Option<Credential>> = SessionSecret::new();
+static LEDGER_SECRET: SessionSecret<TokenLedger> = SessionSecret::new();
+fn retry_credential_access() {
+    ACCOUNT_SECRET.retry();
+    LEDGER_SECRET.retry();
 }
 // Snapshot reads never open the credential store or wait for its permission UI.
 // This observation contains public lifetime/error metadata only, never a token.
@@ -205,8 +234,11 @@ fn now() -> u64 {
         .as_secs()
 }
 fn delete_account_credential() -> Result<(), String> {
-    match entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {
+    match ACCOUNT_SECRET.write(None, || match entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err("Cannot remove GitHub credentials from the system credential store.".into()),
+    }) {
+        Ok(()) => {
             *PENDING_REFRESH
                 .lock()
                 .map_err(|_| "GitHub credential state is unavailable.")? = None;
@@ -226,7 +258,7 @@ fn entry() -> Result<keyring::Entry, String> {
         .map_err(|_| "The system credential store is unavailable.".into())
 }
 fn credential() -> Result<Option<Credential>, String> {
-    observe_credential_read(|| read_entry(&entry()?), publish_credential_observation)
+    observe_credential_read(|| ACCOUNT_SECRET.read(|| read_entry(&entry()?)), publish_credential_observation)
 }
 fn read_entry(entry: &keyring::Entry) -> Result<Option<Credential>, String> {
     match entry.get_password() {
@@ -238,7 +270,7 @@ fn read_entry(entry: &keyring::Entry) -> Result<Option<Credential>, String> {
     }
 }
 fn store(c: &Credential) -> Result<(), String> {
-    let result = entry().and_then(|entry| store_entry(&entry, c));
+    let result = ACCOUNT_SECRET.write(Some(c.clone()), || entry().and_then(|entry| store_entry(&entry, c)));
     publish_credential_observation(
         result
             .as_ref()
@@ -521,12 +553,12 @@ fn save_ledger(entry: &keyring::Entry, ledger: &TokenLedger) -> Result<(), Strin
 // later partial failure must not lose the only copy needed for revocation.
 fn remember_token(app: &tauri::AppHandle, workspace: &str, token: &str) -> Result<(), String> {
     let entry = ledger_entry()?;
-    let mut ledger = read_ledger(&entry)?;
+    let mut ledger = LEDGER_SECRET.read(|| read_ledger(&entry))?;
     let tokens = ledger.entry(workspace.into()).or_default();
     if !tokens.iter().any(|previous| previous == token) {
         tokens.push(token.into());
     }
-    save_ledger(&entry, &ledger)?;
+    LEDGER_SECRET.write(ledger.clone(), || save_ledger(&entry, &ledger))?;
     let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
     let mut document = load(app)?;
     document.grants_issued = true;
@@ -568,7 +600,7 @@ fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> 
         live.extend(tokens.iter().map(|token| token.token.clone()));
     }
     let entry = ledger_entry()?;
-    let mut ledger = read_ledger(&entry)?;
+    let mut ledger = LEDGER_SECRET.read(|| read_ledger(&entry))?;
     let tokens = ledger.get(workspace).cloned().unwrap_or_default();
     let mut failure = None;
     let mut remaining = Vec::new();
@@ -590,7 +622,7 @@ fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> 
     } else {
         ledger.insert(workspace.into(), remaining);
     }
-    save_ledger(&entry, &ledger)?;
+    LEDGER_SECRET.write(ledger.clone(), || save_ledger(&entry, &ledger))?;
     failure.map_or(Ok(()), Err)
 }
 fn finish_application(
@@ -1559,7 +1591,7 @@ pub fn install(app: &tauri::AppHandle) {
                     }
                     let _ = apply(&app, &mut d, None, false);
                     // Removed sandboxes still have a durable retirement ledger.
-                    if let Ok(ledger) = ledger_entry().and_then(|entry| read_ledger(&entry)) {
+                    if let Ok(ledger) = LEDGER_SECRET.read(|| ledger_entry().and_then(|entry| read_ledger(&entry))) {
                         for name in ledger.keys() {
                             if !d
                                 .workspaces
@@ -1634,6 +1666,7 @@ pub async fn connect_github(
     window: tauri::WebviewWindow,
 ) -> Result<Value, String> {
     require_main(window.label())?;
+    retry_credential_access();
     run(app, connect).await
 }
 #[tauri::command]
@@ -1642,6 +1675,7 @@ pub async fn refresh_github_repositories(
     window: tauri::WebviewWindow,
 ) -> Result<Value, String> {
     require_main(window.label())?;
+    retry_credential_access();
     crate::github_http::reset_retries();
     run(app, |app| {
         let result = active_credential().and_then(|c| catalog(&c));
@@ -1675,6 +1709,7 @@ pub async fn disconnect_github(
     window: tauri::WebviewWindow,
 ) -> Result<Value, String> {
     require_main(window.label())?;
+    retry_credential_access();
     let ticket = INTENTS.ticket();
     CANCELLATION.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
@@ -1843,6 +1878,7 @@ pub async fn retry_github_configuration(
     workspace: Option<String>,
 ) -> Result<Value, String> {
     require_main(window.label())?;
+    retry_credential_access();
     let ticket = INTENTS.ticket();
     crate::github_http::reset_retries();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1873,6 +1909,46 @@ pub async fn retry_github_configuration(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_secret_reads_once_and_writes_only_changes() {
+        let cache = super::SessionSecret::new();
+        assert_eq!(cache.read(|| Ok(Some(1))).unwrap(), Some(1));
+        assert_eq!(cache.read(|| panic!("Repeated Keychain read")).unwrap(), Some(1));
+        cache.write(Some(1), || panic!("Unchanged Keychain write")).unwrap();
+        cache.write(Some(2), || Ok(())).unwrap();
+        assert_eq!(cache.read(|| panic!("Read after write")).unwrap(), Some(2));
+        cache.write(None, || Ok(())).unwrap();
+        assert_eq!(cache.read(|| panic!("Read after disconnect")).unwrap(), None);
+    }
+    #[test]
+    fn denied_keychain_access_waits_for_explicit_retry() {
+        let cache = super::SessionSecret::<Option<u64>>::new();
+        assert!(cache.read(|| Err("Denied".into())).is_err());
+        assert!(cache.read(|| panic!("Automatic permission retry")).is_err());
+        assert!(cache.write(Some(1), || panic!("Write after denial")).is_err());
+        cache.retry();
+        assert_eq!(cache.read(|| Ok(Some(1))).unwrap(), Some(1));
+        assert!(cache.write(Some(2), || Err("Write denied".into())).is_err());
+        assert!(cache.write(Some(2), || panic!("Automatic write retry")).is_err());
+        cache.retry();
+        cache.write(Some(2), || Ok(())).unwrap();
+        assert_eq!(cache.read(|| panic!("Read after write")).unwrap(), Some(2));
+    }
+    #[test]
+    fn concurrent_secret_reads_share_one_keychain_request() {
+        let cache = super::SessionSecret::new();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| assert_eq!(cache.read(|| {
+                    reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(Some(1))
+                }).unwrap(), Some(1)));
+            }
+        });
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     use super::*;
     fn test_scope() -> GrantScope {
         GrantScope {

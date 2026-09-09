@@ -247,3 +247,24 @@ but manual reconnect was not verified. A separate fresh-VM UI check was attempte
 the creation form disappeared before input could be applied, so no test VM was
 created and that check is not counted as passed. Earlier fresh-VM integration
 results above remain separate from this UI regression check.
+
+## Keychain access during a session
+
+Account credentials and the runtime-token ledger each use a serialized host-memory
+cache. The first read opens the system credential store; repeated reads reuse its
+result, including absence or failure. Writes persist to Keychain before updating
+the cached value; unchanged values do not trigger writes. Failed reads/writes stay
+blocked until the user explicitly connects, refreshes repositories, retries GitHub
+configuration, or disconnects. Disconnect clears the cached account only after
+successful credential deletion. No cache is sent to the UI or saved as plaintext.
+
+This prevents background reconciliation from repeatedly asking for permission.
+Development bundles are ad-hoc signed: a rebuild can still require renewed macOS
+approval. A release needs a stable signing identity; never broaden a Keychain
+item's access to all applications to hide the prompt. Apple documents both
+[Keychain access control](https://developer.apple.com/documentation/security/access-control-lists)
+and [renewed prompts when a trusted app changes](https://support.apple.com/en-gb/guide/keychain-access/kyca1331/mac).
+
+Validation: all 38 GitHub native tests passed, including one read across concurrent
+callers, no repeated reads or unchanged writes, cached denial until explicit retry,
+write-failure handling, and cached absence after deletion.
