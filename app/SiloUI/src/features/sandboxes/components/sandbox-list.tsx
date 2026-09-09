@@ -141,7 +141,7 @@ export function SandboxAction({ label, tooltip, destructive = false, children, .
           {children}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{tooltip ?? label}</TooltipContent>
+      <TooltipContent className={tooltip ? "max-w-none whitespace-nowrap" : undefined}>{tooltip ?? label}</TooltipContent>
     </Tooltip>
   )
 }

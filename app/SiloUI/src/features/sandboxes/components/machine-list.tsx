@@ -412,7 +412,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
                       hoverActions={presentation?.suppressInteractions ? undefined : <>
                         <SandboxAction label={`Edit ${machine.name}`} disabled={interactionDisabled} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
                         <InlineConfirmation active={deleteArmed} onDismiss={() => setPendingDelete(null)}>
-                          <SandboxAction tooltip={deleteArmed ? undefined : machine.kind === "vm" ? "Create a new VM with these settings. Data is not copied." : "Create a new SSH configuration with these settings."} label={deleteArmed ? `Cancel deletion of ${machine.name}` : `Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => deleteArmed ? setPendingDelete(null) : startDuplicate(machine)}>
+                          <SandboxAction tooltip={deleteArmed ? undefined : machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={deleteArmed ? `Cancel deletion of ${machine.name}` : `Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => deleteArmed ? setPendingDelete(null) : startDuplicate(machine)}>
                             {deleteArmed ? <X /> : <CopyPlus />}
                           </SandboxAction>
                           <SandboxAction

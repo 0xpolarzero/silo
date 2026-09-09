@@ -862,7 +862,7 @@ describe("onboarding", () => {
 
     const tooltipCases = [
       ["Edit dev", "Edit dev"],
-      ["Duplicate dev", "Create a new VM with these settings. Data is not copied."],
+      ["Duplicate dev", "Create a new VM with these settings"],
       ["Delete dev", "Delete dev"],
     ] as const
 
