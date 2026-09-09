@@ -17,7 +17,7 @@ export function GitHubStep({ queueItems = [], activityEvents = [], ...props }: G
   const items = queueItems.filter(({ id }) => ["identityRun", "identityVerify", "githubRun", "githubVerify"].includes(id))
   const events = activityEvents.filter(({ phase }) => phase === "github" || phase === "identity")
   const connecting = props.connectionState === "connecting"
-  const started = items.some(({ status }) => status !== "idle")
+  const started = items.some(({ id, status }) => (id === "githubRun" || id === "githubVerify") && status !== "idle")
   const completed = items.filter(({ status }) => status === "succeeded").length
   const failure = items.find(({ status }) => status === "failed")
   const current = items.find(({ status }) => status === "running")
@@ -44,7 +44,7 @@ export function GitHubStep({ queueItems = [], activityEvents = [], ...props }: G
       <h2 id="github-title" className="sr-only" data-visual-heading="hidden">GitHub</h2>
       <GitHubAccessEditor compactConnection confirmRepositoryClear {...props}
         connectedDetail={started ? detail : props.connectedDetail}
-        connectionProgress={(connecting || started || events.length > 0) && <>
+        connectionProgress={started && <>
           <ListRowDetails label="GitHub setup details">
             <Progress value={connecting ? undefined : items.length ? completed / items.length * 100 : undefined} aria-label="GitHub setup progress" />
             <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-muted-foreground" role={failure ? "alert" : "status"} aria-live="polite">

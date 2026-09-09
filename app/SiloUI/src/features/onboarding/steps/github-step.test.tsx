@@ -27,9 +27,20 @@ describe("GitHub setup feedback", () => {
     expect(screen.queryByText(/private token|Unrelated VM activity/)).not.toBeInTheDocument()
   })
 
-  it("does not invent completed progress during browser authorization", () => {
+  it("does not reveal half-complete progress from background identity verification", () => {
+    render(<GitHubStep {...props} queueItems={[
+      { id: "identityRun", label: "Save Git identities", status: "succeeded" },
+      { id: "identityVerify", label: "Verify Git identities", status: "succeeded" },
+      { id: "githubRun", label: "Save GitHub", status: "idle" },
+      { id: "githubVerify", label: "Verify GitHub", status: "idle" },
+    ]} />)
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Expand activity" })).not.toBeInTheDocument()
+  })
+
+  it("keeps progress and activity hidden before Continue, including browser authorization", () => {
     render(<GitHubStep {...props} connectionState="connecting" />)
-    expect(screen.getByRole("progressbar")).not.toHaveAttribute("aria-valuenow")
-    expect(screen.getByText("Waiting for browser authorization.")).toBeVisible()
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Expand activity" })).not.toBeInTheDocument()
   })
 })

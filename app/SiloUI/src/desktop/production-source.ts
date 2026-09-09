@@ -387,8 +387,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function submitSetupStep(step: "workspaces" | "github", request: OnboardingCompletionRequest): Promise<unknown> {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
     ++identityVerificationSequence
-    lastVerificationKey = undefined
-    const machineJob = configureMachines(request.machineConfiguration)
+    const current = snapshot.source
+    const machinesUnchanged = current && current.workspaces.length > 0
+      && !current.sandboxConfigurationOperation && !activeConfiguration
+      && !setupJobs.some((job) => job.items.some(({ status }) => status === "running" || status === "queued"))
+      && current.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting")
+      && JSON.stringify(current.workspaces.map(({ machine }) => setupMachineConfigurationSchema.parse(machine))) === JSON.stringify(request.machineConfiguration.machines.map((machine) => setupMachineConfigurationSchema.parse(machine)))
+    const machineJob = machinesUnchanged ? Promise.resolve(current) : configureMachines(request.machineConfiguration)
     if (step === "workspaces") return machineJob
     const activityId = crypto.randomUUID()
     const identities = request.github.workspaces.map(({ workspace, identity }) => ({ workspace, ...identity }))
@@ -397,6 +402,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const promise = enqueueSetup(["identityRun", "identityVerify"], async () => {
         await machineJob
         await native.invoke("configure_workspace_identities", { identities })
+        lastVerificationKey = JSON.stringify([request.machineConfiguration, request.github.workspaces.map(({ workspace, identity }) => ({ workspace, identity }))])
       }, activityId)
       lastIdentityJob = { key: identityKey, promise }
       void promise.catch(() => { if (lastIdentityJob?.promise === promise) lastIdentityJob = undefined })

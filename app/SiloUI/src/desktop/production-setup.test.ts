@@ -87,6 +87,24 @@ describe("production setup queue", () => {
     store.dispose()
   })
 
+  it("does not resubmit already verified sandboxes when continuing GitHub after relaunch", async () => {
+    const { store, machines, identities } = await setup()
+    const resumed = structuredClone(request)
+    resumed.machineConfiguration.machines = application.workspaces.map(({ machine }) => machine)
+    resumed.github.workspaces = application.workspaces.map(({ machine }) => ({ ...request.github.workspaces[0], workspace: machine.name }))
+    const observed: string[] = []
+    const unsubscribe = store.subscribe(() => {
+      observed.push(...store.getSnapshot().setupQueue.filter(({ id }) => id === "workspaceRun" || id === "workspaceVerify").map(({ status }) => status))
+    })
+    await store.submitSetupStep("github", resumed)
+    expect(machines).not.toHaveBeenCalled()
+    expect(identities).toHaveBeenCalledOnce()
+    expect(observed).not.toContain("queued")
+    expect(observed).not.toContain("running")
+    unsubscribe()
+    store.dispose()
+  })
+
   it("starts idle, coalesces duplicate Continue, and waits before applying identity", async () => {
     const { store, machines, identities } = await setup()
     expect(store.getSnapshot().setupQueue.every(({ status }) => status === "idle")).toBe(true)
