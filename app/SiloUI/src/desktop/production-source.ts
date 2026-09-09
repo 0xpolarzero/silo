@@ -148,12 +148,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const unlisten: Array<() => void> = []
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
+  const pendingLifecycle = new Map<string, "start" | "stop" | "restart">()
   let pendingBackupOperation = false
   let requestedOperation: { operation: "backup" | "restore"; archive: BackupArchive; targetName?: string } | null = null
 
   function publish(next: ProductionSnapshot) {
     if (disposed) return
-    snapshot = next
+    snapshot = next.source ? { ...next, source: { ...next.source, workspaces: next.source.workspaces.map(({ lifecycleAction: _previous, ...workspace }) => ({ ...workspace, ...(pendingLifecycle.has(workspace.machine.name) && { lifecycleAction: pendingLifecycle.get(workspace.machine.name) }) })) } } : next
     listeners.forEach((listener) => listener())
   }
 
@@ -253,16 +254,23 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   function workspaceAction(action: string, name: string, extras: Record<string, unknown> = {}) {
     const key = `${action}:${name}`
-    if (pendingWorkspaceActions.has(key)) return
+    if (pendingWorkspaceActions.has(key) || pendingLifecycle.has(name)) return
     pendingWorkspaceActions.add(key)
+    const lifecycle = action === "start" || action === "stop" || action === "restart"
+    if (lifecycle) { pendingLifecycle.set(name, action); publish({ ...snapshot }) }
     void native.invoke<unknown>("workspace_action", { action, name, ...extras })
       .then((result) => {
         const source = parseMutationSource(result)
+        if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
         publish({ ...snapshot, source, error: null })
         return refresh()
       })
       .catch((cause) => setWorkspaceFailure(action, name, cause))
-      .finally(() => pendingWorkspaceActions.delete(key))
+      .finally(() => {
+        pendingWorkspaceActions.delete(key)
+        if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
+        publish({ ...snapshot })
+      })
   }
 
   function projectSetupJobs() {

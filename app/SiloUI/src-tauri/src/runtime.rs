@@ -1,3 +1,5 @@
+#[path = "runtime_activity.rs"]
+mod runtime_activity;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
@@ -1316,6 +1318,7 @@ pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource,
         let mut source = read_application_state_with(&ProcessRunner, &paths)
             .map_err(|error| error.to_string())?;
         source.repository_push_operations = crate::host_push::operations();
+        runtime_activity::load_logs(&ProcessRunner, &paths, &mut source);
         for workspace in &mut source.workspaces {
             if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running) {
                 match crate::host_push::discover(&paths, workspace.machine.name()) {
@@ -1429,24 +1432,30 @@ pub(crate) fn health_observations(
 }
 
 #[tauri::command]
-pub fn workspace_action(
+pub async fn workspace_action(
     app: AppHandle,
     action: String,
     name: String,
 ) -> Result<ApplicationSource, String> {
-    let result = (|| {
+    let worker_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let app = worker_app;
         let paths = runtime_paths(&app)?;
         let guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
+        let mut event = runtime_activity::begin(&paths, &action, &name)?;
+        let _ = app.emit("silo://application-state-changed", ());
         let result = host_resources()
             .and_then(|resources| {
                 workspace_action_with(&ProcessRunner, &paths, &resources, &action, &name)
-            })
-            .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+            });
+        runtime_activity::finish(&paths, &mut event, &result)?;
+        let _ = app.emit("silo://application-state-changed", ());
+        let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
         drop(guard);
-        result.map_err(|error| error.to_string())
-    })();
+        result.map_err(|error| safe_activity_error(&error))
+    }).await.map_err(|_| "Sandbox action worker failed.".to_string())?;
     if result.is_err() {
         crate::notifications::action_failed(&app, "Sandbox action failed");
     }
@@ -1987,7 +1996,7 @@ fn read_application_state_with(
     Ok(ApplicationSource {
         runtime_repair: None,
         workspaces,
-        activities: Vec::new(),
+        activities: runtime_activity::read(&paths)?,
         sandbox_configuration_operation: None,
         repository_push_operations: Vec::new(),
         github: serde_json::json!({"state": "disconnected"}),
@@ -2247,16 +2256,7 @@ fn start_at_launch_with(
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
             "created" | "stopped" => {
-                workspace_action_with(runner, paths, host, "start", name)?;
-                let started = inspect_workspace(runner, paths, name)?;
-                ensure_managed(&started)?;
-                if started.status.eq_ignore_ascii_case("running") {
-                    Ok(())
-                } else {
-                    Err(RuntimeError::Invalid(format!(
-                        "{name} did not reach the running state. Check its status before retrying."
-                    )))
-                }
+                workspace_action_with(runner, paths, host, "start", name)
             }
             _ => Err(RuntimeError::Invalid(format!(
                 "{name} is not stopped or running. Check its status before starting it."
@@ -2309,6 +2309,12 @@ fn workspace_action_with(
         &[command.into(), name.into(), "--quiet".into()],
         timeout,
     )?;
+    let observed = inspect_workspace(runner, paths, name)?;
+    ensure_managed(&observed)?;
+    let expected = if action == "stop" { "Stopped" } else { "Running" };
+    if observed.status != expected {
+        return Err(RuntimeError::Invalid(format!("{name} did not reach the {expected} state. Check its status before retrying.")));
+    }
     Ok(())
 }
 
@@ -3194,7 +3200,7 @@ mod tests {
             .unwrap()
             .insert((paths.home.clone(), "other".into()), "other-profile".into());
         for action in ["start", "restart"] {
-            let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null)]);
+            let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null), inspect(&paths, "Running")]);
             workspace_action_with(&runner, &paths, &generous_host(), action, "dev").unwrap();
             let calls = runner.calls.lock().unwrap();
             let command = &calls[1];
@@ -3454,7 +3460,7 @@ mod tests {
         assert_eq!(serde_json::to_value(events).unwrap(), fixture);
     }
 
-    fn paths(directory: &tempfile::TempDir) -> RuntimePaths {
+    pub(super) fn paths(directory: &tempfile::TempDir) -> RuntimePaths {
         RuntimePaths {
             storage_home: None,
             executable: directory.path().join("msb"),
@@ -3803,13 +3809,23 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null)]);
+        let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null), inspect(&paths, "Running")]);
 
         workspace_action_with(&runner, &paths, &generous_host(), "start", "dev").unwrap();
 
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], vec!["inspect", "dev", "--format", "json"]);
         assert_eq!(calls[1], vec!["start", "dev", "--quiet"]);
+    }
+
+    #[test]
+    fn lifecycle_does_not_report_success_when_runtime_stays_stopped() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let runner = StubRunner::successful_json(vec![inspect(&paths, "Running"), json!(null), inspect(&paths, "Stopped")]);
+        let error = workspace_action_with(&runner, &paths, &generous_host(), "restart", "dev").unwrap_err();
+        assert!(error.to_string().contains("did not reach the Running state"));
     }
 
     #[test]

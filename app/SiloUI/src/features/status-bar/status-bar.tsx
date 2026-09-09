@@ -190,7 +190,7 @@ export function StatusBarContent({ source, actions, focusContent }: { source: Ap
                   </span> : undefined}
                   detail={<span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
                     <span className="truncate" title={availability.busy ? activity?.title ?? workspace.stateDetail : detail}>
-                      {availability.busy ? <span className="font-medium text-amber-700 dark:text-amber-400">{activity?.title ?? (workspace.state === "starting" ? workspace.stateDetail : "Working…")}</span> : <><WorkspaceStateLabel state={workspace.state} />{detail && <span> · {detail}</span>}</>}
+                      {availability.busy ? <span className="font-medium text-amber-700 dark:text-amber-400">{workspace.lifecycleAction ? (workspace.lifecycleAction === "restart" ? "Restarting…" : workspace.lifecycleAction === "stop" ? "Stopping…" : "Starting…") : activity?.title ?? (workspace.state === "starting" ? workspace.stateDetail : "Working…")}</span> : <><WorkspaceStateLabel state={workspace.state} />{detail && <span> · {detail}</span>}</>}
                     </span>
                     {pendingSecrets.length > 0 && <SecretChangesLabel workspace={machine.name} state={workspace.state} secrets={pendingSecrets} />}
                   </span>}

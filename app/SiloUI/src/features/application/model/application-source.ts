@@ -105,6 +105,7 @@ export interface ApplicationWorkspace {
   purpose: string
   state: WorkspaceState
   stateDetail: string
+  lifecycleAction?: "start" | "stop" | "restart"
   attention?: {
     level: "warning" | "error"
     message: string

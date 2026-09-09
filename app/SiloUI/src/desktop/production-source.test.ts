@@ -31,6 +31,44 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("shows restart immediately, keeps it through refresh, and blocks conflicting actions", async () => {
+    let finish!: (value: unknown) => void
+    const command = new Promise((resolve) => { finish = resolve })
+    const mock = native()
+    const invoke = vi.fn(async (name: string, args?: Record<string, unknown>) => name === "workspace_action" ? command : mock.invoke(name, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    store.applicationActions.restartWorkspace("dev")
+    expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBe("restart")
+    await store.refresh()
+    expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBe("restart")
+    store.applicationActions.restartWorkspace("dev")
+    store.applicationActions.stopWorkspace("dev")
+    expect(invoke.mock.calls.filter(([name]) => name === "workspace_action")).toHaveLength(1)
+    finish(source)
+    await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBeUndefined())
+    store.dispose()
+  })
+
+  it("does not clear restart feedback when an earlier terminal action finishes", async () => {
+    let finishTerminal!: (value: unknown) => void
+    let finishRestart!: (value: unknown) => void
+    const terminal = new Promise((resolve) => { finishTerminal = resolve })
+    const restart = new Promise((resolve) => { finishRestart = resolve })
+    const mock = native()
+    const invoke = vi.fn(async (name: string, args?: Record<string, unknown>) => name === "workspace_action" ? args?.action === "restart" ? restart : terminal : mock.invoke(name, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    store.applicationActions.openTerminal("dev")
+    store.applicationActions.restartWorkspace("dev")
+    finishTerminal(source)
+    await vi.waitFor(() => expect(mock.invoke.mock.calls.filter(([name]) => name === "read_application_state").length).toBeGreaterThan(1))
+    expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBe("restart")
+    finishRestart(source)
+    await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBeUndefined())
+    store.dispose()
+  })
+
   it("publishes saved sandbox configuration before requesting live state", async () => {
     const machines = source.workspaces.map(({ machine }) => structuredClone(machine))
     const invoke = vi.fn().mockResolvedValue({ schemaVersion: 1, machines })
@@ -334,6 +372,7 @@ describe("production application bridge", () => {
     await vi.waitFor(() => expect(store.getSnapshot().source?.vmOperationsUnavailable).toBe("Stop failed for dev: runtime refused stop Refresh to confirm its current state."))
     expect(store.getSnapshot().source?.workspaces.find(({ machine }) => machine.name === "dev")?.state).toBe("running")
     expect(store.getSnapshot().source?.workspaces.every(({ freshness }) => freshness === "stale")).toBe(true)
+    expect(store.getSnapshot().source?.workspaces.find(({ machine }) => machine.name === "dev")?.lifecycleAction).toBeUndefined()
     store.dispose()
   })
 

@@ -44,6 +44,16 @@ function appPanel(name: string) {
 }
 
 describe("application", () => {
+  it("shows the recorded time for runtime logs without an embedded timestamp", () => {
+    const source = structuredClone(applicationSourceForScenario("running"))
+    const occurredAt = "2026-09-09T19:03:05.952Z"
+    source.workspaces[0].logs = [{ line: "[  61.851852] reboot: Power down", occurredAt }]
+    render(<ApplicationPreview source={source} initialRoute={{ workspace: "dev", workspaceSection: "logs" }} />)
+    const logs = within(screen.getByRole("table", { name: "Logs" }))
+    expect(logs.getByText("[ 61.851852] reboot: Power down")).toBeVisible()
+    expect(logs.getByText(new Date(occurredAt).toLocaleTimeString())).toBeVisible()
+  })
+
   it("keeps secret edits across navigation and shows pending changes on affected sandboxes", async () => {
     const { user, actions } = renderApplication()
     await user.click(within(appNavigation()).getByRole("button", { name: "Secrets" }))
@@ -887,6 +897,17 @@ describe("application", () => {
     await user.keyboard("{ArrowDown}")
     expect(screen.getByText("error can only be reordered within its status group.")).toBeInTheDocument()
     expect(actions.saveMachineConfiguration).not.toHaveBeenCalled()
+  })
+
+  it("shows Restarting and disables lifecycle controls while the runtime works", async () => {
+    const source = structuredClone(applicationSourceForScenario("running"))
+    source.workspaces[0].lifecycleAction = "restart"
+    const app = renderApplication("running", source)
+    const panel = within(appPanel("Sandboxes"))
+    expect(panel.getByText("Restarting…")).toBeVisible()
+    expect(panel.getByRole("button", { name: "Restart dev" })).toBeDisabled()
+    expect(panel.getByRole("button", { name: "Stop dev" })).toBeDisabled()
+    app.unmount()
   })
 
   it("uses subtle row tones and readable labels for every fixture state", async () => {

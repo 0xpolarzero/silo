@@ -229,12 +229,12 @@ interface LogRow {
 
 function logRows(workspaces: ApplicationWorkspace[]): LogRow[] {
   return workspaces.flatMap((workspace) => workspace.logs.map((log, index) => {
-    const match = /^(\S+)\s{2,}(.*)$/.exec(log.line)
+    const match = /^(\d{2}:\d{2}:\d{2})\s{2,}(.*)$/.exec(log.line)
     return {
       id: `${workspace.machine.id}:${index}`,
       raw: log.line,
       occurredAt: log.occurredAt,
-      timestamp: match?.[1] ?? "—",
+      timestamp: match?.[1] ?? new Date(log.occurredAt).toLocaleTimeString(),
       workspace: workspace.machine.name,
       workspaceState: workspace.state,
       message: match?.[2] ?? log.line,

@@ -1381,12 +1381,12 @@ pub(crate) fn dismiss_backup_operation(
 }
 
 #[tauri::command]
-pub(crate) fn retry_workspace_start(
+pub(crate) async fn retry_workspace_start(
     app: AppHandle,
     controller: State<'_, Arc<Controller>>,
     name: String,
 ) -> Result<runtime::ApplicationSource, String> {
-    let source = runtime::workspace_action(app.clone(), "start".into(), name.clone())?;
+    let source = runtime::workspace_action(app.clone(), "start".into(), name.clone()).await?;
     let paths = runtime::runtime_paths(&app)?;
     if inspect(&paths, &name)?.status != "Running" {
         return Err(format!(

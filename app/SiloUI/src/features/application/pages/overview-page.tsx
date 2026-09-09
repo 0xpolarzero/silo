@@ -250,13 +250,18 @@ export function OverviewPage({
                 actionsClassName: "mt-1 self-start",
               }
             }
+            const lifecycle = workspace?.lifecycleAction
+            const lifecycleLabel = lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
             return {
               badge,
+              busy: Boolean(lifecycle),
+              suppressInteractions: Boolean(lifecycle),
+              icon: lifecycle ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : undefined,
               iconState: visualState,
-              tone: workspaceRowTone(workspace),
+              tone: lifecycle ? "starting" as const : workspaceRowTone(workspace),
               detail: (
                 <span title={workspace?.attention?.message}>
-                  <WorkspaceStateLabel state={state} />
+                  {lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : <WorkspaceStateLabel state={state} />}
                   {workspace?.attention && <> · {workspace.attention.message}</>}
                 </span>
               ),
@@ -269,7 +274,7 @@ export function OverviewPage({
                 },
                 stopWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
                 restartWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
-              }} disabled={configurationLocked} />,
+              }} disabled={configurationLocked || Boolean(lifecycle)} />,
             }
           }}
         />
