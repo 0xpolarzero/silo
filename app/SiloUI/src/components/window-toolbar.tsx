@@ -45,6 +45,7 @@ export function ToolbarButton({ label, showTooltip = true, ...props }: Component
 }
 
 interface WindowToolbarProps {
+  sidebarDisabled?: boolean
   title: string
   sidebarId: string
   collapsed: boolean
@@ -57,7 +58,7 @@ interface WindowToolbarProps {
   children?: ReactNode
 }
 
-export function WindowToolbar({ title, sidebarId, collapsed, previewing, toggleRef, onToggleSidebar, onPreviewEnter, onPreviewLeave, navigation, children }: WindowToolbarProps) {
+export function WindowToolbar({ title, sidebarId, collapsed, previewing, toggleRef, onToggleSidebar, onPreviewEnter, onPreviewLeave, navigation, children, sidebarDisabled = false }: WindowToolbarProps) {
   const dragRegion = isTauri() || undefined
   return <header aria-label="Window toolbar" data-tauri-drag-region={dragRegion} className="flex h-11 shrink-0 items-center border-b border-border bg-background select-none">
     {children && <h1 className="sr-only">{title}</h1>}
@@ -66,6 +67,7 @@ export function WindowToolbar({ title, sidebarId, collapsed, previewing, toggleR
       <div data-tauri-drag-region={dragRegion} className="flex items-center gap-1">
         <ToolbarButton
           ref={toggleRef}
+          disabled={sidebarDisabled}
           label={collapsed ? previewing ? "Keep sidebar open" : "Expand sidebar" : "Collapse sidebar"}
           showTooltip={!previewing}
           aria-expanded={!collapsed || previewing}

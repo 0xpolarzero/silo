@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 
+import { useStatusPanelSize } from "./use-status-panel-size"
 import { desktopCommand } from "./commands"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import type { ApplicationSource } from "@/features/application/model/application-source"
@@ -16,18 +17,15 @@ export function StatusPanel({ source: input, actions }: { source: ApplicationSou
   const content = useRef<HTMLDivElement>(null)
   const [opening, setOpening] = useState(0)
   const health = statusBarHealth(source)
+  useStatusPanelSize(content)
 
   useEffect(() => {
     const element = content.current!
-    const observer = new ResizeObserver(() => {
-      void invoke("resize_status", { height: element.getBoundingClientRect().height }).catch(console.error)
-    })
-    observer.observe(element)
     const unlisten = listen("desktop:status-opened", () => {
       setOpening((current) => current + 1)
       element.focus()
     })
-    return () => { observer.disconnect(); void unlisten.then((stop) => stop()) }
+    return () => { void unlisten.then((stop) => stop()) }
   }, [])
 
   useEffect(() => {

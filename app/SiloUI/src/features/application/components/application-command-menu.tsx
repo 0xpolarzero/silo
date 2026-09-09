@@ -15,13 +15,14 @@ function filterCommand(label: string, search: string, keywords: string[] = []) {
   return defaultFilter(label, search, keywords) || 0.5
 }
 
-export function ApplicationCommandMenu({ commands }: { commands: readonly ApplicationCommand[] }) {
+export function ApplicationCommandMenu({ commands, disabled = false }: { commands: readonly ApplicationCommand[]; disabled?: boolean }) {
   const [open, setOpen] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
   const shortcut = navigator.platform.startsWith("Mac") ? "⌘ K" : "Ctrl K"
 
   useEffect(() => {
     function toggleCommands(event: KeyboardEvent) {
+      if (disabled) return
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k" || event.altKey || event.isComposing || event.repeat || event.defaultPrevented) return
       const focusedDialog = document.activeElement?.closest('[role="dialog"], [role="alertdialog"]')
       if (focusedDialog && focusedDialog !== contentRef.current) return
@@ -30,11 +31,11 @@ export function ApplicationCommandMenu({ commands }: { commands: readonly Applic
     }
     window.addEventListener("keydown", toggleCommands)
     return () => window.removeEventListener("keydown", toggleCommands)
-  }, [])
+  }, [disabled])
 
   return <Dialog.Root open={open} onOpenChange={setOpen}>
     <Dialog.Trigger asChild>
-      <button type="button" aria-label="Search or jump to" aria-keyshortcuts="Meta+K Control+K" className="relative flex h-7 w-full max-w-md items-center gap-2 rounded-md border border-border bg-muted/30 px-2 text-xs text-muted-foreground outline-none hover:bg-muted/50 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30">
+      <button type="button" disabled={disabled} aria-label="Search or jump to" aria-keyshortcuts="Meta+K Control+K" className="relative flex h-7 w-full max-w-md items-center gap-2 rounded-md border border-border bg-muted/30 px-2 text-xs text-muted-foreground outline-none hover:bg-muted/50 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30">
         <Search aria-hidden="true" className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate text-left">Search or jump to…</span>
         <kbd aria-hidden="true" className="shrink-0 font-sans text-[11px]">{shortcut}</kbd>

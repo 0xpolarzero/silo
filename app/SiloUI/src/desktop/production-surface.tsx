@@ -5,6 +5,7 @@ import { useDependencyStore, type DependencyStore } from "@/desktop/dependencies
 import { ProductionOnboarding } from "@/desktop/production-onboarding"
 import { useProductionSource, type ProductionSource } from "@/desktop/production-source"
 import { StatusPanel } from "@/desktop/status-panel"
+import { ApplicationLoading } from "@/desktop/application-loading"
 import { ApplicationApp } from "@/features/application/application-app"
 import { useSettings } from "@/features/preferences/settings-store"
 
@@ -48,7 +49,8 @@ export function ProductionSurface({ source, dependencyStore, statusPanel = false
     return <ProductionOnboarding application={current.source} dependencies={dependencies} source={source} onOpenApp={() => setOnboardingActive(false)} />
   }
   if (!current.source) {
-    const message = current.error ?? (current.loading ? "Reading live sandbox state…" : "The native application state is unavailable. No sandbox state changed.")
+    if (current.loading && !current.error && !failures.length) return <ApplicationLoading machines={current.savedMachines ?? []} statusPanel={statusPanel} />
+    const message = current.error ?? "The native application state is unavailable. No sandbox state changed."
     return <Unavailable message={message} checks={failures} checking={checking} retry={current.loading ? undefined : retryChecks} />
   }
   return statusPanel

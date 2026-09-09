@@ -248,6 +248,7 @@ export function ApplicationShell({
   systemIssueStatus,
   workspaceAttention,
   navigationLoading,
+  navigationDisabled = false,
   onTabChange,
   onWorkspaceSectionChange,
   onSettingsSectionChange,
@@ -265,6 +266,7 @@ export function ApplicationShell({
   systemIssueStatus: ActiveRuntimeRepairPresentation["status"] | null
   workspaceAttention: { errors: number; warnings: number }
   navigationLoading?: ApplicationNavigationLoading
+  navigationDisabled?: boolean
   onTabChange: (tab: ApplicationTab) => void
   onWorkspaceSectionChange: (section: WorkspaceSection) => void
   onSettingsSectionChange: (section: SettingsSection) => void
@@ -303,13 +305,14 @@ export function ApplicationShell({
   return (
     <TooltipProvider delayDuration={300} reduceMotion={reduceMotion}>
     <SiloWindow title="Silo" label="Silo" reduceMotion={reduceMotion} className={cn("silo-application", pinnedCollapsed && "sidebar-pinned-collapsed")} titleBar={
-      <ApplicationTitleBar collapsed={pinnedCollapsed} previewing={previewing} toggleRef={toggleRef} onToggleSidebar={toggle} onPreviewEnter={enterToggle} onPreviewLeave={leaveToggle} canGoBack={canGoBack} canGoForward={canGoForward} onGoBack={onGoBack} onGoForward={onGoForward} commandMenu={commandMenu} />
+      <ApplicationTitleBar disabled={navigationDisabled} collapsed={pinnedCollapsed} previewing={previewing} toggleRef={toggleRef} onToggleSidebar={toggle} onPreviewEnter={enterToggle} onPreviewLeave={leaveToggle} canGoBack={canGoBack} canGoForward={canGoForward} onGoBack={onGoBack} onGoForward={onGoForward} commandMenu={commandMenu} />
     }>
       <div className="sidebar-layout grid min-h-0 flex-1" data-sidebar-layout={pinnedCollapsed ? "collapsed" : "expanded"}>
         <nav
           ref={sidebarRef}
           id="application-sidebar"
           aria-label="Silo navigation"
+          inert={navigationDisabled || undefined}
           data-collapsed={collapsed}
           data-previewing={previewing}
           onPointerEnter={enterSidebar}

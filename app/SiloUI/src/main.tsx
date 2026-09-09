@@ -32,6 +32,7 @@ async function start() {
   const stopSettingsLifecycle = await connectSettingsLifecycle(settings, !statusPanel, () => production.drainSetup())
   if (!statusPanel) await invoke("initialize_settings")
   await settings.initialize()
+  await production.loadConfiguration()
   const systemIntegrations = createDesktopSystemIntegrationStore(settings)
   if (!statusPanel) await systemIntegrations.initialize()
   const stopSystemLifecycle = !statusPanel ? connectSystemIntegrationLifecycle(systemIntegrations) : () => {}

@@ -5,8 +5,8 @@ import type { ProductionSource } from "./production-source"
 import type { DependencyStore } from "./dependencies"
 import { ProductionSurface } from "./production-surface"
 
-const state = vi.hoisted(() => ({ source: {} as object | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn() }))
-vi.mock("./production-source", () => ({ useProductionSource: () => ({ source: state.source, backup: {}, loading: false }) }))
+const state = vi.hoisted(() => ({ source: {} as object | null, loading: false, error: null as string | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn() }))
+vi.mock("./production-source", () => ({ useProductionSource: () => ({ source: state.source, backup: {}, loading: state.loading, error: state.error, savedMachines: [{ id: "saved", name: "saved-machine", kind: "ssh", host: "host", user: "user", port: 22 }] }) }))
 vi.mock("./dependencies", () => ({ useDependencyStore: () => ({ checks: state.checks, retry: state.retry }) }))
 vi.mock("./production-onboarding", () => ({ ProductionOnboarding: ({ onOpenApp }: { onOpenApp: () => void }) => <button onClick={onOpenApp}>Open Silo</button> }))
 vi.mock("@/features/application/application-app", () => ({ ApplicationApp: ({ source, actions }: { source: { runtimeRepair?: { reason: string; recovery: string; checking: boolean } }; actions: { retryRuntimeChecks: () => void } }) => <div>Main app{source.runtimeRepair && <div role="alert">{source.runtimeRepair.reason}{source.runtimeRepair.recovery}<button disabled={source.runtimeRepair.checking} onClick={actions.retryRuntimeChecks}>Retry checks</button></div>}</div> }))
@@ -15,9 +15,38 @@ vi.mock("./status-panel", () => ({ StatusPanel: () => <div>Status panel</div> })
 const source = { applicationActions: {}, statusActions: {}, refresh: vi.fn() } as unknown as ProductionSource
 const dependencyStore = {} as DependencyStore
 
-beforeEach(() => { state.source = {}; state.checks = []; vi.clearAllMocks() })
+beforeEach(() => { state.source = {}; state.loading = false; state.error = null; state.checks = []; vi.clearAllMocks() })
 
 describe("production completion routing", () => {
+  it("shows the actual shell and saved rows while live state loads, then replaces skeletons", () => {
+    state.source = null
+    state.loading = true
+    const settings = createMemorySettingsStore({ onboardingComplete: true, reduceMotion: true })
+    const view = () => <SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>
+    const application = render(view())
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.queryByText("Silo could not load")).not.toBeInTheDocument()
+    expect(screen.getByRole("navigation", { name: "Silo navigation" })).toBeVisible()
+    expect(screen.getByText("saved-machine")).toBeVisible()
+    expect(screen.getByText("Loading sandbox state")).toHaveClass("sr-only")
+    expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Search or jump to" })).toBeDisabled()
+    expect(application.container.querySelector(".animate-pulse")).toBeNull()
+    state.loading = false
+    state.source = {}
+    application.rerender(view())
+    expect(screen.getByText("Main app")).toBeVisible()
+    expect(screen.queryByText("Loading sandbox state")).not.toBeInTheDocument()
+  })
+
+  it("does not disguise a real startup failure as a skeleton", () => {
+    state.source = null
+    state.error = "Runtime inspection failed."
+    render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
+    expect(screen.getByRole("alert")).toHaveTextContent("Runtime inspection failed.")
+    expect(screen.getByRole("button", { name: "Retry checks" })).toBeEnabled()
+  })
+
   it("keeps onboarding mounted after Finish saves completion until Open Silo", async () => {
     const settings = createMemorySettingsStore()
     render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)

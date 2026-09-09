@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event"
 import { useSyncExternalStore } from "react"
 import { z } from "zod"
 
-import { siloProgressEventSchema, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
+import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
 import type { ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
@@ -104,6 +104,7 @@ function unavailableBackup(message: string): BackupState {
 }
 
 export interface ProductionSnapshot {
+  savedMachines?: SetupMachineConfiguration[]
   setupQueue: NonNullable<OnboardingSource["setupQueue"]>
   setupStartedAt?: number
   setupFinishedAt?: number
@@ -558,6 +559,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener) },
     initialize,
+    async loadConfiguration() {
+      const configuration = z.object({ schemaVersion: z.literal(1), machines: z.array(setupMachineConfigurationSchema).max(64) }).parse(await native.invoke("read_machine_configuration"))
+      publish({ ...snapshot, savedMachines: configuration.machines })
+    },
     refresh,
     configureMachines,
     submitSetupStep,

@@ -15,6 +15,7 @@ export function ApplicationTitleBar({
   onGoBack,
   onGoForward,
   commandMenu,
+  disabled = false,
 }: {
   collapsed: boolean
   previewing: boolean
@@ -27,10 +28,12 @@ export function ApplicationTitleBar({
   onGoBack: () => void
   onGoForward: () => void
   commandMenu?: ReactNode
+  disabled?: boolean
 }) {
   return (
     <WindowToolbar
       title="Silo"
+      sidebarDisabled={disabled}
       sidebarId="application-sidebar"
       collapsed={collapsed}
       previewing={previewing}
