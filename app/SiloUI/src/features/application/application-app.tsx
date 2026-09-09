@@ -221,6 +221,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         ) : (
           <WorkspacesPage
             onOpenEditor={actions.openEditor}
+            editor={applicationPreferences.editor}
             directoryStore={directoryStore}
             active={visibleTab === "workspaces"}
             workspaces={workspaces}

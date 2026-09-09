@@ -62,10 +62,12 @@ function Files({
   repositoryPushOperations,
   onPushRepository,
   onDismissRepositoryPush,
+  editor,
   onOpenEditor,
   directoryStore,
   active,
 }: {
+  editor: string
   onOpenEditor: (workspace: string, path: string) => void
   directoryStore: ReturnType<typeof createDirectoryStore>
   active: boolean
@@ -120,7 +122,7 @@ function Files({
                             <TooltipContent className="max-w-sm break-all">{repository.path}</TooltipContent>
                           </Tooltip></TooltipProvider>}
                           detail={`${repository.branch} · ${repository.ahead} ahead, ${repository.behind} behind`}
-                          actions={<><FolderActions path={repository.path} onOpen={() => onOpenEditor(workspace.machine.name, repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} /></>}
+                          actions={<><FolderActions editor={editor} path={repository.path} onOpen={() => onOpenEditor(workspace.machine.name, repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} /></>}
                         />
                         {(operation || repository.ahead > 0) && (
                           <div className="flex min-h-6 items-start pr-2 pb-2 pl-10" data-repository-actions>
@@ -163,7 +165,7 @@ function Files({
           <CollapsibleContent className="file-pane-content-motion min-h-0 flex-1" data-files-pane-content="file-tree">
             <div className="h-full overflow-y-auto overscroll-contain px-2 pt-2" data-files-pane-scroll="file-tree">
               <ul className="grid gap-0.5" aria-label="File tree">
-                {workspaces.map((workspace) => <WorkspaceFileTree key={workspace.machine.id} workspace={workspace} store={directoryStore} active={active} onOpenEditor={onOpenEditor} />)}
+                {workspaces.map((workspace) => <WorkspaceFileTree editor={editor} key={workspace.machine.id} workspace={workspace} store={directoryStore} active={active} onOpenEditor={onOpenEditor} />)}
               </ul>
             </div>
           </CollapsibleContent>
@@ -442,6 +444,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
 }
 
 export function WorkspacesPage({
+  editor,
   onOpenEditor,
   directoryStore,
   active,
@@ -457,6 +460,7 @@ export function WorkspacesPage({
   onPushRepository,
   onDismissRepositoryPush,
 }: {
+  editor: string
   onOpenEditor: (workspace: string, path: string) => void
   directoryStore: ReturnType<typeof createDirectoryStore>
   active: boolean
@@ -480,7 +484,7 @@ export function WorkspacesPage({
   return (
     <div className="mx-auto grid h-full min-h-0 w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6">
       <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />
-      {section === "files" && <Files onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
+      {section === "files" && <Files editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
       {section === "logs" && <Logs workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} />}
       {section === "network" && <Network workspaces={visibleWorkspaces} browser={browser} />}
       {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} />}
