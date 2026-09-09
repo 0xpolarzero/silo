@@ -12,6 +12,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn((_name, callback) => { n
 vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: native.menu } }))
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }))
   native.menu.mockResolvedValue({ popup: native.popup, close: native.close })
 })
 
@@ -107,19 +108,17 @@ it("returns to sandbox rows when the status item is opened again", async () => {
   expect(screen.getByRole("button", { name: "Quit Silo" })).toBeVisible()
 })
 
-it.each([false, true])("holds the panel size through folder navigation with Reduce Motion %s", async (reduceMotion) => {
+it.each([false, true])("keeps focus and natural page sizing through folder navigation with Reduce Motion %s", async (reduceMotion) => {
   const { user } = setup(createMemorySettingsStore({ reduceMotion }))
   const panel = screen.getByRole("dialog", { name: "Silo" })
-  const page = panel.querySelector<HTMLDivElement>(".status-page")!
-  vi.spyOn(page, "getBoundingClientRect").mockReturnValue({ height: 280 } as DOMRect)
   await user.click(screen.getByRole("button", { name: "Open dev in Visual Studio Code" }))
-  expect(panel.querySelector(".status-page")).toHaveStyle({ height: "280px" })
+  expect(panel.querySelector<HTMLDivElement>(".status-page")!.style.height).toBe("")
   expect(screen.getByRole("button", { name: "Back to sandboxes" })).toHaveFocus()
   expect(panel).toHaveAttribute("data-reduce-motion", String(reduceMotion))
   await user.type(screen.getByRole("textbox", { name: "Filter folders" }), "no-matching-folder")
-  expect(panel.querySelector(".status-page")).toHaveStyle({ height: "280px" })
+  expect(panel.querySelector<HTMLDivElement>(".status-page")!.style.height).toBe("")
   await user.click(screen.getByRole("button", { name: "Back to sandboxes" }))
-  expect(panel.querySelector(".status-page")).toHaveStyle({ height: "280px" })
+  expect(panel.querySelector<HTMLDivElement>(".status-page")!.style.height).toBe("")
   expect(panel).toHaveFocus()
   expect(screen.getByRole("button", { name: "Quit Silo" })).toBeVisible()
   act(() => native.opened())
