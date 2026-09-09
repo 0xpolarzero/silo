@@ -8,7 +8,7 @@ import { directoryKey, type createDirectoryStore } from "@/features/application/
 import type { ApplicationWorkspace } from "@/features/application/model/application-source"
 
 type DirectoryStore = ReturnType<typeof createDirectoryStore>
-const rowClass = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left font-mono text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&[data-state=open]_.tree-caret]:rotate-90"
+const rowClass = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&[data-state=open]_.tree-caret]:rotate-90"
 
 function Directory({ workspace, path, label, store, expanded, toggle, onOpenEditor }: {
   workspace: string
@@ -43,7 +43,7 @@ function Directory({ workspace, path, label, store, expanded, toggle, onOpenEdit
       {snapshot.entries?.map((entry) => (
         <li key={entry.path}>
           {entry.kind === "folder" ? <Collapsible open={expanded.has(entry.path)} onOpenChange={(open) => toggle(entry.path, open)}>
-            <div className="group/folder flex items-center"><CollapsibleTrigger className={`${rowClass} min-w-0 flex-1`} aria-label={`Folder ${entry.name}`}>
+            <div className="group/folder flex items-center rounded-md pr-1 hover:bg-muted focus-within:bg-muted"><CollapsibleTrigger className={`${rowClass} min-w-0 flex-1`} aria-label={`Folder ${entry.name}`}>
               <ChevronRight className="tree-caret size-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none" aria-hidden="true" />
               <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="truncate">{entry.name}</span>
             </CollapsibleTrigger>
@@ -85,7 +85,7 @@ export function WorkspaceFileTree({ workspace, store, active, onOpenEditor }: { 
     return next
   })
   return <li><Collapsible open={open} onOpenChange={setOpen}>
-    <div className="group/folder flex items-center"><CollapsibleTrigger className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&[data-state=open]_.tree-caret]:rotate-90">
+    <div className="group/folder flex items-center rounded-md pr-1 hover:bg-muted focus-within:bg-muted"><CollapsibleTrigger className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&[data-state=open]_.tree-caret]:rotate-90">
       <ChevronRight className="tree-caret size-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none" aria-hidden="true" />
       <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="truncate">{workspace.machine.name}</span>
     </CollapsibleTrigger>
