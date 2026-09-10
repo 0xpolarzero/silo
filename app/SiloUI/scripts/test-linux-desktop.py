@@ -15,6 +15,7 @@ import time
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.options import BaseOptions
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -88,6 +89,47 @@ def run():
                     retries[0].click()
                     wait.until(lambda _: "Applications" in browser.find_element(By.TAG_NAME, "body").text)
                     report.append("Dependency retry keeps onboarding visible")
+                browser.quit()
+                browser = None
+                # Persisted fixture is isolated in this test's XDG directory. This
+                # exercises the real empty-app state even on hosts without KVM.
+                settings = Path(environment["XDG_CONFIG_HOME"]) / "org.silo.preview/settings.json"
+                settings.parent.mkdir(parents=True, exist_ok=True)
+                settings.write_text(json.dumps({"schemaVersion": 1, "settings": {
+                    "onboardingComplete": True, "launchAtLogin": False,
+                    "startWorkspacesAtLaunch": False,
+                }, "onboardingDraft": None}))
+                browser = webdriver.Remote(f"http://127.0.0.1:{port}", options=Options())
+                wait = WebDriverWait(browser, 45)
+                wait.until(main_window)
+                wait.until(lambda _: browser.find_element(By.ID, "application-nav-backup"))
+                for page in ["workspaces", "github", "secrets", "backup", "settings"]:
+                    browser.find_element(By.ID, f"application-nav-{page}").click()
+                    wait.until(lambda _: browser.find_element(By.ID, f"application-panel-{page}").is_displayed())
+                    assert "Silo could not load" not in browser.find_element(By.TAG_NAME, "body").text
+                    report.append(f"Native {page} page renders and keeps its route")
+                browser.find_element(By.ID, "application-nav-secrets").click()
+                browser.find_element(By.CSS_SELECTOR, "button[aria-label='Add secret']").click()
+                form = browser.find_element(By.CSS_SELECTOR, "form[aria-label='Add secret']")
+                form.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
+                invalid = form.find_elements(By.CSS_SELECTOR, "input[aria-invalid='true']")
+                assert invalid, "Empty secret must show field-level validation"
+                assert form.find_elements(By.CSS_SELECTOR, "[role='alert']"), "Explain invalid fields"
+                invalid[0].send_keys(Keys.ESCAPE)
+                wait.until(lambda _: not browser.find_elements(By.CSS_SELECTOR, "form[aria-label='Add secret']"))
+                report.append("Secret form validates inline and Escape cancels without saving")
+                browser.find_element(By.ID, "application-nav-settings").click()
+                motion = browser.find_element(By.CSS_SELECTOR, "button[aria-label='Reduce motion']")
+                previous = motion.get_attribute("aria-checked")
+                motion.click()
+                expected = "false" if previous == "true" else "true"
+                wait.until(lambda _: motion.get_attribute("aria-checked") == expected)
+                wait.until(lambda _: json.loads(settings.read_text())["settings"].get("reduceMotion") == (expected == "true"))
+                browser.refresh()
+                wait.until(lambda _: browser.find_element(By.ID, "application-nav-settings")).click()
+                wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, "button[aria-label='Reduce motion']").get_attribute("aria-checked") == expected)
+                report.append("Settings survive frontend relaunch through native disk persistence")
+                browser.save_screenshot(str(EVIDENCE / "settings.png"))
             except Exception:
                 if browser:
                     browser.save_screenshot(str(EVIDENCE / "failure.png"))

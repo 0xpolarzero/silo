@@ -10,6 +10,7 @@
         "depends": [
           "libc6 (>= 2.34)",
           "libcurl4 | libcurl4t64",
+          "libcap-ng0",
           "zlib1g"
         ]
       },
@@ -17,6 +18,7 @@
         "depends": [
           "glibc",
           "libcurl",
+          "libcap-ng",
           "zlib"
         ]
       }
