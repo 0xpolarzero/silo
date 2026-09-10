@@ -493,6 +493,15 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
                 }
             }
         }
+        let unchanged = api.call(
+            &f.parent,
+            &format!("/repos/{}/issues/{number}", f.repos[1].name),
+            None,
+        )?;
+        ensure(
+            unchanged.0 == 200 && unchanged.1["title"] == format!("{marker} verified"),
+            "Child escalation changed the fixture issue.",
+        )?;
         stage = "create all-repositories token";
         let (all, _) = scope(&f.app, &f.parent, owner, &[], false, &mut children)?;
         stage = "all-repositories boundaries";

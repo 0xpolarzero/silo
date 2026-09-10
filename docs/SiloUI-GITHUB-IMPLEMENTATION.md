@@ -288,13 +288,36 @@ Current completed evidence:
   TLS to GitHub, production Start/Restart attachment, live profile removal without
   reboot, Git identity and binary transfer. Its VM was removed afterward.
 
-The authenticated harness now also exercises real Host Push Git/LFS and guest
-GraphQL mutations, plus a separate browser session's real refresh rotation. These
-new authenticated checks are not yet recorded as passed: reading the saved account
-waited at Keychain and was canceled, and automatic approval review blocked opening
-an isolated OAuth URL pending action-time confirmation. Neither attempt changed
-Silo's account or minted a token. The existing three disposable private fixtures
-are sufficient; a separate testing GitHub account is unnecessary.
+After explicit approval, `python3 app/SiloUI/tests/live/browser-regression.py`
+passed the complete authenticated workflow in 58.19 seconds on macOS, using an
+isolated Zen sign-in and the existing three private test repositories:
+
+- Production PKCE exchange and refresh rotated both access and refresh tokens.
+- GitHub enforced selected-repository read/write bounds for REST and GraphQL,
+  including opaque issue IDs and direct child-token scope/reset escalation probes.
+  The fixture issue remained unchanged after denied mutations.
+- All-repositories access included the authorized fixtures. Revoking one child
+  token denied that token while preserving the parent and sibling token.
+- A real disposable VM cloned, fetched and pushed Git; used `gh` REST/GraphQL;
+  and round-tripped a 1 MiB LFS object. Removing writes and then all access took
+  effect without changing the VM boot ID; restoring access also needed no reboot.
+- Host Push published two committed changes and their LFS data while guest writes
+  were disabled. It excluded dirty files and did not execute the hostile fixture
+  hook. A fresh clone verified the uploaded LFS contents.
+- Cleanup closed the marked issue, removed the fixture branch and VM, and revoked
+  the isolated token and children. The saved Silo account was untouched.
+
+An earlier attempt failed before exchange because the test process lacked network
+permission. An explicitly network-enabled, credential-free native DNS/TCP/HTTPS
+probe passed in 0.46 seconds, followed by the fresh successful sign-in above. No
+production transport or firewall change was needed; temporary diagnostics were
+removed. Authenticated subprocess output stays suppressed to protect credentials.
+
+These are native/runtime integration tests, not a complete manual UI sign-in test
+or proof of every `gh` command. They also do not prove revocation of an already
+in-flight authenticated connection; the runtime's relay-revocation unit tests
+cover that boundary separately. No security test proves absolute immunity to
+credential exfiltration.
 
 The repeatable runner and its exact boundaries are documented in
 `app/SiloUI/tests/live/README.md`. Rechecked GitHub's official
