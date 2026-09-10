@@ -21,7 +21,7 @@ from selenium.webdriver.common.options import BaseOptions
 from selenium.webdriver.support.ui import WebDriverWait
 
 ROOT = Path(__file__).resolve().parent.parent
-EVIDENCE = ROOT / "test-results/linux"
+EVIDENCE = Path(os.environ.get("SILO_LINUX_EVIDENCE", ROOT / "test-results/linux"))
 EVIDENCE.mkdir(parents=True, exist_ok=True)
 
 
@@ -160,6 +160,9 @@ def run():
                 wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, "button[aria-label='Reduce motion']").get_attribute("aria-checked") == expected)
                 report.append("Settings survive a full native application relaunch")
                 browser.save_screenshot(str(EVIDENCE / "settings.png"))
+                if os.environ.get("SILO_LINUX_DESKTOP_SERVICES") == "gnome":
+                    from linux_desktop_services import verify
+                    report.extend(verify(browser, wait, environment, EVIDENCE))
                 passed = True
             except Exception:
                 if browser:
