@@ -140,3 +140,9 @@ it("explains an inspection failure without claiming an operation is still runnin
   expect(screen.getByRole("button", { name: "Restart and update" })).toBeDisabled()
   expect(screen.queryByText("Wait for active operations to finish.")).not.toBeInTheDocument()
 })
+it("keeps installation status visible without offering another update action", async () => {
+  mount({ phase: "installing" })
+  expect(await screen.findByRole("status")).toHaveTextContent("Installing update. Silo will restart…")
+  expect(screen.queryByRole("button", { name: "View update" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Check for updates" })).not.toBeInTheDocument()
+})

@@ -70,6 +70,7 @@ export function UpdateNotice({ onOpen }: { onOpen: () => void }) {
   const updates = useUpdates()
   const [dismissed, setDismissed] = useState<string | null>(null)
   const state = updates?.snapshot
+  if (state?.phase === "installing") return <div role="status" className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2 text-xs"><Download className="size-3.5" aria-hidden="true" />Installing update. Silo will restart…</div>
   if (!state || !["available", "ready"].includes(state.phase) || !state.availableVersion || dismissed === `${state.availableVersion}:${state.phase}`) return null
   return <div role="status" className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2 text-xs">
     <Download className="size-3.5" aria-hidden="true" />

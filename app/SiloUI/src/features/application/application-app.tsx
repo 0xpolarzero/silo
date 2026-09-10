@@ -1,3 +1,4 @@
+import { useUpdates } from "@/features/updates/update-store"
 import { UpdateNotice } from "@/features/updates/updates"
 import { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react"
@@ -78,6 +79,7 @@ export function ApplicationApp(props: ApplicationAppProps) {
 }
 
 function ApplicationContent({ source, actions, backup, initialRoute, routeRequest }: ApplicationAppProps) {
+  const installingUpdate = useUpdates()?.snapshot?.phase === "installing"
   const [directoryStore] = useState(() => createDirectoryStore(actions.listWorkspaceDirectory))
   useLayoutEffect(() => {
     directoryStore.setLoader(actions.listWorkspaceDirectory)
@@ -200,6 +202,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
 
   return (
     <ApplicationShell
+      navigationDisabled={installingUpdate}
       notice={<UpdateNotice onOpen={() => navigation.selectSettingsSection("general")} />}
       activeTab={visibleTab}
       workspaceSection={visibleWorkspaceSection}
@@ -215,7 +218,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       onGoBack={navigation.goBack}
       onGoForward={navigation.goForward}
       reduceMotion={reduceMotion}
-      commandMenu={<ApplicationCommandMenu commands={applicationCommands(applicationSource, actions, navigateCommand)} />}
+      commandMenu={<ApplicationCommandMenu disabled={installingUpdate} commands={applicationCommands(applicationSource, actions, navigateCommand)} />}
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (

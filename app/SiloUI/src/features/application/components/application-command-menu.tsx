@@ -21,6 +21,11 @@ export function ApplicationCommandMenu({ commands, disabled = false }: { command
   const shortcut = navigator.platform.startsWith("Mac") ? "⌘ K" : "Ctrl K"
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    if (disabled) setOpen(false)
+  }, [disabled])
+
+  useEffect(() => {
     function toggleCommands(event: KeyboardEvent) {
       if (disabled) return
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k" || event.altKey || event.isComposing || event.repeat || event.defaultPrevented) return
@@ -33,7 +38,7 @@ export function ApplicationCommandMenu({ commands, disabled = false }: { command
     return () => window.removeEventListener("keydown", toggleCommands)
   }, [disabled])
 
-  return <Dialog.Root open={open} onOpenChange={setOpen}>
+  return <Dialog.Root open={open && !disabled} onOpenChange={setOpen}>
     <Dialog.Trigger asChild>
       <button type="button" disabled={disabled} aria-label="Search or jump to" aria-keyshortcuts="Meta+K Control+K" className="relative flex h-7 w-full max-w-md items-center gap-2 rounded-md border border-border bg-muted/30 px-2 text-xs text-muted-foreground outline-none hover:bg-muted/50 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30">
         <Search aria-hidden="true" className="size-3.5 shrink-0" />
@@ -54,7 +59,7 @@ export function ApplicationCommandMenu({ commands, disabled = false }: { command
           <Command.List className="max-h-[min(22rem,50dvh)] overflow-y-auto overscroll-contain scroll-py-2 p-1.5" label="Commands">
             <Command.Empty className="px-4 py-10 text-center text-xs text-muted-foreground">No commands found.</Command.Empty>
             {groups.map((group) => <Command.Group key={group} value={group.replaceAll(" ", "-")} heading={group} className="[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:pb-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground">
-              {commands.filter((command) => command.group === group).map((command) => <Command.Item key={command.id} value={command.label} keywords={command.keywords} onSelect={() => { setOpen(false); command.run() }} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-xs outline-none select-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground">
+              {commands.filter((command) => command.group === group).map((command) => <Command.Item key={command.id} value={command.label} keywords={command.keywords} onSelect={() => { if (disabled) return; setOpen(false); command.run() }} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-xs outline-none select-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground">
                 <command.icon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate">{command.label}</span>
               </Command.Item>)}

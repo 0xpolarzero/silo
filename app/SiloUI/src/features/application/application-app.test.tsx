@@ -1777,3 +1777,24 @@ describe("application", () => {
     expect(settings.getByRole("switch", { name: "Enable notifications" })).not.toBeChecked()
   })
 })
+
+it("prevents app interaction during installation and restores the existing page after failure", async () => {
+  const { UpdatesProvider } = await import("@/features/updates/update-store")
+  const user = userEvent.setup()
+  let emit!: (snapshot: import("@/features/updates/update-store").UpdateSnapshot) => void
+  const state: import("@/features/updates/update-store").UpdateSnapshot = { phase: "idle", lastChecked: null, retryAction: null, currentVersion: "0.1.0", availableVersion: null, releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "macos", releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true }
+  const backend = { read: async () => state, subscribe: async (receive: typeof emit) => { emit = receive; return () => {} }, check: vi.fn(), download: vi.fn(), install: vi.fn(), setAutomaticChecks: vi.fn(), openRelease: vi.fn() }
+  render(<UpdatesProvider backend={backend}><ApplicationPreview source={applicationSourceForScenario("running")} initialRoute={{ tab: "settings", settingsSection: "general" }} /></UpdatesProvider>)
+  await screen.findByText("Version 0.1.0")
+  await user.click(screen.getByRole("button", { name: "Search or jump to" }))
+  expect(screen.getByRole("dialog", { name: "Commands" })).toBeVisible()
+  act(() => emit({ ...state, phase: "installing" }))
+  expect(screen.queryByRole("dialog", { name: "Commands" })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Search or jump to" })).toBeDisabled()
+  expect(document.querySelector("#application-sidebar")).toHaveAttribute("inert")
+  expect(document.querySelector("#application-panel-settings")?.closest("[inert]")).not.toBeNull()
+  expect(screen.getByRole("status")).not.toHaveAttribute("inert")
+  act(() => emit({ ...state, phase: "error", error: "Could not install." }))
+  expect(document.querySelector("#application-panel-settings")?.closest("[inert]")).toBeNull()
+  expect(document.querySelector("#application-sidebar")).not.toHaveAttribute("inert")
+})

@@ -402,7 +402,7 @@ export function ApplicationShell({
         </nav>
         <div className="flex min-h-0 min-w-0 flex-col">
           {notice}
-          <div className={cn("min-h-0 min-w-0 flex-1", activeTab === "workspaces" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
+          <div inert={navigationDisabled || undefined} className={cn("min-h-0 min-w-0 flex-1", activeTab === "workspaces" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
         </div>
       </div>
     </SiloWindow>
