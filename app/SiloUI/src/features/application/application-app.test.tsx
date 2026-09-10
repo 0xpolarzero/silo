@@ -1082,6 +1082,7 @@ describe("application", () => {
     await user.click(overview.getByRole("button", { name: "Edit dev" }))
     const name = overview.getByRole("textbox", { name: "Machine name" })
     expect(name).toHaveAttribute("readonly")
+    expect(overview.getByText("Existing VMs cannot be renamed or have their disks resized.")).toBeVisible()
     expect(overview.getByRole("combobox", { name: "Workspace storage" })).toBeDisabled()
     expect(overview.getByRole("combobox", { name: "Runtime storage" })).toBeDisabled()
     await user.hover(overview.getByLabelText(/Workspace storage: .*read-only/))

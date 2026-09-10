@@ -154,6 +154,8 @@ function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange, crea
         onChange={(event) => update({ name: event.target.value })}
       />
 
+      {created && draft.kind === "vm" && <p className="text-[11px] text-muted-foreground">Existing VMs cannot be renamed or have their disks resized.</p>}
+
       {draft.kind === "vm" ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
           <SelectField label="CPU limit" value={draft.cpus} values={supportedCPUs} suffix="CPU" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />

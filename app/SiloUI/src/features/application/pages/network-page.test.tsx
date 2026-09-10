@@ -37,6 +37,28 @@ describe("Network", () => {
     await user.click(screen.getByRole("button",{name:"Add"}))
     expect(screen.queryByRole("spinbutton",{name:"VM port"})).not.toBeInTheDocument()
   })
+
+  it("keeps invalid port values in the form and explains each field before invoking native code", async () => {
+    const {user, actions} = setup()
+    await user.click(screen.getByRole("button", {name: "Add port"}))
+    const guest = screen.getByRole("spinbutton", {name: "VM port"})
+    const local = screen.getByRole("spinbutton", {name: "Local port"})
+    await user.type(guest, "65536")
+    await user.type(local, "0")
+    await user.click(screen.getByRole("button", {name: "Add"}))
+    expect(actions.saveNetworkPort).not.toHaveBeenCalled()
+    for (const field of [guest, local]) {
+      expect(field).toHaveAttribute("aria-invalid", "true")
+      expect(field).toHaveAccessibleDescription("Enter a port from 1 to 65535.")
+    }
+    expect(guest).toHaveValue(65536)
+    expect(local).toHaveValue(0)
+    await user.clear(guest)
+    await user.type(guest, "9000")
+    await user.clear(local)
+    await user.click(screen.getByRole("button", {name: "Add"}))
+    expect(actions.saveNetworkPort).toHaveBeenCalledWith({workspace: "dev", port: 9000, hostPort: null, scheme: "http"})
+  })
   it("requires inline removal confirmation with Cancel and Escape", async () => {
     const {user,actions} = setup()
     await user.click(screen.getByRole("button",{name:"Remove port 3000 from dev"}))
