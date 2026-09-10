@@ -1,0 +1,34 @@
+name: Publish verified Silo draft
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version of the reviewed draft, for example 0.1.0
+        required: true
+        type: string
+concurrency:
+  group: silo-release-publish
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    environment: release-publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Verify and publish existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          test "$RELEASE_REF" = "refs/tags/v$RELEASE_VERSION"
+          python3 app/SiloUI/scripts/publish-release.py "$RELEASE_VERSION" --publish

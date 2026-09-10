@@ -1,73 +1,80 @@
 import importlib.util
 import json
-import os
 from pathlib import Path
 import tempfile
 import unittest
+import os
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location("publish", Path(__file__).with_name("publish-release.py"))
+spec = importlib.util.spec_from_file_location('publish', Path(__file__).with_name('publish-release.py'))
 publish = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publish)
 
-
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.previous = Path.cwd()
-        os.chdir(self.directory.name)
-        self.addCleanup(self.directory.cleanup)
-        self.addCleanup(os.chdir, self.previous)
-        Path("release-assets").mkdir()
-        for name in ["Silo-macos-arm64.app.tar.gz", "Silo-macos-arm64.dmg", "Silo-linux-x64.deb", "Silo-linux-arm64.deb"]:
-            Path("release-assets", name).write_bytes(b"fixture-package")
-        self.calls = []
-        self.existing = False
-        self.head = "test-sha"
-        self.environment = patch.dict(os.environ, GH_REPO="test/repo", GITHUB_SHA="test-sha")
-        self.environment.start()
-        self.addCleanup(self.environment.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for name in publish.EXPECTED:
+            (self.root/name).write_text('signedfixture' if name.endswith('.sig') else 'package')
 
-    def gh(self, *args):
-        self.calls.append(args)
-        if args[:2] == ("api", "repos/test/repo/commits/main"):
-            return self.head
-        if "--paginate" in args:
-            return json.dumps({"assets": [{"name": "obsolete.deb"}]}) if self.existing else ""
-        if args[:2] == ("api", "repos/test/repo/git/matching-refs/tags/latest"):
-            return json.dumps([{"ref": "refs/tags/latest"}] if self.existing else [])
-        return ""
+    def test_complete_matrix_has_version_pinned_feed_and_every_checksum(self):
+        publish.prepare(self.root, '0.1.0', 'test/repo', 'Release notes')
+        feed = json.loads((self.root/'latest.json').read_text())
+        self.assertEqual(feed['version'], '0.1.0')
+        self.assertEqual(set(feed['platforms']), set(publish.PLATFORMS))
+        for target, name in publish.PLATFORMS.items():
+            self.assertEqual(feed['platforms'][target]['url'], f'https://github.com/test/repo/releases/download/v0.1.0/{name}')
+        names = {line.split('  ')[1] for line in (self.root/'SHA256SUMS').read_text().splitlines()}
+        self.assertEqual(names, publish.EXPECTED|{'latest.json'})
 
-    def test_incomplete_matrix_never_touches_github(self):
-        Path("release-assets/Silo-linux-arm64.deb").unlink()
-        with patch.object(publish, "gh", self.gh), self.assertRaises(RuntimeError):
-            publish.main()
-        self.assertEqual(self.calls, [])
+    def test_missing_architecture_fails_before_feed(self):
+        (self.root/'Silo-linux-arm64.AppImage').unlink()
+        with self.assertRaises(RuntimeError): publish.prepare(self.root,'0.1.0','test/repo','notes')
+        self.assertFalse((self.root/'latest.json').exists())
 
-    def test_superseded_build_never_moves_latest(self):
-        self.head = "newer-sha"
-        with patch.object(publish, "gh", self.gh):
-            publish.main()
-        self.assertEqual(len(self.calls), 1)
+    def test_empty_package_rejected(self):
+        (self.root/'Silo-macos-arm64.dmg').write_text('')
+        with self.assertRaises(RuntimeError): publish.prepare(self.root,'0.1.0','test/repo','notes')
 
-    def test_first_release_contains_every_package_and_checksums(self):
-        with patch.object(publish, "gh", self.gh):
-            publish.main()
-        creation = next(call for call in self.calls if call[:2] == ("release", "create"))
-        self.assertIn("--latest", creation)
-        self.assertEqual(len([arg for arg in creation if arg.startswith("release-assets/")]), 5)
-        self.assertEqual(len(Path("release-assets/SHA256SUMS").read_text().splitlines()), 4)
-        self.assertIn("test-sha", Path("release-notes.md").read_text())
+    def test_unexpected_file_rejected(self):
+        (self.root/'private.key').write_text('never upload')
+        with self.assertRaises(RuntimeError): publish.prepare(self.root,'0.1.0','test/repo','notes')
 
-    def test_existing_release_is_updated_without_deleting_release(self):
-        self.existing = True
-        with patch.object(publish, "gh", self.gh):
-            publish.main()
-        upload = next(call for call in self.calls if call[:2] == ("release", "upload"))
-        self.assertIn("--clobber", upload)
-        self.assertIn(("release", "delete-asset", "latest", "obsolete.deb", "--yes"), self.calls)
-        self.assertFalse(any(call[:2] == ("release", "delete") for call in self.calls))
+    def test_symlink_rejected(self):
+        name=self.root/'Silo-macos-arm64.dmg';name.unlink();name.symlink_to(self.root/'Silo-linux-x64.deb')
+        with self.assertRaises(RuntimeError): publish.prepare(self.root,'0.1.0','test/repo','notes')
 
+    def test_bad_signature_rejected(self):
+        (self.root/'Silo-linux-arm64.AppImage.sig').write_text('not a signature')
+        with self.assertRaises(RuntimeError): publish.prepare(self.root,'0.1.0','test/repo','notes')
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_only_stable_nonzero_versions(self):
+        for version in ['0.0.0','01.2.3','1.0','1.0.0-beta','1.0.0/other','v1.0.0']:
+            with self.subTest(version=version), self.assertRaises(RuntimeError): publish.validate_version(version)
+        self.assertEqual(publish.validate_version('1.2.10'), (1,2,10))
+
+    def test_existing_public_version_cannot_be_replaced(self):
+        releases=[[{'tag_name':'v0.1.0','draft':False,'prerelease':False}]]
+        with patch.dict(os.environ,GH_REPO='test/repo'), patch('sys.argv',['publish','0.1.0']), patch.object(publish,'gh',return_value=json.dumps(releases)) as gh:
+            with self.assertRaisesRegex(RuntimeError,'newer'): publish.main()
+            self.assertEqual(gh.call_count,1)
+
+    def test_existing_draft_cannot_be_overwritten(self):
+        releases=[[{'tag_name':'v0.1.0','draft':True,'prerelease':False}]]
+        with patch.dict(os.environ,GH_REPO='test/repo'), patch('sys.argv',['publish','0.1.0']), patch.object(publish,'gh',return_value=json.dumps(releases)) as gh:
+            with self.assertRaisesRegex(RuntimeError,'already exists'): publish.main()
+            self.assertEqual(gh.call_count,1)
+
+    def test_incomplete_draft_cannot_publish(self):
+        releases=[[{'tag_name':'v0.1.0','draft':True,'prerelease':False,'assets':[]}]]
+        with patch.dict(os.environ,GH_REPO='test/repo'), patch('sys.argv',['publish','0.1.0','--publish']), patch.object(publish,'gh',return_value=json.dumps(releases)) as gh:
+            with self.assertRaisesRegex(RuntimeError,'incomplete'): publish.main()
+            self.assertEqual(gh.call_count,1)
+
+    def test_tag_must_match_build(self):
+        with patch.dict(os.environ,GH_REPO='test/repo',GITHUB_SHA='built-sha'), patch('sys.argv',['publish','0.1.0']), patch.object(publish,'gh',side_effect=['[]','other-sha']) as gh:
+            with self.assertRaisesRegex(RuntimeError,'tag'): publish.main()
+            self.assertEqual(gh.call_count,2)
+
+if __name__=='__main__': unittest.main()

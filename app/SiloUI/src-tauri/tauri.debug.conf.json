@@ -4,6 +4,7 @@
     "macOS": {
       "signingIdentity": "-",
       "hardenedRuntime": false
-    }
+    },
+    "createUpdaterArtifacts": false
   }
 }

@@ -62,96 +62,98 @@ Contributors running offline unit tests can explicitly supply synthetic values
 for all three variables; such test executables cannot authenticate to GitHub and
 must not be distributed. Frontend tests need no GitHub credentials.
 
-## Rolling GitHub release
+## Versioned distribution and updates
 
-`.github/workflows/release.yml` runs on every push to `main`, without path
-filters. It also supports manual dispatch on `main`. It builds these existing
-runtime targets natively, because the patched MicroSandbox build rejects cross
-compilation:
+Releases are deliberate. Development pushes do not publish downloads. The source
+version in `app/SiloUI/package.json`, package lock, Cargo manifest and Cargo lock
+must agree. Stable versions use `MAJOR.MINOR.PATCH`; `0.0.0` and prereleases cannot
+be published through the stable pipeline.
 
-| Host runner | Target | Downloads |
+Supported packages:
+
+| Platform | Installer | In-app updates |
 | --- | --- | --- |
-| `macos-15` (ARM64) | `aarch64-apple-darwin` | `Silo-macos-arm64.dmg`, `Silo-macos-arm64.app.tar.gz` |
-| `ubuntu-24.04` | `x86_64-unknown-linux-gnu` | `Silo-linux-x64.deb` |
-| `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | `Silo-linux-arm64.deb` |
+| Apple Silicon macOS | DMG | Signed Tauri app archive |
+| Linux x86-64 | AppImage and Debian package | AppImage only |
+| Linux ARM64 | AppImage and Debian package | AppImage only |
 
-Windows and Intel macOS are not supported by the bundled runtime. Linux packages
-target Ubuntu 24.04 or compatible newer distributions, rather than claiming the
-older glibc minimum of individual bundled components. Local Linux VMs require
-KVM. This initial workflow does not publish AppImage or RPM packages.
+Linux builds target Ubuntu 24.04-compatible systems and require KVM for VMs.
+AppImage bundles application libraries but does not make glibc or GPU support
+universal. Debian upgrades use the package manager and download flow, never
+replace package-owned binaries in place. Intel macOS and Windows are unsupported.
+The guest image, native runtime, host Git/LFS tools and notices are packaged with
+the application; existing VM disks are not release assets.
 
-All three names in the configuration table are repository **Actions secrets** in
-`0xpolarzero/silo`; they were configured on 2026-09-10. New repositories need the
-same setup under Settings → Secrets and variables → Actions. The workflow checks
-their presence before installing dependencies and injects them into the build
-environment. Do not put secret values directly in the workflow YAML.
+### Signing setup
 
-Each matrix job installs Node 24, Rust 1.94.0, and platform prerequisites, runs
-frontend tests/lint and native tests, builds release packages, and uploads only
-the intended downloads. macOS code signatures and Debian package metadata are
-checked. Publication requires every matrix job to succeed and validates that
-all four expected downloads exist and are nonempty before changing GitHub.
+`tauri.conf.json` contains the permanent public updater key. This is safe to
+commit. The private key is stored in protected GitHub environment
+`release-signing` as `TAURI_SIGNING_PRIVATE_KEY`; its optional password is
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep an independent secure backup. Losing
+the private key prevents updates to already installed applications. Never upload
+private keys, complete build directories, or local GitHub configuration artifacts.
 
-One serialized publication job updates the `latest` tag to the built commit,
-uploads replacement downloads and `SHA256SUMS`, removes obsolete assets, and
-updates the existing release notes and GitHub's latest-release designation. It
-skips publication if `main` has advanced. Downloads have stable filenames:
+The `release-signing` and `release-publish` environments require maintainer review
+and restrict execution to version tags. Artifact-only verification uses a fresh
+ephemeral signing key in `release-verification`; these packages are for tests and
+cannot update production installations. The public key override only occurs in
+that isolated workflow checkout. These are not public releases.
 
-- [Rolling release](https://github.com/0xpolarzero/silo/releases/tag/latest)
-- [Latest release redirect](https://github.com/0xpolarzero/silo/releases/latest)
+macOS uses ad-hoc signing and no notarization. A downloaded installation can
+require System Settings → Privacy & Security → Open Anyway. Do not instruct users
+to disable Gatekeeper globally. Update signatures are separate and always checked.
 
-A failed build leaves the previous release intact. GitHub asset replacement is
-not atomic: a network failure during publication can leave a partial update;
-rerun the workflow on current `main` to finish it. This rolling release requires
-mutable releases; do not enable release immutability for it. The release tag
-tracks the source commit; the app's package version remains the version in
-`package.json` and is not incremented automatically.
+### Build and publish
 
-`GITHUB_TOKEN` has read access in build jobs and `contents: write` only in the
-publication job. No personal GitHub token is needed. This adds downloadable
-releases, not automatic in-app updates. The workflow starts only after its
-files are committed and pushed to `main`.
+1. Update the synchronized version and add `docs/releases/VERSION.md` with actual
+   user-facing changes and compatibility notes. Commit and review the source.
+2. For verification, dispatch **Build Silo release** with `draft=false` on the
+   reviewed test branch. All three builds run tests and upload packages only.
+3. After approval, create the exact `vVERSION` tag at the reviewed commit and
+   dispatch **Build Silo release** on that tag with `draft=true`. Approve the
+   signing environment only after confirming the commit. Every platform must
+   pass before a draft is created. Existing releases and drafts are never overwritten.
+4. Download and test the complete draft on clean systems and upgrade an earlier
+   real installation. Review notes, bundled licenses and all architecture assets.
+5. Obtain public-release approval, then dispatch **Publish verified Silo draft**
+   on the version tag with the matching version. Approve `release-publish`.
+   It downloads all draft assets, checks SHA256 and updater signatures, and only
+   then publishes the draft and marks it latest.
 
-## Signing and verification limits
+The app reads
+`https://github.com/0xpolarzero/silo/releases/latest/download/latest.json`.
+That file references immutable version-specific download URLs and all three
+platform signatures. Partial build/upload failures leave the prior public release
+and update feed unchanged. A partial draft must be inspected and explicitly
+removed before retrying; the scripts never silently clobber it. A bad published
+release is fixed with a newer version, not an automatic data downgrade.
 
-macOS release builds currently use `APPLE_SIGNING_IDENTITY=-` for ad-hoc signing.
-They are not Developer ID signed or notarized; downloaded apps can require user
-approval under macOS security settings. Apple signing/notarization needs separate
-Apple credentials and is not supplied by the GitHub App client secret.
+Before publishing, enable GitHub release immutability in repository settings.
+The workflow also refuses existing release versions and older stable versions.
+The `publish-release.py` tests cover missing/empty/unexpected assets, symlinks,
+invalid signature encoding, version bounds, complete checksums and platform URLs.
 
-Builds and unit tests do not certify GUI behavior, GitHub browser authentication,
-VM boot, KVM availability, or the oldest supported OS on every platform. The
-first actual Actions run is required to establish Linux packaging evidence.
-Existing Swift `app/Silo` smoke scripts test a separate application and do not
-validate this Tauri release workflow.
+### Required release acceptance evidence
 
-## Local verification on 2026-09-10
+- Clean install from actual downloaded DMG, AppImage and Debian package.
+- Real signed version-to-version update and app relaunch; preserved settings,
+  account, secrets, VM disks and previous running state.
+- Invalid signature, interrupted/offline download, low disk space, read-only
+  installation directory and interrupted installation.
+- macOS quarantine first launch, signature verification and Keychain behavior
+  after upgrading an ad-hoc signed app.
+- AppImage extraction, library resolution, tray/notifications/desktop integration
+  on both architectures; package-manager upgrade for Debian installations.
+- No public-release claim until these checks have real evidence. Unit/build
+  success does not substitute for clean installation or VM execution.
 
-- `npm --prefix app/SiloUI run desktop:build:debug`: passed using the local file
-  with no GitHub variables exported. All three configured values were confirmed
-  present in the built executable without printing their contents.
-- `codesign --verify --deep --strict app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`:
-  passed. The app was rebuilt, not launched for an authentication test.
-- `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --offline --locked -- --test-threads=1`:
-  241 native tests and 5 configuration tests passed; 6 live tests remained ignored.
-  The restricted sandbox initially blocked four local-socket tests; the same
-  suite passed outside that sandbox without code changes.
-- `python3 -m unittest discover -s app/SiloUI/scripts -p 'test_publish_release.py'`:
-  4 tests passed, covering incomplete matrices, superseded commits, initial
-  creation, and updates to an existing release.
-- `actionlint .github/workflows/release.yml`: passed with actionlint 1.7.7.
-- The local JSON file is Git-ignored and mode `0600`; secret names were verified
-  in GitHub Actions. The client secret does not appear in tracked or unignored
-  task files. The Actions matrix has not yet run.
+## Primary references
 
-## References
-
-- [Tauri GitHub Actions packaging](https://v2.tauri.app/distribute/pipelines/github/)
-- [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/)
-- [GitHub hosted runner labels and architectures](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+- [Tauri updater and signed static feeds](https://v2.tauri.app/plugin/updater/)
+- [Tauri AppImage packaging](https://v2.tauri.app/distribute/appimage/)
 - [Tauri macOS signing](https://v2.tauri.app/distribute/sign/macos/)
-- [GitHub CLI release editing](https://cli.github.com/manual/gh_release_edit)
+- [GitHub release immutability](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
+- [GitHub deployment environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/managing-environments-for-deployment)
 
-These primary sources informed runner selection, dependencies, signing, and
-rolling release behavior on 2026-09-10. Repository target support is defined in
-`app/SiloUI/scripts/microsandbox-runtime.mjs` and `git-runtime.mjs`.
+Reviewed 2026-09-10. Distribution/update acceptance evidence is tracked in
+`docs/SiloUI-DISTRIBUTION-PLAN.md`.

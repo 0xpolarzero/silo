@@ -34,7 +34,7 @@ class Options(BaseOptions):
         return {}
 
     def to_capabilities(self):
-        return {"tauri:options": {"application": str(ROOT / "src-tauri/target/debug/silo-ui")}}
+        return {"tauri:options": {"application": str(Path(os.environ.get("SILO_LINUX_APPLICATION", ROOT / "src-tauri/target/debug/silo-ui")))}}
 
 
 def run():

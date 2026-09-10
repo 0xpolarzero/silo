@@ -1,64 +1,106 @@
-"""Publish the complete, verified matrix to the rolling latest GitHub release."""
+"""Assemble a complete versioned draft, or publish a verified existing draft."""
+import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
+from datetime import datetime, timezone
+
+PLATFORMS = {"darwin-aarch64": "Silo-macos-arm64.app.tar.gz", "linux-x86_64": "Silo-linux-x64.AppImage", "linux-aarch64": "Silo-linux-arm64.AppImage"}
+PACKAGES = set(PLATFORMS.values()) | {"Silo-macos-arm64.dmg", "Silo-linux-x64.deb", "Silo-linux-arm64.deb"}
+EXPECTED = PACKAGES | {name + ".sig" for name in PLATFORMS.values()}
 
 
 def gh(*args):
     return subprocess.check_output(["gh", *args], text=True).strip()
 
 
-def main():
-    root = Path("release-assets")
-    expected = {
-        "Silo-macos-arm64.app.tar.gz",
-        "Silo-macos-arm64.dmg",
-        "Silo-linux-x64.deb",
-        "Silo-linux-arm64.deb",
-    }
-    actual = {p.name for p in root.iterdir() if p.is_file()}
-    if actual != expected or any((root / name).stat().st_size == 0 for name in expected):
-        raise RuntimeError("Release assets are missing, empty, or unexpected; keeping the previous release.")
-    repository = os.environ["GH_REPO"]
-    sha = os.environ["GITHUB_SHA"]
-    # A queued run can already have been superseded on main. Never move latest backwards.
-    head = gh("api", f"repos/{repository}/commits/main", "--jq", ".sha")
-    if head != sha:
-        print("A newer main commit exists; leaving latest unchanged.")
-        return
+def validate_version(version):
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version) or version == "0.0.0":
+        raise RuntimeError("Use a nonzero stable version such as 0.1.0.")
+    return tuple(map(int, version.split(".")))
+
+
+def prepare(root, version, repository, notes):
+    validate_version(version)
+    actual = {p.name for p in root.iterdir()}
+    if actual != EXPECTED or any(not (root / n).is_file() or (root / n).is_symlink() or (root / n).stat().st_size == 0 for n in EXPECTED):
+        raise RuntimeError("Release assets are missing, empty, or unexpected; keeping previous releases unchanged.")
+    platforms = {}
+    for target, name in PLATFORMS.items():
+        signature = (root / (name + ".sig")).read_text().strip()
+        # Cryptographic verification is done in each build job with the release public key.
+        if not signature or len(signature) > 4096 or any(c.isspace() for c in signature):
+            raise RuntimeError("Invalid updater signature encoding.")
+        platforms[target] = {"url": f"https://github.com/{repository}/releases/download/v{version}/{name}", "signature": signature}
+    (root / "latest.json").write_text(json.dumps({"version": version, "notes": notes, "pub_date": datetime.now(timezone.utc).isoformat(), "platforms": platforms}, indent=2) + "\n")
     checksums = []
-    for name in sorted(expected):
-        with (root / name).open("rb") as asset:
-            digest = hashlib.file_digest(asset, "sha256").hexdigest()
-        checksums.append(f"{digest}  {name}\n")
+    for name in sorted(EXPECTED | {"latest.json"}):
+        with (root / name).open("rb") as source:
+            checksums.append(f"{hashlib.file_digest(source, 'sha256').hexdigest()}  {name}\n")
     (root / "SHA256SUMS").write_text("".join(checksums))
-    notes = Path("release-notes.md")
-    notes.write_text(
-        f"Built from [{sha}](https://github.com/{repository}/commit/{sha}).\n\n"
-        "Rolling build from main. Downloads are replaced after the complete build matrix succeeds.\n\n"
-        "- macOS: Apple Silicon, macOS 14 or newer. Ad-hoc signed, not notarized; macOS may block the download pending user approval.\n"
-        "- Linux: x86-64 and ARM64 Debian packages built on Ubuntu 24.04. Use Ubuntu 24.04 or a compatible newer distribution; local VMs require KVM.\n"
-        "- Windows and Intel macOS are not supported by the bundled runtime.\n\n"
-        "Build and unit checks do not certify VM execution on every target. Verify downloads with SHA256SUMS.\n"
-    )
-    releases = json.loads(gh("api", "--paginate", f"repos/{repository}/releases", "--jq", ".[] | select(.tag_name == \"latest\")") or "null")
-    refs = json.loads(gh("api", f"repos/{repository}/git/matching-refs/tags/latest"))
-    if any(ref["ref"] == "refs/tags/latest" for ref in refs):
-        gh("api", "--method", "PATCH", f"repos/{repository}/git/refs/tags/latest", "-f", f"sha={sha}", "-F", "force=true")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("version")
+    parser.add_argument("--publish", action="store_true")
+    args = parser.parse_args()
+    version = args.version
+    current = validate_version(version)
+    repository = os.environ["GH_REPO"]
+    tag = f"v{version}"
+    releases = json.loads(gh("api", "--paginate", "--slurp", f"repos/{repository}/releases"))
+    releases = [release for page in releases for release in page]
+    existing = next((r for r in releases if r["tag_name"] == tag), None)
+    published = [r for r in releases if not r["draft"] and not r["prerelease"] and re.fullmatch(r"v\d+\.\d+\.\d+", r["tag_name"])]
+    if any(validate_version(r["tag_name"][1:]) >= current for r in published):
+        raise RuntimeError("Version must be newer than every published stable release.")
+    if args.publish:
+        if not existing or not existing["draft"]:
+            raise RuntimeError("A verified draft is required; existing public releases are never changed.")
+        assets = {a["name"] for a in existing["assets"] if a["size"] > 0}
+        if assets != EXPECTED | {"latest.json", "SHA256SUMS"}:
+            raise RuntimeError("Draft is incomplete; refusing to publish.")
+        # Download and verify every byte again after draft storage and before public cutover.
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            gh("release", "download", tag, "--dir", directory)
+            root = Path(directory)
+            lines = (root / "SHA256SUMS").read_text().splitlines()
+            if len(lines) != len(EXPECTED) + 1 or {line.split("  ", 1)[-1] for line in lines} != EXPECTED | {"latest.json"}:
+                raise RuntimeError("Draft checksums are incomplete or duplicated.")
+            for line in lines:
+                digest, name = line.split("  ", 1)
+                if name not in EXPECTED | {"latest.json"}:
+                    raise RuntimeError("Unexpected checksum entry.")
+                with (root / name).open("rb") as source:
+                    if hashlib.file_digest(source, "sha256").hexdigest() != digest:
+                        raise RuntimeError("Draft checksum mismatch.")
+            feed = json.loads((root / "latest.json").read_text())
+            if feed["version"] != version or set(feed["platforms"]) != set(PLATFORMS):
+                raise RuntimeError("Draft update feed does not match this version.")
+            for target, name in PLATFORMS.items():
+                expected_url = f"https://github.com/{repository}/releases/download/{tag}/{name}"
+                if feed['platforms'][target] != {'url': expected_url, 'signature': (root / (name + '.sig')).read_text().strip()}:
+                    raise RuntimeError("Draft update feed has an unexpected URL or signature.")
+            subprocess.run(["python3", str(Path(__file__).with_name("verify-release-signatures.py")), str(root)], check=True)
+        gh("release", "edit", tag, "--draft=false", "--latest", "--prerelease=false")
     else:
-        gh("api", "--method", "POST", f"repos/{repository}/git/refs", "-f", "ref=refs/tags/latest", "-f", f"sha={sha}")
-    assets = [str(root / name) for name in sorted(expected | {"SHA256SUMS"})]
-    if releases:
-        gh("release", "upload", "latest", *assets, "--clobber")
-        for asset in releases["assets"]:
-            if asset["name"] not in expected | {"SHA256SUMS"}:
-                gh("release", "delete-asset", "latest", asset["name"], "--yes")
-        gh("release", "edit", "latest", "--title", "Silo latest", "--notes-file", str(notes), "--latest", "--draft=false", "--prerelease=false")
-    else:
-        gh("release", "create", "latest", *assets, "--verify-tag", "--title", "Silo latest", "--notes-file", str(notes), "--latest")
-    print(f"Published https://github.com/{repository}/releases/tag/latest")
+        if existing:
+            raise RuntimeError("Release already exists; never overwrite a draft or public release.")
+        sha = os.environ["GITHUB_SHA"]
+        resolved = gh("api", f"repos/{repository}/commits/{tag}", "--jq", ".sha")
+        if resolved != sha:
+            raise RuntimeError("Version tag does not identify this build.")
+        root = Path("release-assets")
+        notes = Path("release-notes.md")
+        if not notes.is_file() or not notes.read_text().strip():
+            raise RuntimeError("Release notes are required.")
+        prepare(root, version, repository, notes.read_text())
+        gh("release", "create", tag, *[str(root / name) for name in sorted(EXPECTED | {"latest.json", "SHA256SUMS"})], "--verify-tag", "--draft", "--title", f"Silo {version}", "--notes-file", str(notes))
 
 
 if __name__ == "__main__":

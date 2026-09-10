@@ -1,13 +1,14 @@
-name: Release latest
+name: Build Silo release
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-
-# Serialize publication so an older run cannot overwrite a newer release.
+    inputs:
+      draft:
+        description: Create versioned draft after all builds pass (requires vVERSION tag)
+        type: boolean
+        default: false
 concurrency:
-  group: release-latest
+  group: silo-release-build
   cancel-in-progress: false
 
 permissions:
@@ -15,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/main'
+    environment: ${{ inputs.draft && 'release-signing' || 'release-verification' }}
     strategy:
       fail-fast: false
       matrix:
@@ -26,11 +27,11 @@ jobs:
             asset: macos-arm64
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            bundles: deb
+            bundles: deb,appimage
             asset: linux-x64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            bundles: deb
+            bundles: deb,appimage
             asset: linux-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -43,11 +44,16 @@ jobs:
       SILO_GITHUB_CLIENT_ID: ${{ secrets.SILO_GITHUB_CLIENT_ID }}
       SILO_GITHUB_CLIENT_SECRET: ${{ secrets.SILO_GITHUB_CLIENT_SECRET }}
       APPLE_SIGNING_IDENTITY: '-'
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Require GitHub App configuration
         run: |
           for key in SILO_GITHUB_APP_SLUG SILO_GITHUB_CLIENT_ID SILO_GITHUB_CLIENT_SECRET; do
@@ -65,13 +71,33 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libclang-dev libcap-ng-dev cmake
+          sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libclang-dev libcap-ng-dev cmake libfuse2t64 minisign
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install 1.94.0 --profile minimal
           rustup default 1.94.0
           test "$(rustc --print host-tuple)" = '${{ matrix.target }}'
+      - name: Install signature verifier
+        if: runner.os == 'macOS'
+        run: brew install minisign
       - run: npm ci
+      - name: Generate isolated test signing key
+        if: '!inputs.draft'
+        run: |
+          umask 077
+          npx tauri signer generate --ci -p '' -w "$RUNNER_TEMP/silo-test.key" >/dev/null
+          echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/silo-test.key" >> "$GITHUB_ENV"
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          path = Path('src-tauri/tauri.conf.json')
+          config = json.loads(path.read_text())
+          config['plugins']['updater']['pubkey'] = Path(os.environ['RUNNER_TEMP'], 'silo-test.key.pub').read_text().strip()
+          path.write_text(json.dumps(config))
+          PYCODE
+      - name: Require production signing key
+        if: inputs.draft
+        run: test -n "$TAURI_SIGNING_PRIVATE_KEY"
       - run: npm test
       - run: npm run lint
       - name: Prepare native resources
@@ -80,6 +106,14 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
       - name: Free test products before release compilation
         run: cargo clean --manifest-path src-tauri/Cargo.toml --profile dev
+      - name: Validate release version
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          python3 scripts/validate-release-version.py
+          if [[ '${{ inputs.draft }}' == true ]]; then
+            test "$RELEASE_REF" = "refs/tags/v$(node -p "require('./package.json').version")"
+          fi
       - name: Build release bundles
         run: npm run desktop:build -- --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --ci
       - name: Collect and verify macOS assets
@@ -88,7 +122,8 @@ jobs:
           mkdir -p release-assets
           bundle='src-tauri/target/${{ matrix.target }}/release/bundle'
           codesign --verify --deep --strict "$bundle/macos/Silo.app"
-          tar -czf release-assets/Silo-macos-arm64.app.tar.gz -C "$bundle/macos" Silo.app
+          cp "$bundle/macos/Silo.app.tar.gz" release-assets/Silo-macos-arm64.app.tar.gz
+          cp "$bundle/macos/Silo.app.tar.gz.sig" release-assets/Silo-macos-arm64.app.tar.gz.sig
           dmgs=("$bundle"/dmg/*.dmg)
           test "${#dmgs[@]}" -eq 1
           cp "${dmgs[0]}" release-assets/Silo-macos-arm64.dmg
@@ -100,6 +135,15 @@ jobs:
           test "${#packages[@]}" -eq 1
           dpkg-deb --info "${packages[0]}"
           cp "${packages[0]}" 'release-assets/Silo-${{ matrix.asset }}.deb'
+          images=(src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage)
+          test "${#images[@]}" -eq 1
+          cp "${images[0]}" 'release-assets/Silo-${{ matrix.asset }}.AppImage'
+          cp "${images[0]}.sig" 'release-assets/Silo-${{ matrix.asset }}.AppImage.sig'
+          chmod +x 'release-assets/Silo-${{ matrix.asset }}.AppImage'
+          'release-assets/Silo-${{ matrix.asset }}.AppImage' --appimage-extract >/dev/null
+          test -x squashfs-root/usr/bin/silo-ui
+      - name: Verify update signatures
+        run: python3 scripts/verify-release-signatures.py release-assets
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.asset }}
@@ -107,7 +151,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
+  draft:
+    if: inputs.draft
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -115,6 +160,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -122,8 +170,13 @@ jobs:
           path: release-assets
       - name: Test release publication
         run: python3 -m unittest discover -s app/SiloUI/scripts -p 'test_publish_release.py'
-      - name: Publish rolling latest release
+      - name: Read version and release notes
+        run: |
+          version=$(node -p "require('./app/SiloUI/package.json').version")
+          cp "docs/releases/$version.md" release-notes.md
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Create complete versioned draft
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: python3 app/SiloUI/scripts/publish-release.py
+        run: python3 app/SiloUI/scripts/publish-release.py "$RELEASE_VERSION"

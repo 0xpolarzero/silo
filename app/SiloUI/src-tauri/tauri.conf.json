@@ -20,7 +20,10 @@
         "fullscreen": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 12, "y": 24 },
+        "trafficLightPosition": {
+          "x": 12,
+          "y": 24
+        },
         "visible": false,
         "label": "main"
       },
@@ -44,7 +47,9 @@
     ],
     "security": {
       "capabilities": [
-        "preview", "status", "application-events"
+        "preview",
+        "status",
+        "application-events"
       ],
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost",
       "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420"
@@ -74,6 +79,26 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns"
-    ]
+    ],
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "signingIdentity": "-"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libcap-ng0"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZGRDg1QkUyN0Q2QzE1MjAKUldRZ0ZXeDk0bHZZYitCalpOT0NMeFIwNzRISncvdllVcGtkSjNDVmtHWUZRRWxnemxtTmVkd3gK",
+      "endpoints": [
+        "https://github.com/0xpolarzero/silo/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
