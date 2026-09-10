@@ -105,6 +105,22 @@ macOS uses ad-hoc signing and no notarization. A downloaded installation can
 require System Settings → Privacy & Security → Open Anyway. Do not instruct users
 to disable Gatekeeper globally. Update signatures are separate and always checked.
 
+The macOS release packager signs the bundled VM engine first, then constrains
+`msb` to that exact library's code hash. Apple system libraries remain permitted
+by macOS. The helper's library-validation exception is paired with this enforced
+constraint; an unconstrained helper fails release verification. The app and Git
+helpers retain their ordinary library validation. This blocks engine substitution,
+not malicious code already present in the approved build or replacement of the
+entire ad-hoc-signed app. Each update gets a constraint for its own engine.
+The packager regenerates both the DMG and signed updater archive from the same
+finished app, with no AppleDouble archive entries.
+
+The minimum macOS 14 constraint tests are required before draft creation; the
+build runner also exercises the constraint tests. GitHub currently provides
+macOS 14 runners until November 2, 2026. Before their retirement, replace this
+minimum-version proof with a maintained runner rather than silently omitting it.
+This CI test checks library enforcement, not nested VM execution.
+
 ### Build and publish
 
 1. Update the synchronized version and add `docs/releases/VERSION.md` with actual
@@ -131,7 +147,7 @@ and update feed unchanged. A partial draft must be inspected and explicitly
 removed before retrying; the scripts never silently clobber it. A bad published
 release is fixed with a newer version, not an automatic data downgrade.
 
-Before publishing, enable GitHub release immutability in repository settings.
+GitHub release immutability was enabled for this repository on 2026-09-10.
 The workflow also refuses existing release versions and older stable versions.
 The `publish-release.py` tests cover missing/empty/unexpected assets, symlinks,
 invalid signature encoding, version bounds, complete checksums and platform URLs.
@@ -159,6 +175,8 @@ and the signed AppImage release-info resource without executing any package.
 - [Tauri AppImage packaging](https://v2.tauri.app/distribute/appimage/)
 - [AppImage filesystem/runtime layout](https://docs.appimage.org/introduction/software-overview.html)
 - [Tauri macOS signing](https://v2.tauri.app/distribute/sign/macos/)
+- [GitHub macOS 14 runner retirement](https://github.com/actions/runner-images/issues/13518)
+- [Apple library constraints](https://developer.apple.com/documentation/security/defining-launch-environment-and-library-constraints)
 - [GitHub release immutability](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
 - [GitHub deployment environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/managing-environments-for-deployment)
 

@@ -15,6 +15,21 @@ permissions:
   contents: read
 
 jobs:
+  macos-minimum-security:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify library enforcement on minimum macOS version
+        run: python3 app/SiloUI/scripts/test-macos-library-constraints.py --output "$RUNNER_TEMP/library-constraints"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-14-library-constraints
+          path: ${{ runner.temp }}/library-constraints/results.json
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     environment: ${{ inputs.draft && 'release-signing' || 'release-verification' }}
     strategy:
@@ -23,7 +38,7 @@ jobs:
         include:
           - runner: macos-15
             target: aarch64-apple-darwin
-            bundles: app,dmg
+            bundles: app
             asset: macos-arm64
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
@@ -120,6 +135,12 @@ jobs:
           fi
       - name: Build release bundles
         run: npm run desktop:build -- --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --ci
+      - name: Enforce exact macOS runtime libraries and rebuild signed packages
+        if: runner.os == 'macOS'
+        run: python3 scripts/package-macos-release.py 'src-tauri/target/${{ matrix.target }}/release/bundle/macos/Silo.app' release-assets
+      - name: Verify macOS library enforcement
+        if: runner.os == 'macOS'
+        run: python3 scripts/test-macos-library-constraints.py --output "$RUNNER_TEMP/library-constraints"
       - name: Collect and verify macOS assets
         if: runner.os == 'macOS'
         run: |
@@ -127,11 +148,9 @@ jobs:
           bundle='src-tauri/target/${{ matrix.target }}/release/bundle'
           codesign --verify --deep --strict "$bundle/macos/Silo.app"
           python3 scripts/verify-macos-signing.py "$bundle/macos/Silo.app"
-          cp "$bundle/macos/Silo.app.tar.gz" release-assets/Silo-macos-arm64.app.tar.gz
-          cp "$bundle/macos/Silo.app.tar.gz.sig" release-assets/Silo-macos-arm64.app.tar.gz.sig
-          dmgs=("$bundle"/dmg/*.dmg)
-          test "${#dmgs[@]}" -eq 1
-          cp "${dmgs[0]}" release-assets/Silo-macos-arm64.dmg
+          test -s release-assets/Silo-macos-arm64.app.tar.gz
+          test -s release-assets/Silo-macos-arm64.app.tar.gz.sig
+          test -s release-assets/Silo-macos-arm64.dmg
       - name: Collect and verify Linux assets
         if: runner.os == 'Linux'
         run: |
@@ -161,7 +180,7 @@ jobs:
 
   draft:
     if: inputs.draft
-    needs: build
+    needs: [build, macos-minimum-security]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
