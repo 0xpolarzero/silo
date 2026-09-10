@@ -1,6 +1,6 @@
 # Linux verification
 
-Linux parity needs three independent kinds of evidence. Compilation alone does
+Linux parity needs separate evidence for each layer. Compilation alone does
 not prove the WebKit UI, desktop services, or hardware virtualization works.
 
 | Layer | Command | What it proves |
@@ -8,6 +8,7 @@ not prove the WebKit UI, desktop services, or hardware virtualization works.
 | Frontend | `npm test -- --maxWorkers=2` | Component behavior and bridge contracts on Linux; test adapters remain outside production. |
 | Native | `cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1` | Linux application discovery, login entries, settings, resource checks, files, network, GitHub boundary behavior, secrets, and backup validation. |
 | Desktop | `xvfb-run -a dbus-run-session -- python3 scripts/test-linux-desktop.py` | Real production WebKit, native IPC, dependency failure gating, page navigation, inline validation and persisted settings. |
+| GNOME integration | `sh scripts/test-linux-gnome.sh` | Real GNOME Wayland, tray reopen/quit, native backup picker and visible notification delivery. |
 | Hardware | `python3 scripts/test-linux-runtime.py` | Real KVM creation, bundled image import/cache reuse, guest tools/identity, backup/restore data round trips, live secret changes and interrupted restart recovery. |
 
 Run from `app/SiloUI`. Hardware tests use temporary Silo runtime directories and
@@ -61,12 +62,13 @@ virtualization is not a guaranteed service. The workflow probes the actual host
 instead of assuming it is available. If a runner lacks usable KVM, that
 architecture still needs a Linux KVM host before claiming full runtime parity.
 
-Xvfb is not a complete GNOME/KDE desktop. Native adapter tests verify autostart
-and notification rules, but an actual desktop session is still needed to prove
-tray placement, notification delivery, file pickers and terminal/editor handoff
-on supported desktop environments. Display scaling and Wayland/X11 differences
-also need interactive verification. Do not describe this suite as full Linux
-parity until that matrix is exercised.
+Xvfb alone does not prove desktop services. Separate GNOME 46 X11 and native
+Wayland runs now prove the UI; the Wayland run also proves tray reopen/quit,
+a visible production notification and the native backup picker. These sessions
+use nested software rendering. Physical GPU behavior, HiDPI and multiple
+monitors, KDE/other desktop environments, and every external terminal/editor
+application remain unverified. Do not generalize the GNOME evidence to every
+Linux desktop.
 
 ## Recorded local evidence, 10 September 2026
 
@@ -76,8 +78,8 @@ An isolated Ubuntu 24.04 ARM64 OrbStack machine ran the following successfully:
   production Tauri debug build. The first runtime link failed because
   `libcap-ng-dev` was missing; installing it fixed the build. Both Linux build
   workflows now install it, and Linux packages declare `libcap-ng0` / `libcap-ng`.
-- 608 frontend tests in 65 files. Only the deliberate 64-card capacity interaction
-  gets a 15-second timeout; its previous 5-second timeout failed in the full Linux
+- 608 frontend tests in 65 files. At that stage, the deliberate 64-card capacity interaction
+  received a 15-second timeout; its previous 5-second timeout failed in the full Linux
   suite but the isolated behavior passed. No global timeout was increased.
 - 291 native tests and 5 build-configuration tests after the final recovery changes; 10 opt-in hardware/account
   tests excluded from the default native run.
@@ -89,7 +91,7 @@ An isolated Ubuntu 24.04 ARM64 OrbStack machine ran the following successfully:
   WebKit checks passed again; evidence is under `test-results/linux/arm64-final/`.
 
 OrbStack explicitly failed the hardware probe with missing `/dev/kvm`.
-A separate disposable Lima VM provides the hardware evidence below. The GitHub-hosted two-architecture workflow is committed but
+A separate disposable Lima VM provides the hardware evidence below. The GitHub-hosted two-architecture workflow
 was pushed to the approved public `verify-linux-parity-20260910` test branch.
 The first hosted run exposed two long form/navigation tests exceeding their
 5-second limits; only those tests receive 15 seconds. It also confirmed hosted
@@ -98,20 +100,6 @@ for a password. The AMD64 hardware step uses `sudo runuser` with the existing
 KVM group, without broadening device permissions. Screenshots are `test-results/linux/onboarding.png` and
 `settings.png`; detailed success/failure reports are `desktop.json` and
 `runtime.json` in the same ignored directory.
-
-## Primary sources
-
-- [Tauri WebDriver](https://v2.tauri.app/develop/tests/webdriver/): external
-  `tauri-driver` can drive native Linux WebKit without adding an embedded server
-  or test plugin to the application.
-- [Tauri WebDriver CI](https://v2.tauri.app/develop/tests/webdriver/ci/):
-  `webkit2gtk-driver` and Xvfb provide native Linux browser automation.
-- [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners):
-  Linux hardware acceleration and runner characteristics.
-- [GitHub-hosted runner limits](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners):
-  nested virtualization is not officially supported.
-- [Linux KVM API](https://docs.kernel.org/virt/kvm/api.html): `KVM_GET_API_VERSION`
-  and `KVM_CREATE_VM` verify usable hardware virtualization.
 
 ### Additional architectures and real KVM
 
@@ -171,3 +159,85 @@ GitHub API requests; that evidence belongs to the separate GitHub test lane.
 Full logs and a result JSON are saved locally under
 `test-results/linux/kvm-arm64/`. The temporary Lima VM is deleted after evidence
 capture. The existing OrbStack machines and macOS application remain untouched.
+
+## Hosted verification, 10 September 2026
+
+[Run 34480478578](https://github.com/0xpolarzero/silo/actions/runs/34480478578)
+passed both native architectures at commit `6e32bcf` on the approved
+`verify-linux-parity-20260910` branch. It publishes test artifacts only.
+
+| Hosted runner | Frontend | Native | Production WebKit | Real KVM |
+| --- | --- | --- | --- | --- |
+| Ubuntu 24.04 ARM64 | 609 tests / 65 files | 291 tests + 5 build checks | 11 assertions | Explicitly skipped: runner has no KVM; see five local ARM64 KVM passes above |
+| Ubuntu 24.04 AMD64 | 609 tests / 65 files | 291 tests + 5 build checks | 10 assertions | All five real guest tests passed |
+
+Both also passed lint, patched runtime/Git/guest image preparation and the
+production Tauri build. Native suites exclude 10 opt-in hardware/account tests;
+the separate AMD64 hardware step explicitly runs the five applicable guest
+tests. AMD64 WebKit has one fewer assertion because KVM exists, so the
+missing-KVM blocking assertion does not apply.
+
+| Real AMD64 KVM test | Duration |
+| --- | --- |
+| Bundled image import, boot and cache reuse | 12.72 seconds |
+| GitHub guest tools and live Git identity | 21.16 seconds |
+| Backup/restore root and workspace without original VM/cache | 85.75 seconds |
+| Live secret changes with the same guest boot | 27.50 seconds |
+| Worker exit, restart recovery and no duplicate restart | 18.50 seconds |
+
+Downloaded artifacts and complete job logs are stored under
+`test-results/linux/ci/arm64/` and `test-results/linux/ci/amd64/`.
+The AMD64 `runtime.json` records usable KVM and five passing tests; each detailed
+log contains an actual one-test pass. This is guest execution evidence, not
+only a capability check. Later GitHub-account tests and GNOME-only test tooling
+commits are separate from this pinned hosted run.
+
+## GNOME desktop integration
+
+Ubuntu 24.04 ARM64 with GNOME 46 passed the eleven UI assertions on both GNOME
+X11 and native Wayland. The final Wayland run passed sixteen assertions:
+the same eleven plus real notification-service ownership, AppIndicator
+registration and reopening a closed window, native backup file-picker Cancel,
+a visible notification from a production health failure, and the real tray Quit
+action removing both the window and tray item. The test checks native window
+visibility before and after Open; notification visibility belongs to GNOME Shell.
+It does not substitute fake desktop services or add production test hooks.
+
+Install these additional **test-machine** dependencies after the normal Linux
+preparation above, then run against the freshly built production binary:
+
+```sh
+sudo apt-get install -y --no-install-recommends gnome-shell gjs gnome-shell-extension-appindicator xdg-desktop-portal-gnome python3-pyatspi xdotool
+PATH="$HOME/.cargo/bin:$PATH" sh scripts/test-linux-gnome.sh
+```
+
+The launcher creates temporary XDG state and a private D-Bus session. GNOME runs
+as a nested compositor with software rendering; Silo explicitly uses its native
+Wayland socket. It removes its own processes and private portal mount after the
+run. Existing desktop sessions, app data and sandboxes remain untouched.
+
+Evidence is under `test-results/linux/gnome-wayland/`: `desktop.json` records
+all sixteen passes, `gnome-services.json` records the five service assertions,
+`gnome-notification.png` shows the real banner, and the D-Bus/GNOME logs record
+delivery. All test-owned Silo, GNOME and WebDriver processes were removed.
+
+## Primary sources
+
+- [Tauri WebDriver](https://v2.tauri.app/develop/tests/webdriver/): external
+  `tauri-driver` can drive native Linux WebKit without adding an embedded server
+  or test plugin to the application.
+- [Tauri WebDriver CI](https://v2.tauri.app/develop/tests/webdriver/ci/):
+  `webkit2gtk-driver` and Xvfb provide native Linux browser automation.
+- [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners):
+  Linux hardware acceleration and runner characteristics.
+- [GitHub-hosted runner limits](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners):
+  nested virtualization is not officially supported.
+- [Linux KVM API](https://docs.kernel.org/virt/kvm/api.html): `KVM_GET_API_VERSION`
+  and `KVM_CREATE_VM` verify usable hardware virtualization.
+
+- [GNOME nested Wayland testing](https://wiki.gnome.org/Initiatives%282f%29Wayland%282f%29GnomeShell%282f%29Testing.html):
+  a private D-Bus session can run a nested GNOME Wayland compositor.
+- [Ubuntu AppIndicator extension](https://github.com/ubuntu/gnome-shell-extension-appindicator):
+  the real GNOME extension supplies StatusNotifierItem support.
+- [GNOME notifications](https://help.gnome.org/gnome-help/shell-notifications.html):
+  desktop banners and the notification list are owned by GNOME Shell.
