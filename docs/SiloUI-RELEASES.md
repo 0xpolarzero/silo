@@ -81,6 +81,8 @@ Linux builds target Ubuntu 24.04-compatible systems and require KVM for VMs.
 AppImage bundles application libraries but does not make glibc or GPU support
 universal. Debian upgrades use the package manager and download flow, never
 replace package-owned binaries in place. Intel macOS and Windows are unsupported.
+Debian packages keep runtime/Git helpers in `/usr/lib/Silo/bin`; they never
+overwrite system Git in `/usr/bin`. AppImage keeps its helpers inside the image.
 The guest image, native runtime, host Git/LFS tools and notices are packaged with
 the application; existing VM disks are not release assets.
 
@@ -117,7 +119,8 @@ to disable Gatekeeper globally. Update signatures are separate and always checke
    real installation. Review notes, bundled licenses and all architecture assets.
 5. Obtain public-release approval, then dispatch **Publish verified Silo draft**
    on the version tag with the matching version. Approve `release-publish`.
-   It downloads all draft assets, checks SHA256 and updater signatures, and only
+   It downloads all draft assets, checks SHA256, updater signatures and the signed
+   version/architecture metadata, and only
    then publishes the draft and marks it latest.
 
 The app reads
@@ -132,6 +135,9 @@ Before publishing, enable GitHub release immutability in repository settings.
 The workflow also refuses existing release versions and older stable versions.
 The `publish-release.py` tests cover missing/empty/unexpected assets, symlinks,
 invalid signature encoding, version bounds, complete checksums and platform URLs.
+`verify-release-metadata.py` also rejects an old signed package advertised under
+a new version. It reads macOS Info.plist/Mach-O headers, Debian control metadata,
+and the signed AppImage release-info resource without executing any package.
 
 ### Required release acceptance evidence
 
@@ -151,6 +157,7 @@ invalid signature encoding, version bounds, complete checksums and platform URLs
 
 - [Tauri updater and signed static feeds](https://v2.tauri.app/plugin/updater/)
 - [Tauri AppImage packaging](https://v2.tauri.app/distribute/appimage/)
+- [AppImage filesystem/runtime layout](https://docs.appimage.org/introduction/software-overview.html)
 - [Tauri macOS signing](https://v2.tauri.app/distribute/sign/macos/)
 - [GitHub release immutability](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
 - [GitHub deployment environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/managing-environments-for-deployment)

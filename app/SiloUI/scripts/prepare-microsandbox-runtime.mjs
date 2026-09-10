@@ -1,3 +1,4 @@
+import { readFileSync, writeFileSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
@@ -40,3 +41,7 @@ const guest = await stageGuestImage({ appRoot, targetTriple, fetchBytes: async (
   return new Uint8Array(await response.arrayBuffer())
 } })
 console.log(`Prepared bundled guest ${guest.imageReference}`)
+
+// Signed package metadata lets publication verify version and target without running it.
+const { version } = JSON.parse(readFileSync(resolve(appRoot, "package.json"), "utf8"))
+writeFileSync(resolve(appRoot, "src-tauri/runtime/release-info.json"), JSON.stringify({ version, target: targetTriple }) + "\n")

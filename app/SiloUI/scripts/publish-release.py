@@ -87,6 +87,7 @@ def main():
                 if feed['platforms'][target] != {'url': expected_url, 'signature': (root / (name + '.sig')).read_text().strip()}:
                     raise RuntimeError("Draft update feed has an unexpected URL or signature.")
             subprocess.run(["python3", str(Path(__file__).with_name("verify-release-signatures.py")), str(root)], check=True)
+            subprocess.run(["python3", str(Path(__file__).with_name("verify-release-metadata.py")), str(root), version], check=True)
         gh("release", "edit", tag, "--draft=false", "--latest", "--prerelease=false")
     else:
         if existing:

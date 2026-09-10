@@ -71,7 +71,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libclang-dev libcap-ng-dev cmake libfuse2t64 minisign
+          sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libclang-dev libcap-ng-dev cmake libfuse2t64 minisign squashfs-tools file
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install 1.94.0 --profile minimal
@@ -133,6 +133,7 @@ jobs:
           mkdir -p release-assets
           packages=(src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb)
           test "${#packages[@]}" -eq 1
+          python3 scripts/package-debian-release.py "${packages[0]}"
           dpkg-deb --info "${packages[0]}"
           cp "${packages[0]}" 'release-assets/Silo-${{ matrix.asset }}.deb'
           images=(src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage)
@@ -144,6 +145,8 @@ jobs:
           test -x squashfs-root/usr/bin/silo-ui
       - name: Verify update signatures
         run: python3 scripts/verify-release-signatures.py release-assets
+      - name: Verify signed package versions and architectures
+        run: python3 scripts/verify-release-metadata.py release-assets "$(node -p "require('./package.json').version")"
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.asset }}
@@ -169,7 +172,7 @@ jobs:
           merge-multiple: true
           path: release-assets
       - name: Test release publication
-        run: python3 -m unittest discover -s app/SiloUI/scripts -p 'test_publish_release.py'
+        run: python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*release*.py'
       - name: Read version and release notes
         run: |
           version=$(node -p "require('./app/SiloUI/package.json').version")

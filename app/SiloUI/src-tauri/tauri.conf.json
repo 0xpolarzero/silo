@@ -72,7 +72,8 @@
       "runtime/git/manifest.json": "git-support/manifest.json",
       "runtime/git/licenses/": "git-support/licenses/",
       "runtime/git/share/": "git-support/share/",
-      "../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
+      "../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md",
+      "runtime/release-info.json": "release-info.json"
     },
     "icon": [
       "icons/32x32.png",
