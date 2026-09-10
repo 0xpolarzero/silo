@@ -258,6 +258,7 @@ export function ApplicationShell({
   onGoForward,
   reduceMotion = false,
   commandMenu,
+  notice,
   children,
 }: {
   activeTab: ApplicationTab
@@ -276,6 +277,7 @@ export function ApplicationShell({
   onGoForward: () => void
   reduceMotion?: boolean
   commandMenu?: ReactNode
+  notice?: ReactNode
   children: ReactNode
 }) {
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(activeTab === "workspaces")
@@ -398,7 +400,10 @@ export function ApplicationShell({
             </div>
           </div>
         </nav>
-        <div className={cn("min-h-0 min-w-0", activeTab === "workspaces" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
+        <div className="flex min-h-0 min-w-0 flex-col">
+          {notice}
+          <div className={cn("min-h-0 min-w-0 flex-1", activeTab === "workspaces" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
+        </div>
       </div>
     </SiloWindow>
     </TooltipProvider>

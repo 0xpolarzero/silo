@@ -1,3 +1,4 @@
+import { UpdatesCard } from "@/features/updates/updates"
 import { useLayoutEffect } from "react"
 import { Accessibility, Paintbrush, Power } from "lucide-react"
 
@@ -65,6 +66,7 @@ function GeneralPageContent({
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
       <h2 className="text-xs font-medium">General</h2>
+      <UpdatesCard />
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Appearance</h3>
         <ListCard>

@@ -1,5 +1,7 @@
+import { desktopUpdateBackend } from "@/desktop/updates"
+import { UpdatesProvider } from "@/features/updates/update-store"
 import { useMainRoute } from "@/desktop/use-main-route"
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { SiloPreflightCheck } from "@/contracts/silo"
 import { SiloWindow } from "@/components/silo-window"
 import { useDependencyStore, type DependencyStore } from "@/desktop/dependencies"
@@ -33,7 +35,11 @@ export function ProductionSurface({ source, dependencyStore, statusPanel = false
   const current = useProductionSource(source)
   const routeRequest = useMainRoute(!statusPanel)
   const dependencies = useDependencyStore(dependencyStore)
-  const { settings: currentSettings } = useSettings()
+  const { settings: currentSettings, store: settingsStore } = useSettings()
+  const updateBackend = useMemo(() => ({ ...desktopUpdateBackend, install: async (stopSandboxes: boolean) => {
+    await settingsStore.flush()
+    return desktopUpdateBackend.install(stopSandboxes)
+  } }), [settingsStore])
   const checks = dependencies?.checks
   const [previousFailures, setPreviousFailures] = useState<SiloPreflightCheck[]>([])
   useEffect(() => {
@@ -57,9 +63,9 @@ export function ProductionSurface({ source, dependencyStore, statusPanel = false
   }
   return statusPanel
     ? <StatusPanel source={current.source} actions={source.statusActions} />
-    : <ApplicationApp routeRequest={routeRequest} source={failures.length ? { ...current.source, runtimeRepair: {
+    : <UpdatesProvider backend={updateBackend}><ApplicationApp routeRequest={routeRequest} source={failures.length ? { ...current.source, runtimeRepair: {
       status: "unavailable", checking,
       reason: failures.map(({ title, detail }) => `${title}: ${detail}`).join("\n"),
       recovery: [...new Set(failures.map(({ remediation }) => remediation).filter(Boolean))].join("\n"),
-    } } : current.source} actions={{ ...source.applicationActions, retryRuntimeChecks: retryChecks }} backup={current.backup} />
+    } } : current.source} actions={{ ...source.applicationActions, retryRuntimeChecks: retryChecks }} backup={current.backup} /></UpdatesProvider>
 }

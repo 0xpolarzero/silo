@@ -1,3 +1,4 @@
+import { UpdateNotice } from "@/features/updates/updates"
 import { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react"
 
@@ -199,6 +200,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
 
   return (
     <ApplicationShell
+      notice={<UpdateNotice onOpen={() => navigation.selectSettingsSection("general")} />}
       activeTab={visibleTab}
       workspaceSection={visibleWorkspaceSection}
       settingsSection={settingsSection}
