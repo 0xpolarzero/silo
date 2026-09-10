@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react"
+import { useEffect, useEffectEvent, useId, useRef, useState } from "react"
 import { Archive, Check, Circle, CircleX, RotateCcw, TriangleAlert, X } from "lucide-react"
 
 import { DisclosureHeader } from "@/components/disclosure-header"
@@ -34,14 +34,17 @@ function Notice({ tone, title, children }: { tone: "neutral" | "success" | "warn
   </div>
 }
 
-export interface BackupPageProps { source: ApplicationSource; backup: BackupController; onBusyChange?: (busy: boolean) => void }
+export interface BackupPageProps { menuRequest?: { id: number; action: "create" | "restore" }; source: ApplicationSource; backup: BackupController; onBusyChange?: (busy: boolean) => void }
 
 export function BackupPage(props: BackupPageProps) {
   return <BackupPageContent {...props} />
 }
 
-function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
+function BackupPageContent({ source, backup, onBusyChange, menuRequest }: BackupPageProps) {
   const [flow, setFlow] = useState<Flow>({ kind: "idle" })
+  const createCard = useRef<HTMLLIElement>(null)
+  const restoreCard = useRef<HTMLLIElement>(null)
+  const consumedMenuRequest = useRef(0)
   const restoreDraft = useRef<Extract<Flow, { kind: "restore-review" }> | null>(null)
   const restoreNameErrorID = useId()
   const restoreReview = useRef<HTMLDivElement>(null)
@@ -86,6 +89,20 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
     backup.actions.dismissOperation()
     setFlow(next)
   }
+
+  const openMenuRequest = useEffectEvent((action: "create" | "restore") => {
+    if (controlsDisabled) return
+    const card = action === "create" ? createCard : restoreCard
+    card.current?.scrollIntoView({ block: "nearest" })
+    card.current?.focus({ preventScroll: true })
+    if (action === "create") begin({ kind: "backup-select" }, "backup")
+    else void chooseArchive()
+  })
+  useEffect(() => {
+    if (!menuRequest?.id || consumedMenuRequest.current === menuRequest.id) return
+    consumedMenuRequest.current = menuRequest.id
+    openMenuRequest(menuRequest.action)
+  }, [menuRequest])
 
   function reviewBackup() {
     if (backup.state.unsupportedStorage && selected.has(backup.state.unsupportedStorage.sandbox)) { setFlow({ kind: "backup-review" }); return }
@@ -173,7 +190,7 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
   return <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
     <header><h2 className="text-sm font-semibold">Backup</h2><p className="mt-1 text-xs text-muted-foreground">Create a self-contained Silo backup or restore one as a new sandbox.</p></header>
     <ListCard><ul className="divide-y divide-border" aria-label="Backup controls">
-      <li><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title={<h3>Create backup</h3>} detail="Back up selected sandboxes to a folder." actions={<Button variant="outline" size="xs" disabled={controlsDisabled} aria-expanded={flow.kind.startsWith("backup")} onClick={() => begin({ kind: "backup-select" }, "backup")}>Create backup…</Button>} />
+      <li ref={createCard} tabIndex={-1}><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title={<h3>Create backup</h3>} detail="Back up selected sandboxes to a folder." actions={<Button variant="outline" size="xs" disabled={controlsDisabled} aria-expanded={flow.kind.startsWith("backup")} onClick={() => begin({ kind: "backup-select" }, "backup")}>Create backup…</Button>} />
         {flow.kind === "backup-select" && <ListRowDetails label="Choose backup">
           <div className="grid gap-2 text-[11px]">{vmWorkspaces.map(({ machine, state }) => <label key={machine.id} className="flex items-center gap-2"><Checkbox disabled={controlsDisabled} checked={selected.has(machine.name)} onCheckedChange={(checked) => setSelectedIDs((current) => { const next = new Set(current); if (checked) next.add(machine.id); else next.delete(machine.id); return next })} />{machine.name}<span className="text-muted-foreground">{state[0].toUpperCase() + state.slice(1)}</span></label>)}
             <label className="grid gap-1">Destination<div className="flex gap-2"><Input value={destination} readOnly aria-label="Destination" /><Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => { void chooseDestination() }}>Change…</Button></div></label>
@@ -191,7 +208,7 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
         {flow.kind === "unavailable" && flow.operation === "backup" && <ListRowDetails label="Backup unavailable"><Notice tone="danger" title="Backup is unavailable"><p>{flow.reason}</p></Notice><div className="flex justify-end"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Dismiss</Button></div></ListRowDetails>}
         {operationPanel("backup")}
       </li>
-      <li><ListRow icon={<ListRowIcon><RotateCcw className="size-3.5" /></ListRowIcon>} title={<h3>Restore backup</h3>} detail="Validate an archive and restore it as a new sandbox." actions={<Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => { if (backup.state.availability === "unavailable") begin(unavailableFlow("restore"), "restore"); else void chooseArchive() }}>Choose backup…</Button>} />
+      <li ref={restoreCard} tabIndex={-1}><ListRow icon={<ListRowIcon><RotateCcw className="size-3.5" /></ListRowIcon>} title={<h3>Restore backup</h3>} detail="Validate an archive and restore it as a new sandbox." actions={<Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => { if (backup.state.availability === "unavailable") begin(unavailableFlow("restore"), "restore"); else void chooseArchive() }}>Choose backup…</Button>} />
         {flow.kind === "restore-choosing" && <ListRowDetails label="Choose backup file"><p className="text-xs text-muted-foreground" role="status">Choose a backup in the file picker.</p></ListRowDetails>}
         {flow.kind === "restore-checking" && <ListRowDetails label="Checking backup"><p className="text-xs font-medium" role="status">Checking backup…</p><Progress value={null} aria-label="Backup validation progress" /></ListRowDetails>}
         {flow.kind === "invalid-archive" && <ListRowDetails label="Archive validation"><Notice tone="danger" title="This backup cannot be restored"><p>{flow.reason} No sandbox data changed.</p></Notice><div className="flex justify-end"><Button variant="outline" size="xs" onClick={() => { void chooseArchive() }}>Choose another backup</Button></div></ListRowDetails>}
@@ -208,6 +225,6 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
         {operationPanel("restore")}
       </li>
     </ul></ListCard>
-    <section className="grid gap-2"><h3 className="text-xs font-medium">Recent backups</h3><ListCard><ul className="divide-y divide-border" aria-label="Recent backups">{backup.state.archives.length === 0 && <li><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title="No backups yet" detail="Completed backups will appear here." /></li>}{backup.state.archives.map((archive) => <Collapsible key={archive.name} open={expandedArchive === archive.name} onOpenChange={(open) => setExpandedArchive(open ? archive.name : null)} asChild><li><DisclosureHeader icon={<ListRowIcon className="bg-emerald-500/10 text-emerald-600"><Check className="size-3.5" /></ListRowIcon>} title={<span className="flex items-center gap-2">{archive.name}{flow.kind === "restore-checking" && flow.archivePath === archive.archivePath ? <span className="text-[11px] font-normal text-muted-foreground">Checking…</span> : operation?.kind === "running" && operation.operation === "restore" && operation.archive.archivePath === archive.archivePath ? <span className="text-[11px] font-normal text-muted-foreground">Restoring…</span> : null}</span>} detail={[archive.completedLabel, archive.size, `${archive.sandboxes.length} sandboxes`].join(" · ")} label={`Details for ${archive.name}`} /><CollapsibleContent><ListRowDetails label={`Archive details for ${archive.name}`}><p className="text-[11px] text-muted-foreground">{archive.destination} · {archive.sandboxes.join(", ")}</p><div className="flex justify-end"><Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => { void inspect(archive) }}>Restore…</Button></div></ListRowDetails></CollapsibleContent></li></Collapsible>)}</ul></ListCard></section>
+    <section className="grid gap-2"><h3 className="text-xs font-medium">Recent backups</h3><ListCard><ul className="divide-y divide-border" aria-label="Recent backups">{backup.state.archives.length === 0 && <li ref={createCard} tabIndex={-1}><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title="No backups yet" detail="Completed backups will appear here." /></li>}{backup.state.archives.map((archive) => <Collapsible key={archive.name} open={expandedArchive === archive.name} onOpenChange={(open) => setExpandedArchive(open ? archive.name : null)} asChild><li><DisclosureHeader icon={<ListRowIcon className="bg-emerald-500/10 text-emerald-600"><Check className="size-3.5" /></ListRowIcon>} title={<span className="flex items-center gap-2">{archive.name}{flow.kind === "restore-checking" && flow.archivePath === archive.archivePath ? <span className="text-[11px] font-normal text-muted-foreground">Checking…</span> : operation?.kind === "running" && operation.operation === "restore" && operation.archive.archivePath === archive.archivePath ? <span className="text-[11px] font-normal text-muted-foreground">Restoring…</span> : null}</span>} detail={[archive.completedLabel, archive.size, `${archive.sandboxes.length} sandboxes`].join(" · ")} label={`Details for ${archive.name}`} /><CollapsibleContent><ListRowDetails label={`Archive details for ${archive.name}`}><p className="text-[11px] text-muted-foreground">{archive.destination} · {archive.sandboxes.join(", ")}</p><div className="flex justify-end"><Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => { void inspect(archive) }}>Restore…</Button></div></ListRowDetails></CollapsibleContent></li></Collapsible>)}</ul></ListCard></section>
   </div>
 }

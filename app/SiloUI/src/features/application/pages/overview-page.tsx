@@ -195,7 +195,11 @@ export function OverviewPage({
   source,
   actions,
   onMachinesChange,
+  newSandboxRequest,
+  onNewSandboxRequestHandled,
 }: {
+  newSandboxRequest?: number
+  onNewSandboxRequestHandled?: (id: number) => void
   source: ApplicationSource
   actions: ApplicationActions
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
@@ -213,6 +217,8 @@ export function OverviewPage({
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="min-h-0 flex-1">
         <MachineList
+          newSandboxRequest={newSandboxRequest}
+          onNewSandboxRequestHandled={onNewSandboxRequestHandled}
           machines={machines}
           isMachineCreated={(machine) => committedWorkspaces.has(machine.id)}
           isMachineRunning={(machine) => workspaces.get(machine.id)?.state === "running"}

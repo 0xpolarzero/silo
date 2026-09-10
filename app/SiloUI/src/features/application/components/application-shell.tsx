@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react"
+import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
 import { Activity, Bell, Boxes, ChevronRight, CircleAlert, File, GitFork, HardDrive, KeyRound, LayoutDashboard, Loader2, Network, Settings2, SlidersHorizontal, Terminal } from "lucide-react"
 
 import { SiloMark } from "@/components/silo-mark"
@@ -249,6 +249,7 @@ export function ApplicationShell({
   workspaceAttention,
   navigationLoading,
   navigationDisabled = false,
+  toggleSidebarRequest,
   onTabChange,
   onWorkspaceSectionChange,
   onSettingsSectionChange,
@@ -268,6 +269,7 @@ export function ApplicationShell({
   workspaceAttention: { errors: number; warnings: number }
   navigationLoading?: ApplicationNavigationLoading
   navigationDisabled?: boolean
+  toggleSidebarRequest?: number
   onTabChange: (tab: ApplicationTab) => void
   onWorkspaceSectionChange: (section: WorkspaceSection) => void
   onSettingsSectionChange: (section: SettingsSection) => void
@@ -296,6 +298,13 @@ export function ApplicationShell({
     useKeyboard,
     blurSidebar,
   } = useSidebarDisclosure()
+  const consumedToggleRequest = useRef(0)
+  const toggleRequested = useEffectEvent(() => { if (!navigationDisabled) toggle() })
+  useEffect(() => {
+    if (!toggleSidebarRequest || consumedToggleRequest.current === toggleSidebarRequest) return
+    consumedToggleRequest.current = toggleSidebarRequest
+    toggleRequested()
+  }, [toggleSidebarRequest])
   const collapsed = pinnedCollapsed && !previewing
 
   function selectTab(tab: ApplicationTab) {

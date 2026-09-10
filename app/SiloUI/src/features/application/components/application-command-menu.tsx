@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useEffectEvent, useRef, useState } from "react"
 import { Command, defaultFilter } from "cmdk"
 import { ArrowDown, ArrowUp, CornerDownLeft, Search } from "lucide-react"
 import { Dialog } from "radix-ui"
@@ -15,8 +15,20 @@ function filterCommand(label: string, search: string, keywords: string[] = []) {
   return defaultFilter(label, search, keywords) || 0.5
 }
 
-export function ApplicationCommandMenu({ commands, disabled = false }: { commands: readonly ApplicationCommand[]; disabled?: boolean }) {
+export function ApplicationCommandMenu({ commands, disabled = false, openRequest, nativeShortcuts = false }: { commands: readonly ApplicationCommand[]; disabled?: boolean; openRequest?: number; nativeShortcuts?: boolean }) {
   const [open, setOpen] = useState(false)
+  const consumedOpenRequest = useRef(0)
+  const openRequested = useEffectEvent(() => {
+    if (disabled) return
+    const focusedDialog = document.activeElement?.closest('[role="dialog"], [role="alertdialog"]')
+    if (focusedDialog && focusedDialog !== contentRef.current) return
+    setOpen((current) => !current)
+  })
+  useEffect(() => {
+    if (!openRequest || consumedOpenRequest.current === openRequest) return
+    consumedOpenRequest.current = openRequest
+    openRequested()
+  }, [openRequest])
   const contentRef = useRef<HTMLDivElement>(null)
   const shortcut = navigator.platform.startsWith("Mac") ? "⌘ K" : "Ctrl K"
 
@@ -27,7 +39,7 @@ export function ApplicationCommandMenu({ commands, disabled = false }: { command
 
   useEffect(() => {
     function toggleCommands(event: KeyboardEvent) {
-      if (disabled) return
+      if (disabled || nativeShortcuts) return
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k" || event.altKey || event.isComposing || event.repeat || event.defaultPrevented) return
       const focusedDialog = document.activeElement?.closest('[role="dialog"], [role="alertdialog"]')
       if (focusedDialog && focusedDialog !== contentRef.current) return
@@ -36,7 +48,7 @@ export function ApplicationCommandMenu({ commands, disabled = false }: { command
     }
     window.addEventListener("keydown", toggleCommands)
     return () => window.removeEventListener("keydown", toggleCommands)
-  }, [disabled])
+  }, [disabled, nativeShortcuts])
 
   return <Dialog.Root open={open && !disabled} onOpenChange={setOpen}>
     <Dialog.Trigger asChild>

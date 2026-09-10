@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
 import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Server, Trash2, X } from "lucide-react"
 
 import { InlineConfirmation } from "@/components/inline-confirmation"
@@ -41,6 +41,8 @@ interface MachineListProps {
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
   getRowPresentation?: (machine: SetupMachineConfiguration) => MachineRowPresentation
   sortPriority?: (machine: SetupMachineConfiguration) => number
+  newSandboxRequest?: number
+  onNewSandboxRequestHandled?: (id: number) => void
   interactionDisabled?: boolean
   summary?: ReactNode
   footer?: ReactNode
@@ -195,7 +197,7 @@ function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange, crea
   )
 }
 
-export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
+export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, newSandboxRequest, onNewSandboxRequestHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
   const [addOpen, setAddOpen] = useState(false)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
@@ -251,6 +253,14 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
       insertAt: machines.length,
     })
   }
+
+  const consumedNewRequest = useRef(0)
+  const openRequestedVM = useEffectEvent((id: number) => { startAdd("vm"); onNewSandboxRequestHandled?.(id) })
+  useEffect(() => {
+    if (!newSandboxRequest || consumedNewRequest.current === newSandboxRequest) return
+    consumedNewRequest.current = newSandboxRequest
+    openRequestedVM(newSandboxRequest)
+  }, [newSandboxRequest])
 
   function startDuplicate(machine: SetupMachineConfiguration) {
     if (interactionDisabled) return
