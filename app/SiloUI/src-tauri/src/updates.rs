@@ -294,11 +294,24 @@ pub(crate) async fn check_for_update(app: AppHandle) -> Result<Snapshot, String>
             s.snapshot.total_bytes = None;
             s.update = update;
         }),
-        Err(e) => fail(
-            &app,
-            "Could not check for updates. Check your connection and try again.",
-            e,
-        ),
+        Err(e) => fail(&app, check_error_message(&e), e),
+    }
+}
+
+fn check_error_message(error: &tauri_plugin_updater::Error) -> &'static str {
+    use tauri_plugin_updater::Error;
+    match error {
+        Error::ReleaseNotFound => "The update service is unavailable. Try again later.",
+        Error::Serialization(_) | Error::Semver(_) => {
+            "The update service returned invalid release information. Try again later."
+        }
+        Error::Reqwest(error) if error.is_decode() => {
+            "The update service returned invalid release information. Try again later."
+        }
+        Error::TargetNotFound(_) | Error::TargetsNotFound(_) => {
+            "This release has no update for your platform. Try again later."
+        }
+        _ => "Could not check for updates. Try again later.",
     }
 }
 #[tauri::command]
@@ -531,6 +544,18 @@ pub(crate) async fn open_update_release() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unavailable_feed_does_not_blame_the_connection_or_claim_success() {
+        assert_eq!(
+            check_error_message(&tauri_plugin_updater::Error::ReleaseNotFound),
+            "The update service is unavailable. Try again later."
+        );
+        let invalid = serde_json::from_str::<serde_json::Value>("broken").unwrap_err();
+        assert_eq!(
+            check_error_message(&invalid.into()),
+            "The update service returned invalid release information. Try again later."
+        );
+    }
     #[test]
     fn missing_preferences_enable_checks_but_corrupt_preferences_do_not() {
         let dir = tempfile::tempdir().unwrap();
