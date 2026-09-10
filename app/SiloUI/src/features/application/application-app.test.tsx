@@ -325,12 +325,12 @@ describe("application", () => {
 
     const navigation = appNavigation()
     const primaryItems = [...navigation.querySelectorAll<HTMLElement>("[data-navigation-level='primary']")]
-    expect(primaryItems.map(({ textContent }) => textContent)).toEqual(["Sandboxes", "GitHub", "Secrets", "Backup", "Settings"])
+    expect(primaryItems).toEqual(["Sandboxes", "GitHub", "Secrets", "Backup", "Settings"].map(name => within(navigation).getByRole("button", { name })))
     for (const item of primaryItems) expect(item).toHaveClass("flex-none", "w-full")
 
     expect(within(navigation).getByRole("button", { name: "Sandboxes" })).toHaveAttribute("aria-current", "page")
     const sandboxSections = within(navigation).getByRole("group", { name: "Sandbox sections" })
-    expect(within(sandboxSections).getAllByRole("button").map(({ textContent }) => textContent)).toEqual(["Overview", "Files", "Logs", "Network", "Activity"])
+    expect(within(sandboxSections).getAllByRole("button")).toEqual(["Overview", "Files", "Logs", "Network", "Activity"].map(name => within(sandboxSections).getByRole("button", { name })))
     expect(within(sandboxSections).getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page")
     expect(sandboxSections).toHaveClass("sidebar-subnav")
 
@@ -1210,14 +1210,14 @@ describe("application", () => {
     const navigation = within(navigationElement)
     const primaryItems = [...navigationElement.querySelectorAll<HTMLElement>("[data-navigation-level='primary']")]
 
-    expect(primaryItems.map(({ textContent }) => textContent)).toEqual([
+    expect(primaryItems).toEqual([
       "Sandboxes",
       "GitHub",
       "Secrets",
       "Backup",
       "System issue",
       "Settings",
-    ])
+    ].map(name => navigation.getByRole("button", { name })))
     expect(primaryItems.at(-2)).toHaveAttribute("data-navigation-tone", "danger")
     expect(within(appPanel("Sandboxes")).queryByText("Silo runtime is unavailable")).not.toBeInTheDocument()
 

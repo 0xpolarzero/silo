@@ -13,6 +13,13 @@ handler. Repeated creation requests preserve unfinished forms. Consumed sandbox
 requests are cleared by their owner so returning to a remounted overview cannot
 open another form. Sidebar text follows the existing collapse state.
 
+Category shortcuts follow sidebar order: Command-1 Overview, 2 Files, 3 Logs,
+4 Network, 5 Activity, 6 GitHub, 7 Secrets, 8 Backup. Linux desktop builds use
+Control instead of Command and dispatch through the same guarded app actions.
+The shared shortcut badge displays these bindings at the right of expanded
+sidebar rows on hover/focus, or inside tooltips when collapsed. Existing toolbar
+tooltips include their actual bindings; controls without a shortcut have no badge.
+
 Documentation opens the bundled `docs/silo-help.html`, which covers the current
 app rather than the legacy root README. Issues and release notes use fixed
 project URLs. Standard Edit, Window and application commands use Tauri's native
@@ -48,3 +55,10 @@ Native log: `/private/tmp/silo-app-menu-native-tests.log`.
 - [Tauri native menus](https://v2.tauri.app/learn/window-menu/)
 - [Apple menu conventions](https://developer.apple.com/design/human-interface-guidelines/menus)
 - [Apple Settings menu](https://developer.apple.com/documentation/foundation/adding-a-settings-interface-to-your-app)
+
+Shortcut badge verification (2026-09-11): the rebuilt macOS app showed the
+GitHub badge at the right of its hovered expanded row and the Secrets badge
+inside its collapsed tooltip. Command-6 opened GitHub; Command-B collapsed and
+expanded the sidebar. Type checking, lint, focused navigation tests, and bundle
+signature verification passed. Linux keyboard dispatch is covered by hook tests;
+this check did not run a Linux desktop session.

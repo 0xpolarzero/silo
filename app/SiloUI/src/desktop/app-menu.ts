@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useState } from "react"
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
+import { desktopShortcutCommand } from "@/lib/shortcuts"
 
 export interface AppMenuState {
   ready: boolean
@@ -16,7 +17,19 @@ export interface AppMenuState {
 
 export function useAppMenu(state: AppMenuState, onCommand: (command: string) => void) {
   const [connected, setConnected] = useState(false)
-  const receive = useEffectEvent(onCommand)
+  const receive = useEffectEvent((command: string) => {
+    if (command !== "search" && document.querySelector('[role="dialog"], [role="alertdialog"]')) return
+    onCommand(command)
+  })
+  useEffect(() => {
+    if (!isTauri() || navigator.platform.startsWith("Mac")) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      const command = desktopShortcutCommand(event)
+      if (command) { event.preventDefault(); receive(command) }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
   useEffect(() => {
     if (!isTauri() || !navigator.platform.startsWith("Mac")) return
     let disposed = false
