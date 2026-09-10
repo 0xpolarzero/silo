@@ -1,4 +1,5 @@
 mod applications;
+mod app_menu;
 mod backup;
 mod bundled_tools;
 mod backup_controller;
@@ -31,6 +32,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            app_menu::set_app_menu_state,
             updates::get_update_state,
             updates::check_for_update,
             updates::download_update,
@@ -101,6 +103,7 @@ fn main() {
             backup_controller::install(app.handle())?;
             status_panel::install(app.handle())?;
             tray::install(app.handle())?;
+            app_menu::install(app.handle())?;
             let window = app
                 .get_webview_window("main")
                 .expect("main window is configured");

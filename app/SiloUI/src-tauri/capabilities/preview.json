@@ -9,6 +9,7 @@
     "core:window:allow-close",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
+    "allow-set-app-menu-state",
     "allow-get-update-state",
     "allow-check-for-update",
     "allow-download-update",
