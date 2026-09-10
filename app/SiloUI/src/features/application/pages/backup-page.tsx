@@ -40,11 +40,12 @@ export function BackupPage(props: BackupPageProps) {
 function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
   const [flow, setFlow] = useState<Flow>({ kind: "idle" })
   const [destination, setDestination] = useState(backup.state.destination ?? source.backup.destination)
-  const [selected, setSelected] = useState(() => new Set(source.workspaces.filter(({ machine }) => machine.kind === "vm").map(({ machine }) => machine.name)))
+  const [selectedIDs, setSelectedIDs] = useState(() => new Set(source.workspaces.filter(({ machine }) => machine.kind === "vm").map(({ machine }) => machine.id)))
   const [expandedArchive, setExpandedArchive] = useState<string | null>(null)
   const operation = backup.state.operation
   const busy = operation?.kind === "running"
   const vmWorkspaces = source.workspaces.filter(({ machine }) => machine.kind === "vm")
+  const selected = new Set(vmWorkspaces.filter(({ machine }) => selectedIDs.has(machine.id)).map(({ machine }) => machine.name))
   const selectedRunning = vmWorkspaces.filter(({ machine, state }) => selected.has(machine.name) && state === "running").map(({ machine }) => machine.name)
   const controlsDisabled = Boolean(busy)
 
@@ -67,6 +68,7 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
   }
 
   function startBackup() {
+    if (selected.size === 0) return
     backup.actions.startBackup(destination, [...selected])
     setFlow({ kind: "idle" })
   }
@@ -136,7 +138,7 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
     <ListCard><ul className="divide-y divide-border" aria-label="Backup controls">
       <li><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title={<h3>Create backup</h3>} detail="Back up selected sandboxes to a folder." actions={<Button variant="outline" size="xs" disabled={controlsDisabled} aria-expanded={flow.kind.startsWith("backup")} onClick={() => begin({ kind: "backup-select" }, "backup")}>Create backup…</Button>} />
         {flow.kind === "backup-select" && <ListRowDetails label="Choose backup">
-          <div className="grid gap-2 text-[11px]">{vmWorkspaces.map(({ machine, state }) => <label key={machine.id} className="flex items-center gap-2"><Checkbox checked={selected.has(machine.name)} onCheckedChange={(checked) => setSelected((current) => { const next = new Set(current); if (checked) next.add(machine.name); else next.delete(machine.name); return next })} />{machine.name}<span className="text-muted-foreground">{state[0].toUpperCase() + state.slice(1)}</span></label>)}
+          <div className="grid gap-2 text-[11px]">{vmWorkspaces.map(({ machine, state }) => <label key={machine.id} className="flex items-center gap-2"><Checkbox checked={selected.has(machine.name)} onCheckedChange={(checked) => setSelectedIDs((current) => { const next = new Set(current); if (checked) next.add(machine.id); else next.delete(machine.id); return next })} />{machine.name}<span className="text-muted-foreground">{state[0].toUpperCase() + state.slice(1)}</span></label>)}
             <label className="grid gap-1">Destination<div className="flex gap-2"><Input value={destination} readOnly aria-label="Destination" /><Button variant="outline" size="xs" onClick={() => { void chooseDestination() }}>Change…</Button></div></label>
           </div><p className="text-[11px] text-muted-foreground">Includes managed disks, required image data, and Silo VM settings. Archive format and compression are automatic.</p>
           <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Cancel</Button><Button variant="outline" size="xs" disabled={!destination || selected.size === 0} onClick={reviewBackup}>Review backup</Button></div>
@@ -146,9 +148,9 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
           {backup.state.unsupportedStorage && selected.has(backup.state.unsupportedStorage.sandbox) ? <Notice tone="danger" title="Complete backup is blocked"><p>{backup.state.unsupportedStorage.sandbox} uses “{backup.state.unsupportedStorage.label}”, which is outside Silo’s managed disk and cannot be included. No backup was created.</p></Notice>
             : backup.state.requiredSpaceGB !== undefined && backup.state.availableSpaceGB === undefined ? <Notice tone="danger" title="Destination space is unavailable"><p>Silo could not verify the space needed to create a complete backup. No backup was created.</p></Notice>
             : backup.state.requiredSpaceGB !== undefined && backup.state.availableSpaceGB !== undefined && backup.state.availableSpaceGB < backup.state.requiredSpaceGB ? <Notice tone="danger" title="Not enough space at this destination"><p>About {requiredSpace} GB is needed; {availableSpace} GB is available. The estimate includes temporary export space and is not a reservation.</p></Notice>
-            : <><dl className="grid grid-cols-[7rem_1fr] gap-1 text-[11px]"><dt className="text-muted-foreground">Sandboxes</dt><dd>{[...selected].join(", ")}</dd><dt className="text-muted-foreground">Destination</dt><dd>{destination}</dd>{requiredSpace !== undefined && <><dt className="text-muted-foreground">Space</dt><dd>About {requiredSpace} GB needed · {availableSpace} GB available</dd></>}<dt className="text-muted-foreground">Current state</dt><dd>{selectedRunning.length ? `${selectedRunning.join(", ")} will stop briefly` : "Selected sandboxes are stopped and will stay stopped"}</dd></dl><div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "backup-select" })}>Back</Button><Button variant="outline" size="xs" onClick={startBackup}>Start backup</Button></div></>}
+            : <><dl className="grid grid-cols-[7rem_1fr] gap-1 text-[11px]"><dt className="text-muted-foreground">Sandboxes</dt><dd>{[...selected].join(", ")}</dd><dt className="text-muted-foreground">Destination</dt><dd>{destination}</dd>{requiredSpace !== undefined && <><dt className="text-muted-foreground">Space</dt><dd>About {requiredSpace} GB needed · {availableSpace} GB available</dd></>}<dt className="text-muted-foreground">Current state</dt><dd>{selectedRunning.length ? `${selectedRunning.join(", ")} will stop briefly` : "Selected sandboxes are stopped and will stay stopped"}</dd></dl><div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "backup-select" })}>Back</Button><Button variant="outline" size="xs" disabled={selected.size === 0} onClick={startBackup}>Start backup</Button></div></>}
         </ListRowDetails>}
-        {flow.kind === "backup-running-confirm" && <ListRowDetails label="Running sandbox interruption"><Notice tone="warning" title={`${selectedRunning.join(", ")} must stop briefly`}><p>Silo will stop the selected running sandbox, save a disk copy, then restart it while the backup continues writing. Programs inside the VM start fresh.</p></Notice><div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "backup-select" })}>Cancel</Button><Button variant="outline" size="xs" onClick={startBackup}>Stop and back up</Button></div></ListRowDetails>}
+        {flow.kind === "backup-running-confirm" && <ListRowDetails label="Running sandbox interruption"><Notice tone="warning" title={`${selectedRunning.join(", ")} must stop briefly`}><p>Silo will stop the selected running sandbox, save a disk copy, then restart it while the backup continues writing. Programs inside the VM start fresh.</p></Notice><div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "backup-select" })}>Cancel</Button><Button variant="outline" size="xs" disabled={selected.size === 0} onClick={startBackup}>Stop and back up</Button></div></ListRowDetails>}
         {flow.kind === "unavailable" && flow.operation === "backup" && <ListRowDetails label="Backup unavailable"><Notice tone="danger" title="Backup is unavailable"><p>{flow.reason}</p></Notice><div className="flex justify-end"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Dismiss</Button></div></ListRowDetails>}
         {operationPanel("backup")}
       </li>

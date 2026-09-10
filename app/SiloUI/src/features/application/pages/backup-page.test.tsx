@@ -47,6 +47,46 @@ describe("backup and restore presentation", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Native restore state is invalid")
   })
 
+  it.each([false, true])("drops deleted sandboxes from review and submission (removed during review: %s)", (duringReview) => {
+    const initial = structuredClone(source)
+    initial.workspaces = initial.workspaces.slice(0, 2).map(workspace => ({ ...workspace, state: "stopped" as const }))
+    const backup: BackupController = {
+      state: { snapshotId: "1", availability: "available", destination: "/backups", archives: [], operation: null },
+      actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn(), inspectArchive: vi.fn(), startBackup: vi.fn(), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn() },
+    }
+    const view = render(<BackupPage source={initial} backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    if (duringReview) fireEvent.click(screen.getByRole("button", { name: "Review backup" }))
+    view.rerender(<BackupPage source={{ ...initial, workspaces: initial.workspaces.slice(0, 1) }} backup={backup} />)
+    if (!duringReview) fireEvent.click(screen.getByRole("button", { name: "Review backup" }))
+    const review = screen.getByRole("group", { name: "Review backup" })
+    expect(review).toHaveTextContent("dev")
+    expect(review).not.toHaveTextContent(initial.workspaces[1].machine.name)
+    fireEvent.click(within(review).getByRole("button", { name: "Start backup" }))
+    expect(backup.actions.startBackup).toHaveBeenCalledWith("/backups", ["dev"])
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Review backup" }))
+    view.rerender(<BackupPage source={{ ...initial, workspaces: [] }} backup={backup} />)
+    expect(screen.getByRole("button", { name: "Start backup" })).toBeDisabled()
+    expect(backup.actions.startBackup).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not select a new sandbox that reuses a deleted name", () => {
+    const initial = structuredClone(source)
+    initial.workspaces = initial.workspaces.slice(0, 1).map(workspace => ({ ...workspace, state: "stopped" as const }))
+    const backup: BackupController = {
+      state: { snapshotId: "1", availability: "available", destination: "/backups", archives: [], operation: null },
+      actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn(), inspectArchive: vi.fn(), startBackup: vi.fn(), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn() },
+    }
+    const view = render(<BackupPage source={initial} backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Create backup…" }))
+    const replacement = structuredClone(initial)
+    replacement.workspaces[0].machine.id = "00000000-0000-4000-8000-000000000099"
+    view.rerender(<BackupPage source={replacement} backup={backup} />)
+    expect(screen.getByRole("checkbox")).not.toBeChecked()
+    expect(screen.getByRole("button", { name: "Review backup" })).toBeDisabled()
+  })
+
   it("uses the saved native backup destination after reopening", () => {
     const backup: BackupController = {
       state: { snapshotId: "saved", availability: "available", destination: "/Volumes/My Backups", archives: [], operation: null },
