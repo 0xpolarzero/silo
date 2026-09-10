@@ -1907,6 +1907,16 @@ fn read_activity(
     Ok(events)
 }
 
+fn pending_verification_workspace(events: &[MachineConfigurationProgress]) -> Option<String> {
+    let last = events.iter().rev().find(|event| event.step != "activity-storage-warning")?;
+    if last.step == "setup-completed" {
+        return None;
+    }
+    events.iter().rev().find(|event| {
+        event.step == "workspace-verification" && event.request_id == last.request_id
+    }).filter(|event| event.fraction == Some(0)).map(|event| event.workspace.clone())
+}
+
 #[tauri::command]
 pub fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurationProgress>, String> {
     let paths = runtime_paths(&app)?;
@@ -1919,6 +1929,7 @@ pub async fn save_machine_configuration(
     app: AppHandle,
     request: MachineConfigurationRequest,
     request_id: Option<String>,
+    retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     if request_id.trim().is_empty() || request_id.len() > 256 {
@@ -1930,6 +1941,15 @@ pub async fn save_machine_configuration(
         let _guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
+        let retry_workspace = retry_workspace.or_else(|| {
+            // A no-change retry after relaunch resumes the failed verification only.
+            // A fresh add, edit or removal must not replay another sandbox's work.
+            if read_metadata(&paths.metadata).ok().as_ref() != Some(&request) {
+                return None;
+            }
+            pending_verification_workspace(&read_activity(&paths, false).unwrap_or_default())
+                .filter(|name| request.machines.iter().any(|machine| machine.name() == name))
+        });
         let journal = Mutex::new(ActivityJournal::start(&paths, &request_id)?);
         let publish = |event: MachineConfigurationProgress| {
             let mut journal = journal.lock().unwrap_or_else(|error| error.into_inner());
@@ -1959,6 +1979,7 @@ pub async fn save_machine_configuration(
                     &paths,
                     &resources,
                     request,
+                    retry_workspace.as_deref(),
                     &progress,
                 )
             })
@@ -2394,7 +2415,7 @@ fn save_machine_configuration_with(
     host: &HostResources,
     request: MachineConfigurationRequest,
 ) -> Result<(), RuntimeError> {
-    save_machine_configuration_with_progress(runner, paths, host, request, &|_, _, _| {})
+    save_machine_configuration_with_progress(runner, paths, host, request, None, &|_, _, _| {})
 }
 
 fn save_machine_configuration_with_progress(
@@ -2402,10 +2423,16 @@ fn save_machine_configuration_with_progress(
     paths: &RuntimePaths,
     host: &HostResources,
     request: MachineConfigurationRequest,
+    retry_workspace: Option<&str>,
     progress: &dyn Fn(&str, &str, u8),
 ) -> Result<(), RuntimeError> {
     validate_request(&request)?;
     let previous = read_metadata(&paths.metadata)?;
+    if retry_workspace.is_some_and(|name| {
+        !request.machines.iter().chain(&previous.machines).any(|machine| machine.name() == name)
+    }) {
+        return Err(RuntimeError::Invalid("The sandbox selected for retry is not in this configuration.".into()));
+    }
     validate_requested_resources(&request, host)?;
     let previous_by_id: HashMap<&str, &MachineConfiguration> = previous
         .machines
@@ -2445,7 +2472,7 @@ fn save_machine_configuration_with_progress(
                     create_machine_with_progress(runner, paths, machine, progress)?;
                 }
                 Some(old) if *old == machine => {
-                    if machine.is_vm() {
+                    if machine.is_vm() && retry_workspace == Some(machine.name()) {
                         progress("workspace-verification", machine.name(), 0);
                         verify_machine_configuration(runner, paths, machine)?;
                         progress("workspace-verification", machine.name(), 1);
@@ -4313,6 +4340,7 @@ mod tests {
                 &paths,
                 &generous_host(),
                 request(vec![vm()]),
+                None,
                 &report,
             );
             assert_eq!(result.is_err(), fail_verification);
@@ -4345,7 +4373,51 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_saved_settings_do_not_hide_runtime_resource_mismatch() {
+    fn adding_or_removing_a_vm_does_not_recheck_or_report_unchanged_vms() {
+        for (removing, retry_workspace) in [(false, None), (true, None), (true, Some("work"))] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let mut other = vm();
+            if let MachineConfiguration::Vm { id, name, .. } = &mut other {
+                *id = "00000000-0000-4000-8000-000000000002".into();
+                *name = "work".into();
+            }
+            let mut other_inspect = inspect(&paths, "Stopped");
+            other_inspect["name"] = json!("work");
+            other_inspect["config"]["name"] = json!("work");
+            other_inspect["config"]["mounts"][0]["host"] = json!(disk_path(&paths, "work", "workspace"));
+            let previous = if removing { request(vec![vm(), other.clone()]) } else { request(vec![vm()]) };
+            let requested = if removing { request(vec![vm()]) } else { request(vec![vm(), other]) };
+            write_metadata(&paths.metadata, &previous).unwrap();
+            let runner = StubRunner::successful_json(if removing {
+                vec![other_inspect.clone(), other_inspect, json!(null)]
+            } else {
+                vec![json!([]), json!(1), json!(null), other_inspect.clone(), json!(null), other_inspect.clone(), other_inspect]
+            });
+            let events = Mutex::new(Vec::new());
+            save_machine_configuration_with_progress(&runner, &paths, &generous_host(), requested.clone(), retry_workspace, &|step, name, fraction| {
+                events.lock().unwrap().push((step.to_string(), name.to_string(), fraction));
+            }).unwrap();
+            assert_eq!(read_metadata(&paths.metadata).unwrap(), requested);
+            assert!(!events.lock().unwrap().is_empty());
+            assert!(events.lock().unwrap().iter().all(|(_, name, _)| name == "work"));
+            assert!(runner.calls.lock().unwrap().iter().all(|args| !args.iter().any(|arg| arg == "dev")));
+        }
+    }
+
+    #[test]
+    fn interrupted_verification_resumes_only_until_it_completes() {
+        let started = machine_progress("request-1", "workspace-verification", "dev", 0);
+        let failed = machine_progress("request-1", "setup-failed", "dev", 0);
+        assert_eq!(pending_verification_workspace(&[started.clone(), failed]), Some("dev".into()));
+        let done = machine_progress("request-1", "workspace-verification", "dev", 1);
+        assert_eq!(pending_verification_workspace(&[started.clone(), done]), None);
+        let completed = machine_progress("request-1", "setup-completed", "", 0);
+        assert_eq!(pending_verification_workspace(&[started, completed]), None);
+    }
+
+    #[test]
+    fn retry_checks_unchanged_saved_settings_for_runtime_resource_mismatch() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let configured = request(vec![vm()]);
@@ -4353,7 +4425,7 @@ mod tests {
         let mut mismatch = inspect(&paths, "Stopped");
         mismatch["config"]["resources"]["cpus"] = json!(1);
         let runner = StubRunner::successful_json(vec![mismatch]);
-        let error = save_machine_configuration_with(&runner, &paths, &generous_host(), configured)
+        let error = save_machine_configuration_with_progress(&runner, &paths, &generous_host(), configured, Some("dev"), &|_, _, _| {})
             .unwrap_err();
         assert!(error.to_string().contains("do not match"));
         assert!(runner

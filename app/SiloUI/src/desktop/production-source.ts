@@ -382,9 +382,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return promise
   }
 
-  function configureMachines(request: SetupMachineConfigurationRequest): Promise<ApplicationSource> {
+  function configureMachines(request: SetupMachineConfigurationRequest, retryWorkspace?: string): Promise<ApplicationSource> {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
-    const key = JSON.stringify(request)
+    const key = JSON.stringify([request, retryWorkspace])
     if (lastMachineJob?.key === key) return lastMachineJob.promise
     ++identityVerificationSequence
     lastVerificationKey = undefined
@@ -401,7 +401,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       publish({ ...snapshot, setupCandidate: request, setupEvents: [], setupActivity: [], setupStartedAt: Math.floor(Date.now() / 1000), setupFinishedAt: undefined, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
       let failed = false
       try {
-        const result = parseMutationSource(await native.invoke("save_machine_configuration", { request, requestId }))
+        const result = parseMutationSource(await native.invoke("save_machine_configuration", { request, requestId, ...(retryWorkspace ? { retryWorkspace } : {}) }))
         activeConfiguration = null
         publish({ ...snapshot, source: result, error: null })
         return result
@@ -569,9 +569,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     listWorkspaceDirectory: async (workspace, path, offset, snapshotId) => directoryPageShape.parse(await native.invoke("list_workspace_directory", { workspace, path, offset, snapshotId: snapshotId ?? null })),
     retryRuntimeChecks: () => { void refresh() },
     saveMachineConfiguration,
-    retryMachineConfiguration: () => {
+    retryMachineConfiguration: (workspace) => {
       const operation = snapshot.source?.sandboxConfigurationOperation
-      if (operation) saveMachineConfiguration(operation.candidate)
+      if (operation) void configureMachines(operation.candidate, workspace).catch(() => {})
     },
     pushRepository: (workspace, repositoryPath) => {
       void native.invoke("push_repository", { workspace, repositoryPath }).then(refresh).catch((cause) => {

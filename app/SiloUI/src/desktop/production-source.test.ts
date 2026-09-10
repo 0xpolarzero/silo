@@ -427,6 +427,29 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("retries verification only for the requested sandbox", async () => {
+    let attempts = 0
+    const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return structuredClone(backup)
+      if (command === "read_setup_activity") return []
+      if (command === "save_machine_configuration") {
+        if (++attempts === 1) throw new Error("Verification failed")
+        return structuredClone(source)
+      }
+    })
+    const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
+    await store.initialize()
+    const request = { schemaVersion: 1 as const, machines: source.workspaces.map(({ machine }) => machine) }
+    await expect(store.configureMachines(request)).rejects.toThrow("Verification failed")
+    store.applicationActions.retryMachineConfiguration("dev")
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_machine_configuration", {
+      request, requestId: expect.any(String), retryWorkspace: "dev",
+    }))
+    await vi.waitFor(() => expect(store.getSnapshot().source?.sandboxConfigurationOperation).toBeNull())
+    store.dispose()
+  })
+
   it("reports unreadable activity without replacing it with success or raw diagnostics", async () => {
     const mock = native({ invoke: vi.fn(async (command) => {
       if (command === "read_setup_activity") throw new Error("private path and token")

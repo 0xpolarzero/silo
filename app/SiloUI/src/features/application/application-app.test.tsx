@@ -967,6 +967,10 @@ describe("application", () => {
     const row = overview.getByText(workspace).closest("li") as HTMLElement
     const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
 
+    const existing = overview.getByText("dev").closest("li") as HTMLElement
+    expect(existing).not.toHaveAttribute("aria-busy")
+    expect(within(existing).queryByRole("progressbar")).not.toBeInTheDocument()
+    expect(within(existing).getByLabelText("Controls for dev")).toBeInTheDocument()
     expect(row).toHaveAttribute("aria-busy", "true")
     expect(within(row).getByRole("status")).toHaveTextContent(message)
     expect(within(row).getByRole("progressbar", { name: progressLabel })).toBeVisible()
