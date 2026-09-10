@@ -404,3 +404,23 @@ recovered restart and no repeated completed restart or surviving detached Start.
 The test also verified recovered Stop exclusion and removed its disposable VM.
 Focused tests cover each checkpoint, repeated recovery, failed-start retry,
 replacement preservation, activity reuse and superseded actions.
+
+### Integrated macOS verification (2026-09-10)
+
+The final native suite passed 285 tests plus 5 build-configuration tests; 10
+opt-in tests were excluded from that default run. The frontend passed 609 tests
+in 65 files. Type checking and lint also passed. The separate real backup,
+lifecycle and synthetic GitHub proofs above exercised the packaged runtime;
+they do not prove authenticated GitHub account workflows.
+
+`npm --prefix app/SiloUI run desktop:build:debug` rebuilt the canonical
+`app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`. The previous app was
+quit through its native menu before building. The rebuilt production app opened
+with the existing `dev` VM stopped. Native UI checks confirmed the fixed-name and
+disk explanation, a non-settable name field, both disabled disk controls, and
+inline errors for VM port 65536 and local port 0. The unsaved forms were cancelled;
+the VM and existing port settings were unchanged. The rebuilt app was left open.
+
+Local logs: `/private/tmp/silo-recovery-final-native.log`,
+`/private/tmp/silo-functional-final-ui.log`, and
+`/private/tmp/silo-recovery-final-build.log`.
