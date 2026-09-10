@@ -1,5 +1,7 @@
 """Exercise the release signing gate against real disposable macOS signatures."""
 from pathlib import Path
+import importlib.util
+import os
 import plistlib
 import re
 import shutil
@@ -7,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name('verify-macos-signing.py')
 TOOLS = ('silo-ui', 'msb', 'git', 'git-lfs', 'git-remote-http', 'git-remote-https')
@@ -127,6 +130,56 @@ class MacOSReleaseSigningTests(unittest.TestCase):
         data[4096] ^= 1
         self.engine.write_bytes(data)
         self.verify(False)
+
+
+class MacOSReleaseSignerEnvironmentTests(unittest.TestCase):
+    def run_packager(self, file_key):
+        with tempfile.TemporaryDirectory(prefix='silo-signer-env-') as temporary:
+            root = Path(temporary)
+            app = root / 'Silo.app'
+            (app / 'Contents/MacOS').mkdir(parents=True)
+            (app / 'Contents/MacOS/msb').write_bytes(b'fixture runtime')
+            key = 'disposable-inline-fixture'
+            if file_key:
+                key_file = root / 'fixture.key'
+                key_file.write_text('disposable-key-fixture')
+                key = str(key_file)
+            script = SCRIPT.with_name('package-macos-release.py')
+            with patch.object(sys, 'path', [str(script.parent), *sys.path]):
+                spec = importlib.util.spec_from_file_location('package_macos_release_test', script)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+            invocations = []
+
+            def command(args, **kwargs):
+                invocations.append((args, kwargs))
+                return subprocess.CompletedProcess(args, 0)
+
+            environment = {'TAURI_SIGNING_PRIVATE_KEY': key,
+                           'TAURI_SIGNING_PRIVATE_KEY_PATH': 'stale-path',
+                           'TAURI_SIGNING_PRIVATE_KEY_PASSWORD': ''}
+            with patch.dict(os.environ, environment), \
+                    patch.object(sys, 'argv', [str(script), str(app), str(root / 'output')]), \
+                    patch.object(module, 'sign_runtime'), patch.object(module, 'verify_bundle'), \
+                    patch.object(module.subprocess, 'run', side_effect=command):
+                module.main()
+            signer = [(args, kwargs) for args, kwargs in invocations if args[0] == 'npx']
+            self.assertEqual(len(signer), 1)
+            args, kwargs = signer[0]
+            self.assertNotIn('TAURI_SIGNING_PRIVATE_KEY_PATH', kwargs['env'])
+            if file_key:
+                self.assertEqual(args[args.index('-f') + 1], key)
+                self.assertNotIn('TAURI_SIGNING_PRIVATE_KEY', kwargs['env'])
+            else:
+                self.assertNotIn('-f', args)
+                self.assertEqual(kwargs['env']['TAURI_SIGNING_PRIVATE_KEY'], key)
+                self.assertNotIn(key, args)
+
+    def test_file_key_removes_conflicting_inline_environment(self):
+        self.run_packager(file_key=True)
+
+    def test_inline_key_remains_in_environment_only(self):
+        self.run_packager(file_key=False)
 
 
 if __name__ == '__main__':

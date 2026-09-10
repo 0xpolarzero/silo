@@ -1,10 +1,11 @@
 # macOS VM library-loading proof
 
-Tested on 10 September 2026, macOS 26.5 (25F71), Apple Silicon.
+Tested on 10 September 2026, macOS 26.5 (25F71) and macOS 14.8.7
+(23J520), Apple Silicon, with System Integrity Protection enabled.
 
 ## Finding
 
-Apple's library constraints work with ad-hoc signing on this machine. A hardened
+Apple's library constraints work with ad-hoc signing on both tested systems. A hardened
 `msb` can load the exact bundled `libkrunfw` identified by its code-directory hash
 and reject other non-system libraries at load time. No Developer ID certificate
 was used. This is OS enforcement, not a Silo checksum check before launch.
@@ -67,6 +68,28 @@ system crash reports are not copied into the repository. Tampering is reported
 separately from a library-constraint rejection because page signature enforcement
 can terminate the loader rather than return a `dlopen` error.
 
+## Minimum-OS and final-package checks
+
+All 11 library cases also passed in an isolated macOS Sonoma 14.8.7 VM with
+System Integrity Protection and authenticated root enabled and no boot arguments.
+The VM used Cirrus Labs’ vanilla Sonoma image, digest
+`sha256:7ea0d508380b63f13c94ee72cd22ca3dd9ec5cdf4a5ae14b2ae2ce6a6603fba6`.
+Evidence was retained locally at
+`/private/tmp/silo-macos14-proof/silo-sonoma-constraints/results.json`; the VM
+was shut down after testing.
+
+GitHub-hosted macOS 14 and 15 runners had SIP disabled. They enforce the exact
+library constraints but do not enforce the two signature controls tested here.
+CI therefore runs nine constraint cases with those two controls explicitly
+skipped, not reported as passed. The full suite on a normally protected Mac
+remains a separate release acceptance check.
+
+The final local 0.1.1 DMG was mounted read-only and passed bundle verification.
+Its unmodified bundled helper and engine imported the bundled guest image,
+created and started an isolated VM, executed a marker, and stopped successfully.
+This checks the packaged runtime on macOS 26.5; it does not test Gatekeeper
+first-launch behavior or the user’s update interaction.
+
 ## Limits and release requirements
 
 - This establishes a library-load boundary while the constrained executable
@@ -74,14 +97,15 @@ can terminate the loader rather than return a `dlopen` error.
   app: anyone can ad-hoc sign a replacement executable with the rule removed.
   Silo's signed updater supplies a separate trusted delivery check.
 - This does not detect compromised code that we intentionally approve and ship.
-- macOS 14 introduced these APIs, but this run does not prove enforcement on
-  macOS 14. Run the same tests on the minimum supported OS before claiming release
-  coverage. Do not silently relax the rule if an OS rejects it.
+- macOS 14 introduced these APIs. Both the minimum supported major version and
+  the current host passed the full suite. Do not silently relax the rule if an OS
+  rejects it.
 - Generate the approved hash from the final signed engine. Sign the helper with
   `--enforce-constraint-validity`; require the constraint, hardened runtime and
   exact hash in package verification. Any later re-signing must preserve or
   regenerate the constraint. Do not approve libraries by signing identifier alone.
-- The experiments are a proof, not a completed change to release packaging.
+- Release packaging now applies this rule to the final helper, verifies the exact
+  policy using Apple’s signer, then creates and signs the updater archive and DMG.
 
 ## Primary sources
 

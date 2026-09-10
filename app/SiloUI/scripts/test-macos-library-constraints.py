@@ -51,7 +51,7 @@ class Commands:
         return result
 
 
-def generic_probe(root, run, results):
+def generic_probe(root, run, results, constraints_only=False):
     (root/'loader.c').write_text('''#include <dlfcn.h>
     #include <stdio.h>
     int main(int argc,char **argv) {
@@ -90,6 +90,12 @@ def generic_probe(root, run, results):
         run('codesign','--verify','--strict',target)
 
     def case(name,loader,library,expected):
+        if constraints_only and loader == 'loader-strict':
+            results.append({'name': name, 'passed': False, 'skippedReason': 'Host signature control excluded by --constraints-only; requires separate full-suite proof.'})
+            return
+        if constraints_only and library == 'tampered.dylib':
+            results.append({'name': name, 'passed': False, 'skippedReason': 'Host signature control excluded by --constraints-only; requires separate full-suite proof.'})
+            return
         p=run(root/loader,root/library,check=False)
         if expected:
             value=9 if library=='replacement.dylib' else 7
@@ -107,7 +113,8 @@ def generic_probe(root, run, results):
                            (p.returncode == 3 and reason in p.stderr)) and
                           'INITIALIZER_' not in p.stdout + p.stderr)
             else:
-                passed=p.returncode==3 and reason in p.stderr and 'INITIALIZER_' not in p.stdout+p.stderr
+                denied = reason in p.stderr or (library == 'unsigned.dylib' and CONSTRAINT_REASON in p.stderr)
+                passed=p.returncode==3 and denied and 'INITIALIZER_' not in p.stdout+p.stderr
         results.append({'name':name,'passed':passed,'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr})
 
     case('strict rejects unsigned-developer library','loader-strict','approved.dylib',False)
@@ -124,7 +131,8 @@ def generic_probe(root, run, results):
     data=(root/'approved.dylib').read_bytes()
     require(data.count(b'INITIALIZER_APPROVED') == 1, 'Expected one tamper marker')
     tampered.write_bytes(data.replace(b'INITIALIZER_APPROVED',b'INITIALIZER_TAMPERED'))
-    require(run('codesign','--verify','--strict',tampered,check=False).returncode != 0, 'Tampered library unexpectedly verifies')
+    if not constraints_only:
+        require(run('codesign','--verify','--strict',tampered,check=False).returncode != 0, 'Tampered library unexpectedly verifies')
     require(cdhash(tampered) == cdhash(root/'approved.dylib'), 'Tampering changed the stored cdhash')
     case('signature enforcement blocks changed bytes with original signature','loader-constrained','tampered.dylib',False)
 
@@ -267,6 +275,7 @@ def runtime_probe(root, run, bundle, guest, report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--constraints-only', action='store_true', help='Run nine library-constraint cases; skip two host signature controls, which require separate full-suite proof')
     parser.add_argument('--output', type=Path, help='New directory for retained evidence')
     parser.add_argument('--runtime-bundle', type=Path, help='Built Silo.app to copy for VM proof')
     parser.add_argument('--guest-image', type=Path, help='Prepared guest-image directory')
@@ -281,15 +290,17 @@ def main():
     else:
         root = Path(tempfile.mkdtemp(prefix='silo-library-proof-', dir='/private/tmp'))
     run = Commands(root)
-    report = {'cases': [], 'passed': False}
+    report = {'cases': [], 'passed': False, 'mode': 'constraints-only' if args.constraints_only else 'full'}
     print(f'Evidence: {root}', flush=True)
     try:
+        sip = run('csrutil', 'status', check=False)
+        report['sip'] = {'status': sip.stdout.strip(), 'stderr': sip.stderr.strip(), 'returncode': sip.returncode}
         report['os'] = run('sw_vers').stdout
         version = run('sw_vers', '-productVersion').stdout.strip()
         require(int(version.split('.')[0]) >= 14, 'Library constraints require macOS 14+')
         report['architecture'] = run('uname', '-m').stdout.strip()
-        generic_probe(root, run, report['cases'])
-        require(all(case['passed'] for case in report['cases']), 'A library-constraint case failed')
+        generic_probe(root, run, report['cases'], constraints_only=args.constraints_only)
+        require(all(case['passed'] for case in report['cases'] if 'skippedReason' not in case), 'A library-constraint case failed')
         if args.runtime_bundle:
             runtime_probe(root, run, args.runtime_bundle.resolve(),
                           args.guest_image.resolve(), report)
@@ -298,9 +309,15 @@ def main():
         report['error'] = str(error) or type(error).__name__
         print(f'Failed: {report["error"]}', file=sys.stderr)
     finally:
+        report['counts'] = {
+            'passed': sum(case['passed'] for case in report['cases']),
+            'skipped': sum('skippedReason' in case for case in report['cases']),
+            'failed': sum(not case['passed'] and 'skippedReason' not in case for case in report['cases']),
+            'total': len(report['cases']),
+        }
         (root / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
     print(f'{sum(case["passed"] for case in report["cases"])}/{len(report["cases"])} '
-          f'library cases passed; overall {"PASS" if report["passed"] else "FAIL"}')
+          f'library cases passed; {report["counts"]["skipped"]} skipped; {report["mode"]} overall {"PASS" if report["passed"] else "FAIL"}')
     return 0 if report['passed'] else 1
 
 

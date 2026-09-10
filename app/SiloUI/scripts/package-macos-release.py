@@ -38,10 +38,15 @@ def main():
         is_file = Path(key).is_file()
     except OSError:
         is_file = False
+    signer_env = dict(os.environ)
+    signer_env.pop('TAURI_SIGNING_PRIVATE_KEY_PATH', None)
     if is_file:
         signer += ['-f', key]
+        # Tauri treats this environment variable as --private-key (contents),
+        # which conflicts with --private-key-path even when both name one file.
+        signer_env.pop('TAURI_SIGNING_PRIVATE_KEY', None)
     # For key contents, Tauri reads the private key from its environment.
-    subprocess.run(signer + [str(archive)], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(signer + [str(archive)], env=signer_env, check=True, stdout=subprocess.DEVNULL)
     with tempfile.TemporaryDirectory(prefix='silo-dmg-') as temporary:
         stage = Path(temporary) / 'image'
         stage.mkdir()
