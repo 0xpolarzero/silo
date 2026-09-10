@@ -413,7 +413,7 @@ export function ApplicationShell({
           </div>
         </nav>
         <div className="relative flex min-h-0 min-w-0 flex-col">
-          <div className="pointer-events-none absolute inset-x-0 top-3 z-20 mx-auto flex w-full max-w-4xl justify-end px-4 sm:px-6">{notice}</div>
+          <div className="pointer-events-none absolute inset-x-0 top-3 z-20 mx-auto flex w-full max-w-4xl justify-center px-4 sm:px-6">{notice}</div>
           <div inert={navigationDisabled || undefined} className={cn("min-h-0 min-w-0 flex-1", activeTab === "workspaces" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
         </div>
       </div>
