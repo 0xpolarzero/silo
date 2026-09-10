@@ -217,7 +217,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function parseMutationSource(value: unknown): ApplicationSource {
-    const result = parseApplicationSource(value)
+    const parsed = parseApplicationSource(value)
+    // Mutation responses contain configuration/state but do not load log output.
+    // Keep captured lines until the full refresh replaces them with current logs.
+    const result = { ...parsed, workspaces: parsed.workspaces.map(workspace => ({
+      ...workspace,
+      logs: workspace.logs.length ? workspace.logs : snapshot.source?.workspaces.find(previous => previous.machine.id === workspace.machine.id)?.logs ?? [],
+    })) }
     return result.github.hostIdentity === undefined
       ? { ...result, github: { ...result.github, hostIdentity: snapshot.source?.github.hostIdentity } }
       : result
@@ -412,6 +418,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         throw cause
       } finally {
         await readSetupActivity(requestId)
+        await refresh()
         if (failed && !snapshot.setupActivity?.some((event) => event.requestId === requestId && (event.step === "setup-failed" || event.step === "setup-interrupted"))) {
           const event: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId, phase: "workspaces", step: "setup-failed", timestamp: Date.now(), level: "error", message: "Silo could not finish sandbox setup. Review the reported error and retry. This failure could not be retained in activity history.", safeForDisplay: true }
           publish({ ...snapshot, setupActivity: [...(snapshot.setupActivity ?? []), event] })

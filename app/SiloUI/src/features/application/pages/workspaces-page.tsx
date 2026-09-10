@@ -352,7 +352,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
                 }
                 actions={
                   <div className="flex max-w-[40%] shrink-0 flex-col items-end gap-1" data-activity-meta>
-                    <time dateTime={item.occurredAt} className="text-[10px] text-muted-foreground">{item.time}</time>
+                    <time dateTime={item.occurredAt} className="text-[10px] text-muted-foreground">{new Date(item.occurredAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" })}</time>
                     <div className="flex flex-wrap justify-end gap-1">
                       {item.workspace && workspace && <WorkspaceBadge name={item.workspace} state={workspace.state} />}
                       <StatusBadge indicator={<CategoryIcon className="size-2.5" />} aria-label={`Category: ${category.label}`}>{category.label}</StatusBadge>

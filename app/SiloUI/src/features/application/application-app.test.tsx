@@ -54,6 +54,29 @@ describe("application", () => {
     expect(logs.getByText(new Date(occurredAt).toLocaleTimeString())).toBeVisible()
   })
 
+  it.each(["add-configuring", "remove-pending"] as const)("ignores property order on unchanged sandboxes during %s", (operation) => {
+    const source = structuredClone(applicationSourceForScenario("running", undefined, undefined, operation))
+    source.workspaces = source.workspaces.map(workspace => ({
+      ...workspace, machine: Object.fromEntries(Object.entries(workspace.machine).reverse()) as typeof workspace.machine,
+    }))
+    renderApplication("running", source)
+    const overview = within(appPanel("Sandboxes"))
+    for (const workspace of source.workspaces.filter(({ machine }) => source.sandboxConfigurationOperation?.candidate.machines.some(({ id }) => id === machine.id))) {
+      const row = overview.getByText(workspace.machine.name).closest("li") as HTMLElement
+      expect(row).not.toHaveAttribute("aria-busy")
+      expect(within(row).queryByText("Preparing sandbox configuration.")).not.toBeInTheDocument()
+    }
+  })
+
+  it("formats activity dates in the user's locale and timezone", () => {
+    const source = structuredClone(applicationSourceForScenario("running"))
+    const occurredAt = "2026-09-10T09:03:05Z"
+    source.activities = [{ ...source.activities[0], occurredAt, time: occurredAt }]
+    render(<ApplicationPreview source={source} initialRoute={{ workspaceSection: "activity" }} />)
+    expect(screen.getByText(new Date(occurredAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" }))).toBeVisible()
+    expect(screen.queryByText(occurredAt)).not.toBeInTheDocument()
+  })
+
   it("keeps secret edits across navigation and shows pending changes on affected sandboxes", async () => {
     const { user, actions } = renderApplication()
     await user.click(within(appNavigation()).getByRole("button", { name: "Secrets" }))
@@ -593,8 +616,9 @@ describe("application", () => {
     expect(within(activityRows[0]).getByLabelText("playgrounds, Stopped")).toBeVisible()
     const activityContent = activityRows[0].querySelector('[data-activity-content]') as HTMLElement
     const activityMeta = activityRows[0].querySelector('[data-activity-meta]') as HTMLElement
-    expect(activityMeta).toHaveTextContent("2m ago")
-    expect(activityContent).not.toHaveTextContent("2m ago")
+    const activityTime = activityMeta.querySelector("time")!
+    expect(activityTime).toHaveTextContent(new Date(activityTime.dateTime).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" }))
+    expect(activityContent).not.toContainElement(activityTime)
     expect(activityContent).not.toContainElement(within(activityRows[0]).getByLabelText("Category: Sandbox"))
     expect(activityMeta).toHaveClass("items-end")
     expect(activityMeta).toContainElement(within(activityRows[0]).getByLabelText("Category: Sandbox"))
@@ -712,7 +736,8 @@ describe("application", () => {
     const firstRow = within(activity).getAllByRole("listitem")[0]
     expect(within(firstRow).getByText("Start failed")).toBeVisible()
     expect(within(firstRow).getByText("Candidate networking did not become ready.")).toBeVisible()
-    expect(within(firstRow).getByText("3m ago")).toBeVisible()
+    const time = firstRow.querySelector("time")!
+    expect(time).toHaveTextContent(new Date(time.dateTime).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" }))
     expect(firstRow.querySelector("svg")).toHaveClass("lucide-circle-alert", "text-destructive")
     expect(within(firstRow).getByLabelText("dev, Failed")).toBeVisible()
   })

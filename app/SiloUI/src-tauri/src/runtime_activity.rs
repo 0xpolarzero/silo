@@ -261,6 +261,47 @@ mod tests {
         assert!(parse_logs(r#"{"t":"bad","d":"text"}"#).is_err());
     }
     #[test]
+    fn log_refresh_reads_captured_output_for_stopped_sandboxes() {
+        struct LogRunner;
+        impl RuntimeRunner for LogRunner {
+            fn run(&self, _: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+                if args[0] == "list" {
+                    return Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() });
+                }
+                assert_eq!(args, ["logs", "dev", "--tail", "200", "--source", "all", "--json"]);
+                assert!(timeout <= Duration::from_secs(3));
+                Ok(CommandOutput {
+                    stdout: concat!(
+                        "{\"t\":\"2026-09-10T07:30:28.097Z\",\"d\":\"VM stopped\\n\",\"s\":\"system\",\"e\":null}\n",
+                        "{\"t\":\"2026-09-10T07:30:29.000Z\",\"d\":\"Authorization: Bearer private-value\",\"s\":\"stderr\",\"e\":null}\n"
+                    ).into(),
+                    stderr: String::new(),
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut source = read_application_state_with(&LogRunner, &paths).unwrap();
+        source.workspaces.push(ApplicationWorkspace {
+            machine: serde_json::from_value(serde_json::json!({
+                "kind": "vm", "id": "00000000-0000-4000-8000-000000000001", "name": "dev",
+                "cpus": 4, "maxCPUs": 4, "memoryGiB": 16, "maxMemoryGiB": 16,
+                "workspaceStorageGiB": 60, "runtimeStorageGiB": 80
+            })).unwrap(),
+            purpose: String::new(), state: WorkspaceState::Stopped, state_detail: String::new(),
+            attention: None, freshness: Freshness::Fresh, host: String::new(),
+            repositories: Vec::new(), files: Vec::new(), ports: Vec::new(), logs: Vec::new(),
+            github_repositories: Vec::new(), secret_names: Vec::new(),
+        });
+        load_logs(&LogRunner, &paths, &mut source);
+        let logs = &source.workspaces[0].logs;
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0]["line"], "VM stopped");
+        assert_eq!(logs[0]["occurredAt"], "2026-09-10T07:30:28.097Z");
+        assert_eq!(logs[1]["line"], "[Sensitive runtime output hidden]");
+    }
+
+    #[test]
     fn durable_lifecycle_records_verified_results_without_raw_failure_output() {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);

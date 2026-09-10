@@ -427,6 +427,35 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("keeps captured logs during configuration and reloads them after it finishes", async () => {
+    const initial = structuredClone(source)
+    const oldLog = { line: "VM booted", occurredAt: "2026-09-10T09:00:00Z" }
+    const newLog = { line: "VM stopped", occurredAt: "2026-09-10T09:01:00Z" }
+    initial.workspaces[0].logs = [oldLog]
+    const mutation = structuredClone(initial)
+    mutation.workspaces[0].logs = []
+    let reads = 0
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "read_application_state") {
+        const result = structuredClone(initial)
+        if (++reads > 1) result.workspaces[0].logs = [oldLog, newLog]
+        return result
+      }
+      if (command === "read_backup_state") return structuredClone(backup)
+      if (command === "read_setup_activity") return []
+      if (command === "save_machine_configuration") return mutation
+    })
+    const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
+    await store.initialize()
+    const observed: number[] = []
+    const unsubscribe = store.subscribe(() => observed.push(store.getSnapshot().source?.workspaces[0].logs.length ?? -1))
+    await store.configureMachines({ schemaVersion: 1, machines: initial.workspaces.map(({ machine }) => machine) })
+    expect(observed).not.toContain(0)
+    expect(store.getSnapshot().source?.workspaces[0].logs).toEqual([oldLog, newLog])
+    unsubscribe()
+    store.dispose()
+  })
+
   it("retries verification only for the requested sandbox", async () => {
     let attempts = 0
     const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) => {

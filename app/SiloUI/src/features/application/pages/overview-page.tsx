@@ -4,7 +4,7 @@ import { useState } from "react"
 import { ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
-import type { SetupMachineConfiguration, SiloProgressEvent } from "@/contracts/silo"
+import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import type {
   ApplicationActions,
@@ -89,7 +89,7 @@ function configurationRowView(
   const candidate = operation.candidate.machines.find(({ id }) => id === workspace.machine.id)
   const candidateName = candidate?.name ?? workspace.machine.name
   const removed = Boolean(committedWorkspace && !candidate)
-  const addedOrChanged = !committedWorkspace || JSON.stringify(committedWorkspace.machine) !== JSON.stringify(candidate)
+  const addedOrChanged = !committedWorkspace || JSON.stringify(setupMachineConfigurationSchema.parse(committedWorkspace.machine)) !== JSON.stringify(candidate && setupMachineConfigurationSchema.parse(candidate))
   const errorTargetsWorkspace = operation.status === "failed"
     && operation.error.workspace === candidateName
 
