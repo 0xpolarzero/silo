@@ -81,3 +81,39 @@ helpers do not need it.
 Native atomic-replacement tests also terminated child installers immediately
 before and after replacement and verified a complete installed app remained.
 This is process-interruption evidence, not a claim about every power-loss case.
+
+Final local checks:
+
+- Frontend: 633 tests across 69 files; TypeScript and lint passed.
+- Native app/build: 300 + 5 tests passed, 10 opt-in tests skipped.
+- Updater transport: three real loopback HTTP tests passed, covering version
+  comparison, malformed/offline feeds and signature refusal.
+- Release helpers: 24 tests passed, including full publication refusal and
+  Debian tool relocation. GitHub and package-tool boundaries use test doubles.
+- Both Linux architectures passed real AppImage download-failure/retry,
+  signature-refusal, installation-byte comparison, 0.1.1 relaunch and settings
+  preservation checks. Installed Debian desktop checks passed, followed by real
+  package-manager upgrades from 0.1.0 to 0.1.1. System Git's hash stayed unchanged;
+  private MicroSandbox, Git and LFS executables worked.
+- Linux updater transport/atomic tests: seven passed, one child-only test ignored.
+  Local evidence is under the ignored `app/SiloUI/test-results/distribution/`.
+  These Linux update UI runs used empty VM sets in OrbStack without KVM. Running
+  VM shutdown/resume during an actual app upgrade was verified on macOS, not Linux.
+  Linux fixture packages were debug builds of production code with isolated
+  signing keys, feeds and synthetic OAuth configuration. Optimized Linux release
+  builds remain part of the pending GitHub CI run.
+- Optimized macOS app compiled; deep/strict code signature verification,
+  production updater signature verification, and version/architecture inspection
+  passed. The signing readiness gate correctly rejected that release bundle
+  pending the helper entitlement and accepted the authorized temporary test app.
+- The normal development app was rebuilt with the production endpoint/key and
+  reopened on Settings → General. It reports version 0.1.0 and `dev` is running.
+  No test feed override or temporary app copy is left running.
+
+Low/unknown disk-space tests inject the capacity measurement; an unwritable
+parent is tested against the filesystem. We did not fill the host disk.
+GitHub CI execution is pending authorization to push the source to the explicit
+verification branch. Nothing was published. Downloaded macOS DMG/Gatekeeper and
+post-update Keychain behavior remain release acceptance work after the helper
+signing decision; the successful temporary upgrade alone does not close those
+checks.
