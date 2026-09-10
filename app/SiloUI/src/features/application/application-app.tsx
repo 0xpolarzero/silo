@@ -1,4 +1,5 @@
 import { useUpdates } from "@/features/updates/update-store"
+import { useAppMenu } from "@/desktop/app-menu"
 import { UpdateNotice } from "@/features/updates/updates"
 import { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react"
@@ -79,7 +80,14 @@ export function ApplicationApp(props: ApplicationAppProps) {
 }
 
 function ApplicationContent({ source, actions, backup, initialRoute, routeRequest }: ApplicationAppProps) {
-  const installingUpdate = useUpdates()?.snapshot?.phase === "installing"
+  const updates = useUpdates()
+  const installingUpdate = updates?.snapshot?.phase === "installing"
+  const [newSandboxRequest, setNewSandboxRequest] = useState(0)
+  const nextSandboxRequest = useRef(0)
+  const [searchRequest, setSearchRequest] = useState(0)
+  const [sidebarRequest, setSidebarRequest] = useState(0)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [backupMenuRequest, setBackupMenuRequest] = useState<{ id: number; action: "create" | "restore" }>()
   const [directoryStore] = useState(() => createDirectoryStore(actions.listWorkspaceDirectory))
   useLayoutEffect(() => {
     directoryStore.setLoader(actions.listWorkspaceDirectory)
@@ -200,8 +208,48 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     if (routeRequest) navigateRequested(routeRequest)
   }, [routeRequest])
 
+  const canCreateSandbox = sandboxConfigurationOperation === null
+  const canUseBackup = !backupBusy && backup.state.operation?.kind !== "running"
+  const canCheckUpdates = Boolean(updates && !updates.pending && !["checking", "downloading", "installing"].includes(updates.snapshot?.phase ?? ""))
+  const nativeMenu = useAppMenu({ ready: true, busy: installingUpdate,
+    canGoBack: navigation.canGoBack, canGoForward: navigation.canGoForward,
+    canCreateSandbox, canBackup: canUseBackup, canRestore: canUseBackup, canCheckUpdates, sidebarCollapsed,
+  }, (command) => {
+    if (installingUpdate) return
+    switch (command) {
+      case "settings": navigation.selectSettingsSection("general"); break
+      case "check-updates":
+        navigation.selectSettingsSection("general")
+        if (canCheckUpdates) updates?.check()
+        break
+      case "new-sandbox":
+        if (canCreateSandbox) { navigation.selectWorkspaceSection("overview"); setNewSandboxRequest(++nextSandboxRequest.current) }
+        break
+      case "create-backup": case "restore-backup":
+        if (canUseBackup) {
+          navigation.selectTab("backup")
+          setBackupMenuRequest(value => ({ id: (value?.id ?? 0) + 1, action: command === "create-backup" ? "create" : "restore" }))
+        }
+        break
+      case "search": setSearchRequest(value => value + 1); break
+      case "toggle-sidebar": setSidebarRequest(value => value + 1); break
+      case "go-back": navigation.goBack(); break
+      case "go-forward": navigation.goForward(); break
+      case "go-sandboxes": navigation.selectWorkspaceSection("overview"); break
+      case "go-files": navigation.selectWorkspaceSection("files"); break
+      case "go-logs": navigation.selectWorkspaceSection("logs"); break
+      case "go-network": navigation.selectWorkspaceSection("network"); break
+      case "go-activity": navigation.selectWorkspaceSection("activity"); break
+      case "go-github": navigation.selectTab("github"); break
+      case "go-secrets": navigation.selectTab("secrets"); break
+      case "go-backup": navigation.selectTab("backup"); break
+    }
+  })
+
   return (
     <ApplicationShell
+      toggleSidebarRequest={sidebarRequest}
+      onSidebarCollapsedChange={setSidebarCollapsed}
       navigationDisabled={installingUpdate}
       notice={<UpdateNotice onOpen={() => navigation.selectSettingsSection("general")} />}
       activeTab={visibleTab}
@@ -218,11 +266,11 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       onGoBack={navigation.goBack}
       onGoForward={navigation.goForward}
       reduceMotion={reduceMotion}
-      commandMenu={<ApplicationCommandMenu disabled={installingUpdate} commands={applicationCommands(applicationSource, actions, navigateCommand)} />}
+      commandMenu={<ApplicationCommandMenu nativeShortcuts={nativeMenu} openRequest={searchRequest} disabled={installingUpdate} commands={applicationCommands(applicationSource, actions, navigateCommand)} />}
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage source={applicationSource} actions={actions} onMachinesChange={updateMachines} />
+          <OverviewPage newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} source={applicationSource} actions={actions} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
             network={source.network}
@@ -250,7 +298,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <GitHubPage source={applicationSource} actions={actions} onBusyChange={setGitHubBusy} />
       </section>
       <section id="application-panel-secrets" role="region" aria-labelledby="application-nav-secrets" hidden={visibleTab !== "secrets"}><SecretsPage source={applicationSource} onSaveSecret={actions.saveSecret} onRemoveSecret={actions.removeSecret} onRetrySecret={actions.retrySecret} /></section>
-      <section id="application-panel-backup" role="region" aria-labelledby="application-nav-backup" hidden={visibleTab !== "backup"}><BackupPage source={applicationSource} backup={backup} onBusyChange={setBackupBusy} /></section>
+      <section id="application-panel-backup" role="region" aria-labelledby="application-nav-backup" hidden={visibleTab !== "backup"}><BackupPage menuRequest={backupMenuRequest} source={applicationSource} backup={backup} onBusyChange={setBackupBusy} /></section>
       {activeRuntimeRepair && (
         <section id="application-panel-system" role="region" aria-labelledby="application-nav-system" hidden={visibleTab !== "system"}>
           <SystemIssuePage issue={activeRuntimeRepair} actions={actions} />

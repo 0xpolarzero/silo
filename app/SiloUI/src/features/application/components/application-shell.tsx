@@ -250,6 +250,7 @@ export function ApplicationShell({
   navigationLoading,
   navigationDisabled = false,
   toggleSidebarRequest,
+  onSidebarCollapsedChange,
   onTabChange,
   onWorkspaceSectionChange,
   onSettingsSectionChange,
@@ -270,6 +271,7 @@ export function ApplicationShell({
   navigationLoading?: ApplicationNavigationLoading
   navigationDisabled?: boolean
   toggleSidebarRequest?: number
+  onSidebarCollapsedChange?: (collapsed: boolean) => void
   onTabChange: (tab: ApplicationTab) => void
   onWorkspaceSectionChange: (section: WorkspaceSection) => void
   onSettingsSectionChange: (section: SettingsSection) => void
@@ -298,6 +300,7 @@ export function ApplicationShell({
     useKeyboard,
     blurSidebar,
   } = useSidebarDisclosure()
+  useEffect(() => { onSidebarCollapsedChange?.(pinnedCollapsed) }, [pinnedCollapsed, onSidebarCollapsedChange])
   const consumedToggleRequest = useRef(0)
   const toggleRequested = useEffectEvent(() => { if (!navigationDisabled) toggle() })
   useEffect(() => {

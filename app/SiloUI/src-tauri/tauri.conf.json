@@ -73,7 +73,8 @@
       "runtime/git/licenses/": "git-support/licenses/",
       "runtime/git/share/": "git-support/share/",
       "../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md",
-      "runtime/release-info.json": "release-info.json"
+      "runtime/release-info.json": "release-info.json",
+      "../docs/silo-help.html": "docs/silo-help.html"
     },
     "icon": [
       "icons/32x32.png",

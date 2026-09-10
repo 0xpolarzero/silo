@@ -190,13 +190,13 @@ mod native {
             true,
             &[
                 &item("go-sandboxes", "Sandboxes", None)?,
-                &item("go-github", "GitHub", None)?,
-                &item("go-secrets", "Secrets", None)?,
                 &item("go-files", "Files", None)?,
                 &item("go-logs", "Logs", None)?,
                 &item("go-network", "Network", None)?,
-                &item("go-backup", "Backup", None)?,
                 &item("go-activity", "Activity", None)?,
+                &item("go-github", "GitHub", None)?,
+                &item("go-secrets", "Secrets", None)?,
+                &item("go-backup", "Backup", None)?,
             ],
         )?;
         let window = Submenu::with_items(
