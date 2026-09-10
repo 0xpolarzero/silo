@@ -70,12 +70,12 @@ export function UpdateNotice({ onOpen }: { onOpen: () => void }) {
   const updates = useUpdates()
   const [dismissed, setDismissed] = useState<string | null>(null)
   const state = updates?.snapshot
-  if (state?.phase === "installing") return <div role="status" className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2 text-xs"><Download className="size-3.5" aria-hidden="true" />Installing update. Silo will restart…</div>
+  if (state?.phase === "installing") return <div role="status" className="border-b bg-muted/30 text-xs"><div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-4 py-2 sm:px-6"><Download className="size-3.5" aria-hidden="true" />Installing update. Silo will restart…</div></div>
   if (!state || !["available", "ready"].includes(state.phase) || !state.availableVersion || dismissed === `${state.availableVersion}:${state.phase}`) return null
-  return <div role="status" className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2 text-xs">
+  return <div role="status" className="border-b bg-muted/30 text-xs"><div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-4 py-2 sm:px-6">
     <Download className="size-3.5" aria-hidden="true" />
     <span className="min-w-0 flex-1">Silo {state.availableVersion} {state.phase === "ready" ? "is ready to install." : "is available."}</span>
     <Button size="xs" variant="outline" onClick={onOpen}>View update</Button>
     <Button size="icon-xs" variant="ghost" aria-label="Dismiss update notice" onClick={() => setDismissed(`${state.availableVersion}:${state.phase}`)}><X className="size-3" /></Button>
-  </div>
+  </div></div>
 }
