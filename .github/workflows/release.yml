@@ -133,8 +133,19 @@ jobs:
           if [[ '${{ inputs.draft }}' == true ]]; then
             test "$RELEASE_REF" = "refs/tags/v$(node -p "require('./package.json').version")"
           fi
+      - name: Compile release application
+        run: npm run desktop:build -- --target '${{ matrix.target }}' --no-bundle --ci
       - name: Build release bundles
-        run: npm run desktop:build -- --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --ci
+        run: |
+          set -o pipefail
+          npx tauri bundle --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --ci --verbose 2>&1 | tee "$RUNNER_TEMP/silo-bundle.log"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: bundle-diagnostics-${{ matrix.asset }}
+          path: ${{ runner.temp }}/silo-bundle.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Enforce exact macOS runtime libraries and rebuild signed packages
         if: runner.os == 'macOS'
         run: python3 scripts/package-macos-release.py 'src-tauri/target/${{ matrix.target }}/release/bundle/macos/Silo.app' release-assets
