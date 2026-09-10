@@ -9,6 +9,7 @@ export const updateSnapshotSchema = z.object({
   downloadedBytes: z.number().nonnegative(), totalBytes: z.number().positive().nullable(),
   automaticChecks: z.boolean(), packageKind: z.enum(["macos", "appimage", "manual"]),
   releaseUrl: z.string(), error: z.string().nullable(), errorDetails: z.string().nullable(),
+  installBlockReason: z.string().nullable(),
   runningSandboxes: z.array(z.string()), canInstall: z.boolean(),
 })
 export type UpdateSnapshot = z.infer<typeof updateSnapshotSchema>

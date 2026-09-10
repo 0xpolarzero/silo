@@ -11,7 +11,7 @@ function description(state: UpdateSnapshot) {
     case "checking": return "Checking for updates…"
     case "available": return `Version ${state.availableVersion} is available.`
     case "downloading": return "Downloading update…"
-    case "ready": return state.canInstall ? "Ready to install. Silo will restart." : "Wait for active operations to finish."
+    case "ready": return state.canInstall ? "Ready to install. Silo will restart." : state.installBlockReason ?? "Installation is unavailable. Try checking again."
     case "installing": return "Installing update. Silo will restart…"
     default: return state.phase === "idle" && state.lastChecked ? `Version ${state.currentVersion} · Silo is up to date` : `Version ${state.currentVersion}`
   }

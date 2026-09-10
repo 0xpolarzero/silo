@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest"
 import { UpdatesCard, UpdateNotice } from "./updates"
 import { UpdatesProvider, type UpdateBackend, type UpdateSnapshot } from "./update-store"
 
-const state: UpdateSnapshot = { phase: "idle", lastChecked: null, retryAction: null, currentVersion: "0.1.0", availableVersion: null, releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "macos", releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null, runningSandboxes: [], canInstall: true }
+const state: UpdateSnapshot = { phase: "idle", lastChecked: null, retryAction: null, currentVersion: "0.1.0", availableVersion: null, releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "macos", releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true }
 function mount(initial: Partial<UpdateSnapshot> = {}) {
   let emit!: (value: UpdateSnapshot) => void
   const backend: UpdateBackend = {
@@ -51,7 +51,7 @@ it("checks and downloads only on request, displays real progress, and requires c
   expect(backend.install).toHaveBeenCalledWith(true)
 })
 it("does not permit installation during active operations", async () => {
-  mount({ phase: "ready" as const, availableVersion: "0.2.0", canInstall: false })
+  mount({ phase: "ready" as const, availableVersion: "0.2.0", canInstall: false, installBlockReason: "Wait for active operations to finish." })
   expect(await screen.findByRole("button", { name: "Restart and update" })).toBeDisabled()
   expect(screen.getByText("Wait for active operations to finish.")).toBeVisible()
 })
@@ -133,4 +133,10 @@ it("does not overwrite saved automatic-check settings with an older focus refres
   expect(screen.getByRole("switch", { name: "Automatically check for updates" })).not.toBeChecked()
   await act(async () => resolve(state))
   expect(screen.getByRole("switch", { name: "Automatically check for updates" })).not.toBeChecked()
+})
+it("explains an inspection failure without claiming an operation is still running", async () => {
+  mount({ phase: "ready", canInstall: false, installBlockReason: "Silo could not verify sandbox status. Check Sandboxes before updating." })
+  expect(await screen.findByText("Silo could not verify sandbox status. Check Sandboxes before updating.")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Restart and update" })).toBeDisabled()
+  expect(screen.queryByText("Wait for active operations to finish.")).not.toBeInTheDocument()
 })
