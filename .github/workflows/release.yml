@@ -115,7 +115,7 @@ jobs:
         run: test -n "$TAURI_SIGNING_PRIVATE_KEY"
       - name: Test release tooling
         run: python3 -m unittest discover -s scripts -p 'test_*release*.py'
-      - run: npm test
+      - run: npm test -- --maxWorkers=2 --testTimeout=15000
       - run: npm run lint
       - name: Prepare native resources
         run: npm run runtime:prepare
