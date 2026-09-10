@@ -27,3 +27,5 @@ src-tauri/runtime/
 *.njsproj
 *.sln
 *.sw?
+src-tauri/guest-image-artifacts/
+src-tauri/guest-image/

@@ -1,0 +1,7 @@
+**
+!guest-image/
+!guest-image/Dockerfile
+!guest-image/Dockerfile.dockerignore
+!src-tauri/
+!src-tauri/guest/
+!src-tauri/guest/setup-github.sh

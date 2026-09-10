@@ -1223,19 +1223,18 @@ index 9098e747..315df541 100644
          return Err(crate::MicrosandboxError::SandboxStillRunning(format!(
              "cannot remove sandbox {name:?}: status changed to {:?}",
 diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
-index 8998d360..5f4626e8 100644
 --- a/sdk/rust/lib/snapshot/archive.rs
 +++ b/sdk/rust/lib/snapshot/archive.rs
-@@ -245,6 +245,8 @@ pub(super) async fn save_snapshot(
+@@ -244,6 +244,8 @@
+                 img_digest_str, metadata.manifest_digest
              )));
          }
-
-+        validate_cached_metadata(head.manifest(), &metadata)?;
 +
++        validate_cached_metadata(head.manifest(), &metadata)?;
+ 
          let metadata_path = cache.image_metadata_path(&image_ref);
          push_required_cache_file(&mut cache_files, &metadata_path, "manifests")?;
-
-@@ -1903,7 +1905,7 @@ async fn install_staged_cache(
+@@ -1903,7 +1905,7 @@
              MicrosandboxError::Custom(format!("invalid snapshot image digest: {e}"))
          })?;
      let staged_cache = microsandbox_image::GlobalCache::new_async(cache_stage).await?;
@@ -1244,7 +1243,7 @@ index 8998d360..5f4626e8 100644
      let metadata = staged_cache
          .read_image_metadata_async(&image_ref)
          .await?
-@@ -1918,17 +1920,54 @@ async fn install_staged_cache(
+@@ -1918,14 +1920,51 @@
      let expected_files =
          expected_cache_files(&staged_cache, &image_ref, &metadata, &pinned_digest)?;
      ensure_only_expected_cache_files(cache_stage, &expected_files)?;
@@ -1258,7 +1257,7 @@ index 8998d360..5f4626e8 100644
 +        .cloned()
 +        .collect();
 +    ensure_cache_targets_compatible(&portable_files, cache_stage, cache_dir).await?;
-
+ 
      let metadata_path = staged_cache.image_metadata_path(&image_ref);
 -    for source in expected_files.iter().filter(|path| **path != metadata_path) {
 +    for source in portable_files.iter().filter(|path| **path != metadata_path) {
@@ -1271,10 +1270,10 @@ index 8998d360..5f4626e8 100644
 +    }
 +    install_local_vmdk(&real_cache.vmdk_path(&pinned_digest), &extents).await?;
      install_cache_file(&metadata_path, cache_stage, cache_dir).await?;
-
-     Ok(())
- }
-
+ 
++    Ok(())
++}
++
 +async fn install_local_vmdk(target: &Path, extents: &[PathBuf]) -> MicrosandboxResult<()> {
 +    let parent = target
 +        .parent()
@@ -1295,13 +1294,10 @@ index 8998d360..5f4626e8 100644
 +        }
 +        Err(error) => return Err(error.error.into()),
 +    }
-+    Ok(())
-+}
-+
- fn validate_cached_metadata(
-     manifest: &microsandbox_image::snapshot::Manifest,
-     metadata: &microsandbox_image::CachedImageMetadata,
-@@ -2086,14 +2125,18 @@ async fn install_cache_file(
+     Ok(())
+ }
+ 
+@@ -2086,14 +2125,18 @@
      cache_dir: &Path,
  ) -> MicrosandboxResult<()> {
      let target = cache_install_target(source, cache_stage, cache_dir)?;
@@ -1324,11 +1320,51 @@ index 8998d360..5f4626e8 100644
 +    }
      Ok(())
  }
-
-@@ -2309,6 +2352,80 @@ mod tests {
-         assert_eq!(serde_json::to_vec(&entry).unwrap(), released);
+ 
+@@ -2124,6 +2167,20 @@
+     if metadata.len() != tokio::fs::metadata(source).await?.len()
+         || file_sha256(target).await? != file_sha256(source).await?
+     {
++        // Image metadata contains maps whose serialization order can differ
++        // between imports. Preserve an existing equivalent metadata file; all
++        // image blobs and filesystem artifacts still require exact bytes.
++        if source.parent().and_then(Path::file_name) == Some(std::ffi::OsStr::new("manifests"))
++            && source.extension() == Some(std::ffi::OsStr::new("json"))
++            && metadata.len() <= 16 * 1024 * 1024
++            && tokio::fs::metadata(source).await?.len() <= 16 * 1024 * 1024
++        {
++            let source_json = serde_json::from_slice::<serde_json::Value>(&tokio::fs::read(source).await?);
++            let target_json = serde_json::from_slice::<serde_json::Value>(&tokio::fs::read(target).await?);
++            if matches!((source_json, target_json), (Ok(a), Ok(b)) if a == b) {
++                return Ok(());
++            }
++        }
+         return Err(MicrosandboxError::Custom(format!(
+             "cache target already exists with different content: {}",
+             target.display()
+@@ -2310,6 +2367,100 @@
      }
-
+ 
+     #[tokio::test]
++    async fn cache_metadata_comparison_preserves_equivalent_json_only() {
++        let directory = tempfile::tempdir().unwrap();
++        let source = directory.path().join("stage/manifests/image.json");
++        let target = directory.path().join("cache/manifests/image.json");
++        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
++        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
++        std::fs::write(&source, br#"{"config_digest":"a","layers":[]}"#).unwrap();
++        let existing = br#"{"layers":[],"config_digest":"a"}"#;
++        std::fs::write(&target, existing).unwrap();
++        ensure_cache_target_compatible(&source, &target).await.unwrap();
++        assert_eq!(std::fs::read(&target).unwrap(), existing);
++        std::fs::write(&source, br#"{"config_digest":"b","layers":[]}"#).unwrap();
++        assert!(ensure_cache_target_compatible(&source, &target).await.is_err());
++        assert_eq!(std::fs::read(&target).unwrap(), existing);
++        let blob = directory.path().join("blob.json");
++        std::fs::write(&blob, br#"{"config_digest":"a","layers":[]}"#).unwrap();
++        assert!(ensure_cache_target_compatible(&blob, &target).await.is_err());
++    }
++
 +    #[tokio::test]
 +    async fn cache_publication_preserves_target_created_after_preflight() {
 +        let directory = tempfile::tempdir().unwrap();
@@ -1403,9 +1439,10 @@ index 8998d360..5f4626e8 100644
 +        );
 +    }
 +
-     #[tokio::test]
++    #[tokio::test]
      async fn replace_archive_overwrites_existing_destination() {
          let directory = tempfile::tempdir().unwrap();
+         let temp_out = directory.path().join("bundle.tar.zst.tmp");
 --- a/crates/network/lib/secrets/handle.rs
 +++ b/crates/network/lib/secrets/handle.rs
 @@ -3,7 +3,7 @@

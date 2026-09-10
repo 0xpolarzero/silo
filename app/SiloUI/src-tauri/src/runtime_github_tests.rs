@@ -4,7 +4,7 @@
 use super::*;
 
 #[test]
-#[ignore = "requires a signed MicroSandbox binary, hypervisor access and Ubuntu package network access"]
+#[ignore = "requires a signed MicroSandbox binary, hypervisor access, bundled image and GitHub network access"]
 fn github_guest_bootstrap_and_live_identity() {
     let executable = PathBuf::from(std::env::var("SILO_TEST_MSB").expect("set SILO_TEST_MSB"));
     let library =
@@ -14,6 +14,8 @@ fn github_guest_bootstrap_and_live_identity() {
         .tempdir_in("/tmp")
         .unwrap();
     let paths = RuntimePaths {
+        guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("runtime/guest-image"),
         executable,
         library,
         home: directory.path().join("msb"),
@@ -261,6 +263,8 @@ fn github_authenticated_guest_workflow() {
         .tempdir_in("/tmp")
         .unwrap();
     let paths = RuntimePaths {
+        guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("runtime/guest-image"),
         executable: PathBuf::from(required("SILO_TEST_MSB")),
         library: PathBuf::from(required("SILO_TEST_LIBKRUNFW")),
         home: directory.path().join("msb"),

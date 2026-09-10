@@ -1,3 +1,5 @@
+#[path = "guest_image.rs"]
+pub(crate) mod guest_image;
 #[path = "runtime_activity.rs"]
 mod runtime_activity;
 #[path = "secrets_runtime.rs"]
@@ -29,7 +31,6 @@ const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
 pub(crate) const WORKSPACE_MOUNT: &str = "/workspace";
 const MAX_MACHINE_COUNT: usize = 64;
 const MANAGED_LABEL: &str = "silo.managed=true";
-const DEFAULT_IMAGE: &str = "registry-1.docker.io/library/ubuntu:24.04";
 
 pub(crate) static MUTATION_LOCK: Mutex<()> = Mutex::new(());
 const DISABLED_GITHUB_PROFILE: &str = r#"{"version":1,"owners":[]}"#;
@@ -81,6 +82,7 @@ pub(crate) fn github_environment(paths: &RuntimePaths, args: &[String]) -> Strin
 
 #[derive(Clone, Debug)]
 pub(crate) struct RuntimePaths {
+    pub(crate) guest_image: PathBuf,
     pub(crate) executable: PathBuf,
     pub(crate) home: PathBuf,
     pub(crate) storage_home: Option<PathBuf>,
@@ -125,6 +127,10 @@ impl std::fmt::Display for RuntimeError {
 }
 
 pub(crate) trait RuntimeRunner {
+    fn prepare_guest_image(&self, paths: &RuntimePaths) -> Result<String, RuntimeError> {
+        guest_image::prepare(self, paths)
+    }
+
     fn run(
         &self,
         paths: &RuntimePaths,
@@ -326,6 +332,7 @@ pub(crate) fn runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
     let user_home = app.path().home_dir().map_err(|error| error.to_string())?;
     let home = runtime_home_alias(&user_home, &storage_home);
     Ok(RuntimePaths {
+        guest_image: resource_dir.join("guest-image"),
         executable,
         home,
         storage_home: Some(storage_home),
@@ -1552,6 +1559,7 @@ fn machine_progress(
         ("workspace-configuration", _) => format!("{workspace} configured."),
         ("workspace-verification", 0) => format!("Verifying {workspace}…"),
         ("workspace-verification", _) => format!("{workspace} verified."),
+        ("workspace-image-preparation", _) => "Preparing the bundled VM image…".into(),
         ("workspace-disk-preparation", _) => format!("Preparing {workspace}'s workspace disk…"),
         ("workspace-runtime-preparation", _) => {
             format!("Preparing {workspace}'s VM image and system disk…")
@@ -1853,7 +1861,7 @@ fn read_activity(
     }
     for event in &mut events {
         event.message = match event.step.as_str() {
-            "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
+            "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-image-preparation" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
             "image-resolving" => format!("{}: Resolving the VM image…", event.workspace),
             "image-resolved" => format!("{}: VM image resolved; preparing the download…", event.workspace),
             "image-download" => format!("{}: Downloading the VM image…", event.workspace),
@@ -2514,7 +2522,7 @@ fn validate_machine_update(
     }
 }
 
-fn configure_guest_tools(
+fn verify_guest_tools(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
@@ -2527,7 +2535,7 @@ fn configure_guest_tools(
             "--no-tty".into(),
             "--quiet".into(),
             "--timeout".into(),
-            "10m".into(),
+            "30s".into(),
             "--user".into(),
             "root".into(),
             "--workdir".into(),
@@ -2535,9 +2543,9 @@ fn configure_guest_tools(
             "--".into(),
             "sh".into(),
             "-c".into(),
-            include_str!("../guest/setup-github.sh").into(),
+            include_str!("../guest/verify-tools.sh").into(),
         ],
-        Duration::from_secs(630),
+        Duration::from_secs(45),
     )?;
     let inspected = inspect_workspace(runner, paths, name)?;
     ensure_managed(&inspected)?;
@@ -2610,9 +2618,15 @@ fn create_machine_with_progress(
             remove_disk_path(&workspace_volume),
         ));
     }
+    progress("workspace-image-preparation", name, 0);
+    let image = runner
+        .prepare_guest_image(paths)
+        .map_err(|error| with_cleanup_error(error, remove_disk_path(&workspace_volume)))?;
     let args = vec![
         "create".into(),
-        DEFAULT_IMAGE.into(),
+        image,
+        "--pull".into(),
+        "never".into(),
         "--name".into(),
         name.clone(),
         "--cpus".into(),
@@ -2665,7 +2679,7 @@ fn create_machine_with_progress(
             cleanup_failed_create(runner, paths, name, id),
         ));
     }
-    if let Err(error) = configure_guest_tools(runner, paths, name) {
+    if let Err(error) = verify_guest_tools(runner, paths, name) {
         return Err(with_cleanup_error(
             error,
             cleanup_failed_create(runner, paths, name, id),
@@ -3189,6 +3203,10 @@ mod tests {
     }
 
     impl RuntimeRunner for StubRunner {
+        fn prepare_guest_image(&self, _paths: &RuntimePaths) -> Result<String, RuntimeError> {
+            Ok("ghcr.io/0xpolarzero/silo-guest:test".into())
+        }
+
         fn run(
             &self,
             _paths: &RuntimePaths,
@@ -3202,6 +3220,12 @@ mod tests {
                 .pop_front()
                 .expect("missing stub output")
         }
+    }
+
+    #[test]
+    fn bundled_image_preparation_reports_its_actual_stage() {
+        let event = machine_progress("attempt", "workspace-image-preparation", "dev", 0);
+        assert_eq!(event.message, "Preparing the bundled VM image…");
     }
 
     #[test]
@@ -3542,6 +3566,8 @@ mod tests {
 
     pub(super) fn paths(directory: &tempfile::TempDir) -> RuntimePaths {
         RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
             storage_home: None,
             executable: directory.path().join("msb"),
             home: directory.path().join("home"),
@@ -3661,7 +3687,10 @@ mod tests {
         create_machine(&runner, &paths, &vm()).unwrap();
 
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(&calls[2][..2], ["create", DEFAULT_IMAGE]);
+        assert_eq!(
+            &calls[2][..2],
+            ["create", "ghcr.io/0xpolarzero/silo-guest:test"]
+        );
         assert!(calls[2]
             .windows(2)
             .any(|pair| pair == ["--root-disk", "80G"]));
@@ -3693,7 +3722,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![json!(null), inspect(&paths, "Running")]);
-        assert!(configure_guest_tools(&runner, &paths, "dev")
+        assert!(verify_guest_tools(&runner, &paths, "dev")
             .unwrap_err()
             .to_string()
             .contains("stopped state"));
@@ -4228,6 +4257,8 @@ mod tests {
                 .join("Silo.app/Contents/Frameworks/libkrunfw.5.dylib")
         );
         let paths = RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
             storage_home: None,
             executable,
             library,

@@ -25,7 +25,7 @@ const EXPECTED_MSB_SOURCE: &str = "5eca4de8bf233e57f114140f8c076ea8c96f21ab";
 const EXPECTED_MSB_SOURCE_ARCHIVE_SHA: &str =
     "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06";
 const EXPECTED_MSB_PATCH_SHA: &str =
-    "1e423c9deb3000c107cb046e9a4487e6f2cee14fed0cfa62c90e53632e546730";
+    "eaa9125c5a07326a17aa750d0044df2d9e5333eaf8858c9a586820b73c1d4ae2";
 const EXPECTED_MSB_TOOLCHAIN: &str = "1.94.0";
 const EXPECTED_MSB_FEATURES: &str = "net,ssh";
 const EXPECTED_GIT: &str = "2.53.0";
@@ -740,6 +740,9 @@ fn verify_linux_hash(path: &Path, expected: &str) -> Result<(), ProbeError> {
 fn microsandbox_check(paths: &ProbePaths) -> DependencyCheck {
     let id = "runtime-microsandbox";
     let title = "MicroSandbox runtime";
+    if let Err(message) = crate::runtime::guest_image::validate_bundle(&paths.resource_dir) {
+        return ProbeError::Malformed(message).to_check(id, title, true);
+    }
     let manifest_path = paths.resource_dir.join("microsandbox/manifest.json");
     let manifest: MicrosandboxManifest = match read_json(&manifest_path) {
         Ok(value) => value,
@@ -1109,6 +1112,21 @@ pub async fn read_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_guest_image_fails_existing_runtime_check_without_installing() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = ProbePaths {
+            executable_dir: directory.path().join("bin"),
+            resource_dir: directory.path().join("resources"),
+            frameworks_dir: Some(directory.path().join("Frameworks")),
+        };
+        let check = microsandbox_check(&paths);
+        assert_eq!(check.id, "runtime-microsandbox");
+        assert_ne!(check.status, CheckStatus::Pass);
+        assert_eq!(check.remediation.as_deref(), Some(REINSTALL_GUIDANCE));
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn checked_in_runtime_patch_matches_packaged_build_pin() {

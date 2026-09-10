@@ -52,7 +52,7 @@ mod tests {
     use super::*;
     #[test]
     fn opens_in_workspace_without_starting_a_stopped_vm() {
-        let paths = RuntimePaths { executable: "/tmp/Silo app/msb".into(), home: "/tmp/runtime home".into(), storage_home: None, library: "/tmp/lib.dylib".into(), metadata: "/tmp/meta".into(), volumes: "/tmp/volumes".into() };
+        let paths = RuntimePaths { guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image"), executable: "/tmp/Silo app/msb".into(), home: "/tmp/runtime home".into(), storage_home: None, library: "/tmp/lib.dylib".into(), metadata: "/tmp/meta".into(), volumes: "/tmp/volumes".into() };
         let text = command(&paths, "dev").unwrap();
         assert!(text.contains("'--no-start' '--workdir' '/workspace' '--tty'"));
         assert!(text.contains("'MSB_HOME=/tmp/runtime home'"));

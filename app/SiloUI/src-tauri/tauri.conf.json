@@ -61,6 +61,7 @@
       "binaries/git-remote-https"
     ],
     "resources": {
+      "runtime/guest-image/": "guest-image/",
       "runtime/microsandbox/manifest.json": "microsandbox/manifest.json",
       "runtime/microsandbox/licenses/": "microsandbox/licenses/",
       "runtime/git/manifest.json": "git-support/manifest.json",

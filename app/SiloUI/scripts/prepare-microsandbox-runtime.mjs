@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path"
 
 import { resolveRuntimeTarget, stageRuntime } from "./microsandbox-runtime.mjs"
 import { stageGitRuntime } from "./git-runtime.mjs"
+import { stageGuestImage } from "./guest-image.mjs"
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const hostTriple = execFileSync("rustc", ["--print", "host-tuple"], { encoding: "utf8" }).trim()
@@ -32,3 +33,10 @@ const git = await stageGitRuntime({
 
 console.log(`Prepared bundled MicroSandbox ${prepared.targetTriple}`)
 console.log(`Prepared bundled Git ${git.targetTriple}`)
+
+const guest = await stageGuestImage({ appRoot, targetTriple, fetchBytes: async (url) => {
+  const response = await fetch(url, { redirect: "follow" })
+  if (!response.ok) throw new Error(`Guest image download failed (${response.status})`)
+  return new Uint8Array(await response.arrayBuffer())
+} })
+console.log(`Prepared bundled guest ${guest.imageReference}`)

@@ -1470,6 +1470,14 @@ fn validate_snapshottable_config(name: &str, config: &Value) -> Result<(), Backu
 
 // Silo currently creates Ubuntu VMs with these runtime defaults. Reject overrides
 // that the restore command does not reproduce instead of silently changing them.
+// Only the exact credential-free profile installed during Silo VM creation is
+// restorable here. Custom policies, host secret references and values stay blocked.
+pub(crate) fn default_github_network(network: &Value) -> bool {
+    let expected: Value = serde_json::from_str(include_str!("../guest/github-network-default.json"))
+        .expect("checked-in GitHub network defaults");
+    network == &expected
+}
+
 fn supported_runtime_settings(config: &serde_json::Map<String, Value>) -> bool {
     let expected = [
         (
@@ -1487,6 +1495,9 @@ fn supported_runtime_settings(config: &serde_json::Map<String, Value>) -> bool {
     ];
     for (field, defaults) in expected {
         if let Some(value) = config.get(field) {
+            if field == "network" && default_github_network(value) {
+                continue;
+            }
             let Some(fields) = value.as_object() else {
                 return false;
             };
@@ -2641,6 +2652,22 @@ mod tests {
             .position(|args| args.get(1).is_some_and(|arg| arg == "save"))
             .unwrap();
         assert!(stop < capture && capture < restart && restart < archive);
+    }
+
+    #[test]
+    fn default_github_network_is_restorable_but_credentials_and_policy_changes_are_not() {
+        let mut config = managed_config("dev");
+        config["network"] = serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
+        assert!(validate_snapshottable_config("dev", &config).is_ok());
+        let original = config.clone();
+        config["network"]["secrets"]["secrets"][0]["value"] = serde_json::json!("must-not-be-archived");
+        assert!(validate_snapshottable_config("dev", &config).is_err());
+        config = original.clone();
+        config["network"]["tls"]["verify_upstream"] = serde_json::json!(false);
+        assert!(validate_snapshottable_config("dev", &config).is_err());
+        config = original;
+        config["network"]["secrets"]["secrets"][0]["source"] = serde_json::json!({"kind":"file","path":"/private/secret"});
+        assert!(validate_snapshottable_config("dev", &config).is_err());
     }
 
     #[test]

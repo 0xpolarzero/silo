@@ -771,6 +771,7 @@ mod tests {
     fn pending_removal_survives_relaunch_and_corrupt_settings_are_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let paths = RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image"),
             executable: temp.path().join("msb"),
             home: temp.path().into(),
             storage_home: None,

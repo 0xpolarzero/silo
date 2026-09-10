@@ -1,0 +1,68 @@
+name: Publish Silo guest image
+on:
+  workflow_dispatch:
+  push:
+    branches: ['publish-guest-*']
+permissions:
+  contents: read
+concurrency:
+  group: publish-silo-guest
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Refuse replacing an existing image release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view guest-ubuntu-24.04-v1 >/dev/null 2>&1; then
+            echo "This image version is published. Increment the recipe version before publishing again."
+            exit 1
+          fi
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse replacing an already published architecture
+        run: |
+          for arch in arm64 amd64; do
+            if docker manifest inspect ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v1-$arch >/dev/null 2>&1; then
+              echo "This image architecture is already published. Recover the exact artifact or publish a new version."
+              exit 1
+            fi
+          done
+      - name: Build and verify both guest architectures
+        run: |
+          node app/SiloUI/scripts/build-guest-image.mjs arm64
+          node app/SiloUI/scripts/build-guest-image.mjs amd64
+      - name: Publish standard container images and multi-architecture tag
+        run: |
+          docker push ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v1-arm64
+          docker push ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v1-amd64
+          docker manifest create ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v1 ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v1-arm64 ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v1-amd64
+          docker manifest push ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v1
+      - name: Publish exact app bundle archives and provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir guest-release
+          for arch in arm64 amd64; do
+            cp app/SiloUI/src-tauri/guest-image-artifacts/$arch/image.tar.gz guest-release/image-$arch.tar.gz
+            cp app/SiloUI/src-tauri/guest-image-artifacts/$arch/manifest.json guest-release/manifest-$arch.json
+          done
+          cp app/SiloUI/guest-image/Dockerfile guest-release/Dockerfile
+          cp app/SiloUI/src-tauri/guest/setup-github.sh guest-release/setup-github.sh
+          printf '%s\n' "$GITHUB_SHA" > guest-release/source-commit.txt
+          (cd guest-release && sha256sum image-*.tar.gz > SHA256SUMS)
+          gh release create guest-ubuntu-24.04-v1 guest-release/* --target "$GITHUB_SHA" --title 'Silo guest Ubuntu 24.04 v1' --notes 'Ubuntu 24.04 with Git, Git LFS, gh and Silo integration. Exact bundled archives, package inventories and image config digests are attached. Standard OCI images: ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v1. No credentials or user data.' --latest=false

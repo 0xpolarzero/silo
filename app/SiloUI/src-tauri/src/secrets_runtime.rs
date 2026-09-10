@@ -387,13 +387,15 @@ mod tests {
 
 #[cfg(test)]
 #[test]
-#[ignore = "requires signed MicroSandbox, hypervisor access, and Ubuntu image download"]
+#[ignore = "requires signed MicroSandbox, hypervisor access, bundled image and test HTTPS endpoints"]
 fn live_secret_adapter_uses_refs_and_preserves_boot_for_live_updates() {
     let directory = tempfile::Builder::new()
         .prefix("silo-secret-test-")
         .tempdir_in("/tmp")
         .unwrap();
     let paths = RuntimePaths {
+        guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("runtime/guest-image"),
         executable: PathBuf::from(std::env::var("SILO_TEST_MSB").expect("set SILO_TEST_MSB")),
         library: PathBuf::from(
             std::env::var("SILO_TEST_LIBKRUNFW").expect("set SILO_TEST_LIBKRUNFW"),
@@ -579,7 +581,9 @@ finally: c.close()
         command(
             &[
                 "create",
-                DEFAULT_IMAGE,
+                &guest_image::prepare(&ProcessRunner, &paths).map_err(|error| error.to_string())?,
+                "--pull",
+                "never",
                 "--name",
                 name,
                 "--cpus",

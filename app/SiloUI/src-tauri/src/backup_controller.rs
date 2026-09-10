@@ -1055,6 +1055,12 @@ fn select_archive_source(names: &[String], selected: Option<&str>) -> Result<Str
 }
 
 fn append_restored_settings(arguments: &mut Vec<String>, config: &Value) -> Result<(), String> {
+    if config.get("network").is_some_and(backup::default_github_network) {
+        arguments.extend([
+            "--secret".into(), "SILO_GITHUB@github.com,api.github.com,uploads.github.com".into(),
+            "--label".into(), "silo.github-protocol=1".into(),
+        ]);
+    }
     if let Some(labels) = config.get("labels") {
         let labels = labels
             .as_object()
@@ -1596,6 +1602,8 @@ mod tests {
             .tempdir_in("/tmp")
             .unwrap();
         let paths = runtime::RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
             executable: PathBuf::from(std::env::var("SILO_TEST_MSB").expect("packaged msb path")),
             library: PathBuf::from(
                 std::env::var("SILO_TEST_LIBKRUNFW").expect("packaged library path"),
@@ -1635,7 +1643,7 @@ mod tests {
             .unwrap()
         };
         let machine = runtime::create_disposable_test_machine(&paths, name).unwrap();
-        assert_eq!(inspect(&paths, name).unwrap().status, "Created");
+        assert_eq!(inspect(&paths, name).unwrap().status, "Stopped");
         run(&["start", name]);
         run(&["exec", name, "--", "sh", "-c", "printf root-proof > /root/silo-backup-proof; printf workspace-proof > /workspace/silo-backup-proof; sync"]);
         eprintln!(
@@ -1646,7 +1654,7 @@ mod tests {
         runtime::apply_disposable_test_identity(&paths, name).unwrap();
         let inspected = inspect(&paths, name).unwrap();
         let second_machine = runtime::create_disposable_test_machine(&paths, second_name).unwrap();
-        assert_eq!(inspect(&paths, second_name).unwrap().status, "Created");
+        assert_eq!(inspect(&paths, second_name).unwrap().status, "Stopped");
         run(&["start", second_name]);
         run(&["exec", second_name, "--", "sh", "-c", "printf second-root > /root/silo-backup-proof; printf second-workspace > /workspace/silo-backup-proof; sync"]);
         run(&["stop", second_name]);
@@ -1706,6 +1714,8 @@ mod tests {
         fs::remove_dir_all(&paths.volumes).unwrap();
         fs::remove_file(&paths.metadata).unwrap();
         let paths = runtime::RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
             executable: paths.executable.clone(),
             library: paths.library.clone(),
             home: directory.path().join("cold-target"),
@@ -1743,19 +1753,10 @@ mod tests {
             restored.config.get("pull_policy").and_then(Value::as_str),
             Some("Never")
         );
-        assert_eq!(
-            restored
-                .config
-                .get("env")
-                .and_then(Value::as_array)
-                .unwrap()
-                .iter()
-                .find(|entry| entry.get("key").and_then(Value::as_str) == Some("GIT_AUTHOR_EMAIL"))
-                .and_then(|entry| entry.get("value"))
-                .and_then(Value::as_str),
-            Some("silo-test@example.invalid")
-        );
+        assert!(backup::default_github_network(&restored.config["network"]));
+        assert_eq!(restored.config["labels"]["silo.github-protocol"], "1");
         run(&["start", restored_name]);
+        assert_eq!(run(&["exec", restored_name, "--", "git", "config", "--global", "--get", "user.email"]).stdout.trim(), "silo-test@example.invalid");
         let proof = run(&[
             "exec",
             restored_name,
@@ -1782,6 +1783,8 @@ mod tests {
         fs::remove_dir_all(&paths.volumes).unwrap();
         fs::remove_file(&paths.metadata).unwrap();
         let paths = runtime::RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
             executable: paths.executable.clone(),
             library: paths.library.clone(),
             home: directory.path().join("warm-target"),

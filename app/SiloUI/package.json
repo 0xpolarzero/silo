@@ -16,7 +16,8 @@
     "preview": "vite preview",
     "desktop": "tauri dev",
     "desktop:build": "tauri build",
-    "desktop:build:debug": "tauri build --debug --bundles app --config src-tauri/tauri.debug.conf.json"
+    "desktop:build:debug": "tauri build --debug --bundles app --config src-tauri/tauri.debug.conf.json",
+    "guest:image:build": "node scripts/build-guest-image.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

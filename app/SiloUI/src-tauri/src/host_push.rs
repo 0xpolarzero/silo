@@ -738,6 +738,8 @@ mod tests {
         .unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
         let paths = RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
             executable: executable.clone(),
             home: root.join("runtime"),
             storage_home: None,
