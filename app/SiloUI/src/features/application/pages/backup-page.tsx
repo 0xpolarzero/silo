@@ -92,6 +92,17 @@ function BackupPageContent({ source, backup, onBusyChange, menuRequest }: Backup
 
   const openMenuRequest = useEffectEvent((action: "create" | "restore") => {
     if (controlsDisabled) return
+    // A native menu action must not replace an unfinished confirmation or draft.
+    if (flow.kind === "restore-review") {
+      restoreReview.current?.scrollIntoView({ block: "nearest" })
+      restoreName.current?.focus({ preventScroll: true })
+      return
+    }
+    if (flow.kind.startsWith("backup")) {
+      createCard.current?.scrollIntoView({ block: "nearest" })
+      createCard.current?.focus({ preventScroll: true })
+      return
+    }
     const card = action === "create" ? createCard : restoreCard
     card.current?.scrollIntoView({ block: "nearest" })
     card.current?.focus({ preventScroll: true })
@@ -225,6 +236,6 @@ function BackupPageContent({ source, backup, onBusyChange, menuRequest }: Backup
         {operationPanel("restore")}
       </li>
     </ul></ListCard>
-    <section className="grid gap-2"><h3 className="text-xs font-medium">Recent backups</h3><ListCard><ul className="divide-y divide-border" aria-label="Recent backups">{backup.state.archives.length === 0 && <li ref={createCard} tabIndex={-1}><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title="No backups yet" detail="Completed backups will appear here." /></li>}{backup.state.archives.map((archive) => <Collapsible key={archive.name} open={expandedArchive === archive.name} onOpenChange={(open) => setExpandedArchive(open ? archive.name : null)} asChild><li><DisclosureHeader icon={<ListRowIcon className="bg-emerald-500/10 text-emerald-600"><Check className="size-3.5" /></ListRowIcon>} title={<span className="flex items-center gap-2">{archive.name}{flow.kind === "restore-checking" && flow.archivePath === archive.archivePath ? <span className="text-[11px] font-normal text-muted-foreground">Checking…</span> : operation?.kind === "running" && operation.operation === "restore" && operation.archive.archivePath === archive.archivePath ? <span className="text-[11px] font-normal text-muted-foreground">Restoring…</span> : null}</span>} detail={[archive.completedLabel, archive.size, `${archive.sandboxes.length} sandboxes`].join(" · ")} label={`Details for ${archive.name}`} /><CollapsibleContent><ListRowDetails label={`Archive details for ${archive.name}`}><p className="text-[11px] text-muted-foreground">{archive.destination} · {archive.sandboxes.join(", ")}</p><div className="flex justify-end"><Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => { void inspect(archive) }}>Restore…</Button></div></ListRowDetails></CollapsibleContent></li></Collapsible>)}</ul></ListCard></section>
+    <section className="grid gap-2"><h3 className="text-xs font-medium">Recent backups</h3><ListCard><ul className="divide-y divide-border" aria-label="Recent backups">{backup.state.archives.length === 0 && <li><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title="No backups yet" detail="Completed backups will appear here." /></li>}{backup.state.archives.map((archive) => <Collapsible key={archive.name} open={expandedArchive === archive.name} onOpenChange={(open) => setExpandedArchive(open ? archive.name : null)} asChild><li><DisclosureHeader icon={<ListRowIcon className="bg-emerald-500/10 text-emerald-600"><Check className="size-3.5" /></ListRowIcon>} title={<span className="flex items-center gap-2">{archive.name}{flow.kind === "restore-checking" && flow.archivePath === archive.archivePath ? <span className="text-[11px] font-normal text-muted-foreground">Checking…</span> : operation?.kind === "running" && operation.operation === "restore" && operation.archive.archivePath === archive.archivePath ? <span className="text-[11px] font-normal text-muted-foreground">Restoring…</span> : null}</span>} detail={[archive.completedLabel, archive.size, `${archive.sandboxes.length} sandboxes`].join(" · ")} label={`Details for ${archive.name}`} /><CollapsibleContent><ListRowDetails label={`Archive details for ${archive.name}`}><p className="text-[11px] text-muted-foreground">{archive.destination} · {archive.sandboxes.join(", ")}</p><div className="flex justify-end"><Button variant="outline" size="xs" disabled={controlsDisabled} onClick={() => { void inspect(archive) }}>Restore…</Button></div></ListRowDetails></CollapsibleContent></li></Collapsible>)}</ul></ListCard></section>
   </div>
 }

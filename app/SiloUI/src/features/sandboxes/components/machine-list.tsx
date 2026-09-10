@@ -101,8 +101,9 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange, created, running }: {
+function MachineEditor({ editor, focusRequest, machines, onCancel, onSave, onDraftChange, created, running }: {
   editor: MachineEditorDraft
+  focusRequest: number
   created: boolean
   running: boolean
   machines: readonly SetupMachineConfiguration[]
@@ -117,7 +118,7 @@ function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange, crea
   useEffect(() => {
     firstField.current?.focus()
     firstField.current?.scrollIntoView?.({ block: "nearest" })
-  }, [])
+  }, [focusRequest])
 
   function update(changes: Partial<SetupMachineConfiguration>) {
     const next = { ...draft, ...changes } as SetupMachineConfiguration
@@ -199,6 +200,7 @@ function MachineEditor({ editor, machines, onCancel, onSave, onDraftChange, crea
 
 export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, newSandboxRequest, onNewSandboxRequestHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
   const [addOpen, setAddOpen] = useState(false)
+  const [editorFocusRequest, setEditorFocusRequest] = useState(0)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const [draggedID, setDraggedID] = useState<string | null>(null)
@@ -255,7 +257,13 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
   }
 
   const consumedNewRequest = useRef(0)
-  const openRequestedVM = useEffectEvent((id: number) => { startAdd("vm"); onNewSandboxRequestHandled?.(id) })
+  const openRequestedVM = useEffectEvent((id: number) => {
+    if (!interactionDisabled) {
+      if (editor) setEditorFocusRequest(id)
+      else startAdd("vm")
+    }
+    onNewSandboxRequestHandled?.(id)
+  })
   useEffect(() => {
     if (!newSandboxRequest || consumedNewRequest.current === newSandboxRequest) return
     consumedNewRequest.current = newSandboxRequest
@@ -390,7 +398,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
                   onDrop={(event) => drop(event, index)}
                 >
                   {isEditing && editor ? (
-                    <MachineEditor created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} machines={machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} />
+                    <MachineEditor focusRequest={editorFocusRequest} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} machines={machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} />
                   ) : (
                     <SandboxListRow
                       name={machine.name}
