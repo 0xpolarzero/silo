@@ -211,12 +211,13 @@ function Logs({ workspaces, query, onQueryChange }: { workspaces: ApplicationWor
     <div className="flex h-full min-h-0 flex-col">
       <div className="mb-3 flex shrink-0 items-center gap-2">
         <div className="relative min-w-0 flex-1">
-          <Search className="pointer-events-none absolute top-2 left-2.5 size-4 text-muted-foreground" aria-hidden="true" />
-          <Input aria-label="Search logs" placeholder="Search logs" value={query} onChange={(event) => onQueryChange(event.target.value)} className="pl-8" />
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <Input aria-label="Search logs" placeholder="Search logs" value={query} onChange={(event) => onQueryChange(event.target.value)} className="h-7 pl-8" />
         </div>
         <CopyButton
           variant="outline"
           size="sm"
+          className="has-data-[icon=inline-start]:pl-2.5"
           value={filteredRows.map(({ raw }) => raw).join("\n")}
           disabled={filteredRows.length === 0}
           labels={{ idle: "Copy all logs", copied: "All logs copied", failed: "Copy all logs failed" }}
