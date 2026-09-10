@@ -23,8 +23,13 @@ function fixture(t) {
   writeFileSync(join(repo, ".gitignore"), "node_modules\n")
   const git = args => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: "pipe" })
   git(["init", "-b", "main"])
+  // Changesets creates annotated tags, which need identity beyond a single commit.
+  git(["config", "user.name", "Release Test"])
+  git(["config", "user.email", "release-test@example.invalid"])
+  git(["config", "commit.gpgsign", "false"])
+  git(["config", "tag.gpgsign", "false"])
   git(["add", "."])
-  git(["-c", "user.name=Release Test", "-c", "user.email=release-test@example.invalid", "commit", "-m", "Fixture"])
+  git(["commit", "-m", "Fixture"])
   return root
 }
 function prepare(root) {
@@ -71,7 +76,7 @@ test("real Changesets versions a private app, consumes notes, and syncs desktop 
   assert.equal(read(join(root, "CHANGELOG.md")), changelog)
   assert.equal(read(resolve(root, "../../docs/releases", `${expected}.md`)), notes)
   execFileSync("git", ["add", "."], { cwd: resolve(root, "../.."), stdio: "pipe" })
-  execFileSync("git", ["-c", "user.name=Release Test", "-c", "user.email=release-test@example.invalid", "commit", "-m", "Prepare release"], { cwd: resolve(root, "../.."), stdio: "pipe" })
+  execFileSync("git", ["commit", "-m", "Prepare release"], { cwd: resolve(root, "../.."), stdio: "pipe" })
   execFileSync(process.execPath, [join(root, "node_modules/@changesets/cli/bin.js"), "git-tag"], { cwd: root, stdio: "pipe" })
   assert.equal(execFileSync("git", ["tag", "--list"], { cwd: root, encoding: "utf8" }).trim(), `v${expected}`)
 })
