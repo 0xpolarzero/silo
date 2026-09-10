@@ -14,7 +14,7 @@ import tempfile
 import time
 
 from selenium import webdriver
-from selenium.common.exceptions import ElementClickInterceptedException, StaleElementReferenceException
+from selenium.common.exceptions import ElementClickInterceptedException, ElementNotInteractableException, StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.options import BaseOptions
@@ -71,7 +71,7 @@ def run():
                             raise RuntimeError("tauri-driver exited; inspect desktop-driver.log")
                         time.sleep(.1)
                 browser = webdriver.Remote(f"http://127.0.0.1:{port}", options=Options())
-                wait = WebDriverWait(browser, 45, ignored_exceptions=(StaleElementReferenceException, ElementClickInterceptedException))
+                wait = WebDriverWait(browser, 45, ignored_exceptions=(StaleElementReferenceException, ElementClickInterceptedException, ElementNotInteractableException))
                 def click(by, value):
                     def attempt(_):
                         node = browser.find_element(by, value)
@@ -117,7 +117,7 @@ def run():
                     "startWorkspacesAtLaunch": False,
                 }, "onboardingDraft": None}))
                 browser = webdriver.Remote(f"http://127.0.0.1:{port}", options=Options())
-                wait = WebDriverWait(browser, 45, ignored_exceptions=(StaleElementReferenceException, ElementClickInterceptedException))
+                wait = WebDriverWait(browser, 45, ignored_exceptions=(StaleElementReferenceException, ElementClickInterceptedException, ElementNotInteractableException))
                 wait.until(main_window)
                 wait.until(lambda _: browser.find_element(By.ID, "application-nav-backup"))
                 for page in ["workspaces", "github", "secrets", "backup", "settings"]:
@@ -154,7 +154,7 @@ def run():
                 browser.quit()
                 browser = None
                 browser = webdriver.Remote(f"http://127.0.0.1:{port}", options=Options())
-                wait = WebDriverWait(browser, 45, ignored_exceptions=(StaleElementReferenceException, ElementClickInterceptedException))
+                wait = WebDriverWait(browser, 45, ignored_exceptions=(StaleElementReferenceException, ElementClickInterceptedException, ElementNotInteractableException))
                 wait.until(main_window)
                 click(By.ID, "application-nav-settings")
                 wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, "button[aria-label='Reduce motion']").get_attribute("aria-checked") == expected)

@@ -28,23 +28,31 @@ except (OSError, AssertionError) as error:
 target = subprocess.check_output(["rustc", "--print", "host-tuple"], text=True).strip()
 environment = dict(os.environ)
 environment["SILO_TEST_MSB"] = str(root / f"src-tauri/binaries/msb-{target}")
-environment["SILO_TEST_LIBKRUNFW"] = str(root / "src-tauri/runtime/microsandbox/libkrunfw.so.5.6.1")
+environment["SILO_TEST_LIBKRUNFW"] = str(root / f"src-tauri/runtime/microsandbox/{target}/lib/libkrunfw.so.5.6.1")
 for test in [
     "live_bundled_image_import_and_cache_reuse",
     "github_guest_bootstrap_and_live_identity",
     "real_backup_restore_preserves_root_and_workspace_without_original_cache",
     "live_secret_adapter_uses_refs_and_preserves_boot_for_live_updates",
+    "lifecycle_recovery_survives_real_worker_exit_without_repeating_restart",
 ]:
+    returncode = 124
     with (evidence / f"{test}.log").open("w") as output:
-        result = subprocess.run(
-            ["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", test,
-             "--", "--ignored", "--test-threads=1", "--nocapture"],
-            cwd=root, env=environment, stdout=output, stderr=subprocess.STDOUT,
-            timeout=600,
-        )
-    report["tests"].append({"name": test, "passed": result.returncode == 0})
+        try:
+            result = subprocess.run(
+                ["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", test,
+                 "--", "--ignored", "--test-threads=1", "--nocapture"],
+                cwd=root, env=environment, stdout=output, stderr=subprocess.STDOUT,
+                timeout=600,
+            )
+            returncode = result.returncode
+        except subprocess.TimeoutExpired:
+            output.write("\nHardware test exceeded its ten-minute limit.\n")
+    output_text = (evidence / f"{test}.log").read_text()
+    passed = returncode == 0 and "test result: ok. 1 passed; 0 failed;" in output_text
+    report["tests"].append({"name": test, "passed": passed})
     (evidence / "runtime.json").write_text(json.dumps(report, indent=2))
-    if result.returncode:
+    if not passed:
         print(f"FAILED: {test}; see {evidence}")
-        sys.exit(result.returncode)
+        sys.exit(returncode or 1)
     print("PASS: " + test)
