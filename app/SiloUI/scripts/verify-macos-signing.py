@@ -1,19 +1,7 @@
-"""Read-only release gate: every executable stays hardened and the VM can boot."""
+"""Verify release signatures and the exact engine policy without editing the app."""
 from pathlib import Path
-import plistlib
-import subprocess
 import sys
+from macos_release_signing import verify_bundle
 
-app=Path(sys.argv[1])
-for name in ['silo-ui','msb','git','git-lfs','git-remote-http','git-remote-https']:
-    executable=app/'Contents/MacOS'/name
-    display=subprocess.run(['codesign','--display','--verbose=4',str(executable)],capture_output=True,check=True)
-    if b'runtime' not in display.stderr:
-        raise RuntimeError(f'{name} must retain hardened runtime.')
-    result=subprocess.run(['codesign','--display','--entitlements',':-',str(executable)],capture_output=True,check=True)
-    entitlements=plistlib.loads(result.stdout) if result.stdout.strip() else {}
-    if name=='msb':
-        if entitlements.get('com.apple.security.hypervisor') is not True or entitlements.get('com.apple.security.cs.disable-library-validation') is not True:
-            raise RuntimeError('macOS runtime signing is not ready: the ad-hoc VM helper must have its reviewed, helper-only hypervisor/library-loading entitlements. Do not publish this build.')
-    elif entitlements.get('com.apple.security.cs.disable-library-validation'):
-        raise RuntimeError('Only the VM helper may have the library-loading exception.')
+if __name__ == '__main__':
+    verify_bundle(Path(sys.argv[1]).resolve())
