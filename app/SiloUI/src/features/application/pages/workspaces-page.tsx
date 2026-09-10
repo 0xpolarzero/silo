@@ -38,6 +38,7 @@ function WorkspaceFilterBar({
         onChange={onChange}
         label="Sandbox filters"
         inputLabel="Filter sandboxes"
+        className="[&_input]:h-7"
         placeholder="Filter sandboxes…"
         listLabel="Available sandbox filters"
         selectedLabel="Selected sandboxes"
