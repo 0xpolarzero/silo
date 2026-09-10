@@ -34,7 +34,7 @@ impl Cancellation {
         self.0.store(true, Ordering::Release);
     }
 
-    fn cancelled(&self) -> bool {
+    pub(crate) fn cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
 }
@@ -78,10 +78,32 @@ impl MsbRunner for SystemMsbRunner {
         if cancellation.cancelled() {
             return Err(BackupError::Cancelled);
         }
+        if arguments.first().is_some_and(|arg| arg == "start") {
+            // Restart with the same current GitHub and secret material as normal
+            // lifecycle actions; the bare CLI command cannot provide that material.
+            let paths = crate::runtime::RuntimePaths {
+                executable: command.executable.clone(), library: command.library.clone(),
+                home: command.home.clone(), storage_home: command.storage_home.clone(),
+                // The start adapter reads no configuration/image/volume paths.
+                metadata: PathBuf::new(), volumes: PathBuf::new(), guest_image: PathBuf::new(),
+            };
+            let result = crate::runtime::run_msb(&paths, arguments, timeout)
+                .map_err(|error| BackupError::CommandFailed { operation: "Restarting sandbox after backup".into(), detail: error.to_string() })?;
+            use std::os::unix::process::ExitStatusExt;
+            return Ok(CommandOutput { status: ExitStatus::from_raw(0), stdout: result.stdout, stderr: result.stderr });
+        }
         crate::runtime::prepare_runtime_home(&command.home, command.storage_home.as_deref())
             .map_err(|error| BackupError::InvalidRequest(error.to_string()))?;
-        let mut child = Command::new(&command.executable)
-            .args(arguments)
+        // Only these stopped-VM commands can outlive Silo while writing restore
+        // output. Keep the lock in the child until it exits, even if Silo dies.
+        let worker_lock = if arguments.first().is_some_and(|arg| (arg == "snapshot" || arg == "stop") || (arg == "create" && arguments.iter().any(|value| value == "--from-snapshot" || value == "--no-start"))) {
+            Some(wait_for_interrupted_command(&command.home, timeout).map_err(BackupError::Io)?)
+        } else { None };
+        let mut process = Command::new(&command.executable);
+        if let Some(lock) = &worker_lock {
+            inherit_worker_lock(&mut process, lock);
+        }
+        let mut child = process.args(arguments)
             .env("MSB_HOME", &command.home)
             .env("MSB_PATH", &command.executable)
             .env("MSB_LIBKRUNFW_PATH", &command.library)
@@ -125,6 +147,32 @@ impl MsbRunner for SystemMsbRunner {
             }
             thread::sleep(COMMAND_POLL_INTERVAL);
         }
+    }
+}
+
+fn inherit_worker_lock(command: &mut Command, lock: &File) {
+    use std::os::unix::process::CommandExt;
+    let fd = lock.as_raw_fd();
+    // SAFETY: pre_exec only calls async-signal-safe fcntl on this owned FD.
+    unsafe { command.pre_exec(move || {
+        if libc::fcntl(fd, libc::F_SETFD, 0) == -1 { return Err(io::Error::last_os_error()); }
+        Ok(())
+    }); }
+}
+
+/// Also held by a surviving snapshot/create child after the app exits. A bounded
+/// wait prevents recovery from racing that child's writes or hanging forever.
+pub(crate) fn wait_for_interrupted_command(home: &Path, timeout: Duration) -> io::Result<File> {
+    fs::create_dir_all(home)?;
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(home.join(".silo-backup-worker.lock"))?;
+    let started = Instant::now();
+    loop {
+        // SAFETY: file owns this valid descriptor for the duration of the lock.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 { return Ok(file); }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::WouldBlock { return Err(error); }
+        if started.elapsed() >= timeout { return Err(io::Error::new(io::ErrorKind::TimedOut, "The previous backup command is still finishing. Wait a moment and relaunch Silo to resume.")); }
+        thread::sleep(COMMAND_POLL_INTERVAL);
     }
 }
 
@@ -411,11 +459,36 @@ impl<R: MsbRunner> BackupService<R> {
         Ok(OperationGuard(&self.busy))
     }
 
+    pub(crate) fn cleanup_interrupted_staging(&self) -> io::Result<()> {
+        let entries = match fs::read_dir(&self.scratch_root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if (name.starts_with("backup-") || name.starts_with("restore-")) && entry.file_type()?.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn create_backup(
         &self,
         request: BackupRequest,
         cancellation: &Cancellation,
     ) -> Result<BackupResult, BackupError> {
+        self.create_backup_with_token(request, cancellation, None)
+    }
+
+    pub(crate) fn create_backup_with_token(
+        &self, request: BackupRequest, cancellation: &Cancellation, token: Option<&str>,
+    ) -> Result<BackupResult, BackupError> {
+        if let Some(token) = token { uuid::Uuid::parse_str(token).map_err(|_| BackupError::InvalidRequest("Invalid backup operation identity.".into()))?; }
         let _guard = self.begin()?;
         validate_backup_request(&request)?;
         fs::create_dir_all(&self.scratch_root)?;
@@ -624,6 +697,7 @@ impl<R: MsbRunner> BackupService<R> {
             &manifest,
             &archive_payloads,
             cancellation,
+            token,
         )?;
         Ok(BackupResult {
             created_at_ms: manifest.created_at_ms,
@@ -2183,6 +2257,7 @@ fn write_immutable_package(
     manifest: &PackageManifest,
     payloads: &[&Path],
     cancellation: &Cancellation,
+    token: Option<&str>,
 ) -> Result<u64, BackupError> {
     let parent = destination.parent().ok_or_else(|| {
         BackupError::InvalidRequest("The backup destination has no parent directory.".into())
@@ -2194,8 +2269,9 @@ fn write_immutable_package(
             "Backup metadata exceeds the supported size.".into(),
         ));
     }
+    let prefix = token.map(|token| format!(".silo-backup-{token}-")).unwrap_or_else(|| ".silo-backup-".into());
     let mut temporary = tempfile::Builder::new()
-        .prefix(".silo-backup-")
+        .prefix(&prefix)
         .tempfile_in(parent)?;
     temporary.write_all(MAGIC)?;
     temporary.write_all(&FORMAT_VERSION.to_be_bytes())?;
@@ -2545,6 +2621,44 @@ mod tests {
             },
             &Cancellation::default(),
         )
+    }
+
+    #[test]
+    fn stop_command_keeps_recovery_out_until_guest_stop_finishes() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("msb");
+        let home = directory.path().join("home");
+        fs::create_dir(&home).unwrap();
+        fs::write(&executable, b"#!/bin/sh\nprintf ready > \"$MSB_HOME/ready\"\nwhile [ ! -e \"$MSB_HOME/release\" ]; do sleep 0.02; done\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let command = MsbCommand { executable, home: home.clone(), storage_home: None, library: directory.path().join("unused-library") };
+        let worker = thread::spawn(move || SystemMsbRunner.run(&command, &["stop".into(), "example".into()], Duration::from_secs(5), &Cancellation::default()));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !home.join("ready").exists() && Instant::now() < deadline { thread::sleep(Duration::from_millis(10)); }
+        let ready = home.join("ready").exists();
+        let lock_result = wait_for_interrupted_command(&home, Duration::ZERO);
+        fs::write(home.join("release"), b"release").unwrap();
+        let result = worker.join().unwrap();
+        assert!(ready, "stop command never reached its side effect");
+        assert_eq!(lock_result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(result.unwrap().status.success());
+    }
+
+    #[test]
+    fn surviving_child_holds_worker_lock_until_it_exits() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = wait_for_interrupted_command(directory.path(), Duration::ZERO).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "read line"]).stdin(Stdio::piped());
+        inherit_worker_lock(&mut command, &lock);
+        let mut child = command.spawn().unwrap();
+        drop(lock); // The original Silo process no longer owns a descriptor.
+        let blocked = wait_for_interrupted_command(directory.path(), Duration::ZERO);
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        assert_eq!(blocked.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(wait_for_interrupted_command(directory.path(), Duration::from_secs(2)).is_ok());
     }
 
     #[test]

@@ -1,3 +1,5 @@
+mod recovery;
+
 use crate::{backup, runtime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,6 +76,8 @@ enum Operation {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BackupState {
     snapshot_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
     availability: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     availability_message: Option<String>,
@@ -186,6 +190,7 @@ struct ViewState {
 
 pub(crate) struct Controller {
     history_path: PathBuf,
+    journal: Mutex<Option<recovery::Journal>>,
     service: backup::BackupService,
     view: Mutex<ViewState>,
     busy: AtomicBool,
@@ -204,7 +209,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join("backup-history.json");
-    let (history, history_error) = match load_history(&history_path) {
+    let (history, mut history_error) = match load_history(&history_path) {
         Ok(history) => (history, None),
         Err(error) => (
             BackupHistory {
@@ -215,7 +220,9 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
             Some(error),
         ),
     };
-    app.manage(Arc::new(Controller {
+    let journal = match recovery::load(&history_path) { Ok(journal) => journal, Err(error) => { history_error = Some(error); None } };
+    let controller = Arc::new(Controller {
+        journal: Mutex::new(journal.clone()),
         history_path,
         service: backup::BackupService::new(
             backup::MsbCommand {
@@ -235,8 +242,29 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         }),
         busy: AtomicBool::new(false),
         revision: AtomicU64::new(1),
-    }));
+    });
+    app.manage(controller.clone());
+    if let Some(journal) = journal { recovery::resume(app.clone(), controller, journal)?; }
     Ok(())
+}
+
+/// Startup runs this in its background worker before other recovery or optional
+/// starts. An interrupted backup may own a stopped guest or a half-created VM.
+pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
+    let controller = app.state::<Arc<Controller>>();
+    let pending = controller.journal.lock().map_err(|_| "Saved backup progress is unavailable.")?.as_ref().filter(|journal| journal.is_pending()).map(|journal| journal.identity().to_string());
+    let Some(identity) = pending else { return Ok(()); };
+    let started = std::time::Instant::now();
+    loop {
+        if crate::startup::is_cancelled(app) { return Ok(()); }
+        let pending = controller.journal.lock().map_err(|_| "Saved backup progress is unavailable.")?.as_ref().is_some_and(|journal| journal.identity() == identity && journal.is_pending());
+        if !pending { return Ok(()); }
+        if !controller.busy.load(Ordering::Acquire) {
+            return Err("The interrupted backup or restore could not finish. Open Backup to see the error. Saved progress was preserved.".into());
+        }
+        if started.elapsed() >= RESTORE_TIMEOUT { return Err("Backup recovery is still running. Automatic sandbox startup was deferred.".into()); }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn require_main(window: &WebviewWindow) -> Result<(), String> {
@@ -315,14 +343,18 @@ pub(crate) fn read_backup_state(
                     .map(|available| available.min(managed)),
                 None => Some(managed),
             });
+    let availability_message = view.history_error.clone().or_else(|| {
+        recovery::unresolved(&controller).unwrap_or(true).then(|| "The interrupted backup or restore could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
+    });
     Ok(BackupState {
         snapshot_id: controller.revision.load(Ordering::Relaxed).to_string(),
-        availability: if view.history_error.is_some() {
+        operation_id: recovery::token(&controller)?,
+        availability: if availability_message.is_some() {
             "unavailable"
         } else {
             "available"
         },
-        availability_message: view.history_error.clone(),
+        availability_message,
         required_space_gb: None,
         available_space_gb: available.map(|bytes| bytes as f64 / GIB as f64),
         archives: view.archives.clone(),
@@ -534,6 +566,9 @@ async fn start_backup_inner(
         destination,
         sandboxes: sandboxes.clone(),
     };
+    if let Err(error) = recovery::begin(&controller, recovery::Journal::backup(pending_archive.clone(), sandboxes.clone())) {
+        finish(&controller); return Err(error);
+    }
     let cancellation = backup::Cancellation::default();
     {
         let mut view = controller
@@ -558,10 +593,14 @@ async fn start_backup_inner(
     publish(&app, &controller);
     let app_for_work = app.clone();
     let controller_for_work = controller.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || run_backup(app_for_work, controller_for_work, archive_path, sandboxes, cancellation, pending_archive));
+    Ok(())
+}
+
+fn run_backup(app: AppHandle, controller: Arc<Controller>, archive_path: PathBuf, sandboxes: Vec<String>, cancellation: backup::Cancellation, pending_archive: Archive) {
         let result = backup_work(
-            &app_for_work,
-            &controller_for_work,
+            &app,
+            &controller,
             &archive_path,
             &sandboxes,
             &cancellation,
@@ -616,7 +655,7 @@ async fn start_backup_inner(
         } = &mut operation
         {
             if matches!(*outcome, "success" | "restart-required") {
-                if let Err(error) = record_archive(&controller_for_work, archive) {
+                if let Err(error) = record_archive(&controller, archive) {
                     *outcome = "failed";
                     *title = "Backup saved; history update failed".into();
                     *message = format!(
@@ -634,19 +673,34 @@ async fn start_backup_inner(
                 }
             }
         }
+        let operation = recovery::complete(&controller, operation);
         if let Operation::Result {
             operation: kind,
             outcome,
             ..
         } = &operation
         {
-            crate::notifications::backup_result(&app_for_work, kind, outcome);
+            crate::notifications::backup_result(&app, kind, outcome);
         }
-        let _ = set_operation(&controller_for_work, operation);
-        finish(&controller_for_work);
-        publish(&app_for_work, &controller_for_work);
-    });
-    Ok(())
+        let _ = set_operation(&controller, operation);
+        finish(&controller);
+        publish(&app, &controller);
+
+}
+
+fn mutation_guard(cancellation: &backup::Cancellation) -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    let started = std::time::Instant::now();
+    loop {
+        if cancellation.cancelled() { return Err("The operation was cancelled.".into()); }
+        match runtime::MUTATION_LOCK.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err("Sandbox operations are unavailable. Relaunch Silo to retry.".into()),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if started.elapsed() >= RESTORE_TIMEOUT { return Err("The previous sandbox operation did not finish. Relaunch Silo to retry.".into()); }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
 }
 
 fn backup_work(
@@ -656,9 +710,7 @@ fn backup_work(
     names: &[String],
     cancellation: &backup::Cancellation,
 ) -> Result<(Archive, Vec<backup::RestartFailure>), String> {
-    let _guard = runtime::MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| "Another sandbox operation is still running.".to_string())?;
+    let _guard = mutation_guard(cancellation)?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if names.is_empty() {
@@ -683,14 +735,16 @@ fn backup_work(
             volumes,
         });
     }
+    recovery::save_sources(controller, &sources)?;
     let result = controller
         .service
-        .create_backup(
+        .create_backup_with_token(
             backup::BackupRequest {
                 destination: archive_path.to_path_buf(),
                 sources,
             },
             cancellation,
+            recovery::token(controller)?.as_deref(),
         )
         .map_err(|error| error.to_string())?;
     let inspection = backup::ArchiveInspection {
@@ -806,7 +860,7 @@ fn cleanup_restored(
     name: &str,
     expected_id: &str,
 ) -> Result<(), String> {
-    match inspect(paths, name) {
+    let runtime_exists = match inspect(paths, name) {
         Ok(sandbox)
             if sandbox
                 .config
@@ -818,18 +872,18 @@ fn cleanup_restored(
                 "A different VM now owns {name}; Silo preserved it and its storage."
             ));
         }
-        Ok(_) => {}
+        Ok(_) => true,
         Err(error)
             if error.to_ascii_lowercase().contains("not found")
-                || error.to_ascii_lowercase().contains("does not exist") => {}
+                || error.to_ascii_lowercase().contains("does not exist") => false,
         Err(error) => {
             return Err(format!(
                 "Silo could not verify restored VM ownership for cleanup: {error}"
             ))
         }
-    }
+    };
 
-    let runtime_cleanup = match runtime::run_msb(
+    let runtime_cleanup = if !runtime_exists { Ok(()) } else { match runtime::run_msb(
         paths,
         &[
             "remove".into(),
@@ -850,7 +904,7 @@ fn cleanup_restored(
             Ok(())
         }
         Err(error) => Err(error.to_string()),
-    };
+    } };
     runtime_cleanup?;
     let disks = paths.volumes.join(name);
     match fs::remove_dir_all(&disks) {
@@ -860,6 +914,16 @@ fn cleanup_restored(
             "Silo could not remove incomplete restored disks: {error}"
         )),
     }
+}
+
+fn cleanup_failed_restore(controller: &Controller, paths: &runtime::RuntimePaths, name: &str, id: &str) -> Result<(), String> {
+    // A metadata write can commit before its final sync reports failure. Preserve
+    // that VM for recovery rather than removing a now-recorded sandbox.
+    if runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?.machines.iter().any(|machine| machine.id() == id) {
+        return Err("The restored sandbox is already recorded. It was preserved for verification after relaunch.".into());
+    }
+    cleanup_restored(paths, name, id)?;
+    recovery::clear_restore_identity(controller)
 }
 
 struct RestoredResources<'a> {
@@ -965,6 +1029,9 @@ async fn start_restore_inner(
         destination: path.parent().unwrap_or(Path::new("")).to_string_lossy().into_owned(),
         sandboxes: source_name.iter().cloned().collect(),
     };
+    if let Err(error) = recovery::begin(&controller, recovery::Journal::restore(archive.clone(), new_name.clone(), source_name.clone())) {
+        finish(&controller); return Err(error);
+    }
     {
         let mut view = controller
             .view
@@ -988,21 +1055,25 @@ async fn start_restore_inner(
     publish(&app, &controller);
     let app_for_work = app.clone();
     let controller_for_work = controller.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || run_restore(app_for_work, controller_for_work, path, new_name, source_name, cancellation, archive));
+    Ok(())
+}
+
+fn run_restore(app: AppHandle, controller: Arc<Controller>, path: PathBuf, new_name: String, source_name: Option<String>, cancellation: backup::Cancellation, archive: Archive) {
         let mut archive = archive;
         let result = (|| {
-            let inspection = controller_for_work.service.inspect_archive(&path, &cancellation)
+            let inspection = controller.service.inspect_archive(&path, &cancellation)
                 .map_err(|error| error.to_string())?;
             let selected = select_archive_source(&inspection.sandboxes, source_name.as_deref())?;
             archive = archive_from(&path, &inspection);
-            if let Ok(mut view) = controller_for_work.view.lock() {
+            if let Ok(mut view) = controller.view.lock() {
                 if let Some(Operation::Running { archive: current, .. }) = view.operation.as_mut() {
                     *current = archive.clone();
                 }
             }
             restore_work(
-                &app_for_work,
-                &controller_for_work,
+                &app,
+                &controller,
                 &path,
                 &selected,
                 &new_name,
@@ -1040,19 +1111,19 @@ async fn start_restore_inner(
                 detail: Some("No existing sandbox or backup was replaced.".into()),
             },
         };
+        let operation = recovery::complete(&controller, operation);
         if let Operation::Result {
             operation: kind,
             outcome,
             ..
         } = &operation
         {
-            crate::notifications::backup_result(&app_for_work, kind, outcome);
+            crate::notifications::backup_result(&app, kind, outcome);
         }
-        let _ = set_operation(&controller_for_work, operation);
-        finish(&controller_for_work);
-        publish(&app_for_work, &controller_for_work);
-    });
-    Ok(())
+        let _ = set_operation(&controller, operation);
+        finish(&controller);
+        publish(&app, &controller);
+
 }
 
 fn select_archive_source(names: &[String], selected: Option<&str>) -> Result<String, String> {
@@ -1155,9 +1226,7 @@ fn restore_at_paths(
     progress: &dyn Fn(&str),
 ) -> Result<(), String> {
     progress("Preparing restore");
-    let _guard = runtime::MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| "Another sandbox operation is still running.".to_string())?;
+    let _guard = mutation_guard(cancellation)?;
     let original = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if original
         .machines
@@ -1266,15 +1335,8 @@ fn restore_at_paths(
     }
     fs::create_dir_all(&paths.volumes)
         .map_err(|error| format!("Silo could not prepare restored disk storage: {error}"))?;
-    fs::create_dir(&disk_directory).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            format!(
-                "Managed disk storage already exists for {new_name}. No existing disk was changed."
-            )
-        } else {
-            format!("Silo could not claim restored disk storage: {error}")
-        }
-    })?;
+    recovery::save_restore_identity(controller, &id)?;
+    recovery::claim_disk(&disk_directory, &id)?;
     progress("Restoring workspace disk");
     let mut mounts = Vec::new();
     for volume in &prepared.volumes {
@@ -1290,7 +1352,7 @@ fn restore_at_paths(
         }
         if let Err(error) = backup::materialize_prepared_volume(volume, &destination, cancellation)
         {
-            let cleanup = cleanup_restored(&paths, new_name, &id);
+            let cleanup = cleanup_failed_restore(controller, &paths, new_name, &id);
             return Err(match cleanup {
                 Ok(()) => error.to_string(),
                 Err(cleanup) => format!("{error} Cleanup also failed: {cleanup}"),
@@ -1313,7 +1375,7 @@ fn restore_at_paths(
         },
     );
     if let Err(error) = append_restored_settings(&mut arguments, &prepared.runtime_config) {
-        let cleanup = cleanup_restored(paths, new_name, &id);
+        let cleanup = cleanup_failed_restore(controller, paths, new_name, &id);
         return Err(match cleanup {
             Ok(()) => error,
             Err(cleanup) => format!("{error} Cleanup also failed: {cleanup}"),
@@ -1335,7 +1397,7 @@ fn restore_at_paths(
     ) {
         Ok(output) => output,
         Err(error) => {
-            let cleanup = cleanup_restored(&paths, new_name, &id);
+            let cleanup = cleanup_failed_restore(controller, &paths, new_name, &id);
             return Err(match cleanup {
                 Ok(_) => error.to_string(),
                 Err(cleanup) => format!("{error} Cleanup also failed: {cleanup}"),
@@ -1349,7 +1411,7 @@ fn restore_at_paths(
             output.stderr
         };
         let error = format!("Creating the restored sandbox failed: {detail}");
-        let cleanup = cleanup_restored(&paths, new_name, &id);
+        let cleanup = cleanup_failed_restore(controller, &paths, new_name, &id);
         return Err(match cleanup {
             Ok(_) => error,
             Err(cleanup) => format!("{error} Cleanup also failed: {cleanup}"),
@@ -1371,12 +1433,13 @@ fn restore_at_paths(
         runtime::write_metadata(&paths.metadata, &updated).map_err(|error| error.to_string())
     })();
     if let Err(error) = result {
-        let cleanup = cleanup_restored(&paths, new_name, &id);
+        let cleanup = cleanup_failed_restore(controller, &paths, new_name, &id);
         return Err(match cleanup {
             Ok(_) => error,
             Err(cleanup) => format!("{error} Cleanup also failed: {cleanup}"),
         });
     }
+    recovery::remove_disk_marker(&disk_directory)?;
     Ok(())
 }
 
@@ -1394,6 +1457,7 @@ pub(crate) fn cancel_backup_operation(
         .cancellation
         .as_ref()
         .ok_or("No backup or restore operation is running.")?;
+    recovery::cancel(&controller)?;
     cancellation.cancel();
     Ok(())
 }
@@ -1403,20 +1467,28 @@ pub(crate) fn dismiss_backup_operation(
     app: AppHandle,
     window: WebviewWindow,
     controller: State<'_, Arc<Controller>>,
+    expected_operation: Value,
+    expected_operation_id: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
-    if dismiss_finished_operation(&controller)? {
+    if dismiss_finished_operation(&controller, Some(&expected_operation), expected_operation_id.as_deref())? {
         publish(&app, &controller);
     }
     Ok(())
 }
 
-fn dismiss_finished_operation(controller: &Controller) -> Result<bool, String> {
+fn dismiss_finished_operation(controller: &Controller, expected: Option<&Value>, expected_id: Option<&str>) -> Result<bool, String> {
     let mut view = controller.view.lock()
         .map_err(|_| "Backup state is unavailable.".to_string())?;
     if matches!(view.operation, Some(Operation::Running { .. })) {
         return Ok(false);
     }
+    if recovery::unresolved(controller)? { return Ok(false); }
+    if recovery::token(controller)?.as_deref() != expected_id { return Ok(false); }
+    if let Some(expected) = expected {
+        if serde_json::to_value(&view.operation).map_err(|e| e.to_string())? != *expected { return Ok(false); }
+    }
+    recovery::dismiss(controller)?;
     Ok(view.operation.take().is_some())
 }
 
@@ -1472,9 +1544,10 @@ pub(crate) async fn retry_workspace_start(
 mod tests {
     use super::*;
 
-    fn history_controller(path: PathBuf) -> Controller {
+    pub(super) fn history_controller(path: PathBuf) -> Controller {
         Controller {
             history_path: path,
+            journal: Mutex::new(None),
             service: backup::BackupService::new(
                 backup::MsbCommand {
                     executable: PathBuf::from("/unused/msb"),
@@ -1496,7 +1569,7 @@ mod tests {
         }
     }
 
-    fn completed_archive() -> Archive {
+    pub(super) fn completed_archive() -> Archive {
         Archive {
             name: "saved.silo-backup".into(),
             archive_path: "/backups/saved.silo-backup".into(),
@@ -1589,7 +1662,7 @@ mod tests {
             indeterminate: Some(true),
             phases: vec![Phase { title: "Checking backup".into(), detail: String::new(), tone: "running" }],
         }).unwrap();
-        assert!(!dismiss_finished_operation(&controller).unwrap());
+        assert!(!dismiss_finished_operation(&controller, None, None).unwrap());
         assert!(matches!(controller.view.lock().unwrap().operation, Some(Operation::Running { .. })));
         advance_restore_phase(&controller, "Unpacking backup");
         let serialized = serde_json::to_value(&controller.view.lock().unwrap().operation).unwrap();
@@ -1603,14 +1676,43 @@ mod tests {
             target_name: Some("restored".into()), outcome: "success", title: "Restored".into(),
             message: "Sandbox restored successfully.".into(), detail: None,
         }).unwrap();
-        assert!(dismiss_finished_operation(&controller).unwrap());
-        assert!(!dismiss_finished_operation(&controller).unwrap());
+        assert!(dismiss_finished_operation(&controller, None, None).unwrap());
+        assert!(!dismiss_finished_operation(&controller, None, None).unwrap());
+    }
+
+    #[test]
+    fn resumed_work_waits_for_other_sandbox_changes_and_can_cancel_while_waiting() {
+        let guard = runtime::MUTATION_LOCK.lock().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = mutation_guard(&backup::Cancellation::default()).map(|_| ());
+            sender.send(result).unwrap();
+        });
+        assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
+        let cancellation = backup::Cancellation::default();
+        cancellation.cancel();
+        assert_eq!(mutation_guard(&cancellation).unwrap_err(), "The operation was cancelled.");
+        drop(guard);
+        assert!(receiver.recv_timeout(Duration::from_secs(5)).unwrap().is_ok());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn delayed_dismissal_cannot_clear_a_new_completed_operation() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let result = |name: &str| Operation::Result { operation: "restore", archive: completed_archive(), running_names: vec![], target_name: Some(name.into()), outcome: "success", title: "Restore complete".into(), message: "Sandbox restored successfully.".into(), detail: None };
+        let old = serde_json::to_value(result("first")).unwrap();
+        set_operation(&controller, result("second")).unwrap();
+        assert!(!dismiss_finished_operation(&controller, Some(&old), None).unwrap());
+        assert!(matches!(&controller.view.lock().unwrap().operation, Some(Operation::Result { target_name: Some(name), .. }) if name == "second"));
     }
 
     #[test]
     fn backup_state_serialization_matches_frontend_contract() {
         let state = BackupState {
             snapshot_id: "contract".into(),
+            operation_id: None,
             availability: "available",
             availability_message: None,
             required_space_gb: Some(2.5),
@@ -1726,6 +1828,7 @@ mod tests {
         let second_inspected = inspect(&paths, second_name).unwrap();
         let make_controller = |paths: &runtime::RuntimePaths| Controller {
             history_path: paths.metadata.with_file_name("backup-history.json"),
+            journal: Mutex::new(None),
             service: backup::BackupService::new(
                 backup::MsbCommand {
                     executable: paths.executable.clone(),
@@ -1747,6 +1850,7 @@ mod tests {
         };
         let controller = make_controller(&paths);
         let archive = directory.path().join("proof.silo-backup");
+        run(&["start", name]);
         controller
             .service
             .create_backup(
@@ -1755,24 +1859,39 @@ mod tests {
                     sources: vec![
                         backup::BackupSource {
                             name: name.into(),
-                            was_running: false,
+                            was_running: true,
                             volumes: backup_volumes(&paths, &machine, &inspected).unwrap(),
-                            runtime_config: inspected.config,
-                            machine_config: serde_json::to_value(machine).unwrap(),
+                            runtime_config: inspected.config.clone(),
+                            machine_config: serde_json::to_value(&machine).unwrap(),
                         },
                         backup::BackupSource {
                             name: second_name.into(),
                             was_running: false,
                             volumes: backup_volumes(&paths, &second_machine, &second_inspected)
                                 .unwrap(),
-                            runtime_config: second_inspected.config,
-                            machine_config: serde_json::to_value(second_machine).unwrap(),
+                            runtime_config: second_inspected.config.clone(),
+                            machine_config: serde_json::to_value(&second_machine).unwrap(),
                         },
                     ],
                 },
                 &backup::Cancellation::default(),
             )
             .unwrap();
+        assert_eq!(inspect(&paths, name).unwrap().status, "Running");
+        let checked = controller.service.inspect_archive(&archive, &backup::Cancellation::default()).unwrap();
+        recovery::begin(&controller, recovery::Journal::backup(archive_from(&archive, &checked), vec![name.into(), second_name.into()])).unwrap();
+        recovery::save_sources(&controller, &[
+            backup::BackupSource { name: name.into(), was_running: true, volumes: backup_volumes(&paths, &machine, &inspected).unwrap(), runtime_config: inspected.config, machine_config: serde_json::to_value(&machine).unwrap() },
+            backup::BackupSource { name: second_name.into(), was_running: false, volumes: backup_volumes(&paths, &second_machine, &second_inspected).unwrap(), runtime_config: second_inspected.config, machine_config: serde_json::to_value(&second_machine).unwrap() },
+        ]).unwrap();
+        // Archive publication succeeded, but app death can precede completion
+        // reporting and restoration of the guest's previous running state.
+        run(&["stop", name]);
+        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
+        assert!(recovery::recover_at_paths(&paths, &controller, &checkpoint, &backup::Cancellation::default()).unwrap());
+        assert_eq!(inspect(&paths, name).unwrap().status, "Running");
+        assert_eq!(inspect(&paths, second_name).unwrap().status, "Stopped");
+        assert_ne!(load_history(&controller.history_path).unwrap().archives[0].size, "Unknown");
         run(&["remove", "--force", "--quiet", name]);
         run(&["remove", "--force", "--quiet", second_name]);
         fs::remove_dir_all(&paths.home).unwrap();
@@ -1805,6 +1924,28 @@ mod tests {
         fs::create_dir_all(&paths.volumes).unwrap();
         // A deleted sandbox from an older build can leave this empty folder.
         fs::create_dir(paths.volumes.join(restored_name)).unwrap();
+        let checked = controller.service.inspect_archive(&archive, &backup::Cancellation::default()).unwrap();
+        recovery::begin(&controller, recovery::Journal::restore(archive_from(&archive, &checked), restored_name.into(), Some(name.into()))).unwrap();
+        // Emulate process death after the owned disk directory was claimed but
+        // before msb create. Only this operation's partial disk can be removed.
+        let interrupted_id = uuid::Uuid::new_v4().to_string();
+        recovery::save_restore_identity(&controller, &interrupted_id).unwrap();
+        recovery::claim_disk(&paths.volumes.join(restored_name), &interrupted_id).unwrap();
+        fs::write(runtime::disk_path(&paths, restored_name, "workspace"), b"incomplete disk").unwrap();
+        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
+        assert!(!recovery::recover_at_paths(&paths, &controller, &checkpoint, &backup::Cancellation::default()).unwrap());
+        assert!(!paths.volumes.join(restored_name).exists());
+        // A durable cancellation cleans owned partial output and does not create
+        // the requested guest when the app reopens.
+        recovery::save_restore_identity(&controller, &interrupted_id).unwrap();
+        recovery::claim_disk(&paths.volumes.join(restored_name), &interrupted_id).unwrap();
+        fs::write(runtime::disk_path(&paths, restored_name, "workspace"), b"cancelled disk").unwrap();
+        recovery::cancel(&controller).unwrap();
+        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
+        assert!(recovery::recover_at_paths(&paths, &controller, &checkpoint, &backup::Cancellation::default()).unwrap());
+        assert!(!paths.volumes.join(restored_name).exists());
+        recovery::complete(&controller, Operation::Result { operation: "restore", archive: archive_from(&archive, &checked), running_names: vec![], target_name: Some(restored_name.into()), outcome: "cancelled", title: "Cancelled".into(), message: "Cancelled".into(), detail: None });
+        recovery::begin(&controller, recovery::Journal::restore(archive_from(&archive, &checked), restored_name.into(), Some(name.into()))).unwrap();
         let restore_phases = Mutex::new(Vec::new());
         restore_at_paths(
             &paths,
@@ -1822,6 +1963,21 @@ mod tests {
         ]);
         let restored = inspect(&paths, restored_name).unwrap();
         assert_eq!(restored.status, "Created");
+        // Metadata was committed, but process death could precede marker removal
+        // and delivery of the success event. Relaunch verifies and adopts it.
+        let restored_id = restored.config["labels"]["silo.machine-id"].as_str().unwrap();
+        fs::write(paths.volumes.join(restored_name).join(".silo-restore-owner"), restored_id).unwrap();
+        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
+        assert!(recovery::recover_at_paths(&paths, &controller, &checkpoint, &backup::Cancellation::default()).unwrap());
+        assert!(!paths.volumes.join(restored_name).join(".silo-restore-owner").exists());
+        recovery::save_restore_identity(&controller, &uuid::Uuid::new_v4().to_string()).unwrap();
+        let foreign = recovery::load(&controller.history_path).unwrap().unwrap();
+        assert!(recovery::recover_at_paths(&paths, &controller, &foreign, &backup::Cancellation::default()).unwrap_err().contains("different sandbox"));
+        assert_eq!(inspect(&paths, restored_name).unwrap().status, "Created");
+        assert!(runtime::disk_path(&paths, restored_name, "workspace").exists());
+        recovery::save_restore_identity(&controller, restored_id).unwrap();
+
+
         assert_eq!(
             restored.config.get("pull_policy").and_then(Value::as_str),
             Some("Never")

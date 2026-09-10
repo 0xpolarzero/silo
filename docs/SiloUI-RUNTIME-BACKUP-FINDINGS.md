@@ -330,3 +330,42 @@ runtime coverage to 57 passing tests. The rebuilt production macOS app showed th
 name without edit capability, both storage controls disabled, unchanged CPU/RAM
 controls, and the explanatory tooltip on keyboard focus. No real VM settings were
 changed during this UI check; the running-VM stop/save path has automated coverage.
+
+## Interrupted backup and restore (2026-09-10)
+
+A private, atomically replaced `backup-operation.json` records the confirmed
+request before work starts. It stores the archive path, sandbox identities,
+previously running guests, restore ownership, cancellation and final result.
+No credential material belongs in this journal. Unreadable or newer journals are
+preserved and disable backup actions instead of guessing that work succeeded.
+
+Relaunch displays the existing progress card while checking the checkpoint.
+Backup recovery restores previously running guests using current GitHub/secret
+settings, verifies an already published archive, or restarts the capture/copy.
+Restore recovery accepts a committed VM only after checking its exact machine ID,
+state and disks. Incomplete storage is removed only when its durable owner marker
+matches the saved operation; restore then replays from the verified archive.
+Cancellation is durable and completes recovery/cleanup instead of replaying work.
+Copying restarts from the beginning; this is not byte-offset resumption.
+
+Scratch cleanup is confined to Silo's private working directory. Incomplete
+archive files include the journal's random operation UUID, so recovery removes
+only that operation's files, never earlier backups or another operation's files.
+Restore owner markers are removed and their parent directory synced after commit.
+Completed results survive relaunch until dismissed; delayed dismissal carries the
+exact result and cannot erase a later operation.
+
+Stop, snapshot and stopped-create commands inherit an OS file lock. Recovery waits for
+that lock with a bounded timeout before reading or removing their output, even
+when the original app process was killed. Start commands do not inherit the lock,
+because their VM daemon intentionally survives. These are documented
+[macOS flock semantics](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/flock.2.html)
+and [Linux flock semantics](https://man7.org/linux/man-pages/man2/flock.2.html).
+The bundled MicroSandbox patch makes `create --from-snapshot` stop before boot;
+this is the only create form the backup service uses.
+
+Startup waits for pending backup recovery before configuration/lifecycle recovery
+and optional automatic starts. Waiting for another sandbox mutation is
+cancellable. If cleanup cannot prove ownership or finish safely, the journal stays
+pending, Backup actions are unavailable, and the existing error card explains
+that relaunch will retry; dismissing a message cannot discard that checkpoint.

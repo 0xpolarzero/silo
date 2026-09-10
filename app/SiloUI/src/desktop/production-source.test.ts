@@ -592,7 +592,7 @@ describe("production application bridge", () => {
   it("shows restore immediately, ignores stale results and dismisses results locally", async () => {
     const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Backup complete", message: "Backup completed successfully." }
     let release: (() => void) | undefined
-    let current = { ...structuredClone(backup), operation: completed } as BackupState
+    let current = { ...structuredClone(backup), operation: completed, operationId: "first-operation" } as BackupState
     const mock = native({ invoke: vi.fn(async (command: string) => {
       if (command === "read_application_state") return structuredClone(source)
       if (command === "read_backup_state") return structuredClone(current)
@@ -610,8 +610,9 @@ describe("production application bridge", () => {
     expect(store.getSnapshot().backup.operation?.kind).toBe("running")
     store.backupActions.dismissOperation()
     expect(store.getSnapshot().backup.operation?.kind).toBe("running")
-    expect(mock.bridge.invoke).not.toHaveBeenCalledWith("dismiss_backup_operation")
-    current = { ...current, operation: { ...completed, operation: "restore", targetName: "restored", title: "Restore complete" } }
+    expect(mock.bridge.invoke).toHaveBeenCalledWith("dismiss_backup_operation", { expectedOperation: completed, expectedOperationId: "first-operation" })
+    expect(vi.mocked(mock.bridge.invoke).mock.calls.filter(([command]) => command === "dismiss_backup_operation")).toHaveLength(1)
+    current = { ...current, operationId: "second-operation", operation: { ...completed, operation: "restore", targetName: "restored", title: "Restore complete" } }
     await store.refresh()
     expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", operation: "restore" })
     store.backupActions.dismissOperation()

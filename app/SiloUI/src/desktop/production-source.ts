@@ -89,7 +89,7 @@ const backupOperationShape = z.discriminatedUnion("kind", [
   z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("result"), outcome: z.enum(["success", "failed", "restart-required", "cancelled"]), title: z.string(), message: z.string(), detail: z.string().optional() }).strict(),
 ])
 const backupStateShape = z.object({
-  snapshotId: z.string(), availability: z.enum(["available", "unavailable"]), availabilityMessage: z.string().optional(),
+  snapshotId: z.string(), operationId: z.string().optional(), availability: z.enum(["available", "unavailable"]), availabilityMessage: z.string().optional(),
   requiredSpaceGB: z.number().nonnegative().optional(), availableSpaceGB: z.number().nonnegative().optional(),
   unsupportedStorage: z.object({ sandbox: z.string(), label: z.string() }).strict().optional(),
   destination: z.string().optional(),
@@ -684,6 +684,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       dismissedBackupResults.add(JSON.stringify(operation))
       localBackupOperation = null
       publish({ ...snapshot, backup: { ...snapshot.backup, operation: null } })
+      void native.invoke("dismiss_backup_operation", { expectedOperation: operation, expectedOperationId: snapshot.backup.operationId ?? null })
+        .catch(() => console.error("Silo could not save the backup result dismissal. It may appear again after relaunch."))
     },
   }
 

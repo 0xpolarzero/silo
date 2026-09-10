@@ -29,6 +29,7 @@ export type BackupOperation = {
 export interface BackupState {
   /** Changes when an authoritative replacement should discard the open review. */
   snapshotId: string
+  operationId?: string
   availability: "available" | "unavailable"
   availabilityMessage?: string
   requiredSpaceGB?: number
