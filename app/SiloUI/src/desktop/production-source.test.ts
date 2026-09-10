@@ -548,6 +548,30 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("keeps the mounted application and restore progress while configuration is updating", async () => {
+    const mock = native()
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    const updating = { ...backup, operation: { kind: "running", operation: "restore", archive: backup.archives[0], runningNames: [], targetName: "copy", progress: 0, indeterminate: true, phases: [{ title: "Creating restored sandbox", detail: "", tone: "running" }] } }
+    mock.invoke.mockImplementation(async (command) => {
+      if (command === "read_application_state") throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+      if (command === "read_backup_state") return updating
+    })
+    await store.refresh()
+    expect(store.getSnapshot().source?.workspaces[0].machine.name).toBe("dev")
+    expect(store.getSnapshot().error).toBeNull()
+    expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", phases: [{ title: "Creating restored sandbox" }] })
+    // A later authoritative snapshot remains responsible for reporting success.
+    mock.invoke.mockImplementation(async (command) => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return { ...backup, operation: { kind: "result", operation: "restore", archive: backup.archives[0], runningNames: [], outcome: "success", title: "Restored", message: "Sandbox restored successfully." } }
+    })
+    await store.refresh()
+    expect(store.getSnapshot().source).not.toBeNull()
+    expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", outcome: "success" })
+    store.dispose()
+  })
+
   it("keeps a visible failed restore result when native operation state is malformed", async () => {
     let broken = false
     const mock = native()

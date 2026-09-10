@@ -1363,8 +1363,7 @@ pub async fn read_machine_configuration(
 pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        let mut source = read_application_state_with(&ProcessRunner, &paths)
-            .map_err(|error| error.to_string())?;
+        let mut source = read_application_snapshot(&ProcessRunner, &paths, &MUTATION_LOCK)?;
         source.repository_push_operations = crate::host_push::operations();
         runtime_activity::load_logs(&ProcessRunner, &paths, &mut source);
         for workspace in &mut source.workspaces {
@@ -1388,6 +1387,31 @@ pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource,
     })
     .await
     .map_err(|error| format!("Sandbox state worker failed: {error}"))?
+}
+
+fn read_application_snapshot(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    mutation_lock: &Mutex<()>,
+) -> Result<ApplicationSource, String> {
+    // Runtime creation and metadata publication are separate steps. Discard
+    // observations overlapping a mutation, without blocking progress updates.
+    const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
+    let check_idle = || -> Result<(), String> {
+        match mutation_lock.try_lock() {
+            Ok(guard) => { drop(guard); Ok(()) }
+            Err(std::sync::TryLockError::WouldBlock) => Err(UPDATING.into()),
+            Err(std::sync::TryLockError::Poisoned(_)) => Err("Sandbox operation lock is unavailable.".into()),
+        }
+    };
+    check_idle()?;
+    let before = fs::read(&paths.metadata).ok();
+    let observed = read_application_state_with(runner, paths);
+    check_idle()?;
+    if before != fs::read(&paths.metadata).ok() {
+        return Err(UPDATING.into());
+    }
+    observed.map_err(|error| error.to_string())
 }
 
 /// A background health observation uses the same real inspection as the UI, without
@@ -3648,6 +3672,19 @@ mod tests {
             "active_config": null,
             "pending_changes": []
         })
+    }
+
+    #[test]
+    fn application_snapshot_defers_during_mutation_but_reports_real_mismatches() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mutation_lock = Mutex::new(());
+        let guard = mutation_lock.lock().unwrap();
+        let runner = StubRunner::successful_json(vec![json!([])]);
+        assert_eq!(read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err(), "SILO_SANDBOX_UPDATE_IN_PROGRESS");
+        drop(guard);
+        assert!(read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err().contains("does not match"));
     }
 
     #[test]

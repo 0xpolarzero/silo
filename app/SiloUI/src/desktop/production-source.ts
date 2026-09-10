@@ -270,6 +270,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     let source = snapshot.source
     let backup = snapshot.backup
     let error: string | null = null
+    let configurationUpdating = false
     if (applicationResult.status === "fulfilled") {
       try { source = parseApplicationSource(applicationResult.value) }
       catch (cause) {
@@ -277,8 +278,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         error = `Silo returned invalid application state: ${errorMessage(cause)}`
       }
     } else {
-      source = null
-      error = `Silo could not read application state: ${errorMessage(applicationResult.reason)}`
+      configurationUpdating = errorMessage(applicationResult.reason) === "SILO_SANDBOX_UPDATE_IN_PROGRESS"
+      if (!configurationUpdating) {
+        source = null
+        error = `Silo could not read application state: ${errorMessage(applicationResult.reason)}`
+      }
     }
     if (backupResult.status === "fulfilled") {
       try {
@@ -288,7 +292,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
     if (source && snapshot.source && (githubMutationPending || (source.github.policyRevision ?? 0) < (snapshot.source.github.policyRevision ?? 0))) source = { ...source, github: snapshot.source.github }
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
-    publish({ ...snapshot, source, backup, loading: false, error })
+    publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error })
     void refreshNetwork()
   }
 
