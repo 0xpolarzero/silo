@@ -216,7 +216,7 @@ function Logs({ workspaces, query, onQueryChange }: { workspaces: ApplicationWor
         </div>
         <CopyButton
           variant="outline"
-          size="xs"
+          size="sm"
           value={filteredRows.map(({ raw }) => raw).join("\n")}
           disabled={filteredRows.length === 0}
           labels={{ idle: "Copy all logs", copied: "All logs copied", failed: "Copy all logs failed" }}
