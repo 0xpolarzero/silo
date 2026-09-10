@@ -162,7 +162,7 @@ describe("application", () => {
     await user.click(navigation.getByRole("button", { name: "Settings" }))
     await user.click(navigation.getByRole("button", { name: "Notifications" }))
     await user.click(back)
-    expect(within(appPanel("Settings")).getByRole("heading", { name: "General", level: 2 })).toBeVisible()
+    expect(within(appPanel("Settings")).getByRole("heading", { name: "Appearance", level: 3 })).toBeVisible()
     await user.click(back)
     expect(appPanel("Backup")).toBeVisible()
     await user.click(back)
