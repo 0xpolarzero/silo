@@ -1,6 +1,8 @@
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
 import { Activity, Bell, Boxes, ChevronRight, CircleAlert, File, GitFork, HardDrive, KeyRound, LayoutDashboard, Loader2, Network, Settings2, SlidersHorizontal, Terminal } from "lucide-react"
 
+import { ShortcutBadge } from "@/components/shortcut-badge"
+import { shortcutFor, type KeyboardShortcut } from "@/lib/shortcuts"
 import { SiloMark } from "@/components/silo-mark"
 import { SiloWindow } from "@/components/silo-window"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -44,12 +46,17 @@ function NavigationLoadingIndicator({ loading, collapsed }: { loading: boolean; 
   return collapsed ? spinner : <span className="grid size-5 shrink-0 place-items-center">{spinner}</span>
 }
 
-function NavigationTooltip({ label, collapsed, children }: { label: string; collapsed: boolean; children: ReactNode }) {
+function NavigationTooltip({ label, collapsed, children, shortcut }: { label: string; collapsed: boolean; children: ReactNode; shortcut?: KeyboardShortcut }) {
   // Hidden content still needs Radix's dismissal handlers to clear its open state.
   return <Tooltip>
     <TooltipTrigger asChild>{children}</TooltipTrigger>
-    <TooltipContent side="right" hidden={!collapsed}>{label}</TooltipContent>
+    <TooltipContent side="right" hidden={!collapsed} shortcut={shortcut}>{label}</TooltipContent>
   </Tooltip>
+}
+
+function SidebarShortcut({ action }: { action: string }) {
+  const shortcut = shortcutFor(action)
+  return shortcut ? <ShortcutBadge shortcut={shortcut} className="pointer-events-none opacity-0 group-hover/sidebar-item:opacity-100 group-focus-visible/sidebar-item:opacity-100" /> : null
 }
 
 function NavigationButton({
@@ -74,7 +81,7 @@ function NavigationButton({
   onClick: () => void
 }) {
   return (
-    <NavigationTooltip label={label} collapsed={collapsed}>
+    <NavigationTooltip label={label} collapsed={collapsed} shortcut={shortcutFor(id === "workspaces" ? "go-sandboxes" : id === "settings" ? "settings" : `go-${id}`)}>
     <button
       id={`application-nav-${id}`}
       type="button"
@@ -82,10 +89,11 @@ function NavigationButton({
       data-navigation-tone={tone}
       aria-current={active ? "page" : undefined}
       aria-controls={`application-panel-${id}`}
+      aria-keyshortcuts={shortcutFor(id === "workspaces" ? "go-sandboxes" : id === "settings" ? "settings" : `go-${id}`)?.aria}
       aria-busy={loading || undefined}
       onClick={onClick}
       className={cn(
-        "sidebar-primary relative flex h-10 w-full min-w-0 flex-none items-center gap-2 rounded-md py-2 text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/70",
+        "group/sidebar-item sidebar-primary relative flex h-10 w-full min-w-0 flex-none items-center gap-2 rounded-md py-2 text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/70",
         tone === "danger"
           ? "text-destructive hover:bg-destructive/[0.07] hover:text-destructive"
           : tone === "warning"
@@ -105,6 +113,7 @@ function NavigationButton({
       </span>
       <span className="sidebar-label flex-1 text-left">{label}</span>
       {!collapsed && <NavigationLoadingIndicator loading={loading} collapsed={false} />}
+      {!collapsed && <SidebarShortcut action={id === "workspaces" ? "go-sandboxes" : id === "settings" ? "settings" : `go-${id}`} />}
     </button>
     </NavigationTooltip>
   )
@@ -135,7 +144,7 @@ function DisclosureNavigationItem({
 
   return (
     <div className="grid w-full grid-cols-1 gap-1">
-      <div className="relative w-full">
+      <div className="group/sidebar-item relative w-full">
         <NavigationButton id={id} label={label} icon={icon} active={active} collapsed={collapsed} reserveDisclosure onClick={onSelect} />
         <button
           type="button"
@@ -178,14 +187,15 @@ function SubNavigation<Section extends string>({
     <div role="group" aria-label={label} className="sidebar-subnav relative grid grid-cols-1 gap-1">
       <span aria-hidden="true" className="sidebar-subnav-guide pointer-events-none absolute inset-y-0 border-l border-border" />
       {items.map(({ id, label: itemLabel, icon: Icon }) => (
-        <NavigationTooltip key={id} label={itemLabel} collapsed={collapsed}>
+        <NavigationTooltip key={id} label={itemLabel} collapsed={collapsed} shortcut={shortcutFor(id === "overview" ? "go-sandboxes" : id === "general" ? "settings" : `go-${id}`)}>
         <button
           type="button"
           aria-current={active && section === id ? "page" : undefined}
           aria-busy={loading?.[id] || undefined}
+          aria-keyshortcuts={shortcutFor(id === "overview" ? "go-sandboxes" : id === "general" ? "settings" : `go-${id}`)?.aria}
           onClick={() => onSelect(id)}
           className={cn(
-            "sidebar-secondary relative flex h-8 w-full min-w-0 items-center gap-2 rounded-md text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/70",
+            "group/sidebar-item sidebar-secondary relative flex h-8 w-full min-w-0 items-center gap-2 rounded-md text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/70",
             active && section === id && "bg-muted font-medium text-foreground",
           )}
         >
@@ -234,6 +244,7 @@ function SubNavigation<Section extends string>({
               </span>
             )}
           {!collapsed && <NavigationLoadingIndicator loading={loading?.[id] ?? false} collapsed={false} />}
+          {!collapsed && <SidebarShortcut action={id === "overview" ? "go-sandboxes" : id === "general" ? "settings" : `go-${id}`} />}
         </button>
         </NavigationTooltip>
       ))}

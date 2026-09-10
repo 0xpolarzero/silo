@@ -3,6 +3,7 @@ import { isTauri } from "@tauri-apps/api/core"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { PanelLeft } from "lucide-react"
 
+import type { KeyboardShortcut } from "@/lib/shortcuts"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
@@ -35,17 +36,18 @@ export function WindowTitleBar({ title }: { title: string }) {
   </header>
 }
 
-export function ToolbarButton({ label, showTooltip = true, ...props }: ComponentProps<typeof Button> & { label: string; showTooltip?: boolean }) {
+export function ToolbarButton({ label, showTooltip = true, shortcut, ...props }: ComponentProps<typeof Button> & { label: string; showTooltip?: boolean; shortcut?: KeyboardShortcut }) {
   return <Tooltip>
     <TooltipTrigger asChild>
-      <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground hover:text-foreground disabled:opacity-35 [&_svg]:size-4" aria-label={label} {...props} />
+      <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground hover:text-foreground disabled:opacity-35 [&_svg]:size-4" aria-label={label} aria-keyshortcuts={shortcut?.aria} {...props} />
     </TooltipTrigger>
-    <TooltipContent side="bottom" hidden={!showTooltip}>{label}</TooltipContent>
+    <TooltipContent side="bottom" hidden={!showTooltip} shortcut={shortcut}>{label}</TooltipContent>
   </Tooltip>
 }
 
 interface WindowToolbarProps {
   sidebarDisabled?: boolean
+  sidebarShortcut?: KeyboardShortcut
   title: string
   sidebarId: string
   collapsed: boolean
@@ -58,7 +60,7 @@ interface WindowToolbarProps {
   children?: ReactNode
 }
 
-export function WindowToolbar({ title, sidebarId, collapsed, previewing, toggleRef, onToggleSidebar, onPreviewEnter, onPreviewLeave, navigation, children, sidebarDisabled = false }: WindowToolbarProps) {
+export function WindowToolbar({ title, sidebarId, collapsed, previewing, toggleRef, onToggleSidebar, onPreviewEnter, onPreviewLeave, navigation, children, sidebarDisabled = false, sidebarShortcut }: WindowToolbarProps) {
   const dragRegion = isTauri() || undefined
   return <header aria-label="Window toolbar" data-tauri-drag-region={dragRegion} className="flex h-11 shrink-0 items-center border-b border-border bg-background select-none">
     {children && <h1 className="sr-only">{title}</h1>}
@@ -67,6 +69,7 @@ export function WindowToolbar({ title, sidebarId, collapsed, previewing, toggleR
       <div data-tauri-drag-region={dragRegion} className="flex items-center gap-1">
         <ToolbarButton
           ref={toggleRef}
+          shortcut={sidebarShortcut}
           disabled={sidebarDisabled}
           label={collapsed ? previewing ? "Keep sidebar open" : "Expand sidebar" : "Collapse sidebar"}
           showTooltip={!previewing}

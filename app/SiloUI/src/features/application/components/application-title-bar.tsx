@@ -1,6 +1,7 @@
 import type { ReactNode, RefObject } from "react"
 import { ArrowLeft, ArrowRight } from "lucide-react"
 
+import { shortcutFor } from "@/lib/shortcuts"
 import { ToolbarButton, WindowToolbar } from "@/components/window-toolbar"
 
 export function ApplicationTitleBar({
@@ -34,6 +35,7 @@ export function ApplicationTitleBar({
     <WindowToolbar
       title="Silo"
       sidebarDisabled={disabled}
+      sidebarShortcut={shortcutFor("toggle-sidebar")}
       sidebarId="application-sidebar"
       collapsed={collapsed}
       previewing={previewing}
@@ -42,8 +44,8 @@ export function ApplicationTitleBar({
       onPreviewEnter={onPreviewEnter}
       onPreviewLeave={onPreviewLeave}
       navigation={<>
-        <ToolbarButton label="Go back" disabled={!canGoBack} onClick={onGoBack}><ArrowLeft /></ToolbarButton>
-        <ToolbarButton label="Go forward" disabled={!canGoForward} onClick={onGoForward}><ArrowRight /></ToolbarButton>
+        <ToolbarButton shortcut={shortcutFor("go-back")} label="Go back" disabled={disabled || !canGoBack} onClick={onGoBack}><ArrowLeft /></ToolbarButton>
+        <ToolbarButton shortcut={shortcutFor("go-forward")} label="Go forward" disabled={disabled || !canGoForward} onClick={onGoForward}><ArrowRight /></ToolbarButton>
       </>}
     >
       {commandMenu}

@@ -3,6 +3,8 @@ import { Command, defaultFilter } from "cmdk"
 import { ArrowDown, ArrowUp, CornerDownLeft, Search } from "lucide-react"
 import { Dialog } from "radix-ui"
 
+import { ShortcutBadge } from "@/components/shortcut-badge"
+import { shortcutFor } from "@/lib/shortcuts"
 import type { ApplicationCommand } from "./application-commands"
 
 const groups = ["Go to", "Sandboxes", "Actions"] as const
@@ -30,7 +32,7 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
     openRequested()
   }, [openRequest])
   const contentRef = useRef<HTMLDivElement>(null)
-  const shortcut = navigator.platform.startsWith("Mac") ? "⌘ K" : "Ctrl K"
+  const shortcut = shortcutFor("search")
 
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
@@ -52,10 +54,10 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
 
   return <Dialog.Root open={open && !disabled} onOpenChange={setOpen}>
     <Dialog.Trigger asChild>
-      <button type="button" disabled={disabled} aria-label="Search or jump to" aria-keyshortcuts="Meta+K Control+K" className="relative flex h-7 w-full max-w-md items-center gap-2 rounded-md border border-border bg-muted/30 px-2 text-xs text-muted-foreground outline-none hover:bg-muted/50 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30">
+      <button type="button" disabled={disabled} aria-label="Search or jump to" aria-keyshortcuts={shortcut?.aria} className="relative flex h-7 w-full max-w-md items-center gap-2 rounded-md border border-border bg-muted/30 px-2 text-xs text-muted-foreground outline-none hover:bg-muted/50 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30">
         <Search aria-hidden="true" className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate text-left">Search or jump to…</span>
-        <kbd aria-hidden="true" className="shrink-0 font-sans text-[11px]">{shortcut}</kbd>
+        {shortcut && <ShortcutBadge shortcut={shortcut} />}
       </button>
     </Dialog.Trigger>
     <Dialog.Portal>

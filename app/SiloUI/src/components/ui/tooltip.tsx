@@ -4,6 +4,8 @@ import * as React from "react"
 import { Tooltip as TooltipPrimitive } from "radix-ui"
 
 import { isRestoringFocus } from "@/lib/focus"
+import { ShortcutBadge } from "@/components/shortcut-badge"
+import type { KeyboardShortcut } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 
 const Tooltip = TooltipPrimitive.Root
@@ -29,8 +31,9 @@ function TooltipContent({
   sideOffset = 4,
   children,
   style,
+  shortcut,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Content> & { shortcut?: KeyboardShortcut }) {
   const reduceMotion = React.useContext(ReduceMotionContext)
   return (
     <TooltipPrimitive.Portal>
@@ -44,7 +47,7 @@ function TooltipContent({
         style={reduceMotion ? { ...style, animation: "none" } : style}
         {...props}
       >
-        {children}
+        {shortcut ? <span className="flex items-center gap-2"><span>{children}</span><ShortcutBadge shortcut={shortcut} /></span> : children}
         <TooltipPrimitive.Arrow className="fill-primary" />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
