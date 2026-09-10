@@ -53,3 +53,31 @@ keys or upload native build directories containing account configuration.
   supports Apple Silicon but does not confer Gatekeeper trust or notarization.
 - [Tauri AppImage packaging](https://v2.tauri.app/distribute/appimage/): package
   format and Linux build compatibility constraints.
+
+## Verification record, 10 September 2026
+
+The local macOS two-version test used a separate app copy, disposable signing
+key and loopback feed compiled into test builds. None of those settings belongs
+in the shipping configuration.
+
+- A bad update signature produced a recoverable error and left the executable
+  unchanged. A correctly signed retry reached the explicit install confirmation.
+- Cancel kept the running `dev` sandbox and downloaded update available.
+- A malformed archive failed installation without replacing the app; the stopped
+  sandbox resumed and its recovery journal cleared.
+- The corrected archive upgraded the app from 0.1.0 to 0.1.1. The running `dev`
+  sandbox restarted, its guest boot identifier changed, and its workspace test
+  file survived. The completed recovery journal was removed.
+- The first archive exposed BSD tar's AppleDouble metadata as a second top-level
+  entry. Release archives must contain only the `Silo.app` root.
+
+These were debug-compiled native bundles with hardened runtime and ad-hoc
+signatures, not proof of a downloaded production DMG or Gatekeeper first launch.
+The temporary `msb` helper required the library-validation exception to load
+libkrun firmware without an Apple Team ID. Applying that exception to release
+packaging remains pending explicit owner authorization; the outer app and Git
+helpers do not need it.
+
+Native atomic-replacement tests also terminated child installers immediately
+before and after replacement and verified a complete installed app remained.
+This is process-interruption evidence, not a claim about every power-loss case.
