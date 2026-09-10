@@ -28,7 +28,7 @@ type Flow =
 function Notice({ tone, title, children }: { tone: "neutral" | "success" | "warning" | "danger"; title: string; children: React.ReactNode }) {
   const classes = tone === "danger" ? "border-destructive/20 bg-destructive/[.06]" : tone === "warning" ? "border-amber-500/25 bg-amber-500/[.07]" : tone === "success" ? "border-emerald-500/25 bg-emerald-500/[.06]" : "border-border bg-muted/30"
   const Icon = tone === "danger" ? CircleX : tone === "warning" ? TriangleAlert : tone === "success" ? Check : Circle
-  return <div className={`rounded-lg border p-3 ${classes}`} role={tone === "danger" ? "alert" : "status"}>
+  return <div className={`-ml-8 rounded-lg border p-3 ${classes}`} role={tone === "danger" ? "alert" : "status"}>
     <div className="flex gap-2"><Icon className={tone === "danger" ? "mt-0.5 size-3.5 shrink-0 text-destructive" : tone === "warning" ? "mt-0.5 size-3.5 shrink-0 text-amber-600" : tone === "success" ? "mt-0.5 size-3.5 shrink-0 text-emerald-600" : "mt-0.5 size-3.5 shrink-0 text-muted-foreground"} aria-hidden="true" /><div className="min-w-0 flex-1"><p className="text-xs font-medium">{title}</p><div className="mt-1 text-[11px] leading-4 text-muted-foreground">{children}</div></div></div>
   </div>
 }
@@ -142,8 +142,8 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
       <Progress value={operation.indeterminate ? null : operation.progress} aria-label={kind === "backup" ? "Backup progress" : "Restore progress"} />
       <div className="flex justify-end"><Button variant="outline" size="xs" disabled={operation.canCancel === false} onClick={() => setFlow({ kind: "cancel-confirm", operation: kind })}>Cancel {kind}…</Button></div>
     </ListRowDetails>
-    if (operation.outcome === "success") return <ListRowDetails label={`${kind === "backup" ? "Backup" : "Restore"} result`}>
-      <div className="flex items-center gap-2 text-xs text-emerald-600" role="status"><Check className="size-3.5 shrink-0" aria-hidden="true" /><span className="flex-1">{kind === "backup" ? "Backup completed successfully." : "Sandbox restored successfully."}</span><Button variant="ghost" size="icon-xs" aria-label="Dismiss success" onClick={() => backup.actions.dismissOperation()}><X className="size-3.5" /></Button></div>
+    if (operation.outcome === "success") return <ListRowDetails label={`${kind === "backup" ? "Backup" : "Restore"} result`} className="pl-0">
+      <div className="flex items-center gap-1.5 text-xs text-emerald-600" role="status"><span className="grid w-7 shrink-0 place-items-center"><Check className="size-3.5" aria-hidden="true" /></span><span className="flex-1">{kind === "backup" ? "Backup completed successfully." : "Sandbox restored successfully."}</span><Button variant="ghost" size="icon-xs" aria-label="Dismiss success" onClick={() => backup.actions.dismissOperation()}><X className="size-3.5" /></Button></div>
     </ListRowDetails>
     const tone = operation.outcome === "restart-required" ? "warning" : operation.outcome === "failed" ? "danger" : "neutral"
     return <ListRowDetails label={`${kind === "backup" ? "Backup" : "Restore"} result`}>
