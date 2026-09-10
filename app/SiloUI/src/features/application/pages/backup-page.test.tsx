@@ -20,6 +20,75 @@ describe("backup and restore presentation", () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
+  it.each(["recent", "picker"])("shows checking immediately, blocks conflicts, and requires confirmation (%s)", async (entry) => {
+    const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GB", destination: "/backups", sandboxes: ["dev"] }
+    let complete!: (result: { archive: typeof archive; valid: boolean }) => void
+    const pending = new Promise<{ archive: typeof archive; valid: boolean }>(resolve => { complete = resolve })
+    const backup: BackupController = {
+      state: { snapshotId: "1", availability: "available", archives: [archive], operation: null },
+      actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn((onSelected) => { onSelected?.(archive.archivePath); return pending }), inspectArchive: vi.fn(() => pending), startBackup: vi.fn(), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn() },
+    }
+    const view = render(<BackupPage source={source} backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: `Details for ${archive.name}` }))
+    fireEvent.click(screen.getByRole("button", { name: entry === "recent" ? "Restore…" : "Choose backup…" }))
+    expect(screen.getByRole("progressbar", { name: "Backup validation progress" })).not.toHaveAttribute("aria-valuenow")
+    expect(screen.getByText("Checking…")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Create backup…" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Choose backup…" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Restore…" })).toBeDisabled()
+    expect(backup.actions.startRestore).not.toHaveBeenCalled()
+    await act(async () => { complete({ archive, valid: true }); await pending })
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+    expect(screen.getByRole("group", { name: "Review restore" })).toBeVisible()
+    expect(backup.actions.startRestore).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Restore new sandbox" }))
+    expect(backup.actions.startRestore).toHaveBeenCalledWith(archive, "dev-restored", "dev")
+    view.rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, operation: { kind: "running", operation: "restore", archive, runningNames: [], progress: 0, indeterminate: true, phases: [] } } }} />)
+    expect(screen.getByText("Restoring…")).toBeVisible()
+    expect(screen.getByRole("progressbar", { name: "Restore progress" })).not.toHaveAttribute("aria-valuenow")
+    expect(screen.getByRole("button", { name: "Cancel restore…" })).toBeEnabled()
+    view.rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, operation: { kind: "running", operation: "restore", archive, runningNames: [], progress: 0, indeterminate: true, canCancel: false, phases: [] } } }} />)
+    expect(screen.getByRole("button", { name: "Cancel restore…" })).toBeDisabled()
+  })
+
+  it("clears picker feedback when choosing a backup is cancelled", async () => {
+    let complete!: (value: null) => void
+    const backup: BackupController = {
+      state: { snapshotId: "1", availability: "available", archives: [], operation: null },
+      actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn(() => new Promise<null>(resolve => { complete = resolve })), inspectArchive: vi.fn(), startBackup: vi.fn(), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn() },
+    }
+    render(<BackupPage source={source} backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Choose backup…" }))
+    expect(screen.getByRole("status")).toHaveTextContent("Choose a backup in the file picker.")
+    await act(async () => { complete(null) })
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Create backup…" })).toBeEnabled()
+  })
+
+  it("automatically dismisses only success and never dismisses a newer operation", async () => {
+    const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GB", destination: "/backups", sandboxes: ["dev"] }
+    const success = { kind: "result" as const, operation: "backup" as const, outcome: "success" as const, title: "Backup ready", message: "Long success description", archive, runningNames: [] }
+    const backup: BackupController = {
+      state: { snapshotId: "1", availability: "available", archives: [archive], operation: success },
+      actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn(), inspectArchive: vi.fn(), startBackup: vi.fn(), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn() },
+    }
+    const view = render(<BackupPage source={source} backup={backup} />)
+    expect(screen.getByRole("status")).toHaveTextContent("Backup completed successfully.")
+    expect(screen.queryByText("Long success description")).not.toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(backup.actions.dismissOperation).toHaveBeenCalledTimes(1)
+    view.rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, operation: null } }} />)
+    view.rerender(<BackupPage source={source} backup={backup} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    view.rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, operation: { kind: "running", operation: "restore", archive, runningNames: [], progress: 20, phases: [] } } }} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(backup.actions.dismissOperation).toHaveBeenCalledTimes(1)
+    view.rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, operation: { ...success, outcome: "restart-required", title: "Restart failed" } } }} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(screen.getByRole("status")).toHaveTextContent("Restart failed")
+    expect(backup.actions.dismissOperation).toHaveBeenCalledTimes(1)
+  })
+
   it("keeps an open review and edited name when native progress snapshots refresh", async () => {
     const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GB", destination: "/backups", sandboxes: ["dev"] }
     const backup: BackupController = {
@@ -166,7 +235,7 @@ describe("backup and restore presentation", () => {
     await finish()
     expect(screen.getByRole("status")).toHaveTextContent("Backup ready; restart failed")
     fireEvent.click(screen.getByRole("button", { name: "Retry start" }))
-    expect(screen.getByRole("status")).toHaveTextContent("dev is running again")
+    expect(screen.getByRole("status")).toHaveTextContent("Backup completed successfully.")
   })
 
   it("validates before review and restores to an editable new stopped sandbox", async () => {
@@ -183,8 +252,7 @@ describe("backup and restore presentation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Restore new sandbox" }))
     await finish()
     expect(onRestoreComplete).toHaveBeenCalledOnce()
-    expect(screen.getByRole("status")).toHaveTextContent("dev-restored is ready")
-    expect(screen.getByRole("status")).toHaveTextContent("running programs were not")
+    expect(screen.getByRole("status")).toHaveTextContent("Sandbox restored successfully.")
   })
 
   it("blocks corrupt archives and removes incomplete new VMs after cancellation", async () => {

@@ -85,7 +85,7 @@ const backupArchiveShape = z.object({
 }).strict()
 const backupPhaseShape = z.object({ title: z.string(), detail: z.string(), tone: z.enum(["waiting", "running", "succeeded", "failed"]) }).strict()
 const backupOperationShape = z.discriminatedUnion("kind", [
-  z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("running"), progress: z.number().min(0).max(100), phases: z.array(backupPhaseShape) }).strict(),
+  z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("running"), progress: z.number().min(0).max(100), indeterminate: z.boolean().optional(), canCancel: z.boolean().optional(), phases: z.array(backupPhaseShape) }).strict(),
   z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("result"), outcome: z.enum(["success", "failed", "restart-required", "cancelled"]), title: z.string(), message: z.string(), detail: z.string().optional() }).strict(),
 ])
 const backupStateShape = z.object({
@@ -175,6 +175,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const pendingWorkspaceActions = new Set<string>()
   const pendingLifecycle = new Map<string, "start" | "stop" | "restart">()
   let pendingBackupOperation = false
+  let localBackupOperation: BackupOperation | null = null
+  const dismissedBackupResults = new Set<string>()
   let requestedOperation: { operation: "backup" | "restore"; archive: BackupArchive; targetName?: string } | null = null
 
   function refreshNetwork(): Promise<void> {
@@ -209,6 +211,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   function publish(next: ProductionSnapshot) {
     if (disposed) return
+    let operation = next.backup.operation
+    if (operation?.kind === "result" && dismissedBackupResults.has(JSON.stringify(operation))) operation = null
+    if (localBackupOperation && operation !== localBackupOperation) {
+      if (!operation) operation = localBackupOperation
+      else {
+        localBackupOperation = null
+        if (operation.kind === "running") dismissedBackupResults.clear()
+      }
+    }
+    if (operation?.kind === "result") requestedOperation = null
+    next = { ...next, backup: { ...next.backup, operation } }
     if (next.source) next = { ...next, source: { ...next.source, network, networkError,
       workspaces: next.source.workspaces.map(workspace => ({ ...workspace, ports: (network?.workspaces.find(item => item.workspace === workspace.machine.name)?.ports ?? []).map(port => ({ port: port.port, listening: !networkError && !network?.workspaces.find(item => item.workspace === workspace.machine.name)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })) }))
     } }
@@ -270,7 +283,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (backupResult.status === "fulfilled") {
       try {
         backup = parseBackupState(backupResult.value)
-        if (backup.operation?.kind === "result") requestedOperation = null
       }
       catch (cause) { backup = unreadableBackup(`Silo returned invalid backup state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
     } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
@@ -605,15 +617,27 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return { operation, archive, runningNames: [], targetName, kind: "result", outcome: "failed", title: `${operation === "backup" ? "Backup" : "Restore"} failed`, message, detail: "No successful result was recorded." }
   }
 
+  function showPendingBackup(operation: "backup" | "restore", archive: BackupArchive, targetName?: string) {
+    ++refreshSequence
+    const previous = snapshot.backup.operation
+    if (previous?.kind === "result") dismissedBackupResults.add(JSON.stringify(previous))
+    requestedOperation = { operation, archive, targetName }
+    localBackupOperation = { operation, archive, targetName, runningNames: [], kind: "running", progress: 0, indeterminate: true, canCancel: false,
+      phases: [{ title: operation === "backup" ? "Preparing backup" : "Checking backup", detail: operation === "backup" ? "Preparing the selected sandboxes." : "Verifying the archive before restoring it.", tone: "running" }],
+    }
+    publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
+  }
+
   const backupActions: BackupController["actions"] = {
     async chooseDestination() {
       const selected = await native.invoke<string | null>("choose_backup_destination")
       if (selected) await refresh()
       return selected
     },
-    async chooseArchive() {
+    async chooseArchive(onSelected) {
       const archivePath = await native.invoke<string | null>("choose_backup_archive")
       if (!archivePath) return null
+      onSelected?.(archivePath)
       const inspected = archiveInspectionShape.parse(await native.invoke("inspect_backup_archive", { archivePath }))
       await refresh()
       return inspected
@@ -624,20 +648,22 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       return inspected
     },
     startBackup(destination, sandboxes) {
-      if (pendingBackupOperation) return
+      if (pendingBackupOperation || snapshot.backup.operation?.kind === "running") return
       pendingBackupOperation = true
-      requestedOperation = { operation: "backup", archive: { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes } }
-      void native.invoke("start_backup", { destination, sandboxes }).then(refresh).catch((cause) => {
+      showPendingBackup("backup", { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes })
+      void native.invoke("start_backup", { destination, sandboxes }).then(() => { if (localBackupOperation?.kind === "running") dismissedBackupResults.clear(); return refresh() }).catch((cause) => {
         const archive: BackupArchive = { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
-        publish({ ...snapshot, backup: { ...snapshot.backup, operation: backupFailure("backup", archive, errorMessage(cause)) } })
+        localBackupOperation = backupFailure("backup", archive, errorMessage(cause))
+        publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
       }).finally(() => { pendingBackupOperation = false })
     },
     startRestore(archive, newName, sourceName) {
-      if (pendingBackupOperation) return
+      if (pendingBackupOperation || snapshot.backup.operation?.kind === "running") return
       pendingBackupOperation = true
-      requestedOperation = { operation: "restore", archive, targetName: newName }
-      void native.invoke("start_restore", { archivePath: archive.archivePath, newName, ...(sourceName && { sourceName }) }).then(refresh).catch((cause) => {
-        publish({ ...snapshot, backup: { ...snapshot.backup, operation: backupFailure("restore", archive, errorMessage(cause), newName) } })
+      showPendingBackup("restore", archive, newName)
+      void native.invoke("start_restore", { archivePath: archive.archivePath, newName, ...(sourceName && { sourceName }) }).then(() => { if (localBackupOperation?.kind === "running") dismissedBackupResults.clear(); return refresh() }).catch((cause) => {
+        localBackupOperation = backupFailure("restore", archive, errorMessage(cause), newName)
+        publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
       }).finally(() => { pendingBackupOperation = false })
     },
     cancelOperation() { void native.invoke("cancel_backup_operation").then(refresh).catch((cause) => reportUnavailable(`Backup cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
@@ -648,7 +674,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         return refresh()
       }).catch((cause) => setWorkspaceFailure("start", name, cause))
     },
-    dismissOperation() { void native.invoke("dismiss_backup_operation").then(() => { requestedOperation = null; return refresh() }).catch((cause) => reportUnavailable(`The backup result could not be dismissed: ${errorMessage(cause)}`)) },
+    dismissOperation() {
+      const operation = snapshot.backup.operation
+      if (operation?.kind !== "result") return
+      dismissedBackupResults.add(JSON.stringify(operation))
+      localBackupOperation = null
+      publish({ ...snapshot, backup: { ...snapshot.backup, operation: null } })
+    },
   }
 
   const statusActions: StatusBarActions = {

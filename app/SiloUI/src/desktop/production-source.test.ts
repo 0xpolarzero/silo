@@ -565,6 +565,79 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("shows restore immediately, ignores stale results and dismisses results locally", async () => {
+    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Backup complete", message: "Backup completed successfully." }
+    let release: (() => void) | undefined
+    let current = { ...structuredClone(backup), operation: completed } as BackupState
+    const mock = native({ invoke: vi.fn(async (command: string) => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return structuredClone(current)
+      if (command === "start_restore") await new Promise<void>(resolve => { release = resolve })
+    }) as ProductionBridge["invoke"] })
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    store.backupActions.dismissOperation()
+    expect(store.getSnapshot().backup.operation).toBeNull()
+    await store.refresh()
+    expect(store.getSnapshot().backup.operation).toBeNull()
+    store.backupActions.startRestore(backup.archives[0], "restored", "dev")
+    expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", operation: "restore", indeterminate: true })
+    await store.refresh()
+    expect(store.getSnapshot().backup.operation?.kind).toBe("running")
+    store.backupActions.dismissOperation()
+    expect(store.getSnapshot().backup.operation?.kind).toBe("running")
+    expect(mock.bridge.invoke).not.toHaveBeenCalledWith("dismiss_backup_operation")
+    current = { ...current, operation: { ...completed, operation: "restore", targetName: "restored", title: "Restore complete" } }
+    await store.refresh()
+    expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", operation: "restore" })
+    store.backupActions.dismissOperation()
+    release?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await store.refresh()
+    expect(store.getSnapshot().backup.operation).toBeNull()
+    store.dispose()
+  })
+
+  it("keeps a submission failure visible across refreshes until dismissed", async () => {
+    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Backup complete", message: "Backup completed successfully." }
+    const mock = native({ invoke: vi.fn(async (command: string) => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return { ...backup, operation: completed }
+      if (command === "start_restore") throw new Error("Sandbox name already exists")
+    }) as ProductionBridge["invoke"] })
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    store.backupActions.startRestore(backup.archives[0], "dev", "dev")
+    await vi.waitFor(() => expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", outcome: "failed" }))
+    await store.refresh()
+    expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", outcome: "failed", message: "Sandbox name already exists" })
+    store.backupActions.dismissOperation()
+    await store.refresh()
+    expect(store.getSnapshot().backup.operation).toBeNull()
+    store.dispose()
+  })
+
+  it("announces archive selection before waiting for validation", async () => {
+    let release: (() => void) | undefined
+    const mock = native({ invoke: vi.fn(async (command: string) => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return structuredClone(backup)
+      if (command === "choose_backup_archive") return "/tmp/dev.silo-backup"
+      if (command === "inspect_backup_archive") {
+        await new Promise<void>(resolve => { release = resolve })
+        return { archive: backup.archives[0], valid: true }
+      }
+    }) as ProductionBridge["invoke"] })
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    const selected = vi.fn()
+    const inspection = store.backupActions.chooseArchive(selected)
+    await vi.waitFor(() => expect(selected).toHaveBeenCalledWith("/tmp/dev.silo-backup"))
+    release?.()
+    await inspection
+    store.dispose()
+  })
+
   it("coalesces duplicate in-flight backup starts", async () => {
     let finish: (() => void) | undefined
     const mock = native()

@@ -51,6 +51,8 @@ enum Operation {
         #[serde(skip_serializing_if = "Option::is_none")]
         target_name: Option<String>,
         progress: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        indeterminate: Option<bool>,
         phases: Vec<Phase>,
     },
     #[serde(rename = "result")]
@@ -544,7 +546,8 @@ async fn start_backup_inner(
             archive: pending_archive.clone(),
             running_names: Vec::new(),
             target_name: None,
-            progress: 5,
+            progress: 0,
+            indeterminate: Some(true),
             phases: vec![Phase {
                 title: "Capture and verify".into(),
                 detail: "Silo is creating verified self-contained snapshots.".into(),
@@ -954,19 +957,14 @@ async fn start_restore_inner(
     let controller = controller.inner().clone();
     let path = PathBuf::from(&archive_path);
     let cancellation = backup::Cancellation::default();
-    let inspection = controller
-        .service
-        .inspect_archive(&path, &cancellation)
-        .map_err(|error| {
-            finish(&controller);
-            error.to_string()
-        })?;
-    let source_name = select_archive_source(&inspection.sandboxes, source_name.as_deref())
-        .map_err(|error| {
-            finish(&controller);
-            error
-        })?;
-    let archive = archive_from(&path, &inspection);
+    let archive = Archive {
+        name: path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        archive_path,
+        completed_label: "Checking backup".into(),
+        size: "Unknown".into(),
+        destination: path.parent().unwrap_or(Path::new("")).to_string_lossy().into_owned(),
+        sandboxes: source_name.iter().cloned().collect(),
+    };
     {
         let mut view = controller
             .view
@@ -978,10 +976,11 @@ async fn start_restore_inner(
             archive: archive.clone(),
             running_names: Vec::new(),
             target_name: Some(new_name.clone()),
-            progress: 5,
+            progress: 0,
+            indeterminate: Some(true),
             phases: vec![Phase {
-                title: "Validate and restore".into(),
-                detail: format!("Silo is restoring {source_name} as {new_name}."),
+                title: "Checking backup".into(),
+                detail: "Verifying the archive before restoring.".into(),
                 tone: "running",
             }],
         });
@@ -990,25 +989,36 @@ async fn start_restore_inner(
     let app_for_work = app.clone();
     let controller_for_work = controller.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = restore_work(
-            &app_for_work,
-            &controller_for_work,
-            &path,
-            &source_name,
-            &new_name,
-            &cancellation,
-        );
+        let mut archive = archive;
+        let result = (|| {
+            let inspection = controller_for_work.service.inspect_archive(&path, &cancellation)
+                .map_err(|error| error.to_string())?;
+            let selected = select_archive_source(&inspection.sandboxes, source_name.as_deref())?;
+            archive = archive_from(&path, &inspection);
+            if let Ok(mut view) = controller_for_work.view.lock() {
+                if let Some(Operation::Running { archive: current, .. }) = view.operation.as_mut() {
+                    *current = archive.clone();
+                }
+            }
+            restore_work(
+                &app_for_work,
+                &controller_for_work,
+                &path,
+                &selected,
+                &new_name,
+                &cancellation,
+            )?;
+            Ok::<_, String>(selected)
+        })();
         let operation = match result {
-            Ok(()) => Operation::Result {
+            Ok(_) => Operation::Result {
                 operation: "restore",
                 archive,
                 running_names: Vec::new(),
                 target_name: Some(new_name.clone()),
                 outcome: "success",
                 title: "Restore complete".into(),
-                message: format!(
-                    "{source_name} was restored as the new stopped sandbox {new_name}."
-                ),
+                message: "Sandbox restored successfully.".into(),
                 detail: None,
             },
             Err(error) => Operation::Result {
@@ -1117,7 +1127,22 @@ fn restore_work(
         source_name,
         new_name,
         cancellation,
+        &|title| {
+            advance_restore_phase(controller, title);
+            publish(app, controller);
+        },
     )
+}
+
+fn advance_restore_phase(controller: &Controller, title: &str) {
+    if let Ok(mut view) = controller.view.lock() {
+        if let Some(Operation::Running { phases, .. }) = view.operation.as_mut() {
+            for phase in phases.iter_mut() {
+                phase.tone = "succeeded";
+            }
+            phases.push(Phase { title: title.into(), detail: String::new(), tone: "running" });
+        }
+    }
 }
 
 fn restore_at_paths(
@@ -1127,7 +1152,9 @@ fn restore_at_paths(
     source_name: &str,
     new_name: &str,
     cancellation: &backup::Cancellation,
+    progress: &dyn Fn(&str),
 ) -> Result<(), String> {
+    progress("Preparing restore");
     let _guard = runtime::MUTATION_LOCK
         .try_lock()
         .map_err(|_| "Another sandbox operation is still running.".to_string())?;
@@ -1163,6 +1190,7 @@ fn restore_at_paths(
             "Managed disk storage already exists for {new_name}. No existing disk was changed."
         ));
     }
+    progress("Unpacking backup");
     let prepared = controller
         .service
         .prepare_restore(
@@ -1245,6 +1273,7 @@ fn restore_at_paths(
             format!("Silo could not claim restored disk storage: {error}")
         }
     })?;
+    progress("Restoring workspace disk");
     let mut mounts = Vec::new();
     for volume in &prepared.volumes {
         let expected_mount = match volume.role.as_str() {
@@ -1294,6 +1323,7 @@ fn restore_at_paths(
         storage_home: paths.storage_home.clone(),
         library: paths.library.clone(),
     };
+    progress("Creating restored sandbox");
     let output = match backup::MsbRunner::run(
         &backup::SystemMsbRunner,
         &command,
@@ -1323,6 +1353,7 @@ fn restore_at_paths(
             Err(cleanup) => format!("{error} Cleanup also failed: {cleanup}"),
         });
     }
+    progress("Verifying restored sandbox");
     let result = (|| {
         let inspected = inspect(&paths, new_name)?;
         if inspected.status != "Created" {
@@ -1372,18 +1403,19 @@ pub(crate) fn dismiss_backup_operation(
     controller: State<'_, Arc<Controller>>,
 ) -> Result<(), String> {
     require_main(&window)?;
-    if controller.busy.load(Ordering::Acquire) {
-        return Err("The running operation cannot be dismissed.".into());
+    if dismiss_finished_operation(&controller)? {
+        publish(&app, &controller);
     }
-    {
-        let mut view = controller
-            .view
-            .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
-        view.operation = None;
-    }
-    publish(&app, &controller);
     Ok(())
+}
+
+fn dismiss_finished_operation(controller: &Controller) -> Result<bool, String> {
+    let mut view = controller.view.lock()
+        .map_err(|_| "Backup state is unavailable.".to_string())?;
+    if matches!(view.operation, Some(Operation::Running { .. })) {
+        return Ok(false);
+    }
+    Ok(view.operation.take().is_some())
 }
 
 #[tauri::command]
@@ -1518,6 +1550,7 @@ mod tests {
                 running_names: Vec::new(),
                 target_name: Some("restored".into()),
                 progress: 5,
+                indeterminate: None,
                 phases: vec![Phase {
                     title: "Restore".into(),
                     detail: "Creating sandbox".into(),
@@ -1540,6 +1573,36 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(serde_json::to_value(operations).unwrap(), expected);
+    }
+
+    #[test]
+    fn stale_result_dismissal_preserves_the_next_running_operation() {
+        let controller = history_controller(PathBuf::from("/unused/history"));
+        set_operation(&controller, Operation::Running {
+            operation: "restore",
+            archive: completed_archive(),
+            running_names: Vec::new(),
+            target_name: Some("restored".into()),
+            progress: 0,
+            indeterminate: Some(true),
+            phases: vec![Phase { title: "Checking backup".into(), detail: String::new(), tone: "running" }],
+        }).unwrap();
+        assert!(!dismiss_finished_operation(&controller).unwrap());
+        assert!(matches!(controller.view.lock().unwrap().operation, Some(Operation::Running { .. })));
+        advance_restore_phase(&controller, "Unpacking backup");
+        let serialized = serde_json::to_value(&controller.view.lock().unwrap().operation).unwrap();
+        assert_eq!(serialized["indeterminate"], true);
+        assert_eq!(serialized["phases"], serde_json::json!([
+            { "title": "Checking backup", "detail": "", "tone": "succeeded" },
+            { "title": "Unpacking backup", "detail": "", "tone": "running" },
+        ]));
+        set_operation(&controller, Operation::Result {
+            operation: "restore", archive: completed_archive(), running_names: Vec::new(),
+            target_name: Some("restored".into()), outcome: "success", title: "Restored".into(),
+            message: "Sandbox restored successfully.".into(), detail: None,
+        }).unwrap();
+        assert!(dismiss_finished_operation(&controller).unwrap());
+        assert!(!dismiss_finished_operation(&controller).unwrap());
     }
 
     #[test]
@@ -1738,6 +1801,7 @@ mod tests {
         };
         fs::create_dir_all(&paths.home).unwrap();
         fs::create_dir_all(&paths.volumes).unwrap();
+        let restore_phases = Mutex::new(Vec::new());
         restore_at_paths(
             &paths,
             &controller,
@@ -1745,8 +1809,13 @@ mod tests {
             name,
             restored_name,
             &backup::Cancellation::default(),
+            &|phase| restore_phases.lock().unwrap().push(phase.to_string()),
         )
         .unwrap();
+        assert_eq!(*restore_phases.lock().unwrap(), [
+            "Preparing restore", "Unpacking backup", "Restoring workspace disk",
+            "Creating restored sandbox", "Verifying restored sandbox",
+        ]);
         let restored = inspect(&paths, restored_name).unwrap();
         assert_eq!(restored.status, "Created");
         assert_eq!(
@@ -1829,6 +1898,7 @@ mod tests {
             second_name,
             restored_name,
             &backup::Cancellation::default(),
+            &|_| {},
         )
         .unwrap();
         assert_eq!(original_cache, cache_hashes());

@@ -22,7 +22,7 @@ export type BackupOperation = {
   runningNames: string[]
   targetName?: string
 } & (
-  | { kind: "running"; progress: number; phases: BackupPhase[] }
+  | { kind: "running"; progress: number; indeterminate?: boolean; canCancel?: boolean; phases: BackupPhase[] }
   | { kind: "result"; outcome: "success" | "failed" | "restart-required" | "cancelled"; title: string; message: string; detail?: string }
 )
 
@@ -41,7 +41,7 @@ export interface BackupState {
 
 export interface BackupActions {
   chooseDestination: () => Promise<string | null>
-  chooseArchive: () => Promise<{ archive: BackupArchive; valid: boolean; reason?: string } | null>
+  chooseArchive: (onSelected?: (archivePath: string) => void) => Promise<{ archive: BackupArchive; valid: boolean; reason?: string } | null>
   inspectArchive: (selection: BackupArchive) => Promise<{ archive: BackupArchive; valid: boolean; reason?: string }>
   startBackup: (destination: string, sandboxes: string[]) => void
   startRestore: (archive: BackupArchive, newName: string, sourceName?: string) => void

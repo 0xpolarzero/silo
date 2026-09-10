@@ -313,7 +313,7 @@ describe("application", () => {
       expect(overview.getByRole("button", { name: "Start dev-restored" })).toBeEnabled()
       expect(application.actions.stopWorkspace).not.toHaveBeenCalled()
       fireEvent.click(backup)
-      expect(within(appPanel("Backup")).getByRole("status")).toHaveTextContent("dev-restored is ready")
+      expect(within(appPanel("Backup")).getByRole("status")).toHaveTextContent("Sandbox restored successfully.")
     } finally {
       application.unmount()
       vi.useRealTimers()
