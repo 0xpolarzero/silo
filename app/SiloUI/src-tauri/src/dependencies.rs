@@ -1077,12 +1077,7 @@ pub async fn read_dependencies(
     if request_id.trim().is_empty() || request_id.len() > 128 {
         return Err("Invalid dependency-check request ID".into());
     }
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("Silo executable path is unavailable: {error}"))?;
-    let executable_dir = executable
-        .parent()
-        .ok_or("Silo executable directory is unavailable")?
-        .to_path_buf();
+    let executable_dir = crate::bundled_tools::directory(&app)?;
     let resource_dir = app
         .path()
         .resource_dir()

@@ -316,11 +316,7 @@ struct HostResources {
 }
 
 pub(crate) fn runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("Silo could not locate its bundled runtime: {error}"))?
-        .parent()
-        .ok_or_else(|| "Silo could not locate its bundled runtime directory.".to_string())?
-        .join(if cfg!(windows) { "msb.exe" } else { "msb" });
+    let executable = crate::bundled_tools::directory(app)?.join(if cfg!(windows) { "msb.exe" } else { "msb" });
     let app_data = app
         .path()
         .app_data_dir()

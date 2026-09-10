@@ -88,14 +88,14 @@ fn save_preferences(path: &Path, enabled: bool) -> Result<(), String> {
         .and_then(|f| f.sync_all())
         .map_err(|_| "Update preferences could not be saved.".into())
 }
-fn package_kind(executable: &Path, appimage: Option<&Path>) -> &'static str {
+fn package_kind(executable: &Path, appimage: Option<&Path>, bundle: Option<tauri::utils::config::BundleType>) -> &'static str {
     if cfg!(target_os = "macos")
         && executable
             .ancestors()
             .any(|p| p.extension().is_some_and(|e| e == "app"))
     {
         "macos"
-    } else if cfg!(target_os = "linux") && appimage.is_some_and(|p| p.is_absolute() && p.is_file())
+    } else if cfg!(target_os = "linux") && matches!(bundle, Some(tauri::utils::config::BundleType::AppImage)) && appimage.is_some_and(|p| p.is_absolute() && p.is_file())
     {
         "appimage"
     } else {
@@ -179,7 +179,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
                 downloaded_bytes: 0,
                 total_bytes: None,
                 automatic_checks: automatic,
-                package_kind: package_kind(&executable, appimage.as_deref()).into(),
+                package_kind: package_kind(&executable, appimage.as_deref(), tauri::utils::platform::bundle_type()).into(),
                 release_url: RELEASE_URL.into(),
                 error,
                 error_details: None,
@@ -503,7 +503,7 @@ mod tests {
     }
     #[test]
     fn ordinary_executable_does_not_claim_updatable_package() {
-        assert_eq!(package_kind(Path::new("/usr/bin/silo-ui"), None), "manual");
+        assert_eq!(package_kind(Path::new("/usr/bin/silo-ui"), None, None), "manual");
     }
     #[test]
     fn preflight_counts_actual_tar_members_and_rejects_invalid_archive() {
@@ -527,4 +527,10 @@ mod tests {
         assert_eq!(unpacked_size(&bytes, false).unwrap(), bytes.len() as u64);
         assert!(unpacked_size(b"not an archive", true).is_err());
     }
+    #[test]
+    fn debian_with_stray_appimage_environment_remains_manual() {
+        let image = tempfile::NamedTempFile::new().unwrap();
+        assert_eq!(package_kind(Path::new("/usr/bin/silo-ui"), Some(image.path()), Some(tauri::utils::config::BundleType::Deb)), "manual");
+    }
+
 }

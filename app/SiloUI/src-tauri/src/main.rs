@@ -1,5 +1,6 @@
 mod applications;
 mod backup;
+mod bundled_tools;
 mod backup_controller;
 mod dependencies;
 mod editor;

@@ -434,9 +434,7 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
         .try_lock()
         .map_err(|_| "A sandbox operation is already running. Try again shortly.")?;
     require_running(&paths, workspace)?;
-    let executable = std::env::current_exe()
-        .map_err(|_| "Cannot locate bundled Git.")?
-        .with_file_name("git");
+    let executable = crate::bundled_tools::directory(app)?.join("git");
     let support = app
         .path()
         .resource_dir()
