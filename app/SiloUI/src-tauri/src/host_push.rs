@@ -433,6 +433,28 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
         .try_lock()
         .map_err(|_| "A sandbox operation is already running. Try again shortly.")?;
     require_running(&paths, workspace)?;
+    let executable = std::env::current_exe()
+        .map_err(|_| "Cannot locate bundled Git.")?
+        .with_file_name("git");
+    let support = app
+        .path()
+        .resource_dir()
+        .map_err(|_| "Cannot locate Git support.")?
+        .join("git-support");
+    push_committed(&paths, workspace, path, &repo, &token, &executable, &support)
+}
+
+// The same object-transfer path is exercised with disposable VMs and scoped
+// credentials in the opt-in live regression. Authorization stays in perform.
+pub(crate) fn push_committed(
+    paths: &RuntimePaths,
+    workspace: &str,
+    path: &str,
+    repo: &str,
+    token: &str,
+    executable: &Path,
+    support: &Path,
+) -> Result<u64, String> {
     let export = format!("/tmp/silo-push-{}", uuid::Uuid::new_v4());
     let result = (|| {
         let data = guest(
@@ -464,18 +486,11 @@ git -C "$1" rev-parse --git-common-dir"#,
             &bundle,
             &mut remaining,
         )?;
-        let executable = std::env::current_exe()
-            .map_err(|_| "Cannot locate bundled Git.")?
-            .with_file_name("git");
         let git = HostGit {
-            executable,
+            executable: executable.to_path_buf(),
             directory: root.join("repository.git"),
             home: root.join("home"),
-            support: app
-                .path()
-                .resource_dir()
-                .map_err(|_| "Cannot locate Git support.")?
-                .join("git-support"),
+            support: support.to_path_buf(),
         };
         fs::create_dir_all(&git.directory)
             .and_then(|_| fs::create_dir_all(git.home.join("empty-templates")))

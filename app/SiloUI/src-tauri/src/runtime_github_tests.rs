@@ -238,6 +238,7 @@ fn github_authenticated_guest_workflow() {
     let read_repo = required("SILO_GITHUB_TEST_READ_REPO");
     let write_repo = required("SILO_GITHUB_TEST_WRITE_REPO");
     let denied_repo = required("SILO_GITHUB_TEST_DENIED_REPO");
+    let issue_id = required("SILO_TEST_GITHUB_ISSUE_ID");
     for repo in [&read_repo, &write_repo, &denied_repo] {
         assert!(
             repo.split('/').count() == 2
@@ -293,6 +294,7 @@ fn github_authenticated_guest_workflow() {
             write_repo.clone(),
             denied_repo.clone(),
             branch.clone(),
+            issue_id.clone(),
         ])
     };
     let install = |value: &Value| -> Result<(), String> {
@@ -348,6 +350,8 @@ git clone "https://github.com/$1.git" read >/dev/null 2>&1
 git clone "https://github.com/$2.git" write >/dev/null 2>&1
 if git ls-remote "https://github.com/$3.git" >/dev/null 2>&1; then exit 1; fi
 gh api "repos/$1" >/dev/null
+gh api graphql -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}' -f owner="${1%/*}" -f name="${1#*/}" --jq '.data.repository.nameWithOwner' | grep -Fx "$1" >/dev/null
+gh api graphql -f query='mutation($id:ID!,$title:String!){updateIssue(input:{id:$id,title:$title}){issue{title}}}' -f id="$5" -f title="Silo authenticated guest $4" --jq '.data.updateIssue.issue.title' | grep -Fx "Silo authenticated guest $4" >/dev/null
 if gh api "repos/$3" >/dev/null 2>&1; then exit 1; fi
 cd read
 git checkout -b "$4" >/dev/null 2>&1
@@ -384,10 +388,43 @@ sha256sum -c /workspace/silo-live/expected.sha256 >/dev/null
 cd /workspace/silo-live/write
 git fetch origin >/dev/null 2>&1
 git commit --allow-empty -m 'Silo live write removal test' >/dev/null
+if gh api graphql -f query='mutation($id:ID!){updateIssue(input:{id:$id,title:"unexpected live write"}){issue{id}}}' -f id="$5" >/dev/null 2>&1; then exit 1; fi
+gh api graphql -f query='query($id:ID!){node(id:$id){... on Issue{title}}}' -f id="$5" --jq '.data.node.title' | grep -Fx "Silo authenticated guest $4" >/dev/null
 if git push origin "HEAD:refs/heads/$4" >/dev/null 2>&1; then exit 1; fi
 "#,
         )
         .map_err(|_| "Live write removal was not enforced.")?;
+        // Host Push uses its separately authorized scoped write token while the
+        // VM remains read-only. Exercise the production binary/LFS transfer.
+        guest(r#"set -eu
+cd /workspace/silo-live/write
+head -c 1048576 /dev/urandom >silo-live.bin
+sha256sum silo-live.bin >/workspace/silo-live/host-expected.sha256
+git add silo-live.bin
+git commit -m 'Silo isolated host push LFS test' >/dev/null
+printf 'uncommitted local data' >uncommitted.txt
+printf '#!/bin/sh\nexit 99\n' >.git/hooks/pre-push
+chmod +x .git/hooks/pre-push
+"#).map_err(|_| "Host Push fixture preparation failed.")?;
+        let write_token = profile["owners"].as_array().unwrap().iter()
+            .find_map(|owner| owner["writeToken"].as_str())
+            .ok_or("Missing host push test token.")?;
+        let count = crate::host_push::push_committed(
+            &paths, name, "/workspace/silo-live/write", &write_repo, write_token,
+            std::path::Path::new(&required("SILO_TEST_GIT")),
+            std::path::Path::new(&required("SILO_TEST_GIT_SUPPORT")),
+        ).map_err(|_| "Production Host Push failed against private GitHub fixture.")?;
+        if count != 2 { return Err("Host Push returned an incorrect commit count.".into()); }
+        guest(r#"set -eu
+cd /workspace/silo-live
+git clone --branch "$4" "https://github.com/$2.git" host-roundtrip >/dev/null 2>&1
+cd host-roundtrip
+sha256sum -c /workspace/silo-live/host-expected.sha256 >/dev/null
+[ ! -e uncommitted.txt ]
+cd ../write
+[ -e uncommitted.txt ]
+rm .git/hooks/pre-push
+"#).map_err(|_| "Host Push LFS roundtrip or committed-only boundary failed.")?;
         install(&json!({"version":1,"owners":[]}))?;
         guest(
             r#"set -eu
@@ -422,6 +459,7 @@ gh api "repos/$2" >/dev/null
 cleanup_failed=0
 for directory in /workspace/silo-live/read /workspace/silo-live/write; do
  [ -d "$directory/.git" ] || continue
+ rm -f "$directory/.git/hooks/pre-push"
  if ! remote_branch=$(git -C "$directory" ls-remote origin "refs/heads/$4" 2>/dev/null); then
   cleanup_failed=1
  elif [ -n "$remote_branch" ]; then

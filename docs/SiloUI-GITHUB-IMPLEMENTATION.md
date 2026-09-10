@@ -43,9 +43,9 @@ key. User access/refresh credentials remain in Keychain or Secret Service.
   token into arbitrary bodies/query parameters or uses the parent token as a
   fallback. For opaque GraphQL IDs, bounded restricted read probes resolve the
   owner before forwarding the original request once.
-- Existing guest Git/gh/LFS setup, selected/all controls and live Git/jj author
-  updates remain. Guest packages come from signed Ubuntu repositories on initial
-  provisioning; they are not yet baked into a shipped guest image.
+- Guest Git/gh/LFS tools are baked into the bundled Ubuntu 24.04 image, built
+  from signed Ubuntu packages. Selected/all controls and live Git/jj author
+  updates remain.
 - Explicit host Push transfers committed Git/LFS objects into isolated bundled
   host Git. Guest hooks/configuration and uncommitted files do not become host
   configuration or committed data. No guest write permission is temporarily added.
@@ -271,3 +271,33 @@ and [renewed prompts when a trusted app changes](https://support.apple.com/en-gb
 Validation: all 38 GitHub native tests passed, including one read across concurrent
 callers, no repeated reads or unchanged writes, cached denial until explicit retry,
 write-failure handling, and cached absence after deletion.
+
+
+## Verification expansion (2026-09-10)
+
+Current completed evidence:
+
+- 71 focused native GitHub tests passed; four authenticated/hardware tests stayed
+  opt-in. Coverage includes stale policy results, removal before network changes,
+  cached Keychain denial, refresh rotation/storage failure, callback validation,
+  bounded rate-limit backoff, ambiguous mutation refusal and token redaction.
+- All seven Host Push tests passed: committed-only import, hostile destinations,
+  managed/running guards, binary transfer limits and bounded host output.
+- The actual signed bundled runtime passed the isolated synthetic GitHub hardware
+  regression in 11.46 seconds: guest tools and placeholder credentials, verified
+  TLS to GitHub, production Start/Restart attachment, live profile removal without
+  reboot, Git identity and binary transfer. Its VM was removed afterward.
+
+The authenticated harness now also exercises real Host Push Git/LFS and guest
+GraphQL mutations, plus a separate browser session's real refresh rotation. These
+new authenticated checks are not yet recorded as passed: reading the saved account
+waited at Keychain and was canceled, and automatic approval review blocked opening
+an isolated OAuth URL pending action-time confirmation. Neither attempt changed
+Silo's account or minted a token. The existing three disposable private fixtures
+are sufficient; a separate testing GitHub account is unnecessary.
+
+The repeatable runner and its exact boundaries are documented in
+`app/SiloUI/tests/live/README.md`. Rechecked GitHub's official
+[scoped-token endpoint](https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token)
+and [rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+The tests keep permission refusal distinct from network/rate-limit failures.

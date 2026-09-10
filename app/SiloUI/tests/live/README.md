@@ -45,3 +45,39 @@ After native checks, the harness starts the existing ignored `github_authenticat
 The guest test uses a temporary managed VM to check real Git clone/fetch/push, `gh`, Git LFS roundtrip, absence of real tokens in guest environment/configuration, live write removal, full access removal, restoration and unchanged VM boot ID. It creates a unique test branch and deletes it during cleanup. Uploaded LFS objects can remain in GitHub storage after branch deletion; these repositories must be disposable.
 
 This harness does not automate browser consent, sign-in cancellation, token refresh expiry or Linux hardware. Those require their own explicit verification. A passing ordinary suite or a compiled ignored test is **not** an authenticated integration pass.
+
+## Isolated browser authorization and real token refresh
+
+When the saved Silo session cannot be read, do not substitute the GitHub CLI's
+unrelated token or change Keychain permissions. Set the same fixture variables,
+plus `SILO_TEST_GIT` (the bundled Git executable) and `SILO_TEST_GIT_SUPPORT`
+(the bundled `git-support` directory), then run:
+
+```sh
+python3 app/SiloUI/tests/live/browser-regression.py
+```
+
+Open the printed authorization URL in the already signed-in browser. This uses
+the existing App permissions and a separate loopback callback. It never reads or
+replaces Silo's saved account. The native test runs the production PKCE exchange,
+refreshes that isolated session immediately, verifies access/refresh rotation,
+then runs the native and VM tests. Cleanup revokes only the isolated test token,
+never the entire App authorization. Tokens remain in process memory and child
+environments; the launcher does not create credential files or print callbacks.
+The ignored local build configuration supplies client settings unless explicitly
+overridden in the environment. Browser consent expires after five minutes.
+
+The authenticated VM test now additionally checks:
+
+- Actual `gh api graphql` repository queries and opaque issue-ID mutations.
+- Removing write access rejects the mutation and preserves the issue title.
+- The production Host Push object-transfer path while guest access stays read-only.
+- A second 1 MiB LFS roundtrip with exactly the expected two new commits.
+- Guest pre-push hooks do not execute on the host, and uncommitted files remain
+  local and absent from the remote clone.
+
+The shared transfer function starts after the production UI's authorization and
+managed-VM guards; the live test supplies only its explicit disposable VM and
+scoped fixture token. It proves transfer behavior, not a click through the real
+Push button. Ordinary tests cover the guards separately. A passing live test
+must not be claimed when the browser or credential prerequisite is unavailable.

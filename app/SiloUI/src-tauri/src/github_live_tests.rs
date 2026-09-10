@@ -519,6 +519,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
         if vm {
             run_vm(
                 &f,
+                issue_id.as_deref().ok_or("Missing fixture issue ID.")?,
                 json!({"version":1,"owners":[{"login":f.repos[0].name.split('/').next().unwrap(),"repositoryIds":[f.repos[0].id,f.repos[1].id],"readToken":read,"writeToken":write,"expiresAt":read_expiry.min(write_expiry)}]}),
             )?;
         }
@@ -541,7 +542,7 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
     ensure(!cleanup_failed, "Cleanup unconfirmed: inspect only named fixture repository for test issue and revoke remaining test credentials.")?;
     result
 }
-fn run_vm(f: &Fixture, profile: Value) -> Check<()> {
+fn run_vm(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
     let mut command = std::process::Command::new("cargo");
     command.current_dir(env!("CARGO_MANIFEST_DIR")).env_clear();
     for key in [
@@ -554,6 +555,8 @@ fn run_vm(f: &Fixture, profile: Value) -> Check<()> {
         "DEVELOPER_DIR",
         "SILO_TEST_MSB",
         "SILO_TEST_LIBKRUNFW",
+        "SILO_TEST_GIT",
+        "SILO_TEST_GIT_SUPPORT",
     ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
@@ -564,6 +567,7 @@ fn run_vm(f: &Fixture, profile: Value) -> Check<()> {
     }
     let status = command
         .env("SILO_TEST_GITHUB_PROFILE_JSON", profile.to_string())
+        .env("SILO_TEST_GITHUB_ISSUE_ID", issue_id)
         .args([
             "test",
             "--offline",
@@ -581,6 +585,37 @@ fn run_vm(f: &Fixture, profile: Value) -> Check<()> {
         "Authenticated guest regression failed; output suppressed to protect credentials.",
     )
 }
+/// Separate browser authorization: never reads or replaces Silo's saved account.
+#[test]
+#[ignore = "requires an isolated PKCE callback and explicitly authorized private fixture repositories"]
+fn github_authenticated_browser_workflow() {
+    let mut environment: HashMap<String, String> = std::env::vars().collect();
+    let app = Configuration {
+        client_id: required(&environment, "SILO_GITHUB_CLIENT_ID").unwrap(),
+        client_secret: required(&environment, "SILO_GITHUB_CLIENT_SECRET").unwrap(),
+    };
+    let session = execute(&app, Operation::Exchange, json!({
+        "code": required(&environment, "SILO_GITHUB_TEST_CODE").unwrap(),
+        "codeVerifier": required(&environment, "SILO_GITHUB_TEST_VERIFIER").unwrap(),
+        "redirectUri": required(&environment, "SILO_GITHUB_TEST_REDIRECT").unwrap(),
+    })).expect("Isolated native PKCE exchange failed.");
+    let first = session["accessToken"].as_str().expect("Missing isolated token.").to_owned();
+    let mut current = first.clone();
+    let result = (|| -> Check<()> {
+        let renewed = execute(&app, Operation::Refresh, json!({
+            "refreshToken":session["refreshToken"],
+        })).map_err(|_| "Isolated native refresh failed.")?;
+        current = renewed["accessToken"].as_str().ok_or("Missing renewed token.")?.to_owned();
+        ensure(current != first && renewed["refreshToken"] != session["refreshToken"],
+            "GitHub did not rotate isolated access and refresh credentials.")?;
+        environment.insert("SILO_GITHUB_TEST_USER_TOKEN".into(), current.clone());
+        verify(configuration(&environment)?, true)
+    })();
+    let cleanup = execute(&app, Operation::RevokeToken, json!({"accessToken":current}));
+    assert!(cleanup.is_ok(), "Isolated browser token cleanup failed.");
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+}
+
 #[test]
 #[ignore = "requires explicit private GitHub fixtures and credentials; mutates only a marked fixture issue"]
 fn github_authenticated_native_workflow() {
