@@ -90,6 +90,8 @@ pub(crate) fn macos(destination: &Path, bytes: &[u8]) -> Result<()> {
     checkpoint("prepared");
     swap(&next, destination)?;
     checkpoint("replaced");
+    // The swap changes both directories; persist both namespace changes.
+    fs::File::open(staged.path())?.sync_all()?;
     fs::File::open(directory)?.sync_all()?;
     // The temporary path now holds the old bundle. TempDir removes it only after
     // a successful swap; an interrupted process leaves recoverable old files.
@@ -182,6 +184,52 @@ mod tests {
             assert_eq!(status.code(), Some(86));
             if stage == "prepared" { assert_eq!(installed(&path), b"old version"); }
             else { assert!(String::from_utf8_lossy(&installed(&path)).contains("new version")); }
+        }
+    }
+    #[test]
+    fn successful_install_cleans_staging_and_preserves_executable_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = create_old(temp.path());
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o751)).unwrap();
+        }
+        install(&path, &payload()).unwrap();
+        assert!(String::from_utf8_lossy(&installed(&path)).contains("new version"));
+        let entries = fs::read_dir(temp.path()).unwrap().map(|e| e.unwrap().path()).collect::<Vec<_>>();
+        assert_eq!(entries, vec![path.clone()]);
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o7777, 0o751);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn invalid_archive_roots_and_traversal_preserve_app_and_siblings() {
+        // Raw header names deliberately bypass tar::Builder's own traversal check,
+        // so this exercises the installer's boundary, not the archive writer.
+        for names in [
+            vec!["Silo.app/Contents/Info.plist", "Other.app/Contents/Info.plist"],
+            vec!["Silo.app/../../untouched"],
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = create_old(temp.path());
+            let sibling = temp.path().join("untouched");
+            fs::write(&sibling, "keep sibling").unwrap();
+            let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+            for name in names {
+                let mut header = tar::Header::new_gnu();
+                header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+                header.set_size(3); header.set_mode(0o644); header.set_cksum();
+                archive.append(&header, b"new".as_slice()).unwrap();
+            }
+            let bytes = archive.into_inner().unwrap().finish().unwrap();
+            assert!(install(&path, &bytes).is_err());
+            assert_eq!(installed(&path), b"old version");
+            assert_eq!(fs::read(&sibling).unwrap(), b"keep sibling");
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
         }
     }
     #[test]
