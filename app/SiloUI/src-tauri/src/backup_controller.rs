@@ -1185,7 +1185,9 @@ fn restore_at_paths(
         ));
     }
     let disk_directory = paths.volumes.join(new_name);
-    if disk_directory.exists() {
+    // Older deletions left an empty directory behind. remove_dir only succeeds
+    // for an empty directory; never recursively remove or overwrite disk data.
+    if disk_directory.exists() && fs::remove_dir(&disk_directory).is_err() {
         return Err(format!(
             "Managed disk storage already exists for {new_name}. No existing disk was changed."
         ));
@@ -1801,6 +1803,8 @@ mod tests {
         };
         fs::create_dir_all(&paths.home).unwrap();
         fs::create_dir_all(&paths.volumes).unwrap();
+        // A deleted sandbox from an older build can leave this empty folder.
+        fs::create_dir(paths.volumes.join(restored_name)).unwrap();
         let restore_phases = Mutex::new(Vec::new());
         restore_at_paths(
             &paths,

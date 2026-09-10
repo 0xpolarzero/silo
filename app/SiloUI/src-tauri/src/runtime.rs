@@ -2905,7 +2905,14 @@ fn remove_machine_volumes(
             });
         }
     }
-    failure.map_or(Ok(()), Err)
+    failure.map_or(Ok(()), Err)?;
+    match fs::remove_dir(paths.volumes.join(name)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(RuntimeError::Unavailable(format!(
+            "Silo could not remove the sandbox's managed disk folder: {error}"
+        ))),
+    }
 }
 
 fn with_cleanup_error(original: RuntimeError, cleanup: Result<(), RuntimeError>) -> RuntimeError {
@@ -3672,6 +3679,22 @@ mod tests {
             "active_config": null,
             "pending_changes": []
         })
+    }
+
+    #[test]
+    fn deleting_managed_volumes_removes_empty_folder_and_preserves_unknown_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let folder = paths.volumes.join("dev");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(disk_path(&paths, "dev", "workspace"), b"disk").unwrap();
+        remove_machine_volumes(&paths, &vm()).unwrap();
+        assert!(!folder.exists());
+        remove_machine_volumes(&paths, &vm()).unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("unknown.raw"), b"keep").unwrap();
+        assert!(remove_machine_volumes(&paths, &vm()).is_err());
+        assert_eq!(fs::read(folder.join("unknown.raw")).unwrap(), b"keep");
     }
 
     #[test]
