@@ -46,7 +46,7 @@ jobs:
         with:
           workspaces: app/SiloUI/src-tauri
       - run: npm ci
-      - run: npm test -- --maxWorkers=1
+      - run: npm test -- --maxWorkers=2
       - run: npm run lint
       - run: npm run runtime:prepare
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
@@ -55,7 +55,7 @@ jobs:
       - name: Install external WebDriver
         run: cargo install tauri-driver --version 2.0.6 --locked
       - name: Verify native WebKit onboarding and validation
-        run: dbus-run-session -- xvfb-run -a python3 scripts/test-linux-desktop.py
+        run: xvfb-run -a dbus-run-session -- python3 scripts/test-linux-desktop.py
       - name: Verify real hardware runtime operations
         if: ${{ !cancelled() }}
         run: |

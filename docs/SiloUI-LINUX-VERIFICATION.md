@@ -5,9 +5,9 @@ not prove the WebKit UI, desktop services, or hardware virtualization works.
 
 | Layer | Command | What it proves |
 | --- | --- | --- |
-| Frontend | `npm test -- --maxWorkers=1` | Component behavior and bridge contracts on Linux; test adapters remain outside production. |
+| Frontend | `npm test -- --maxWorkers=2` | Component behavior and bridge contracts on Linux; test adapters remain outside production. |
 | Native | `cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1` | Linux application discovery, login entries, settings, resource checks, files, network, GitHub boundary behavior, secrets, and backup validation. |
-| Desktop | `dbus-run-session -- xvfb-run -a python3 scripts/test-linux-desktop.py` | Real production WebKit, native IPC, dependency failure gating, page navigation, inline validation and persisted settings. |
+| Desktop | `xvfb-run -a dbus-run-session -- python3 scripts/test-linux-desktop.py` | Real production WebKit, native IPC, dependency failure gating, page navigation, inline validation and persisted settings. |
 | Hardware | `python3 scripts/test-linux-runtime.py` | Real KVM creation, bundled image import/cache reuse, guest tools/identity, backup/restore data round trips and live secret changes. |
 
 Run from `app/SiloUI`. Hardware tests use temporary Silo runtime directories and
@@ -36,6 +36,9 @@ Set the three build configuration variables to synthetic values for these tests:
 `npm run desktop:build -- --debug --no-bundle --ci` before desktop testing.
 For memory-limited machines, set `CARGO_PROFILE_DEV_DEBUG=0`,
 `CARGO_PROFILE_TEST_DEBUG=0` and bound `CARGO_BUILD_JOBS`.
+Do not run Cargo tests concurrently with desktop builds in the same target
+directory: a test build can replace the runnable debug executable with a build
+that expects the development server. Always rebuild immediately before UI tests.
 
 The test-only `linux-verification.yml` workflow runs both architectures. It has
 read-only repository permissions and cannot publish packages or releases.
@@ -62,6 +65,32 @@ tray placement, notification delivery, file pickers and terminal/editor handoff
 on supported desktop environments. Display scaling and Wayland/X11 differences
 also need interactive verification. Do not describe this suite as full Linux
 parity until that matrix is exercised.
+
+## Recorded local evidence, 10 September 2026
+
+An isolated Ubuntu 24.04 ARM64 OrbStack machine ran the following successfully:
+
+- Bundled MicroSandbox, Git and guest image preparation, followed by the real
+  production Tauri debug build. The first runtime link failed because
+  `libcap-ng-dev` was missing; installing it fixed the build. Both Linux build
+  workflows now install it, and Linux packages declare `libcap-ng0` / `libcap-ng`.
+- 608 frontend tests in 65 files. Only the deliberate 64-card capacity interaction
+  gets a 15-second timeout; its previous 5-second timeout failed in the full Linux
+  suite but the isolated behavior passed. No global timeout was increased.
+- 276 native tests and 5 build-configuration tests; 8 opt-in hardware/account
+  tests excluded from the default native run.
+- Eleven real WebKit assertions: first-run onboarding, truthful missing-KVM
+  failure and disabled Continue, dependency retry, five main page routes,
+  secret inline validation and Escape, actual XDG login enable/disable, and
+  persisted settings after full native application quit/relaunch.
+
+The hardware probe failed explicitly with missing `/dev/kvm`. No Linux VM
+lifecycle, authenticated GitHub operation or AMD64 execution was proven by
+this local run. The GitHub-hosted two-architecture workflow is committed but
+has not been dispatched: publishing its test branch to the public repository
+requires approval. Screenshots are `test-results/linux/onboarding.png` and
+`settings.png`; detailed success/failure reports are `desktop.json` and
+`runtime.json` in the same ignored directory.
 
 ## Primary sources
 

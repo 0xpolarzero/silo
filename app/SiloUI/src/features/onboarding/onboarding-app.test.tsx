@@ -1033,7 +1033,7 @@ describe("onboarding", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("Configure no more than 64 sandboxes.")
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
-  })
+  }, 15_000) // Rendering and editing the maximum 64 cards is slower on Linux CI.
 
   it("mirrors final machine order and kind in Review while preserving activity collapse", async () => {
     const { user } = await renderMachineScenario()
