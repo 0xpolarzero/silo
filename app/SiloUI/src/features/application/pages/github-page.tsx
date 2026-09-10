@@ -329,7 +329,7 @@ export function GitHubPage({
   )
 
   return (
-    <div className="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col px-4 py-5 sm:px-6 sm:py-6">
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <GitHubAccessEditor
         compactConnection
         workspaces={source.workspaces.map(({ machine }) => ({ name: machine.name }))}
