@@ -403,6 +403,7 @@ fn validate_running(inspected: &runtime::InspectedSandbox, workspace: &str) -> R
     Ok(())
 }
 fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, String> {
+    let _update = crate::updates::operation_guard()?;
     if !valid_path(path) {
         return Err("Choose a repository inside /workspace.".into());
     }

@@ -21,13 +21,21 @@ mod status_panel;
 mod system_integrations;
 mod tray;
 mod terminal;
+mod updates;
 
 use tauri::{Manager, WindowEvent};
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            updates::get_update_state,
+            updates::check_for_update,
+            updates::download_update,
+            updates::install_update,
+            updates::set_update_automatic_checks,
+            updates::open_update_release,
             status_panel::open_main,
             status_panel::take_main_route,
             status_panel::hide_status,
@@ -112,6 +120,7 @@ fn main() {
             });
             window.show()?;
             notifications::install(app.handle());
+            updates::install(app.handle())?;
             startup::install(app.handle());
             Ok(())
         })

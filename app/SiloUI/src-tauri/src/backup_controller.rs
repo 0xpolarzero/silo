@@ -2096,3 +2096,23 @@ mod tests {
         eprintln!("Verified stopped restore without original VM/cache; both root and workspace files survived.");
     }
 }
+
+pub(crate) fn update_ready(app: &AppHandle) -> Result<(), String> {
+    let controller = app.state::<Arc<Controller>>();
+    if controller.busy.load(Ordering::Acquire) || recovery::unresolved(&controller)? {
+        Err("Wait for the backup or restore operation to finish before updating.".into())
+    } else { Ok(()) }
+}
+
+pub(crate) struct UpdateGuard(Arc<Controller>);
+impl Drop for UpdateGuard {
+    fn drop(&mut self) { self.0.busy.store(false, Ordering::Release); }
+}
+pub(crate) fn update_guard(app: &AppHandle) -> Result<UpdateGuard, String> {
+    let controller = app.state::<Arc<Controller>>().inner().clone();
+    controller.busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Wait for the backup or restore operation to finish before updating.")?;
+    let guard = UpdateGuard(controller);
+    if recovery::unresolved(&guard.0)? { return Err("An interrupted backup or restore must finish before updating.".into()); }
+    Ok(guard)
+}

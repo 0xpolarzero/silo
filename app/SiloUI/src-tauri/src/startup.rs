@@ -92,6 +92,11 @@ pub(crate) fn install(app: &AppHandle) {
                 return;
             }
         };
+        match crate::runtime::update_recovery::recover(&app) {
+            Ok(true) => return, // Preserve the exact pre-update running set, even if empty.
+            Ok(false) => (),
+            Err(message) => { crate::updates::recovery_failed(&app, message); return; }
+        }
         let result = crate::settings::current_settings(&app).map(|mut settings| {
             preserve_recovered_stops(&mut settings, &recovered_stops);
             start_selected(&settings, &state.cancelled, |id| {

@@ -1,6 +1,6 @@
 [package]
 name = "silo-ui"
-version = "0.0.0"
+version = "0.1.0"
 description = "Silo desktop application"
 edition = "2021"
 
@@ -15,12 +15,15 @@ serde_json = "1"
 tempfile = "3.27"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-dialog = "2.7"
+tauri-plugin-updater = "=2.11.0"
+tokio = { version = "1", features = ["sync", "time", "macros"] }
 base64 = "0.22"
 libc = "0.2"
 microsandbox-image = { git = "https://github.com/superradcompany/microsandbox", rev = "5eca4de8bf233e57f114140f8c076ea8c96f21ab", package = "microsandbox-image" }
 sha2 = "0.10"
 flate2 = "1"
-time = { version = "0.3", features = ["parsing"] }
+tar = "0.4"
+time = { version = "0.3", features = ["parsing", "formatting"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 keyring = { version = "3.6", features = ["apple-native", "sync-secret-service", "crypto-rust"] }
 
@@ -37,3 +40,6 @@ block2 = "0.6"
 ksni = "0.3.6"
 gio = "0.18"
 gtk = "0.18"
+
+[patch.crates-io]
+tauri-plugin-updater = { path = "vendor/tauri-plugin-updater" }

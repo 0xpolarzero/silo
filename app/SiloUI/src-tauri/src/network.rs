@@ -582,6 +582,7 @@ pub(crate) async fn save_network_port(
     scheme: Option<String>,
 ) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _update = crate::updates::operation_guard()?;
         let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         configured_vm(&paths, &workspace)?;
@@ -627,6 +628,7 @@ pub(crate) async fn remove_network_port(
     port: u16,
 ) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _update = crate::updates::operation_guard()?;
         let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         configured_vm(&paths, &workspace)?;

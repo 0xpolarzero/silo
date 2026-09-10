@@ -1648,6 +1648,7 @@ async fn run(
     f: fn(&tauri::AppHandle) -> Result<Value, String>,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _update = crate::updates::operation_guard()?;
         let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
         f(&app)
     })
@@ -1714,6 +1715,7 @@ pub async fn disconnect_github(
     CANCELLATION.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = INTENTS.wait(ticket)?;
+        let _update = crate::updates::operation_guard()?;
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
         d.access_enabled = false;
@@ -1742,6 +1744,7 @@ pub async fn set_github_access_enabled(
     }
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = INTENTS.wait(ticket)?;
+        let _update = crate::updates::operation_guard()?;
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
         if d.access_enabled == enabled {
@@ -1813,6 +1816,7 @@ pub async fn save_github_configuration(
             .as_bool()
             .ok_or("Missing GitHub access choice.")?;
         let _turn = INTENTS.wait(ticket)?;
+        let _update = crate::updates::operation_guard()?;
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
         if d.workspaces == *ws && d.access_enabled == enabled {
@@ -1883,6 +1887,7 @@ pub async fn retry_github_configuration(
     crate::github_http::reset_retries();
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = INTENTS.wait(ticket)?;
+        let _update = crate::updates::operation_guard()?;
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
         for w in &d.workspaces {
@@ -2605,4 +2610,8 @@ mod tests {
             assert!(!actual.to_string().contains("contract-token-not-real"));
         }
     }
+}
+
+pub(crate) fn update_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    OPERATION.try_lock().map_err(|_| "Wait for the GitHub operation to finish before updating.".into())
 }

@@ -444,6 +444,7 @@ pub async fn save_secret(
 ) -> Result<Vec<Value>, String> {
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _update = crate::updates::operation_guard()?;
         let _operation = OPERATION.lock().map_err(|_| "Secret settings are busy.")?;
         retry_store();
         let document = load()?;
@@ -502,6 +503,7 @@ pub async fn remove_secret(
 ) -> Result<Vec<Value>, String> {
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _update = crate::updates::operation_guard()?;
         let _operation = OPERATION.lock().map_err(|_| "Secret settings are busy.")?;
         retry_store();
         update(|d| {
@@ -529,6 +531,7 @@ pub async fn retry_secret(
 ) -> Result<Vec<Value>, String> {
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _update = crate::updates::operation_guard()?;
         let _operation = OPERATION.lock().map_err(|_| "Secret settings are busy.")?;
         retry_store();
         reconcile(&app, &id)?;
@@ -711,4 +714,8 @@ mod tests {
             .all(|e| e["category"] == "secrets" && e["status"] == "completed"));
         assert!(!serde_json::to_string(&d).unwrap().contains("private-value"));
     }
+}
+
+pub(crate) fn update_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    OPERATION.try_lock().map_err(|_| "Wait for the secret operation to finish before updating.".into())
 }

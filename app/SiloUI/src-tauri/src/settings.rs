@@ -1227,3 +1227,12 @@ mod tests {
         assert!(state.approved());
     }
 }
+
+/// The webview drains its queue before invoking installation. Persist the native
+/// snapshot before replacing the executable, independently of restart callbacks.
+pub(crate) fn flush_for_update(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<SettingsState>();
+    let mut initialized = state.store.lock().map_err(|_| "Settings could not be saved before updating.")?;
+    if let Some(current) = initialized.as_mut() { current.store.save()?; }
+    Ok(())
+}

@@ -1,3 +1,4 @@
+pub(crate) mod update_recovery;
 #[path = "guest_image.rs"]
 pub(crate) mod guest_image;
 #[path = "runtime_activity.rs"]

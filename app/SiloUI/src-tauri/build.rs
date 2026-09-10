@@ -21,6 +21,12 @@ fn main() {
     }
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "get_update_state",
+            "check_for_update",
+            "download_update",
+            "install_update",
+            "set_update_automatic_checks",
+            "open_update_release",
             "open_main",
             "hide_status",
             "resize_status",
