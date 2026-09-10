@@ -571,7 +571,7 @@ async fn start_backup_inner(
                 target_name: None,
                 outcome: "success",
                 title: "Backup complete".into(),
-                message: "The verified backup archive was saved without changing earlier backups."
+                message: "Backup completed successfully."
                     .into(),
                 detail: None,
             },
