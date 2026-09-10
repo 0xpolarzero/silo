@@ -199,7 +199,7 @@ function BackupPageContent({ source, backup, onBusyChange, menuRequest }: Backup
   const restoreSpaceBlocked = flow.kind === "restore-review" && (backup.state.requiredSpaceGB !== undefined && (backup.state.availableSpaceGB === undefined || backup.state.availableSpaceGB < backup.state.requiredSpaceGB))
 
   return <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
-    <header><h2 className="text-sm font-semibold">Backup</h2><p className="mt-1 text-xs text-muted-foreground">Create a self-contained Silo backup or restore one as a new sandbox.</p></header>
+    <header><h2 className="text-xs font-medium">Backup</h2></header>
     <ListCard><ul className="divide-y divide-border" aria-label="Backup controls">
       <li ref={createCard} tabIndex={-1}><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title={<h3>Create backup</h3>} detail="Back up selected sandboxes to a folder." actions={<Button variant="outline" size="xs" disabled={controlsDisabled} aria-expanded={flow.kind.startsWith("backup")} onClick={() => begin({ kind: "backup-select" }, "backup")}>Create backup…</Button>} />
         {flow.kind === "backup-select" && <ListRowDetails label="Choose backup">
