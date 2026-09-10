@@ -98,12 +98,16 @@ jobs:
       - name: Require production signing key
         if: inputs.draft
         run: test -n "$TAURI_SIGNING_PRIVATE_KEY"
+      - name: Test release tooling
+        run: python3 -m unittest discover -s scripts -p 'test_*release*.py'
       - run: npm test
       - run: npm run lint
       - name: Prepare native resources
         run: npm run runtime:prepare
       - name: Test build configuration and native behavior
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
+      - name: Test updater transport and interrupted installation
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib -- --test-threads=1
       - name: Free test products before release compilation
         run: cargo clean --manifest-path src-tauri/Cargo.toml --profile dev
       - name: Validate release version
@@ -122,6 +126,7 @@ jobs:
           mkdir -p release-assets
           bundle='src-tauri/target/${{ matrix.target }}/release/bundle'
           codesign --verify --deep --strict "$bundle/macos/Silo.app"
+          python3 scripts/verify-macos-signing.py "$bundle/macos/Silo.app"
           cp "$bundle/macos/Silo.app.tar.gz" release-assets/Silo-macos-arm64.app.tar.gz
           cp "$bundle/macos/Silo.app.tar.gz.sig" release-assets/Silo-macos-arm64.app.tar.gz.sig
           dmgs=("$bundle"/dmg/*.dmg)

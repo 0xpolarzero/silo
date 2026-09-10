@@ -32,7 +32,7 @@ parser.add_argument('--target', required=True)
 parser.add_argument('--evidence', type=Path, required=True)
 args=parser.parse_args()
 args.evidence.mkdir(parents=True, exist_ok=True)
-mode={'value':'corrupt'}
+mode={'value':'interrupted'}
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*unused): pass
     def do_GET(self):
@@ -46,6 +46,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404);return
         self.send_response(200);self.send_header('Content-Length',str(len(payload)));self.end_headers()
         try:
+            if self.path.endswith('.AppImage') and mode['value']=='interrupted':
+                self.wfile.write(payload[:1024*1024]);self.wfile.flush();time.sleep(.7)
+                self.close_connection=True;return
             for offset in range(0,len(payload),1024*1024):
                 self.wfile.write(payload[offset:offset+1024*1024])
                 if self.path.endswith('.AppImage'): time.sleep(.005)
@@ -115,6 +118,12 @@ with tempfile.TemporaryDirectory(prefix='silo-real-update-') as temporary:
         wait.until(lambda _:button('Retry').is_enabled())
         assert sha(args.application)==original
         assert not browser.find_elements(By.XPATH,"//button[normalize-space()='Restart and update']")
+        checks.append('Interrupted download leaves installed AppImage unchanged and offers retry')
+        mode['value']='corrupt';button('Retry').click()
+        wait.until(lambda _:browser.find_elements(By.CSS_SELECTOR,"[role='progressbar']"))
+        wait.until(lambda _:button('Retry').is_enabled())
+        assert sha(args.application)==original
+        assert not browser.find_elements(By.XPATH,"//button[normalize-space()='Restart and update']")
         checks.append('Corrupted signed download rejected before installed AppImage changes')
         browser.save_screenshot(str(args.evidence/'invalid-signature.png'))
         mode['value']='valid';button('Retry').click()
@@ -134,7 +143,8 @@ with tempfile.TemporaryDirectory(prefix='silo-real-update-') as temporary:
         for pid in owned_processes(environment['XDG_CONFIG_HOME']):os.kill(pid,signal.SIGTERM)
         time.sleep(.5)
         wait=connect()
-        wait.until(lambda _:args.version in browser.find_element(By.CSS_SELECTOR,"section[aria-label='Updates']").text)
+        wait.until(lambda _:args.version in browser.find_element(By.CSS_SELECTOR,"section[aria-label='Updates']").get_attribute('textContent'))
+        assert browser.find_element(By.CSS_SELECTOR,"section[aria-label='Updates']").is_displayed()
         assert json.loads(settings.read_text())['settings']['reduceMotion'] is True
         checks.append('Updated production app relaunches with target version and preserved settings')
         browser.save_screenshot(str(args.evidence/'updated.png'))
