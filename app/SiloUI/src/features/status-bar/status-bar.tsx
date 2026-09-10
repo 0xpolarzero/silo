@@ -105,12 +105,12 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
   if (!repositories.length) return null
   const canPush = workspaceAvailability(workspace, source).canOpen
   return (
-    <div className="grid gap-1 pr-2 pb-2 pl-10">
+    <div className="grid gap-1 px-2 pb-2">
       {repositories.map(({ repository, operation }) => (
         <div key={repository.path} className="flex min-h-6 min-w-0 items-center gap-2" role="group" aria-label={`${repository.path} in ${workspace.machine.name}`}>
           <span className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted-foreground" title={repository.path}>
             <GitBranch className="size-3 shrink-0" aria-hidden="true" />
-            <span className="truncate">{repository.path}</span>
+            <span className="truncate">{repository.path.split("/").filter(Boolean).at(-1) ?? repository.path}</span>
           </span>
           {operation ? <RepositoryPushFeedback
             operation={operation}
