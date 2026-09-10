@@ -5,6 +5,7 @@ mod runtime_activity;
 #[path = "secrets_runtime.rs"]
 mod secrets_runtime;
 pub(crate) mod configuration_recovery;
+pub(crate) mod lifecycle_recovery;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
@@ -1541,13 +1542,11 @@ pub async fn workspace_action(
         let guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
-        let mut event = runtime_activity::begin(&paths, &action, &name)?;
         let _ = app.emit("silo://application-state-changed", ());
         let result = host_resources()
             .and_then(|resources| {
                 workspace_action_with(&ProcessRunner, &paths, &resources, &action, &name)
             });
-        runtime_activity::finish(&paths, &mut event, &result)?;
         let _ = app.emit("silo://application-state-changed", ());
         let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
         drop(guard);
@@ -1979,7 +1978,10 @@ pub async fn save_machine_configuration(
         let _guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
-        configuration_recovery::prepare_retry(&ProcessRunner, &paths).map_err(|e| e.to_string())?;
+        let resources = host_resources().map_err(|e| e.to_string())?;
+        validate_request(&request).map_err(|e| e.to_string())?;
+        validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
+        configuration_recovery::prepare_retry(&ProcessRunner, &paths, Some(&request)).map_err(|e| e.to_string())?;
         let retry_workspace = retry_workspace.or_else(|| {
             // A no-change retry after relaunch resumes the failed verification only.
             // A fresh add, edit or removal must not replay another sandbox's work.
@@ -2002,7 +2004,7 @@ pub async fn save_machine_configuration(
         let progress = |step: &str, workspace: &str, fraction: u8| {
             publish(machine_progress(&request_id, step, workspace, fraction));
         };
-        let result = host_resources()
+        let result = Ok(resources)
             .and_then(|resources| {
                 if resources.physical_memory_bytes.is_none() {
                     let mut warning = machine_progress(&request_id, "host-memory-warning", "", 0);
@@ -2405,48 +2407,7 @@ fn workspace_action_with(
     action: &str,
     name: &str,
 ) -> Result<(), RuntimeError> {
-    validate_name(name)?;
-    let metadata = read_metadata(&paths.metadata)?;
-    let machine = metadata
-        .machines
-        .iter()
-        .find(|machine| machine.name() == name)
-        .ok_or_else(|| {
-            RuntimeError::Invalid(format!("Sandbox '{name}' is not configured in Silo."))
-        })?;
-    if !machine.is_vm() {
-        return Err(RuntimeError::Invalid(format!(
-            "Sandbox '{name}' is an SSH configuration. Local VM actions are unavailable."
-        )));
-    }
-    let inspected = inspect_workspace(runner, paths, name)?;
-    ensure_managed(&inspected)?;
-    if matches!(action, "start" | "restart") {
-        validate_inspected_resources(name, &inspected.config, host)?;
-    }
-    let (command, timeout) =
-        match action {
-            "start" => ("start", MUTATION_TIMEOUT),
-            "stop" => ("stop", STOP_TIMEOUT),
-            "restart" => ("restart", MUTATION_TIMEOUT),
-            _ => {
-                return Err(RuntimeError::Invalid(format!(
-                    "Unknown sandbox action '{action}'. No sandbox operation was performed."
-                )))
-            }
-        };
-    runner.run(
-        paths,
-        &[command.into(), name.into(), "--quiet".into()],
-        timeout,
-    )?;
-    let observed = inspect_workspace(runner, paths, name)?;
-    ensure_managed(&observed)?;
-    let expected = if action == "stop" { "Stopped" } else { "Running" };
-    if observed.status != expected {
-        return Err(RuntimeError::Invalid(format!("{name} did not reach the {expected} state. Check its status before retrying.")));
-    }
-    Ok(())
+    lifecycle_recovery::perform(runner, paths, host, action, name)
 }
 
 #[cfg(test)]
@@ -2552,6 +2513,7 @@ fn save_machine_configuration_with_progress(
                 .machines
                 .retain(|existing| existing.id() != machine.id());
             write_metadata(&paths.metadata, &applied)?;
+            lifecycle_recovery::forget_removed(paths, machine)?;
             crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             remove_machine_volumes(paths, machine)?;
             progress("workspace-removal", machine.name(), 1);
@@ -3052,6 +3014,9 @@ fn preflight_removal(
     };
     let inspected = inspect_workspace(runner, paths, name)?;
     ensure_managed(&inspected)?;
+    if inspected.name != *name || inspected.config.pointer("/labels/silo.machine-id").and_then(Value::as_str) != Some(machine.id()) {
+        return Err(RuntimeError::Invalid("The sandbox selected for deletion changed identity. It was preserved.".into()));
+    }
     if !matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed") {
         return Err(RuntimeError::Invalid(format!(
             "Stop sandbox '{name}' before removing it from Silo. This sandbox was not removed."
@@ -3691,7 +3656,7 @@ mod tests {
                 "name": "dev",
                 "image": {"Oci": {"reference": "ubuntu", "root_disk": {"kind": "managed", "size_mib": 81920}}},
                 "resources": {"cpus": 4, "max_cpus": 6, "memory_mib": 16384, "max_memory_mib": 32768},
-                "labels": {"silo.managed": "true"},
+                "labels": {"silo.managed": "true", "silo.machine-id": vm().id()},
                 "mounts": [
                     {"type":"DiskImage","host":workspace,"guest":"/workspace","format":"Raw","fstype":"ext4"}
                 ]
@@ -3719,6 +3684,90 @@ mod tests {
     }
 
     #[test]
+    fn configuration_recovery_verifies_an_edit_committed_before_interruption() {
+        for (valid, retry) in [(false, false), (true, false), (false, true), (true, true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            let mut edited = vm();
+            if let MachineConfiguration::Vm { cpus, .. } = &mut edited { *cpus = 5; }
+            let candidate = request(vec![edited]);
+            configuration_recovery::begin(&paths, &candidate).unwrap();
+            // Simulate termination between writing metadata and verifying runtime.
+            write_metadata(&paths.metadata, &candidate).unwrap();
+            let mut actual = inspect(&paths, "Stopped");
+            actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
+            if valid { actual["config"]["resources"]["cpus"] = json!(5); }
+            let runner = StubRunner::successful_json(vec![json!([{"name":"dev","status":"Stopped","image":"ubuntu"}]), actual.clone(), actual]);
+            let result = if retry {
+                configuration_recovery::prepare_retry(&runner, &paths, Some(&candidate))
+            } else {
+                configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {})
+            };
+            assert_eq!(result.is_ok(), valid);
+            assert_eq!(paths.metadata.with_file_name("configuration-operation.json").exists(), retry || !valid);
+            assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
+            assert!(!runner.calls.lock().unwrap().iter().any(|args| matches!(args[0].as_str(), "create" | "modify" | "remove")));
+        }
+    }
+
+    #[test]
+    fn configuration_retry_can_correct_failed_creation_and_preserve_completed_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
+        configuration_recovery::begin(&paths, &request(vec![remote.clone(), vm()])).unwrap();
+        // The first addition committed; the VM failed while preparing its disk.
+        write_metadata(&paths.metadata, &request(vec![remote.clone()])).unwrap();
+        configuration_recovery::claim(&paths, &vm()).unwrap();
+        fs::write(disk_path(&paths, "dev", "workspace"), b"incomplete").unwrap();
+        let mut corrected = vm();
+        if let MachineConfiguration::Vm { memory_gib, .. } = &mut corrected { *memory_gib = 8; }
+        let revised = request(vec![remote.clone(), corrected]);
+        let runner = StubRunner::successful_json(vec![json!([])]);
+        configuration_recovery::prepare_retry(&runner, &paths, Some(&revised)).unwrap();
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), request(vec![remote]));
+        assert!(!paths.volumes.join("dev").exists());
+        let journal: Value = serde_json::from_slice(&fs::read(paths.metadata.with_file_name("configuration-operation.json")).unwrap()).unwrap();
+        assert_eq!(journal["request"], serde_json::to_value(&revised).unwrap());
+        assert_eq!(journal["previous"], serde_json::to_value(read_metadata(&paths.metadata).unwrap()).unwrap());
+        // No relaunch is needed and the replaced durable request is accepted.
+        configuration_recovery::begin(&paths, &revised).unwrap();
+    }
+
+    #[test]
+    fn configuration_adoption_releases_worker_lock_before_guest_verification() {
+        struct LockAwareRunner(StubRunner);
+        impl RuntimeRunner for LockAwareRunner {
+            fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+                if args[0] == "exec" {
+                    // Real guest verification may perform a temporary start/stop.
+                    // It must be able to acquire the runtime child lock itself.
+                    drop(configuration_recovery::command_lock(paths, Duration::ZERO)?);
+                }
+                self.0.run(paths, args, timeout)
+            }
+        }
+        for retry in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let candidate = request(vec![vm()]);
+            configuration_recovery::begin(&paths, &candidate).unwrap();
+            configuration_recovery::claim(&paths, &vm()).unwrap();
+            let mut actual = inspect(&paths, "Created");
+            actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
+            let runner = LockAwareRunner(StubRunner::successful_json(vec![json!([{"name":"dev","status":"Created","image":"ubuntu"}]), actual.clone(), actual.clone(), json!(null), actual]));
+            if retry {
+                configuration_recovery::prepare_retry(&runner, &paths, Some(&candidate)).unwrap();
+            } else {
+                configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {}).unwrap();
+            }
+            assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
+            assert!(runner.0.calls.lock().unwrap().iter().any(|args| args[0] == "exec"));
+        }
+    }
+
+    #[test]
     fn configuration_recovery_preserves_a_replacement_vm() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -3742,7 +3791,7 @@ mod tests {
         configuration_recovery::claim(&paths, &vm()).unwrap();
         fs::write(disk_path(&paths, "dev", "workspace"), b"incomplete").unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
-        configuration_recovery::prepare_retry(&runner, &paths).unwrap();
+        configuration_recovery::prepare_retry(&runner, &paths, None).unwrap();
         assert!(!paths.volumes.join("dev").exists());
         configuration_recovery::claim(&paths, &vm()).unwrap();
         assert!(paths.volumes.join("dev/.silo-configuration-owner").exists());
@@ -3759,7 +3808,7 @@ mod tests {
         fs::write(disk_path(&paths, "dev", "workspace"), b"saved-data").unwrap();
         write_metadata(&paths.metadata, &candidate).unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
-        assert!(configuration_recovery::prepare_retry(&runner, &paths).unwrap_err().to_string().contains("missing from the runtime"));
+        assert!(configuration_recovery::prepare_retry(&runner, &paths, None).unwrap_err().to_string().contains("missing from the runtime"));
         assert_eq!(fs::read(disk_path(&paths, "dev", "workspace")).unwrap(), b"saved-data");
     }
 
@@ -4146,7 +4195,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let runner = StubRunner::successful_json(vec![inspect(&paths, "Running"), json!(null), inspect(&paths, "Stopped")]);
+        let runner = StubRunner::successful_json(vec![inspect(&paths, "Running"), json!(null), inspect(&paths, "Stopped"), json!(null), inspect(&paths, "Stopped")]);
         let error = workspace_action_with(&runner, &paths, &generous_host(), "restart", "dev").unwrap_err();
         assert!(error.to_string().contains("did not reach the Running state"));
     }
@@ -4542,6 +4591,7 @@ mod tests {
             let mut other_inspect = inspect(&paths, "Stopped");
             other_inspect["name"] = json!("work");
             other_inspect["config"]["name"] = json!("work");
+            other_inspect["config"]["labels"]["silo.machine-id"] = json!(other.id());
             other_inspect["config"]["mounts"][0]["host"] = json!(disk_path(&paths, "work", "workspace"));
             let previous = if removing { request(vec![vm(), other.clone()]) } else { request(vec![vm()]) };
             let requested = if removing { request(vec![vm()]) } else { request(vec![vm(), other]) };
@@ -4653,21 +4703,24 @@ mod tests {
             &request(vec![vm(), second.clone(), remote.clone()]),
         )
         .unwrap();
-        let stopped = || {
+        let stopped = |machine: &MachineConfiguration| {
+            let mut inspected = inspect(&paths, "Stopped");
+            inspected["name"] = json!(machine.name());
+            inspected["config"]["labels"]["silo.machine-id"] = json!(machine.id());
             Ok(CommandOutput {
-                stdout: inspect(&paths, "Stopped").to_string(),
+                stdout: inspected.to_string(),
                 stderr: String::new(),
             })
         };
         let runner = StubRunner::new(vec![
-            stopped(),
-            stopped(),
-            stopped(),
+            stopped(&vm()),
+            stopped(&second),
+            stopped(&vm()),
             Ok(CommandOutput {
                 stdout: String::new(),
                 stderr: String::new(),
             }),
-            stopped(),
+            stopped(&second),
             Err(RuntimeError::Unavailable("remove failed".into())),
         ]);
         let error = save_machine_configuration_with(

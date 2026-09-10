@@ -369,3 +369,38 @@ and optional automatic starts. Waiting for another sandbox mutation is
 cancellable. If cleanup cannot prove ownership or finish safely, the journal stays
 pending, Backup actions are unavailable, and the existing error card explains
 that relaunch will retry; dismissing a message cannot discard that checkpoint.
+
+### Standalone VM actions after app interruption (2026-09-10)
+
+Start, Stop and Restart now save the exact Silo VM ID, requested action, phase and
+original activity event before running the command. Journals are per VM so a
+failed request does not block unrelated sandboxes. Recovery verifies both saved
+metadata and the runtime's `silo.machine-id`; it does not act on a replacement
+that reused a name. Successful deletion retires only that VM's pending action.
+
+Restart is a verified Stop followed by a persisted Start phase. Exiting after
+Stop resumes Start; exiting after Start verifies the already-running VM instead
+of restarting again. A failed Stop is not successful just because a VM crashed.
+The existing activity entry is updated when recovery completes. Explicit Stops
+recovered during launch are excluded from automatic starts for that launch.
+
+Startup waits for backup/restore recovery, then configuration recovery, then VM
+action recovery, before applying normal automatic-start preferences. No new UI
+was added. Pending work uses existing status, activity and error surfaces.
+
+The pinned MicroSandbox [local Start implementation](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/sdk/rust/lib/backend/local/sandbox/mod.rs)
+serializes detached starts with its transition guard, database state claim and
+runtime lifecycle lock. Silo waits for transitional states and rechecks identity
+and terminal state even if a surviving start wins a duplicate command. It does
+not pass Silo's configuration-worker lock into detached Start, where the daemon
+could retain it indefinitely. An outside program deliberately stopping/starting
+the same VM before a pending Stop checkpoint is reconciled is outside exactly-once
+guarantees: the saved desired state is enforced again.
+
+Proof: the opt-in `lifecycle_recovery_survives_real_worker_exit_without_repeating_restart`
+passed in 9.35 seconds on macOS. Isolated worker processes exited after real Stop
+and Start commands, without the next journal checkpoint. Boot IDs proved one
+recovered restart and no repeated completed restart or surviving detached Start.
+The test also verified recovered Stop exclusion and removed its disposable VM.
+Focused tests cover each checkpoint, repeated recovery, failed-start retry,
+replacement preservation, activity reuse and superseded actions.

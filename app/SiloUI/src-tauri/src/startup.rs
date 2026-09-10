@@ -35,6 +35,12 @@ fn selected_sandboxes(settings: &Map<String, Value>) -> Vec<String> {
         .collect()
 }
 
+fn preserve_recovered_stops(settings: &mut Map<String, Value>, stopped: &HashSet<String>) {
+    if let Some(ids) = settings.get_mut("startupWorkspaceIds").and_then(Value::as_array_mut) {
+        ids.retain(|id| !id.as_str().is_some_and(|id| stopped.contains(id)));
+    }
+}
+
 fn start_selected(
     settings: &Map<String, Value>,
     cancelled: &AtomicBool,
@@ -61,6 +67,13 @@ pub(crate) fn install(app: &AppHandle) {
         let Ok(_active) = state.active.lock() else {
             return;
         };
+        if let Err(message) = crate::backup_controller::wait_for_recovery(&app) {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = crate::system_integrations::show_integration_error(app.clone(), window, message);
+            }
+            return;
+        }
+        if state.cancelled.load(Ordering::SeqCst) { return; }
         if let Err(message) = crate::runtime::configuration_recovery::recover(&app) {
             crate::notifications::action_failed(&app, "Sandbox setup could not resume");
             if let Some(window) = app.get_webview_window("main") {
@@ -69,7 +82,18 @@ pub(crate) fn install(app: &AppHandle) {
             }
             return;
         }
-        let result = crate::settings::current_settings(&app).map(|settings| {
+        let recovered_stops = match crate::runtime::lifecycle_recovery::recover(&app) {
+            Ok(stopped) => stopped,
+            Err(message) => {
+                crate::notifications::action_failed(&app, "Sandbox actions could not resume");
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = crate::system_integrations::show_integration_error(app.clone(), window, message);
+                }
+                return;
+            }
+        };
+        let result = crate::settings::current_settings(&app).map(|mut settings| {
+            preserve_recovered_stops(&mut settings, &recovered_stops);
             start_selected(&settings, &state.cancelled, |id| {
                 let result = crate::runtime::start_at_launch(&app, id);
                 let _ = app.emit("silo://application-state-changed", ());
@@ -114,6 +138,13 @@ pub(crate) fn cancel_and_wait(app: &AppHandle) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn recovered_explicit_stops_are_not_undone_by_launch_preferences() {
+        let mut settings = serde_json::json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true,"startupWorkspaceIds":["stopped","other"]}).as_object().unwrap().clone();
+        preserve_recovered_stops(&mut settings, &HashSet::from(["stopped".into()]));
+        assert_eq!(selected_sandboxes(&settings), vec!["other"]);
+    }
 
     #[test]
     fn startup_requires_completed_onboarding_and_explicit_opt_in() {

@@ -62,9 +62,10 @@ fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
     file.as_file()
         .sync_all()
         .map_err(|_| "Sandbox activity could not be saved.")?;
-    file.persist(target)
+    file.persist(&target)
         .map_err(|_| "Sandbox activity could not be saved.")?;
-    Ok(())
+    File::open(parent).and_then(|file| file.sync_all())
+        .map_err(|_| "Sandbox activity could not be synced.".to_string())
 }
 
 pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str) -> Result<Event, String> {
@@ -91,6 +92,17 @@ pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str) -> Resu
     };
     store(paths, &event)?;
     Ok(event)
+}
+
+pub(super) fn matches(event: &Event, action: &str, workspace: &str) -> bool {
+    event.action == action && event.workspace == workspace
+}
+
+pub(super) fn resume(paths: &RuntimePaths, event: &mut Event) -> Result<(), String> {
+    event.process = std::process::id();
+    event.completed = false;
+    event.failure = None;
+    store(paths, event)
 }
 
 pub(super) fn finish(

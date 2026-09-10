@@ -38,6 +38,10 @@ pub(super) fn begin(paths: &RuntimePaths, request: &MachineConfigurationRequest)
         return Err(failure("An interrupted configuration is pending. Relaunch Silo to resume it before making another change."));
     }
     let journal = Journal { version: 1, previous: read_metadata(&paths.metadata)?, request: request.clone() };
+    write(paths, &journal)
+}
+
+fn write(paths: &RuntimePaths, journal: &Journal) -> Result<(), RuntimeError> {
     let parent = paths.metadata.parent().ok_or_else(|| failure("Missing storage directory."))?;
     fs::create_dir_all(parent).map_err(failure)?;
     let mut file = tempfile::NamedTempFile::new_in(parent).map_err(failure)?;
@@ -81,7 +85,7 @@ pub(super) fn finish(paths: &RuntimePaths) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-pub(super) fn command_lock(paths: &RuntimePaths, timeout: Duration) -> Result<File, RuntimeError> {
+pub(crate) fn command_lock(paths: &RuntimePaths, timeout: Duration) -> Result<File, RuntimeError> {
     fs::create_dir_all(&paths.home).map_err(failure)?;
     let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
         .open(paths.home.join(".silo-configuration-worker.lock")).map_err(failure)?;
@@ -134,6 +138,7 @@ fn reconcile(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal
         if !machine.is_vm() || !listed.iter().any(|entry| entry.name == machine.name()) {
             crate::secrets::workspace_removed(machine.name()).map_err(failure)?;
             remove_machine_volumes(paths, machine)?;
+            lifecycle_recovery::forget_removed(paths, machine)?;
             current.machines.retain(|entry| entry.id() != machine.id());
         } else {
             let inspected = inspect_workspace(runner, paths, machine.name())?;
@@ -146,28 +151,75 @@ fn reconcile(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal
     write_metadata(&paths.metadata, &current)
 }
 
+fn verify_committed_edits(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal, requested: &MachineConfigurationRequest) -> Result<(), RuntimeError> {
+    // Metadata is committed before the final verification. An existing VM whose
+    // edit reached that checkpoint still needs verification after relaunch.
+    let current = read_metadata(&paths.metadata)?;
+    for machine in journal.request.machines.iter().filter(|machine| machine.is_vm()
+        && journal.previous.machines.iter().any(|old| old.id() == machine.id() && old != *machine)
+        && current.machines.contains(machine) && requested.machines.contains(machine)) {
+        let inspected = inspect_workspace(runner, paths, machine.name())?;
+        ensure_managed(&inspected)?;
+        if inspected.config.pointer("/labels/silo.machine-id").and_then(Value::as_str) != Some(machine.id()) {
+            return Err(failure("The updated sandbox changed ownership. Its data was preserved."));
+        }
+        verify_machine_configuration(runner, paths, machine)?;
+    }
+    Ok(())
+}
+
 pub(super) fn recover_at_paths(runner: &dyn RuntimeRunner, paths: &RuntimePaths, resources: &HostResources, progress: &dyn Fn(&str, &str, u8)) -> Result<(), RuntimeError> {
     let Some(journal) = load(paths)? else { return Ok(()); };
-    let worker = command_lock(paths, MUTATION_TIMEOUT)?;
+    // Drain a surviving child before inspecting state; runtime operations in
+    // reconciliation acquire this same lock themselves. MUTATION_LOCK serializes
+    // the application-level recovery transaction.
+    drop(command_lock(paths, MUTATION_TIMEOUT)?);
     reconcile(runner, paths, &journal)?;
-    drop(worker);
+    verify_committed_edits(runner, paths, &journal, &journal.request)?;
     save_machine_configuration_with_progress(runner, paths, resources, journal.request, None, progress)?;
     finish(paths)
 }
 
-pub(super) fn prepare_retry(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<(), RuntimeError> {
+pub(super) fn prepare_retry(runner: &dyn RuntimeRunner, paths: &RuntimePaths, request: Option<&MachineConfigurationRequest>) -> Result<(), RuntimeError> {
     if let Some(journal) = load(paths)? {
-        let _worker = command_lock(paths, MUTATION_TIMEOUT)?;
+        drop(command_lock(paths, MUTATION_TIMEOUT)?);
         reconcile(runner, paths, &journal)?;
+        verify_committed_edits(runner, paths, &journal, request.unwrap_or(&journal.request))?;
+        if let Some(request) = request.filter(|request| **request != journal.request) {
+            validate_request(request)?;
+            let previous = read_metadata(&paths.metadata)?;
+            for machine in &request.machines {
+                if let Some(old) = previous.machines.iter().find(|old| old.id() == machine.id()) {
+                    validate_machine_update(old, machine)?;
+                }
+            }
+            for machine in &previous.machines {
+                let marker = paths.volumes.join(machine.name()).join(OWNER);
+                if fs::read_to_string(&marker).ok().as_deref() == Some(machine.id()) {
+                    fs::remove_file(&marker).map_err(failure)?;
+                    File::open(marker.parent().unwrap()).and_then(|file| file.sync_all()).map_err(failure)?;
+                }
+            }
+            // Reconciliation has either adopted completed additions or removed
+            // owned partial files. Atomically replace intent without losing the
+            // committed machines that the revised request may now edit/remove.
+            write(paths, &Journal { version: 1, previous, request: request.clone() })?;
+        }
     }
     *RECOVERY_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
 }
 
 pub(super) fn pending(paths: &RuntimePaths) -> Result<bool, String> {
-    if let Some(message) = RECOVERY_FAILURE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        return Err(message.clone());
-    }
+    let failed = RECOVERY_FAILURE.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    blocks_snapshot(paths, failed)
+}
+
+fn blocks_snapshot(paths: &RuntimePaths, recovery_failed: bool) -> Result<bool, String> {
+    // After recovery stops with an error, let the normal snapshot verifier show
+    // the actual committed state so the user can correct the request. The saved
+    // intent, activity failure and startup error remain; this is not completion.
+    if recovery_failed { return Ok(false); }
     load(paths).map(|journal| journal.is_some()).map_err(|e| e.to_string())
 }
 
@@ -193,4 +245,41 @@ fn recover_inner(app: &AppHandle) -> Result<(), String> {
     progress(if result.is_ok() { "setup-completed" } else { "setup-interrupted" }, "", 0);
     let _ = app.emit("silo://application-state-changed", ());
     result.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_recovery_unblocks_verified_current_state_without_discarding_intent() {
+        struct EmptyRuntime;
+        impl RuntimeRunner for EmptyRuntime {
+            fn run(&self, _paths: &RuntimePaths, args: &[String], _timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+                assert_eq!(args[0], "list");
+                Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let paths = RuntimePaths { executable: root.join("msb"), library: root.join("library"), home: root.join("home"), storage_home: None, guest_image: root.join("image"), metadata: root.join("machines.json"), volumes: root.join("volumes") };
+        let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
+        let current = MachineConfigurationRequest { schema_version: 1, machines: vec![remote.clone()] };
+        write_metadata(&paths.metadata, &current).unwrap();
+        let new = MachineConfiguration::Vm { id: uuid::Uuid::new_v4().to_string(), name: "dev".into(), cpus: 1, max_cpus: 2, memory_gib: 4, max_memory_gib: 8, workspace_storage_gib: 10, runtime_storage_gib: 10 };
+        let request = MachineConfigurationRequest { schema_version: 1, machines: vec![remote, new] };
+        begin(&paths, &request).unwrap();
+        assert!(blocks_snapshot(&paths, false).unwrap());
+        assert!(!blocks_snapshot(&paths, true).unwrap());
+        // The existing verifier still checks real runtime state, rather than
+        // presenting the pending requested VM as successfully created.
+        let source = read_application_state_with(&EmptyRuntime, &paths).unwrap();
+        assert_eq!(source.workspaces.len(), 1);
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), current);
+        assert!(path(&paths).is_file());
+        let mut revised = request;
+        if let MachineConfiguration::Vm { memory_gib, .. } = &mut revised.machines[1] { *memory_gib = 2; }
+        prepare_retry(&EmptyRuntime, &paths, Some(&revised)).unwrap();
+        assert!(load(&paths).unwrap().is_some_and(|journal| journal.request == revised));
+    }
 }
