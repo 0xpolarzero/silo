@@ -313,10 +313,16 @@ probe passed in 0.46 seconds, followed by the fresh successful sign-in above. No
 production transport or firewall change was needed; temporary diagnostics were
 removed. Authenticated subprocess output stays suppressed to protect credentials.
 
+A second full run with `SILO_GITHUB_TEST_INFLIGHT=1` passed in 83.71 seconds.
+The guest kept one verified-TLS connection open across two successful authenticated
+private-repository HTTP requests, with a one-second persistence check after each.
+Changing write access to read-only then closed that existing connection within
+five seconds. The remaining workflow and cleanup passed again. This directly
+checks live connection cancellation on a write-policy change; it does not undo a
+request GitHub has already accepted or establish mid-upload rollback.
+
 These are native/runtime integration tests, not a complete manual UI sign-in test
-or proof of every `gh` command. They also do not prove revocation of an already
-in-flight authenticated connection; the runtime's relay-revocation unit tests
-cover that boundary separately. No security test proves absolute immunity to
+or proof of every `gh` command. No security test proves absolute immunity to
 credential exfiltration.
 
 The repeatable runner and its exact boundaries are documented in

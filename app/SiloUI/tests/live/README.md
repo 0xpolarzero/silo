@@ -81,3 +81,17 @@ managed-VM guards; the live test supplies only its explicit disposable VM and
 scoped fixture token. It proves transfer behavior, not a click through the real
 Push button. Ordinary tests cover the guards separately. A passing live test
 must not be claimed when the browser or credential prerequisite is unavailable.
+
+### Existing authenticated connection cancellation
+
+Set `SILO_GITHUB_TEST_INFLIGHT=1` with the browser runner above to also check a
+held TLS connection. The guest uses `openssl s_client` with certificate verification,
+requires two successful private-repository reads on the same connection and checks
+that it remains open before removing write access. The connection must close within
+five seconds of that policy update. Early server closure is reported as inconclusive,
+not successful revocation. No production code or guest package installation is added.
+Only fixed diagnostic messages can escape the captured child output.
+
+This passed with the complete authenticated workflow on macOS in 83.71 seconds on
+2026-09-10. It tests connection cancellation, not reversal of requests GitHub has
+already accepted or cancellation of every possible long-running GitHub operation.

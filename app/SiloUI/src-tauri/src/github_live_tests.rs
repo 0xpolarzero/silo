@@ -566,6 +566,7 @@ fn run_vm(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
         "SILO_TEST_LIBKRUNFW",
         "SILO_TEST_GIT",
         "SILO_TEST_GIT_SUPPORT",
+        "SILO_GITHUB_TEST_INFLIGHT",
     ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
@@ -574,7 +575,7 @@ fn run_vm(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
     for (role, repo) in ["READ", "WRITE", "DENIED"].into_iter().zip(&f.repos) {
         command.env(format!("SILO_GITHUB_TEST_{role}_REPO"), &repo.name);
     }
-    let status = command
+    let output = command
         .env("SILO_TEST_GITHUB_PROFILE_JSON", profile.to_string())
         .env("SILO_TEST_GITHUB_ISSUE_ID", issue_id)
         .args([
@@ -585,12 +586,19 @@ fn run_vm(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
             "--ignored",
             "--test-threads=1",
         ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .output()
         .map_err(|_| "Cannot launch authenticated guest regression.")?;
+    // Emit only fixed probe diagnoses, never arbitrary child output or credentials.
+    for diagnosis in [
+        "Live socket probe inconclusive: authenticated connection did not stay open.",
+        "Live socket probe failed: policy change did not close held connection within five seconds.",
+    ] {
+        if !output.status.success() && String::from_utf8_lossy(&output.stdout).contains(diagnosis) {
+            return Err(diagnosis.into());
+        }
+    }
     ensure(
-        status.success(),
+        output.status.success(),
         "Authenticated guest regression failed; output suppressed to protect credentials.",
     )
 }

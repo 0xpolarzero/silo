@@ -382,7 +382,41 @@ sha256sum -c /workspace/silo-live/expected.sha256 >/dev/null
         {
             owner["writeToken"] = Value::Null;
         }
+        let held_connection = std::env::var("SILO_GITHUB_TEST_INFLIGHT").as_deref() == Ok("1");
+        if held_connection {
+            guest(r#"set -eu
+command -v openssl >/dev/null
+probe=/workspace/silo-live/socket-probe
+mkdir "$probe"
+mkfifo "$probe/input"
+( exec 3<>"$probe/input"
+  openssl s_client -quiet -ign_eof -verify_return_error -servername api.github.com -connect api.github.com:443 <&3 >"$probe/response" 2>"$probe/tls" || true
+  touch "$probe/closed"
+) </dev/null >/dev/null 2>&1 &
+for expected in 1 2; do
+  timeout 5 sh -c 'printf "GET /repos/%s HTTP/1.1\r\nHost: api.github.com\r\nUser-Agent: Silo-revocation-test\r\nAuthorization: Bearer \$MSB_SILO_GITHUB\r\nConnection: keep-alive\r\n\r\n" "$1" >"$2"' sh "$2" "$probe/input"
+  ready=0
+  for attempt in $(seq 1 50); do
+    [ ! -e "$probe/closed" ] || exit 1
+    if [ "$(grep -c 'HTTP/1.1 200' "$probe/response" || true)" -ge "$expected" ]; then ready=1; break; fi
+    sleep 0.1
+  done
+  [ "$ready" = 1 ] || exit 1
+  sleep 1
+  [ ! -e "$probe/closed" ] || exit 1
+done
+"#).map_err(|_| "Live socket probe inconclusive: authenticated connection did not stay open.")?;
+        }
         install(&readonly)?;
+        if held_connection {
+            guest(r#"set -eu
+for attempt in $(seq 1 50); do
+  [ ! -e /workspace/silo-live/socket-probe/closed ] || exit 0
+  sleep 0.1
+done
+exit 1
+"#).map_err(|_| "Live socket probe failed: policy change did not close held connection within five seconds.")?;
+        }
         guest(
             r#"set -eu
 cd /workspace/silo-live/write
