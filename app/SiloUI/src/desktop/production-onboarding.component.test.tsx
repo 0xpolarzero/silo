@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import type { OnboardingAppProps } from "@/features/onboarding/onboarding-app"
 import { onboardingScenarios } from "@/fixtures/scenarios"
@@ -113,4 +113,36 @@ describe("production onboarding submission errors", () => {
     expect(verifySetupIdentities).toHaveBeenLastCalledWith(expect.objectContaining({ github: expect.objectContaining({ workspaces: [{ workspace: machine.name, repositories: [], identity: changed }] }) }))
   })
 
+})
+
+describe("remote computer onboarding", () => {
+  it("connects and completes onboarding without submitting local VM configuration", async () => {
+    const connectComputer = vi.fn().mockResolvedValue(undefined)
+    const configureMachines = vi.fn()
+    const onOpenApp = vi.fn()
+    const store = createMemorySettingsStore()
+    const source = { configureMachines, applicationActions: { connectComputer } } as unknown as ProductionSource
+    render(<SettingsProvider store={store}><ProductionOnboarding application={null} dependencies={{ checks: [{ id: "runtime-microsandbox", title: "Runtime", status: "unavailable", detail: "Not installed", remediation: null }], retry: vi.fn() }} source={source} onOpenApp={onOpenApp} /></SettingsProvider>)
+    act(() => captured.props!.onConnectComputer!())
+    fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "owner@office" } })
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }))
+    await vi.waitFor(() => expect(onOpenApp).toHaveBeenCalledOnce())
+    expect(connectComputer).toHaveBeenCalledWith("owner@office")
+    expect(configureMachines).not.toHaveBeenCalled()
+    expect(store.getSnapshot().settings.onboardingComplete).toBe(true)
+  })
+
+  it("keeps setup incomplete when the remote connection fails", async () => {
+    const connectComputer = vi.fn().mockRejectedValue(new Error("Computer unavailable"))
+    const onOpenApp = vi.fn()
+    const store = createMemorySettingsStore()
+    const source = { applicationActions: { connectComputer } } as unknown as ProductionSource
+    render(<SettingsProvider store={store}><ProductionOnboarding application={null} dependencies={dependencies} source={source} onOpenApp={onOpenApp} /></SettingsProvider>)
+    act(() => captured.props!.onConnectComputer!())
+    fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "owner@office" } })
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("Computer unavailable")
+    expect(store.getSnapshot().settings.onboardingComplete).toBe(false)
+    expect(onOpenApp).not.toHaveBeenCalled()
+  })
 })

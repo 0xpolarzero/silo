@@ -146,3 +146,13 @@ describe("setup progress and review presentation", () => {
     expect(repair).toHaveBeenCalledOnce()
   })
 })
+
+it("offers the real computer connection flow during production sandbox setup", async () => {
+  const user = userEvent.setup()
+  const onConnectComputer = vi.fn()
+  render(<WorkspacesStep machines={fixtureMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} onConnectComputer={onConnectComputer} />)
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  expect(screen.queryByRole("menuitem", { name: "Connect a machine via SSH" })).not.toBeInTheDocument()
+  await user.click(screen.getByRole("menuitem", { name: "Connect computer…" }))
+  expect(onConnectComputer).toHaveBeenCalledOnce()
+})

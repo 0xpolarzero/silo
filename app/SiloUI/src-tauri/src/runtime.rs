@@ -1,3 +1,5 @@
+pub(crate) mod remote_ops;
+pub(crate) mod shutdown;
 pub(crate) mod update_recovery;
 #[path = "guest_image.rs"]
 pub(crate) mod guest_image;
@@ -1009,6 +1011,7 @@ pub async fn verify_workspace_identities(
         let _guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
+        shutdown::ensure_accepting_operations()?;
         verify_workspace_identities_with(&ProcessRunner, &paths, &identities)
             .map_err(|error| error.to_string())
     })
@@ -1071,6 +1074,7 @@ pub async fn configure_workspace_identities(
         let _guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
+        shutdown::ensure_accepting_operations()?;
         let result = configure_workspace_identities_with(&ProcessRunner, &paths, &identities);
         result.map_err(|error| error.to_string())
     })
@@ -1348,6 +1352,7 @@ pub(crate) fn apply_github_identity(
     let _guard = MUTATION_LOCK
         .try_lock()
         .map_err(|_| RuntimeError::Busy.to_string())?;
+    shutdown::ensure_accepting_operations()?;
     let paths = runtime_paths(app)?;
     let parsed: WorkspaceIdentity = serde_json::from_value(serde_json::json!({
         "workspace": workspace, "name": identity["name"], "email": identity["email"], "apply": identity["apply"]
@@ -1398,6 +1403,31 @@ pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource,
     })
     .await
     .map_err(|error| format!("Sandbox state worker failed: {error}"))?
+}
+
+/// The controller UI can remain usable when local VM inspection fails. This is
+/// never used for a remote owner's snapshot and never invents local VM states.
+#[tauri::command]
+pub async fn read_application_shell(app: AppHandle, error: String) -> Result<ApplicationSource, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        let mut source = application_shell(&paths, &error)?;
+        source.github = crate::github::snapshot(&app).unwrap_or_else(|message| serde_json::json!({
+            "state": "disconnected", "accessEnabled": false, "repositoryCatalog": [],
+            "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
+            "workspaceOperations": [], "hostIdentity": crate::host_identity::read(),
+        }));
+        Ok(source)
+    }).await.map_err(|error| error.to_string())?
+}
+
+fn application_shell(paths: &RuntimePaths, error: &str) -> Result<ApplicationSource, String> {
+    let mut source = application_source_for_workspaces(paths, Vec::new()).map_err(|error| error.to_string())?;
+    source.runtime_repair = Some(serde_json::json!({
+        "status": "unavailable", "reason": error.chars().take(1024).collect::<String>(),
+        "recovery": "Check this computer’s runtime and retry. Connected computers remain available."
+    }));
+    Ok(source)
 }
 
 fn read_application_snapshot(
@@ -1523,6 +1553,7 @@ pub async fn workspace_action(
     path: Option<String>,
 ) -> Result<ApplicationSource, String> {
     if matches!(action.as_str(), "open-editor" | "open-terminal") {
+        shutdown::ensure_accepting_operations()?;
         return tauri::async_runtime::spawn_blocking(move || {
             if action == "open-terminal" { crate::terminal::open(&app, &name)?; }
             else { crate::editor::open(&app, &name, path.as_deref())?; }
@@ -1539,6 +1570,7 @@ pub async fn workspace_action(
         let guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
+        shutdown::ensure_accepting_operations()?;
         let _ = app.emit("silo://application-state-changed", ());
         let result = host_resources()
             .and_then(|resources| {
@@ -1975,6 +2007,7 @@ pub async fn save_machine_configuration(
         let _guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
+        shutdown::ensure_accepting_operations()?;
         let resources = host_resources().map_err(|e| e.to_string())?;
         validate_request(&request).map_err(|e| e.to_string())?;
         validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
@@ -2068,7 +2101,9 @@ fn read_application_state_with(
     paths: &RuntimePaths,
 ) -> Result<ApplicationSource, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
-    let listed = list_managed(runner, paths)?;
+    let listed = if metadata.machines.iter().any(MachineConfiguration::is_vm) {
+        list_managed(runner, paths)?
+    } else { Vec::new() };
     let configured_names: HashSet<&str> = metadata
         .machines
         .iter()
@@ -2110,6 +2145,10 @@ fn read_application_state_with(
             }),
         }
     }
+    application_source_for_workspaces(paths, workspaces)
+}
+
+fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<ApplicationWorkspace>) -> Result<ApplicationSource, RuntimeError> {
     let secrets = crate::secrets::snapshot().map_err(RuntimeError::Unavailable)?;
     for workspace in &mut workspaces {
         workspace.secret_names = secrets.iter().filter(|secret| secret["removing"] != true && secret["workspaces"].as_array().is_some_and(|names| names.iter().any(|name| name.as_str() == Some(workspace.machine.name()))))
@@ -2357,6 +2396,7 @@ pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
     let _guard = MUTATION_LOCK
         .lock()
         .map_err(|_| RuntimeError::Busy.to_string())?;
+    shutdown::ensure_accepting_operations()?;
     if crate::startup::is_cancelled(app) {
         return Ok(());
     }
@@ -3055,9 +3095,9 @@ fn validate_request(request: &MachineConfigurationRequest) -> Result<(), Runtime
             "The sandbox configuration version is not supported.".into(),
         ));
     }
-    if request.machines.is_empty() || request.machines.len() > MAX_MACHINE_COUNT {
+    if request.machines.len() > MAX_MACHINE_COUNT {
         return Err(RuntimeError::Invalid(format!(
-            "Configure between 1 and {MAX_MACHINE_COUNT} sandboxes."
+            "Configure at most {MAX_MACHINE_COUNT} sandboxes."
         )));
     }
     let mut ids = HashSet::new();
@@ -4250,7 +4290,7 @@ mod tests {
         fs::write(&path, b"not json").unwrap();
         assert!(read_metadata(&path).is_err());
         fs::write(&path, br#"{"schemaVersion":1,"machines":[]}"#).unwrap();
-        assert!(read_metadata(&path).is_err());
+        assert!(read_metadata(&path).unwrap().machines.is_empty());
     }
 
     #[test]
@@ -4576,6 +4616,33 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_local_runtime_shell_preserves_error_without_inventing_vm_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let source = application_shell(&paths, "Local runtime could not be reached.").unwrap();
+        assert!(source.workspaces.is_empty());
+        assert_eq!(source.runtime_repair.unwrap()["reason"], "Local runtime could not be reached.");
+        assert!(!paths.executable.exists());
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), request(vec![vm()]));
+    }
+
+    #[test]
+    fn deleting_last_vm_persists_empty_inventory_without_requiring_runtime_for_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        save_machine_configuration_with(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        let unavailable_runtime = StubRunner::successful_json(vec![]);
+        let source = read_application_state_with(&unavailable_runtime, &paths).unwrap();
+        assert!(source.workspaces.is_empty());
+        assert!(unavailable_runtime.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn adding_or_removing_a_vm_does_not_recheck_or_report_unchanged_vms() {
         for (removing, retry_workspace) in [(false, None), (true, None), (true, Some("work"))] {
             let directory = tempfile::tempdir().unwrap();
@@ -4834,6 +4901,7 @@ mod github_integration_tests;
 pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(String,String,Vec<String>)>) -> Result<Vec<String>,String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
     let _mutation = MUTATION_LOCK.try_lock().map_err(|_| RuntimeError::Busy.to_string())?;
+    shutdown::ensure_accepting_operations()?;
     let paths = runtime_paths(app)?;
     let lock = github_revision_lock(&paths.home, workspace)?;
     let _guard = lock.lock().map_err(|_| "Sandbox access state is unavailable.".to_string())?;

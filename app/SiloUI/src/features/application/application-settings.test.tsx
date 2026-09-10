@@ -157,3 +157,40 @@ it.each(["native", "fixture"] as const)("updates unsaved startup defaults after 
   expect(update).not.toHaveBeenCalled()
   expect(write).not.toHaveBeenCalled()
 })
+
+it("puts remote management in Computers and preserves it across settings navigation", async () => {
+  const user = userEvent.setup()
+  const source = applicationSourceForScenario("running")
+  source.remoteManagement = { enabled: false, hostId: "office", name: "Office Mac", address: "owner@office" }
+  const connectComputer = vi.fn().mockResolvedValue(undefined)
+  const setRemoteManagement = vi.fn().mockResolvedValue(undefined)
+  render(<ApplicationPreview source={source} actions={{ connectComputer, setRemoteManagement }} initialRoute={{ tab: "settings", settingsSection: "general" }} />)
+  const navigation = within(screen.getByRole("navigation", { name: "Silo navigation" }))
+  const settings = settingsPanel()
+  expect(settings.queryByRole("switch", { name: "Allow remote management" })).not.toBeInTheDocument()
+
+  await user.click(navigation.getByRole("button", { name: "Computers" }))
+  expect(navigation.getByRole("button", { name: "Computers" })).toHaveAttribute("aria-current", "page")
+  expect(settings.getByRole("heading", { name: "Computers", level: 2 })).toBeVisible()
+  expect(settings.queryByRole("combobox", { name: "Theme" })).not.toBeInTheDocument()
+  await user.click(settings.getByRole("switch", { name: "Allow remote management" }))
+  expect(setRemoteManagement).toHaveBeenCalledWith(true)
+  await user.click(settings.getByRole("button", { name: "Connect computer…" }))
+  await user.type(settings.getByRole("textbox", { name: "Computer address" }), "owner@office")
+
+  await user.click(navigation.getByRole("button", { name: "Notifications" }))
+  expect(settings.queryByRole("switch", { name: "Allow remote management" })).not.toBeInTheDocument()
+  await user.click(screen.getByRole("button", { name: "Go back" }))
+  expect(settings.getByRole("textbox", { name: "Computer address" })).toHaveValue("owner@office")
+  await user.click(settings.getByRole("button", { name: "Connect" }))
+  expect(connectComputer).toHaveBeenCalledWith("owner@office")
+})
+
+it("opens Computers directly from the command palette", async () => {
+  const user = userEvent.setup()
+  render(<ApplicationPreview source={applicationSourceForScenario("running")} actions={{ connectComputer: vi.fn() }} />)
+  await user.keyboard("{Control>}k{/Control}")
+  await user.type(screen.getByRole("combobox", { name: "Search commands" }), "computers")
+  await user.keyboard("{Enter}")
+  expect(settingsPanel().getByRole("heading", { name: "Computers", level: 2 })).toBeVisible()
+})

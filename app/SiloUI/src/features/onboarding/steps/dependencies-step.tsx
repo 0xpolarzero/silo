@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button"
 import { ListCard } from "@/components/list-row"
 import { DependencyDisclosure } from "@/features/onboarding/components/dependency-disclosure"
 import type { DependencyGroupView } from "@/features/onboarding/model/onboarding-state"
@@ -9,16 +10,22 @@ export function DependenciesStep({
   applicationPreferences,
   onApplicationPreferencesChange,
   onRetry,
+  onConnectComputer,
 }: {
   groups: DependencyGroupView[]
   applicationPreferences: ApplicationPreferenceSelection
   onApplicationPreferencesChange: (preferences: ApplicationPreferenceSelection) => void
   onRetry?: () => void
+  onConnectComputer?: () => void
 }) {
   const retryGroup = groups.find(({ status }) => status === "failed")?.id
   return (
     <section aria-labelledby="dependencies-title">
       <h2 id="dependencies-title" className="sr-only" data-visual-heading="hidden">Dependencies</h2>
+      {onConnectComputer && <div className="mb-5 grid justify-items-start gap-2">
+        <Button variant="outline" size="sm" onClick={onConnectComputer}>Connect another computer…</Button>
+        <p className="text-xs text-muted-foreground">Use VMs on another computer without setting up local VMs.</p>
+      </div>}
       <div className="grid gap-2">
         {groups.map((group) => <DependencyDisclosure key={group.id} group={group} onRetry={group.id === retryGroup ? onRetry : undefined} />)}
       </div>

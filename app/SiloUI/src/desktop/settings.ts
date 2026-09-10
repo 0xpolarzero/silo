@@ -60,8 +60,15 @@ export async function connectSettingsLifecycle(store: SettingsStore, main: boole
                 .catch((error: unknown) => console.error("Silo settings shutdown acknowledgment:", error))
                 .then(beforeFlush)
                 .then(() => store.flush())
-                .then(() => invoke("complete_settings_flush"))
-                .catch((error: unknown) => console.error("Silo settings shutdown:", error))
+                .then(() => {
+                  const error = store.getSnapshot().saveError
+                  if (error) throw new Error(error)
+                  return invoke("complete_settings_flush")
+                })
+                .catch(async (error: unknown) => {
+                  console.error("Silo settings shutdown:", error)
+                  await invoke("cancel_settings_flush").catch((failure: unknown) => console.error("Silo could not cancel shutdown:", failure))
+                })
             })
           : await listen("desktop:status-opened", () => { void store.refresh() })
         if (disposed) unsubscribe()

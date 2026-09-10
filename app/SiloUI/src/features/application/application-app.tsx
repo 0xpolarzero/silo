@@ -1,3 +1,4 @@
+import { workspaceTarget } from "./model/remote-computers"
 import { useUpdates } from "@/features/updates/update-store"
 import { useAppMenu } from "@/desktop/app-menu"
 import { UpdateNotice } from "@/features/updates/updates"
@@ -12,6 +13,7 @@ import { applicationCommands } from "@/features/application/components/applicati
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { BackupPage } from "@/features/application/pages/backup-page"
+import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
 import { NotificationsPage } from "@/features/application/pages/notifications-page"
@@ -95,7 +97,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const previousFileStates = useRef(new Map<string, string>())
   useLayoutEffect(() => {
     const current = new Map(source.workspaces.map((workspace) => [
-      workspace.machine.name, `${workspace.machine.id}:${workspace.state}:${workspace.freshness}`,
+      workspaceTarget(workspace), `${workspace.machine.id}:${workspace.state}:${workspace.freshness}`,
     ]))
     for (const [name, state] of previousFileStates.current) {
       if (current.get(name) !== state) directoryStore.invalidateWorkspace(name)
@@ -308,6 +310,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <div hidden={settingsSection !== "general"}>
           <GeneralPage source={source} applicationPreferences={applicationPreferences} onApplicationPreferencesChange={changeApplicationPreferences} reduceMotion={reduceMotion} onReduceMotionChange={(enabled) => { void updateSettings({ reduceMotion: enabled }) }} />
         </div>
+        <div hidden={settingsSection !== "computers"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><RemoteComputersSettings source={source} actions={actions} /></div>
         <div hidden={settingsSection !== "notifications"}><NotificationsPage /></div>
       </section>
     </ApplicationShell>

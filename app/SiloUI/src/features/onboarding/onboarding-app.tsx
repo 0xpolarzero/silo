@@ -33,6 +33,7 @@ export interface OnboardingAppProps {
   repositoryPolicies?: readonly ApplicationGitHubWorkspacePolicy[]
   onOpenApp?: () => void
   onRetryDependencies?: () => void
+  onConnectComputer?: () => void
 }
 
 function OnboardingPanel({ step, activeStep, children }: { step: OnboardingStep; activeStep: OnboardingStep; children: ReactNode }) {
@@ -144,6 +145,7 @@ export function OnboardingApp({
   repositoryPolicies,
   onOpenApp,
   onRetryDependencies,
+  onConnectComputer,
 }: OnboardingAppProps) {
   const { settings, onboardingDraft, updateSettings, updateOnboardingDraft } = useSettings(source.applicationPreferences)
   const [draft, setDraft] = useState<OnboardingDraft>(() => {
@@ -337,10 +339,11 @@ export function OnboardingApp({
             void updateSettings(applicationPreferenceChanges(applicationPreferences, preferences))
           }}
           onRetry={onRetryDependencies}
+          onConnectComputer={onConnectComputer}
         />
       </OnboardingPanel>
       <OnboardingPanel step="workspaces" activeStep={activeStep}>
-        <WorkspacesStep machines={machines} progress={viewModel.workspaceProgress} onMachinesChange={saveMachines} onRetry={actions.retryWorkspaceSetup} initialEditorDraft={draft.unfinishedMachineEditor} onEditorDraftChange={(unfinishedMachineEditor) => updateDraft({ unfinishedMachineEditor })} />
+        <WorkspacesStep onConnectComputer={onConnectComputer} machines={machines} progress={viewModel.workspaceProgress} onMachinesChange={saveMachines} onRetry={actions.retryWorkspaceSetup} initialEditorDraft={draft.unfinishedMachineEditor} onEditorDraftChange={(unfinishedMachineEditor) => updateDraft({ unfinishedMachineEditor })} />
       </OnboardingPanel>
       <OnboardingPanel step="github" activeStep={activeStep}>
         <GitHubStep

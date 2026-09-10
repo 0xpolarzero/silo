@@ -10,6 +10,13 @@ fn command(paths: &RuntimePaths, name: &str) -> Result<String, String> {
     Ok(args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "))
 }
 pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
+    if let Some((host, vm)) = crate::remote_access::target(name)? {
+        let (alias, config) = crate::editor::prepare_remote(app, &host, &vm, "/workspace")?;
+        let application = applications::selected_terminal(app)?;
+        let command = ["/usr/bin/ssh", "-F", config.to_str().ok_or("Invalid SSH configuration path.")?, "-t", &alias]
+            .iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" ");
+        return applications::open_terminal(app, &application, &command);
+    }
     runtime::validate_name(name).map_err(|e| e.to_string())?;
     let application = applications::selected_terminal(app)?;
     let paths = runtime::runtime_paths(app)?;

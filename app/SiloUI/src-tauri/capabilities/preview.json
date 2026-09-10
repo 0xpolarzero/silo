@@ -61,6 +61,24 @@
     "allow-configure-workspace-identities",
     "allow-verify-workspace-identities",
     "allow-read-setup-activity",
-    "allow-save-machine-configuration"
+    "allow-save-machine-configuration",
+    "allow-remote-host-list",
+    "allow-remote-host-snapshot",
+    "allow-remote-management-status",
+    "allow-remote-workspace-action",
+    "allow-remote-network-state",
+    "allow-remote-open-network-port",
+    "allow-read-application-shell",
+    "allow-read-shutdown-state",
+    "allow-set-remote-management",
+    "allow-connect-remote-host",
+    "allow-remove-remote-host",
+    "allow-remote-authorize-ssh",
+    "allow-remote-setup-ssh-key",
+    "allow-remote-upsert-machine",
+    "allow-remote-delete-machine",
+    "allow-remote-save-network-port",
+    "allow-remote-remove-network-port",
+    "allow-cancel-settings-flush"
   ]
 }

@@ -20,6 +20,16 @@ const FAILED: &str = "Could not prepare the editor connection.";
 
 pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<(), String> {
     let _guard = LOCK.lock().map_err(|_| FAILED)?;
+    if let Some((host, vm)) = crate::remote_access::target(name)? {
+        let path = path.unwrap_or("/workspace");
+        let (alias, _) = prepare_remote(app, &host, &vm, path)?;
+        let application = applications::selected_editor(app)?;
+        let (executable, zed) = applications::editor_command(&application)?;
+        let mut launch = Command::new(executable);
+        if !zed { launch.arg("--folder-uri"); }
+        launch.arg(remote_uri(&alias, path, zed)?);
+        return run(&mut launch, Duration::from_secs(10));
+    }
     if !Path::new("/usr/bin/ssh").is_file() || !Path::new("/usr/bin/ssh-keygen").is_file() {
         return Err("OpenSSH is required to open VM folders in your editor. Install your system's OpenSSH client and retry.".into());
     }
@@ -298,9 +308,93 @@ fn run(command: &mut Command, timeout: Duration) -> Result<(), String> {
     }
 }
 
+pub(crate) fn validate_public_key(public: &str) -> Result<(), String> {
+    use base64::Engine;
+    let mut parts = public.split(' ');
+    if parts.next() != Some("ssh-ed25519") { return Err("Expected an Ed25519 public key.".into()) }
+    let encoded = parts.next().ok_or("Missing public key.")?;
+    if parts.next().is_some() || encoded.len() > 128 { return Err("Invalid public key.".into()) }
+    let data = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| "Invalid public key.")?;
+    if data.len() != 51 || &data[..19] != b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" {
+        return Err("Invalid Ed25519 public key.".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn authorize_remote(paths: &RuntimePaths, name: &str, public: &str, path: &str) -> Result<String, String> {
+    let _guard = LOCK.lock().map_err(|_| FAILED)?;
+    crate::runtime::shutdown::ensure_accepting_operations()?;
+    validate_public_key(public)?;
+    validate_path(path)?;
+    let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, paths, name).map_err(|e| e.to_string())?;
+    runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
+    if inspected.status != "Running" { return Err("Start this VM before connecting.".into()) }
+    runtime::run_msb(paths, &[
+        "exec".into(), name.into(), "--no-start".into(), "--no-tty".into(), "--quiet".into(),
+        "--timeout".into(), "5s".into(), "--".into(), "test".into(), "-d".into(), path.into(),
+    ], Duration::from_secs(8)).map_err(|_| "This folder is unavailable inside the VM.")?;
+    let root = paths.home.join("ssh");
+    private_directory(&root)?;
+    let authorized = root.join("authorized_keys");
+    let mut contents = read_regular(&authorized)?;
+    if !std::str::from_utf8(&contents).map_err(|_| FAILED)?.lines().any(|line| line == public) {
+        if !contents.is_empty() && !contents.ends_with(b"\n") { contents.push(b'\n'); }
+        contents.extend_from_slice(format!("{public}\n").as_bytes());
+        write_private(&authorized, &contents)?;
+    }
+    let host_root = paths.home.join("sandboxes").join(name).join("ssh");
+    private_directory(&host_root)?;
+    let host_key = host_root.join("host_ed25519");
+    key(&host_key)?;
+    public_key(&host_key)
+}
+
+pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) -> Result<(String, PathBuf), String> {
+    validate_path(path)?;
+    uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
+    uuid::Uuid::parse_str(vm).map_err(|_| "Invalid VM identity.")?;
+    let home = app.path().home_dir().map_err(|_| FAILED)?;
+    let root = home.join(".silo/desktop-remote/ssh");
+    private_directory(&root)?;
+    let client = root.join(format!("{host}.key"));
+    key(&client)?;
+    let host_public = crate::remote_access::prepare(app, host, vm, &public_key(&client)?, path)?;
+    let alias = format!("silo-remote-{host}-{vm}");
+    let known_hosts = root.join(format!("{host}-{vm}.known_hosts"));
+    write_private(&known_hosts, format!("{alias} {host_public}\n").as_bytes())?;
+    let executable = std::env::current_exe().map_err(|_| FAILED)?;
+    let executable = executable.to_str().ok_or(FAILED)?;
+    let proxy = [executable, "--remote-guest", host, vm].iter()
+        .map(|value| quote(&value.replace('%', "%%"))).collect::<Vec<_>>().join(" ");
+    let config = root.join(format!("{host}-{vm}.conf"));
+    let contents = format!("Host {alias}\n  HostName {alias}\n  User root\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
+    write_private(&config, contents.as_bytes())?;
+    let ssh_root = home.join(".ssh");
+    private_directory(&ssh_root)?;
+    let user_config = ssh_root.join("config");
+    let old = read_regular(&user_config)?;
+    let include = format!("Include {}\n", ssh_quote(&root.join("*.conf"))?);
+    if !old.split(|byte| *byte == b'\n').any(|line| line == include.trim_end().as_bytes()) {
+        let mut updated = include.into_bytes(); updated.extend_from_slice(&old);
+        write_private(&user_config, &updated)?;
+    }
+    Ok((alias, config))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_authorization_accepts_only_plain_ed25519_public_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("controller");
+        key(&path).unwrap();
+        let public = public_key(&path).unwrap();
+        validate_public_key(&public).unwrap();
+        for invalid in [format!("command=evil {public}"), format!("{public}\n{public}"), format!("{public} comment"), "ssh-ed25519 YQ==".into()] {
+            assert!(validate_public_key(&invalid).is_err());
+        }
+    }
     #[test]
     fn remote_paths_stay_in_uri_and_are_encoded() {
         let uri = remote_uri("silo-test-dev", "/workspace/a b/#test?x", true).unwrap();

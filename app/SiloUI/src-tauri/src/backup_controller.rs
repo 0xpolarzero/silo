@@ -693,7 +693,7 @@ fn mutation_guard(cancellation: &backup::Cancellation) -> Result<std::sync::Mute
     loop {
         if cancellation.cancelled() { return Err("The operation was cancelled.".into()); }
         match runtime::MUTATION_LOCK.try_lock() {
-            Ok(guard) => return Ok(guard),
+            Ok(guard) => { runtime::shutdown::ensure_accepting_operations()?; return Ok(guard); },
             Err(std::sync::TryLockError::Poisoned(_)) => return Err("Sandbox operations are unavailable. Relaunch Silo to retry.".into()),
             Err(std::sync::TryLockError::WouldBlock) => {
                 if started.elapsed() >= RESTORE_TIMEOUT { return Err("The previous sandbox operation did not finish. Relaunch Silo to retry.".into()); }

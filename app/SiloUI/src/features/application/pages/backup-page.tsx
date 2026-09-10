@@ -56,7 +56,7 @@ function BackupPageContent({ source, backup, onBusyChange, menuRequest }: Backup
     restoreName.current?.select()
   }, [flow.kind])
   const [destination, setDestination] = useState(backup.state.destination ?? source.backup.destination)
-  const [selectedIDs, setSelectedIDs] = useState(() => new Set(source.workspaces.filter(({ machine }) => machine.kind === "vm").map(({ machine }) => machine.id)))
+  const [selectedIDs, setSelectedIDs] = useState(() => new Set(source.workspaces.filter(({ machine, computer }) => machine.kind === "vm" && !computer).map(({ machine }) => machine.id)))
   const [expandedArchive, setExpandedArchive] = useState<string | null>(null)
   const [choosingDestination, setChoosingDestination] = useState(false)
   const operation = backup.state.operation
@@ -73,7 +73,7 @@ function BackupPageContent({ source, backup, onBusyChange, menuRequest }: Backup
     }, 5000)
     return () => clearTimeout(timer)
   }, [operationKey, successful])
-  const vmWorkspaces = source.workspaces.filter(({ machine }) => machine.kind === "vm")
+  const vmWorkspaces = source.workspaces.filter(({ machine, computer }) => machine.kind === "vm" && !computer)
   const selected = new Set(vmWorkspaces.filter(({ machine }) => selectedIDs.has(machine.id)).map(({ machine }) => machine.name))
   const selectedRunning = vmWorkspaces.filter(({ machine, state }) => selected.has(machine.name) && state === "running").map(({ machine }) => machine.name)
   const controlsDisabled = Boolean(busy)
@@ -194,12 +194,12 @@ function BackupPageContent({ source, backup, onBusyChange, menuRequest }: Backup
   const requiredSpace = backup.state.requiredSpaceGB === undefined ? undefined : Math.ceil(backup.state.requiredSpaceGB * 10) / 10
   const availableSpace = backup.state.availableSpaceGB === undefined ? "Unknown" : Math.floor(backup.state.availableSpaceGB * 10) / 10
 
-  const restoreNameConflict = flow.kind === "restore-review" && source.workspaces.some(({ machine }) => machine.name.toLowerCase() === flow.newName.toLowerCase())
+  const restoreNameConflict = flow.kind === "restore-review" && source.workspaces.filter(w => !w.computer).some(({ machine }) => machine.name.toLowerCase() === flow.newName.toLowerCase())
   const restoreNameError = flow.kind === "restore-review" ? validateSandboxName(flow.newName) : undefined
   const restoreSpaceBlocked = flow.kind === "restore-review" && (backup.state.requiredSpaceGB !== undefined && (backup.state.availableSpaceGB === undefined || backup.state.availableSpaceGB < backup.state.requiredSpaceGB))
 
   return <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
-    <header><h2 className="text-xs font-medium">Backup</h2></header>
+    <header><h2 className="text-xs font-medium">Backup</h2><p className="text-[11px] text-muted-foreground">VMs and backup destinations on this computer.</p></header>
     <ListCard><ul className="divide-y divide-border" aria-label="Backup controls">
       <li ref={createCard} tabIndex={-1}><ListRow icon={<ListRowIcon><Archive className="size-3.5" /></ListRowIcon>} title={<h3>Create backup</h3>} detail="Back up selected sandboxes to a folder." actions={<Button variant="outline" size="xs" disabled={controlsDisabled} aria-expanded={flow.kind.startsWith("backup")} onClick={() => begin({ kind: "backup-select" }, "backup")}>Create backup…</Button>} />
         {flow.kind === "backup-select" && <ListRowDetails label="Choose backup">

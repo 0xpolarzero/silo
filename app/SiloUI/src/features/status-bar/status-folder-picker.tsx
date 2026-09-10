@@ -1,3 +1,4 @@
+import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react"
 import { ArrowLeft, ChevronRight, Code, Folder, Search } from "lucide-react"
 
@@ -23,16 +24,17 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   useEffect(() => { back.current?.focus() }, [])
   const [store] = useState(() => createDirectoryStore(listDirectory))
   useLayoutEffect(() => { store.setLoader(listDirectory) }, [store, listDirectory])
+  const target = workspaceTarget(workspace)
   const path = ["/workspace", ...segments].join("/")
-  const key = directoryKey(workspace.machine.name, path)
+  const key = directoryKey(target, path)
   const subscribe = useCallback((listener: () => void) => store.subscribe(key, listener), [store, key])
   const snapshot = useSyncExternalStore(subscribe, () => store.getSnapshot(key))
   const available = workspace.machine.kind === "vm" && workspace.state === "running" && workspace.freshness === "fresh"
   useEffect(() => {
-    if (!available) { store.invalidateWorkspace(workspace.machine.name); return }
+    if (!available) { store.invalidateWorkspace(target); return }
     let focused = true
     const refresh = () => {
-      if (focused && document.visibilityState !== "hidden") void store.load(workspace.machine.name, path, { refresh: true })
+      if (focused && document.visibilityState !== "hidden") void store.load(target, path, { refresh: true })
     }
     const focus = () => { focused = true; refresh() }
     const blur = () => { focused = false }
@@ -47,7 +49,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
       window.removeEventListener("blur", blur)
       document.removeEventListener("visibilitychange", refresh)
     }
-  }, [store, available, workspace.machine.name, path])
+  }, [store, available, target, path])
   const folders = snapshot.entries?.filter((entry) => entry.kind === "folder") ?? []
   const filtered = folders.filter((entry) => entry.name.toLowerCase().includes(query.trim().toLowerCase()))
   const unavailable = workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this VM to browse its files." : "Files will be available when this VM is running."
@@ -91,9 +93,9 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
           </div>}
           {snapshot.error && <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
             <span role="alert">{snapshot.entries && snapshot.errorOperation === "refresh" ? "Couldn’t refresh. Showing previous folders." : snapshot.error}</span>
-            <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(workspace.machine.name, path, snapshot.errorOperation === "more" ? { more: true } : { refresh: true })}>Retry</Button>
+            <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(target, path, snapshot.errorOperation === "more" ? { more: true } : { refresh: true })}>Retry</Button>
           </div>}
-          {snapshot.nextOffset !== null && <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(workspace.machine.name, path, { more: true })}>Load more</Button>}
+          {snapshot.nextOffset !== null && <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(target, path, { more: true })}>Load more</Button>}
           </>}
         </ListCard>
       </div>

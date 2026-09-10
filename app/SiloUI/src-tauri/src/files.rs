@@ -1,6 +1,6 @@
 //! Read-only, bounded directory snapshots. Pagination never combines two scans.
 use crate::runtime::{ensure_managed, inspect_workspace, run_msb, runtime_paths, ProcessRunner};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     sync::{
@@ -16,14 +16,14 @@ const MAX_ENTRIES: usize = 20_000;
 const MAX_SNAPSHOTS: usize = 64;
 const FAILED: &str = "Could not load this folder.";
 const EXPIRED: &str = "Folder listing expired. Refresh this folder.";
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Entry {
     name: String,
     path: String,
     kind: String,
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DirectoryPage {
     entries: Vec<Entry>,
@@ -119,6 +119,12 @@ pub(crate) async fn list_workspace_directory(
         return Err("Invalid folder request.".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
+            let value = crate::remote::call_remote(&app, &host, "files.list", serde_json::json!({
+                "vmId": vm, "path": path, "offset": offset, "snapshotId": snapshot_id,
+            }))?;
+            return serde_json::from_value(value).map_err(|_| "The remote computer returned an invalid folder listing.".into());
+        }
         let paths = runtime_paths(&app).map_err(|_| FAILED.to_owned())?;
         let state =
             inspect_workspace(&ProcessRunner, &paths, &workspace).map_err(|_| FAILED.to_owned())?;

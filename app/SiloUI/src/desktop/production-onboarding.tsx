@@ -1,3 +1,5 @@
+import { SiloWindow } from "@/components/silo-window"
+import { ConnectComputerForm } from "@/features/application/components/remote-computers-settings"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
@@ -27,6 +29,8 @@ function bootstrapConfiguration(machines: readonly SetupMachineConfiguration[]):
 
 // oxlint-disable-next-line react/only-export-components
 export function productionOnboardingSource(application: ApplicationSource | null, dependencies: DependencyRuntime, applicationPreferences: OnboardingSource["applicationPreferences"], setup?: ProductionSnapshot): OnboardingSource {
+  // Setup on this computer must never adopt another computer's VM identities.
+  if (application) application = { ...application, workspaces: application.workspaces.filter(workspace => !workspace.computer) }
   const operation = application?.sandboxConfigurationOperation
   const machines = setup?.setupCandidate?.machines ?? operation?.candidate.machines ?? (application?.workspaces.length ? application.workspaces.map(({ machine }) => machine) : productionMachineDefaults)
   const configured = (application?.workspaces.length ?? 0) > 0 && application!.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
@@ -68,6 +72,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
   const { settings, onboardingDraft, updateSettings, store } = useSettings()
   const lastSubmission = useRef<{ operation: () => Promise<unknown>; isFinishing: boolean } | null>(null)
   const [completed, setCompleted] = useState(false)
+  const [connectingComputer, setConnectingComputer] = useState(false)
   const submissionSequence = useRef(0)
   const [finishing, setFinishing] = useState(false)
   const [operationError, setOperationError] = useState<string | null>(null)
@@ -118,7 +123,23 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     })
   }
 
+  if (connectingComputer && source.applicationActions.connectComputer) {
+    return <SiloWindow title="Silo" label="Connect another computer">
+      <div className="mx-auto w-full max-w-lg p-6">
+        <h1 className="mb-3 text-sm font-semibold">Connect another computer</h1>
+        <ConnectComputerForm authorize={source.applicationActions.authorizeComputer} onClose={() => setConnectingComputer(false)} connect={async address => {
+          await source.applicationActions.connectComputer!(address)
+          await updateSettings({ onboardingComplete: true })
+          await store.flush()
+          const error = store.getSnapshot().saveError
+          if (error) throw new Error(error)
+          onOpenApp?.()
+        }} />
+      </div>
+    </SiloWindow>
+  }
   return <OnboardingApp
+    onConnectComputer={source.applicationActions.connectComputer ? () => setConnectingComputer(true) : undefined}
     source={onboarding}
     completed={completed}
     onOpenApp={onOpenApp}

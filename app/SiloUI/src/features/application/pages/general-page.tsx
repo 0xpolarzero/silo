@@ -36,7 +36,7 @@ type GeneralPageProps = {
 }
 
 export function GeneralPage(props: GeneralPageProps) {
-  const initialWorkspace = props.source.workspaces.find(({ machine }) => machine.name === "dev") ?? props.source.workspaces[0]
+  const initialWorkspace = props.source.workspaces.filter(workspace => !workspace.computer).find(({ machine }) => machine.name === "dev") ?? props.source.workspaces.find(workspace => !workspace.computer)
   return <SettingsProvider initialSettings={{
     ...props.source.preferences,
     startupWorkspaceIds: props.source.preferences.startupWorkspaceIds ?? (initialWorkspace ? [initialWorkspace.machine.id] : []),
@@ -57,7 +57,7 @@ function GeneralPageContent({
   const startupWorkspaces = new Set(settings.startupWorkspaceIds)
 
   useLayoutEffect(() => {
-    const initial = source.workspaces.find(({ machine }) => machine.name === "dev") ?? source.workspaces[0]
+    const initial = source.workspaces.filter(workspace => !workspace.computer).find(({ machine }) => machine.name === "dev") ?? source.workspaces.find(workspace => !workspace.computer)
     store.updateDefaults({
       startupWorkspaceIds: source.preferences.startupWorkspaceIds ?? (initial ? [initial.machine.id] : []),
     })
@@ -101,7 +101,7 @@ function GeneralPageContent({
             {startAtLaunch && (
               <ListRowDetails label="Sandboxes to start at launch" className="gap-2">
                 <FilterCombobox
-                  options={source.workspaces.map(({ machine }) => ({ value: machine.id, label: machine.name }))}
+                  options={source.workspaces.filter(workspace => !workspace.computer).map(({ machine }) => ({ value: machine.id, label: machine.name }))}
                   selectedValues={startupWorkspaces}
                   onChange={(selected) => { void updateSettings({ startupWorkspaceIds: [...selected] }) }}
                   label="Startup sandboxes"

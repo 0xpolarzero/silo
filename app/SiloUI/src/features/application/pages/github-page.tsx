@@ -71,7 +71,7 @@ function configurationFromDraft(source: ApplicationSource, draft: GitHubDraft, a
   return {
     accessEnabled,
     hostIdentity: source.github.hostIdentity ?? null,
-    workspaces: source.workspaces.map(({ machine }) => ({
+    workspaces: source.workspaces.filter(w => !w.computer).map(({ machine }) => ({
       workspace: machine.name,
       ...(draft.access[machine.name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }),
       identity: draft.identities[machine.name] ?? { name: "", email: "", apply: false },
@@ -144,7 +144,7 @@ export function GitHubPage({
   onBusyChange?: (busy: boolean) => void
 }) {
   const sourceDraft = useMemo(
-    () => draftFromSource(source.github.workspaces, source.github.hostIdentity, source.workspaces),
+    () => draftFromSource(source.github.workspaces, source.github.hostIdentity, source.workspaces.filter(w => !w.computer)),
     [source.github.hostIdentity, source.github.workspaces, source.workspaces],
   )
   const [draft, setDraft] = useState(() => copyDraft(sourceDraft))
@@ -330,9 +330,10 @@ export function GitHubPage({
 
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
+      <p className="mb-2 text-[11px] text-muted-foreground">GitHub access for VMs on this computer.</p>
       <GitHubAccessEditor
         compactConnection
-        workspaces={source.workspaces.map(({ machine }) => ({ name: machine.name }))}
+        workspaces={source.workspaces.filter(w => !w.computer).map(({ machine }) => ({ name: machine.name }))}
         connectionState={connectionState}
         repositoryOptions={source.github.repositoryCatalog ?? []}
         workspaceSelections={draft.selections}

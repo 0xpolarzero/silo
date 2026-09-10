@@ -6,7 +6,6 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU8, Ordering},
         Condvar, Mutex, MutexGuard,
     },
     time::Duration,
@@ -501,7 +500,9 @@ impl SettingsState {
 }
 
 #[derive(Default)]
-struct ShutdownState(AtomicU8);
+struct ShutdownState(Mutex<ShutdownProgress>);
+#[derive(Default)]
+struct ShutdownProgress { phase: u8, generation: u64 }
 
 impl ShutdownState {
     const REQUESTED: u8 = 1;
@@ -509,45 +510,46 @@ impl ShutdownState {
     const FINISHING: u8 = 3;
     const FLUSHING: u8 = 4;
 
-    fn request(&self) -> bool {
-        self.0
-            .compare_exchange(0, Self::REQUESTED, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+    #[cfg(test)]
+    fn request(&self) -> bool { self.request_generation().is_some() }
+    fn request_generation(&self) -> Option<u64> {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.phase != 0 { return None; }
+        state.phase = Self::REQUESTED;
+        state.generation += 1;
+        Some(state.generation)
     }
-
+    #[cfg(test)]
+    fn generation(&self) -> u64 {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).generation
+    }
     fn begin_flush(&self) -> bool {
-        self.0
-            .compare_exchange(
-                Self::REQUESTED,
-                Self::FLUSHING,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
-            .is_ok()
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.phase != Self::REQUESTED { return false; }
+        state.phase = Self::FLUSHING;
+        true
     }
-
     fn claim_exit(&self, frontend_completed: bool) -> bool {
-        let expected = if frontend_completed {
-            Self::FLUSHING
-        } else {
-            Self::REQUESTED
-        };
-        self.0
-            .compare_exchange(
-                expected,
-                Self::FINISHING,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
-            .is_ok()
+        self.claim_exit_for(frontend_completed, None)
     }
-
+    fn claim_exit_for(&self, frontend_completed: bool, generation: Option<u64>) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let expected = if frontend_completed { Self::FLUSHING } else { Self::REQUESTED };
+        if state.phase != expected || generation.is_some_and(|generation| generation != state.generation) { return false; }
+        state.phase = Self::FINISHING;
+        true
+    }
+    fn active(&self) -> bool {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).phase != 0
+    }
     fn approved(&self) -> bool {
-        self.0.load(Ordering::SeqCst) == Self::APPROVED
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).phase == Self::APPROVED
     }
-
+    fn cancel(&self) {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).phase = 0;
+    }
     fn allow_exit(&self) {
-        self.0.store(Self::APPROVED, Ordering::SeqCst);
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).phase = Self::APPROVED;
     }
 }
 
@@ -685,21 +687,42 @@ pub async fn flush_settings(app: AppHandle, window: WebviewWindow) -> Result<(),
     snapshot.save_error.map_or(Ok(()), Err)
 }
 
-fn finish_exit(app: &AppHandle, frontend_completed: bool) {
-    if !app.state::<ShutdownState>().claim_exit(frontend_completed) {
+fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64>) {
+    if !app.state::<ShutdownState>().claim_exit_for(frontend_completed, generation) {
         return;
     }
     crate::startup::cancel_and_wait(app);
-    // The frontend has drained its invoke queue. Wait for any native write already in progress.
-    if let Ok(mut initialized) = app.state::<SettingsState>().store.lock() {
-        if let Some(current) = initialized.as_mut() {
-            if let Err(error) = current.store.save() {
-                eprintln!("Silo settings: {error}");
-            }
-        }
+    if let Err(error) = crate::runtime::shutdown::stop_local_vms(app) {
+        cancel_exit(app, format!("Silo stayed open because its local VMs could not shut down safely.\n\n{error}\n\nCheck the affected VMs and choose Quit Silo again. VMs on other computers were not stopped."));
+        return;
     }
+    // The frontend has drained its invoke queue. Wait for any native write already in progress.
+    let saved = app.state::<SettingsState>().store.lock()
+        .map_err(|_| "Settings storage is unavailable.".to_string())
+        .and_then(|mut initialized| match initialized.as_mut() {
+            Some(current) => current.store.save(),
+            None => Ok(()),
+        });
+    if let Err(error) = saved {
+        cancel_exit(app, format!("Local VMs stopped, but Silo could not save its settings.\n\n{error}\n\nResolve the storage issue and choose Quit Silo again."));
+        return;
+    }
+    crate::remote_network::close_all();
     app.state::<ShutdownState>().allow_exit();
     app.exit(0);
+}
+
+fn cancel_exit(app: &AppHandle, message: String) {
+    crate::runtime::shutdown::cancel();
+    app.state::<ShutdownState>().cancel();
+    let _ = app.emit("silo://shutdown-state-changed", false);
+    // Startup remains cancelled: a failed Quit must not automatically restart VMs
+    // that have already stopped. Manual controls become available again.
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = crate::system_integrations::show_integration_error(app.clone(), window, message);
+    }
 }
 
 pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi) {
@@ -709,9 +732,9 @@ pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi) {
     }
     api.prevent_exit();
     crate::startup::cancel(app);
-    if !state.request() {
-        return;
-    }
+    let Some(generation) = state.request_generation() else { return; };
+    crate::runtime::shutdown::begin();
+    let _ = app.emit("silo://shutdown-state-changed", true);
     if app.get_webview_window("main").is_some() {
         crate::status_panel::report(app.emit_to("main", "settings:flush-request", ()));
     }
@@ -720,8 +743,13 @@ pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi) {
         // Only a webview that never acknowledges may use the fallback. A responsive
         // frontend can take as long as it needs to drain its pending changes.
         std::thread::sleep(Duration::from_secs(2));
-        finish_exit(&app, false);
+        finish_exit(&app, false, Some(generation));
     });
+}
+
+#[tauri::command]
+pub fn read_shutdown_state(app: AppHandle) -> bool {
+    app.state::<ShutdownState>().active()
 }
 
 #[tauri::command]
@@ -735,9 +763,18 @@ pub fn begin_settings_flush(app: AppHandle, window: WebviewWindow) -> Result<(),
 }
 
 #[tauri::command]
+pub fn cancel_settings_flush(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    require_main(window.label())?;
+    if app.state::<ShutdownState>().claim_exit(true) {
+        cancel_exit(&app, "Silo stayed open because pending changes could not be saved. Check the reported save error, then choose Quit Silo again. Local VMs have not been shut down.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn complete_settings_flush(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     require_main(window.label())?;
-    tauri::async_runtime::spawn_blocking(move || finish_exit(&app, true))
+    tauri::async_runtime::spawn_blocking(move || finish_exit(&app, true, None))
         .await
         .map_err(|error| error.to_string())
 }
@@ -1199,6 +1236,35 @@ mod tests {
         ready.recv().unwrap();
         state.initialize(|| Ok(None)).unwrap();
         assert!(reader.join().unwrap().settings.is_empty());
+    }
+
+    #[test]
+    fn timeout_from_cancelled_quit_cannot_finish_a_new_quit_attempt() {
+        let state = ShutdownState::default();
+        assert!(state.request());
+        let old = state.generation();
+        assert!(state.begin_flush());
+        state.cancel();
+        assert!(state.request());
+        assert!(!state.claim_exit_for(false, Some(old)));
+        assert!(state.begin_flush());
+        assert!(state.claim_exit(true));
+    }
+
+    #[test]
+    fn failed_shutdown_keeps_app_open_and_allows_another_quit_attempt() {
+        let state = ShutdownState::default();
+        assert!(state.request());
+        assert!(state.claim_exit(false));
+        assert!(state.active());
+        state.cancel();
+        assert!(!state.active());
+        assert!(!state.approved());
+        assert!(state.request());
+        assert!(state.begin_flush());
+        assert!(state.claim_exit(true));
+        state.allow_exit();
+        assert!(state.approved());
     }
 
     #[test]

@@ -18,6 +18,15 @@ describe("production onboarding", () => {
     expect(source.readyToFinish).toBe(true)
   })
 
+  it("never adopts remote VMs into local setup or counts them as configured", () => {
+    const remote = { ...application.workspaces[0], computer: { id: "office", vmId: "remote-vm", name: "Office", address: "owner@office", connected: true }, machine: { ...application.workspaces[0].machine, id: "silo-remote:office:remote-vm", name: "remote-build" } }
+    const source = productionOnboardingSource({ ...application, workspaces: [remote] }, { checks: [], retry: vi.fn() }, application.preferences)
+    expect(source.machineConfigurations).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "remote-build" })]))
+    expect(source.readyToFinish).toBe(false)
+    const mixed = productionOnboardingSource({ ...application, workspaces: [...application.workspaces, remote] }, { checks: [], retry: vi.fn() }, application.preferences)
+    expect(mixed.machineConfigurations).toEqual(application.workspaces.map(({ machine }) => machine))
+  })
+
   it("offers only dev on a fresh install without claiming it has been created", () => {
     const source = productionOnboardingSource({ ...application, workspaces: [] }, { checks: [], retry: vi.fn() }, application.preferences)
     expect(source.machineConfigurations).toEqual([expect.objectContaining({ name: "dev", cpus: 8, memoryGiB: 32, workspaceStorageGiB: 120, runtimeStorageGiB: 100 })])

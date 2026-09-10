@@ -1,3 +1,4 @@
+import { parseRemoteWorkspaceTarget } from "@/features/application/model/remote-computers"
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
 import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Server, Trash2, X } from "lucide-react"
 
@@ -24,6 +25,7 @@ import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
+  kindBadge?: ReactNode
   badge?: ReactNode
   detail?: ReactNode
   detailClassName?: string
@@ -38,6 +40,11 @@ export interface MachineRowPresentation {
 
 interface MachineListProps {
   machines: readonly SetupMachineConfiguration[]
+  computers?: readonly { id: string; name: string; connected: boolean }[]
+  getComputerId?: (machine: SetupMachineConfiguration) => string | undefined
+  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string) => Promise<void>
+  onDeleteMachine?: (machine: SetupMachineConfiguration) => Promise<void>
+  onConnectComputer?: () => void
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
   getRowPresentation?: (machine: SetupMachineConfiguration) => MachineRowPresentation
   sortPriority?: (machine: SetupMachineConfiguration) => number
@@ -50,7 +57,7 @@ interface MachineListProps {
   onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
   isMachineCreated?: (machine: SetupMachineConfiguration) => boolean
   isMachineRunning?: (machine: SetupMachineConfiguration) => boolean
-  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean) => string | undefined
+  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
 }
 
 function SelectField({ label, value, values, suffix, error, readOnly = false, onChange }: {
@@ -101,7 +108,9 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-function MachineEditor({ editor, focusRequest, machines, onCancel, onSave, onDraftChange, created, running }: {
+function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, onCancel, onSave, onDraftChange, created, running }: {
+  saving?: boolean
+  editorHeader?: ReactNode
   editor: MachineEditorDraft
   focusRequest: number
   created: boolean
@@ -128,7 +137,8 @@ function MachineEditor({ editor, focusRequest, machines, onCancel, onSave, onDra
   }
 
   function save() {
-    const nextErrors = validateMachine(draft, machines, editor.originalID)
+    const nativeId = (id: string) => parseRemoteWorkspaceTarget(id)?.vmId ?? id
+    const nextErrors = validateMachine({ ...draft, id: nativeId(draft.id) }, machines.map(machine => ({ ...machine, id: nativeId(machine.id) })), editor.originalID ? nativeId(editor.originalID) : undefined)
     if (!editor.originalID && machines.length >= maximumMachineCount) {
       nextErrors.form = `Configure no more than ${maximumMachineCount} sandboxes.`
     }
@@ -144,6 +154,7 @@ function MachineEditor({ editor, focusRequest, machines, onCancel, onSave, onDra
         <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{draft.kind}</span>
       </div>
 
+      {editorHeader}
       <TextField
         firstField
         inputRef={firstField}
@@ -190,15 +201,18 @@ function MachineEditor({ editor, focusRequest, machines, onCancel, onSave, onDra
       )}
 
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={onCancel}>Cancel</Button>
-        <Button type="button" size="sm" onClick={save}>{running ? "Stop VM and save" : "Save"}</Button>
+        <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>
+        <Button type="button" size="sm" disabled={saving} onClick={save}>{saving ? "Saving…" : running ? "Stop VM and save" : "Save"}</Button>
       </div>
       {errors.form && <p className="text-xs text-destructive" role="alert">{errors.form}</p>}
     </div>
   )
 }
 
-export function MachineList({ machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, newSandboxRequest, onNewSandboxRequestHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
+export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, newSandboxRequest, onNewSandboxRequestHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
+  const [computerId, setComputerId] = useState("")
+  const [committing, setCommitting] = useState(false)
+  interactionDisabled = interactionDisabled || committing
   const [addOpen, setAddOpen] = useState(false)
   const [editorFocusRequest, setEditorFocusRequest] = useState(0)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
@@ -239,6 +253,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
   function startEdit(machine: SetupMachineConfiguration) {
     if (interactionDisabled) return
     beginOperation()
+    setComputerId(getComputerId?.(machine) ?? "")
     setEditor({
       draft: structuredClone(machine),
       originalID: machine.id,
@@ -250,6 +265,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
     if (interactionDisabled) return
     beginOperation()
     setAddOpen(false)
+    setComputerId("")
     setEditor({
       draft: kind === "vm" ? newVirtualMachine(machines) : newSSHMachine(machines),
       insertAt: machines.length,
@@ -274,13 +290,23 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
     if (interactionDisabled) return
     beginOperation()
     const sourceIndex = machines.findIndex(({ id }) => id === machine.id)
+    setComputerId(getComputerId?.(machine) ?? "")
     setEditor({ draft: duplicateMachine(machine, machines), insertAt: sourceIndex + 1, displayAfterID: machine.id })
   }
 
-  function save(machine: SetupMachineConfiguration) {
+  async function save(machine: SetupMachineConfiguration) {
     if (interactionDisabled) return
-    const blocked = validateOperation?.(machine, !editor?.originalID)
+    const blocked = validateOperation?.(machine, !editor?.originalID, computerId)
     if (blocked) { setOperationError(blocked); return }
+    if (onCommitMachine) {
+      setCommitting(true)
+      try {
+        await onCommitMachine(machine, machines.find(item => item.id === editor?.originalID), computerId)
+        setEditor(null)
+      } catch (cause) { setOperationError(cause instanceof Error ? cause.message : String(cause)) }
+      finally { setCommitting(false) }
+      return
+    }
     const updated = [...machines]
     if (editor?.originalID) {
       const index = updated.findIndex(({ id }) => id === editor.originalID)
@@ -289,15 +315,22 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
     } else {
       updated.splice(editor?.insertAt ?? updated.length, 0, machine)
     }
-    onMachinesChange(configurationRequest(updated).machines)
+    onMachinesChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines)
     setEditor(null)
   }
 
-  function remove(machine: SetupMachineConfiguration) {
+  async function remove(machine: SetupMachineConfiguration) {
     if (interactionDisabled) return
     if (pendingDelete !== machine.id) {
       beginOperation()
       setPendingDelete(machine.id)
+      return
+    }
+    if (onDeleteMachine) {
+      setCommitting(true)
+      try { await onDeleteMachine(machine); setPendingDelete(null) }
+      catch (cause) { setOperationError(cause instanceof Error ? cause.message : String(cause)) }
+      finally { setCommitting(false) }
       return
     }
     if (machines.length === 1) {
@@ -333,7 +366,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
       bucket.splice(bucketTarget, 0, bucketMoved)
       let bucketIndex = 0
       const updated = machines.map((machine) => sortPriority(machine) === priority ? bucket[bucketIndex++] : machine)
-      onMachinesChange(configurationRequest(updated).machines)
+      onMachinesChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines)
       setAnnouncement(`${moved.name} moved to position ${boundedTarget + 1} of ${displayed.length}.`)
       return
     }
@@ -342,7 +375,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
     const configuredFrom = updated.findIndex((machine) => machine.id === id)
     const [configuredMoved] = updated.splice(configuredFrom, 1)
     updated.splice(boundedTarget, 0, configuredMoved)
-    onMachinesChange(configurationRequest(updated).machines)
+    onMachinesChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines)
     setAnnouncement(`${moved.name} moved to position ${boundedTarget + 1} of ${displayed.length}.`)
   }
 
@@ -377,7 +410,7 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
             </PopoverTrigger>
             <PopoverContent role="menu" aria-label="Add sandbox" align="end" className="grid w-48 gap-1 p-1">
               <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => startAdd("vm")}>New sandbox</button>
-              <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => startAdd("ssh")}>Connect a machine via SSH</button>
+              <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { if (onConnectComputer) { setAddOpen(false); onConnectComputer() } else startAdd("ssh") }}>{onConnectComputer ? "Connect computer…" : "Connect a machine via SSH"}</button>
             </PopoverContent>
           </Popover>
         </div>
@@ -387,6 +420,8 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
               const isEditing = editor?.draft.id === machine.id
               const presentation = getRowPresentation?.(machine)
               const deleteArmed = pendingDelete === machine.id
+              const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
+              const deletionName = computerName ? `${machine.name} on ${computerName}` : machine.name
               return (
                 <SandboxListItem
                   key={machine.id}
@@ -398,11 +433,12 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
                   onDrop={(event) => drop(event, index)}
                 >
                   {isEditing && editor ? (
-                    <MachineEditor focusRequest={editorFocusRequest} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} machines={machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} />
+                    <MachineEditor saving={committing} editorHeader={computers && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={computerId} disabled={Boolean(editor.originalID) || committing} onChange={event => setComputerId(event.target.value)}><option value="">This computer</option>{computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} machines={getComputerId ? machines.filter(machine => (getComputerId(machine) ?? "") === computerId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} />
                   ) : (
                     <SandboxListRow
                       name={machine.name}
                       kind={machine.kind}
+                      kindBadge={presentation?.kindBadge}
                       badge={presentation?.badge}
                       iconState={presentation?.iconState}
                       icon={presentation?.icon}
@@ -431,12 +467,13 @@ export function MachineList({ machines, onMachinesChange, getRowPresentation, so
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions ? undefined : <>
                         <SandboxAction label={`Edit ${machine.name}`} disabled={interactionDisabled} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
+                        {deleteArmed && computerName && <span className="text-[10px] text-destructive">Delete on {computerName}?</span>}
                         <InlineConfirmation active={deleteArmed} onDismiss={() => setPendingDelete(null)}>
                           <SandboxAction tooltip={deleteArmed ? undefined : machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={deleteArmed ? `Cancel deletion of ${machine.name}` : `Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => deleteArmed ? setPendingDelete(null) : startDuplicate(machine)}>
                             {deleteArmed ? <X /> : <CopyPlus />}
                           </SandboxAction>
                           <SandboxAction
-                            label={deleteArmed ? `Confirm deletion of ${machine.name}` : `Delete ${machine.name}`}
+                            label={deleteArmed ? `Confirm deletion of ${deletionName}` : `Delete ${deletionName}`}
                             destructive={deleteArmed}
                             disabled={interactionDisabled}
                             onClick={() => remove(machine)}

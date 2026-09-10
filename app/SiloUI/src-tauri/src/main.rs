@@ -16,6 +16,9 @@ mod host_push;
 mod network;
 mod notifications;
 mod runtime;
+mod remote;
+mod remote_access;
+mod remote_network;
 mod secrets;
 mod settings;
 mod startup;
@@ -28,6 +31,18 @@ mod updates;
 use tauri::{Manager, WindowEvent};
 
 fn main() {
+    let args: Vec<_> = std::env::args().collect();
+    let bridge = match args.get(1).map(String::as_str) {
+        Some("--remote-bridge") => Some(remote::run_bridge()),
+        Some("--remote-guest") => Some(if args.len() == 4 {
+            remote::run_remote_stream(&args[2], "guest.ssh", serde_json::json!({"vmId": args[3]}))
+        } else { Err("Expected a computer and VM identity.".into()) }),
+        _ => None,
+    };
+    if let Some(result) = bridge {
+        if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -71,6 +86,23 @@ fn main() {
             settings::flush_settings,
             settings::begin_settings_flush,
             settings::complete_settings_flush,
+            settings::cancel_settings_flush,
+            settings::read_shutdown_state,
+            remote::remote_management_status,
+            remote::remote_authorize_ssh,
+            remote::remote_setup_ssh_key,
+            remote_network::remote_network_state,
+            remote_network::remote_save_network_port,
+            remote_network::remote_remove_network_port,
+            remote_network::remote_open_network_port,
+            remote::set_remote_management,
+            remote::remote_host_list,
+            remote::connect_remote_host,
+            remote::remove_remote_host,
+            remote::remote_host_snapshot,
+            remote::remote_workspace_action,
+            remote::remote_upsert_machine,
+            remote::remote_delete_machine,
             system_integrations::read_system_integrations,
             system_integrations::set_login_item,
             system_integrations::request_notification_authorization,
@@ -88,6 +120,7 @@ fn main() {
             backup_controller::cancel_backup_operation,
             backup_controller::dismiss_backup_operation,
             runtime::read_application_state,
+            runtime::read_application_shell,
             runtime::read_machine_configuration,
             runtime::configure_workspace_identities,
             runtime::verify_workspace_identities,
@@ -98,6 +131,7 @@ fn main() {
         ])
         .setup(|app| {
             settings::install(app.handle());
+            remote::start(app.handle().clone())?;
             secrets::install(app.handle())?;
             github::install(app.handle());
             backup_controller::install(app.handle())?;
@@ -131,6 +165,7 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Silo")
         .run(|_app, _event| {
+            if let tauri::RunEvent::Exit = &_event { remote_network::close_all(); }
             if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
                 settings::prevent_exit_until_saved(_app, api);
             }

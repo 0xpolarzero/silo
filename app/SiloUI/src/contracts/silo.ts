@@ -67,7 +67,7 @@ export const setupMachineConfigurationSchema = z.discriminatedUnion("kind", [
 
 export const setupMachineConfigurationRequestSchema = z.object({
   schemaVersion: z.literal(1),
-  machines: z.array(setupMachineConfigurationSchema).min(1).max(64),
+  machines: z.array(setupMachineConfigurationSchema).max(64),
 }).strict().refine((configuration) => {
   const names = configuration.machines.map(({ name }) => name.toLowerCase())
   return new Set(names).size === names.length

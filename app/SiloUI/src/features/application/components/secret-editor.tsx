@@ -23,7 +23,7 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
   const [errors, setErrors] = useState<SecretValidationErrors>({})
   const formRef = useRef<HTMLFormElement>(null)
   const id = useId()
-  const workspaces = source.workspaces.filter(({ machine }) => machine.kind === "vm")
+  const workspaces = source.workspaces.filter(w => !w.computer).filter(({ machine }) => machine.kind === "vm")
   const title = secret ? `Edit ${secret.name}` : "Add secret"
   const anyDomain = draft.domains.split(/[\s,]+/).includes("*")
 

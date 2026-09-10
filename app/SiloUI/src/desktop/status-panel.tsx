@@ -1,3 +1,4 @@
+import { ShutdownBoundary } from "./shutdown-boundary"
 import { useEffect, useRef, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
@@ -50,7 +51,7 @@ export function StatusPanel({ source: input, actions }: { source: ApplicationSou
         // Nested menus consume Escape first; the next Escape dismisses the panel.
         if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); void desktopCommand("hide_status") }
       }}>
-      <StatusBarContent workspaceMenu={NativeWorkspaceMenu} key={opening} source={source} actions={nativeActions} focusContent={() => content.current?.focus()} />
+      <ShutdownBoundary compact><StatusBarContent workspaceMenu={NativeWorkspaceMenu} key={opening} source={source} actions={nativeActions} focusContent={() => content.current?.focus()} /></ShutdownBoundary>
     </div>
   </TooltipProvider>
 }

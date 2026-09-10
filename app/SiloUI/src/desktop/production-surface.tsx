@@ -1,3 +1,4 @@
+import { ShutdownBoundary } from "@/desktop/shutdown-boundary"
 import { desktopUpdateBackend } from "@/desktop/updates"
 import { UpdatesProvider } from "@/features/updates/update-store"
 import { useMainRoute } from "@/desktop/use-main-route"
@@ -31,7 +32,11 @@ export function Unavailable({ message, retry, checks = [], checking = false }: {
   )
 }
 
-export function ProductionSurface({ source, dependencyStore, statusPanel = false }: { source: ProductionSource; dependencyStore: DependencyStore | null; statusPanel?: boolean }) {
+type ProductionSurfaceProps = { source: ProductionSource; dependencyStore: DependencyStore | null; statusPanel?: boolean }
+export function ProductionSurface(props: ProductionSurfaceProps) {
+  return props.statusPanel ? <ProductionContent {...props} /> : <ShutdownBoundary><ProductionContent {...props} /></ShutdownBoundary>
+}
+function ProductionContent({ source, dependencyStore, statusPanel = false }: ProductionSurfaceProps) {
   const current = useProductionSource(source)
   const routeRequest = useMainRoute(!statusPanel)
   const dependencies = useDependencyStore(dependencyStore)
@@ -61,9 +66,12 @@ export function ProductionSurface({ source, dependencyStore, statusPanel = false
     const message = current.error ?? "The native application state is unavailable. No sandbox state changed."
     return <Unavailable message={message} checks={failures} checking={checking} retry={current.loading ? undefined : retryChecks} />
   }
+  const remoteOnly = Boolean(current.source.remoteComputers?.length)
+    && !current.source.workspaces.some(workspace => !workspace.computer && workspace.machine.kind === "vm")
+  const localRuntimeFailures = remoteOnly ? [] : failures
   return statusPanel
     ? <StatusPanel source={current.source} actions={source.statusActions} />
-    : <UpdatesProvider backend={updateBackend}><ApplicationApp routeRequest={routeRequest} source={failures.length ? { ...current.source, runtimeRepair: {
+    : <UpdatesProvider backend={updateBackend}><ApplicationApp routeRequest={routeRequest} source={localRuntimeFailures.length ? { ...current.source, runtimeRepair: {
       status: "unavailable", checking,
       reason: failures.map(({ title, detail }) => `${title}: ${detail}`).join("\n"),
       recovery: [...new Set(failures.map(({ remediation }) => remediation).filter(Boolean))].join("\n"),

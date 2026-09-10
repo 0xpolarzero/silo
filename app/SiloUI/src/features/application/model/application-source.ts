@@ -1,3 +1,4 @@
+import type { RemoteComputer, RemoteManagement, WorkspaceComputer } from "./remote-computers"
 import type { DirectoryLoader } from "./directory-store"
 import type {
   SetupMachineConfiguration,
@@ -9,7 +10,7 @@ import type {
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 
 export type ApplicationTab = "workspaces" | "github" | "secrets" | "backup" | "system" | "settings"
-export type SettingsSection = "general" | "notifications"
+export type SettingsSection = "general" | "computers" | "notifications"
 export type WorkspaceSection = "overview" | "files" | "logs" | "network" | "activity"
 export type WorkspaceDetailSection = Exclude<WorkspaceSection, "overview">
 export type WorkspaceState = "running" | "starting" | "stopped" | "failed"
@@ -117,6 +118,7 @@ export interface ApplicationActivity {
 }
 
 export interface ApplicationWorkspace {
+  computer?: WorkspaceComputer
   machine: SetupMachineConfiguration
   purpose: string
   state: WorkspaceState
@@ -196,6 +198,9 @@ export type GitHubRepositoryCatalogStatus =
   | { status: "unavailable"; message: string; canRetry: boolean }
 
 export interface ApplicationSource {
+  remoteComputers?: RemoteComputer[]
+  remoteManagement?: RemoteManagement
+  remoteManagementError?: string
   network?: NetworkState
   networkError?: string | null
   runtimeRepair: RuntimeRepairPresentation | null
@@ -236,6 +241,13 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
+  setRemoteManagement?: (enabled: boolean) => Promise<void>
+  setupComputerKey?: (address: string) => Promise<void>
+  authorizeComputer?: (address: string) => Promise<void>
+  connectComputer?: (address: string) => Promise<void>
+  removeComputer?: (hostId: string) => Promise<void>
+  saveRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
+  deleteRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration) => Promise<void>
   refreshNetwork?: () => Promise<void>
   saveNetworkPort?: (request: NetworkPortRequest) => Promise<void>
   removeNetworkPort?: (workspace: string, port: number) => Promise<void>

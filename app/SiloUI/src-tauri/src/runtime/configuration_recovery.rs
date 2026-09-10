@@ -32,6 +32,16 @@ fn load(paths: &RuntimePaths) -> Result<Option<Journal>, RuntimeError> {
     Ok(Some(journal))
 }
 
+/// Include VMs created before their metadata commit without replaying setup on Quit.
+pub(super) fn shutdown_machines(paths: &RuntimePaths) -> Result<Vec<MachineConfiguration>, RuntimeError> {
+    let Some(journal) = load(paths)? else { return Ok(Vec::new()); };
+    let mut machines = journal.previous.machines;
+    for machine in journal.request.machines {
+        if !machines.iter().any(|old| old.id() == machine.id()) { machines.push(machine); }
+    }
+    Ok(machines.into_iter().filter(MachineConfiguration::is_vm).collect())
+}
+
 pub(super) fn begin(paths: &RuntimePaths, request: &MachineConfigurationRequest) -> Result<(), RuntimeError> {
     if let Some(saved) = load(paths)? {
         if saved.request == *request { return Ok(()); }

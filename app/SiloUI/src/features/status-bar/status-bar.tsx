@@ -1,3 +1,5 @@
+import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { useRef, useState, type ComponentType, type ReactNode } from "react"
 import { ChevronRight, CircleAlert, Code, ExternalLink, GitBranch, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
@@ -38,6 +40,7 @@ export interface WorkspaceMenuProps {
 
 function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: WorkspaceMenuProps) {
   const { machine } = workspace
+  const target = workspaceTarget(workspace)
   const { canOpen, canStart, canStop, canRestart } = workspaceAvailability(workspace, source)
   const sites = workspace.ports.filter(({ listening, configured, scheme, hostPort }) => listening === true && configured === true && scheme != null && hostPort != null).sort((a, b) => a.port - b.port)
   return (
@@ -47,19 +50,19 @@ function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: Wor
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content className={menuClass} data-reduce-motion={source.preferences.reduceMotion} align="end" sideOffset={4} collisionPadding={10} aria-label={`Actions for ${machine.name}`}>
-          {workspace.state === "stopped" && <MenuItem icon={<Play />} disabled={!canStart} onSelect={() => actions.startWorkspace(machine.name)}>Start</MenuItem>}
+          {workspace.state === "stopped" && <MenuItem icon={<Play />} disabled={!canStart} onSelect={() => actions.startWorkspace(target)}>Start</MenuItem>}
           {workspace.state !== "stopped" && <>
             <MenuItem icon={<Square />} disabled={!canStop} onSelect={() => onConfirm("stop")}>Stop…</MenuItem>
             <MenuItem icon={<RotateCw />} disabled={!canRestart} onSelect={() => onConfirm("restart")}>Restart…</MenuItem>
           </>}
           <DropdownMenu.Separator className="my-1 border-t" />
-          <MenuItem icon={<Terminal />} disabled={!canOpen} onSelect={() => actions.openTerminal(machine.name)}>Open in {source.preferences.terminal}</MenuItem>
+          <MenuItem icon={<Terminal />} disabled={!canOpen} onSelect={() => actions.openTerminal(target)}>Open in {source.preferences.terminal}</MenuItem>
           <MenuItem icon={<Code />} disabled={!canOpen} onSelect={onFolders}>Open in {source.preferences.editor}…</MenuItem>
           <DropdownMenu.Sub>
             <DropdownMenu.SubTrigger className={menuItemClass} disabled={!canOpen}><Globe /> Open site <ChevronRight className="ml-auto" /></DropdownMenu.SubTrigger>
             <DropdownMenu.Portal>
               <DropdownMenu.SubContent className={menuClass} data-reduce-motion={source.preferences.reduceMotion} sideOffset={4} collisionPadding={10}>
-                {sites.length ? sites.map(({ port }) => <MenuItem key={port} icon={<ExternalLink />} onSelect={() => actions.openSite(machine.name, port)}>Port {port}</MenuItem>) : <DropdownMenu.Item disabled className={menuItemClass}>No active sites</DropdownMenu.Item>}
+                {sites.length ? sites.map(({ port }) => <MenuItem key={port} icon={<ExternalLink />} onSelect={() => actions.openSite(target, port)}>Port {port}</MenuItem>) : <DropdownMenu.Item disabled className={menuItemClass}>No active sites</DropdownMenu.Item>}
                 {sites.length > 0 && <DropdownMenu.Separator className="my-1 border-t" />}
                 {sites.map(site => <DropdownMenu.Item key={`copy:${site.port}`} asChild onSelect={(event) => event.preventDefault()}>
                   <CopyButton
@@ -99,7 +102,7 @@ function OperationIssue({ title, detail, actionLabel, onReview, retry }: { title
 
 function RepositoryPushes({ workspace, source, actions }: { workspace: ApplicationWorkspace; source: ApplicationSource; actions: StatusBarActions }) {
   const repositories = workspace.repositories.flatMap((repository) => {
-    const operation = source.repositoryPushOperations.find((push) => push.workspace === workspace.machine.name && push.repositoryPath === repository.path)
+    const operation = source.repositoryPushOperations.find((push) => push.workspace === workspaceTarget(workspace) && push.repositoryPath === repository.path)
     return operation?.status !== "failed" && (operation || repository.ahead > 0) ? [{ repository, operation }] : []
   })
   if (!repositories.length) return null
@@ -114,11 +117,11 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
           </span>
           {operation ? <RepositoryPushFeedback
             operation={operation}
-            workspace={workspace.machine.name}
+            workspace={workspaceTarget(workspace)}
             repositoryPath={repository.path}
-            onRetry={() => actions.pushRepository(workspace.machine.name, repository.path)}
+            onRetry={() => actions.pushRepository(workspaceTarget(workspace), repository.path)}
             onDismiss={actions.dismissRepositoryPush}
-          /> : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${workspace.machine.name}`} onClick={() => { if (canPush) actions.pushRepository(workspace.machine.name, repository.path) }}>
+          /> : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${workspace.machine.name}`} onClick={() => { if (canPush) actions.pushRepository(workspaceTarget(workspace), repository.path) }}>
             Push {commitLabel(repository.ahead)}
           </Button>}
         </div>
@@ -143,7 +146,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
 
   if (folders && workspaceAvailability(folders, source).canOpen) {
     return <div key="folders" className="status-page status-page-forward flex max-h-[518px] shrink-0 flex-col overflow-hidden">
-      <StatusFolderPicker listDirectory={actions.listWorkspaceDirectory} workspace={folders} editor={source.preferences.editor} onBack={() => { setFolderWorkspace(null); focusContent() }} onOpen={(path) => actions.openEditor(folders.machine.name, path)} />
+      <StatusFolderPicker listDirectory={actions.listWorkspaceDirectory} workspace={folders} editor={source.preferences.editor} onBack={() => { setFolderWorkspace(null); focusContent() }} onOpen={(path) => actions.openEditor(workspaceTarget(folders), path)} />
     </div>
   }
 
@@ -165,7 +168,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
           onReview={() => actions.openSilo({ workspaceSection: "overview" })}
         />}
         {failedPushes.map((operation) => {
-          const workspace = source.workspaces.find(({ machine }) => machine.name === operation.workspace)
+          const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === operation.workspace)
           const canRetry = workspace && workspace.repositories.some(({ path, ahead }) => path === operation.repositoryPath && ahead > 0) && workspaceAvailability(workspace, source).canOpen
           return <OperationIssue
             key={`${operation.workspace}:${operation.repositoryPath}`}
@@ -182,16 +185,18 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
           <ol aria-label="Sandboxes" className="divide-y">
             {source.workspaces.map((workspace) => {
               const { machine } = workspace
+  const target = workspaceTarget(workspace)
               const availability = workspaceAvailability(workspace, source)
-              const pending = confirmation?.workspace === machine.name ? confirmation : null
-              const pendingSecrets = machine.kind === "vm" ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
-              const activity = source.activities.find((item) => item.category === "sandbox" && item.workspace === machine.name && item.status === "running")
+              const pending = confirmation?.workspace === target ? confirmation : null
+              const pendingSecrets = machine.kind === "vm" && !workspace.computer ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
+              const activity = source.activities.find((item) => item.category === "sandbox" && item.workspace === target && item.status === "running")
               const review = workspace.state === "failed" || workspace.attention?.level === "error"
-              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? "Last known status" : undefined)
+              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Computer unavailable · Last known status" : "Last known status" : undefined)
               return <SandboxListItem key={machine.id} aria-label={machine.name} aria-busy={availability.busy || undefined}>
                 <SandboxListRow
                   name={machine.name}
                   kind={machine.kind}
+                  kindBadge={workspace.computer ? <ComputerBadge computer={workspace.computer} /> : undefined}
                   iconState={workspaceIconState(workspace)}
                   tone={workspace.freshness === "stale" ? "warning" : workspaceRowTone(workspace)}
                   icon={availability.busy ? <span className="relative shrink-0">
@@ -206,27 +211,27 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                   </span>}
                   detailClassName="overflow-visible whitespace-normal"
                   actions={<>
-                    {!availability.busy && !repair && (review
-                      ? <SandboxAction label={`See logs for ${machine.name}`} onClick={() => actions.openSilo({ workspace: machine.name, workspaceSection: "logs" })}><Terminal /></SandboxAction>
+                    {!availability.busy && (!repair || workspace.computer) && (review
+                      ? <SandboxAction label={`See logs for ${machine.name}`} onClick={() => actions.openSilo({ workspace: target, workspaceSection: "logs" })}><Terminal /></SandboxAction>
                       : workspace.freshness === "stale" ? <SandboxAction label={`Retry ${machine.name} status`} onClick={actions.refresh}><RotateCw /></SandboxAction>
                         : availability.canOpen ? <>
-                          <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(machine.name)}><Terminal /></SandboxAction>
+                          <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(target)}><Terminal /></SandboxAction>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} onClick={() => openFolders(machine.id)}><Code /></SandboxAction>
-                        </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => actions.startWorkspace(machine.name)}><Play /></SandboxAction>
-                          : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: machine.name })}><SiloMark /></SandboxAction>)}
-                    <WorkspaceActions workspace={workspace} source={source} actions={actions} onFolders={() => openFolders(machine.id)} onConfirm={(action) => setConfirmation({ workspace: machine.name, action })} />
+                        </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => actions.startWorkspace(target)}><Play /></SandboxAction>
+                          : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: target })}><SiloMark /></SandboxAction>)}
+                    <WorkspaceActions workspace={workspace} source={source} actions={actions} onFolders={() => openFolders(machine.id)} onConfirm={(action) => setConfirmation({ workspace: target, action })} />
                   </>}
                 />
                 <RepositoryPushes workspace={workspace} source={source} actions={actions} />
                 {pending && <ListRowDetails label={`${pending.action === "stop" ? "Stop" : "Restart"} ${machine.name}?`} className="gap-2 pl-0">
-                  <p className="text-[11px] text-muted-foreground">{pending.action === "stop" ? "Stop" : "Restart"} {machine.name}? Running processes will be interrupted.</p>
+                  <p className="text-[11px] text-muted-foreground">{pending.action === "stop" ? "Stop" : "Restart"} {machine.name}{workspace.computer ? ` on ${workspace.computer.name}` : ""}? Running processes will be interrupted.</p>
                   <div className="flex justify-end gap-1.5">
                     <Button variant="ghost" size="xs" onClick={() => setConfirmation(null)}>Cancel</Button>
                     <Button variant="destructive" size="xs" disabled={pending.action === "stop" ? !availability.canStop : !availability.canRestart} onClick={() => {
                       if (pending.action === "stop" ? !availability.canStop : !availability.canRestart) return
                       setConfirmation(null)
-                      if (pending.action === "stop") actions.stopWorkspace(machine.name)
-                      else actions.restartWorkspace(machine.name)
+                      if (pending.action === "stop") actions.stopWorkspace(target)
+                      else actions.restartWorkspace(target)
                     }}>{pending.action === "stop" ? <Square /> : <RotateCw />}{pending.action === "stop" ? "Stop" : "Restart"}</Button>
                   </div>
                 </ListRowDetails>}

@@ -1,3 +1,4 @@
+import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { NetworkPage } from "./network-page"
 import { FolderActions } from "@/features/application/components/folder-actions"
 import { WorkspaceFileTree } from "@/features/application/components/workspace-file-tree"
@@ -112,8 +113,8 @@ function Files({
               {repositories.length > 0 ? (
                 <ListCard divided role="list" aria-label="Repositories">
                   {repositories.map(({ workspace, repository }) => {
-                    const operation = pushOperations.get(`${workspace.machine.name}:${repository.path}`)
-                    const push = () => onPushRepository(workspace.machine.name, repository.path, operation?.commitCount ?? repository.ahead)
+                    const operation = pushOperations.get(`${workspaceTarget(workspace)}:${repository.path}`)
+                    const push = () => onPushRepository(workspaceTarget(workspace), repository.path, operation?.commitCount ?? repository.ahead)
                     return (
                       <div key={`${workspace.machine.id}:${repository.path}`} role="listitem" aria-busy={operation?.status === "pushing" || undefined} className="group/folder transition-colors hover:bg-muted/35 focus-within:bg-muted/35">
                         <ListRow
@@ -124,12 +125,12 @@ function Files({
                             <TooltipContent className="max-w-sm break-all">{repository.path}</TooltipContent>
                           </Tooltip></TooltipProvider>}
                           detail={`${repository.branch} · ${repository.ahead} ahead, ${repository.behind} behind`}
-                          actions={<><FolderActions editor={editor} path={repository.path} onOpen={() => onOpenEditor(workspace.machine.name, repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} /></>}
+                          actions={<><FolderActions editor={editor} path={repository.path} onOpen={() => onOpenEditor(workspaceTarget(workspace), repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} /></>}
                         />
                         {(operation || repository.ahead > 0) && (
                           <div className="flex min-h-6 items-start pr-2 pb-2 pl-10" data-repository-actions>
                             {operation
-                              ? <RepositoryPushFeedback operation={operation} workspace={workspace.machine.name} repositoryPath={repository.path} onRetry={push} onDismiss={onDismissRepositoryPush} />
+                              ? <RepositoryPushFeedback operation={operation} workspace={workspaceTarget(workspace)} repositoryPath={repository.path} onRetry={push} onDismiss={onDismissRepositoryPush} />
                               : <Button variant="outline" size="xs" onClick={push}>Push {commitLabel(repository.ahead)}</Button>}
                           </div>
                         )}
@@ -276,9 +277,9 @@ const activityCategoryPresentation = {
 
 function ActivityLog({ workspaces, sourceActivities }: { workspaces: ApplicationWorkspace[]; sourceActivities: ApplicationActivity[] }) {
   const [selectedCategories, setSelectedCategories] = useState<Set<ApplicationActivityCategory>>(() => new Set())
-  const workspacesByName = new Map(workspaces.map((workspace) => [workspace.machine.name, workspace]))
+  const workspacesByTarget = new Map(workspaces.map((workspace) => [workspaceTarget(workspace), workspace]))
   const allActivities = [...sourceActivities]
-    .filter(({ workspace }) => !workspace || workspacesByName.has(workspace))
+    .filter(({ workspace }) => !workspace || workspacesByTarget.has(workspace))
     .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
   const activities = selectedCategories.size === 0
     ? allActivities
@@ -307,7 +308,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
           {activities.map((item) => {
             const category = activityCategoryPresentation[item.category]
             const CategoryIcon = category.icon
-            const workspace = item.workspace ? workspacesByName.get(item.workspace) : undefined
+            const workspace = item.workspace ? workspacesByTarget.get(item.workspace) : undefined
             return (
               <ListRow
                 key={item.id}
@@ -355,7 +356,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
                   <div className="flex max-w-[40%] shrink-0 flex-col items-end gap-1" data-activity-meta>
                     <time dateTime={item.occurredAt} className="text-[10px] text-muted-foreground">{new Date(item.occurredAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" })}</time>
                     <div className="flex flex-wrap justify-end gap-1">
-                      {item.workspace && workspace && <WorkspaceBadge name={item.workspace} state={workspace.state} />}
+                      {item.workspace && workspace && <WorkspaceBadge name={workspace.machine.name} state={workspace.state} />}
                       <StatusBadge indicator={<CategoryIcon className="size-2.5" />} aria-label={`Category: ${category.label}`}>{category.label}</StatusBadge>
                     </div>
                   </div>

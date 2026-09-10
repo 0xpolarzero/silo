@@ -1,3 +1,4 @@
+import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { FolderActions } from "./folder-actions"
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
 import { ChevronRight, File, Folder, Link } from "lucide-react"
@@ -90,10 +91,10 @@ export function WorkspaceFileTree({ workspace, store, active, editor, onOpenEdit
       <ChevronRight className="tree-caret size-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none" aria-hidden="true" />
       <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="truncate">{workspace.machine.name}</span>
     </CollapsibleTrigger>
-      {onOpenEditor && <FolderActions editor={editor} path="/workspace" onOpen={() => onOpenEditor(workspace.machine.name, "/workspace")} disabled={!available} />}
+      {onOpenEditor && <FolderActions editor={editor} path="/workspace" onOpen={() => onOpenEditor(workspaceTarget(workspace), "/workspace")} disabled={!available} />}
     </div>
     <CollapsibleContent className="ml-4">
-      {open && (available ? active && <Directory editor={editor} workspace={workspace.machine.name} path="/workspace" label={`Files in ${workspace.machine.name}`} store={store} expanded={expanded} toggle={toggle} onOpenEditor={onOpenEditor} />
+      {open && (available ? active && <Directory editor={editor} workspace={workspaceTarget(workspace)} path="/workspace" label={`Files in ${workspace.machine.name}`} store={store} expanded={expanded} toggle={toggle} onOpenEditor={onOpenEditor} />
         : <p className="border-l border-border py-1 pl-5 text-xs text-muted-foreground">{workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this VM to browse its files." : "Files will be available when this VM is running."}</p>)}
     </CollapsibleContent>
   </Collapsible></li>

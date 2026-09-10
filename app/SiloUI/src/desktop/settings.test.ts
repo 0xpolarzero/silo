@@ -202,6 +202,20 @@ describe("native settings transport", () => {
     expect(state.settings).toEqual({ terminal: "iTerm", browser: "Firefox" })
   })
 
+  it("cancels Quit when pending changes cannot be flushed so another attempt is possible", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "read_settings") return snapshot()
+      if (command === "flush_settings") throw new Error("Disk full")
+    })
+    const settings = store()
+    await settings.initialize()
+    cleanups.push(await connectSettingsLifecycle(settings, true))
+    native.handlers.get("settings:flush-request")?.({ payload: null })
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("cancel_settings_flush"))
+    expect(native.invoke).not.toHaveBeenCalledWith("complete_settings_flush")
+  })
+
   it("includes changes made while the final native flush is running before acknowledging Quit", async () => {
     const flushStarted = deferred<void>()
     const finishFlush = deferred<void>()

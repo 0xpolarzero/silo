@@ -1,3 +1,6 @@
+import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
+import { workspaceTarget } from "../model/remote-computers"
+import { ConnectComputerForm } from "../components/remote-computers-settings"
 import { CircleAlert, Loader2, Play, RotateCw, Square, TriangleAlert } from "lucide-react"
 import { useState } from "react"
 
@@ -179,14 +182,14 @@ function ConfigurationDetail({ view }: { view: ConfigurationRowView }) {
   )
 }
 
-function WorkspaceActions({ machine, state, actions, disabled = false }: { machine: SetupMachineConfiguration; state: WorkspaceState; actions: ApplicationActions; disabled?: boolean }) {
+function WorkspaceActions({ machine, target, state, actions, disabled = false }: { target?: string; machine: SetupMachineConfiguration; state: WorkspaceState; actions: ApplicationActions; disabled?: boolean }) {
   const canStop = state === "running" || state === "starting"
   return (
     <>
       {canStop
-        ? <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={() => actions.stopWorkspace(machine.name)}><Square /></SandboxAction>
-        : <SandboxAction label={`Start ${machine.name}`} disabled={disabled} onClick={() => actions.startWorkspace(machine.name)}><Play /></SandboxAction>}
-      <SandboxAction label={`Restart ${machine.name}`} disabled={disabled || (state !== "running" && state !== "failed")} onClick={() => actions.restartWorkspace(machine.name)}><RotateCw /></SandboxAction>
+        ? <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={() => actions.stopWorkspace(target ?? machine.name)}><Square /></SandboxAction>
+        : <SandboxAction label={`Start ${machine.name}`} disabled={disabled} onClick={() => actions.startWorkspace(target ?? machine.name)}><Play /></SandboxAction>}
+      <SandboxAction label={`Restart ${machine.name}`} disabled={disabled || (state !== "running" && state !== "failed")} onClick={() => actions.restartWorkspace(target ?? machine.name)}><RotateCw /></SandboxAction>
     </>
   )
 }
@@ -204,6 +207,7 @@ export function OverviewPage({
   actions: ApplicationActions
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
 }) {
+  const [connecting, setConnecting] = useState(false)
   const [pendingStart, setPendingStart] = useState<string | null>(null)
   const [operationUnavailable, setOperationUnavailable] = useState(false)
   const visibleWorkspaces = displayWorkspaces(source)
@@ -212,22 +216,45 @@ export function OverviewPage({
   const machines = visibleWorkspaces.map(({ machine }) => machine)
   const configurationOperation = source.sandboxConfigurationOperation
   const configurationLocked = configurationOperation !== null
+  const localMachines = machines.filter(machine => !workspaces.get(machine.id)?.computer)
+  function updateLocal(machine: SetupMachineConfiguration, original?: SetupMachineConfiguration) {
+    onMachinesChange(original ? localMachines.map(item => item.id === original.id ? machine : item) : [...localMachines, machine])
+  }
 
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="min-h-0 flex-1">
+        {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
         <MachineList
           newSandboxRequest={newSandboxRequest}
           onNewSandboxRequestHandled={onNewSandboxRequestHandled}
           machines={machines}
+          computers={source.remoteComputers}
+          getComputerId={machine => workspaces.get(machine.id)?.computer?.id}
+          onConnectComputer={actions.connectComputer ? () => setConnecting(true) : undefined}
+          onCommitMachine={actions.saveRemoteMachine ? async (machine, original, computerId) => {
+            if (computerId) await actions.saveRemoteMachine!(computerId, machine, original)
+            else updateLocal(machine, original)
+          } : undefined}
+          onDeleteMachine={actions.deleteRemoteMachine ? async machine => {
+            const computer = workspaces.get(machine.id)?.computer
+            if (computer) {
+              if (!computer.connected) throw new Error("This computer is unavailable. Reconnect before deleting its VM.")
+              await actions.deleteRemoteMachine!(computer.id, machine)
+            } else {
+              onMachinesChange(localMachines.filter(item => item.id !== machine.id))
+            }
+          } : undefined}
           isMachineCreated={(machine) => committedWorkspaces.has(machine.id)}
           isMachineRunning={(machine) => workspaces.get(machine.id)?.state === "running"}
           onMachinesChange={(next) => {
             if (source.vmOperationsUnavailable) setOperationUnavailable(true)
-            else onMachinesChange(next)
+            else onMachinesChange(next.filter(machine => !workspaces.get(machine.id)?.computer))
           }}
           interactionDisabled={configurationLocked}
-          validateOperation={(machine, isNew) => {
+          validateOperation={(machine, isNew, computerId) => {
+            const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
+            if (computer) return computer.busy ? "This computer is applying VM changes. Wait for the operation to finish." : computer.connected ? undefined : "This computer is unavailable. Reconnect before changing its VMs."
             if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
             const notice = source.resourceNotice
             if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
@@ -236,7 +263,7 @@ export function OverviewPage({
           summary={configurationOperation ? <>{source.workspaces.length} configured · Applying sandbox changes</> : undefined}
           sortPriority={(machine) => {
             const workspace = workspaces.get(machine.id)
-            const configuration = workspace && configurationOperation
+            const configuration = workspace && !workspace.computer && configurationOperation
               ? configurationRowView(workspace, committedWorkspaces.get(machine.id), configurationOperation)
               : undefined
             return attentionPriority[configuration?.status === "failed" ? "error" : workspaceIconState(workspace)]
@@ -244,14 +271,14 @@ export function OverviewPage({
           getRowPresentation={(machine) => {
             const workspace = workspaces.get(machine.id)
             const state = workspace?.state ?? "stopped"
-            const pendingSecrets = machine.kind === "vm"
+            const pendingSecrets = machine.kind === "vm" && !workspace?.computer
               ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map((secret) => secret.name)
               : []
             const badge = pendingSecrets.length > 0
               ? <SecretChangesLabel workspace={machine.name} state={state} secrets={pendingSecrets} />
               : undefined
             const visualState = workspaceIconState(workspace)
-            const configuration = workspace && configurationOperation
+            const configuration = workspace && !workspace.computer && configurationOperation
               ? configurationRowView(workspace, committedWorkspaces.get(machine.id), configurationOperation)
               : undefined
             if (configuration) {
@@ -274,28 +301,29 @@ export function OverviewPage({
             const lifecycle = workspace?.lifecycleAction
             const lifecycleLabel = lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
             return {
+              kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
               badge,
-              busy: Boolean(lifecycle),
-              suppressInteractions: Boolean(lifecycle),
+              busy: Boolean(lifecycle) || Boolean(workspace?.computer?.busy),
+              suppressInteractions: Boolean(lifecycle) || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
               icon: lifecycle ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
               iconState: visualState,
               tone: lifecycle ? "starting" as const : workspaceRowTone(workspace),
               detail: (
                 <span title={workspace?.attention?.message}>
-                  {lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : <WorkspaceStateLabel state={state} />}
+                  {workspace?.computer?.busy ? <span role="status">Applying VM changes…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : <WorkspaceStateLabel state={state} />}
                   {workspace?.attention && <> · {workspace.attention.message}</>}
                 </span>
               ),
-              actions: <WorkspaceActions machine={machine} state={state} actions={{
+              actions: <WorkspaceActions target={workspace && workspaceTarget(workspace)} machine={machine} state={state} actions={{
                 ...actions,
                 startWorkspace: (name) => {
-                  if (source.vmOperationsUnavailable) setOperationUnavailable(true)
+                  if (!workspace?.computer && source.vmOperationsUnavailable) setOperationUnavailable(true)
                   else if (source.resourceNotice?.kind === "start-memory" && source.resourceNotice.sandbox === name) setPendingStart(name)
                   else actions.startWorkspace(name)
                 },
-                stopWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
-                restartWorkspace: (name) => source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
-              }} disabled={configurationLocked || Boolean(lifecycle)} />,
+                stopWorkspace: (name) => !workspace?.computer && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
+                restartWorkspace: (name) => !workspace?.computer && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
+              }} disabled={configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale")} />,
             }
           }}
         />

@@ -14,6 +14,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 // installation owns the process. Readers never wait behind the installer.
 static ADMISSION: RwLock<()> = RwLock::new(());
 pub(crate) fn operation_guard() -> Result<RwLockReadGuard<'static, ()>, String> {
+    crate::runtime::shutdown::ensure_accepting_operations()?;
     ADMISSION
         .try_read()
         .map_err(|_| "Silo is installing an update. Try again after it restarts.".into())
@@ -157,6 +158,7 @@ fn ready(app: &AppHandle) -> Result<(), String> {
     let _runtime = crate::runtime::MUTATION_LOCK
         .try_lock()
         .map_err(|_| "Wait for sandbox operations to finish before updating.")?;
+    crate::runtime::shutdown::ensure_accepting_operations()?;
     Ok(())
 }
 pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
@@ -497,6 +499,7 @@ pub(crate) async fn install_update(
             let github = crate::github::update_guard()?;
             let secrets = crate::secrets::update_guard()?;
             let runtime = crate::runtime::MUTATION_LOCK.try_lock().map_err(|_| "Wait for sandbox operations to finish before updating.")?;
+            crate::runtime::shutdown::ensure_accepting_operations()?;
             Ok::<_, String>((admission, backup, github, secrets, runtime))
         })();
         let (_admission, _backup, _github, _secrets, _runtime) = match admission {
@@ -511,8 +514,12 @@ pub(crate) async fn install_update(
             let _ = modify(&worker, |s| s.bytes = Some(bytes));
             return Err(match restore { Ok(()) => error, Err(resume) => format!("{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry.") });
         }
-        // The existing ExitRequested handler flushes frontend/native settings. Keep
-        // every operation lock alive until the process exits and restarts.
+        // Quit also takes the runtime lock to verify local VMs have stopped.
+        // Close admission before releasing installation guards, then let the
+        // ordinary exit path finish. The update journal retains the running set
+        // that startup will restore after this intentional restart.
+        crate::runtime::shutdown::begin();
+        drop((_admission, _backup, _github, _secrets, _runtime));
         worker.restart()
     }).await.unwrap_or_else(|_| Err("Update installation was interrupted. Relaunch Silo to restore the saved sandbox state, then download the update again.".into()));
     match result {

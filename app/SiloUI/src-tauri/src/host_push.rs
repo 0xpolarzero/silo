@@ -45,11 +45,16 @@ fn dismiss_result(entries: &mut HashMap<String, (Value, Instant)>, key: &str) {
 }
 
 #[tauri::command]
-pub fn dismiss_repository_push(
+pub async fn dismiss_repository_push(
     app: tauri::AppHandle,
     workspace: String,
     repository_path: String,
 ) -> Result<(), String> {
+    if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
+        return tauri::async_runtime::spawn_blocking(move || {
+            crate::remote::call_remote(&app, &host, "repository.dismiss", json!({"vmId":vm,"path":repository_path})).map(|_| ())
+        }).await.map_err(|_| "Remote repository request failed.".to_string())?;
+    }
     let mut entries = results().lock().map_err(|_| "Push state unavailable.")?;
     dismiss_result(&mut entries, &format!("{workspace}\0{repository_path}"));
     drop(entries);
@@ -420,6 +425,7 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
     let read_guard = runtime::MUTATION_LOCK
         .try_lock()
         .map_err(|_| "A sandbox operation is already running. Try again shortly.")?;
+    runtime::shutdown::ensure_accepting_operations()?;
     require_running(&paths, workspace)?;
     let origin = guest(
         &paths,
@@ -433,6 +439,7 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
     let _guard = runtime::MUTATION_LOCK
         .try_lock()
         .map_err(|_| "A sandbox operation is already running. Try again shortly.")?;
+    runtime::shutdown::ensure_accepting_operations()?;
     require_running(&paths, workspace)?;
     let executable = crate::bundled_tools::directory(app)?.join("git");
     let support = app
@@ -623,6 +630,11 @@ pub async fn push_repository(
     workspace: String,
     repository_path: String,
 ) -> Result<Value, String> {
+    if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
+        return tauri::async_runtime::spawn_blocking(move || {
+            crate::remote::call_remote(&app, &host, "repository.push", json!({"vmId":vm,"path":repository_path}))
+        }).await.map_err(|_| "Remote repository request failed.".to_string())?;
+    }
     let key = format!("{workspace}\0{repository_path}");
     let planned_count = runtime::runtime_paths(&app)
         .ok()

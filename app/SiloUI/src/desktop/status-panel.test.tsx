@@ -8,7 +8,7 @@ import { createMemorySettingsStore, SettingsProvider, type SettingsStore } from 
 
 const native = vi.hoisted(() => ({ invoke: vi.fn().mockResolvedValue(undefined), opened: () => {}, menu: vi.fn(), popup: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) }))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }))
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn((_name, callback) => { native.opened = callback; return Promise.resolve(vi.fn()) }) }))
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn((name, callback) => { if (name === "desktop:status-opened") native.opened = callback; return Promise.resolve(vi.fn()) }) }))
 vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: native.menu } }))
 beforeEach(() => {
   vi.clearAllMocks()

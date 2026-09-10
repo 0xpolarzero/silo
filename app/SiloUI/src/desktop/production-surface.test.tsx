@@ -5,6 +5,7 @@ import type { ProductionSource } from "./production-source"
 import type { DependencyStore } from "./dependencies"
 import { ProductionSurface } from "./production-surface"
 
+vi.mock("./shutdown-boundary", () => ({ ShutdownBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
 const state = vi.hoisted(() => ({ source: {} as object | null, loading: false, error: null as string | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn() }))
 vi.mock("./production-source", () => ({ useProductionSource: () => ({ source: state.source, backup: {}, loading: state.loading, error: state.error, savedMachines: [{ id: "saved", name: "saved-machine", kind: "ssh", host: "host", user: "user", port: 22 }] }) }))
 vi.mock("./dependencies", () => ({ useDependencyStore: () => ({ checks: state.checks, retry: state.retry }) }))
@@ -85,6 +86,13 @@ describe("production dependency recovery", () => {
     expect(state.retry).toHaveBeenCalledOnce()
     expect(source.refresh).toHaveBeenCalledOnce()
     expect(screen.queryByRole("button", { name: /repair/i })).not.toBeInTheDocument()
+  })
+  it("does not block remote-only use when this computer lacks virtualization", () => {
+    state.source = { workspaces: [], remoteComputers: [{ id: "office", connected: true }] }
+    state.checks = [failure]
+    render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
+    expect(screen.getByText("Main app")).toBeVisible()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
   it("retains recovery while rechecking and clears the issue only after passing", () => {
     state.checks = [failure]

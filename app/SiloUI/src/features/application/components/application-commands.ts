@@ -1,4 +1,4 @@
-import { Activity, Bell, Boxes, CircleAlert, Code, File, GitFork, HardDrive, KeyRound, Network, Play, RotateCw, Settings2, Square, Terminal, type LucideIcon } from "lucide-react"
+import { Activity, Bell, Boxes, CircleAlert, Code, File, GitFork, HardDrive, KeyRound, Monitor, Network, Play, RotateCw, Settings2, Square, Terminal, type LucideIcon } from "lucide-react"
 
 import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
@@ -28,6 +28,7 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
     { label: "Secrets", icon: KeyRound, route: { tab: "secrets" }, keywords: ["tokens", "credentials"] },
     { label: "Backup", icon: HardDrive, route: { tab: "backup" }, keywords: ["archive", "restore"] },
     { label: "Settings", icon: Settings2, route: { settingsSection: "general" }, keywords: ["general", "preferences", "applications"] },
+    { label: "Computers", icon: Monitor, route: { settingsSection: "computers" }, keywords: ["remote", "ssh", "connections", "management"] },
     { label: "Notifications", icon: Bell, route: { settingsSection: "notifications" }, keywords: ["alerts"] },
   ]
   if (source.runtimeRepair) {

@@ -56,6 +56,7 @@ export function SandboxListRow({
   name,
   kind,
   badge,
+  kindBadge,
   iconState = "normal",
   detail,
   detailClassName,
@@ -69,6 +70,7 @@ export function SandboxListRow({
   name: string
   kind: "vm" | "ssh"
   badge?: ReactNode
+  kindBadge?: ReactNode
   iconState?: SandboxIconState
   detail: ReactNode
   detailClassName?: string
@@ -96,7 +98,7 @@ export function SandboxListRow({
       title={
         <>
           <span className="truncate" title={name}>{name}</span>
-          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">{kind}</span>
+          {kindBadge ?? <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">{kind}</span>}
           {badge}
         </>
       }
