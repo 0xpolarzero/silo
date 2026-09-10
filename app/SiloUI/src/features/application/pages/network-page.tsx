@@ -64,7 +64,7 @@ export function NetworkPage({ workspaces, browser, network, error, actions, acti
       <div role="cell" className="flex justify-end gap-1"><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-xs" aria-label="Cancel" disabled={busy} onClick={() => { setDraft(null); setOperationError(null) }}><X /></Button></TooltipTrigger><TooltipContent>Cancel</TooltipContent></Tooltip><Tooltip><TooltipTrigger asChild><Button type="submit" variant="ghost" size="icon-xs" aria-label={draft.editing ? "Save" : "Add"} disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : <Check />}</Button></TooltipTrigger><TooltipContent>{draft.editing ? "Save" : "Add"}</TooltipContent></Tooltip></div>
     </form>
   return <TooltipProvider delayDuration={150}><div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
-    <div className="flex justify-end"><Button variant="outline" size="sm" disabled={!actions.saveNetworkPort || !localWorkspaces.length || busy} onClick={() => add()}><Plus />Add port</Button></div>
+    <div className="flex h-7 items-center justify-end"><Button variant="outline" size="xs" disabled={!actions.saveNetworkPort || !localWorkspaces.length || busy} onClick={() => add()}><Plus />Add port</Button></div>
 
     {(error || errors.length > 0) && <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/20 px-3 py-2 text-xs text-destructive"><span>{error || errors.join(" · ")}</span><Button size="sm" variant="ghost" onClick={() => void actions.refreshNetwork?.()}>Retry</Button></div>}
     {operationError && <div role="alert" className="text-xs text-destructive">{operationError}</div>}
