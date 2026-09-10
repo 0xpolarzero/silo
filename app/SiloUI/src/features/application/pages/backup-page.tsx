@@ -41,6 +41,14 @@ export function BackupPage(props: BackupPageProps) {
 
 function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
   const [flow, setFlow] = useState<Flow>({ kind: "idle" })
+  const restoreReview = useRef<HTMLDivElement>(null)
+  const restoreName = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (flow.kind !== "restore-review") return
+    restoreReview.current?.scrollIntoView({ block: "nearest" })
+    restoreName.current?.focus({ preventScroll: true })
+    restoreName.current?.select()
+  }, [flow.kind])
   const [destination, setDestination] = useState(backup.state.destination ?? source.backup.destination)
   const [selectedIDs, setSelectedIDs] = useState(() => new Set(source.workspaces.filter(({ machine }) => machine.kind === "vm").map(({ machine }) => machine.id)))
   const [expandedArchive, setExpandedArchive] = useState<string | null>(null)
@@ -183,12 +191,12 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
         {flow.kind === "restore-choosing" && <ListRowDetails label="Choose backup file"><p className="text-xs text-muted-foreground" role="status">Choose a backup in the file picker.</p></ListRowDetails>}
         {flow.kind === "restore-checking" && <ListRowDetails label="Checking backup"><p className="text-xs font-medium" role="status">Checking backup…</p><Progress value={null} aria-label="Backup validation progress" /></ListRowDetails>}
         {flow.kind === "invalid-archive" && <ListRowDetails label="Archive validation"><Notice tone="danger" title="This backup cannot be restored"><p>{flow.reason} No sandbox data changed.</p></Notice><div className="flex justify-end"><Button variant="outline" size="xs" onClick={() => { void chooseArchive() }}>Choose another backup</Button></div></ListRowDetails>}
-        {flow.kind === "restore-review" && <ListRowDetails label="Review restore">
+        {flow.kind === "restore-review" && <ListRowDetails ref={restoreReview} label="Review restore">
           <Notice tone="success" title="Backup validated"><p>{flow.archive.name} · format and checksum verified</p></Notice>
           {restoreNameConflict && <Notice tone="danger" title={`The name ${flow.newName} already exists`}><p>Choose a new sandbox name. Silo will not overwrite an existing sandbox.</p></Notice>}
           {restoreSpaceBlocked && <Notice tone="danger" title={backup.state.availableSpaceGB === undefined ? "Managed storage is unavailable" : "Not enough managed storage"}><p>{backup.state.availableSpaceGB === undefined ? "Silo could not verify the required managed storage. No sandbox was created." : `About ${requiredSpace} GB is needed; ${availableSpace} GB is available. No sandbox was created.`}</p></Notice>}
           {flow.archive.sandboxes.length > 1 && <label className="grid gap-1 text-[11px]">Sandbox to restore<Select value={flow.sourceName} onValueChange={(sourceName) => setFlow({ ...flow, sourceName, newName: flow.newName === `${flow.sourceName}-restored` ? `${sourceName}-restored` : flow.newName })}><SelectTrigger className="h-7 text-[11px]" aria-label="Sandbox to restore"><SelectValue /></SelectTrigger><SelectContent>{flow.archive.sandboxes.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></label>}
-          <label className="grid gap-1 text-[11px]">New sandbox name<Input autoFocus value={flow.newName} aria-invalid={restoreNameConflict} onChange={(event) => setFlow({ ...flow, newName: event.target.value })} /></label>
+          <label className="grid gap-1 text-[11px]">New sandbox name<Input ref={restoreName} value={flow.newName} aria-invalid={restoreNameConflict} onChange={(event) => setFlow({ ...flow, newName: event.target.value })} /></label>
           <dl className="grid grid-cols-[7rem_1fr] gap-1 text-[11px]"><dt className="text-muted-foreground">Source</dt><dd>{flow.sourceName}</dd><dt className="text-muted-foreground">Location</dt><dd>Silo managed storage</dd>{requiredSpace !== undefined && <><dt className="text-muted-foreground">Space</dt><dd>{requiredSpace} GB needed · {availableSpace} GB available</dd></>}</dl>
           <p className="text-[11px] text-muted-foreground">Restores saved disk files and Silo settings. Programs start fresh. Existing sandboxes and backups stay unchanged.</p>
           <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Cancel</Button><Button variant="outline" size="xs" disabled={controlsDisabled || !flow.newName || restoreNameConflict || restoreSpaceBlocked} onClick={() => { backup.actions.startRestore(flow.archive, flow.newName, flow.sourceName); setFlow({ kind: "idle" }) }}>Restore new sandbox</Button></div>

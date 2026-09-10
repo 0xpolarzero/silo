@@ -20,6 +20,35 @@ describe("backup and restore presentation", () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
+  it("reveals the recent-backup confirmation even when the suggested name exists", async () => {
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
+    const existing = { ...source, workspaces: [...source.workspaces, { ...source.workspaces[0], machine: { ...source.workspaces[0].machine, id: "restored", name: "dev-restored" } }] }
+    const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GB", destination: "/backups", sandboxes: ["dev"] }
+    const backup: BackupController = {
+      state: { snapshotId: "1", availability: "available", archives: [archive], operation: null },
+      actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn(), inspectArchive: vi.fn().mockResolvedValue({ archive, valid: true }), startBackup: vi.fn(), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn() },
+    }
+    render(<BackupPage source={existing} backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: `Details for ${archive.name}` }))
+    fireEvent.click(screen.getByRole("button", { name: "Restore…" }))
+    await act(async () => { await Promise.resolve() })
+    const review = screen.getByRole("group", { name: "Review restore" })
+    expect(scroll.mock.contexts).toContain(review)
+    const name = within(review).getByRole("textbox", { name: "New sandbox name" })
+    expect(name).toHaveFocus()
+    expect(within(review).getByRole("alert")).toHaveTextContent("already exists")
+    const confirm = within(review).getByRole("button", { name: "Restore new sandbox" })
+    expect(confirm).toBeDisabled()
+    expect(backup.actions.startRestore).not.toHaveBeenCalled()
+    scroll.mockClear()
+    fireEvent.change(name, { target: { value: "another-copy" } })
+    expect(scroll).not.toHaveBeenCalled()
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+    expect(backup.actions.startRestore).toHaveBeenCalledWith(archive, "another-copy", "dev")
+    scroll.mockRestore()
+  })
+
   it.each(["recent", "picker"])("shows checking immediately, blocks conflicts, and requires confirmation (%s)", async (entry) => {
     const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GB", destination: "/backups", sandboxes: ["dev"] }
     let complete!: (result: { archive: typeof archive; valid: boolean }) => void
