@@ -88,14 +88,20 @@ fn save_preferences(path: &Path, enabled: bool) -> Result<(), String> {
         .and_then(|f| f.sync_all())
         .map_err(|_| "Update preferences could not be saved.".into())
 }
-fn package_kind(executable: &Path, appimage: Option<&Path>, bundle: Option<tauri::utils::config::BundleType>) -> &'static str {
+fn package_kind(
+    executable: &Path,
+    appimage: Option<&Path>,
+    bundle: Option<tauri::utils::config::BundleType>,
+) -> &'static str {
     if cfg!(target_os = "macos")
         && executable
             .ancestors()
             .any(|p| p.extension().is_some_and(|e| e == "app"))
     {
         "macos"
-    } else if cfg!(target_os = "linux") && matches!(bundle, Some(tauri::utils::config::BundleType::AppImage)) && appimage.is_some_and(|p| p.is_absolute() && p.is_file())
+    } else if cfg!(target_os = "linux")
+        && matches!(bundle, Some(tauri::utils::config::BundleType::AppImage))
+        && appimage.is_some_and(|p| p.is_absolute() && p.is_file())
     {
         "appimage"
     } else {
@@ -179,7 +185,12 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
                 downloaded_bytes: 0,
                 total_bytes: None,
                 automatic_checks: automatic,
-                package_kind: package_kind(&executable, appimage.as_deref(), tauri::utils::platform::bundle_type()).into(),
+                package_kind: package_kind(
+                    &executable,
+                    appimage.as_deref(),
+                    tauri::utils::platform::bundle_type(),
+                )
+                .into(),
                 release_url: RELEASE_URL.into(),
                 error,
                 error_details: None,
@@ -331,9 +342,22 @@ pub(crate) async fn download_update(app: AppHandle) -> Result<Snapshot, String> 
             }
         }, || {}) => result.map_err(|e| e.to_string()),
     };
+    // The completed download and notification can both be ready in the same
+    // select poll. Check the final verified buffer independently of that race.
+    let result = result.and_then(|bytes| {
+        validate_download_size(bytes.len() as u64)?;
+        Ok(bytes)
+    });
     match result {
         Ok(bytes) => { modify(&app, |s| { s.snapshot.phase = "ready".into(); s.snapshot.downloaded_bytes = bytes.len() as u64; s.snapshot.total_bytes = Some(bytes.len() as u64); s.bytes = Some(bytes); })?; get_update_state(app).await },
         Err(e) => fail(&app, "The update could not be downloaded or verified. Your installation was not changed. Try again.", e),
+    }
+}
+fn validate_download_size(size: u64) -> Result<(), String> {
+    if size > MAX_DOWNLOAD_BYTES {
+        Err("The update exceeds the supported download size.".into())
+    } else {
+        Ok(())
     }
 }
 fn unpacked_size(bytes: &[u8], macos: bool) -> Result<u64, String> {
@@ -362,7 +386,7 @@ fn unpacked_size(bytes: &[u8], macos: bool) -> Result<u64, String> {
     }
     Ok(total)
 }
-fn installation_preflight(app: &AppHandle, bytes: &[u8]) -> Result<(), String> {
+fn installation_preflight(bytes: &[u8]) -> Result<(), String> {
     let executable =
         std::env::current_exe().map_err(|_| "The installed application could not be located.")?;
     let destination = if cfg!(target_os = "macos") {
@@ -374,24 +398,27 @@ fn installation_preflight(app: &AppHandle, bytes: &[u8]) -> Result<(), String> {
         std::env::var_os("APPIMAGE").map(PathBuf::from)
     }
     .ok_or("This installation must be updated using a downloaded package.")?;
+    preflight_destination(
+        &destination,
+        bytes,
+        cfg!(target_os = "macos"),
+        available_install_space,
+    )
+}
+fn preflight_destination(
+    destination: &Path,
+    bytes: &[u8],
+    macos: bool,
+    free_space: impl FnOnce(&Path) -> Result<u64, String>,
+) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or("The installation folder could not be located.")?;
     // Test the actual staging directory, rather than assuming Unix mode bits mean writable.
     let probe = tempfile::NamedTempFile::new_in(parent).map_err(|_| "Silo cannot write to its installation folder. Move it to a writable folder or install the new package manually.")?;
     drop(probe);
-    use std::os::unix::ffi::OsStrExt;
-    let encoded = std::ffi::CString::new(parent.as_os_str().as_bytes())
-        .map_err(|_| "The installation folder is invalid.")?;
-    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: CString is NUL terminated and stats is a valid exclusive output pointer.
-    if unsafe { libc::statvfs(encoded.as_ptr(), &mut stats) } != 0 {
-        return Err("Available installation space could not be checked.".into());
-    }
-    let free = (stats.f_bavail as u64)
-        .checked_mul(stats.f_frsize as u64)
-        .ok_or("Available installation space is invalid.")?;
-    let needed = unpacked_size(bytes, cfg!(target_os = "macos"))?;
+    let needed = unpacked_size(bytes, macos)?;
+    let free = free_space(parent)?;
     // Existing installation already occupies space. Atomic replacement stages only
     // one new copy beside it; the downloaded archive is held in memory.
     if free < needed {
@@ -400,9 +427,22 @@ fn installation_preflight(app: &AppHandle, bytes: &[u8]) -> Result<(), String> {
             needed.saturating_sub(free).div_ceil(1024 * 1024)
         ));
     }
-    let _ = app;
     Ok(())
 }
+fn available_install_space(parent: &Path) -> Result<u64, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let encoded = std::ffi::CString::new(parent.as_os_str().as_bytes())
+        .map_err(|_| "The installation folder is invalid.")?;
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: CString is NUL terminated and stats is a valid exclusive output pointer.
+    if unsafe { libc::statvfs(encoded.as_ptr(), &mut stats) } != 0 {
+        return Err("Available installation space could not be checked.".into());
+    }
+    (stats.f_bavail as u64)
+        .checked_mul(stats.f_frsize as u64)
+        .ok_or_else(|| "Available installation space is invalid.".into())
+}
+
 #[tauri::command]
 pub(crate) async fn install_update(
     app: AppHandle,
@@ -450,7 +490,7 @@ pub(crate) async fn install_update(
             Ok(guards) => guards,
             Err(error) => { let _ = modify(&worker, |s| s.bytes = Some(bytes)); return Err(error); }
         };
-        let result = installation_preflight(&worker, &bytes)
+        let result = installation_preflight(&bytes)
             .and_then(|_| crate::settings::flush_for_update(&worker))
             .and_then(|_| crate::runtime::update_recovery::prepare(&worker, stop_sandboxes)).and_then(|_| update.install(&bytes).map_err(|e| e.to_string()));
         if let Err(error) = result {
@@ -503,7 +543,10 @@ mod tests {
     }
     #[test]
     fn ordinary_executable_does_not_claim_updatable_package() {
-        assert_eq!(package_kind(Path::new("/usr/bin/silo-ui"), None, None), "manual");
+        assert_eq!(
+            package_kind(Path::new("/usr/bin/silo-ui"), None, None),
+            "manual"
+        );
     }
     #[test]
     fn preflight_counts_actual_tar_members_and_rejects_invalid_archive() {
@@ -530,7 +573,48 @@ mod tests {
     #[test]
     fn debian_with_stray_appimage_environment_remains_manual() {
         let image = tempfile::NamedTempFile::new().unwrap();
-        assert_eq!(package_kind(Path::new("/usr/bin/silo-ui"), Some(image.path()), Some(tauri::utils::config::BundleType::Deb)), "manual");
+        assert_eq!(
+            package_kind(
+                Path::new("/usr/bin/silo-ui"),
+                Some(image.path()),
+                Some(tauri::utils::config::BundleType::Deb)
+            ),
+            "manual"
+        );
     }
 
+    #[test]
+    fn final_download_size_rejects_overflow_even_if_completion_wins_notification() {
+        assert!(validate_download_size(MAX_DOWNLOAD_BYTES).is_ok());
+        assert!(validate_download_size(MAX_DOWNLOAD_BYTES + 1).is_err());
+        assert!(validate_download_size(u64::MAX).is_err());
+    }
+    #[test]
+    fn preflight_rejects_insufficient_or_unknown_space_without_touching_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("Silo.AppImage");
+        fs::write(&destination, "old app").unwrap();
+        let error = preflight_destination(&destination, b"new app", false, |_| Ok(0)).unwrap_err();
+        assert!(error.contains("Not enough space"));
+        assert!(
+            preflight_destination(&destination, b"new app", false, |_| Err(
+                "Space unavailable".into()
+            ))
+            .is_err()
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"old app");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn preflight_rejects_unwritable_parent_before_measuring_space() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("not-a-directory");
+        fs::write(&parent, "preserve").unwrap();
+        let error = preflight_destination(&parent.join("Silo.AppImage"), b"new app", false, |_| {
+            panic!("must reject unwritable staging first")
+        })
+        .unwrap_err();
+        assert!(error.contains("cannot write"));
+        assert_eq!(fs::read(parent).unwrap(), b"preserve");
+    }
 }

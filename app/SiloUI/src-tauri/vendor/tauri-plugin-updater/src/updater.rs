@@ -1568,3 +1568,72 @@ mod tests {
         }
     }
 }
+
+// Exercise the real HTTP/parser/version/signature path against a one-request
+// loopback server. No application build accepts endpoint overrides from its UI.
+#[cfg(all(test, not(windows)))]
+mod http_regression_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    fn response(body: Vec<u8>, status: &str) -> (Url, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/update", listener.local_addr().unwrap()).parse().unwrap();
+        let status = status.to_string();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request = [0; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        (url, server)
+    }
+    fn updater(url: Url) -> Updater {
+        Updater {
+            current_version: Version::parse("1.2.0").unwrap(), version_comparator: None,
+            timeout: Some(Duration::from_millis(500)), proxy: None, no_proxy: true,
+            endpoints: vec![url], arch: "aarch64", target: Some("darwin".into()),
+            headers: HeaderMap::new(), extract_path: PathBuf::from("/unused-installer-path"),
+            context: UpdaterContext { config: Config::default(), configure_client: None },
+        }
+    }
+    fn feed(version: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({"version":version,"url":"https://example.invalid/Silo.tar.gz","signature":"invalid-signature"})).unwrap()
+    }
+    #[test]
+    fn real_check_offers_only_newer_versions() {
+        for (version, available) in [("1.1.9", false), ("1.2.0", false), ("1.2.1", true)] {
+            let (url, server) = response(feed(version), "200 OK");
+            let result = tauri::async_runtime::block_on(updater(url).check()).unwrap();
+            server.join().unwrap();
+            assert_eq!(result.is_some(), available);
+            if let Some(update) = result { assert_eq!(update.version, version); }
+        }
+    }
+    #[test]
+    fn malformed_and_unavailable_feeds_never_report_up_to_date() {
+        for (body, status) in [(b"not-json".to_vec(), "200 OK"), (feed("invalid-version"), "200 OK"), (vec![], "503 Service Unavailable")] {
+            let (url, server) = response(body, status);
+            assert!(tauri::async_runtime::block_on(updater(url).check()).is_err());
+            server.join().unwrap();
+        }
+        let at = std::time::Instant::now();
+        // Port zero cannot host a listening service, so this is deterministic
+        // connection refusal without relying on public DNS or internet access.
+        assert!(tauri::async_runtime::block_on(updater("http://127.0.0.1:0/update".parse().unwrap()).check()).is_err());
+        assert!(at.elapsed() < Duration::from_secs(5));
+    }
+    #[test]
+    fn rejected_signature_never_returns_installable_bytes() {
+        let (url, server) = response(feed("1.2.1"), "200 OK");
+        let mut update = tauri::async_runtime::block_on(updater(url).check()).unwrap().unwrap();
+        server.join().unwrap();
+        let (download, server) = response(b"unsigned payload".to_vec(), "200 OK");
+        update.download_url = download;
+        let result = tauri::async_runtime::block_on(update.download(|_, _| {}, || {}));
+        server.join().unwrap();
+        assert!(result.is_err());
+    }
+}
