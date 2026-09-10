@@ -43,9 +43,11 @@ that expects the development server. Always rebuild immediately before UI tests.
 The test-only `linux-verification.yml` workflow runs both architectures. It has
 read-only repository permissions and cannot publish packages or releases.
 Evidence and screenshots are stored under ignored `app/SiloUI/test-results/linux/`.
-The KVM test exits nonzero when hardware is unavailable, rather than marking an
-unexercised VM workflow successful. Desktop checks run before the KVM gate so
-those results remain available even on a host that cannot run nested VMs.
+The AMD64 CI job requires real KVM tests after successful build and desktop
+checks. ARM64 hosted runners have no `/dev/kvm`, so that CI hardware step is
+explicitly skipped; the separate local Lima hardware evidence below covers
+ARM64. The hardware script itself exits nonzero when KVM is unavailable,
+rather than marking an unexercised VM workflow successful.
 
 ## Coverage limits
 
@@ -88,8 +90,12 @@ An isolated Ubuntu 24.04 ARM64 OrbStack machine ran the following successfully:
 
 OrbStack explicitly failed the hardware probe with missing `/dev/kvm`.
 A separate disposable Lima VM provides the hardware evidence below. The GitHub-hosted two-architecture workflow is committed but
-has not been dispatched: publishing its test branch to the public repository
-requires approval. Screenshots are `test-results/linux/onboarding.png` and
+was pushed to the approved public `verify-linux-parity-20260910` test branch.
+The first hosted run exposed two long form/navigation tests exceeding their
+5-second limits; only those tests receive 15 seconds. It also confirmed hosted
+ARM64 has no KVM and that changing the primary group through `sudo -g` prompts
+for a password. The AMD64 hardware step uses `sudo runuser` with the existing
+KVM group, without broadening device permissions. Screenshots are `test-results/linux/onboarding.png` and
 `settings.png`; detailed success/failure reports are `desktop.json` and
 `runtime.json` in the same ignored directory.
 

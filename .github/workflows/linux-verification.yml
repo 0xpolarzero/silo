@@ -56,11 +56,11 @@ jobs:
         run: cargo install tauri-driver --version 2.0.6 --locked
       - name: Verify native WebKit onboarding and validation
         run: xvfb-run -a dbus-run-session -- python3 scripts/test-linux-desktop.py
-      - name: Verify real hardware runtime operations
-        if: ${{ !cancelled() }}
+      - name: Verify real AMD64 hardware runtime operations
+        if: matrix.runner == 'ubuntu-24.04'
         run: |
           if test -e /dev/kvm; then
-            sudo --preserve-env=PATH,SILO_GITHUB_APP_SLUG,SILO_GITHUB_CLIENT_ID,SILO_GITHUB_CLIENT_SECRET,CARGO_PROFILE_DEV_DEBUG,CARGO_PROFILE_TEST_DEBUG,CARGO_INCREMENTAL -u "$(id -un)" -g kvm python3 scripts/test-linux-runtime.py
+            sudo -n runuser -u "$(id -un)" -g kvm -- env PATH="$PATH" SILO_GITHUB_APP_SLUG="$SILO_GITHUB_APP_SLUG" SILO_GITHUB_CLIENT_ID="$SILO_GITHUB_CLIENT_ID" SILO_GITHUB_CLIENT_SECRET="$SILO_GITHUB_CLIENT_SECRET" CARGO_PROFILE_DEV_DEBUG="$CARGO_PROFILE_DEV_DEBUG" CARGO_PROFILE_TEST_DEBUG="$CARGO_PROFILE_TEST_DEBUG" CARGO_INCREMENTAL="$CARGO_INCREMENTAL" python3 scripts/test-linux-runtime.py
           else
             python3 scripts/test-linux-runtime.py
           fi

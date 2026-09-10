@@ -827,7 +827,7 @@ describe("onboarding", () => {
     const panel = within(screen.getByRole("tabpanel"))
     expect(panel.getByText("deploy@staging.example.com:2222")).toBeVisible()
     expect(panel.queryByText(/connected/i)).not.toBeInTheDocument()
-  })
+  }, 15_000) // This full form/navigation flow exceeds 5 seconds on Linux CI.
 
   it("restores an existing VM exactly on Cancel and persists a valid edit on Save", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
@@ -1071,6 +1071,6 @@ describe("onboarding", () => {
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     expect(screen.getByRole("button", { name: "Expand activity" })).toHaveAttribute("aria-expanded", "false")
     expect(within(screen.getByRole("tabpanel")).queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
-  })
+  }, 15_000) // This full form/navigation flow exceeds 5 seconds on Linux CI.
 
 })
