@@ -116,7 +116,13 @@ The packager regenerates both the DMG and signed updater archive from the same
 finished app, with no AppleDouble archive entries.
 
 The minimum macOS 14 constraint tests are required before draft creation; the
-build runner also exercises the constraint tests. GitHub currently provides
+build runner also exercises the constraint tests. GitHub's macOS 14.8.9 and
+15.7.9 runners were verified to have System Integrity Protection disabled on
+2026-09-10. Their explicit `--constraints-only` mode checks library fingerprint
+restrictions and records the two signature-enforcement controls as skipped.
+A passing hosted result does not establish signature enforcement. Public release
+also requires the full suite on a Mac with SIP enabled, including the minimum
+supported macOS version. GitHub currently provides
 macOS 14 runners until November 2, 2026. Before their retirement, replace this
 minimum-version proof with a maintained runner rather than silently omitting it.
 This CI test checks library enforcement, not nested VM execution.
