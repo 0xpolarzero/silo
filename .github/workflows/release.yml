@@ -1,6 +1,8 @@
 name: Build Silo release
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       draft:
@@ -15,7 +17,45 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      draft: ${{ steps.release.outputs.draft }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate release inputs before building
+        id: release
+        env:
+          CREATE_DRAFT: ${{ github.event_name == 'push' || inputs.draft }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          version=$(python3 app/SiloUI/scripts/validate-release-version.py)
+          if [[ "$CREATE_DRAFT" == true ]]; then
+            if [[ "$RELEASE_REF" != "refs/tags/v$version" ]]; then
+              echo "::error::Release ref must be refs/tags/v$version."
+              exit 1
+            fi
+            if [[ ! -s "docs/releases/$version.md" ]]; then
+              echo "::error::Missing release notes: docs/releases/$version.md. Run npm run release:version in app/SiloUI."
+              exit 1
+            fi
+            shopt -s nullglob
+            for changeset in app/SiloUI/.changeset/*.md; do
+              if [[ "$(basename "$changeset")" != README.md ]]; then
+                echo "::error::Pending changeset $changeset. Run npm run release:version in app/SiloUI before tagging."
+                exit 1
+              fi
+            done
+          fi
+          echo "draft=$CREATE_DRAFT" >> "$GITHUB_OUTPUT"
+
   macos-minimum-constraints:
+    needs: validate
     runs-on: macos-14
     timeout-minutes: 15
     steps:
@@ -31,7 +71,8 @@ jobs:
           retention-days: 7
 
   build:
-    environment: ${{ inputs.draft && 'release-signing' || 'release-verification' }}
+    needs: validate
+    environment: ${{ needs.validate.outputs.draft == 'true' && 'release-signing' || 'release-verification' }}
     strategy:
       fail-fast: false
       matrix:
@@ -96,8 +137,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install minisign
       - run: npm ci
+      - run: npm run test:release
       - name: Generate isolated test signing key
-        if: '!inputs.draft'
+        if: needs.validate.outputs.draft != 'true'
         run: |
           umask 077
           npx tauri signer generate --ci -p '' -w "$RUNNER_TEMP/silo-test.key" >/dev/null
@@ -111,7 +153,7 @@ jobs:
           path.write_text(json.dumps(config))
           PYCODE
       - name: Require production signing key
-        if: inputs.draft
+        if: needs.validate.outputs.draft == 'true'
         run: test -n "$TAURI_SIGNING_PRIVATE_KEY"
       - name: Test release tooling
         run: python3 -m unittest discover -s scripts -p 'test_*release*.py'
@@ -125,14 +167,6 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib -- --test-threads=1
       - name: Free test products before release compilation
         run: cargo clean --manifest-path src-tauri/Cargo.toml --profile dev
-      - name: Validate release version
-        env:
-          RELEASE_REF: ${{ github.ref }}
-        run: |
-          python3 scripts/validate-release-version.py
-          if [[ '${{ inputs.draft }}' == true ]]; then
-            test "$RELEASE_REF" = "refs/tags/v$(node -p "require('./package.json').version")"
-          fi
       - name: Compile release application
         run: npm run desktop:build -- --target '${{ matrix.target }}' --no-bundle --ci
       - name: Build release bundles
@@ -190,8 +224,8 @@ jobs:
           retention-days: 7
 
   draft:
-    if: inputs.draft
-    needs: [build, macos-minimum-constraints]
+    if: needs.validate.outputs.draft == 'true'
+    needs: [validate, build, macos-minimum-constraints]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

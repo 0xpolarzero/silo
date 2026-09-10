@@ -17,7 +17,14 @@
     "desktop": "tauri dev",
     "desktop:build": "tauri build",
     "desktop:build:debug": "tauri build --debug --bundles app --config src-tauri/tauri.debug.conf.json",
-    "guest:image:build": "node scripts/build-guest-image.mjs"
+    "guest:image:build": "node scripts/build-guest-image.mjs",
+    "changeset": "changeset",
+    "release:status": "changeset status",
+    "release:version": "changeset version && node scripts/sync-release.mjs",
+    "release:sync": "node scripts/sync-release.mjs",
+    "release:draft": "node scripts/release.mjs draft",
+    "release:publish": "node scripts/release.mjs publish",
+    "test:release": "node --test scripts/release.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
@@ -35,6 +42,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@changesets/cli": "3.0.1",
     "@tauri-apps/cli": "^2.11.4",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",

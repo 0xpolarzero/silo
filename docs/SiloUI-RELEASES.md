@@ -6,6 +6,118 @@ Explicit environment variables take precedence, which is how GitHub Actions
 supplies the same configuration. Missing, empty, malformed, or multiline values
 stop the native build instead of producing an app with broken GitHub access.
 
+## Release a new version
+
+Silo uses **Changesets** for version decisions and changelogs. Contributors add
+short release notes with their changes. Preparing a release combines those notes;
+pushing its version tag builds a draft. Publication is a separate explicit step.
+Normal branch pushes do not release the app.
+
+Run these commands from `app/SiloUI`. Install dependencies with `npm ci` first.
+Use Node.js 24, Python 3.11 or newer, Git, and GitHub CLI (`gh auth login` for
+publication). Your Git remote `origin` must point to the Silo repository, and
+your account needs push and Actions permissions. CI holds the signing keys;
+local release preparation needs no signing credentials or VM runtime.
+
+### While making changes
+
+```sh
+npm run changeset
+```
+
+Choose `silo-ui`, the bump type, and write a user-facing summary. Use **patch**
+for fixes, **minor** for compatible features, and **major** for incompatible
+changes. Include any migration steps. Commit the generated `.changeset/*.md`
+file alongside the change. Edit the Markdown freely before release. Internal
+refactors, tests, and documentation do not require a note unless users are affected.
+
+Agents can create these files directly; release notes do not depend on commit
+message conventions. Each note should explain the resulting behavior, not list
+implementation files. Never put credentials or private user information in notes.
+
+### Prepare and review
+
+```sh
+npm run release:status
+npm run release:version
+```
+
+Changesets chooses the next version, updates `package.json` and `CHANGELOG.md`,
+and consumes the pending notes. Our adapter updates `package-lock.json`,
+`src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock` to the same version without
+changing dependencies. It exports the new changelog entry to
+`docs/releases/VERSION.md`, which becomes the GitHub release body and app update
+notes. Tauri already reads its version from `package.json`.
+
+Review all generated changes, including the removed changeset files. The initial
+remote-computers changeset requests a minor release from 0.1.1 to 0.2.0; the
+version is not bumped until you run the command. Several pending notes produce
+one release using the largest requested bump.
+
+Commit the generated changes and push your branch. Use your normal review process;
+merge the release preparation into `main` before releasing from its clean checkout.
+Do not edit version files by hand. To edit wording after preparation, keep the
+new changelog entry and `docs/releases/VERSION.md` consistent.
+
+### Build the draft
+
+```sh
+npm run release:draft
+```
+
+This requires a clean working tree, synchronized versions, release notes, and no
+pending changesets. Changesets creates the `vVERSION` tag; the command pushes
+only that tag to `origin`. The tag push automatically runs **Build Silo release**.
+Approve `release-signing` in GitHub Actions if requested. All three platforms
+must pass before the complete draft appears under GitHub Releases. Nothing is
+published to npm, and no public app update is announced yet.
+
+Test the draft installers on clean supported systems and upgrade an earlier real
+installation. Review the notes and the acceptance evidence below.
+
+### Publish the tested draft
+
+From the same release commit:
+
+```sh
+npm run release:publish
+```
+
+This dispatches **Publish verified Silo draft** against the exact version tag.
+Approve `release-publish` if requested. The workflow verifies the stored packages,
+signatures, checksums, version metadata and update feed, then publishes and marks
+the release latest. A successful command means the workflow was requested;
+publication is complete only when that workflow succeeds.
+
+### Preview, retries, and recovery
+
+- `npm run release:status` is read-only. No pending changes is not a new release;
+  `release:version` fails without changing the version when there are no notes.
+- If versioning succeeds but synchronization fails, fix the reported input and
+  run `npm run release:sync`. It can be retried without another version bump and
+  refuses to overwrite different existing release notes. Review the working diff
+  before committing; failed preparation never pushes or publishes anything.
+- For CI verification before tagging, manually run **Build Silo release** on
+  your branch with `draft` unchecked. Those packages use isolated test signing
+  keys and are not distributable updates.
+- A failed tag push leaves a local tag; retry `release:draft`. The command never
+  force-moves tags. If a tag identifies another commit, check out that release or
+  prepare a newer version.
+- Pushing an existing remote tag again does not retrigger CI. Retry **Build Silo
+  release** manually on that tag with `draft` checked. An existing incomplete
+  draft must be reviewed and explicitly removed before rebuilding; publication
+  refuses incomplete drafts. Never replace a published version.
+- For a later publication retry, check out the release tag and run
+  `release:publish`, or select that tag in **Publish verified Silo draft** and
+  enter its version without the `v` prefix.
+
+The installed Changesets CLI is pinned in `package.json` and the lockfile.
+Configuration keeps Silo private to npm while enabling versioning and Git tags.
+Changesets 3 uses `git-tag`; the wrapper uses the installed command. See the
+[Changesets source and documentation](https://github.com/changesets/changesets)
+for its note format and release model. Run `npm run test:release` to exercise
+actual Changesets versioning in disposable repositories and the desktop adapter.
+
 ## Local setup
 
 The local file on the maintainer's machine was configured on 2026-09-10 with
@@ -129,21 +241,9 @@ This CI test checks library enforcement, not nested VM execution.
 
 ### Build and publish
 
-1. Update the synchronized version and add `docs/releases/VERSION.md` with actual
-   user-facing changes and compatibility notes. Commit and review the source.
-2. For verification, dispatch **Build Silo release** with `draft=false` on the
-   reviewed test branch. All three builds run tests and upload packages only.
-3. After approval, create the exact `vVERSION` tag at the reviewed commit and
-   dispatch **Build Silo release** on that tag with `draft=true`. Approve the
-   signing environment only after confirming the commit. Every platform must
-   pass before a draft is created. Existing releases and drafts are never overwritten.
-4. Download and test the complete draft on clean systems and upgrade an earlier
-   real installation. Review notes, bundled licenses and all architecture assets.
-5. Obtain public-release approval, then dispatch **Publish verified Silo draft**
-   on the version tag with the matching version. Approve `release-publish`.
-   It downloads all draft assets, checks SHA256, updater signatures and the signed
-   version/architecture metadata, and only
-   then publishes the draft and marks it latest.
+Follow [Release a new version](#release-a-new-version) above. Both version-tag
+pushes and manual draft builds use the same signing and validation pipeline;
+only the separate publication workflow can make the draft public.
 
 The app reads
 `https://github.com/0xpolarzero/silo/releases/latest/download/latest.json`.

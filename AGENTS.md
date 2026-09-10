@@ -419,3 +419,13 @@ unredacted system logs.
   proves the static status-item/popover, fixture rows, shortcuts, and quit flow.
   It does not prove VM health, `silo` command integration, lifecycle actions,
   telemetry, signing, notarization, or release readiness.
+
+## SiloUI release notes
+
+For each user-visible SiloUI feature, fix, or behavior change, include a Markdown
+changeset in `app/SiloUI/.changeset/` with `"silo-ui": patch|minor|major` front
+matter and a concise user-facing summary. Agents may write the file directly.
+Use patch for fixes, minor for compatible features, and major for incompatible
+changes. Internal-only changes need no changeset. Do not bump versions, consume
+changesets, create release tags, or publish unless requested. Follow
+`docs/SiloUI-RELEASES.md` for release preparation and verification.

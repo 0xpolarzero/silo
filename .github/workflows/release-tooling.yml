@@ -1,0 +1,43 @@
+name: Verify release tooling
+
+on:
+  pull_request:
+    paths:
+      - 'app/SiloUI/.changeset/**'
+      - 'app/SiloUI/scripts/**'
+      - 'app/SiloUI/package*.json'
+      - 'app/SiloUI/src-tauri/Cargo.*'
+      - '.github/workflows/*release*.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'app/SiloUI/.changeset/**'
+      - 'app/SiloUI/scripts/**'
+      - 'app/SiloUI/package*.json'
+      - 'app/SiloUI/src-tauri/Cargo.*'
+      - '.github/workflows/*release*.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app/SiloUI
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/SiloUI/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run test:release
+      - run: python3 scripts/validate-release-version.py
+      - run: python3 -m unittest discover -s scripts -p 'test_*release*.py'

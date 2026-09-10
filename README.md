@@ -14,6 +14,10 @@ A ready-to-run development setup for an Apple Silicon Mac with configurable, iso
 
 Each workspace has its own Ubuntu system, repositories, Docker daemon, images, volumes, credentials, processes, and public-internet connection. Code and Docker data live on independent persistent ext4 volumes. Zed and Ghostty remain native macOS applications and connect over SSH.
 
+## Desktop releases
+
+Use [Changesets and the desktop release guide](docs/SiloUI-RELEASES.md#release-a-new-version) to record changes, prepare a version, build a draft, and publish verified app updates.
+
 ## Install
 
 ```bash
