@@ -1,8 +1,0 @@
-{
-  "scaffolded": true,
-  "docsBuildPassed": true,
-  "commandsRun": [
-    "bun .smithers/lib/ddd/build.ts"
-  ],
-  "summary": "features.json validated, derived feature docs regenerated, and UI content modules rebuilt reproducibly."
-}

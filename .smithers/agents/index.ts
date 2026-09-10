@@ -1,5 +1,0 @@
-export { ClaudeCodeAgent } from "./claude-code";
-export { CodexAgent } from "./codex";
-export { CursorAgent } from "./cursor";
-export { OpenCodeAgent } from "./opencode";
-export { AntigravityAgent } from "./antigravity";
