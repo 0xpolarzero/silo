@@ -180,7 +180,7 @@ mod native {
                 &item("go-back", "Back", Some("Cmd+["))?,
                 &item("go-forward", "Forward", Some("Cmd+]"))?,
                 &Standard::separator(app)?,
-                &item("toggle-sidebar", "Hide Sidebar", None)?,
+                &item("toggle-sidebar", "Hide Sidebar", Some("Cmd+B"))?,
                 &Standard::fullscreen(app, None)?,
             ],
         )?;

@@ -7,7 +7,8 @@ until the listener is ready; installation disables navigation and mutation
 commands. Individual busy states disable update checks and backup operations.
 The status panel and Linux menus are unchanged.
 
-Native macOS owns Command-K while connected, avoiding a second DOM shortcut
+Native macOS owns Command-B for the sidebar and Command-K for the command palette,
+avoiding a second DOM shortcut
 handler. Repeated creation requests preserve unfinished forms. Consumed sandbox
 requests are cleared by their owner so returning to a remounted overview cannot
 open another form. Sidebar text follows the existing collapse state.
