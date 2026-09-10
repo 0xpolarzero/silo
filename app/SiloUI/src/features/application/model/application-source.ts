@@ -141,7 +141,7 @@ export interface ApplicationSecret {
   name: string
   workspaces: string[]
   allowedDomains: string[]
-  state: "active" | "restart-required"
+  state: "active" | "applying" | "restart-required"
   pendingWorkspaces?: string[]
   error?: string
   removing?: boolean

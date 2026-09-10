@@ -107,7 +107,7 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret, onRetrySecre
           <ListCard>
             <ul className="divide-y divide-border" aria-label="Configured secrets">
               {secrets.map((secret) => {
-                const working = busy === secret.id
+                const working = busy === secret.id || secret.state === "applying"
                 const failure = operationError?.id === secret.id ? operationError.message : secret.error
                 const confirmingRemoval = pendingRemoval === secret.id
                 const removalLabel = confirmingRemoval ? `Confirm removal of ${secret.name}` : `Remove ${secret.name}`
@@ -119,12 +119,13 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret, onRetrySecre
                       icon={<ListRowIcon aria-hidden="true"><KeyRound className="size-3.5" /></ListRowIcon>}
                       title={<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                         <h3 className="break-all font-mono">{secret.name}</h3>
+                        {secret.state === "applying" && <span role="status" className="text-[10px] text-muted-foreground">{secret.removing ? "Removing…" : "Applying…"}</span>}
                         {secret.state === "restart-required" && (
                           <span className="inline-flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400">
                             <RotateCw className="size-3" aria-hidden="true" />Restart to apply{secret.pendingWorkspaces?.length ? `: ${secret.pendingWorkspaces.join(", ")}` : ""}
                           </span>
                         )}
-                        {secret.removing && <span className="text-[10px] text-muted-foreground">Removal pending</span>}
+                        {secret.removing && secret.state !== "applying" && <span className="text-[10px] text-muted-foreground">Removal pending</span>}
                       </div>}
                       detailClassName="whitespace-normal"
                       detail={<div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -145,7 +146,7 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret, onRetrySecre
                         <InlineConfirmation active={confirmingRemoval} onDismiss={() => setPendingRemoval(null)}>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <Button type="button" variant="ghost" size="icon-xs" aria-label={confirmingRemoval ? `Cancel removal of ${secret.name}` : `Edit ${secret.name}`} disabled={saving || busy !== null || secret.removing} onClick={(event) => confirmingRemoval ? setPendingRemoval(null) : openEditor(event.currentTarget, secret)}>
+                              <Button type="button" variant="ghost" size="icon-xs" aria-label={confirmingRemoval ? `Cancel removal of ${secret.name}` : `Edit ${secret.name}`} disabled={saving || busy !== null || working || secret.removing} onClick={(event) => confirmingRemoval ? setPendingRemoval(null) : openEditor(event.currentTarget, secret)}>
                                 {confirmingRemoval ? <X aria-hidden="true" /> : <Pencil aria-hidden="true" />}
                               </Button>
                             </TooltipTrigger>
@@ -153,7 +154,7 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret, onRetrySecre
                           </Tooltip>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <Button type="button" variant={confirmingRemoval ? "destructive" : "ghost"} size="icon-xs" aria-label={removalLabel} disabled={saving || busy !== null || secret.removing} onClick={() => removeSecret(secret.id)}>
+                              <Button type="button" variant={confirmingRemoval ? "destructive" : "ghost"} size="icon-xs" aria-label={removalLabel} disabled={saving || busy !== null || working || secret.removing} onClick={() => removeSecret(secret.id)}>
                                 {working ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : confirmingRemoval ? <Check aria-hidden="true" /> : <Trash2 aria-hidden="true" />}
                               </Button>
                             </TooltipTrigger>

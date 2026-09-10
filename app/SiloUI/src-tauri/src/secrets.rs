@@ -133,7 +133,9 @@ fn public(secret: &Secret) -> Value {
         .map(|(name, error)| format!("{name}: {error}"))
         .collect::<Vec<_>>();
     json!({"id":secret.id,"name":secret.name,"workspaces":secret.workspaces,"allowedDomains":secret.allowed_domains,
-        "state": if secret.pending_workspaces.is_empty() {"active"} else {"restart-required"},
+        "state": if secret.errors.is_empty() && secret.affected.iter().any(|workspace| !secret.pending_workspaces.contains(workspace)) {
+            "applying"
+        } else if secret.pending_workspaces.is_empty() {"active"} else {"restart-required"},
         "pendingWorkspaces":secret.pending_workspaces,"removing":secret.removing,
         "error": if errors.is_empty() {Value::Null} else {json!(errors.join(" "))}})
 }
@@ -679,6 +681,22 @@ mod tests {
         assert!(public(&s)["error"].as_str().unwrap().contains("dev:"));
         s.removing = true;
         assert_eq!(public(&s)["removing"], true);
+    }
+    #[test]
+    fn persisted_unfinished_secret_targets_are_not_reported_active_after_relaunch() {
+        let mut secret = secret();
+        assert_eq!(public(&secret)["state"], "applying");
+        secret.pending_workspaces.push("dev".into());
+        assert_eq!(public(&secret)["state"], "restart-required");
+        secret.affected.push("other".into());
+        assert_eq!(public(&secret)["state"], "applying");
+        secret.errors.insert("other".into(), "Could not apply changes.".into());
+        assert_eq!(public(&secret)["state"], "restart-required");
+        assert!(public(&secret)["error"].is_string());
+        secret.affected.clear();
+        secret.pending_workspaces.clear();
+        secret.errors.clear();
+        assert_eq!(public(&secret)["state"], "active");
     }
     #[test]
     fn history_is_bounded_and_contains_no_values() {

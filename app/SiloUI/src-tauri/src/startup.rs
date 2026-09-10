@@ -61,6 +61,14 @@ pub(crate) fn install(app: &AppHandle) {
         let Ok(_active) = state.active.lock() else {
             return;
         };
+        if let Err(message) = crate::runtime::configuration_recovery::recover(&app) {
+            crate::notifications::action_failed(&app, "Sandbox setup could not resume");
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = crate::system_integrations::show_integration_error(app.clone(), window,
+                    format!("{message}\n\nSaved setup progress was preserved. Relaunch Silo to retry."));
+            }
+            return;
+        }
         let result = crate::settings::current_settings(&app).map(|settings| {
             start_selected(&settings, &state.cancelled, |id| {
                 let result = crate::runtime::start_at_launch(&app, id);

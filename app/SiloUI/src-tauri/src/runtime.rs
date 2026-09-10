@@ -4,6 +4,7 @@ pub(crate) mod guest_image;
 mod runtime_activity;
 #[path = "secrets_runtime.rs"]
 mod secrets_runtime;
+pub(crate) mod configuration_recovery;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
@@ -620,8 +621,20 @@ fn run_msb_process(
     let stderr_file = tempfile::NamedTempFile::new().map_err(|error| {
         RuntimeError::Unavailable(format!("Silo could not capture runtime errors: {error}"))
     })?;
-    let mut child = Command::new(&paths.executable)
-        .args(args)
+    let worker_lock = if args.first().is_some_and(|command| matches!(command.as_str(), "create" | "modify" | "remove" | "stop")) {
+        Some(configuration_recovery::command_lock(paths, timeout)?)
+    } else { None };
+    let mut command = Command::new(&paths.executable);
+    if let Some(lock) = &worker_lock {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let fd = lock.as_raw_fd();
+        // SAFETY: only async-signal-safe fcntl runs between fork and exec.
+        unsafe { command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 { return Err(std::io::Error::last_os_error()); }
+            Ok(())
+        }); }
+    }
+    let mut child = command.args(args)
         .envs(general_secrets.iter().map(|(name,value,_)| (name,value)))
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)
@@ -1397,6 +1410,7 @@ fn read_application_snapshot(
     // Runtime creation and metadata publication are separate steps. Discard
     // observations overlapping a mutation, without blocking progress updates.
     const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
+    if configuration_recovery::pending(paths)? { return Err(UPDATING.into()); }
     let check_idle = || -> Result<(), String> {
         match mutation_lock.try_lock() {
             Ok(guard) => { drop(guard); Ok(()) }
@@ -1965,6 +1979,7 @@ pub async fn save_machine_configuration(
         let _guard = MUTATION_LOCK
             .try_lock()
             .map_err(|_| RuntimeError::Busy.to_string())?;
+        configuration_recovery::prepare_retry(&ProcessRunner, &paths).map_err(|e| e.to_string())?;
         let retry_workspace = retry_workspace.or_else(|| {
             // A no-change retry after relaunch resumes the failed verification only.
             // A fresh add, edit or removal must not replay another sandbox's work.
@@ -1995,6 +2010,8 @@ pub async fn save_machine_configuration(
                     warning.message = "Silo could not measure host memory. Setup can continue, but available memory could not be checked.".into();
                     publish(warning);
                 }
+                validate_request(&request)?;
+                validate_requested_resources(&request, &resources)?;
                 save_machine_configuration_with_progress(
                     &SetupRunner {
                         request_id: &request_id,
@@ -2005,7 +2022,7 @@ pub async fn save_machine_configuration(
                     request,
                     retry_workspace.as_deref(),
                     &progress,
-                )
+                ).and_then(|_| configuration_recovery::finish(&paths))
             })
             .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
         let mut outcome = machine_progress(
@@ -2486,6 +2503,7 @@ fn save_machine_configuration_with_progress(
     {
         preflight_removal(runner, paths, machine)?;
     }
+    configuration_recovery::begin(paths, &request)?;
     let mut applied = previous.clone();
     let mut changed = false;
     let result = (|| {
@@ -2538,7 +2556,8 @@ fn save_machine_configuration_with_progress(
             remove_machine_volumes(paths, machine)?;
             progress("workspace-removal", machine.name(), 1);
         }
-        write_metadata(&paths.metadata, &request)
+        write_metadata(&paths.metadata, &request)?;
+        configuration_recovery::finish(paths)
     })();
     result.map_err(|error| if changed {
         RuntimeError::Failed { operation: "Applying the sandbox configuration".into(), detail: format!("Some sandbox changes were applied before this error: {error} Completed changes were kept; reload the sandbox list before retrying.") }
@@ -2637,6 +2656,7 @@ fn create_machine_with_progress(
         return Ok(());
     };
     let workspace_volume = disk_path(paths, name, "workspace");
+    configuration_recovery::claim(paths, machine)?;
     progress("workspace-disk-preparation", name, 0);
     create_disk_volume(&workspace_volume, *workspace_storage_gib)?;
     let preflight = (|| {
@@ -3679,6 +3699,83 @@ mod tests {
             "active_config": null,
             "pending_changes": []
         })
+    }
+
+    #[test]
+    fn configuration_recovery_adopts_only_the_created_vm_with_the_saved_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let candidate = request(vec![vm()]);
+        configuration_recovery::begin(&paths, &candidate).unwrap();
+        configuration_recovery::claim(&paths, &vm()).unwrap();
+        let mut actual = inspect(&paths, "Created");
+        actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
+        let runner = StubRunner::successful_json(vec![json!([{"name":"dev","status":"Created","image":"ubuntu"}]), actual.clone(), actual.clone(), json!(null), actual]);
+        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {}).unwrap();
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
+        assert!(!paths.metadata.with_file_name("configuration-operation.json").exists());
+        assert!(!paths.volumes.join("dev/.silo-configuration-owner").exists());
+        assert!(!runner.calls.lock().unwrap().iter().any(|args| args[0] == "create" || args[0] == "remove"));
+    }
+
+    #[test]
+    fn configuration_recovery_preserves_a_replacement_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        configuration_recovery::begin(&paths, &request(vec![vm()])).unwrap();
+        let mut actual = inspect(&paths, "Created");
+        actual["config"]["labels"]["silo.machine-id"] = json!("someone-else");
+        let runner = StubRunner::successful_json(vec![json!([{"name":"dev","status":"Created","image":"ubuntu"}]), actual]);
+        let error = configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {}).unwrap_err();
+        assert!(error.to_string().contains("different sandbox"));
+        assert!(paths.metadata.with_file_name("configuration-operation.json").exists());
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        assert!(!runner.calls.lock().unwrap().iter().any(|args| args[0] == "remove"));
+    }
+
+    #[test]
+    fn configuration_recovery_retries_owned_incomplete_storage_without_relaunch() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let candidate = request(vec![vm()]);
+        configuration_recovery::begin(&paths, &candidate).unwrap();
+        configuration_recovery::claim(&paths, &vm()).unwrap();
+        fs::write(disk_path(&paths, "dev", "workspace"), b"incomplete").unwrap();
+        let runner = StubRunner::successful_json(vec![json!([])]);
+        configuration_recovery::prepare_retry(&runner, &paths).unwrap();
+        assert!(!paths.volumes.join("dev").exists());
+        configuration_recovery::claim(&paths, &vm()).unwrap();
+        assert!(paths.volumes.join("dev/.silo-configuration-owner").exists());
+        assert!(paths.metadata.with_file_name("configuration-operation.json").exists());
+    }
+
+    #[test]
+    fn configuration_recovery_preserves_committed_storage_when_runtime_is_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let candidate = request(vec![vm()]);
+        configuration_recovery::begin(&paths, &candidate).unwrap();
+        configuration_recovery::claim(&paths, &vm()).unwrap();
+        fs::write(disk_path(&paths, "dev", "workspace"), b"saved-data").unwrap();
+        write_metadata(&paths.metadata, &candidate).unwrap();
+        let runner = StubRunner::successful_json(vec![json!([])]);
+        assert!(configuration_recovery::prepare_retry(&runner, &paths).unwrap_err().to_string().contains("missing from the runtime"));
+        assert_eq!(fs::read(disk_path(&paths, "dev", "workspace")).unwrap(), b"saved-data");
+    }
+
+    #[test]
+    fn configuration_recovery_finishes_interrupted_deletion() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
+        write_metadata(&paths.metadata, &request(vec![vm(), remote.clone()])).unwrap();
+        fs::create_dir_all(paths.volumes.join("dev")).unwrap();
+        fs::write(disk_path(&paths, "dev", "workspace"), b"deleted-vm-disk").unwrap();
+        configuration_recovery::begin(&paths, &request(vec![remote.clone()])).unwrap();
+        let runner = StubRunner::successful_json(vec![json!([])]);
+        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {}).unwrap();
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), request(vec![remote]));
+        assert!(!paths.volumes.join("dev").exists());
     }
 
     #[test]

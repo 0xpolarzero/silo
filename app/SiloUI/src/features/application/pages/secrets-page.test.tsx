@@ -13,6 +13,19 @@ function SecretsPreview({ source }: { source: ApplicationSource }) {
 }
 
 describe("SecretsPage", () => {
+  it("shows persisted secret application after remount and enables controls only after it settles", () => {
+    const source = applicationSourceForScenario("running")
+    const applying = { ...source, secrets: source.secrets.map((secret) => ({ ...secret, state: "applying" as const })) }
+    const props = { onSaveSecret: vi.fn(), onRemoveSecret: vi.fn() }
+    const { rerender } = render(<SecretsPage source={applying} {...props} />)
+    expect(screen.getAllByText("Applying…").length).toBeGreaterThan(0)
+    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" })).toBeDisabled()
+    rerender(<SecretsPage source={source} {...props} />)
+    expect(screen.queryByText("Applying…")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeEnabled()
+  })
+
   it("keeps a failed save draft across native refresh, then closes after successful retry", async () => {
     const user = userEvent.setup()
     let reject!: (error: Error) => void

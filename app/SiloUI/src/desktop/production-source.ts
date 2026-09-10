@@ -52,7 +52,7 @@ const directoryPageShape = z.object({
 
 const secretShape = z.object({
   id: z.string(), name: z.string(), workspaces: z.array(z.string()), allowedDomains: z.array(z.string()),
-  state: z.enum(["active", "restart-required"]), pendingWorkspaces: z.array(z.string()).optional(),
+  state: z.enum(["active", "applying", "restart-required"]), pendingWorkspaces: z.array(z.string()).optional(),
   error: z.string().nullish().transform((value) => value ?? undefined), removing: z.boolean().optional(),
 })
 
