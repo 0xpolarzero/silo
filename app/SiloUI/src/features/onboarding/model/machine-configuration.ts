@@ -80,6 +80,12 @@ export function duplicateMachine(
 
 export type MachineValidationErrors = Partial<Record<"form" | "name" | "cpus" | "maxCPUs" | "memoryGiB" | "maxMemoryGiB" | "workspaceStorageGiB" | "runtimeStorageGiB" | "host" | "user" | "port", string>>
 
+export function validateSandboxName(name: string): string | undefined {
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(name)) {
+    return "Use 1–32 lowercase letters, numbers, or hyphens, starting with a letter."
+  }
+}
+
 export function validateMachine(
   machine: SetupMachineConfiguration,
   machines: readonly SetupMachineConfiguration[],
@@ -96,9 +102,8 @@ export function validateMachine(
   if (machines.some(({ id, name }) => id !== originalID && name.toLowerCase() === machine.name.toLowerCase())) {
     errors.name = "Sandbox names must be unique."
   }
-  if (!/^[a-z][a-z0-9-]{0,31}$/.test(machine.name)) {
-    errors.name = "Use a lowercase name that starts with a letter and contains only letters, numbers, or hyphens."
-  }
+  const nameError = validateSandboxName(machine.name)
+  if (nameError) errors.name = nameError
   if (machine.kind === "vm") {
     if (machine.cpus > machine.maxCPUs) errors.cpus = "CPU limit cannot exceed its ceiling."
     if (machine.memoryGiB > machine.maxMemoryGiB) errors.memoryGiB = "Memory limit cannot exceed its ceiling."

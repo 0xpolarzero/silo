@@ -20,6 +20,35 @@ describe("backup and restore presentation", () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
+  it.each(["Dev", "1dev", "dev copy", "dev_copy", "", "a".repeat(33)])("explains invalid restore names at the input: %j", async (invalidName) => {
+    const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GB", destination: "/backups", sandboxes: ["dev"] }
+    const backup: BackupController = {
+      state: { snapshotId: "1", availability: "available", archives: [archive], operation: null },
+      actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn().mockResolvedValue({ archive, valid: true }), inspectArchive: vi.fn(), startBackup: vi.fn(), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn() },
+    }
+    const view = render(<BackupPage source={source} backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Choose backup…" }))
+    await act(async () => { await Promise.resolve() })
+    const name = screen.getByRole("textbox", { name: "New sandbox name" })
+    fireEvent.change(name, { target: { value: invalidName } })
+    expect(name).toHaveAttribute("aria-invalid", "true")
+    expect(name).toHaveAccessibleDescription("Use 1–32 lowercase letters, numbers, or hyphens, starting with a letter.")
+    const confirm = screen.getByRole("button", { name: "Restore new sandbox" })
+    expect(confirm).toBeDisabled()
+    fireEvent.click(confirm)
+    expect(backup.actions.startRestore).not.toHaveBeenCalled()
+    fireEvent.change(name, { target: { value: "my-copy-2" } })
+    expect(name).toHaveAttribute("aria-invalid", "false")
+    expect(name).not.toHaveAccessibleDescription()
+    fireEvent.click(confirm)
+    expect(backup.actions.startRestore).toHaveBeenCalledWith(archive, "my-copy-2", "dev")
+    view.rerender(<BackupPage source={source} backup={{ ...backup, state: { ...backup.state, operation: { kind: "result", operation: "restore", archive, targetName: "my-copy-2", runningNames: [], outcome: "failed", title: "Restore failed", message: "Storage is unavailable." } } }} />)
+    fireEvent.click(screen.getByRole("button", { name: "Review and retry" }))
+    expect(screen.getByRole("textbox", { name: "New sandbox name" })).toHaveValue("my-copy-2")
+    expect(backup.actions.chooseArchive).toHaveBeenCalledTimes(1)
+    expect(backup.actions.inspectArchive).not.toHaveBeenCalled()
+  })
+
   it("reveals the recent-backup confirmation even when the suggested name exists", async () => {
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
     const existing = { ...source, workspaces: [...source.workspaces, { ...source.workspaces[0], machine: { ...source.workspaces[0].machine, id: "restored", name: "dev-restored" } }] }

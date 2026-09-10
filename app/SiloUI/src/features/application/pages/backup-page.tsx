@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { Archive, Check, Circle, CircleX, RotateCcw, TriangleAlert, X } from "lucide-react"
 
 import { DisclosureHeader } from "@/components/disclosure-header"
@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Progress } from "@/components/ui/progress"
 import type { ApplicationSource } from "@/features/application/model/application-source"
+import { validateSandboxName } from "@/features/onboarding/model/machine-configuration"
 import type { BackupArchive, BackupController, BackupOperationKind } from "@/features/application/model/backup-source"
 
 type Flow =
@@ -41,6 +42,8 @@ export function BackupPage(props: BackupPageProps) {
 
 function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
   const [flow, setFlow] = useState<Flow>({ kind: "idle" })
+  const restoreDraft = useRef<Extract<Flow, { kind: "restore-review" }> | null>(null)
+  const restoreNameErrorID = useId()
   const restoreReview = useRef<HTMLDivElement>(null)
   const restoreName = useRef<HTMLInputElement>(null)
   useEffect(() => {
@@ -156,7 +159,7 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
     const tone = operation.outcome === "restart-required" ? "warning" : operation.outcome === "failed" ? "danger" : "neutral"
     return <ListRowDetails label={`${kind === "backup" ? "Backup" : "Restore"} result`}>
       <Notice tone={tone} title={operation.title}><p>{operation.message}</p>{operation.detail && <p className="mt-1">{operation.detail}</p>}</Notice>
-      <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => backup.actions.dismissOperation()}>Done</Button>{operation.outcome === "restart-required" && <Button variant="outline" size="xs" onClick={() => backup.actions.retryStart(operation.runningNames[0])}>Retry start</Button>}{operation.outcome === "failed" && <Button variant="outline" size="xs" onClick={() => kind === "backup" ? setFlow({ kind: "backup-select" }) : void chooseArchive()}>Review and retry</Button>}</div>
+      <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => backup.actions.dismissOperation()}>Done</Button>{operation.outcome === "restart-required" && <Button variant="outline" size="xs" onClick={() => backup.actions.retryStart(operation.runningNames[0])}>Retry start</Button>}{operation.outcome === "failed" && <Button variant="outline" size="xs" onClick={() => kind === "backup" ? setFlow({ kind: "backup-select" }) : restoreDraft.current ? setFlow(restoreDraft.current) : void chooseArchive()}>Review and retry</Button>}</div>
     </ListRowDetails>
   }
 
@@ -164,6 +167,7 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
   const availableSpace = backup.state.availableSpaceGB === undefined ? "Unknown" : Math.floor(backup.state.availableSpaceGB * 10) / 10
 
   const restoreNameConflict = flow.kind === "restore-review" && source.workspaces.some(({ machine }) => machine.name.toLowerCase() === flow.newName.toLowerCase())
+  const restoreNameError = flow.kind === "restore-review" ? validateSandboxName(flow.newName) : undefined
   const restoreSpaceBlocked = flow.kind === "restore-review" && (backup.state.requiredSpaceGB !== undefined && (backup.state.availableSpaceGB === undefined || backup.state.availableSpaceGB < backup.state.requiredSpaceGB))
 
   return <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
@@ -195,10 +199,10 @@ function BackupPageContent({ source, backup, onBusyChange }: BackupPageProps) {
           <Notice tone="success" title="Backup validated"><p>{flow.archive.name} · format and checksum verified</p></Notice>
           {restoreSpaceBlocked && <Notice tone="danger" title={backup.state.availableSpaceGB === undefined ? "Managed storage is unavailable" : "Not enough managed storage"}><p>{backup.state.availableSpaceGB === undefined ? "Silo could not verify the required managed storage. No sandbox was created." : `About ${requiredSpace} GB is needed; ${availableSpace} GB is available. No sandbox was created.`}</p></Notice>}
           {flow.archive.sandboxes.length > 1 && <label className="grid gap-1 text-[11px]">Sandbox to restore<Select value={flow.sourceName} onValueChange={(sourceName) => setFlow({ ...flow, sourceName, newName: flow.newName === `${flow.sourceName}-restored` ? `${sourceName}-restored` : flow.newName })}><SelectTrigger className="h-7 text-[11px]" aria-label="Sandbox to restore"><SelectValue /></SelectTrigger><SelectContent>{flow.archive.sandboxes.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></label>}
-          <label className="grid gap-1 text-[11px]">New sandbox name<Input ref={restoreName} value={flow.newName} aria-invalid={restoreNameConflict} onChange={(event) => setFlow({ ...flow, newName: event.target.value })} /></label>
+          <label className="grid gap-1 text-[11px]">New sandbox name<Input ref={restoreName} value={flow.newName} aria-invalid={Boolean(restoreNameError) || restoreNameConflict} aria-describedby={restoreNameError ? restoreNameErrorID : undefined} onChange={(event) => setFlow({ ...flow, newName: event.target.value })} />{restoreNameError && <span id={restoreNameErrorID} className="text-destructive">{restoreNameError}</span>}</label>
           <dl className="grid grid-cols-[7rem_1fr] gap-1 text-[11px]"><dt className="text-muted-foreground">Source</dt><dd>{flow.sourceName}</dd><dt className="text-muted-foreground">Location</dt><dd>Silo managed storage</dd>{requiredSpace !== undefined && <><dt className="text-muted-foreground">Space</dt><dd>{requiredSpace} GB needed · {availableSpace} GB available</dd></>}</dl>
           <p className="text-[11px] text-muted-foreground">Restores saved disk files and Silo settings. Programs start fresh. Existing sandboxes and backups stay unchanged.</p>
-          <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Cancel</Button><Button variant="outline" size="xs" disabled={controlsDisabled || !flow.newName || restoreNameConflict || restoreSpaceBlocked} onClick={() => { backup.actions.startRestore(flow.archive, flow.newName, flow.sourceName); setFlow({ kind: "idle" }) }}>Restore new sandbox</Button></div>
+          <div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Cancel</Button><Button variant="outline" size="xs" disabled={controlsDisabled || Boolean(restoreNameError) || restoreNameConflict || restoreSpaceBlocked} onClick={() => { restoreDraft.current = flow; backup.actions.startRestore(flow.archive, flow.newName, flow.sourceName); setFlow({ kind: "idle" }) }}>Restore new sandbox</Button></div>
         </ListRowDetails>}
         {flow.kind === "unavailable" && flow.operation === "restore" && <ListRowDetails label="Restore unavailable"><Notice tone="danger" title="Restore is unavailable"><p>{flow.reason}</p></Notice><div className="flex justify-end"><Button variant="ghost" size="xs" onClick={() => setFlow({ kind: "idle" })}>Dismiss</Button></div></ListRowDetails>}
         {operationPanel("restore")}
