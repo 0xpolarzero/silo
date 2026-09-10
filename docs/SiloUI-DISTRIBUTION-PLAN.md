@@ -47,6 +47,18 @@ keys or upload native build directories containing account configuration.
 
 ## Primary references
 
+Signing follow-up: MicroSandbox's checked-in `msb-entitlements.plist` already
+disables library validation; this establishes its configuration, not the authors'
+reason or that alternatives are impossible. Apple's macOS 14 library constraints
+offer a narrower OS-enforced loading policy. The isolated ad-hoc tests and real
+VM proof now pass on macOS 26.5; see [the evidence and limits](SiloUI-LIBRARY-CONSTRAINTS.md).
+Minimum-OS testing and production packaging remain outstanding. This establishes
+a library-load boundary, not Developer ID-equivalent publisher authentication.
+Do not claim a checksum before launch is equivalent to OS enforcement at load time.
+
+- [MicroSandbox entitlements](https://github.com/superradcompany/microsandbox/blob/main/msb-entitlements.plist)
+- [Apple library constraints](https://developer.apple.com/documentation/security/defining-launch-environment-and-library-constraints)
+
 - [Tauri updater](https://v2.tauri.app/plugin/updater/): established signed update
   transport and platform artifacts; static GitHub feed needs no hosted service.
 - [Tauri macOS signing](https://v2.tauri.app/distribute/sign/macos/): ad-hoc signing
