@@ -144,6 +144,12 @@ file and verbose Cargo build output private. Cargo's ignored build outputs also
 contain the compiled configuration. Do not upload the entire Cargo target tree
 as an Actions artifact or cache.
 
+Release review must explicitly acknowledge that publishing packages distributes
+this GitHub public-client secret. It is not an App private key or a user's access
+token, and it must never authenticate a Silo installation to a backend service.
+The [0.1.1 credential-distribution audit](SiloUI-OAUTH-RELEASE-AUDIT.md) records
+package inspection, live App settings, PKCE enforcement checks, and their limits.
+
 Use the existing commands:
 
 ```sh
