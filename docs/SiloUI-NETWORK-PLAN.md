@@ -1,7 +1,9 @@
 # Network implementation
 
-Approved 2026-09-10. TCP development services on local VMs; UDP management,
-traffic inspection, remote hosts, and firewall editing remain separate scope.
+Silo connects TCP development services to local loopback ports. The local VM
+implementation below was verified on 2026-09-10. Remote VM services now use
+[SSH tunnels through their owning computer](SiloUI-REMOTE-COMPUTERS.md). UDP
+management, traffic inspection, and firewall editing are not implemented.
 
 ## Runtime and state
 

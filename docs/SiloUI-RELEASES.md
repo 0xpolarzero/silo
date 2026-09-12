@@ -49,10 +49,8 @@ changing dependencies. It exports the new changelog entry to
 `docs/releases/VERSION.md`, which becomes the GitHub release body and app update
 notes. Tauri already reads its version from `package.json`.
 
-Review all generated changes, including the removed changeset files. The initial
-remote-computers changeset requests a minor release from 0.1.1 to 0.2.0; the
-version is not bumped until you run the command. Several pending notes produce
-one release using the largest requested bump.
+Review all generated changes, including the removed changeset files. Several
+pending notes produce one release using the largest requested bump.
 
 Commit the generated changes and push your branch. Use your normal review process;
 merge the release preparation into `main` before releasing from its clean checkout.
@@ -120,9 +118,8 @@ actual Changesets versioning in disposable repositories and the desktop adapter.
 
 ## Local setup
 
-The local file on the maintainer's machine was configured on 2026-09-10 with
-owner-only permissions (`0600`). It is explicitly ignored by Git. For a new
-checkout or another development machine, run from the repository root:
+Native development requires a GitHub App client ID, slug, and client secret.
+The local configuration file is ignored by Git. From the repository root:
 
 ```sh
 cp app/SiloUI/github-build.example.json app/SiloUI/github-build.local.json
@@ -130,7 +127,8 @@ chmod 600 app/SiloUI/github-build.local.json
 ```
 
 Fill in `SILO_GITHUB_CLIENT_SECRET` using the existing GitHub App's client secret.
-The example already contains the two public identifiers:
+You need access to that credential for native development; installed-app users
+do not. The example contains Silo's two public identifiers:
 
 | Key | Value / source |
 | --- | --- |
@@ -173,6 +171,40 @@ Native tests also require configuration. CI uses the configured Actions secrets.
 Contributors running offline unit tests can explicitly supply synthetic values
 for all three variables; such test executables cannot authenticate to GitHub and
 must not be distributed. Frontend tests need no GitHub credentials.
+
+### Local macOS bundles
+
+From the repository root, build a debug app:
+
+```sh
+npm --prefix app/SiloUI run desktop:build:debug
+```
+
+Output: `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`.
+For an optimized local app without installer or updater artifacts:
+
+```sh
+npm --prefix app/SiloUI run desktop:build -- --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+```
+
+Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`.
+These commands do not install or publish the app.
+
+### Verify a change
+
+Run the checks relevant to the change from the repository root:
+
+```sh
+npm --prefix app/SiloUI run typecheck
+npm --prefix app/SiloUI run lint
+npm --prefix app/SiloUI test
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml
+npm --prefix app/SiloUI run test:release
+```
+
+Native tests require the configuration described above. Frontend fixtures and
+unit tests do not prove installed-app behavior, live VM health, or two-computer
+operation. Keep opt-in live tests separate from ordinary tests.
 
 ## Versioned distribution and updates
 
