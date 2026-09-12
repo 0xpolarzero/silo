@@ -20,7 +20,7 @@ On macOS, first launch may require **System Settings → Privacy & Security → 
 ## Start working
 
 1. **Create a sandbox.** Follow setup to choose its name and resources, and your preferred terminal and editor. GitHub connection is optional. Use **Add → New sandbox** to create more later.
-2. **Open your project.** Start the sandbox and open its terminal. Create or clone your project in `/workspace`; use an HTTPS URL for GitHub repositories. Browse **Files** to open a folder in Zed or Visual Studio Code with its Remote SSH extension.
+2. **Open your project.** Start the sandbox and open its terminal. Create or clone your project in `/workspace`; use an HTTPS URL for GitHub repositories. Browse **Files** to open a folder in your code editor.
 3. **Open your development server.** Run it inside the sandbox, listening on `0.0.0.0`. In **Network**, connect a discovered port or choose **Add port**, then open the displayed address.
 
 Your files survive stops, restarts, and app updates. Choose names and disk sizes carefully: they cannot change later. CPU and memory edits stop the sandbox and apply on its next start.
