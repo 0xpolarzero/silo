@@ -2,7 +2,7 @@
 
 2026-09-09. User authorized implementation, parallel subagents/review, removal of
 the POC/obsolete designs, and an **All repositories** option in Silo. This is the
-single current plan. Legacy Swift/Python code is reference only.
+single current plan.
 
 ## Behavior and scope
 

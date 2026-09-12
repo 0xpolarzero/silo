@@ -1,7 +1,6 @@
 # Test dependencies and VM backups in the real app
 
-Use `app/SiloUI`, not the Swift reference app. The normal native app now uses
-real VM state and operations. It has no fixture launch flags, fake operation
+The native app at `app/SiloUI` uses real VM state and operations. It has no fixture launch flags, fake operation
 results or settings-directory overrides.
 
 ## Build and launch

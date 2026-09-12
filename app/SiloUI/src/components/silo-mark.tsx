@@ -3,13 +3,11 @@ import type { ComponentProps } from "react"
 import { cn } from "@/lib/utils"
 
 /**
- * The Silo mark, translated 1:1 from app/Silo/Scripts/generate-app-icons.swift
- * (the production app icon generator): two levels and one orange core, each
+ * The Silo mark: two levels and one orange core, each
  * with its characteristic gap. The icon's dark plate is omitted so the glyphs
  * sit directly on the surrounding surface; the levels use currentColor (dark
  * in light mode, ivory in dark mode) while the orange core stays fixed. The
- * viewBox is tightened to the arcs' bounds, and CoreGraphics' y-up arcs are
- * mirrored to SVG's y-down coordinates.
+ * viewBox is tightened to the arcs' bounds.
  */
 export function SiloMark({ className, ...props }: ComponentProps<"svg">) {
   return (

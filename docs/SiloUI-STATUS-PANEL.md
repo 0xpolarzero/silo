@@ -20,7 +20,7 @@ Validation on 2026-09-08: frontend build passed, both focused test files passed
 (26 tests), and the ad-hoc signed native debug bundle built successfully at
 `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`. The UI driver exposed
 the setup window but no tray-item action, so native corner inspection remains
-unverified. The Swift app's smoke suite does not exercise this Tauri surface.
+unverified.
 
 ## Live folder picker
 

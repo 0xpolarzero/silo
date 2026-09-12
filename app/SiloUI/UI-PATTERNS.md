@@ -89,12 +89,12 @@ keeps them readable against the menu bar. Each image replacement uses
 the plain image setter clears template rendering, and restoring it in a separate
 call introduces a redraw flash.
 
-The content reference is `../Silo/Sources/MonitorView.swift`: aggregate health,
+The status panel presents aggregate health,
 one runtime-repair action, sandbox shortcuts and overflow actions, folder and site
 selection, Open Silo, and Quit. TypeScript components and tokens own the design.
 Freshness, busy state, and repair state gate quick actions. Repair appears once
 above the list. The editor picker browses sandbox folders, not host folders.
 
-Lifecycle progress and host handoffs are UI simulations. Terminal, editor, site,
-and Quit actions have no native effects in this preview. Open Silo navigates to
-the existing app surface and carries the selected sandbox and simulated state.
+Browser fixtures simulate lifecycle progress and host handoffs. In the desktop
+app, Rust commands perform terminal, editor, site, and Quit actions. Open Silo
+opens the main window and carries the selected sandbox.

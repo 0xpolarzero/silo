@@ -1,9 +1,8 @@
 # Terminal handoff and status actions
 
-Implemented 2026-09-10. The Swift `TerminalLauncher` was inspected as reference:
-its Ghostty native-tab API and private command-file approach were retained.
-The executable target is now the bundled MicroSandbox interactive exec command,
-not a legacy wrapper or a new SSH layer.
+Implemented 2026-09-10. Terminal handoff uses Ghostty’s native-tab API or private
+command files. Local VM sessions target the bundled MicroSandbox interactive
+exec command.
 
 The native action reads the current terminal preference, verifies a local managed
 VM is Running, and launches `msb exec NAME --no-start --workdir /workspace --tty`.

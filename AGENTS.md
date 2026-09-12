@@ -1,424 +1,70 @@
-## Silo: driving and debugging
+# Silo: development and verification
 
-This repository includes a native macOS status-bar app at `app/Silo`. Use the
-commands and evidence workflow below whenever you change or investigate the app.
-Run commands from the repository root unless a command says otherwise.
+The application lives in `app/SiloUI/` and uses React/TypeScript with a Rust/Tauri backend. Run the commands below from the repository root unless a command says otherwise.
 
-### Scope and current implementation
+## Source and layout
 
-- The local app bundle is `app/Silo/build/Silo.app`.
-- The app is a regular macOS application with a normal `Silo` application
-  menu and Dock/Cmd-Tab presence. The Descent status item and transient popover
-  provide quick actions. One unified `Silo` window uses top tabs for
-  Overview, Workspaces, GitHub, Notifications, Backup, and General. Setup is a
-  first-run or explicitly requested repair flow, not permanent navigation.
-- The source of truth is `app/Silo/Sources/`, especially
-  `SiloApp.swift`, `StatusBarController.swift`, `MonitorView.swift`,
-  `SettingsView.swift`, `DetailView.swift`, and `AppModel.swift`.
-- UI-test workspace values are deterministic fixtures, not live sandbox
-  telemetry. Production state comes through the typed Silo app protocol.
-- Generated bundles, DerivedData, test results, and logs are under
-  `app/Silo/build/`. The app-local `.gitignore` ignores that directory;
-  never commit generated artifacts.
+- `app/SiloUI/src/`: UI, production data sources, deterministic fixtures, and frontend tests.
+- `app/SiloUI/src-tauri/src/`: runtime management, remote computers, native integrations, and backend tests.
+- `app/SiloUI/src-tauri/tests/`: Rust integration tests.
+- `app/SiloUI/src-tauri/`: guest scripts, runtime inputs, capabilities, and Tauri packaging configuration.
+- `app/SiloUI/scripts/`: runtime preparation and release tooling.
+- `app/SiloUI/docs/`: bundled application help.
+- `docs/README.md`: index of implementation documentation, research, and proposals.
+- `docs/SiloUI-RELEASES.md`: authoritative build configuration and release procedure.
 
-### Host prerequisites
+Preserve bundled MicroSandbox and Git tools, guest scripts, the Rust vendor patch, and the `silo-remote` SSH bridge. They are part of the current app. Generated `node_modules`, `dist`, Cargo `target`, binaries, and runtime resources are ignored build output; never commit them or private local configuration.
 
-- Use an Apple Silicon Mac with the macOS SDK required by the project and a
-  full Xcode installation, not only command-line tools.
-- UI smoke testing requires a logged-in interactive GUI session with an
-  available menu bar; it is not a headless or SSH-only check.
-- No `silo`/MicroSandbox VM, GitHub credential, or running workspace is required
-  by the current static app. Do not seed credentials or live sandbox data just
-  to drive this fixture UI.
-- When diagnosing a toolchain issue, use these non-destructive checks:
+## Setup and commands
 
-```bash
-xcodebuild -version
-xcodebuild -showsdks
-xcodebuild -project app/Silo/Silo.xcodeproj \
-  -scheme Silo -showdestinations
+Use Node.js 24, Python 3.11 or newer, Rust, and the host's Tauri prerequisites. Runtime preparation requires Rust 1.94.0 for the pinned MicroSandbox build and network access on a cold cache. Supported packages target Apple Silicon macOS 14+ and Linux x86-64/ARM64 on Ubuntu 24.04-compatible systems; Linux VMs require KVM.
+
+Native builds and Rust tests require GitHub App configuration. Follow `docs/SiloUI-RELEASES.md#local-setup`; do not print `github-build.local.json`, signing credentials, or verbose build output containing configuration. For native unit tests only, the release guide permits explicit synthetic GitHub configuration. Never distribute those test executables.
+
+```sh
+npm --prefix app/SiloUI ci
+npm --prefix app/SiloUI run desktop
 ```
 
-The scripts select the runnable macOS arm64 host destination. Do not hard-code
-the machine-specific destination identifier from `-showdestinations`.
+`desktop` prepares runtime resources and launches native development mode. `npm --prefix app/SiloUI run dev` starts the browser UI preview only.
 
+Run checks appropriate to the change:
 
-### Build and test order
-
-After changing app source, rebuild the bundle before running the UI smoke test.
-The scripts use `/bin/zsh`; invoke them as executable scripts rather than with
-`bash`:
-
-```bash
-app/Silo/Scripts/build.sh
+```sh
+npm --prefix app/SiloUI run typecheck
+npm --prefix app/SiloUI run lint
+npm --prefix app/SiloUI test
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml
+npm --prefix app/SiloUI run test:release
 ```
 
-This produces a locally ad-hoc signed arm64 Debug bundle at
-`app/Silo/build/Silo.app` and writes
-`app/Silo/build/logs/build.log`.
+Frontend tests use Vitest. Use test file arguments to focus a frontend run and a Cargo test filter to focus backend behavior. Keep opt-in live tests separate from ordinary unit tests. Release-tooling changes also need the relevant script tests and workflow checks.
 
-Run the model/unit tests separately:
+For a local macOS debug bundle:
 
-```bash
-app/Silo/Scripts/test.sh
+```sh
+npm --prefix app/SiloUI run desktop:build:debug
 ```
 
-This writes `app/Silo/build/logs/test.log` and runs only the
-`SiloTests` target. It does not update the bundle at
-`app/Silo/build/Silo.app`.
+Output: `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`.
 
-For runtime/configuration installation progress inside the first onboarding
-step and its disabled Continue gate, run only the focused startup flow:
+For an optimized local macOS app without installer or updater signing:
 
-```bash
-app/Silo/Scripts/smoke-test.sh --startup-only
+```sh
+npm --prefix app/SiloUI run desktop:build -- --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
-Run the real macOS accessibility/UI flow. For status-item and popover-only
-changes, use the focused flow so onboarding is not replayed:
-
-```bash
-app/Silo/Scripts/smoke-test.sh --monitor-only
-```
-
-For the centralized runtime-repair warning, dedicated repair action, and
-verified-state cutover across the status item, popover, and unified-window tabs, use:
-
-```bash
-app/Silo/Scripts/smoke-test.sh --repair-only
-```
-
-For the status-popover folder browser, run only its Finder-style interaction:
-
-```bash
-app/Silo/Scripts/smoke-test.sh --picker-only
-```
-
-For terminal/editor preference changes, run only the settings-to-status flow:
-
-```bash
-app/Silo/Scripts/smoke-test.sh --preferences-only
-```
-
-For unified top-tab and workspace navigation changes, use:
-
-```bash
-app/Silo/Scripts/smoke-test.sh --navigation-only
-```
-
-For unified-window lifecycle confirmation ownership and restart verification, use:
-
-```bash
-app/Silo/Scripts/smoke-test.sh --lifecycle-only
-```
-
-For backup destination preview semantics, use:
-
-```bash
-app/Silo/Scripts/smoke-test.sh --backup-only
-```
-
-For consolidated running, success, partial-restart, and failure backup results,
-use:
-
-```bash
-app/Silo/Scripts/smoke-test.sh --backup-result-only
-```
-
-For operation-failure presentation and error-detail routing, use:
-
-```bash
-app/Silo/Scripts/smoke-test.sh --failure-only
-```
-
-Run the complete onboarding and GitHub fixture suite only when those surfaces or
-their shared infrastructure change:
-
-```bash
-app/Silo/Scripts/smoke-test.sh
-```
-
-Both modes clear and recreate `build/DerivedData/Smoke` and
-`build/SmokeProducts`, then write complete xcodebuild/XCTest output to
-`app/Silo/build/logs/smoke-ui.log`. The UI test launches the bundle at
-`build/Silo.app`, not the newly built dependency under `SmokeProducts`;
-therefore running `build.sh` first is mandatory after source changes. The script
-exits non-zero unless the log contains `** TEST SUCCEEDED **`.
-
-For status-item and popover work, the normal verification sequence is:
-
-```bash
-app/Silo/Scripts/build.sh
-app/Silo/Scripts/test.sh
-app/Silo/Scripts/smoke-test.sh --monitor-only
-```
-
-Do not run two smoke tests concurrently: each invocation removes the shared
-`DerivedData/Smoke` and `SmokeProducts` directories.
-
-### Launching and driving the app
-
-Gracefully close an existing instance before launching with different arguments:
-
-```bash
-osascript -e 'tell application id "org.silo.Silo" to quit' \
-  2>/dev/null || true
-open app/Silo/build/Silo.app
-pgrep -x Silo
-```
-
-Normal production launch creates the application menu and status item but does not
-automatically open the monitor popover after setup. On first launch it may open
-the setup window. Otherwise click the Silo Descent mark in the menu bar to open the
-monitor. Do not use the absence of a monitor popover or `app.windows` as a
-launch-failure signal; the monitor remains primarily a status-item/popover app.
-
-For deterministic automation and debugging, launch the test mode:
-
-```bash
-osascript -e 'tell application id "org.silo.Silo" to quit' \
-  2>/dev/null || true
-open app/Silo/build/Silo.app --args --ui-test-open-popover
-```
-
-`--ui-test-open-popover` is an intentional test-only argument. The app waits
-briefly and opens the popover during launch. In this mode the popover uses
-`NSPopover.Behavior.applicationDefined` so XCUITest app activation cannot dismiss
-it mid-assertion. Production mode remains `.transient`; do not use test mode to
-judge normal outside-click dismissal behavior.
-The checked-in UI test supplies this argument through `XCUIApplication(url:)`;
-manual `open` is a targeted diagnosis path, not a replacement for the smoke
-test's accessibility assertions.
-
-The canonical UI driver is `app/Silo/UITests/SiloUITests.swift`.
-Use accessibility identifiers rather than screen coordinates:
-
-| Identifier | Element | Expected value/action |
-| --- | --- | --- |
-| `statusItem.button` | status item | Accessibility label `Silo` |
-| `monitor.popover` | popover hosting view | Popover content root |
-| `monitor.title` | title text | `Silo` |
-| `workspace.dev.name` / `.state` | dev row | `dev` / `Stopped` |
-| `workspace.playgrounds.name` / `.state` | playgrounds row | `playgrounds` / `Stopped` |
-| `workspace.personal.name` / `.state` | personal row | `personal` / `Stopped` |
-| `open-monitor.button` | Unified-window shortcut | Opens the Overview top tab |
-| `quit.button` | Quit button | Terminates the app |
-| `settings.tabs` | Unified window | Hosts all top-level destinations |
-| `runtime-repair.window.banner` / `.message` / `.action` | Global repair banner | One banner with `Silo installation needs repair` and one `Repair…` action on every top tab |
-| `runtime-repair.status-item.warning` | Status warning state | Status item value communicates repair while its label remains `Silo` |
-| `runtime-repair.popover.row` / `.message` / `.action` | Popover repair row | One compact repair row and one `Repair…` action |
-| `workspace.section-picker` / `workspace.section.<name>` | Workspace tools | Switches Summary, Files, Logs, Network, Repositories, and Maintenance |
-| `folders.path-bar` / `folders.search.field` | Folder scope and search | Clickable `/workspace` breadcrumbs and bounded search |
-| `folders.tree` / `folders.entry.<safe-path>.expand` | Lazy folder tree | Selects, expands, or double-clicks a real VM directory |
-| `folders.open.button` | Editor handoff | Opens the exact selected folder in the resolved editor adapter |
-| `settings.applications.terminal.picker` / `.editor.picker` | App-specific launch preferences | Defaults to the discovered macOS app and allows a supported override |
-| `workspace.<id>.open-terminal` / `.open-editor-shortcut` / `.open-editor` | Dynamic app actions | Direct terminal/editor shortcuts and the action menu use the resolved app override |
-
-The Quit button defines the `Command-Q` keyboard shortcut. Prefer semantic UI
-queries and waits over fixed sleeps or pixel coordinates. The test intentionally
-checks the status item, compact popover, all three workspace rows, shortcuts,
-absence of refresh/counter UI, and clean termination.
-
-### Capturing complete evidence
-
-The three script logs have different purposes:
-
-```text
-app/Silo/build/logs/build.log      compiler/linker/bundle output
-app/Silo/build/logs/test.log       unit-test output
-app/Silo/build/logs/smoke-ui.log   full UI-test and xcodebuild output
-```
-
-Unit-test result bundles are under
-`app/Silo/build/DerivedData/Tests/Logs/Test/`; UI-smoke result bundles
-are under `app/Silo/build/DerivedData/Smoke/Logs/Test/`. Use the exact
-path printed by the corresponding run.
-
-The smoke log ends with the exact `.xcresult` path. Set that path explicitly
-when inspecting a run:
-
-```bash
-RESULT='app/Silo/build/DerivedData/Smoke/Logs/Test/<run>.xcresult'
-
-xcrun xcresulttool get test-results summary --path "$RESULT"
-xcrun xcresulttool get test-results tests --path "$RESULT"
-xcrun xcresulttool get test-results activities \
-  --path "$RESULT" \
-  --test-id 'SiloUITests/testStatusItemMinimalPopoverAndQuit()' \
-  --compact
-```
-
-Export failure screenshots or other attachments into the ignored build tree:
-
-```bash
-xcrun xcresulttool export attachments \
-  --path "$RESULT" \
-  --output-path app/Silo/build/xcresult-attachments \
-  --only-failures
-```
-
-XCTest output is not the same as the app's unified log. Query the app process
-separately after a run:
-
-```bash
-log show --last 3m --style compact --info --debug \
-  --predicate 'process == "Silo"'
-
-log show --last 3m --style compact --info --debug \
-  --predicate 'process == "Silo" AND (messageType == error OR messageType == fault)'
-```
-
-For a live launch/interaction trace, start this before driving the app and stop
-it with `Ctrl-C`:
-
-```bash
-log stream --timeout 10m --style compact --level debug \
-  --predicate 'process == "Silo"'
-```
-
-Keep this stream in the foreground when possible. If a capture is required,
-write it to a private temporary path outside the repository (for example
-`/tmp/Silo-runtime.log`), remove it after analysis, and never paste raw
-unified logs into public posts or commit them. Correlate log timestamps with
-`smoke-ui.log`. AppKit, AppIntents, XCTest, TCC, and other
-system messages can be noisy; classify them by subsystem and do not treat every
-`Error` line as an app failure. The app currently has no intentional
-application-level logger, so unified logs mostly describe framework behavior.
-
-If the process actually terminates unexpectedly, inspect only the crash report
-associated with that reproduction under
-`~/Library/Logs/DiagnosticReports/` and keep it local. Do not bulk-print or
-copy the diagnostic-report directory; crash reports can contain private paths
-and environment details.
-
-### Debugging hangs, launch failures, and crashes
-
-Use a verified process identity before attaching tools:
-
-```bash
-pgrep -x Silo
-```
-
-For a responsive-process snapshot:
-
-```bash
-sample <verified-pid> 5 1
-```
-
-For an interactive debugger, launch the actual executable rather than a stale
-test product:
-
-```bash
-lldb -- app/Silo/build/Silo.app/Contents/MacOS/Silo
-```
-
-Useful LLDB commands:
-
-```text
-settings set target.run-args -- --ui-test-open-popover
-breakpoint set --selector togglePopover
-run
-bt
-thread backtrace all
-```
-
-To attach instead, use `lldb -p <verified-pid>` only after confirming the PID
-with `pgrep -x`. Prefer graceful termination through `osascript` after
-debugging; do not use `kill -9` as a first response because it bypasses normal
-popover and status-item cleanup.
-
-Check the symptom against the narrowest evidence source:
-
-| Symptom | First checks |
-| --- | --- |
-| Build fails | `build.log`; rerun `build.sh` and inspect the first compiler/linker error |
-| Smoke says the app bundle is missing | Run `build.sh`; `smoke-test.sh` requires `build/Silo.app` |
-| `statusItem.button` is missing | Confirm the bundle path, `pgrep`, `LSUIElement=false`, the application menu, and launch logs; the status item may exist without the monitor popover being open |
-| `monitor.title` or rows are missing | Confirm `--ui-test-open-popover`, rebuild the bundle, then inspect the smoke log and result activities |
-| Quit times out | Check `pgrep -x Silo`, query the app log for termination, and close it gracefully with `osascript` |
-| Test reports a crash | Inspect the `.xcresult` summary, activities, exported failure attachments, and the unified log; do not rely on the final one-line XCTest failure alone |
-
-Accessibility-driven tools may require Automation/Accessibility permission for
-the terminal, Xcode, or test runner. If semantic queries fail while the app is
-running, check those permissions before rewriting the test around coordinates.
-Do not dismiss an unfamiliar system security or permission dialog blindly.
-
-### Evidence and cleanup checklist
-
-Every investigation report should state:
-
-1. The exact build/test/smoke commands run and their result.
-2. The bundle path and whether the observed instance was production or
-   `--ui-test-open-popover` mode.
-3. The semantic identifiers/actions exercised and observed values.
-4. The `smoke-ui.log` and `.xcresult` paths, plus the unified-log predicate and
-   time window used.
-5. Whether the app was gracefully closed and whether `pgrep -x Silo`
-   returned no remaining instance.
-6. Which behavior is real implementation versus the current static scaffold.
-
-For the current static fixture, the report must explicitly say that workspace
-states are deterministic scaffold values, not live sandbox telemetry. It must
-enumerate observed semantic identifiers and values, not only say that the UI
-was verified:
-
-- `statusItem.button`: `Silo`; application menu: `Silo`.
-- Application menu items: `About Silo`, `Settings…`, `Hide Silo`,
-  and `Quit Silo`.
-- `monitor.title`: `Silo`.
-- `workspace.dev.name/state`: `dev` / `Stopped`;
-  `workspace.playgrounds.name/state`: `playgrounds` / `Stopped`;
-  `workspace.personal.name/state`: `personal` / `Stopped`.
-- `open-monitor.button`: `Open Silo…`; separate Overview, Settings, and
-  Setup shortcuts must be absent.
-- `quit.button`: `Quit`; clicking it must reach app state `notRunning`.
-
-Keep generated logs and result bundles under `app/Silo/build/`. Do not
-publish credentials, raw private paths, user data, security details, or
-unredacted system logs.
-
-### Process ownership, stale artifacts, and coverage limits
-
-- Use the canonical bundle path above. Do not launch an installed copy with
-  `open -a Silo` or infer behavior from an arbitrary bundle.
-- Before a manual launch or smoke run, confirm that no unrelated
-  `Silo` instance is already running. If ownership is unclear, inspect
-  the process and bundle before acting. Never use `pkill`, `killall`, or a
-  guessed PID; do not use `kill -9` as routine cleanup.
-- The `Quit` button is the preferred cleanup path. The UI test also terminates
-  its launched app in `defer` if an assertion fails. Closing the popover is not
-  process cleanup.
-- `build.sh` removes the canonical app bundle but does not clear all old Build
-  DerivedData. `test.sh` leaves its TestProducts and prior test results.
-  `smoke-test.sh` removes the prior `smoke-ui.log`, `smoke-app.log`, and
-  `smoke-launch.log`, then recreates its Smoke DerivedData and products. Preserve
-  a failing log and exact result bundle before rerunning.
-- Do not guess the newest result with a glob. Use the exact
-  `Test session results, code coverage, and logs:` path printed by that run.
-- The scripts use filtered targets: `test.sh` runs only `SiloTests`;
-  `smoke-test.sh` runs `SiloUITests`; `--startup-only` runs
-  `testStartupInstallsDependenciesInsideFirstOnboardingStep()`; `--monitor-only`
-  runs `testStatusItemMinimalPopoverAndQuit()`; `--repair-only` runs
-  `testDedicatedRuntimeRepairClearsEverySurfaceAfterVerifiedReactivation()`;
-  `--picker-only` runs
-  `testDirectFolderPickerFromStatusPopover()`; `--preferences-only` runs
-  `testApplicationPreferencesUpdateWorkspaceActions()`; `--navigation-only`
-  runs `testUnifiedWindowUsesTopTabsAndWorkspaceSections()`; `--lifecycle-only`
-  runs
-  `testUnifiedWindowOwnsLifecycleConfirmationAndVerifiesRestartGap()`;
-  `--backup-only` runs `testBackupDestinationSelectionShowsRequiredSpaceConfirmation()`;
-  `--backup-result-only` runs
-  `testBackupResultCardSuccessPartialAndFailure()`; and
-  `--failure-only` runs `testOperationFailureOpensDetailedLogs()`. A bare
-  `xcodebuild test` is a different, broader operation and is not a replacement
-  for the documented checks.
-- UI automation requires an interactive GUI session and may require narrowly
-  scoped Automation/Accessibility permission for the launcher or test runner.
-  Never reset TCC globally or use `sudo` as a shortcut.
-- A passing build proves compilation and bundling; a passing focused smoke
-  proves the static status-item/popover, fixture rows, shortcuts, and quit flow.
-  It does not prove VM health, `silo` command integration, lifecycle actions,
-  telemetry, signing, notarization, or release readiness.
+Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. This command disables updater artifact creation for this invocation only. The normal `desktop:build` command builds host-platform distribution packages and requires updater signing credentials. Follow the release guide for distributable packages; a local app build does not publish anything.
+
+## Running and debugging
+
+- Rebuild before inspecting a packaged change. Launch the exact bundle path with `open`, not an arbitrary installed copy with `open -a Silo`.
+- Before a manual launch, inspect any existing instance and verify its executable path and ownership. Do not interrupt the user's running app or VMs as routine test cleanup.
+- Closing the window leaves the app running. Graceful Quit stops Silo-owned local VMs; it does not stop remote VMs. A shutdown failure leaves the app open. Account for these side effects before exercising Quit against real state.
+- Use deterministic frontend fixtures for UI-only checks. Use semantic roles and identifiers instead of screen coordinates where available. Native UI automation requires an interactive session and the applicable OS permissions; do not reset permissions globally or dismiss unfamiliar security dialogs.
+- Verify process identity before attaching a debugger. Prefer graceful cleanup of processes started for the test; never use `pkill`, `killall`, guessed PIDs, or routine `kill -9`.
+- Keep generated evidence under an ignored directory such as `app/SiloUI/src-tauri/target/verification/`. Keep private system logs in a temporary local path and do not publish credentials, VM data, or unredacted logs. Preserve the exact failing output before rerunning.
+- Report commands, results, the exact inspected bundle, and whether data was fixture or live. A frontend test proves UI behavior against its supplied data; a build proves compilation and packaging. Neither proves live VM health, two-computer management, installed-app behavior, or release readiness.
 
 ## SiloUI release notes
 

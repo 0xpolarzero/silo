@@ -37,9 +37,9 @@ Legacy SSH entries remain saved connections. They are not assumed to be Silo hos
 
 Commands, counts, and final build evidence are recorded after the final verification run below. Automated tests use controlled subprocesses, sockets, and runtime responses; browser inspection uses deterministic fixture data. They do not prove real two-computer hypervisor operation.
 
-The native Swift app under `app/Silo` was not changed or launched. Its build/smoke scripts and fixture identifiers do not validate this Tauri implementation. No user VMs were started, stopped, created, or deleted during implementation verification.
+No user VMs were started, stopped, created, or deleted during implementation verification.
 
-Primary-source basis: [OpenSSH](https://man.openbsd.org/ssh) documents the reused SSH transport, configuration, URIs, and forwarding. The earlier architecture discussion is retained in `SiloUI-REMOTE-HOST-UX-PROPOSAL.md`; its separate-daemon proposal was superseded by the agreed app-lifetime behavior here.
+Primary-source basis: [OpenSSH](https://man.openbsd.org/ssh) documents the reused SSH transport, configuration, URIs, and forwarding.
 
 ### Final verification results
 

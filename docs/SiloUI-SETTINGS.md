@@ -4,7 +4,6 @@ SiloUI saves preferences and unfinished onboarding input. Layout, navigation,
 and existing Save/Cancel/Finish actions stay unchanged. The approved application
 menus now show installed choices, their icons, `System default`, and a native
 `Choose…` action.
-Swift code and Swift saved values are untouched.
 
 ## Login and notification authorization
 

@@ -80,7 +80,7 @@ The repository already keeps token storage, login state, PKCE, policy reconcilia
 
 The five operations are code exchange, refresh, scope creation, individual-token revocation and whole-authorization revocation. Endpoint construction stays fixed to GitHub; guest requests cannot invoke these operations with host credentials. Preserve the distinction between confirmed rate limits, safe retries and ambiguous token issuance.
 
-This is a change of transport and packaging, not replacement of GitHub authorization. The old Swift path used gh/device login and a Git/LFS proxy; it did not already establish arbitrary gh REST/GraphQL isolation. The current MicroSandbox patch explicitly relies on GitHub-scoped authority and should retain that design.
+This is a change of transport and packaging, not replacement of GitHub authorization. The MicroSandbox patch relies on GitHub-scoped authority and should retain that design.
 
 ## Proof required before calling it complete
 
@@ -140,4 +140,4 @@ All sources accessed 2026-09-09. Documentation and main-branch code describe cur
 17. GitHub Docs, [Forming calls with GraphQL](https://docs.github.com/en/graphql/guides/forming-calls-with-graphql).
 18. GitHub Docs, [Managing personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 
-Local implementation evidence: `app/SiloUI/src-tauri/src/github.rs`, `github_http.rs`, `runtime_github_tests.rs`, `guest/setup-github.sh`, `app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch`, `services/github-auth/src/service.ts`, `app/Silo/Sources/GitHubProvider.swift`, `bin/silo`, and `lib/proxycore.py`.
+Local implementation evidence: `app/SiloUI/src-tauri/src/github.rs`, `github_http.rs`, `runtime_github_tests.rs`, `guest/setup-github.sh`, `app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch`.

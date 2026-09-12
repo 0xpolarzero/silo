@@ -2,7 +2,6 @@
 
 Validated against MicroSandbox 0.6.17, source commit
 [`5eca4de8bf233e57f114140f8c076ea8c96f21ab`](https://github.com/superradcompany/microsandbox/tree/5eca4de8bf233e57f114140f8c076ea8c96f21ab).
-The old Swift app and shell scripts are reference material only.
 
 ## Bundled runtime
 

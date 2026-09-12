@@ -2,119 +2,74 @@
 
 <img src="assets/silo-logo.svg" alt="Silo" width="96">
 
-**Silo** is the native macOS control surface for these MicroSandbox workspaces.
+Silo is a desktop app for creating and managing persistent Linux microVM development environments with MicroSandbox. The application uses React, TypeScript, Rust, and Tauri and lives in [`app/SiloUI`](app/SiloUI).
 
-A ready-to-run development setup for an Apple Silicon Mac with configurable, isolated, persistent Linux microVM workspaces. A fresh setup starts with these defaults:
-
-| Workspace | Purpose | Normal live limit | Resize ceiling | Browser name |
-|---|---|---:|---:|---|
-| `dev` | Main/work development | 8 CPU, 32 GB RAM | 48 GB RAM | `dev.silo.test` |
-| `playgrounds` | Experiments | 4 CPU, 32 GB RAM | 48 GB RAM | `playgrounds.silo.test` |
-| `personal` | Personal projects | 6 CPU, 16 GB RAM | 32 GB RAM | `personal.silo.test` |
-
-Each workspace has its own Ubuntu system, repositories, Docker daemon, images, volumes, credentials, processes, and public-internet connection. Code and Docker data live on independent persistent ext4 volumes. Zed and Ghostty remain native macOS applications and connect over SSH.
-
-## Desktop releases
-
-Use [Changesets and the desktop release guide](docs/SiloUI-RELEASES.md#release-a-new-version) to record changes, prepare a version, build a draft, and publish verified app updates.
+Manage VMs, open terminals and editors over SSH, browse files, configure network connections, grant GitHub repository access, manage host-held API secrets, and back up local workspaces. Connect another computer running Silo to manage its VMs from the same interface. Closing the window keeps Silo available in the status bar; quitting stops this computer's Silo VMs. Remote management requires Silo to remain running on the owning computer.
 
 ## Install
 
-```bash
-unzip silo-v3.1.0.zip
-cd silo
-./setup.sh
-exec zsh -l
+Download a package from [Silo releases](https://github.com/0xpolarzero/silo/releases) and follow the app's onboarding. Supported packages target Apple Silicon macOS 14 or newer and Linux x86-64/ARM64 on Ubuntu 24.04-compatible systems. Linux VM execution requires KVM. See the [release guide](docs/SiloUI-RELEASES.md) for signing, installation, and update details.
+
+## Develop
+
+Use Node.js 24, Rust, Python 3.11 or newer, and the host's Tauri build prerequisites. Runtime preparation also requires the Rust 1.94.0 toolchain for the pinned MicroSandbox build and network access on a cold cache. Native builds require GitHub App configuration; follow [local setup](docs/SiloUI-RELEASES.md#local-setup) before building. Keep the ignored local configuration private.
+
+Run commands from the repository root:
+
+```sh
+npm --prefix app/SiloUI ci
+npm --prefix app/SiloUI run desktop
 ```
 
-`setup.sh` installs the host tools, builds the common development image, creates every workspace in the validated schema-v1 `~/.config/silo/workspaces.json`, publishes the configured localhost ports, configures SSH/Zed integration, and finishes with a live deep check. Silo supplies that JSON through `silo app bootstrap --resume --workspace-config-fd FD --format json`; names and numeric limits are decoded as data rather than shell syntax.
+For a browser-only UI preview, use `npm --prefix app/SiloUI run dev`. Browser fixtures do not execute VMs or validate native integrations.
 
-Native onboarding treats that bootstrap as background work. **Continue** on Workspaces validates and saves the selected configuration, enqueues one idempotent bootstrap operation, and advances immediately to GitHub; it never waits for VM creation or verification. Progress and failures remain visible through the later steps. Review is the only synchronization barrier, and **Done** stays unavailable until every required operation has completed and verified successfully.
+### Verify
 
-Then set your commit identity:
-
-```bash
-silo identity "Your Name" you@example.com
+```sh
+npm --prefix app/SiloUI run typecheck
+npm --prefix app/SiloUI run lint
+npm --prefix app/SiloUI test
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml
+npm --prefix app/SiloUI run test:release
 ```
 
-GitHub is optional. Silo never binds a GitHub token into a workspace: git
-inside a workspace reaches GitHub
-through a host-side proxy on `127.0.0.1:18446`. Public repositories are
-cloneable anonymously with no setup at all. A per-workspace policy file
-controls host-credential injection only: it decides, per workspace and
-canonical repository, whether the host OAuth/token may be attached to a
-request and whether that grant is read-only or read-write. The Mac holds ONE
-host credential (reusing an authenticated `gh` CLI, or OAuth Device Flow when
-configured); no GitHub credential ever enters a VM.
+Native tests require the GitHub build configuration described above. Automated tests do not replace installed-app, live VM, or real two-computer acceptance checks.
 
-Set up authenticated access in **Silo** → **Settings** → **GitHub**:
-connect the account on this Mac, then grant repositories to each workspace and
-pick a mode per repository — **Clone/pull (push from Mac)** or **Clone/pull +
-Push from VM**. Selections grant the host credential to those repositories;
-they are not required for public repositories, which remain anonymously
-cloneable. Local editing and commits always work; host push (`silo push` or the
-app's Push button) is allowed for every granted repository, while push from
-inside a VM is allowed only for repositories granted for VM push. The policy
-starts empty — no credential is injected anywhere until you grant
-repositories. Port warnings during setup are nonfatal. The CLI mirrors this
-surface: `silo github auth|repos|status|verify|disconnect`. See
-[`docs/GITHUB-SETUP.md`](docs/GITHUB-SETUP.md).
+### Build a local macOS app
 
-### Host-held API secrets
-
-Use **Silo → Secrets** to add, edit, remove, and scope API keys to
-workspaces and exact domains, `*.example.com`, or all HTTPS hosts (`*`). Values
-stay in macOS Keychain; VMs receive placeholders that MicroSandbox substitutes
-only at the configured HTTPS destinations. Every change is staged and shows
-**Restart required** or **Applies on next start** until Silo verifies it.
-
-## Daily use
-
-```bash
-# Enter /workspace in Ghostty
-silo dev
-silo playgrounds
-silo personal
-
-# Enter a nested repository
-silo dev clients/acme/backend
-
-# Clone into a nested folder
-silo clone dev OWNER/REPO clients/acme/backend
-
-# Open in Zed
-silo zed dev clients/acme/backend
-
-# Open a running website in your Mac browser
-silo open dev 3000
-silo open playgrounds 5173
-
-# Explicitly push the current committed branch from the Mac
-silo push dev clients/acme/backend
-
-# Back up every VM and persistent volume
-silo backup
+```sh
+npm --prefix app/SiloUI run desktop:build:debug
 ```
 
-A service must listen on `0.0.0.0` inside the VM or container. The common development ports are already published to each workspace's dedicated loopback IP, so every configured workspace can use port 3000 simultaneously.
+The debug bundle is `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`. For an optimized local app without installer or updater packaging:
+
+```sh
+npm --prefix app/SiloUI run desktop:build -- --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+```
+
+The release bundle is `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. These commands build locally; they do not install or publish the app. Distributable packages and signed updates use the [release workflow](docs/SiloUI-RELEASES.md#release-a-new-version).
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `app/SiloUI/src/` | React UI, production data sources, fixtures, and frontend tests |
+| `app/SiloUI/src-tauri/` | Rust backend, native integrations, guest scripts, tests, and packaging |
+| `app/SiloUI/scripts/` | Runtime preparation, build, and release tooling |
+| `app/SiloUI/.changeset/` | Pending user-facing release notes |
+| `app/SiloUI/docs/` | Bundled application help |
+| `docs/` | Technical documentation, research, and versioned release notes |
+| `assets/` | Shared branding assets |
+| `artifacts/` | Design work |
+| `.github/workflows/` | CI and release workflows |
 
 ## Documentation
 
-- [Complete setup guide](docs/SETUP-GUIDE.md)
-- [GitHub permissions and push guide](docs/GITHUB-SETUP.md)
-- [Desktop build configuration and rolling releases](docs/SiloUI-RELEASES.md)
-- [Command cheatsheet](docs/Silo-CHEATSHEET.md)
-- [Test report](docs/TEST-REPORT.md)
+- [Documentation index](docs/README.md)
+- [Build and release guide](docs/SiloUI-RELEASES.md)
+- [Runtime packaging](docs/SiloUI-RUNTIME-PACKAGING.md)
+- [Remote computers and Quit behavior](docs/SiloUI-REMOTE-COMPUTERS.md)
+- [GitHub integration](docs/SiloUI-GITHUB-IMPLEMENTATION.md)
+- [Host-held API secrets](docs/SiloUI-SECRETS.md)
 
-Installed documentation is also available from any terminal:
-
-```bash
-silo docs setup
-silo docs github
-silo docs cheatsheet
-silo docs tests
-```
-
-Every process and agent inside one workspace can access everything in that workspace. Configured workspaces are separate from one another and no Mac folder, Mac Docker socket, or Mac SSH agent is mounted into them. GitHub credential grants are owner/repository scoped: the host credential is injected only for the exact canonical repositories granted to a workspace (read-only by default), it stays in macOS Keychain and is used only by the proxy and the explicit `silo push` path, and no GitHub credential exists inside any workspace. Public repositories remain reachable anonymously regardless of grants; GitHub itself decides whether an unauthenticated request succeeds.
-
-Full public internet access means an untrusted agent can still transmit files it can read to an unrelated internet service. This setup prevents direct access to your Mac and gates GitHub pushes to the repositories each workspace is allowed to write; it is not a data-loss-prevention system.
+For each user-visible change, add a changeset under `app/SiloUI/.changeset/`. Version preparation and publication are separate, explicit operations; see the release guide.
