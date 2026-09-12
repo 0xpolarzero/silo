@@ -60,30 +60,45 @@ interface MachineListProps {
   validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
 }
 
-function SelectField({ label, value, values, suffix, error, readOnly = false, onChange }: {
+function SelectField({ label, value, values, suffix, error, readOnly = false, custom = false, onChange }: {
   label: string
   value: number
   values: readonly number[]
   suffix: string
   readOnly?: boolean
+  custom?: boolean
   error?: string
   onChange: (value: number) => void
 }) {
+  const [customSelected, setCustomSelected] = useState(!values.includes(value))
+  const isCustom = custom && (customSelected || !values.includes(value))
   const field = (
-    <label className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
+    <div className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
       {label}
       <select
         disabled={readOnly}
         aria-label={label}
         aria-invalid={Boolean(error)}
         className="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground disabled:cursor-default disabled:opacity-60 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive"
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
+        value={isCustom ? "custom" : value}
+        onChange={(event) => {
+          const selected = event.target.value
+          setCustomSelected(selected === "custom")
+          if (selected !== "custom") onChange(Number(selected))
+        }}
       >
         {values.map((option) => <option key={option} value={option}>{option} {suffix}</option>)}
+        {custom && <option value="custom">Custom…</option>}
       </select>
+      {isCustom && <Input
+        type="number" disabled={readOnly} min={1} max={label.includes("storage") ? 4_194_303 : 4_294_967_295} step={1}
+        aria-label={`${label} custom (${suffix === "CPU" ? "CPUs" : "GiB"})`}
+        aria-invalid={Boolean(error)}
+        value={value || ""}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />}
       {error && <span className="text-destructive">{error}</span>}
-    </label>
+    </div>
   )
   return readOnly ? (
     <TooltipProvider><Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`}>{field}</span></TooltipTrigger>
@@ -172,12 +187,12 @@ function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, o
 
       {draft.kind === "vm" ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
-          <SelectField label="CPU limit" value={draft.cpus} values={supportedCPUs} suffix="CPU" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField label="CPU ceiling" value={draft.maxCPUs} values={supportedCPUs} suffix="CPU" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField label="Memory limit" value={draft.memoryGiB} values={supportedMemoryGiB} suffix="GB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField label="Memory ceiling" value={draft.maxMemoryGiB} values={supportedMemoryGiB} suffix="GB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField readOnly={created} label="Workspace storage" value={draft.workspaceStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField readOnly={created} label="Runtime storage" value={draft.runtimeStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="CPU limit" value={draft.cpus} values={supportedCPUs} suffix="CPU" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="CPU ceiling" value={draft.maxCPUs} values={supportedCPUs} suffix="CPU" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory limit" value={draft.memoryGiB} values={supportedMemoryGiB} suffix="GB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={supportedMemoryGiB} suffix="GB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom readOnly={created} label="Workspace storage" value={draft.workspaceStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom readOnly={created} label="Runtime storage" value={draft.runtimeStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
         </div>
       ) : (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem]">

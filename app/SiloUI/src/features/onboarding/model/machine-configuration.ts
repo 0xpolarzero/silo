@@ -8,9 +8,9 @@ import {
   setupMachineConfigurationRequestSchema,
 } from "@/contracts/silo"
 
-export const supportedCPUs = [4, 6, 8, 12] as const
-export const supportedMemoryGiB = [16, 32, 48] as const
-export const supportedStorageGiB = [60, 80, 100, 120] as const
+export const supportedCPUs = [1, 2, 4, 6, 8, 12, 16] as const
+export const supportedMemoryGiB = [1, 2, 4, 8, 12, 16, 24, 32, 48, 64] as const
+export const supportedStorageGiB = [10, 20, 40, 60, 80, 100, 120, 200] as const
 export const maximumMachineCount = 64
 
 // Fresh onboarding offers one dev VM; creation waits for Continue.

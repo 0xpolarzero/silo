@@ -10,7 +10,16 @@ import { onboardingSteps } from "@/features/onboarding/model/onboarding-state"
 // Recovery stores unfinished input. Existing Save validation still decides
 // whether these values can become a machine configuration.
 const unfinishedMachineSchema = z.discriminatedUnion("kind", [
-  z.object({ ...setupVirtualMachineConfigurationSchema.shape, name: z.string() }).strict(),
+  z.object({
+    ...setupVirtualMachineConfigurationSchema.shape,
+    name: z.string(),
+    cpus: z.number(),
+    maxCPUs: z.number(),
+    workspaceStorageGiB: z.number(),
+    runtimeStorageGiB: z.number(),
+    memoryGiB: z.number(),
+    maxMemoryGiB: z.number(),
+  }).strict(),
   setupSSHMachineConfigurationSchema.extend({
     name: z.string(), host: z.string(), user: z.string(), port: z.number(),
   }).strict(),

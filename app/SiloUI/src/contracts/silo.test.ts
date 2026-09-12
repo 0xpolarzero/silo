@@ -1,3 +1,4 @@
+import { machineEditorDraftSchema } from "@/features/onboarding/model/onboarding-draft"
 import { describe, expect, it } from "vitest"
 
 import {
@@ -102,4 +103,30 @@ describe("Silo contract fixtures", () => {
       machines: [request.machines[0], { ...request.machines[1], id: request.machines[0].id }],
     })).toThrow("machine IDs must be unique")
   })
+})
+
+describe("custom VM memory", () => {
+  it.each([1, 2, 4, 8, 12, 24, 64])("accepts %i GiB through the saved configuration contract", (memory) => {
+    const machine = { ...fixtureMachineDefaults[0], memoryGiB: memory, maxMemoryGiB: memory }
+    expect(setupMachineConfigurationRequestSchema.safeParse({ schemaVersion: 1, machines: [machine] }).success).toBe(true)
+  })
+  it.each([0, -1, 1.5, 4294967296])("rejects invalid memory %s", (memory) => {
+    const machine = { ...fixtureMachineDefaults[0], memoryGiB: memory, maxMemoryGiB: memory }
+    expect(setupMachineConfigurationRequestSchema.safeParse({ schemaVersion: 1, machines: [machine] }).success).toBe(false)
+  })
+})
+
+it("preserves temporarily invalid custom memory only in an unfinished editor", () => {
+  const draft = { ...fixtureMachineDefaults[0], memoryGiB: 0, maxMemoryGiB: 12 }
+  expect(machineEditorDraftSchema.safeParse({ draft, insertAt: 0 }).success).toBe(true)
+  expect(setupMachineConfigurationRequestSchema.safeParse({ schemaVersion: 1, machines: [draft] }).success).toBe(false)
+})
+
+it("accepts custom CPUs and disks and rejects storage overflow", () => {
+  const machine = { ...fixtureMachineDefaults[0], cpus: 3, maxCPUs: 5, memoryGiB: 12, maxMemoryGiB: 12, workspaceStorageGiB: 35, runtimeStorageGiB: 25 }
+  const parse = (changes: object) => setupMachineConfigurationRequestSchema.safeParse({ schemaVersion: 1, machines: [{ ...machine, ...changes }] }).success
+  expect(parse({})).toBe(true)
+  for (const changes of [{ cpus: 0 }, { cpus: 1.5 }, { cpus: 6 }, { maxCPUs: 4294967296 }, { workspaceStorageGiB: 0 }, { runtimeStorageGiB: 1.5 }, { workspaceStorageGiB: 4194300, runtimeStorageGiB: 4 }]) {
+    expect(parse(changes)).toBe(false)
+  }
 })

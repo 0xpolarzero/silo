@@ -277,12 +277,6 @@ fn valid_name(value: &Value) -> bool {
     })
 }
 
-fn one_of(value: &Value, choices: &[f64]) -> bool {
-    value
-        .as_f64()
-        .is_some_and(|number| choices.contains(&number))
-}
-
 fn valid_machine(value: &Value, unfinished: bool) -> bool {
     let Some(machine) = value.as_object() else {
         return false;
@@ -313,19 +307,23 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
         return false;
     }
     if machine["kind"] == "vm" {
-        return ["cpus", "maxCPUs"]
+        return ["cpus", "maxCPUs", "memoryGiB", "maxMemoryGiB", "workspaceStorageGiB", "runtimeStorageGiB"]
             .iter()
-            .all(|key| one_of(&machine[*key], &[4., 6., 8., 12.]))
-            && ["memoryGiB", "maxMemoryGiB"]
-                .iter()
-                .all(|key| one_of(&machine[*key], &[16., 32., 48.]))
-            && ["workspaceStorageGiB", "runtimeStorageGiB"]
-                .iter()
-                .all(|key| one_of(&machine[*key], &[60., 80., 100., 120.]))
+            .all(|key| {
+                if unfinished {
+                    machine[*key].as_f64().is_some_and(f64::is_finite)
+                } else {
+                    machine[*key].as_u64().is_some_and(|value| (1..=u64::from(u32::MAX)).contains(&value))
+                }
+            })
             && (unfinished
-                || (machine["cpus"].as_f64() <= machine["maxCPUs"].as_f64()
-                    && machine["memoryGiB"].as_f64() <= machine["maxMemoryGiB"].as_f64()));
+                || (machine["cpus"].as_u64() <= machine["maxCPUs"].as_u64()
+                    && machine["memoryGiB"].as_u64() <= machine["maxMemoryGiB"].as_u64()
+                    && machine["workspaceStorageGiB"].as_u64().unwrap_or(u64::MAX)
+                        .checked_add(machine["runtimeStorageGiB"].as_u64().unwrap_or(u64::MAX))
+                        .is_some_and(|total| total <= u64::from(u32::MAX) / 1024)));
     }
+
     if unfinished {
         return machine["host"].is_string()
             && machine["user"].is_string()
@@ -1162,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn unfinished_vm_resources_can_exceed_ceiling_but_must_use_existing_choices() {
+    fn unfinished_vm_resources_allow_custom_input_but_saved_limits_are_checked() {
         let mut draft = unfinished_draft();
         let vm = json!({
             "id":"025da8eb-56bf-4519-85cb-3316b2feb549", "kind":"vm", "name":"unfinished name",
@@ -1171,7 +1169,7 @@ mod tests {
         });
         draft["unfinishedMachineEditor"]["draft"] = vm.clone();
         assert!(valid_draft(&draft));
-        draft["unfinishedMachineEditor"]["draft"]["cpus"] = json!(3);
+        draft["unfinishedMachineEditor"]["draft"]["cpus"] = json!("invalid");
         assert!(!valid_draft(&draft));
         let mut saved = vm;
         saved["name"] = json!("dev");
@@ -1179,6 +1177,28 @@ mod tests {
         saved["maxCPUs"] = json!(12);
         saved["maxMemoryGiB"] = json!(48);
         assert!(valid_machine(&saved, false));
+    }
+
+    #[test]
+    fn custom_resources_survive_settings_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(path.clone()));
+        let mut draft = unfinished_draft();
+        draft["machines"][0] = json!({
+            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"vm", "name":"dev",
+            "cpus":3,"maxCPUs":5,"memoryGiB":10,"maxMemoryGiB":12,
+            "workspaceStorageGiB":35,"runtimeStorageGiB":25
+        });
+        store.update_draft(draft.clone()).unwrap();
+        assert_eq!(SettingsStore::load(Some(path)).snapshot().onboarding_draft, draft);
+        draft["unfinishedMachineEditor"]["draft"] = draft["machines"][0].clone();
+        draft["unfinishedMachineEditor"]["draft"]["memoryGiB"] = json!(0);
+        assert!(valid_draft(&draft));
+        for invalid in [json!(0), json!(-1), json!(1.5), json!(4294967296_u64)] {
+            draft["machines"][0]["memoryGiB"] = invalid;
+            assert!(!valid_draft(&draft));
+        }
     }
 
     #[test]

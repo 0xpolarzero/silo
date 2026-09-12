@@ -12,13 +12,13 @@ export const siloPreflightCheckSchema = z.object({
 
 export const siloBootstrapWorkspaceSchema = z.object({
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
-  cpu: z.union([z.literal(4), z.literal(6), z.literal(8), z.literal(12)]),
-  cpuCeiling: z.union([z.literal(4), z.literal(6), z.literal(8), z.literal(12)]),
-  memoryGiB: z.union([z.literal(16), z.literal(32), z.literal(48)]),
-  memoryCeilingGiB: z.union([z.literal(16), z.literal(32), z.literal(48)]),
-  workspaceStorageGiB: z.union([z.literal(60), z.literal(80), z.literal(100), z.literal(120)]),
-  runtimeStorageGiB: z.union([z.literal(60), z.literal(80), z.literal(100), z.literal(120)]),
-}).strict().refine((workspace) => workspace.cpu <= workspace.cpuCeiling, {
+  cpu: z.number().int().min(1).max(4_294_967_295),
+  cpuCeiling: z.number().int().min(1).max(4_294_967_295),
+  memoryGiB: z.number().int().min(1).max(4_294_967_295),
+  memoryCeilingGiB: z.number().int().min(1).max(4_294_967_295),
+  workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
+  runtimeStorageGiB: z.number().int().min(1).max(4_194_303),
+}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "Combined storage exceeds the runtime limit", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpu <= workspace.cpuCeiling, {
   message: "cpu must not exceed cpuCeiling",
 }).refine((workspace) => workspace.memoryGiB <= workspace.memoryCeilingGiB, {
   message: "memoryGiB must not exceed memoryCeilingGiB",
@@ -35,13 +35,13 @@ export const siloBootstrapConfigurationSchema = z.object({
 export const setupWorkspaceConfigurationSchema = z.object({
   id: z.uuid(),
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
-  cpus: z.union([z.literal(4), z.literal(6), z.literal(8), z.literal(12)]),
-  maxCPUs: z.union([z.literal(4), z.literal(6), z.literal(8), z.literal(12)]),
-  memoryGiB: z.union([z.literal(16), z.literal(32), z.literal(48)]),
-  maxMemoryGiB: z.union([z.literal(16), z.literal(32), z.literal(48)]),
-  workspaceStorageGiB: z.union([z.literal(60), z.literal(80), z.literal(100), z.literal(120)]),
-  runtimeStorageGiB: z.union([z.literal(60), z.literal(80), z.literal(100), z.literal(120)]),
-}).strict().refine((workspace) => workspace.cpus <= workspace.maxCPUs, {
+  cpus: z.number().int().min(1).max(4_294_967_295),
+  maxCPUs: z.number().int().min(1).max(4_294_967_295),
+  memoryGiB: z.number().int().min(1).max(4_294_967_295),
+  maxMemoryGiB: z.number().int().min(1).max(4_294_967_295),
+  workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
+  runtimeStorageGiB: z.number().int().min(1).max(4_194_303),
+}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "Combined storage exceeds the runtime limit", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpus <= workspace.maxCPUs, {
   message: "cpus must not exceed maxCPUs",
 }).refine((workspace) => workspace.memoryGiB <= workspace.maxMemoryGiB, {
   message: "memoryGiB must not exceed maxMemoryGiB",

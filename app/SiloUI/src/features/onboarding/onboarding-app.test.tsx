@@ -996,6 +996,59 @@ describe("onboarding", () => {
     expect(screen.getByText("dev moved to position 2 of 3.")).toBeInTheDocument()
   })
 
+  it("saves smaller memory presets and custom whole GiB values", async () => {
+    const { user, saveMachineConfiguration } = await renderMachineScenario()
+    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
+    await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "12")
+    await user.selectOptions(screen.getByRole("combobox", { name: "Memory ceiling" }), "12")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(saveMachineConfiguration.mock.lastCall?.[0].machines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "dev-copy", memoryGiB: 12, maxMemoryGiB: 12 }),
+    ]))
+    await user.click(screen.getByRole("button", { name: "Edit dev-copy" }))
+    await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "custom")
+    const input = screen.getByRole("spinbutton", { name: "Memory limit custom (GiB)" })
+    await user.clear(input)
+    await user.type(input, "10")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(saveMachineConfiguration.mock.lastCall?.[0].machines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "dev-copy", memoryGiB: 10, maxMemoryGiB: 12 }),
+    ]))
+    await user.click(screen.getByRole("button", { name: "Edit dev-copy" }))
+    expect(screen.getByRole("spinbutton", { name: "Memory limit custom (GiB)" })).toHaveValue(10)
+    saveMachineConfiguration.mockClear()
+    const customInput = screen.getByRole("spinbutton", { name: "Memory limit custom (GiB)" })
+    for (const invalid of ["0", "1.5", "13"]) {
+      await user.clear(customInput)
+      await user.type(customInput, invalid)
+      await user.click(screen.getByRole("button", { name: "Save" }))
+      expect(saveMachineConfiguration).not.toHaveBeenCalled()
+    }
+    await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "8")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(saveMachineConfiguration.mock.lastCall?.[0].machines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "dev-copy", memoryGiB: 8, maxMemoryGiB: 12 }),
+    ]))
+  })
+
+  it("saves custom CPU and disk values and reopens them", async () => {
+    const { user, saveMachineConfiguration } = await renderMachineScenario()
+    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
+    for (const [label, unit, value] of [["CPU limit", "CPUs", "3"], ["CPU ceiling", "CPUs", "5"], ["Workspace storage", "GiB", "35"], ["Runtime storage", "GiB", "25"]]) {
+      await user.selectOptions(screen.getByRole("combobox", { name: label }), "custom")
+      const input = screen.getByRole("spinbutton", { name: `${label} custom (${unit})` })
+      await user.clear(input)
+      await user.type(input, value)
+    }
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(saveMachineConfiguration.mock.lastCall?.[0].machines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "dev-copy", cpus: 3, maxCPUs: 5, workspaceStorageGiB: 35, runtimeStorageGiB: 25 }),
+    ]))
+    await user.click(screen.getByRole("button", { name: "Edit dev-copy" }))
+    expect(screen.getByRole("spinbutton", { name: "CPU limit custom (CPUs)" })).toHaveValue(3)
+    expect(screen.getByRole("spinbutton", { name: "Workspace storage custom (GiB)" })).toHaveValue(35)
+  })
+
   it("blocks duplicate names and invalid VM resource ranges", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
     await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
