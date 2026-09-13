@@ -164,6 +164,8 @@ export interface GitHubAccessEditorProps {
   onWorkspaceRepositoryAccessChange?: (workspace: string, access: GitHubRepositoryAccess) => void
   workspaceIdentities: Readonly<Record<string, GitHubIdentity>>
   currentHostGitIdentity: { name: string; email: string } | null
+  onCancelConnection?: () => void
+  onReopenAuthorization?: () => void
   onConnect: () => void
   onWorkspaceSelectionsChange: (workspace: string, selections: GitHubRepositorySelection[]) => void
   onWorkspaceIdentityChange: (workspace: string, identity: GitHubIdentity) => void
@@ -194,6 +196,8 @@ export function GitHubAccessEditor({
   onWorkspaceRepositoryAccessChange,
   currentHostGitIdentity,
   onConnect,
+  onCancelConnection,
+  onReopenAuthorization,
   onWorkspaceSelectionsChange,
   onWorkspaceIdentityChange,
   onCommitWorkspaceIdentity,
@@ -234,11 +238,14 @@ export function GitHubAccessEditor({
             </ListRowIcon>
           }
           title={<h3 className={compactConnection ? undefined : "text-sm"}>{connectionState === "connected" ? connectedTitle : connectionState === "connecting" ? "Connecting to GitHub…" : "Not connected"}</h3>}
-          detail={connectionState === "connected" ? connectedDetail : connectionState === "connecting" ? "Completing the secure browser authorization." : "Connect to choose repositories and allow GitHub changes."}
+          detail={connectionState === "connected" ? connectedDetail : connectionState === "connecting" ? "Finish signing in in your browser." : "Connect to choose repositories and allow GitHub changes."}
           detailClassName={compactConnection ? "whitespace-normal" : "mt-0.5 whitespace-normal text-xs"}
-          actions={connectionState !== "connecting" && (
+          actions={(
             <div className={`col-start-2 flex shrink-0 flex-wrap items-center ${compactConnection ? "gap-1" : "gap-2"}`}>
-              {connectionState === "connected" ? connectedActions : <Button type="button" size={compactConnection ? "xs" : "default"} variant={compactConnection ? "outline" : "default"} onClick={onConnect}>Connect GitHub</Button>}
+              {connectionState === "connecting" ? <>
+                <Button type="button" size={compactConnection ? "xs" : "default"} variant="outline" onClick={onReopenAuthorization}>Open browser again</Button>
+                <Button type="button" size={compactConnection ? "xs" : "default"} variant="ghost" onClick={onCancelConnection}>Cancel</Button>
+              </> : connectionState === "connected" ? connectedActions : <Button type="button" size={compactConnection ? "xs" : "default"} variant={compactConnection ? "outline" : "default"} onClick={onConnect}>Connect GitHub</Button>}
             </div>
           )}
         />

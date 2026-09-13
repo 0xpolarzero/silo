@@ -38,6 +38,8 @@ describe("onboarding source boundary", () => {
     const user = userEvent.setup()
     const actions = {
       connectGitHub: vi.fn(),
+      cancelGitHubConnection: vi.fn(),
+      reopenGitHubAuthorization: vi.fn(),
       saveMachineConfiguration: vi.fn(),
       retryWorkspaceSetup: vi.fn(),
       finishSetup: vi.fn(),
@@ -53,6 +55,10 @@ describe("onboarding source boundary", () => {
 
     view.rerender(<OnboardingApp {...props} githubConnectionState="connecting" />)
     expect(screen.getByRole("heading", { name: "Connecting to GitHub…" })).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Open browser again" }))
+    expect(actions.reopenGitHubAuthorization).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }))
+    expect(actions.cancelGitHubConnection).toHaveBeenCalledOnce()
     view.rerender(<OnboardingApp {...props} githubConnectionState="connected" />)
     expect(screen.getByRole("heading", { name: "Connected to GitHub" })).toBeVisible()
   })

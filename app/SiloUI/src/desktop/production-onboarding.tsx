@@ -33,7 +33,9 @@ export function productionOnboardingSource(application: ApplicationSource | null
   if (application) application = { ...application, workspaces: application.workspaces.filter(workspace => !workspace.computer) }
   const operation = application?.sandboxConfigurationOperation
   const machines = setup?.setupCandidate?.machines ?? operation?.candidate.machines ?? (application?.workspaces.length ? application.workspaces.map(({ machine }) => machine) : productionMachineDefaults)
-  const configured = (application?.workspaces.length ?? 0) > 0 && application!.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
+  const emptyConfigurationVerified = setup?.setupCandidate?.machines.length === 0
+    && ["workspaceRun", "workspaceVerify"].every((id) => setup.setupQueue.some((item) => item.id === id && item.status === "succeeded"))
+  const configured = !!application && (application.workspaces.length > 0 || emptyConfigurationVerified) && application.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
   const completedPhases = configured ? ["preflight", "toolchain", "hostIntegration", "workspaces"] as const : []
   return {
     ...(setup && { setupQueue: setup.setupQueue.map((item) => configured && item.status === "idle" && ["workspaceRun", "workspaceVerify"].includes(item.id) ? { ...item, status: "succeeded" as const } : item) }),
@@ -95,7 +97,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     [application, dependencies, preferences, operationError, finishing, setup],
   )
   useEffect(() => {
-    if (!onboardingDraft?.machines.length || completed) return
+    if (!onboardingDraft || completed) return
     void source.verifySetupIdentities({
       machineConfiguration: { schemaVersion: 1, machines: onboardingDraft.machines },
       github: {
@@ -152,6 +154,8 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
         submit(() => source.submitSetupStep(step, request))
       },
       connectGitHub: () => source.applicationActions.connectGitHub?.(),
+      cancelGitHubConnection: () => source.applicationActions.cancelGitHubConnection?.(),
+      reopenGitHubAuthorization: () => source.applicationActions.reopenGitHubAuthorization?.(),
       saveMachineConfiguration: (request) => {
         submit(() => source.configureMachines(request))
       },

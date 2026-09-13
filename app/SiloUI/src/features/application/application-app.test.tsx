@@ -21,6 +21,8 @@ function renderApplication(scenario: Parameters<typeof applicationSourceForScena
     openTerminal: vi.fn(),
     openEditor: vi.fn(),
     connectGitHub: vi.fn(),
+    cancelGitHubConnection: vi.fn(),
+    reopenGitHubAuthorization: vi.fn(),
     disconnectGitHub: vi.fn(),
     setGitHubAccessEnabled: vi.fn(),
     saveGitHubConfiguration: vi.fn(),
@@ -1519,6 +1521,10 @@ describe("application", () => {
     await connecting.user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
     github = within(appPanel("GitHub"))
     expect(github.getByRole("status")).toHaveTextContent("Connecting to GitHub…")
+    await connecting.user.click(github.getByRole("button", { name: "Open browser again" }))
+    expect(connecting.actions.reopenGitHubAuthorization).toHaveBeenCalledOnce()
+    await connecting.user.click(github.getByRole("button", { name: /^Cancel$/ }))
+    expect(connecting.actions.cancelGitHubConnection).toHaveBeenCalledOnce()
     expect(github.getByLabelText("Git name for dev")).toBeEnabled()
     expect(github.queryByLabelText("Add repository to dev")).not.toBeInTheDocument()
   })

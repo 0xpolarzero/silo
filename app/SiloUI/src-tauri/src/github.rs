@@ -68,6 +68,20 @@ fn session() -> &'static str {
 }
 static CONNECTING: AtomicBool = AtomicBool::new(false);
 static CANCELLATION: AtomicU64 = AtomicU64::new(0);
+// Browser URLs contain OAuth state. Keep them in memory and never return them to the UI.
+#[derive(Default)]
+struct PendingAuthorization(Option<(u64, String)>);
+impl PendingAuthorization {
+    fn clear(&mut self, generation: u64) {
+        if self.0.as_ref().is_some_and(|(active, _)| *active == generation) { self.0 = None; }
+    }
+    fn url(&self, generation: u64) -> Result<String, String> {
+        self.0.as_ref().filter(|(active, _)| *active == generation)
+            .map(|(_, url)| url.clone())
+            .ok_or_else(|| "No browser authorization is waiting. Connect GitHub again.".into())
+    }
+}
+static AUTHORIZATION: Mutex<PendingAuthorization> = Mutex::new(PendingAuthorization(None));
 // Policy edits keep their submission order even if spawn_blocking starts its
 // jobs out of order. This queue contains local updates only, never HTTP calls.
 struct IntentQueue {
@@ -110,10 +124,15 @@ impl Drop for IntentTurn<'_> {
     }
 }
 static INTENTS: IntentQueue = IntentQueue::new();
-struct Connecting(tauri::AppHandle);
+struct Connecting(tauri::AppHandle, u64);
 impl Drop for Connecting {
     fn drop(&mut self) {
-        CONNECTING.store(false, Ordering::SeqCst);
+        if let Ok(mut pending) = AUTHORIZATION.lock() {
+            pending.clear(self.1);
+            if pending.0.is_none() {
+                CONNECTING.store(false, Ordering::SeqCst);
+            }
+        }
         let _ = self.0.emit("silo://application-state-changed", ());
     }
 }
@@ -1323,10 +1342,22 @@ fn open_browser(url: &str) -> Result<(), String> {
         Err("Cannot open the browser.".into())
     }
 }
-fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
-    let generation = CANCELLATION.load(Ordering::SeqCst);
-    CONNECTING.store(true, Ordering::SeqCst);
-    let _connecting = Connecting(app.clone());
+fn open_authorization_browser(generation: u64, url: &str) -> Result<(), String> {
+    {
+        let mut pending = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?;
+        if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
+        pending.0 = Some((generation, url.to_owned()));
+    }
+    open_browser(url)
+}
+
+fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
+    {
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
+        CONNECTING.store(true, Ordering::SeqCst);
+    }
+    let _connecting = Connecting(app.clone(), generation);
     let _ = app.emit("silo://application-state-changed", ());
     let configuration = token_configuration()?;
     let client_id = &configuration.client_id;
@@ -1361,7 +1392,7 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
-    open_browser(url.as_str())?;
+    open_authorization_browser(generation, url.as_str())?;
     let deadline = Instant::now() + Duration::from_secs(300);
     let code = loop {
         if CANCELLATION.load(Ordering::SeqCst) != generation {
@@ -1393,6 +1424,8 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
             Err(_) => return Err("GitHub callback listener failed.".into()),
         }
     };
+    AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?.clear(generation);
+    if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
     let c = from_response(token_operation(
         Operation::Exchange,
         json!({"code":code,"codeVerifier":verifier,"redirectUri":redirect}),
@@ -1410,7 +1443,7 @@ fn connect(app: &tauri::AppHandle) -> Result<Value, String> {
         if !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             return Err("GitHub App identifier is invalid.".into());
         }
-        open_browser(&format!("https://github.com/apps/{slug}/installations/new"))?;
+        open_authorization_browser(generation, &format!("https://github.com/apps/{slug}/installations/new"))?;
         let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             if CANCELLATION.load(Ordering::SeqCst) != generation {
@@ -1668,8 +1701,39 @@ pub async fn connect_github(
 ) -> Result<Value, String> {
     require_main(window.label())?;
     retry_credential_access();
-    run(app, connect).await
+    let generation = CANCELLATION.load(Ordering::SeqCst);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _update = crate::updates::operation_guard()?;
+        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+        connect(&app, generation)
+    }).await.map_err(|_| "GitHub operation failed.")?
 }
+#[tauri::command]
+pub async fn cancel_github_connection(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Value, String> {
+    require_main(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        // Serialize with credential publication, not with the browser/network wait.
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let mut pending = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?;
+        CANCELLATION.fetch_add(1, Ordering::SeqCst);
+        pending.0 = None;
+        CONNECTING.store(false, Ordering::SeqCst);
+        let result = snapshot(&app);
+        let _ = app.emit("silo://application-state-changed", ());
+        result
+    }).await.map_err(|_| "GitHub cancellation failed.")?
+}
+
+#[tauri::command]
+pub async fn reopen_github_authorization(window: tauri::WebviewWindow) -> Result<(), String> {
+    require_main(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let url = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?
+            .url(CANCELLATION.load(Ordering::SeqCst))?;
+        open_browser(&url)
+    }).await.map_err(|_| "Cannot reopen GitHub authorization.")?
+}
+
 #[tauri::command]
 pub async fn refresh_github_repositories(
     app: tauri::AppHandle,
@@ -2427,6 +2491,27 @@ mod tests {
             assert!(require_main(label).is_err());
         }
     }
+    #[test]
+    fn authorization_reopens_same_attempt_and_tracks_installation_page() {
+        let mut pending = PendingAuthorization(Some((7, "https://github.com/login/oauth/authorize?state=example".into())));
+        assert_eq!(pending.url(7).unwrap(), "https://github.com/login/oauth/authorize?state=example");
+        assert!(pending.url(8).is_err());
+        pending.0 = Some((7, "https://github.com/apps/example/installations/new".into()));
+        assert_eq!(pending.url(7).unwrap(), "https://github.com/apps/example/installations/new");
+        pending.clear(7);
+        assert!(pending.url(7).is_err());
+    }
+
+    #[test]
+    fn finished_old_authorization_cannot_clear_a_new_attempt() {
+        let mut pending = PendingAuthorization(Some((8, "https://github.com/new-attempt".into())));
+        pending.clear(7);
+        assert_eq!(pending.url(8).unwrap(), "https://github.com/new-attempt");
+        assert!(pending.url(7).is_err());
+        pending.0 = None;
+        assert!(pending.url(8).is_err());
+    }
+
     #[test]
     fn callback_ignores_unrelated_traffic_and_rejects_empty_authenticated_code() {
         for request in [

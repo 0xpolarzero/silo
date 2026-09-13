@@ -26,6 +26,14 @@ const requestB: SetupMachineConfigurationRequest = { ...requestA, machines: [req
 const dependencies = { checks: [], retry: vi.fn() }
 
 describe("production onboarding submission errors", () => {
+  it("passes an intentionally empty restored draft to identity verification", () => {
+    const store = createMemorySettingsStore({}, { currentStep: "review", machines: [], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} })
+    const verifySetupIdentities = vi.fn().mockResolvedValue(undefined)
+    const source = { verifySetupIdentities, applicationActions: {} } as unknown as ProductionSource
+    render(<SettingsProvider store={store}><ProductionOnboarding application={application} dependencies={dependencies} source={source} /></SettingsProvider>)
+    expect(verifySetupIdentities).toHaveBeenCalledWith({ machineConfiguration: { schemaVersion: 1, machines: [] }, github: { connectionState: application.github.state, workspaces: [] } })
+  })
+
   it("ignores an older rejection while the newer submission succeeds", async () => {
     const first = deferred()
     const second = deferred()

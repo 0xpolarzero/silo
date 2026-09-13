@@ -40,6 +40,12 @@ export function OnboardingPreview({ source: initialSource, actions, initialGitHu
         setGitHubConnectionState("connecting")
         connectTimer.current = window.setTimeout(() => setGitHubConnectionState("connected"), 700)
       },
+      cancelGitHubConnection: () => {
+        window.clearTimeout(connectTimer.current)
+        setGitHubConnectionState("disconnected")
+        actions?.cancelGitHubConnection?.()
+      },
+      reopenGitHubAuthorization: () => actions?.reopenGitHubAuthorization?.(),
       saveMachineConfiguration: (request) => {
         actions?.saveMachineConfiguration?.(request)
         setSource((current) => ({ ...current, machineConfigurations: request.machines }))

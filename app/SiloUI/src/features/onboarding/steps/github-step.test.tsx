@@ -7,6 +7,18 @@ import type { GitHubAccessEditorProps } from "@/features/github/components/githu
 const props: GitHubAccessEditorProps = { workspaces: [], connectionState: "connected", repositoryOptions: [], workspaceSelections: {}, workspaceIdentities: {}, currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(), onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn() }
 
 describe("GitHub setup feedback", () => {
+  it("lets browser authorization be reopened or cancelled while connecting", async () => {
+    const user = userEvent.setup()
+    const onCancelConnection = vi.fn()
+    const onReopenAuthorization = vi.fn()
+    render(<GitHubStep {...props} connectionState="connecting" onCancelConnection={onCancelConnection} onReopenAuthorization={onReopenAuthorization} />)
+    expect(screen.getByText("Finish signing in in your browser.")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Open browser again" }))
+    expect(onReopenAuthorization).toHaveBeenCalledOnce()
+    await user.click(screen.getByRole("button", { name: /^Cancel$/ }))
+    expect(onCancelConnection).toHaveBeenCalledOnce()
+  })
+
   it("shows verified progress and only safe GitHub activity beneath the connection header", async () => {
     const user = userEvent.setup()
     render(<GitHubStep {...props} queueItems={[

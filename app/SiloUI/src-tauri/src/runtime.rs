@@ -1043,10 +1043,13 @@ fn verify_workspace_identities_with(
     paths: &RuntimePaths,
     identities: &[WorkspaceIdentity],
 ) -> Result<bool, RuntimeError> {
-    if identities.is_empty() || identities.len() > MAX_MACHINE_COUNT {
+    if identities.len() > MAX_MACHINE_COUNT {
         return Ok(false);
     }
     let metadata = read_metadata(&paths.metadata)?;
+    if identities.is_empty() {
+        return Ok(metadata.machines.is_empty());
+    }
     let mut names = HashSet::new();
     for identity in identities {
         validate_name(&identity.workspace)?;
@@ -4364,6 +4367,23 @@ mod tests {
         let successful = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null)]);
         remove_machine(&successful, &paths, &vm()).unwrap();
         assert!(!disk.exists());
+    }
+
+    #[test]
+    fn empty_setup_saves_and_verifies_without_initializing_runtime() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let runner = StubRunner::successful_json(vec![]);
+        let request = MachineConfigurationRequest { schema_version: 1, machines: vec![] };
+        save_machine_configuration_with_progress(&runner, &paths, &generous_host(), request.clone(), None, &|_, _, _| {}).unwrap();
+        configure_workspace_identities_with(&runner, &paths, &[]).unwrap();
+        assert!(verify_workspace_identities_with(&runner, &paths, &[]).unwrap());
+        read_application_state_with(&runner, &paths).unwrap();
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), request);
+        assert!(!paths.home.exists());
+        // Empty identity input must not verify a configured VM's identity.
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![vm()] }).unwrap();
+        assert!(!verify_workspace_identities_with(&runner, &paths, &[]).unwrap());
     }
 
     fn test_identity() -> WorkspaceIdentity {

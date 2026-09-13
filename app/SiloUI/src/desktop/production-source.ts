@@ -573,7 +573,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     setSetupStatus(["identityRun", "identityVerify"], "idle")
     const identities = request.github.workspaces.map(({ workspace, identity }) => ({ workspace, ...identity }))
     const machines = request.machineConfiguration.machines
-    if (machines.length === 0 || identities.length !== machines.length || machines.some(({ name }) => !identities.some(({ workspace }) => workspace === name))) return
+    if (identities.length !== machines.length || machines.some(({ name }) => !identities.some(({ workspace }) => workspace === name))) return
     try {
       const verified = z.boolean().parse(await native.invoke("verify_workspace_identities", { identities }))
       if (disposed || sequence !== identityVerificationSequence) return
@@ -671,10 +671,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     try {
       const github = githubStateShape.parse(await native.invoke(command, arguments_))
       if (sequence === githubMutationSequence && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github }, error: null })
-      if (connectionAttempt) recordGitHubActivity(connectionAttempt, "github", github.state === "connected" ? "GitHub account connected." : "GitHub authorization is pending.")
+      if (connectionAttempt && sequence === githubMutationSequence) recordGitHubActivity(connectionAttempt, "github", github.state === "connected" ? "GitHub account connected." : "GitHub authorization is pending.")
       return github
     } catch (cause) {
-      if (connectionAttempt) recordGitHubActivity(connectionAttempt, "github", "GitHub connection did not complete. You can try connecting again.", true)
+      if (connectionAttempt && sequence === githubMutationSequence) recordGitHubActivity(connectionAttempt, "github", "GitHub connection did not complete. You can try connecting again.", true)
       if (command === "connect_github" && sequence === githubMutationSequence) {
         try {
           const github = githubStateShape.parse(await native.invoke("read_github_state"))
@@ -767,6 +767,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
     connectGitHub: () => { void githubMutation("connect_github").catch(() => {}) },
+    cancelGitHubConnection: () => { void githubMutation("cancel_github_connection").catch(() => {}) },
+    reopenGitHubAuthorization: () => {
+      const sequence = githubMutationSequence
+      void native.invoke("reopen_github_authorization").catch((cause: unknown) => {
+        if (sequence === githubMutationSequence) publish({ ...snapshot, error: `Could not reopen GitHub authorization: ${errorMessage(cause)}` })
+      })
+    },
     disconnectGitHub: () => { void githubMutation("disconnect_github").catch(() => {}) },
     setGitHubAccessEnabled: (enabled) => { void githubMutation("set_github_access_enabled", { enabled }).catch(() => {}) },
     saveGitHubConfiguration: async (configuration) => { await githubMutation("save_github_configuration", { configuration }) },

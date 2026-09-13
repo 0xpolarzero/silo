@@ -264,6 +264,52 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it.each(["resolve", "reject"])("cancels authorization without a failure or stale %s changing account state", async (completion) => {
+    const mock = native()
+    const original = mock.invoke.getMockImplementation()!
+    let finishLogin!: (value: unknown) => void
+    let failLogin!: (cause: Error) => void
+    const disconnected = { ...source.github, state: "disconnected", account: null }
+    mock.invoke.mockImplementation((command, args) => {
+      if (command === "connect_github") return new Promise((resolve, reject) => { finishLogin = resolve; failLogin = reject })
+      if (command === "cancel_github_connection") return Promise.resolve(disconnected)
+      return original(command, args)
+    })
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    store.applicationActions.connectGitHub!()
+    store.applicationActions.cancelGitHubConnection!()
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.state).toBe("disconnected"))
+    if (completion === "resolve") finishLogin({ ...source.github, state: "connected", account: "late-account" })
+    else failLogin(new Error("GitHub authorization was cancelled"))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(store.getSnapshot().source?.github.state).toBe("disconnected")
+    expect(store.getSnapshot().source?.github.account).toBeUndefined()
+    expect(store.getSnapshot().error).toBeNull()
+    expect((store.getSnapshot().setupActivity ?? []).some(event => event.message.includes("did not complete") || event.message === "GitHub account connected.")).toBe(false)
+    store.dispose()
+  })
+
+  it("reopens the browser without replacing an active connection attempt", async () => {
+    const mock = native()
+    const original = mock.invoke.getMockImplementation()!
+    let finishLogin!: (value: unknown) => void
+    mock.invoke.mockImplementation((command, args) => {
+      if (command === "connect_github") return new Promise(resolve => { finishLogin = resolve })
+      if (command === "reopen_github_authorization") return Promise.resolve(null)
+      return original(command, args)
+    })
+    const store = createProductionSource(mock.bridge)
+    await store.initialize()
+    store.applicationActions.connectGitHub!()
+    store.applicationActions.reopenGitHubAuthorization!()
+    expect(mock.invoke).toHaveBeenCalledWith("reopen_github_authorization")
+    finishLogin({ ...source.github, state: "connected", account: "test-account" })
+    await vi.waitFor(() => expect(store.getSnapshot().source?.github.account).toBe("test-account"))
+    expect(store.getSnapshot().error).toBeNull()
+    store.dispose()
+  })
+
   it("restores native disconnected state after cancelled browser login", async () => {
     const mock = native()
     const original = mock.invoke.getMockImplementation()!

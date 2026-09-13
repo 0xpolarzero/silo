@@ -81,6 +81,8 @@ fn main() {
             secrets::retry_secret,
             github::read_github_state,
             github::connect_github,
+            github::cancel_github_connection,
+            github::reopen_github_authorization,
             github::disconnect_github,
             github::set_github_access_enabled,
             github::save_github_configuration,

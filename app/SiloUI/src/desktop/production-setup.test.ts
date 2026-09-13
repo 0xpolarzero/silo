@@ -16,13 +16,13 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
 }
-async function setup(savedActivity: SiloProgressEvent[] = []) {
-  const machines = vi.fn<() => Promise<unknown>>().mockResolvedValue(application)
+async function setup(savedActivity: SiloProgressEvent[] = [], currentApplication = application) {
+  const machines = vi.fn<() => Promise<unknown>>().mockResolvedValue(currentApplication)
   const identities = vi.fn<() => Promise<unknown>>().mockResolvedValue(undefined)
   const github = vi.fn<() => Promise<unknown>>().mockResolvedValue({ ...application.github, workspaceOperations: [{ workspace: request.github.workspaces[0].workspace, status: "failed", message: "Runtime did not acknowledge access", canRetry: true }] })
   const events = new Map<string, (event?: { payload: unknown }) => void>()
   const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) => {
-    if (command === "read_application_state") return application
+    if (command === "read_application_state") return currentApplication
     if (command === "read_backup_state") return { snapshotId: "test", availability: "available", archives: [], operation: null }
     if (command === "read_setup_activity") return savedActivity
     if (command === "save_machine_configuration") return machines()
@@ -37,6 +37,20 @@ async function setup(savedActivity: SiloProgressEvent[] = []) {
 }
 
 describe("production setup queue", () => {
+  it("finishes setup with zero sandboxes and persists completion", async () => {
+    const { store, invoke } = await setup([], { ...application, workspaces: [] })
+    const emptyRequest: OnboardingCompletionRequest = { ...request, machineConfiguration: { schemaVersion: 1, machines: [] }, github: { connectionState: "disconnected", workspaces: [] } }
+    const markComplete = vi.fn().mockResolvedValue(undefined)
+    await store.submitSetupStep("workspaces", emptyRequest)
+    await store.finishSetup(emptyRequest, markComplete)
+    expect(invoke).toHaveBeenCalledWith("save_machine_configuration", expect.objectContaining({ request: emptyRequest.machineConfiguration }))
+    expect(invoke).toHaveBeenCalledWith("configure_workspace_identities", { identities: [] })
+    expect(markComplete).toHaveBeenCalledOnce()
+    expect(store.getSnapshot().source?.workspaces).toEqual([])
+    expect(store.getSnapshot().setupQueue.every(({ status }) => status === "succeeded")).toBe(true)
+    store.dispose()
+  })
+
   it("restores saved activity without treating it as new setup progress", async () => {
     const saved: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId: "previous-attempt", phase: "workspaces", step: "setup-failed", timestamp: 1788912000000, level: "error", message: "Image download failed. Check your connection and retry.", safeForDisplay: true }
     const { store } = await setup([saved])

@@ -186,6 +186,9 @@ export function GitHubPage({
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
     setConnectionState(source.github.state)
+  }, [source.github])
+
+  useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
     setAccessEnabled(source.github.accessEnabled ?? true)
     // oxlint-disable-next-line react/set-state-in-effect
@@ -345,6 +348,8 @@ export function GitHubPage({
           setConnectionState("connecting")
           actions.connectGitHub?.()
         }}
+        onCancelConnection={actions.cancelGitHubConnection}
+        onReopenAuthorization={actions.reopenGitHubAuthorization}
         onWorkspaceSelectionsChange={updateSelections}
         onWorkspaceIdentityChange={updateIdentity}
         onCommitWorkspaceIdentity={commitIdentity}

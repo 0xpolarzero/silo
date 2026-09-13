@@ -159,6 +159,7 @@ export function OnboardingApp({
     }
     return completed ? { ...restored, currentStep: "review" } : restored
   })
+  const machinesInitialized = useRef(onboardingDraft !== null || draft.machines.length > 0)
   const currentDraft = useRef(draft)
   const editedIdentities = useRef(new Set<string>())
   const recoveryCleared = useRef(false)
@@ -187,7 +188,8 @@ export function OnboardingApp({
 
   useEffect(() => {
     const current = currentDraft.current
-    if (current.machines.length > 0 || current.unfinishedMachineEditor || source.machineConfigurations.length === 0) return
+    if (machinesInitialized.current || current.unfinishedMachineEditor || source.machineConfigurations.length === 0) return
+    machinesInitialized.current = true
     const next = { ...current, machines: source.machineConfigurations.map((machine) => ({ ...machine })), workspaceSelections: initialWorkspaceSelections(source), workspaceIdentities: initialWorkspaceIdentities(source) }
     currentDraft.current = next
     setDraft(next)
@@ -242,6 +244,7 @@ export function OnboardingApp({
 
   function saveMachines(updated: SetupMachineConfiguration[]) {
     const request = configurationRequest(updated)
+    machinesInitialized.current = true
     const current = currentDraft.current
     const previousNameByID = new Map(current.machines.map(({ id, name }) => [id, name]))
     const selections = Object.fromEntries(request.machines.map(({ id, name }) => {
@@ -358,6 +361,8 @@ export function OnboardingApp({
           workspaceIdentities={workspaceIdentities}
           currentHostGitIdentity={source.currentHostGitIdentity}
           onConnect={actions.connectGitHub}
+          onCancelConnection={actions.cancelGitHubConnection}
+          onReopenAuthorization={actions.reopenGitHubAuthorization}
           onWorkspaceSelectionsChange={updateWorkspaceSelections}
           onWorkspaceIdentityChange={updateWorkspaceIdentity}
           onResetWorkspaceIdentity={resetWorkspaceIdentity}

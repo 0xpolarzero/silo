@@ -39,6 +39,28 @@ async function restartStore(previous: SettingsStore) {
 }
 
 describe("onboarding restart recovery", () => {
+  it("deletes the last sandbox, preserves the empty draft after restart, and finishes setup", async () => {
+    const user = userEvent.setup()
+    const machine = onboardingScenarios.complete.machineConfigurations[0]
+    const first = createMemorySettingsStore({}, { currentStep: "workspaces", machines: [machine], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} })
+    const handlers = { ...actions(), submitStep: vi.fn() }
+    const view = render(onboarding(first, handlers, { scenario: "complete" }))
+    await user.click(screen.getByRole("button", { name: `Delete ${machine.name}` }))
+    await user.click(screen.getByRole("button", { name: `Confirm deletion of ${machine.name}` }))
+    expect(screen.queryByRole("button", { name: `Delete ${machine.name}` })).not.toBeInTheDocument()
+    expect(first.getSnapshot().onboardingDraft?.machines).toEqual([])
+    view.unmount()
+
+    const restored = await restartStore(first)
+    render(onboarding(restored, handlers, { scenario: "complete" }))
+    expect(screen.queryByRole("button", { name: `Delete ${machine.name}` })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Continue" }))
+    expect(handlers.submitStep).toHaveBeenCalledWith("workspaces", expect.objectContaining({ machineConfiguration: { schemaVersion: 1, machines: [] } }))
+    await user.click(screen.getByRole("tab", { name: /Review/ }))
+    await user.click(screen.getByRole("button", { name: "Finish" }))
+    expect(handlers.finishSetup).toHaveBeenCalledWith(expect.objectContaining({ machineConfiguration: { schemaVersion: 1, machines: [] } }))
+  })
+
   it("fills untouched identities when host detection finishes without replacing manual edits", async () => {
     const user = userEvent.setup()
     const store = createMemorySettingsStore()

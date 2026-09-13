@@ -20,6 +20,14 @@ function setup() {
   return { verify, invoke, store: createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge) }
 }
 describe("identity completion after relaunch", () => {
+  it.each([true, false])("checks an empty draft against native saved configuration: %s", async (verified) => {
+    const { store, verify, invoke } = setup()
+    verify.mockResolvedValue(verified)
+    await store.verifySetupIdentities({ machineConfiguration: { schemaVersion: 1, machines: [] }, github: { connectionState: "disconnected", workspaces: [] } })
+    expect(invoke).toHaveBeenCalledWith("verify_workspace_identities", { identities: [] })
+    expect(statuses(store)).toEqual(verified ? ["succeeded", "succeeded"] : ["idle", "idle"])
+    store.dispose()
+  })
   it("restores completion only from a successful native read, without changing a VM", async () => {
     const { store, invoke } = setup()
     expect(statuses(store)).toEqual(["idle", "idle"])

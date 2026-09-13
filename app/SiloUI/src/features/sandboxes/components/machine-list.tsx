@@ -348,11 +348,6 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
       finally { setCommitting(false) }
       return
     }
-    if (machines.length === 1) {
-      setPendingDelete(null)
-      setOperationError("At least one sandbox is required.")
-      return
-    }
     onMachinesChange(configurationRequest(machines.filter(({ id }) => id !== machine.id)).machines)
     setPendingDelete(null)
   }

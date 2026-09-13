@@ -44,7 +44,9 @@ fn stop_local_vms_with(
             machines.push(pending);
         }
     }
-    if !machines.iter().any(MachineConfiguration::is_vm) && !paths.home.exists() {
+    if runtime_never_initialized(paths)
+        || (!machines.iter().any(MachineConfiguration::is_vm) && !paths.home.exists())
+    {
         return Ok(());
     }
     let present: HashSet<_> = list_managed(runner, paths)?
@@ -87,6 +89,37 @@ fn stop_local_vms_with(
             failures.join("\n")
         )))
     }
+}
+
+// Failed first-run recovery in older versions can leave a directory in place
+// of the runtime alias. Only bypass the runtime when BOTH locations contain no
+// runtime state, and no surviving command owns one of the bootstrap locks.
+fn runtime_never_initialized(paths: &RuntimePaths) -> bool {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let Some(storage) = paths.storage_home.as_deref() else { return false; };
+    let mut locks = Vec::new();
+    for path in [&paths.home, storage] {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(metadata) if metadata.is_dir() => {}
+            _ => return false,
+        }
+        let Ok(entries) = fs::read_dir(path) else { return false; };
+        for entry in entries {
+            let Ok(entry) = entry else { return false; };
+            if !matches!(entry.file_name().to_str(), Some(".silo-configuration-worker.lock" | ".silo-backup-worker.lock")) {
+                return false;
+            }
+            if !entry.file_type().is_ok_and(|kind| kind.is_file()) { return false; }
+            let Ok(file) = fs::OpenOptions::new().read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(entry.path()) else { return false; };
+            // SAFETY: the open file owns the descriptor. Keep every lock until
+            // both directories have been checked, without waiting on children.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 { return false; }
+            locks.push(file);
+        }
+    }
+    true
 }
 
 // A failed guest verification can leave a real VM before metadata publication.
@@ -338,6 +371,60 @@ mod tests {
             .unwrap()
             .iter()
             .any(|args| args[0] == "stop"));
+    }
+
+    #[test]
+    fn quit_after_failed_first_setup_does_not_require_a_working_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = setup(&dir);
+        let pending = read_metadata(&paths.metadata).unwrap();
+        fs::remove_file(&paths.metadata).unwrap();
+        configuration_recovery::begin(&paths, &pending).unwrap();
+        paths.storage_home = Some(dir.path().join("storage"));
+        fs::create_dir(&paths.home).unwrap();
+        fs::write(paths.home.join(".silo-configuration-worker.lock"), b"").unwrap();
+        let runner = runner(None);
+        stop_local_vms_with(&runner, &paths).unwrap();
+        assert!(runner.calls.lock().unwrap().is_empty());
+        assert_eq!(configuration_recovery::shutdown_machines(&paths).unwrap(), pending.machines);
+    }
+
+    #[test]
+    fn bootstrap_shortcut_rejects_runtime_state_in_either_location() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = super::super::tests::paths(&dir);
+        let storage = dir.path().join("storage");
+        paths.storage_home = Some(storage.clone());
+        for location in [&paths.home, &storage] {
+            fs::create_dir_all(location).unwrap();
+            let state = location.join("run");
+            fs::create_dir(&state).unwrap();
+            assert!(!runtime_never_initialized(&paths));
+            fs::remove_dir(state).unwrap();
+        }
+        assert!(runtime_never_initialized(&paths));
+    }
+
+    #[test]
+    fn bootstrap_shortcut_rejects_active_workers_and_symlinks() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = super::super::tests::paths(&dir);
+        paths.storage_home = Some(dir.path().join("storage"));
+        fs::create_dir(&paths.home).unwrap();
+        let lock_path = paths.home.join(".silo-configuration-worker.lock");
+        let file = File::create(&lock_path).unwrap();
+        assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert!(!runtime_never_initialized(&paths));
+        drop(file);
+        assert!(runtime_never_initialized(&paths));
+        fs::remove_file(&lock_path).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("elsewhere"), &lock_path).unwrap();
+        assert!(!runtime_never_initialized(&paths));
+        fs::remove_file(lock_path).unwrap();
+        fs::remove_dir(&paths.home).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("elsewhere"), &paths.home).unwrap();
+        assert!(!runtime_never_initialized(&paths));
     }
 
     #[test]

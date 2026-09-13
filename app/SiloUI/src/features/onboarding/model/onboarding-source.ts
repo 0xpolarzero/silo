@@ -79,6 +79,8 @@ export interface OnboardingCompletionRequest {
 
 export interface OnboardingActions {
   submitStep?: (step: "workspaces" | "github", request: OnboardingCompletionRequest) => void
+  cancelGitHubConnection?: () => void
+  reopenGitHubAuthorization?: () => void
   connectGitHub: () => void
   saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void
   retryWorkspaceSetup: () => void

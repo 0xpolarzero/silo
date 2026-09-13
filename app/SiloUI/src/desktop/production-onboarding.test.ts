@@ -3,10 +3,24 @@ import { describe, expect, it, vi } from "vitest"
 import { onboardingScenarios } from "@/fixtures/scenarios"
 import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
+import type { ProductionSnapshot } from "./production-source"
 import { productionOnboardingSource } from "./production-onboarding"
 
 const application = applicationSourceForScenario("running")
 describe("production onboarding", () => {
+  it("enables Finish after an empty sandbox configuration is saved and verified", () => {
+    const emptyApplication = { ...application, workspaces: [] }
+    const setup = { setupCandidate: { schemaVersion: 1, machines: [] }, setupQueue: [
+      { id: "workspaceRun", status: "succeeded" }, { id: "workspaceVerify", status: "succeeded" },
+    ], setupEvents: [] } as unknown as ProductionSnapshot
+    const dependencies = { checks: onboardingScenarios.complete.preflightChecks, retry: vi.fn() }
+    const source = productionOnboardingSource(emptyApplication, dependencies, application.preferences, setup)
+    expect(source.machineConfigurations).toEqual([])
+    expect(projectOnboarding(source, "disconnected").finishEnabled).toBe(true)
+    const pending = { ...setup, setupQueue: setup.setupQueue.map((item) => ({ ...item, status: "running" as const })) }
+    expect(productionOnboardingSource(emptyApplication, dependencies, application.preferences, pending).readyToFinish).toBe(false)
+  })
+
   it("projects only live dependency and machine state", () => {
     const checks = [{ id: "system-os", title: "Supported OS", status: "pass" as const, detail: "macOS", remediation: null }]
     const source = productionOnboardingSource(application, { checks, retry: vi.fn() }, application.preferences)

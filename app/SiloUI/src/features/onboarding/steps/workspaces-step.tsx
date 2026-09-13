@@ -37,7 +37,7 @@ export function WorkspacesStep({ onConnectComputer, machines, progress, onMachin
   const failed = progress.status === "failed"
   const running = progress.status === "running"
   const complete = progress.status === "succeeded"
-  const title = failed ? "Sandbox setup couldn’t finish" : complete ? "Sandboxes are ready" : running ? "Creating your sandboxes" : "Sandboxes are waiting"
+  const title = machines.length === 0 ? "Create sandboxes later" : failed ? "Sandbox setup couldn’t finish" : complete ? "Sandboxes are ready" : running ? "Creating your sandboxes" : "Sandboxes are waiting"
 
   return (
     <section aria-labelledby="workspaces-title" className="flex h-full min-h-[28rem] flex-col gap-4">
@@ -56,7 +56,7 @@ export function WorkspacesStep({ onConnectComputer, machines, progress, onMachin
             complete && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
           )}><StatusIcon status={progress.status} className="size-3.5" /></ListRowIcon>}
           title={<h3>{title}</h3>}
-          detail={<>{progress.currentWorkspace && <span className="font-medium">{progress.currentWorkspace} · </span>}{progress.currentMessage}</>}
+          detail={machines.length === 0 ? "Continue setup without a sandbox. Add one from Sandboxes whenever you’re ready." : <>{progress.currentWorkspace && <span className="font-medium">{progress.currentWorkspace} · </span>}{progress.currentMessage}</>}
           detailClassName="whitespace-normal break-words select-text"
           actions={failed && progress.retryable && (
             <div className="col-start-2 shrink-0"><Button type="button" variant="outline" size="xs" onClick={onRetry}><RotateCw aria-hidden="true" />Retry</Button></div>
