@@ -31,6 +31,14 @@ mod updates;
 use tauri::{Manager, WindowEvent};
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if std::env::current_exe().is_ok_and(|path| path == std::path::Path::new("/usr/bin/silo-ui"))
+        && std::path::Path::new("/var/lib/silo/package-update-in-progress").exists()
+    {
+        eprintln!("Silo is being updated. Finish the package update, then open Silo again.");
+        return;
+    }
+
     let args: Vec<_> = std::env::args().collect();
     let bridge = match args.get(1).map(String::as_str) {
         Some("--remote-bridge") => Some(remote::run_bridge()),

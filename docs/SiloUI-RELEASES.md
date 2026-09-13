@@ -299,6 +299,14 @@ invalid signature encoding, version bounds, complete checksums and platform URLs
 a new version. It reads macOS Info.plist/Mach-O headers, Debian control metadata,
 and the signed AppImage release-info resource without executing any package.
 
+### Linux software source
+
+After publication, **Publish Silo system updates** verifies the public Debian
+packages and deploys signed APT metadata to GitHub Pages. Confirm that workflow
+succeeds before announcing availability through Software Updater. Initial
+setup, key rotation, migration, and installer tests are documented in
+[Linux system updates](SiloUI-LINUX-UPDATES.md).
+
 ### Required release acceptance evidence
 
 - Clean install from actual downloaded DMG, AppImage and Debian package.

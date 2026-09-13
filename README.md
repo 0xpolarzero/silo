@@ -13,7 +13,7 @@ Download Silo from [Releases](https://github.com/0xpolarzero/silo/releases). The
 | Platform | Requirements | Installation |
 | --- | --- | --- |
 | macOS | Apple Silicon, macOS 14+ | Open the DMG and drag Silo to Applications. |
-| Linux | x86-64 or ARM64, Ubuntu 24.04-compatible system | Make the AppImage executable and open it, or install the `.deb` with your package manager. |
+| Linux | x86-64 or ARM64, Ubuntu 24.04-compatible system | Install the `.deb` with your package manager and enable Silo updates when asked. Future releases appear in Software Updater. AppImage remains an optional portable download. |
 
 On macOS, first launch may require **System Settings → Privacy & Security → Open Anyway** because the app is not notarized. Local VMs on Linux require KVM access.
 

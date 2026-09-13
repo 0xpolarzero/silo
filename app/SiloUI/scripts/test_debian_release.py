@@ -25,6 +25,7 @@ class DebianReleaseTests(unittest.TestCase):
         (self.fixture / 'usr/bin').mkdir(parents=True)
         (self.fixture / 'DEBIAN').mkdir()
         (self.fixture / 'DEBIAN/md5sums').write_text('obsolete paths')
+        (self.fixture / 'DEBIAN/control').write_text('Package: silo\nVersion: 1.0.0\nArchitecture: amd64\n')
         for name in ('silo-ui', *TOOLS):
             path = self.fixture / 'usr/bin' / name
             path.write_text(f'private {name}')
@@ -45,6 +46,11 @@ class DebianReleaseTests(unittest.TestCase):
                 path = tree / 'usr/lib/Silo/bin' / name
                 self.assertEqual(path.read_text(), f'private {name}')
                 self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+            self.assertIn('debconf', (tree / 'DEBIAN/control').read_text())
+            self.assertIn('Signed-By: /usr/share/keyrings/silo-archive-keyring.gpg', (tree / 'usr/share/silo/apt/silo.sources').read_text())
+            for script in ('config', 'preinst', 'postinst', 'postrm'):
+                self.assertEqual((tree / 'DEBIAN' / script).stat().st_mode & 0o777, 0o755)
+            self.assertGreater((tree / 'usr/share/keyrings/silo-archive-keyring.gpg').stat().st_size, 0)
             sums = (tree / 'DEBIAN/md5sums').read_text().splitlines()
             expected = []
             for path in sorted(tree.rglob('*')):

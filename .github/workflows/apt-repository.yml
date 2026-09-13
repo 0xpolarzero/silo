@@ -1,0 +1,60 @@
+name: Publish Silo system updates
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [Publish verified Silo draft]
+    types: [completed]
+  schedule:
+    # Refresh the signed metadata before its 14-day expiry, even without releases.
+    - cron: '17 6 * * 1'
+concurrency:
+  group: silo-apt-repository
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    environment:
+      name: apt-publish
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y gnupg dpkg-dev
+      - name: Test signed repository generation
+        run: python3 -m unittest discover -s app/SiloUI/scripts -p 'test_apt_repository.py'
+      - uses: actions/configure-pages@v5
+      - name: Download verified public packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 app/SiloUI/scripts/download-apt-releases.py apt-packages
+      - name: Sign update repository
+        env:
+          SILO_APT_SIGNING_KEY: ${{ secrets.SILO_APT_SIGNING_KEY }}
+        run: |
+          set -eu
+          test -n "$SILO_APT_SIGNING_KEY"
+          export GNUPGHOME="$(mktemp -d)"
+          trap 'rm -rf "$GNUPGHOME"' EXIT
+          printf '%s' "$SILO_APT_SIGNING_KEY" | gpg --batch --import
+          python3 app/SiloUI/scripts/apt-repository.py --packages apt-packages --output apt-site --previous-url https://0xpolarzero.github.io/silo/apt --fingerprint "$(cat app/SiloUI/scripts/debian/signing-fingerprint.txt)"
+      - name: Reject stale publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: test "$(cat apt-packages/latest-version)" = "$(gh api repos/0xpolarzero/silo/releases/latest --jq .tag_name)"
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: apt-site
+      - name: Publish system updates
+        id: deployment
+        uses: actions/deploy-pages@v4

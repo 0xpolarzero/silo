@@ -9,7 +9,9 @@ import { useUpdates, type UpdateSnapshot } from "./update-store"
 function description(state: UpdateSnapshot) {
   switch (state.phase) {
     case "checking": return "Checking for updates…"
-    case "available": return `Version ${state.availableVersion} is available.`
+    case "available": return state.packageKind === "manual"
+      ? `Version ${state.availableVersion} is available. If you enabled Silo’s software source, quit Silo and install the update through Software Updater. You can also download the installer below.`
+      : `Version ${state.availableVersion} is available.`
     case "downloading": return "Downloading update…"
     case "ready": return state.canInstall ? "Ready to install. Silo will restart." : state.installBlockReason ?? "Installation is unavailable. Try checking again."
     case "installing": return "Installing update. Silo will restart…"

@@ -59,6 +59,7 @@ it("opens the package release for manual installations instead of offering nativ
   const user = userEvent.setup()
   const { backend } = mount({ packageKind: "manual", phase: "available" as const, availableVersion: "0.2.0" })
   await user.click(await screen.findByRole("button", { name: "Download package" }))
+  expect(screen.getByText(/install the update through Software Updater/)).toBeVisible()
   expect(backend.openRelease).toHaveBeenCalledOnce()
   expect(backend.download).not.toHaveBeenCalled()
   expect(screen.queryByRole("button", { name: "Restart and update" })).not.toBeInTheDocument()

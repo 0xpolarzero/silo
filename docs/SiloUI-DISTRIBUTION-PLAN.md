@@ -132,6 +132,10 @@ checks.
 
 ## Linux installation UX recommendation, 13 September 2026
 
+Implementation follow-up: [Linux system updates](SiloUI-LINUX-UPDATES.md) describes
+the new installer and publishing workflow. The assessment below records the
+previous released behavior that motivated it.
+
 The current Debian package installs the application normally but has no Silo
 APT update source. Its in-app update action opens a package download. This is
 usable for testing, but repeated manual downloads do not meet the desired
