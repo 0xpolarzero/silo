@@ -16,7 +16,9 @@ cannot register the source, and the existing released installers do not contain
 these hooks. After enrollment, the normal system refresh discovers Silo updates.
 No repeated package downloads or terminal commands are needed for normal updates.
 The in-app update card also explains the Software Updater route and retains a
-package download fallback for users who opted out.
+fallback for users who opted out: **View installers on GitHub** opens the release
+page, where **Assets** lists the installers. The button does not download a package
+or install an update itself.
 
 Quit Silo before applying a system update. Closing its window is not Quit.
 Quitting stops local VMs; remote VMs keep running. The installer refuses to
@@ -123,3 +125,52 @@ Xubuntu's graphical updater, native VM health, or a production release upgrade.
 - [Debian repository format](https://wiki.debian.org/DebianRepository/Format): hashes, relative package paths, and signed metadata.
 - [Debconf developer guide](https://manpages.debian.org/unstable/debconf-doc/debconf-devel.7.en.html): installer choices.
 - [GitHub Pages custom workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages): deployment permissions and artifacts.
+
+## Automatic discovery regression, 14 September 2026
+
+The previous native loop waited 30 seconds at launch and then slept 24 hours
+regardless of success, failure, or a skipped operation. Enabling checks did not
+wake it. This explains a reproducible failure mode: start offline, reconnect,
+and no automatic retry occurs that day. It does not establish which failure
+occurred on the reported Linux installation.
+
+The native schedule now checks after five seconds, retries failed requests after
+one minute with exponential backoff capped at 15 minutes, and checks daily after
+success. A five-second poll uses wall-clock deadlines so an overdue check runs
+after Linux resumes. Enabling automatic checks makes the next poll eligible.
+Admission and manual operations share the state lock; background checks preserve
+discovered updates, failed downloads, and verified installers.
+
+The updater remains host-owned. Tauri's [updater documentation](https://v2.tauri.app/plugin/updater/)
+describes explicit check, download, and install operations and mandatory signature
+verification. The application implements scheduling around the pinned plugin;
+no automatic download or installation was added.
+
+The packaged AppImage test (`app/SiloUI/scripts/test-linux-update.py`) now waits
+for automatic discovery without clicking Check for updates before exercising
+interrupted downloads, signature rejection, replacement, and restart. Run it on
+Linux with the isolated signed AppImages described in its header. Unit tests
+exercise the schedule with supplied times, including failure recovery, disabled
+checks, busy operations, and resume. Those tests do not prove a live Linux GUI
+upgrade or APT publication.
+
+Verification on the macOS development host used deterministic fixtures and
+synthetic GitHub build configuration for native tests:
+
+- `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml updates::`: 13 passed.
+- `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml runtime::update_recovery::`: 6 passed.
+- `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib -- --test-threads=1`: 8 passed; one subprocess-only helper ignored. Loopback server tests required local network permission.
+- `npm --prefix app/SiloUI run test:release`: 16 passed.
+- `python3 -m unittest discover -s app/SiloUI/scripts -p 'test_release_metadata.py'`: 4 passed.
+- Frontend typecheck, lint, and Python syntax validation of the packaged upgrade test passed.
+
+No native bundle was built or inspected, and no live VM or installed Linux
+application was touched. The packaged Linux acceptance test remains required
+before claiming release readiness.
+
+The full frontend run passed 734 of 735 tests; its sole failure expected the
+installation status in the old component. After updating that assertion for
+the shared installation guard, the affected application/update suites passed
+all 111 tests across four files. The other 76 test files passed in the full run.
+The guard now spans settings-save preparation and onboarding as well as native
+installation; the main application's existing installation guard remains.

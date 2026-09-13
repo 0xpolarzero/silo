@@ -10,7 +10,7 @@ function description(state: UpdateSnapshot) {
   switch (state.phase) {
     case "checking": return "Checking for updates…"
     case "available": return state.packageKind === "manual"
-      ? `Version ${state.availableVersion} is available. If you enabled Silo’s software source, quit Silo and install the update through Software Updater. You can also download the installer below.`
+      ? `Version ${state.availableVersion} is available. If you enabled Silo’s software source, quit Silo and install the update through Software Updater. For a manual installation, view the release on GitHub. On GitHub, open Assets and download the installer for your system.`
       : `Version ${state.availableVersion} is available.`
     case "downloading": return "Downloading update…"
     case "ready": return state.canInstall ? "Ready to install. Silo will restart." : state.installBlockReason ?? "Installation is unavailable. Try checking again."
@@ -45,7 +45,7 @@ export function UpdatesCard() {
             {confirm && installing && state ? <span className="flex shrink-0 gap-1.5">
               <Button size="xs" variant="outline" disabled={busy} onClick={() => setConfirm(false)}>Cancel</Button>
               <Button size="xs" disabled={busy || !state.canInstall} onClick={() => { setConfirm(false); updates.install(true) }}>Stop sandboxes and update</Button>
-            </span> : state?.phase === "available" ? <Button size="xs" variant="outline" disabled={busy} onClick={state.packageKind === "manual" ? updates.openRelease : updates.download}>{state.packageKind === "manual" ? "Download package" : "Download update"}</Button>
+            </span> : state?.phase === "available" ? <Button size="xs" variant="outline" disabled={busy} onClick={state.packageKind === "manual" ? updates.openRelease : updates.download}>{state.packageKind === "manual" ? "View installers on GitHub" : "Download update"}</Button>
               : state?.phase === "ready" ? <Button size="xs" variant="outline" disabled={busy || !state.canInstall} onClick={requestInstall}>Restart and update</Button>
                 : error || state?.phase === "downloading" || state?.phase === "installing" ? null : <Button size="xs" variant="outline" disabled={busy || !state} onClick={updates.check}><RefreshCw aria-hidden="true" className="size-3" />Check for updates</Button>}
           </InlineConfirmation>} />
@@ -62,7 +62,7 @@ export function UpdatesCard() {
         </div>}
         {state?.releaseNotes && state.availableVersion && <details className="px-2 pb-2 text-[11px] text-muted-foreground"><summary className="cursor-pointer">Release notes</summary><p className="mt-1 whitespace-pre-wrap break-words">{state.releaseNotes}</p></details>}
       </div>
-      <ListRow icon={<ListRowIcon><RefreshCw aria-hidden="true" className="size-3.5" /></ListRowIcon>} title="Automatically check for updates" detail="Checks quietly. You choose when to download and install."
+      <ListRow icon={<ListRowIcon><RefreshCw aria-hidden="true" className="size-3.5" /></ListRowIcon>} title="Automatically check for updates" detail="Checks shortly after launch and daily, and retries failed checks automatically. You choose when to download and install."
         detailClassName="whitespace-normal" actions={<Switch aria-label="Automatically check for updates" checked={state?.automaticChecks ?? false} disabled={!state || busy} onCheckedChange={updates.setAutomaticChecks} />} />
     </ListCard>
   </section>
@@ -72,7 +72,6 @@ export function UpdateNotice({ onOpen }: { onOpen: () => void }) {
   const updates = useUpdates()
   const [dismissed, setDismissed] = useState<string | null>(null)
   const state = updates?.snapshot
-  if (state?.phase === "installing") return <div role="status" className="pointer-events-auto flex max-w-full items-center gap-2 rounded-lg border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md"><Download className="size-3.5 shrink-0" aria-hidden="true" />Installing update. Silo will restart…</div>
   if (!state || !["available", "ready"].includes(state.phase) || !state.availableVersion || dismissed === `${state.availableVersion}:${state.phase}`) return null
   return <div role="status" className="pointer-events-auto flex max-w-full items-center gap-2 rounded-lg border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
     <Download className="size-3.5 shrink-0" aria-hidden="true" />

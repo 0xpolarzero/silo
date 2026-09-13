@@ -1,10 +1,12 @@
 //! Host-owned signed updates. The webview never chooses an endpoint, key or installer.
+mod schedule;
+use schedule::Schedule;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, RwLock, RwLockReadGuard},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -42,6 +44,7 @@ pub(crate) struct Snapshot {
     install_block_reason: Option<String>,
 }
 struct State {
+    schedule: Schedule,
     snapshot: Snapshot,
     update: Option<Update>,
     bytes: Option<Vec<u8>>,
@@ -175,6 +178,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     app.manage(Controller {
         preferences: path,
         state: Mutex::new(State {
+            schedule: Schedule::new(SystemTime::now()),
             update: None,
             bytes: None,
             snapshot: Snapshot {
@@ -204,21 +208,9 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        // Quiet launch check, then daily while Silo stays open. Failed checks never install anything.
-        tokio::time::sleep(Duration::from_secs(30)).await;
         loop {
-            let enabled = app
-                .state::<Controller>()
-                .state
-                .lock()
-                .map(|s| {
-                    s.snapshot.automatic_checks && !busy(&s.snapshot.phase) && s.bytes.is_none()
-                })
-                .unwrap_or(false);
-            if enabled {
-                let _ = check_for_update(app.clone()).await;
-            }
-            tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+            tokio::time::sleep(schedule::POLL_INTERVAL).await;
+            let _ = check(app.clone(), true).await;
         }
     });
     Ok(())
@@ -250,16 +242,36 @@ pub(crate) fn set_update_automatic_checks(
     enabled: bool,
 ) -> Result<Snapshot, String> {
     save_preferences(&app.state::<Controller>().preferences, enabled)?;
-    modify(&app, |s| s.snapshot.automatic_checks = enabled)
+    modify(&app, |s| {
+        if enabled && !s.snapshot.automatic_checks {
+            s.schedule.enable(SystemTime::now());
+        }
+        s.snapshot.automatic_checks = enabled;
+    })
 }
 #[tauri::command]
 pub(crate) async fn check_for_update(app: AppHandle) -> Result<Snapshot, String> {
+    check(app, false).await
+}
+async fn check(app: AppHandle, automatic: bool) -> Result<Snapshot, String> {
     {
         let controller = app.state::<Controller>();
         let mut state = controller
             .state
             .lock()
             .map_err(|_| "Update state is unavailable.")?;
+        // Admit automatic checks under the same lock as manual actions. Never
+        // discard a discovered update, a download retry, or verified bytes.
+        if automatic
+            && !state.schedule.due(
+                SystemTime::now(),
+                state.snapshot.automatic_checks,
+                busy(&state.snapshot.phase),
+                state.update.is_some() || state.bytes.is_some(),
+            )
+        {
+            return Ok(state.snapshot.clone());
+        }
         if busy(&state.snapshot.phase) {
             return Err("An update operation is already running.".into());
         }
@@ -280,6 +292,7 @@ pub(crate) async fn check_for_update(app: AppHandle) -> Result<Snapshot, String>
     .await;
     match result {
         Ok(update) => modify(&app, |s| {
+            s.schedule.completed(SystemTime::now(), true);
             s.snapshot.last_checked = time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
                 .ok();
@@ -296,7 +309,10 @@ pub(crate) async fn check_for_update(app: AppHandle) -> Result<Snapshot, String>
             s.snapshot.total_bytes = None;
             s.update = update;
         }),
-        Err(e) => fail(&app, check_error_message(&e), e),
+        Err(e) => {
+            modify(&app, |s| s.schedule.completed(SystemTime::now(), false))?;
+            fail(&app, check_error_message(&e), e)
+        }
     }
 }
 
@@ -514,10 +530,10 @@ pub(crate) async fn install_update(
             let _ = modify(&worker, |s| s.bytes = Some(bytes));
             return Err(match restore { Ok(()) => error, Err(resume) => format!("{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry.") });
         }
-        // Quit also takes the runtime lock to verify local VMs have stopped.
-        // Close admission before releasing installation guards, then let the
-        // ordinary exit path finish. The update journal retains the running set
-        // that startup will restore after this intentional restart.
+        // Settings are flushed before installation and the UI stays inert.
+        // Tauri restart cannot be deferred by the ordinary exit flush handler.
+        // Close admission before releasing installation guards. The update
+        // journal retains the running set for startup to restore after restart.
         crate::runtime::shutdown::begin();
         drop((_admission, _backup, _github, _secrets, _runtime));
         worker.restart()

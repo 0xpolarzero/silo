@@ -1,8 +1,8 @@
 import { ShutdownBoundary } from "@/desktop/shutdown-boundary"
 import { desktopUpdateBackend } from "@/desktop/updates"
-import { UpdatesProvider } from "@/features/updates/update-store"
+import { UpdatesProvider, useUpdates } from "@/features/updates/update-store"
 import { useMainRoute } from "@/desktop/use-main-route"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import type { SiloPreflightCheck } from "@/contracts/silo"
 import { SiloWindow } from "@/components/silo-window"
 import { useDependencyStore, type DependencyStore } from "@/desktop/dependencies"
@@ -41,9 +41,15 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   const routeRequest = useMainRoute(!statusPanel)
   const dependencies = useDependencyStore(dependencyStore)
   const { settings: currentSettings, store: settingsStore } = useSettings()
+  const [preparingUpdate, setPreparingUpdate] = useState(false)
   const updateBackend = useMemo(() => ({ ...desktopUpdateBackend, install: async (stopSandboxes: boolean) => {
-    await settingsStore.flush()
-    return desktopUpdateBackend.install(stopSandboxes)
+    setPreparingUpdate(true)
+    try {
+      await settingsStore.flush()
+      return await desktopUpdateBackend.install(stopSandboxes)
+    } finally {
+      setPreparingUpdate(false)
+    }
   } }), [settingsStore])
   const checks = dependencies?.checks
   const [previousFailures, setPreviousFailures] = useState<SiloPreflightCheck[]>([])
@@ -59,7 +65,7 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   // Finish persists completion; keep this session on its preferences screen until Open Silo.
   const [onboardingActive, setOnboardingActive] = useState(() => !currentSettings.onboardingComplete)
   if (!statusPanel && onboardingActive && dependencies) {
-    return <UpdatesProvider backend={updateBackend}><ProductionOnboarding application={current.source} dependencies={dependencies} source={source} onOpenApp={() => setOnboardingActive(false)} /></UpdatesProvider>
+    return <UpdatesProvider backend={updateBackend}><UpdateInstallationBoundary preparing={preparingUpdate}><ProductionOnboarding application={current.source} dependencies={dependencies} source={source} onOpenApp={() => setOnboardingActive(false)} /></UpdateInstallationBoundary></UpdatesProvider>
   }
   if (!current.source) {
     if (current.loading && !current.error && !failures.length) return <ApplicationLoading machines={current.savedMachines ?? []} statusPanel={statusPanel} />
@@ -71,9 +77,19 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   const localRuntimeFailures = remoteOnly ? [] : failures
   return statusPanel
     ? <StatusPanel source={current.source} actions={source.statusActions} />
-    : <UpdatesProvider backend={updateBackend}><ApplicationApp routeRequest={routeRequest} source={localRuntimeFailures.length ? { ...current.source, runtimeRepair: {
+    : <UpdatesProvider backend={updateBackend}><UpdateInstallationBoundary preparing={preparingUpdate}><ApplicationApp routeRequest={routeRequest} source={localRuntimeFailures.length ? { ...current.source, runtimeRepair: {
       status: "unavailable", checking,
       reason: failures.map(({ title, detail }) => `${title}: ${detail}`).join("\n"),
       recovery: [...new Set(failures.map(({ remediation }) => remediation).filter(Boolean))].join("\n"),
-    } } : current.source} actions={{ ...source.applicationActions, retryRuntimeChecks: retryChecks }} backup={current.backup} /></UpdatesProvider>
+    } } : current.source} actions={{ ...source.applicationActions, retryRuntimeChecks: retryChecks }} backup={current.backup} /></UpdateInstallationBoundary></UpdatesProvider>
+}
+
+function UpdateInstallationBoundary({ preparing, children }: { preparing: boolean; children: ReactNode }) {
+  const updates = useUpdates()
+  const installing = updates?.snapshot?.phase === "installing"
+  const blocked = preparing || installing
+  return <div className="flex h-full min-h-0 flex-col">
+    {blocked && <div role="status" className="border-b bg-muted px-4 py-2 text-xs">{installing ? "Installing update. Silo will restart…" : "Preparing update…"}</div>}
+    <div className="flex min-h-0 flex-1 flex-col" inert={blocked} aria-busy={blocked}>{children}</div>
+  </div>
 }

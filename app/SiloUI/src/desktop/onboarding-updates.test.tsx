@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { act, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
 import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
@@ -67,7 +67,7 @@ it("offers the manual package action during onboarding for system packages", asy
   backend.read.mockResolvedValue({ ...available, packageKind: "manual" })
   const { user } = mount()
   await user.click(await screen.findByRole("button", { name: "View update" }))
-  await user.click(screen.getByRole("button", { name: "Download package" }))
+  await user.click(screen.getByRole("button", { name: "View installers on GitHub" }))
   expect(backend.openRelease).toHaveBeenCalledOnce()
   expect(backend.download).not.toHaveBeenCalled()
 })
@@ -82,6 +82,27 @@ it("flushes onboarding settings before installing a ready update", async () => {
   await user.click(screen.getByRole("button", { name: "Restart and update" }))
   expect(order).toEqual(["flush", "install"])
   expect(backend.install).toHaveBeenCalledWith(false)
+  expect(screen.getByRole("navigation", { name: "Setup steps" }).closest("[inert]")).not.toBeNull()
+  const status = screen.getAllByRole("status").find(element => element.textContent === "Installing update. Silo will restart…")
+  expect(status).toBeVisible()
+  expect(status?.closest("[inert]")).toBeNull()
+})
+
+it("protects the unfinished setup while flushing and restores it when saving fails", async () => {
+  backend.read.mockResolvedValue({ ...available, phase: "ready" })
+  const { user, store } = mount()
+  let failFlush!: (error: Error) => void
+  vi.spyOn(store, "flush").mockReturnValue(new Promise<void>((_, reject) => { failFlush = reject }))
+  await user.click(await screen.findByRole("button", { name: "View update" }))
+  await user.click(screen.getByRole("button", { name: "Restart and update" }))
+  const steps = screen.getByRole("navigation", { name: "Setup steps" })
+  expect(steps.closest("[inert]")).not.toBeNull()
+  expect(screen.getByText("Preparing update…").closest("[inert]")).toBeNull()
+  await act(async () => failFlush(new Error("disk full")))
+  expect(steps.closest("[inert]")).toBeNull()
+  expect(screen.queryByText("Preparing update…")).not.toBeInTheDocument()
+  expect(backend.install).not.toHaveBeenCalled()
+  expect(store.getSnapshot().settings.onboardingComplete).toBe(false)
 })
 
 it("dismisses the onboarding notice without finishing setup", async () => {

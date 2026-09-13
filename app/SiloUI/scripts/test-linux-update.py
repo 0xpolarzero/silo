@@ -110,10 +110,10 @@ with tempfile.TemporaryDirectory(prefix='silo-real-update-') as temporary:
                 with socket.create_connection(('127.0.0.1',native),timeout=1):break
             except OSError:time.sleep(.1)
         wait=connect()
-        wait.until(lambda _:button('Check for updates').is_enabled())
         original=sha(args.application)
-        button('Check for updates').click()
-        wait.until(lambda _:button('Download update').is_enabled());button('Download update').click()
+        wait.until(lambda _:button('Download update').is_enabled())
+        checks.append('Startup automatically discovers the update without clicking Check for updates')
+        button('Download update').click()
         wait.until(lambda _:browser.find_elements(By.CSS_SELECTOR,"[role='progressbar']"))
         wait.until(lambda _:button('Retry').is_enabled())
         assert sha(args.application)==original

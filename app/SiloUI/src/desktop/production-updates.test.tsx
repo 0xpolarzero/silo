@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
 import { ProductionSurface } from "./production-surface"
@@ -42,6 +42,35 @@ it("does not install if pending settings cannot be saved", async () => {
   await user.click(await screen.findByRole("button", { name: "Install test update" }))
   expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish")
   expect(backend.install).not.toHaveBeenCalled()
+  expect(screen.getByRole("button", { name: "Install test update" }).closest("[inert]")).toBeNull()
+  expect(screen.queryByText("Preparing update…")).not.toBeInTheDocument()
+})
+it("blocks edits before flushing and keeps them blocked through native installation", async () => {
+  const user = userEvent.setup()
+  const store = createMemorySettingsStore({ onboardingComplete: true })
+  let finishFlush!: () => void
+  vi.spyOn(store, "flush").mockReturnValue(new Promise<void>(resolve => { finishFlush = resolve }))
+  render(<SettingsProvider store={store}><ProductionSurface source={source} dependencyStore={null} /></SettingsProvider>)
+  const install = await screen.findByRole("button", { name: "Install test update" })
+  await user.click(install)
+  expect(install.closest("[inert]")).not.toBeNull()
+  expect(screen.getByRole("status")).toHaveTextContent("Preparing update…")
+  expect(screen.getByRole("status").closest("[inert]")).toBeNull()
+  expect(backend.install).not.toHaveBeenCalled()
+  await act(async () => finishFlush())
+  expect(install.closest("[inert]")).not.toBeNull()
+  expect(screen.getByRole("status")).toHaveTextContent("Installing update. Silo will restart…")
+  expect(backend.subscribe).toHaveBeenCalledOnce()
+})
+it("restores editing when native installation fails", async () => {
+  const user = userEvent.setup()
+  backend.install.mockResolvedValue({ phase: "error", error: "Installation failed", retryAction: "install" })
+  render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={null} /></SettingsProvider>)
+  const install = await screen.findByRole("button", { name: "Install test update" })
+  await user.click(install)
+  expect(backend.install).toHaveBeenCalledOnce()
+  expect(install.closest("[inert]")).toBeNull()
+  expect(screen.queryByRole("status")).not.toBeInTheDocument()
 })
 it("does not start another update connection in the status panel", () => {
   render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={null} statusPanel /></SettingsProvider>)

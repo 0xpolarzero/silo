@@ -58,8 +58,10 @@ it("does not permit installation during active operations", async () => {
 it("opens the package release for manual installations instead of offering native installation", async () => {
   const user = userEvent.setup()
   const { backend } = mount({ packageKind: "manual", phase: "available" as const, availableVersion: "0.2.0" })
-  await user.click(await screen.findByRole("button", { name: "Download package" }))
+  await user.click(await screen.findByRole("button", { name: "View installers on GitHub" }))
   expect(screen.getByText(/install the update through Software Updater/)).toBeVisible()
+  expect(screen.getByText(/On GitHub, open Assets and download the installer for your system/)).toBeVisible()
+  expect(screen.queryByText(/installer below/)).not.toBeInTheDocument()
   expect(backend.openRelease).toHaveBeenCalledOnce()
   expect(backend.download).not.toHaveBeenCalled()
   expect(screen.queryByRole("button", { name: "Restart and update" })).not.toBeInTheDocument()
@@ -141,9 +143,23 @@ it("explains an inspection failure without claiming an operation is still runnin
   expect(screen.getByRole("button", { name: "Restart and update" })).toBeDisabled()
   expect(screen.queryByText("Wait for active operations to finish.")).not.toBeInTheDocument()
 })
-it("keeps installation status visible without offering another update action", async () => {
+it("leaves installation status to the application guard without offering another update action", async () => {
   mount({ phase: "installing" })
-  expect(await screen.findByRole("status")).toHaveTextContent("Installing update. Silo will restart…")
+  expect(await screen.findByText("Installing update. Silo will restart…")).toBeVisible()
+  expect(screen.queryByRole("status")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "View update" })).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Check for updates" })).not.toBeInTheDocument()
+})
+
+it("surfaces a native automatic discovery without a manual check or download", async () => {
+  const user = userEvent.setup()
+  const { backend, emit, open } = mount({ packageKind: "appimage" })
+  await screen.findByText("Version 0.1.0")
+  emit({ phase: "checking" })
+  emit({ phase: "available", availableVersion: "0.2.0" })
+  expect(screen.getByRole("status")).toHaveTextContent("Silo 0.2.0 is available.")
+  await user.click(screen.getByRole("button", { name: "View update" }))
+  expect(open).toHaveBeenCalledOnce()
+  expect(backend.check).not.toHaveBeenCalled()
+  expect(backend.download).not.toHaveBeenCalled()
 })

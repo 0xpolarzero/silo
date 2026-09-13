@@ -1823,7 +1823,8 @@ it("prevents app interaction during installation and restores the existing page 
   expect(screen.getByRole("button", { name: "Search or jump to" })).toBeDisabled()
   expect(document.querySelector("#application-sidebar")).toHaveAttribute("inert")
   expect(document.querySelector("#application-panel-settings")?.closest("[inert]")).not.toBeNull()
-  expect(screen.getByRole("status")).not.toHaveAttribute("inert")
+  // ProductionSurface owns the accessible installation status outside its guard.
+  expect(screen.queryByRole("button", { name: "View update" })).not.toBeInTheDocument()
   act(() => emit({ ...state, phase: "error", error: "Could not install." }))
   expect(document.querySelector("#application-panel-settings")?.closest("[inert]")).toBeNull()
   expect(document.querySelector("#application-sidebar")).not.toHaveAttribute("inert")
