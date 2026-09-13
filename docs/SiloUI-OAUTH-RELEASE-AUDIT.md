@@ -5,6 +5,37 @@ GitHub App client secret through public desktop packages.
 
 ## Verdict
 
+### September 13 recovery follow-up
+
+Silo 0.3.1 registered the Cancel and Open browser again handlers but omitted
+their commands from the Tauri build manifest and main-window capability.
+The native permission regression failed against the generated ACL artifacts
+before the fix and passed after adding both grants. The grants are limited to
+the local main window. A frontend integration regression also covers displaying
+a rejected cancellation, retrying successfully while OAuth is pending, and
+ignoring a late completion. These checks do not prove installed Linux behavior.
+
+The same user reported a 404 at GitHub's authorization endpoint, before the
+loopback callback. On September 13 the authenticated GitHub Apps list still
+showed `microsandbox-workspaces`; opening its settings required reauthentication.
+Current registration details and the cause of that 404 remain unverified.
+The earlier live PKCE result below is historical evidence, not verification of
+this failing attempt. Do not diagnose a callback-port mismatch from the URL
+alone or replay a user's authorization state to test it.
+
+On September 14, after the owner reauthenticated, settings confirmed the same
+client ID and callback URI as the earlier audit. Advanced settings showed
+"Make public" and "Allow this GitHub App to be installed on other accounts":
+the production registration is private. GitHub's
+[June 2025 authentication restriction](https://github.blog/changelog/2025-06-24-security-updates-for-apps-and-api-access/)
+allows only the owning user to sign into a private user-owned GitHub App.
+This blocks other accounts independently of the desktop OS or browser. The
+Linux browser's signed-in account remains unverified. After explicit owner
+approval, the registration was made public on September 14. GitHub confirmed:
+"The GitHub App is now public. Anyone is free to install it." No callback or
+repository permission settings were changed. A successful Linux authorization
+still requires verification by the affected user.
+
 The client secret is present and extractable in the sampled public executables.
 This is the documented public-client architecture, not evidence of an OAuth
 authorization bypass. No vulnerability caused by distributing this value was

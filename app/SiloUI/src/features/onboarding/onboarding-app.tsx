@@ -27,6 +27,7 @@ export interface OnboardingAppProps {
   source: OnboardingSource
   actions: OnboardingActions
   githubConnectionState: GitHubConnectionState
+  operationError?: string | null
   completed: boolean
   presentationOnlyCompleted?: boolean
   repositoryOptions?: readonly string[]
@@ -139,6 +140,7 @@ export function OnboardingApp({
   source,
   actions,
   githubConnectionState,
+  operationError,
   completed,
   presentationOnlyCompleted = false,
   repositoryOptions,
@@ -354,6 +356,7 @@ export function OnboardingApp({
           activityEvents={source.activityEvents ?? source.progressEvents}
           workspaces={machineWorkspaceViews}
           connectionState={githubConnectionState}
+          notice={operationError ? <p role="alert" className="text-xs text-destructive">{operationError}</p> : undefined}
           repositoryOptions={availableRepositories}
           workspaceSelections={workspaceSelections}
           workspaceRepositoryAccess={draft.workspaceRepositoryAccess}

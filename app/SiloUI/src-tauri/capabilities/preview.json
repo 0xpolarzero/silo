@@ -50,6 +50,8 @@
     "allow-retry-secret",
     "allow-read-github-state",
     "allow-connect-github",
+    "allow-cancel-github-connection",
+    "allow-reopen-github-authorization",
     "allow-disconnect-github",
     "allow-set-github-access-enabled",
     "allow-save-github-configuration",

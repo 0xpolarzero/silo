@@ -91,6 +91,8 @@ fn main() {
             "retry_secret",
             "read_github_state",
             "connect_github",
+            "cancel_github_connection",
+            "reopen_github_authorization",
             "disconnect_github",
             "set_github_access_enabled",
             "save_github_configuration",
