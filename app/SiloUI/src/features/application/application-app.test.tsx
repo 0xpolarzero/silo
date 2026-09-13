@@ -1165,7 +1165,7 @@ describe("application", () => {
   })
 
   it("does not show a VM secret restart label on an SSH machine", () => {
-    const source = applicationSourceForScenario("running")
+    const source = structuredClone(applicationSourceForScenario("running"))
     source.workspaces[0].machine = {
       id: source.workspaces[0].machine.id,
       kind: "ssh",
@@ -1176,6 +1176,27 @@ describe("application", () => {
     }
     renderApplication("running", source)
     expect(within(appPanel("Sandboxes")).queryByRole("note")).not.toBeInTheDocument()
+  })
+
+  it("opens the sandbox terminal and a selected editor folder from overview", async () => {
+    const source = applicationSourceForScenario("running")
+    const { actions, user } = renderApplication("running", source)
+    const overview = within(appPanel("Sandboxes"))
+    await user.click(overview.getByRole("button", { name: `Open dev in ${source.preferences.terminal}` }))
+    expect(actions.openTerminal).toHaveBeenCalledWith("dev")
+    expect(overview.getByRole("button", { name: `Open playgrounds in ${source.preferences.editor}` })).toBeDisabled()
+    await user.click(overview.getByRole("button", { name: `Open dev in ${source.preferences.editor}` }))
+    const open = overview.getByRole("button", { name: `Open in ${source.preferences.editor}` })
+    await waitFor(() => expect(open).toBeEnabled())
+    await user.click(open)
+    expect(actions.openEditor).toHaveBeenCalledWith("dev", "/workspace")
+    await user.click(overview.getByRole("button", { name: "Back to sandboxes" }))
+    expect(overview.getByRole("button", { name: "Stop dev" })).toBeVisible()
+    const sections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+    await user.click(sections.getByRole("button", { name: "Files" }))
+    const repositories = within(overview.getByRole("list", { name: "Repositories" }))
+    await user.click(repositories.getAllByRole("button", { name: `Open in ${source.preferences.editor}` })[0])
+    expect(actions.openEditor).toHaveBeenLastCalledWith("dev", source.workspaces[0].repositories[0].path)
   })
 
   it("routes compact lifecycle actions with the exact sandbox", async () => {

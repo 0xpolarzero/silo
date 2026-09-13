@@ -1,7 +1,9 @@
+import { StatusFolderPicker } from "@/features/status-bar/status-folder-picker"
+import { workspaceAvailability } from "../model/workspace-availability"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
-import { CircleAlert, Loader2, Play, RotateCw, Square, TriangleAlert } from "lucide-react"
+import { CircleAlert, Code, Loader2, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useState } from "react"
 
 import { ListRowIcon } from "@/components/list-row"
@@ -207,6 +209,7 @@ export function OverviewPage({
   actions: ApplicationActions
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
 }) {
+  const [folderWorkspaceId, setFolderWorkspaceId] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [pendingStart, setPendingStart] = useState<string | null>(null)
   const [operationUnavailable, setOperationUnavailable] = useState(false)
@@ -219,6 +222,13 @@ export function OverviewPage({
   const localMachines = machines.filter(machine => !workspaces.get(machine.id)?.computer)
   function updateLocal(machine: SetupMachineConfiguration, original?: SetupMachineConfiguration) {
     onMachinesChange(original ? localMachines.map(item => item.id === original.id ? machine : item) : [...localMachines, machine])
+  }
+
+  const folderWorkspace = folderWorkspaceId ? workspaces.get(folderWorkspaceId) : undefined
+  if (folderWorkspace && workspaceAvailability(folderWorkspace, source).canOpen) {
+    return <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
+      <StatusFolderPicker key={folderWorkspace.machine.id} workspace={folderWorkspace} editor={source.preferences.editor} listDirectory={actions.listWorkspaceDirectory} onBack={() => setFolderWorkspaceId(null)} onOpen={(path) => actions.openEditor(workspaceTarget(folderWorkspace), path)} />
+    </div>
   }
 
   return (
@@ -314,7 +324,10 @@ export function OverviewPage({
                   {workspace?.attention && <> · {workspace.attention.message}</>}
                 </span>
               ),
-              actions: <WorkspaceActions target={workspace && workspaceTarget(workspace)} machine={machine} state={state} actions={{
+              actions: <>
+                <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={!workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction>
+                <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => setFolderWorkspaceId(machine.id)}><Code /></SandboxAction>
+                <WorkspaceActions target={workspace && workspaceTarget(workspace)} machine={machine} state={state} actions={{
                 ...actions,
                 startWorkspace: (name) => {
                   if (!workspace?.computer && source.vmOperationsUnavailable) setOperationUnavailable(true)
@@ -323,7 +336,7 @@ export function OverviewPage({
                 },
                 stopWorkspace: (name) => !workspace?.computer && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
                 restartWorkspace: (name) => !workspace?.computer && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
-              }} disabled={configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale")} />,
+              }} disabled={configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale")} /></>,
             }
           }}
         />
