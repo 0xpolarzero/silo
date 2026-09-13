@@ -1,0 +1,74 @@
+name: Prepare cached release runtime
+description: Restore verified public runtime inputs; only main can populate shared caches.
+inputs:
+  runner:
+    description: Pinned runner image label
+    required: true
+  target:
+    description: Rust target triple
+    required: true
+  save:
+    description: Populate default-branch caches from the credential-free warmer
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Restore public runtime cache
+      id: runtime
+      uses: actions/cache/restore@v4
+      with:
+        key: silo-runtime-v1-${{ inputs.runner }}-${{ inputs.target }}-rust1.94.0-${{ hashFiles('app/SiloUI/scripts/prepare-microsandbox-runtime.mjs', 'app/SiloUI/scripts/microsandbox-runtime.mjs', 'app/SiloUI/scripts/git-runtime.mjs', 'app/SiloUI/scripts/guest-image.mjs', 'app/SiloUI/patches/microsandbox-*.patch', 'app/SiloUI/guest-image/image-lock.json') }}
+        path: |
+          app/SiloUI/src-tauri/target/runtime-cache/v*/msb-*
+          app/SiloUI/src-tauri/target/runtime-cache/v*/microsandbox-*.tar.gz
+          app/SiloUI/src-tauri/target/runtime-cache/v*/agentd-*
+          app/SiloUI/src-tauri/target/runtime-cache/v*/licenses
+          app/SiloUI/src-tauri/target/runtime-cache/v*/libkrunfw-*
+          app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb
+          app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb.sha256
+          app/SiloUI/src-tauri/target/runtime-cache/dugite
+          app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz
+    - name: Restore Cargo downloads
+      id: cargo
+      uses: actions/cache/restore@v4
+      with:
+        restore-keys: silo-cargo-downloads-v1-${{ inputs.runner }}-${{ inputs.target }}-
+        key: silo-cargo-downloads-v1-${{ inputs.runner }}-${{ inputs.target }}-${{ hashFiles('app/SiloUI/src-tauri/Cargo.lock', 'app/SiloUI/scripts/microsandbox-runtime.mjs', 'app/SiloUI/patches/microsandbox-*.patch') }}
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+    # Always verify and re-stage cached inputs, and regenerate release-info.json.
+    - name: Prepare native resources
+      shell: bash
+      working-directory: app/SiloUI
+      run: npm run runtime:prepare
+    - name: Warm application dependency downloads
+      if: inputs.save == 'true' && github.ref == 'refs/heads/main'
+      shell: bash
+      working-directory: app/SiloUI
+      run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked --target '${{ inputs.target }}'
+    - name: Save public runtime cache
+      if: inputs.save == 'true' && github.ref == 'refs/heads/main' && steps.runtime.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        key: ${{ steps.runtime.outputs.cache-primary-key }}
+        path: |
+          app/SiloUI/src-tauri/target/runtime-cache/v*/msb-*
+          app/SiloUI/src-tauri/target/runtime-cache/v*/microsandbox-*.tar.gz
+          app/SiloUI/src-tauri/target/runtime-cache/v*/agentd-*
+          app/SiloUI/src-tauri/target/runtime-cache/v*/licenses
+          app/SiloUI/src-tauri/target/runtime-cache/v*/libkrunfw-*
+          app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb
+          app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb.sha256
+          app/SiloUI/src-tauri/target/runtime-cache/dugite
+          app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz
+    - name: Save Cargo downloads
+      if: inputs.save == 'true' && github.ref == 'refs/heads/main' && steps.cargo.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        key: ${{ steps.cargo.outputs.cache-primary-key }}
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db

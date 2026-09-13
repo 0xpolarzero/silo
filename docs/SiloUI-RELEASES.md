@@ -334,3 +334,33 @@ setup, key rotation, migration, and installer tests are documented in
 
 Reviewed 2026-09-10. Distribution/update acceptance evidence is tracked in
 `docs/SiloUI-DISTRIBUTION-PLAN.md`.
+
+## Release CI caches
+
+The release workflow runs frontend tests, type checking, lint, and Node release
+checks once in a shared job. Draft creation requires that job to pass. Each
+platform still runs Python release checks, native tests, updater checks, and
+its packaging and signing verification.
+
+`warm-release-caches.yml` populates caches on `main` when runtime inputs or the
+Cargo lockfile change; it also supports manual dispatch on `main`. Let its first
+cold run finish before tagging a release to benefit from the cache.
+[GitHub cache scope](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
+allows tags to restore default-branch caches, but not caches from other tags.
+Release jobs restore caches without saving them.
+
+The shared `prepare-release-runtime` action caches pinned public downloads,
+patched MicroSandbox executables and their checksums, and the guest archive.
+Keys include the runner, target, Rust toolchain, staging scripts, runtime patch,
+and guest lockfile, so app version changes alone do not invalidate the runtime.
+Preparation always verifies and stages restored inputs and regenerates package
+metadata. Cache misses follow the normal build path.
+
+Cargo caches contain only registry indexes, downloaded crates, and Git databases,
+following the [Cargo home guidance](https://doc.rust-lang.org/cargo/guide/cargo-home.html).
+Application executables, Cargo build trees, and local configuration are excluded.
+Rust application compilation still runs for every release.
+
+The 0.3.1 macOS release spent about 14 minutes preparing its runtime. Reusing the
+patched runtime targets that cost; actual savings must be measured on a release
+with a warm cache. The first cache-warming run still pays the cold build cost.

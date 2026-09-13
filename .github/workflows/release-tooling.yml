@@ -9,6 +9,7 @@ on:
       - 'app/SiloUI/src-tauri/Cargo.*'
       - '.github/workflows/*release*.yml'
       - '.github/workflows/apt-repository.yml'
+      - '.github/actions/prepare-release-runtime/**'
   push:
     branches: [main]
     paths:
@@ -18,6 +19,7 @@ on:
       - 'app/SiloUI/src-tauri/Cargo.*'
       - '.github/workflows/*release*.yml'
       - '.github/workflows/apt-repository.yml'
+      - '.github/actions/prepare-release-runtime/**'
 
 permissions:
   contents: read

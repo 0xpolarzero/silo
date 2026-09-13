@@ -1,0 +1,61 @@
+name: Warm Silo release caches
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/prepare-release-runtime/**'
+      - '.github/workflows/warm-release-caches.yml'
+      - 'app/SiloUI/scripts/prepare-microsandbox-runtime.mjs'
+      - 'app/SiloUI/scripts/microsandbox-runtime.mjs'
+      - 'app/SiloUI/scripts/git-runtime.mjs'
+      - 'app/SiloUI/scripts/guest-image.mjs'
+      - 'app/SiloUI/patches/microsandbox-*.patch'
+      - 'app/SiloUI/guest-image/image-lock.json'
+      - 'app/SiloUI/src-tauri/Cargo.lock'
+
+permissions:
+  contents: read
+concurrency:
+  group: silo-release-cache-warmer
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    # Only default-branch caches can be shared by all version tags.
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install native Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev libcap-ng-dev cmake
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal
+          rustup default 1.94.0
+          test "$(rustc --print host-tuple)" = '${{ matrix.target }}'
+      # No signing environment or GitHub App credentials enter this job.
+      - uses: ./.github/actions/prepare-release-runtime
+        with:
+          runner: ${{ matrix.runner }}
+          target: ${{ matrix.target }}
+          save: 'true'
