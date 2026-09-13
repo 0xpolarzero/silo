@@ -5,6 +5,7 @@ import { Tabs } from "@/components/ui/tabs"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { WindowToolbar } from "@/components/window-toolbar"
 import { OnboardingFooter } from "@/features/onboarding/components/onboarding-footer"
+import { OnboardingUpdates } from "@/features/onboarding/components/onboarding-updates"
 import { StepNavigation } from "@/features/onboarding/components/step-navigation"
 import type { OnboardingStep, OnboardingViewModel } from "@/features/onboarding/model/onboarding-state"
 import { useSidebarDisclosure } from "@/hooks/use-sidebar-disclosure"
@@ -58,7 +59,7 @@ export function OnboardingShell({ activeStep, viewModel, onStepChange, onBack, o
           onBlurCapture={blurSidebar}
         />
         <div className="flex min-h-0 min-w-0 flex-col">
-          <div className="relative min-h-0 flex-1 overflow-hidden">{children}</div>
+          <div className="relative min-h-0 flex-1 overflow-hidden">{children}<OnboardingUpdates /></div>
           <OnboardingFooter activeStep={activeStep} viewModel={viewModel} onBack={onBack} onContinue={onContinue} completed={completed} onOpenApp={onOpenApp} />
         </div>
       </Tabs>

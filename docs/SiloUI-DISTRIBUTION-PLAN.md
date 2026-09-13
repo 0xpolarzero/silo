@@ -129,3 +129,30 @@ verification branch. Nothing was published. Downloaded macOS DMG/Gatekeeper and
 post-update Keychain behavior remain release acceptance work after the helper
 signing decision; the successful temporary upgrade alone does not close those
 checks.
+
+## Linux installation UX recommendation, 13 September 2026
+
+The current Debian package installs the application normally but has no Silo
+APT update source. Its in-app update action opens a package download. This is
+usable for testing, but repeated manual downloads do not meet the desired
+install-once experience.
+
+For the supported Ubuntu-compatible audience, the recommended next distribution
+step is to retain the Debian installer and offer a signed APT source during
+installation. Updates can then arrive through the normal system updater.
+This is a proposal, not implemented behavior. VS Code uses this installation
+pattern: its Debian package offers the repository and signing key to enable
+updates through the package manager. See its [Linux installation guide](https://code.visualstudio.com/docs/setup/linux)
+and Ubuntu's [third-party repository guidance](https://ubuntu.com/server/docs/explanation/software/third-party-repository-usage/).
+Before shipping, verify package upgrades while Silo or its VMs are running;
+system package updates do not invoke Silo's in-app update shutdown coordination.
+
+The existing AppImage supports Silo's in-app updater, but users still need to
+make it executable and arrange a stable location/menu entry. Switching the
+primary download to AppImage alone does not finish installation UX. See the
+[AppImage user guide](https://docs.appimage.org/user-guide/),
+[desktop integration reference](https://docs.appimage.org/reference/desktop-integration.html),
+and [Tauri updater documentation](https://v2.tauri.app/plugin/updater/).
+An identical in-app update flow on Linux and macOS would instead require a
+polished AppImage installation/integration flow. Keep package-format choices
+out of the primary download journey once a default is selected.

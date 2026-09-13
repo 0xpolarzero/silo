@@ -59,7 +59,7 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   // Finish persists completion; keep this session on its preferences screen until Open Silo.
   const [onboardingActive, setOnboardingActive] = useState(() => !currentSettings.onboardingComplete)
   if (!statusPanel && onboardingActive && dependencies) {
-    return <ProductionOnboarding application={current.source} dependencies={dependencies} source={source} onOpenApp={() => setOnboardingActive(false)} />
+    return <UpdatesProvider backend={updateBackend}><ProductionOnboarding application={current.source} dependencies={dependencies} source={source} onOpenApp={() => setOnboardingActive(false)} /></UpdatesProvider>
   }
   if (!current.source) {
     if (current.loading && !current.error && !failures.length) return <ApplicationLoading machines={current.savedMachines ?? []} statusPanel={statusPanel} />

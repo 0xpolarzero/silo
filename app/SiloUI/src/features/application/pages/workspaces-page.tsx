@@ -317,7 +317,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
                 data-activity-id={item.id}
                 data-activity-status={item.status}
                 className={cn(
-                  "hover:bg-muted/35",
+                  "hover:bg-muted/35 select-text",
                   item.status === "running" && "bg-primary/[0.025]",
                   item.tone === "warning" && "bg-amber-500/[0.035]",
                   item.tone === "danger" && "bg-destructive/[0.025]",
@@ -356,6 +356,13 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
                   <div className="flex max-w-[40%] shrink-0 flex-col items-end gap-1" data-activity-meta>
                     <time dateTime={item.occurredAt} className="text-[10px] text-muted-foreground">{new Date(item.occurredAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" })}</time>
                     <div className="flex flex-wrap justify-end gap-1">
+                      <CopyButton
+                        value={`${item.title}\n${item.detail}`}
+                        labels={{ idle: "Copy activity", copied: "Activity copied", failed: "Could not copy activity" }}
+                        variant="ghost"
+                        size="icon"
+                        className="size-5 [&_svg]:size-3"
+                      />
                       {item.workspace && workspace && <WorkspaceBadge name={workspace.machine.name} state={workspace.state} />}
                       <StatusBadge indicator={<CategoryIcon className="size-2.5" />} aria-label={`Category: ${category.label}`}>{category.label}</StatusBadge>
                     </div>

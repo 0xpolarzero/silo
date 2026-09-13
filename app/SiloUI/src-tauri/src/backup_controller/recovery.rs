@@ -530,6 +530,8 @@ pub(super) fn recover_at_paths(
     let _guard = runtime::MUTATION_LOCK
         .lock()
         .map_err(|_| "Sandbox operations unavailable.")?;
+    runtime::prepare_runtime_home(&paths.home, paths.storage_home.as_deref())
+        .map_err(|e| e.to_string())?;
     let _command = backup::wait_for_interrupted_command(&paths.home, Duration::from_secs(60))
         .map_err(|e| e.to_string())?;
     // A cleanup `remove` from the previous process uses the general runtime

@@ -45,7 +45,9 @@ pub struct ManagementStatus {
 }
 fn directory() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
-    let dir = PathBuf::from(home).join(".silo/desktop-remote");
+    let root = PathBuf::from(home).join(".silo");
+    crate::runtime::prepare_private_directory(&root).map_err(|e| e.to_string())?;
+    let dir = root.join("desktop-remote");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     Ok(dir)

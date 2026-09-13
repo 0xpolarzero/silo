@@ -354,6 +354,7 @@ pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) 
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     uuid::Uuid::parse_str(vm).map_err(|_| "Invalid VM identity.")?;
     let home = app.path().home_dir().map_err(|_| FAILED)?;
+    crate::runtime::prepare_private_directory(&home.join(".silo")).map_err(|e| e.to_string())?;
     let root = home.join(".silo/desktop-remote/ssh");
     private_directory(&root)?;
     let client = root.join(format!("{host}.key"));

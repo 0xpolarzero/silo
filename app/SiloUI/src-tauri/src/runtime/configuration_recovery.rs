@@ -96,7 +96,7 @@ pub(super) fn finish(paths: &RuntimePaths) -> Result<(), RuntimeError> {
 }
 
 pub(crate) fn command_lock(paths: &RuntimePaths, timeout: Duration) -> Result<File, RuntimeError> {
-    fs::create_dir_all(&paths.home).map_err(failure)?;
+    prepare_runtime_home(&paths.home, paths.storage_home.as_deref())?;
     let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
         .open(paths.home.join(".silo-configuration-worker.lock")).map_err(failure)?;
     let started = Instant::now();

@@ -375,6 +375,30 @@ fn runtime_home_alias(user_home: &Path, storage_home: &Path) -> PathBuf {
         .join(format!("{:x}", digest)[..12].to_string())
 }
 
+/// Create or secure an account-owned directory without following a symlink.
+#[cfg(unix)]
+pub(crate) fn prepare_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let directory = fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(path)?;
+    let metadata = directory.metadata()?;
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
+            format!("Silo's directory {} is owned by UID {}, not this account.", path.display(), metadata.uid())));
+    }
+    if metadata.mode() & 0o022 != 0 {
+        directory.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o777 & !0o022))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn prepare_runtime_home(
     home: &Path,
     storage_home: Option<&Path>,
@@ -399,28 +423,23 @@ pub(crate) fn prepare_runtime_home(
         })?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-            let mut builder = fs::DirBuilder::new();
-            builder.mode(0o700);
-            match builder.create(parent) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-            let metadata = fs::symlink_metadata(parent)?;
-            if !metadata.is_dir()
-                || metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.mode() & 0o022 != 0
-            {
-                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Silo's runtime alias directory must be owned by this account and not writable by other users."));
-            }
+            use std::os::unix::fs::MetadataExt;
+            prepare_private_directory(parent)?;
             match fs::symlink_metadata(home) {
                 Ok(metadata) => {
-                    if !metadata.file_type().is_symlink()
-                        || metadata.uid() != unsafe { libc::geteuid() }
-                        || fs::read_link(home)? != storage_home
-                    {
-                        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Silo's runtime alias already points elsewhere. No existing data was changed."));
+                    let conflict = if !metadata.file_type().is_symlink() {
+                        Some("is an existing file or directory, not a symbolic link".to_string())
+                    } else if metadata.uid() != unsafe { libc::geteuid() } {
+                        Some(format!("is owned by UID {}, not this account", metadata.uid()))
+                    } else {
+                        let target = fs::read_link(home)?;
+                        (target != storage_home).then(|| format!("points to {}", target.display()))
+                    };
+                    if let Some(conflict) = conflict {
+                        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!(
+                            "Silo's runtime alias {} {conflict}. Expected a symbolic link to {}. No existing data was changed.",
+                            home.display(), storage_home.display()
+                        )));
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -4490,6 +4509,69 @@ mod tests {
             b"preserved"
         );
         prepare_runtime_home(&alias, Some(&storage)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_alias_secures_existing_parent_without_changing_its_contents() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
+        let storage = directory.path().join("storage");
+        let alias = runtime_home_alias(directory.path(), &storage);
+        let parent = alias.parent().unwrap();
+        fs::create_dir(parent).unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o775)).unwrap();
+        fs::write(parent.join("existing"), b"preserved").unwrap();
+        prepare_runtime_home(&alias, Some(&storage)).unwrap();
+        assert_eq!(fs::metadata(parent).unwrap().mode() & 0o777, 0o755);
+        assert_eq!(fs::read(parent.join("existing")).unwrap(), b"preserved");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_alias_rejects_symlink_parent_without_changing_target_permissions() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
+        let other = directory.path().join("other");
+        fs::create_dir(&other).unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o775)).unwrap();
+        let storage = directory.path().join("storage");
+        let alias = runtime_home_alias(directory.path(), &storage);
+        std::os::unix::fs::symlink(&other, alias.parent().unwrap()).unwrap();
+        assert!(prepare_runtime_home(&alias, Some(&storage)).is_err());
+        assert_eq!(fs::metadata(other).unwrap().mode() & 0o777, 0o775);
+        assert!(!storage.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_alias_reports_existing_directory_and_preserves_data() {
+        let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
+        let storage = directory.path().join("storage");
+        let alias = runtime_home_alias(directory.path(), &storage);
+        fs::create_dir_all(&alias).unwrap();
+        fs::write(alias.join("data"), b"preserved").unwrap();
+        let error = prepare_runtime_home(&alias, Some(&storage)).unwrap_err().to_string();
+        assert!(error.contains("not a symbolic link"));
+        assert!(error.contains(&alias.display().to_string()));
+        assert!(error.contains(&storage.display().to_string()));
+        assert_eq!(fs::read(alias.join("data")).unwrap(), b"preserved");
+        assert!(!storage.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_alias_is_prepared_before_configuration_lock_on_first_run() {
+        let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
+        let mut paths = paths(&directory);
+        let storage = directory.path().join("storage");
+        paths.home = runtime_home_alias(directory.path(), &storage);
+        paths.storage_home = Some(storage.clone());
+        let lock = configuration_recovery::command_lock(&paths, Duration::ZERO).unwrap();
+        assert_eq!(fs::read_link(&paths.home).unwrap(), storage);
+        prepare_runtime_home(&paths.home, paths.storage_home.as_deref()).unwrap();
+        assert!(storage.join(".silo-configuration-worker.lock").is_file());
+        drop(lock);
     }
 
     #[cfg(unix)]
