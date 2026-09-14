@@ -1,0 +1,31 @@
+{
+  "name": "silo-demo",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "prepare:css": "tailwindcss -i src/app.css -o src/app.generated.css --minify",
+    "start": "npm run prepare && remotion studio src/index.ts --port 3400",
+    "render": "npm run prepare && remotion render src/index.ts SiloDemo out/silo-demo-v10.mp4 --codec=h264 --muted --crf=18 --concurrency=4",
+    "stills": "npm run prepare:css && node scripts/stills.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/timeline.test.ts",
+    "prepare": "npm run prepare:css"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.521",
+    "@remotion/bundler": "4.0.521",
+    "@remotion/renderer": "4.0.521",
+    "remotion": "4.0.521",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "lucide-react": "1.34.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.3",
+    "typescript": "6.0.2"
+  }
+}
