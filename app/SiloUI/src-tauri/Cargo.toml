@@ -1,6 +1,6 @@
 [package]
 name = "silo-ui"
-version = "0.4.3"
+version = "0.4.4"
 description = "Silo desktop application"
 edition = "2021"
 
