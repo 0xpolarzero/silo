@@ -1,5 +1,11 @@
 # silo-ui
 
+## 0.4.4
+
+### Patch Changes
+
+- Fix AI agents disconnecting after reading secret placeholders. Unmatched placeholders now pass unchanged, while real credentials remain restricted to allowed domains. Update Silo on every computer running your VMs, then restart those VMs to apply the fix.
+
 ## 0.4.3
 
 ### Patch Changes
