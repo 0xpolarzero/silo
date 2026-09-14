@@ -1,4 +1,7 @@
 //! Host-only GitHub account and durable desired policy. No credential is exposed by a command.
+#[path = "github_personal_token.rs"]
+pub(crate) mod personal_token;
+
 use crate::github_tokens::{Configuration, Operation};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
@@ -214,6 +217,8 @@ fn observed_credential() -> CredentialObservation {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Document {
+    #[serde(default)]
+    personal_token_removing: bool,
     revision: u64,
     access_enabled: bool,
     account: Option<String>,
@@ -541,7 +546,7 @@ fn public_snapshot(
         d.operations = d.workspaces.iter().map(|w|json!({"workspace":w["workspace"],"status":"failed","message":"GitHub access must be verified for this app session.","canRetry":true})).collect();
     }
 
-    json!({"policyRevision":d.revision,"state":if CONNECTING.load(Ordering::SeqCst){"connecting"}else if connected{"connected"}else{"disconnected"},"account":d.account,"accessEnabled":d.access_enabled,"hostIdentity":identity,"repositoryCatalog":d.repositories.iter().filter_map(|r|r["name"].as_str()).collect::<Vec<_>>(),"repositoryCatalogStatus":match &d.catalog_error { Some(message)=>json!({"status":"unavailable","message":message,"canRetry":true}),None=>json!({"status":"available"})},"workspaces":d.workspaces,"workspaceOperations":d.operations})
+    json!({"policyRevision":d.revision,"personalToken":personal_token::status(),"state":if CONNECTING.load(Ordering::SeqCst){"connecting"}else if connected{"connected"}else{"disconnected"},"account":d.account,"accessEnabled":d.access_enabled,"hostIdentity":identity,"repositoryCatalog":d.repositories.iter().filter_map(|r|r["name"].as_str()).collect::<Vec<_>>(),"repositoryCatalogStatus":match &d.catalog_error { Some(message)=>json!({"status":"unavailable","message":message,"canRetry":true}),None=>json!({"status":"available"})},"workspaces":d.workspaces,"workspaceOperations":d.operations})
 }
 type TokenLedger = std::collections::HashMap<String, Vec<String>>;
 fn ledger_entry() -> Result<keyring::Entry, String> {
@@ -683,6 +688,11 @@ fn apply(
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         load(app)?
     };
+    let narrowing_error = {
+        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        if load(app)?.revision != d.revision { schedule(Duration::ZERO); return Ok(()); }
+        narrow_now(app, &mut d.clone()).err()
+    };
     let mut refresh_at = if now() < d.refresh_at {
         d.refresh_at
     } else {
@@ -723,7 +733,9 @@ fn apply(
             .unwrap_or_default();
         let access_requested = access_update_due(&d, name, now());
         let result = if access_requested {
-            let result = runtime_grants_for(app, &d, w, &previous).and_then(|grants| {
+            let result = if let Some(error) = &narrowing_error { Err(error.clone()) } else if personal_token::selected(w) {
+                personal_token::apply(app, name, d.revision)
+            } else { runtime_grants_for(app, &d, w, &previous).and_then(|grants| {
                 let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
                 if load(app)?.revision != d.revision {
                     return Err("GitHub access changed. Applying your latest choices.".into());
@@ -732,7 +744,7 @@ fn apply(
                     refresh_at = refresh_at.min(expiry.saturating_sub(120));
                 }
                 // Comparing credentials too avoids reconnecting unchanged sessions.
-                if grants != previous || d.session != session() {
+                if grants != previous || d.session != session() || !crate::runtime::github_policy_is_cached(app, name, &profile(&grants))? {
                     crate::runtime::apply_github_policy(app, name, d.revision, &profile(&grants))?;
                     active()
                         .lock()
@@ -740,7 +752,8 @@ fn apply(
                         .insert(key, grants);
                 }
                 Ok(())
-            });
+            })
+            };
             let retirement = if d.grants_issued || load(app)?.grants_issued {
                 retire_unused(app, name)
             } else {
@@ -815,6 +828,7 @@ fn validate(workspaces: &[Value]) -> Result<(), String> {
                 "repositories",
                 "repositoryMode",
                 "allRepositoriesAllowChanges",
+                "authenticationMethod",
             ]
             .contains(&k.as_str())
         }) {
@@ -854,6 +868,9 @@ fn validate(workspaces: &[Value]) -> Result<(), String> {
         if !w["allRepositoriesAllowChanges"].is_boolean() {
             return Err("Invalid GitHub changes policy.".into());
         };
+        if !matches!(w["authenticationMethod"].as_str(), None | Some("oauth" | "token")) || (!w["authenticationMethod"].is_null() && !w["authenticationMethod"].is_string()) {
+            return Err("Choose GitHub OAuth or a personal token.".into());
+        }
         let mut repository_names = std::collections::HashSet::new();
         for r in w["repositories"]
             .as_array()
@@ -921,7 +938,7 @@ struct GrantScope {
     all: bool,
 }
 fn scopes(d: &Document, policy: &Value) -> Result<Vec<GrantScope>, String> {
-    if !d.access_enabled {
+    if !d.access_enabled || personal_token::selected(policy) {
         return Ok(Vec::new());
     }
     let all = policy["repositoryMode"].as_str() == Some("all");
@@ -1150,6 +1167,7 @@ fn narrow(grants: &[RuntimeGrant], desired: &[GrantScope]) -> Vec<RuntimeGrant> 
         .collect()
 }
 fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
+    personal_token::narrow(app, d)?;
     let prefix = format!("{}:", path(app)?.display());
     let mut failure = None;
     if d.session != session() && d.grants_issued {
@@ -1222,15 +1240,14 @@ pub(crate) fn host_push_credential(
 ) -> Result<String, String> {
     let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
     let d = load(app)?;
-    if !d.access_enabled {
-        return Err("Enable GitHub access before pushing.".into());
-    }
     let policy = d
         .workspaces
         .iter()
         .find(|w| w["workspace"].as_str() == Some(workspace))
         .ok_or("This sandbox has no GitHub repository authorization.")?;
     validate(std::slice::from_ref(policy))?;
+    if personal_token::selected(policy) { return personal_token::value(); }
+    if !d.access_enabled { return Err("Enable GitHub access before pushing.".into()); }
     if policy["repositoryMode"].as_str() != Some("all")
         && !policy["repositories"].as_array().is_some_and(|repos| {
             repos
@@ -1472,7 +1489,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         // Reconnecting creates a new account authorization. Never reuse old
         // grants, even if the account name and repository choices are identical.
         let prefix = format!("{}:", path(app)?.display());
-        for w in &d.workspaces {
+        for w in d.workspaces.iter().filter(|w| !personal_token::selected(w)) {
             if let Some(name) = w["workspace"].as_str() {
                 crate::runtime::apply_github_policy(app, name, d.revision + 1, &profile(&[]))?;
             }
@@ -1527,6 +1544,7 @@ pub fn install(app: &tauri::AppHandle) {
             .ok()
             .and_then(|p| *p);
         let pending_due = pending_deadline.is_some_and(|time| Instant::now() >= time);
+        personal_token::check(&app);
         if let Ok(_network) = OPERATION.try_lock() {
             let observed = {
                 let _state = STATE.lock().ok();
@@ -1826,6 +1844,16 @@ pub async fn set_github_access_enabled(
     .await
     .map_err(|_| "GitHub operation failed.")?
 }
+fn validate_method_change(previous: Option<&Value>, policy: &Value, oauth_connected: bool, token_connected: bool) -> Result<(), String> {
+    let previous = previous.and_then(|w| w["authenticationMethod"].as_str()).unwrap_or("oauth");
+    let method = policy["authenticationMethod"].as_str().unwrap_or("oauth");
+    if method != previous {
+        if method == "token" && !token_connected { return Err("Connect a personal token before selecting it.".into()); }
+        if method == "oauth" && !oauth_connected { return Err("Connect GitHub OAuth before selecting it.".into()); }
+    }
+    Ok(())
+}
+
 fn access_choice(policy: &Value) -> Value {
     let all = policy["repositoryMode"] == "all";
     let mut repos = policy["repositories"]
@@ -1834,9 +1862,9 @@ fn access_choice(policy: &Value) -> Value {
         .unwrap_or_default();
     repos.sort_by(|a, b| a["repository"].as_str().cmp(&b["repository"].as_str()));
     if all {
-        json!({"all":true,"changes":policy["allRepositoriesAllowChanges"]})
+        json!({"method":policy["authenticationMethod"].as_str().unwrap_or("oauth"),"all":true,"changes":policy["allRepositoriesAllowChanges"]})
     } else {
-        json!({"all":false,"repositories":repos})
+        json!({"method":policy["authenticationMethod"].as_str().unwrap_or("oauth"),"all":false,"repositories":repos})
     }
 }
 fn mark_pending_for(d: &mut Document, names: &[String]) {
@@ -1893,6 +1921,9 @@ pub async fn save_github_configuration(
                 .workspaces
                 .iter()
                 .find(|old| old["workspace"] == w["workspace"]);
+            validate_method_change(previous, w,
+                observed_credential().is_some_and(|v| v.is_ok_and(|expiry| expiry.is_some_and(|at| at > now()))),
+                personal_token::connected())?;
             if d.access_enabled != enabled
                 || previous.is_none_or(|old| access_choice(old) != access_choice(w))
             {

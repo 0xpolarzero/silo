@@ -2038,7 +2038,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      }
 
      fn consume_chunked_body_with_violation_detection(
-@@ -3083,6 +3262,156 @@
+@@ -3083,6 +3262,178 @@
          }
      }
 
@@ -2059,6 +2059,28 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +        SecretsHandler::new_tls_intercepted_via_connect(&make_config(vec![secret]), host)
 +    }
 +
++    #[test]
++    fn personal_token_substitutes_only_authorization_under_verified_tls() {
++        let profile = serde_json::json!({"version":2,"owners":[],"personalToken":"github_pat_synthetic"});
++        let mut secret = make_secret("$MSB_SILO_GITHUB", &profile.to_string(), "api.github.com");
++        secret.env_var = "SILO_GITHUB".into();
++        let config = make_config(vec![secret]);
++        let mut handler = SecretsHandler::new_tls_intercepted_via_connect(&config, "api.github.com");
++        let body = r#"{"name":"first","description":"$MSB_SILO_GITHUB"}"#;
++        let request = format!("POST /user/repos?note=$MSB_SILO_GITHUB HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer $MSB_SILO_GITHUB\r\nX-Note: $MSB_SILO_GITHUB\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
++        let result = handler.substitute(request.as_bytes()).unwrap();
++        let output = std::str::from_utf8(result.as_ref()).unwrap();
++        assert_eq!(output.matches("github_pat_synthetic").count(), 1);
++        assert!(output.contains("Authorization: Bearer github_pat_synthetic"));
++        assert!(output.contains(body));
++        assert!(output.contains("X-Note: $MSB_SILO_GITHUB"));
++        assert!(output.contains("?note=$MSB_SILO_GITHUB"));
++        let mut handler = SecretsHandler::new_tls_intercepted_via_connect(&config, "api.github.com");
++        let basic = BASE64.encode("x-access-token:$MSB_SILO_GITHUB");
++        let request = format!("GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Basic {basic}\r\n\r\n");
++        let result = handler.substitute(request.as_bytes()).unwrap();
++        assert!(std::str::from_utf8(result.as_ref()).unwrap().contains(&BASE64.encode("x-access-token:github_pat_synthetic")));
++    }
 +    #[test]
 +    fn github_owner_lookup_suspends_fragmented_and_pipelined_unsent_bytes() {
 +        let profile = serde_json::json!({"version":1,"owners":[
@@ -2272,10 +2294,16 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
   "system-configuration",
 --- a/crates/cli/bin/main.rs
 +++ b/crates/cli/bin/main.rs
-@@ -275,6 +275,13 @@
+@@ -275,6 +275,19 @@
  //--------------------------------------------------------------------------------------------------
 
  fn main() {
++    if std::env::args_os().skip(1).collect::<Vec<_>>()
++        == [std::ffi::OsString::from("--silo-github-token-protocol")]
++    {
++        println!("1");
++        return;
++    }
 +    if std::env::args_os().skip(1).collect::<Vec<_>>()
 +        == [std::ffi::OsString::from("--silo-github-protocol")]
 +    {
@@ -2288,7 +2316,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      microsandbox_cli::ui::install_panic_hook();
 --- /dev/null
 +++ b/crates/network/lib/secrets/github.rs
-@@ -0,0 +1,948 @@
+@@ -0,0 +1,982 @@
 +//! Credential selection only. GitHub-issued tokens enforce repository authority.
 +//! Never split, replay, or authorize GraphQL fields here.
 +use super::config::ViolationAction;
@@ -2301,6 +2329,11 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +struct Profile {
 +    version: u8,
 +    owners: Vec<Owner>,
++    #[serde(default)]
++    personal_token: Option<String>,
++}
++impl Drop for Profile {
++    fn drop(&mut self) { self.personal_token.zeroize(); }
 +}
 +#[derive(Deserialize)]
 +#[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2364,6 +2397,17 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +) -> Result<String, ViolationAction> {
 +    let deny = || ViolationAction::Block;
 +    let profile: Profile = serde_json::from_str(profile).map_err(|_| deny())?;
++    if profile.version == 2 {
++        if !profile.owners.is_empty() || !matches!(sni, "github.com" | "api.github.com" | "uploads.github.com") {
++            return Err(deny());
++        }
++        let token = profile.personal_token.as_ref().ok_or_else(deny)?;
++        if token.is_empty() || token.len() > 4096 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
++            return Err(deny());
++        }
++        return Ok(token.clone());
++    }
++    if profile.personal_token.is_some() { return Err(deny()); }
 +    let now = std::time::SystemTime::now()
 +        .duration_since(std::time::UNIX_EPOCH)
 +        .map_err(|_| deny())?
@@ -2511,6 +2555,24 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++    #[test]
++    fn personal_token_needs_no_repositories_and_preserves_full_authority() {
++        let profile = serde_json::json!({"version":2,"owners":[],"personalToken":"github_pat_synthetic"}).to_string();
++        for (host, headers, body) in [
++            ("api.github.com", "GET /user HTTP/1.1\r\n", &b""[..]),
++            ("api.github.com", "POST /user/repos HTTP/1.1\r\n", &b"{}"[..]),
++            ("api.github.com", "DELETE /repos/owner/repo HTTP/1.1\r\n", &b""[..]),
++            ("github.com", "GET /owner/repo.git/info/refs?service=git-receive-pack HTTP/1.1\r\n", &b""[..]),
++            ("api.github.com", "POST /graphql HTTP/1.1\r\n", &b"{\"query\":\"mutation { createRepository(input: {name: \"first\", visibility: PRIVATE}) {clientMutationId} }\"}"[..]),
++        ] {
++            assert_eq!(select(&profile, host, headers, body).unwrap(), "github_pat_synthetic");
++        }
++        assert!(select(&profile, "example.com", "GET / HTTP/1.1\r\n", b"").is_err());
++        let missing = r#"{"version":2,"owners":[]}"#;
++        assert!(select(missing, "api.github.com", "GET /user HTTP/1.1\r\n", b"").is_err());
++        let mixed = serde_json::json!({"version":1,"owners":[],"personalToken":"github_pat_synthetic"}).to_string();
++        assert!(select(&mixed, "api.github.com", "GET /user HTTP/1.1\r\n", b"").is_err());
++    }
 +    fn profile() -> String {
 +        serde_json::json!({"version":1,"owners":[{"login":"alice","readToken":"read","writeToken":"write","expiresAt":4102444800u64}]}).to_string()
 +    }
@@ -3563,7 +3625,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      /// Failure detail when `ok` is false.
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub error: Option<String>,
-@@ -137,6 +166,10 @@
+@@ -137,6 +166,13 @@
  
      /// Live secret rotation, removal, and allowed-host updates are available.
      pub secrets_update: bool,
@@ -3571,6 +3633,9 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +    /// Live loopback TCP publications are available.
 +    #[serde(default)]
 +    pub ports_update: bool,
++    /// The running proxy supports full personal-token profiles.
++    #[serde(default)]
++    pub github_personal_token: bool,
  }
  
  /// Memory sizing carried in [`ControlResponse`], all in MiB.
@@ -3584,10 +3649,11 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
  }
  
  //--------------------------------------------------------------------------------------------------
-@@ -387,6 +423,10 @@
+@@ -387,6 +423,11 @@
                  cpu_resize: control.cpu_resize_supported(),
                  memory_resize: control.memory_resize_supported(),
                  secrets_update: context.secrets_update_supported(),
++                github_personal_token: cfg!(feature = "net"),
 +                ports_update: {
 +                    #[cfg(feature = "net")] { context.ports.is_some() }
 +                    #[cfg(not(feature = "net"))] { false }
@@ -3603,10 +3669,11 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      }
  }
  
-@@ -529,6 +570,7 @@
+@@ -529,6 +570,8 @@
                  cpu_resize: true,
                  memory_resize: false,
                  secrets_update: true,
++                github_personal_token: true,
 +                ports_update: true,
              }),
              ..Default::default()
@@ -4108,3 +4175,21 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
              inbound_rx,
              _inbound_tx: inbound_tx,
              connections: Vec::new(),
+--- a/sdk/rust/lib/sandbox/modify.rs
++++ b/sdk/rust/lib/sandbox/modify.rs
+@@ -774,6 +774,15 @@
+     name: &str,
+     changes: Vec<microsandbox_runtime::control::SecretLiveChange>,
+ ) -> MicrosandboxResult<()> {
++    // Do not acknowledge a token profile that an older running proxy cannot use.
++    let personal_token = changes.iter().any(|change| match change {
++        microsandbox_runtime::control::SecretLiveChange::Rotate { name, value } if name == "SILO_GITHUB" =>
++            serde_json::from_str::<serde_json::Value>(&value.0).is_ok_and(|profile| profile["version"] == 2),
++        _ => false,
++    });
++    if personal_token && !control_capabilities(name).await?.github_personal_token {
++        return Err(crate::MicrosandboxError::Runtime("Restart this VM to enable personal GitHub tokens in its updated runtime.".into()));
++    }
+     let request = microsandbox_runtime::control::ControlRequest::SecretsUpdate { changes };
+     let mut line = serde_json::to_string(&request)?;
+     line.push('\n');

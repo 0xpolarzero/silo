@@ -31,6 +31,21 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("keeps personal-token connection independent from OAuth and never publishes its value", async () => {
+    const mock = native()
+    const base = await mock.invoke("read_application_state") as { github: Record<string, unknown> }
+    const github = { ...base.github, state: "connected", personalToken: { state: "connected", saved: true, account: "token-user" } }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "save_github_personal_token" ? github : mock.invoke(command, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    await store.applicationActions.saveGitHubPersonalToken!("github_pat_synthetic")
+    expect(invoke).toHaveBeenCalledWith("save_github_personal_token", { token: "github_pat_synthetic" })
+    expect(store.getSnapshot().source?.github.state).toBe("connected")
+    expect(store.getSnapshot().source?.github.personalToken?.account).toBe("token-user")
+    expect(JSON.stringify(store.getSnapshot())).not.toContain("github_pat_synthetic")
+    store.dispose()
+  })
+
   it("passes status destinations and dismisses completed push results natively", async () => {
     const mock = native()
     const store = createProductionSource(mock.bridge)

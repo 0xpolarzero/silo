@@ -24,6 +24,7 @@ const bridge: ProductionBridge = {
 }
 
 const githubStateShape = z.object({
+  personalToken: z.object({ state: z.enum(["connected", "disconnected"]), saved: z.boolean(), account: z.string().optional(), message: z.string().optional() }).optional(),
   policyRevision: z.number().int().nonnegative().optional(),
   state: z.enum(["disconnected", "connecting", "connected"]),
   account: z.string().nullish().transform((value) => value ?? undefined),
@@ -36,6 +37,7 @@ const githubStateShape = z.object({
   ]).optional(),
   workspaces: z.array(z.object({
     workspace: z.string(), identity: z.object({ name: z.string(), email: z.string(), apply: z.boolean() }),
+    authenticationMethod: z.enum(["oauth", "token"]).optional(),
     repositoryMode: z.enum(["selected", "all"]).default("selected"), allRepositoriesAllowChanges: z.boolean().default(false),
     repositories: z.array(z.object({ repository: z.string(), allowPushes: z.boolean() })),
   })).optional(),
@@ -683,7 +685,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       }
       const message = `GitHub operation failed: ${errorMessage(cause)}`
       if (sequence === githubMutationSequence && snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source, github: { ...snapshot.source.github,
-        ...(command !== "save_github_configuration" && { repositoryCatalogStatus: { status: "unavailable" as const, message, canRetry: command === "refresh_github_repositories" } }),
+        ...(!(["save_github_configuration", "save_github_personal_token", "remove_github_personal_token"].includes(command)) && { repositoryCatalogStatus: { status: "unavailable" as const, message, canRetry: command === "refresh_github_repositories" } }),
       } } })
       throw cause
     } finally {
@@ -766,6 +768,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     restartWorkspace: (name) => workspaceAction("restart", name),
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
+    saveGitHubPersonalToken: async token => { await githubMutation("save_github_personal_token", { token }) },
+    removeGitHubPersonalToken: async () => { await githubMutation("remove_github_personal_token") },
     connectGitHub: () => { void githubMutation("connect_github").catch(() => {}) },
     cancelGitHubConnection: () => { void githubMutation("cancel_github_connection").catch(() => {}) },
     reopenGitHubAuthorization: () => {

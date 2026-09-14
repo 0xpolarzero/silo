@@ -171,6 +171,7 @@ export interface ApplicationGitHubRepositoryPolicy {
 }
 
 export interface ApplicationGitHubWorkspacePolicy {
+  authenticationMethod?: "oauth" | "token"
   repositoryMode?: "selected" | "all"
   allRepositoriesAllowChanges?: boolean
   workspace: string
@@ -209,6 +210,7 @@ export interface ApplicationSource {
   sandboxConfigurationOperation: SandboxConfigurationOperation | null
   repositoryPushOperations: RepositoryPushOperation[]
   github: {
+    personalToken?: { state: "connected" | "disconnected"; saved: boolean; account?: string; message?: string }
     policyRevision?: number
     state: "disconnected" | "connecting" | "connected"
     account?: string
@@ -267,6 +269,8 @@ export interface ApplicationActions {
   openEditor: (workspace: string, path?: string) => void
   cancelGitHubConnection?: () => void
   reopenGitHubAuthorization?: () => void
+  saveGitHubPersonalToken?: (token: string) => Promise<void>
+  removeGitHubPersonalToken?: () => Promise<void>
   connectGitHub?: () => void
   disconnectGitHub?: () => void
   setGitHubAccessEnabled?: (enabled: boolean) => void
