@@ -1,10 +1,10 @@
 #!/bin/sh
 # Run only inside a managed Silo VM. No host credential is passed to this script.
 set -eu
-if ! command -v git >/dev/null 2>&1 || ! command -v gh >/dev/null 2>&1 || ! command -v git-lfs >/dev/null 2>&1; then
+if ! command -v curl >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || ! command -v gh >/dev/null 2>&1 || ! command -v git-lfs >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
-    apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ca-certificates git git-lfs gh
+    apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ca-certificates curl git git-lfs gh
 fi
 mkdir -p /usr/local/libexec
 cat > /usr/local/libexec/silo-github-credential.tmp <<'HELPER'
@@ -26,6 +26,7 @@ chmod 0755 /usr/local/libexec/silo-github-credential.tmp
 mv /usr/local/libexec/silo-github-credential.tmp /usr/local/libexec/silo-github-credential
 git config --system --replace-all credential.https://github.com.helper /usr/local/libexec/silo-github-credential
 git lfs install --system --skip-repo
+curl --version
 git --version
 git lfs version
 gh --version

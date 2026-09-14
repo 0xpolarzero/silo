@@ -10,14 +10,14 @@ import { createGzip } from "node:zlib"
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const architecture = process.argv[2]
 if (!["arm64", "amd64"].includes(architecture)) throw new Error("Usage: node scripts/build-guest-image.mjs arm64|amd64")
-const version = "ubuntu-24.04-v1"
+const version = "ubuntu-24.04-v2"
 const imageReference = `ghcr.io/0xpolarzero/silo-guest:${version}-${architecture}`
 const revision = process.env.GITHUB_SHA || execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim()
 const output = resolve(root, "src-tauri/guest-image-artifacts", architecture)
 await mkdir(output, { recursive: true })
 execFileSync("docker", ["build", "--label", `org.opencontainers.image.revision=${revision}`, "--platform", `linux/${architecture}`, "-f", resolve(root, "guest-image/Dockerfile"), "-t", imageReference, root], { stdio: "inherit" })
 const image = JSON.parse(execFileSync("docker", ["image", "inspect", imageReference], { encoding: "utf8" }))[0]
-execFileSync("docker", ["run", "--rm", "--network", "none", "--platform", `linux/${architecture}`, imageReference, "sh", "-ec", "git --version; git lfs version; gh --version; test -x /usr/local/libexec/silo-github-credential"], { stdio: "inherit" })
+execFileSync("docker", ["run", "--rm", "--network", "none", "--platform", `linux/${architecture}`, imageReference, "sh", "-ec", "curl --version; curl -fsS file:///etc/os-release -o /dev/null; git --version; git lfs version; gh --version; test -x /usr/local/libexec/silo-github-credential"], { stdio: "inherit" })
 const packages = execFileSync("docker", ["run", "--rm", "--network", "none", "--platform", `linux/${architecture}`, imageReference, "cat", "/usr/local/share/silo-packages.txt"], { encoding: "utf8" })
 const archive = resolve(output, "image.tar.gz")
 let unpackedBytes = 0
