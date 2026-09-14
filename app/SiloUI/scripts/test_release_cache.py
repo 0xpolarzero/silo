@@ -37,6 +37,12 @@ class ReleaseCacheTests(unittest.TestCase):
                     subprocess.run(['/bin/bash', '-eu', '-c', block], env=env, check=True, capture_output=True)
                     self.assertEqual(log.read_text().splitlines(), ['toolchain install 9.8.7 --profile minimal', 'default 9.8.7'])
             self.assertIn('-rust${{ steps.runtime-inputs.outputs.toolchain }}-', ACTION)
+            output = root / 'github-output'
+            env['GITHUB_OUTPUT'] = str(output)
+            preflight_block = re.search(r'      run: \|\n((?:        .+\n)+)', ACTION).group(1)
+            subprocess.run(['/bin/bash', '-eu', '-c', preflight_block], cwd=ROOT, env=env, check=True, capture_output=True)
+            approved = json.loads((ROOT / 'app/SiloUI/runtime-inputs.json').read_text())
+            self.assertEqual(output.read_text(), f"toolchain={approved['toolchain']}\n")
 
     def test_cache_allowlist_excludes_compiled_application_and_build_work(self):
         blocks = re.findall(r'        path: \|\n((?:          .+\n)+)', ACTION)

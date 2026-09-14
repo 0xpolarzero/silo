@@ -202,11 +202,10 @@ a statistically established speedup. It also says nothing about optimized
 release compilation, which remains the larger hosted cost.
 
 **Decision: retain the small disabled prototype; do not enable compiler caching
-in release workflows.** A useful next experiment must measure the exact
-optimized Tauri command on a stable-path runner and report its app/link and
-native-build-script residual before paying for a broader cache. Repeating the
-same four-crate debug experiment or broadening the allowlist without measuring
-the new critical path is not justified by this result. Native C compilation
+in release workflows.** The remaining decisive question was the exact optimized Tauri command on a
+stable-path runner. The final probe below measures it. Repeating the same
+four-crate debug experiment or broadening the allowlist without measuring the
+new critical path was not justified by this result. Native C compilation
 would require a separately reviewed compiler-cache boundary, outside this
 Rust-only prototype.
 
@@ -217,3 +216,83 @@ remain in `/private/tmp/silo-native-perf/`. The full native commands used
 `CARGO_PROFILE_TEST_DEBUG=0`. `cold-target`, `population-preserved-target`,
 `hits-target` and the recreated `population-target` are isolated test products;
 none is a release artifact or an uploaded Cargo target cache.
+
+## Final optimized-release cache acceptance probe
+
+The final local experiment ran the actual installed **Tauri CLI 2.11.4**, using
+one built frontend, the same existing fixture resources, identical synthetic
+GitHub configuration and the same empty target path for each of three runs.
+A disposable `--runner` first captured the CLI's exact Cargo invocation:
+
+```sh
+cargo build --locked --offline --timings --bins \
+  --features tauri/custom-protocol --release --target aarch64-apple-darwin
+```
+
+This agrees with the [pinned CLI source](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-cli/src/interface/rust.rs#L450).
+The real measured commands then used:
+
+```sh
+./node_modules/.bin/tauri build --target aarch64-apple-darwin \
+  --no-bundle --ci --config '{"build":{"beforeBuildCommand":""}}' \
+  -- --locked --offline --timings
+```
+
+`npm run build` succeeded before the sequence. Overriding only the before-build
+hook prevented another runtime preparation and frontend build. There was no
+bundling, signing, publication or application launch. Each successful target
+directory was moved aside before the next command, so all three began at the
+same empty `/private/tmp/silo-native-perf/release-target` path. No Cargo target
+products were reused. All used the same source, frontend, platform config,
+synthetic strings and native compiler flags. The disposable cache wrapper also
+preserved `SDKROOT` and `MACOSX_DEPLOYMENT_TARGET` from the CLI environment;
+cache contents remained restricted to the same four explicit public libraries.
+
+| Actual Tauri command | Wall time | Cargo timing | Cache result |
+| --- | ---: | ---: | --- |
+| Unwrapped control | **68.887 s** | 66.97 s | No cache |
+| Cache population | **68.599 s** | 66.40 s | Five misses, five writes |
+| Readonly consumer | **91.239 s** | 88.34 s | Five hits, no misses or writes |
+
+**The 30% acceptance criterion was not met.** The consumer was slower in this
+single sequence, despite hitting every admitted library. No transfer time is
+included. Do not infer a stable 32% cache penalty: several uncached units also
+grew substantially, and the experiment did not isolate host variance or repeat
+the pair. The data nevertheless provides no basis for enabling this cache.
+
+| Residual work | Control | Readonly consumer |
+| --- | ---: | ---: |
+| Native `aws-lc-sys` build-script execution | 26.29 s | 35.65 s |
+| Application compilation and link | 22.86 s | 26.04 s |
+| MicroSandbox image library | 4.55 s | 12.83 s |
+| Native `zstd-sys` build-script execution | 9.23 s | 14.19 s |
+
+The release control's critical chain already ran through native crypto,
+Rustls/Reqwest, OCI/MicroSandbox and the application, rather than through the
+large Objective-C libraries. Removing work from those Objective-C libraries
+therefore did not remove the release's dominant dependency chain. Even with
+hits, the consumer spent 9.97 s on the cached app-kit invocation and 4.24 s on
+foundation, retaining Rust dependency-information work.
+
+Correctness checks passed for this narrow experiment. The control, population
+and consumer emitted **byte-identical 24,337,408-byte synthetic executables**,
+with SHA-256
+`9fdfed5f03b9e70fc7b48c2e6a5e4012f9e5b3e55145ddb5d715ff435dc2058e`.
+The five cache objects totaled **79,678,161 bytes**. Inspection of all 20 decoded
+members found no synthetic release secret sentinel or GitHub secret variable.
+The consumer left every cache object hash unchanged. All processes and cache
+daemons created for the experiment completed or were stopped gracefully.
+
+This final sequence used rustc 1.91.1 on the same local Apple Silicon host,
+not the hosted Rust 1.94.0 runners. It does not replace Linux tests, signing,
+package verification or a repeatable hosted performance result. The three
+commands completed within the ten-minute experiment budget, and no more
+compiler-cache builds were run afterward. Logs, complete Cargo reports,
+CLI argv capture, cache statistics and disposable runners remain under
+`/private/tmp/silo-native-perf/release-*` and `tauri-release-argv.json`.
+
+**Final decision: reject compiler-cache rollout for this change.** Preserve the
+disabled prototype and measured evidence. The narrow cache boundary works,
+but neither the native nor optimized-release experiment meets the performance
+acceptance gate. Broadening the allowlist, adding hosted cache transfers or
+changing compiler/linker settings is not warranted by these results.

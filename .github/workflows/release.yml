@@ -275,9 +275,7 @@ jobs:
       - name: Compile release application
         run: python3 scripts/measure-command.py release-build -- npm run desktop:build -- --target '${{ matrix.target }}' --no-bundle --ci
       - name: Build release bundles
-        run: |
-          set -o pipefail
-          npx tauri bundle --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --ci --verbose 2>&1 | tee "$RUNNER_TEMP/silo-bundle.log"
+        run: python3 scripts/measure-command.py release-bundle -- python3 scripts/retry-bundle.py --log "$RUNNER_TEMP/silo-bundle.log" -- npx tauri bundle --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --ci --verbose
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
