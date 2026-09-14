@@ -1,7 +1,7 @@
 # Bundled Silo guest images
 
 Silo ships one recommended Ubuntu 24.04 image for the app's CPU architecture.
-Git, Git LFS, gh, CA certificates and Silo's credential helper are installed while
+curl, Git, Git LFS, gh, CA certificates and Silo's credential helper are installed while
 building that image. No account, token, identity or user data enters the image.
 Additional supported Ubuntu releases can be provided as prepared downloads later;
 there is no version picker or arbitrary-image compatibility promise in this change.
@@ -9,8 +9,8 @@ there is no version picker or arbitrary-image compatibility promise in this chan
 ## Publication and app builds
 
 The public standard container package is
-`ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v1`, with `-arm64` and `-amd64` tags.
-The matching [versioned release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v1)
+`ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v2`, with `-arm64` and `-amd64` tags.
+The matching [versioned release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v2)
 contains compressed Docker-save archives, package inventories in JSON manifests,
 SHA256SUMS, the recipe, setup script and source commit. The image itself retains
 Ubuntu's package copyright files under `/usr/share/doc`.
@@ -69,7 +69,7 @@ GitHub access, Git identity and secrets remain separate live configuration.
 See [the initial size measurement](SiloUI-GUEST-IMAGE-SIZE.md) for the earlier
 experiment. Final published archive sizes are authoritative in the image lock.
 
-## Verification on 2026-09-10
+## Verification on 2026-09-10 (guest image v1)
 
 The image publication run succeeded:
 https://github.com/0xpolarzero/silo/actions/runs/34452627515
@@ -121,3 +121,20 @@ build, not a notarized release.
 Linux hardware/KVM and a Linux desktop bundle have not been exercised locally.
 The two architecture image builds do not substitute for those checks. No optional
 Ubuntu downloads or selection UI is implemented in this slice.
+
+## Guest image v2 verification on 2026-09-14
+
+Version 2 adds curl to new VMs. Existing VM disks and restored backups retain
+their packages; install curl inside those VMs with
+`apt-get update && apt-get install -y curl` (as root).
+
+[Image publication](https://github.com/0xpolarzero/silo/actions/runs/34837327776)
+built ARM64 and AMD64 and ran curl, Git, Git LFS, gh and credential-helper checks
+with container networking disabled before publishing. Curl also read a local
+file through its file protocol. Both manifests record curl 8.5.0-2ubuntu10.13.
+
+Both downloaded archives passed compressed SHA-256, compressed size, uncompressed
+size and Docker configuration digest checks before updating the application lock.
+The six guest-image staging tests, 16 release-tooling tests, type checking and
+lint passed locally. These checks establish image contents and packaging inputs;
+they do not establish live VM networking or installation/upgrade acceptance.
