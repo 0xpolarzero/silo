@@ -38,3 +38,24 @@ The initial profile showed the expensive application tests cover committed edits
 Use `npm --prefix app/SiloUI test -- --project node` for the browser-free suite or the existing `test:watch` command with a file filter for the affected behavior. The normal `test` command still discovers both projects. Typecheck, lint, and a direct TypeScript check of `vitest.config.ts` passed.
 
 Primary references: [Vitest test projects](https://vitest.dev/guide/projects) and [performance guidance](https://vitest.dev/guide/improving-performance). Configuration inheritance and worker precedence were also verified against the installed Vitest 4.1.11 types and `resolveMaxWorkers` implementation; current online documentation can describe a newer major version.
+
+## Bounded CPU follow-up
+
+After the native experiment released the CPU, profiled all 88 tests in `application-app.test.tsx` with one worker and Node's `--cpu-prof`. An ignored temporary config supplied `execArgv` directly to the DOM project, preserving every other setting. Passing `--execArgv` only at the CLI root did not produce a worker profile with these inline projects; that first run was diagnostic only. Both runs passed all 88 tests.
+
+The profiled run took 36.88 seconds in Vitest, including 35.84 seconds executing tests, 72 ms setup, 487 ms imports and 398 ms environment initialization. The worker profile sampled 36.855 seconds of elapsed timeline; this includes idle samples and profiler overhead and is not an uninstrumented benchmark.
+
+| Profile stack | Inclusive sampled time | Share of worker timeline |
+| --- | ---: | ---: |
+| jsdom `prepareComputedStyleDeclaration` | 20.618 s | 55.9% |
+| jsdom `applyStyleSheetRules` | 20.575 s | 55.8% |
+| jsdom stylesheet selector `matches` | 18.853 s | 51.2% |
+| Testing Library role queries | 15.223 s | 41.3% |
+| Accessible-name calculation | 14.290 s | 38.8% |
+| user-event dispatch and descendants | 4.241 s | 11.5% |
+
+These rows overlap: role queries compute accessible names, which inspect computed styles and match stylesheet selectors. Exclusive samples attribute 34.7% to jsdom, 22.3% to its DOM selector engine, 13.6% to React plus React DOM, and 0.4% to user-event itself. Idle accounts for 6.3%; garbage collection for 2.8%. This is style and selector work, not a browser layout measurement.
+
+There is no demonstrated cheap setup/configuration waste left in this file. Setup and environment startup together account for under half a second. Real CSS affects collapsed-sidebar visibility and pointer interaction, and the suite explicitly checks tooltip and reduced-motion styling. Removing stylesheet processing, caching computed styles across mutations, disabling interaction checks, or substituting cheaper queries indiscriminately would weaken the tested behavior. Further work should reduce unnecessary query scope at proven component boundaries or minimize a reproducer for the upstream style/selector implementation, then benchmark that specific change. No such unmeasured test or dependency change was retained.
+
+Local ignored evidence: `frontend-perf/cpu-profile/run-fixed.log`, `CPU.20260914.164040.27935.0.001.cpuprofile`, `summary.json`, and `hot-functions.json`. The temporary profiling configuration and sample-aggregation script are beside them. Analysis stopped within five minutes of the CPU handoff.

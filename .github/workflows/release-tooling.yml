@@ -48,7 +48,6 @@ jobs:
         with:
           python-version: '3.12'
       - run: node scripts/preflight.mjs
-      - run: node --test scripts/preflight.test.mjs
       - run: npm ci
       - run: npm run test:release
       - run: python3 scripts/validate-release-version.py

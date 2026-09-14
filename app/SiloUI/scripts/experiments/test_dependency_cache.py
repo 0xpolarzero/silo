@@ -40,6 +40,20 @@ class BoundaryTests(unittest.TestCase):
             env = os.environ | dict(CARGO_HOME=root, CARGO_MANIFEST_DIR=str(manifest), CARGO_PKG_NAME='itoa', CARGO_PKG_VERSION='1.0.18', SILO_EXPERIMENT_SCCACHE=str(cache), SILO_EXPERIMENT_CACHE_DIR=str(directory / 'objects'), SILO_GITHUB_CLIENT_SECRET='synthetic', APPLE_PASSWORD='synthetic', SCCACHE_BUCKET='must-not-upload')
             subprocess.run(['python3', str(WRAPPER), '/nonexistent-rustc', '--crate-name', 'itoa', '--crate-type', 'lib', str(source)], env=env, check=True)
 
+    def test_direct_compiler_preserves_cargo_jobserver_descriptors(self):
+        with tempfile.TemporaryDirectory() as root:
+            compiler = Path(root) / 'rustc'
+            compiler.write_text("#!/usr/bin/env python3\nimport os\nos.fstat(int(os.environ['TEST_JOBSERVER_FD']))\n")
+            compiler.chmod(0o755)
+            read_fd, write_fd = os.pipe()
+            try:
+                env = os.environ | {'TEST_JOBSERVER_FD': str(read_fd)}
+                subprocess.run(['python3', str(WRAPPER), str(compiler)], env=env,
+                               pass_fds=(read_fd, write_fd), check=True)
+            finally:
+                os.close(read_fd)
+                os.close(write_fd)
+
     def test_unknown_app_bypasses_cache_and_preserves_configuration(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)

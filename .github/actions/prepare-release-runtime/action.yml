@@ -14,17 +14,20 @@ runs:
   using: composite
   steps:
     - name: Validate approved runtime inputs before cache or network work
+      id: runtime-inputs
       shell: bash
       working-directory: ${{ github.workspace }}
-      run: node app/SiloUI/scripts/preflight.mjs
+      run: |
+        node app/SiloUI/scripts/preflight.mjs
+        echo "toolchain=$(node -p "require('./app/SiloUI/runtime-inputs.json').toolchain")" >> "$GITHUB_OUTPUT"
     - name: Restore public runtime cache
       id: runtime
       uses: actions/cache/restore@v4
       with:
-        key: silo-runtime-v1-${{ inputs.runner }}-${{ inputs.target }}-rust1.94.0-${{ hashFiles('app/SiloUI/runtime-inputs.json', 'app/SiloUI/scripts/preflight.mjs', 'app/SiloUI/scripts/prepare-microsandbox-runtime.mjs', 'app/SiloUI/scripts/microsandbox-runtime.mjs', 'app/SiloUI/scripts/git-runtime.mjs', 'app/SiloUI/scripts/guest-image.mjs', 'app/SiloUI/patches/microsandbox-*.patch', 'app/SiloUI/guest-image/image-lock.json') }}
+        key: silo-runtime-v1-${{ inputs.runner }}-${{ inputs.target }}-rust${{ steps.runtime-inputs.outputs.toolchain }}-${{ hashFiles('app/SiloUI/runtime-inputs.json', 'app/SiloUI/scripts/preflight.mjs', 'app/SiloUI/scripts/prepare-microsandbox-runtime.mjs', 'app/SiloUI/scripts/microsandbox-runtime.mjs', 'app/SiloUI/scripts/git-runtime.mjs', 'app/SiloUI/scripts/guest-image.mjs', 'app/SiloUI/patches/microsandbox-*.patch', 'app/SiloUI/guest-image/image-lock.json') }}
         # Older cache archives are input candidates only; preparation below
         # rechecks pinned bytes and the source/patch/toolchain build key.
-        restore-keys: silo-runtime-v1-${{ inputs.runner }}-${{ inputs.target }}-rust1.94.0-
+        restore-keys: silo-runtime-v1-${{ inputs.runner }}-${{ inputs.target }}-rust${{ steps.runtime-inputs.outputs.toolchain }}-
         path: |
           app/SiloUI/src-tauri/target/runtime-cache/v*/msb-*
           app/SiloUI/src-tauri/target/runtime-cache/v*/microsandbox-*.tar.gz

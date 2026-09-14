@@ -36,16 +36,17 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: app/SiloUI/package-lock.json
+      - run: node scripts/preflight.mjs
       - name: Install Linux build and desktop test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libclang-dev libcap-ng-dev cmake webkit2gtk-driver xvfb xauth dbus-x11 python3-selenium
-          rustup toolchain install 1.94.0 --profile minimal
-          rustup default 1.94.0
+          runtime_toolchain=$(node -p "require(process.env.GITHUB_WORKSPACE + '/app/SiloUI/runtime-inputs.json').toolchain")
+          rustup toolchain install "$runtime_toolchain" --profile minimal
+          rustup default "$runtime_toolchain"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/SiloUI/src-tauri
-      - run: node scripts/preflight.mjs
       - run: npm ci
       - run: npm test -- --maxWorkers=2
       - run: npm run lint

@@ -29,13 +29,15 @@ def eligible(args, env):
 
 
 def main():
+    # Cargo passes jobserver pipe descriptors to rustc. Preserve them on every
+    # direct compiler path, including cache failure and unknown packages.
     rustc, *args = sys.argv[1:]
     env = os.environ
     cache = env.get('SILO_EXPERIMENT_SCCACHE')
     directory = env.get('SILO_EXPERIMENT_CACHE_DIR')
     mode = env.get('SILO_EXPERIMENT_CACHE_MODE', 'READ_ONLY')
     if not cache or not directory or mode not in ('READ_ONLY', 'READ_WRITE') or not eligible(args, env):
-        return subprocess.call([rustc, *args])
+        return subprocess.call([rustc, *args], close_fds=False)
     # No inherited config, remote backend, signing or GitHub variables reach
     # the isolated daemon. The writer therefore receives no app credentials.
     child = {key: env[key] for key in ('PATH', 'HOME', 'TMPDIR', 'RUSTUP_HOME', 'CARGO_HOME') if key in env}
@@ -45,7 +47,7 @@ def main():
     try:
         version = subprocess.check_output([cache, '--version'], env=child, text=True).strip()
         if version != VERSION:
-            return subprocess.call([rustc, *args])
+            return subprocess.call([rustc, *args], close_fds=False)
         result = subprocess.call([cache, rustc, *args], env=child)
         if result == 0:
             return 0
@@ -53,7 +55,7 @@ def main():
         pass
     # Cache startup, corruption, unsupported compilation and misses that fail
     # inside the cache can never prevent the ordinary compiler invocation.
-    return subprocess.call([rustc, *args])
+    return subprocess.call([rustc, *args], close_fds=False)
 
 
 if __name__ == '__main__':

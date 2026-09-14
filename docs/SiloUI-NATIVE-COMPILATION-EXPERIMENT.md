@@ -55,7 +55,7 @@ receives an environment allowlist without GitHub, signing or remote-cache
 variables. Each mode uses a separate daemon socket; consumers default to local
 `READ_ONLY`. No workflow invokes this wrapper or uploads its output.
 
-Three boundary tests pass, covering application bypass with rotated synthetic
+Four boundary tests pass, covering application bypass with rotated synthetic
 configuration, package/target admission and the credential-free readonly child
 environment. Run them with:
 
@@ -111,3 +111,109 @@ run passed all four. Logs remain in `/private/tmp/silo-native-perf/` as
 were copied from the existing ignored test baseline. This verification used
 fixtures, launched no application bundle and proves neither live VM health nor
 package/release readiness.
+
+## Full native cache probe
+
+A follow-up cold build measured the actual dependency graph while hosted
+scheduling benchmarks waited. Source was optimization commit
+`417dedad8a3b45748aa8ef98411df5bb01b19277`, macOS 26.5 ARM64, rustc 1.91.1,
+with isolated temporary targets, offline Cargo, incremental compilation off,
+and dev/test debug information off. No compiler profiles or features changed.
+Only synthetic GitHub configuration was supplied. No release-profile or Linux
+build was measured in this probe.
+
+The unwrapped cold build took **34.27 s across 523 compilation/build-script
+units**. The largest relevant units were:
+
+| Unit | Measured duration | Cache treatment |
+| --- | ---: | --- |
+| `aws-lc-sys` native build-script execution | 14.65 s | Remains uncached |
+| `objc2-app-kit` 0.3.2 library | 10.44 s | Explicit disposable allowlist |
+| `objc2-foundation` 0.3.2 library | 6.74 s | Explicit disposable allowlist |
+| Application test harness | 5.65 s | Always bypasses cache |
+| `ring` native build-script execution | 5.08 s | Remains uncached |
+| `tokio` 1.53.1 library | 4.69 s | Explicit disposable allowlist |
+| `zstd-sys` native build-script execution | 4.39 s | Remains uncached |
+| `tauri-utils` 2.9.3 library | 3.72 s and 2.96 s | Two feature contexts cached |
+
+These durations overlap. The initial final dependency chain went through
+Objective-C foundation/app-kit, WebKit/Wry, Tauri and the application harness.
+There were 28.63 s before the final app compilation. That window is not all
+avoidable: it contains native C/assembly compilation and Rust build scripts.
+For orientation only, a fixed-duration model retaining the 14.65 s native
+crypto build and 5.65 s app compilation already leaves 20.30 s, even before
+other necessary work and cache overhead. Thus that model's optimistic saving
+ceiling is about 14 s (41%) for *all* public Rust dependencies. This is not a
+prediction or strict physical bound: concurrency changes individual timings.
+
+A disposable copy of the wrapper admitted exactly the four public registry
+packages above, with exact versions and only library targets. Every other
+compiler invocation remained uncached. All environment values passed to the
+cache daemon were allowlisted; the writer had synthetic app values and no
+signing credentials. Five library variants produced five cache objects.
+
+| Full cold-target command | Elapsed | Cache result |
+| --- | ---: | --- |
+| Original no-wrapper control | 34.27 s | No cache |
+| Populate cache | 40.03 s | 5 misses, 5 objects written |
+| Readonly, different empty target path | 39.50 s | 0 hits, 5 misses |
+| Readonly, original empty target path | **30.19 s** | **5 hits, no misses or writes** |
+
+The initial population run exposed a Python wrapper bug: direct rustc
+subprocesses closed Cargo's inherited jobserver descriptors. Its timing is
+therefore diagnostic, not a clean population-cost comparison. Both consumer
+runs preserved these descriptors. The checked-in experimental wrapper now
+preserves them on every direct compiler path, with a regression that passes
+real pipe descriptors through the wrapper into a compiler probe. All four
+experimental boundary tests pass.
+
+The successful consumer reused **only compiler-cache objects**. Its original
+Cargo target directory was moved aside first, so the command recreated the
+same target path from empty storage. The differently named target missed
+because path-dependent prerequisite artifacts changed. For example,
+`otool -D` showed that the uncached `tokio_macros` Mach-O library embeds its
+absolute target-directory install name; its SHA-256 differed across paths.
+[sccache hashes the contents of Rust extern dependencies](https://github.com/mozilla/sccache/blob/v0.12.0/src/compiler/rust.rs#L1325),
+so identical source/version/features alone did not yield identical cache keys.
+The same-path rebuild recovered all five hits. This makes stable checkout and
+target paths an explicit prerequisite for any hosted follow-up.
+
+The five objects total **82,530,266 bytes (about 79 MiB)**. All 20 ZIP members
+were inspected after Zstandard decoding: only the five reviewed library
+variants' `.rlib`, `.rmeta`, `.d` and compiler-stderr members were present;
+neither the unique synthetic secret sentinel nor `SILO_GITHUB_CLIENT_SECRET`
+appeared. No application binary or build-script output directory was cached.
+Real credentials were never supplied, so this is a sentinel boundary check,
+not a claim to have searched for actual user secrets.
+
+Even real hits retain substantial Rust front-end work: the `objc2-app-kit`
+hit still occupied 5.64 s, foundation 2.46 s and Tokio 1.95 s. The pinned
+implementation [runs rustc to obtain dependency information before hashing](https://github.com/mozilla/sccache/blob/v0.12.0/src/compiler/rust.rs#L249).
+The successful consumer's final chain shifted to `aws-lc-sys` (11.91 s),
+Rustls/Reqwest, OCI client, MicroSandbox image and the 5.73 s application
+harness. Broadening the Rust allowlist cannot remove that native crypto build.
+
+The observed reduction against the original control was **4.08 s (about 12%)**,
+below the proposed 30% acceptance gate even before transferring 79 MiB.
+This was one local exploratory sequence, not a repeated paired benchmark;
+the original control used different synthetic string values from the cache
+runs. It therefore establishes useful hit behavior and residual costs, not
+a statistically established speedup. It also says nothing about optimized
+release compilation, which remains the larger hosted cost.
+
+**Decision: retain the small disabled prototype; do not enable compiler caching
+in release workflows.** A useful next experiment must measure the exact
+optimized Tauri command on a stable-path runner and report its app/link and
+native-build-script residual before paying for a broader cache. Repeating the
+same four-crate debug experiment or broadening the allowlist without measuring
+the new critical path is not justified by this result. Native C compilation
+would require a separately reviewed compiler-cache boundary, outside this
+Rust-only prototype.
+
+Raw reports, cache statistics, decoded member inventory and disposable runners
+remain in `/private/tmp/silo-native-perf/`. The full native commands used
+`cargo test --locked --offline --no-run --timings` with the manifest path above,
+`CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=0` and
+`CARGO_PROFILE_TEST_DEBUG=0`. `cold-target`, `population-preserved-target`,
+`hits-target` and the recreated `population-target` are isolated test products;
+none is a release artifact or an uploaded Cargo target cache.

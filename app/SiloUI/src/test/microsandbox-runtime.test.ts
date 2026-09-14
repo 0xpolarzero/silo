@@ -1,4 +1,5 @@
-import { execFileSync } from "node:child_process"
+import { execFileSync, type ExecFileSyncOptions } from "node:child_process"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -9,12 +10,18 @@ import {
   applyRuntimePatch,
   runtimeTargets,
   MICROSANDBOX_PATCH_PATH,
+  MICRO_SANDBOX_VERSION,
   resolveRuntimeTarget,
   selectRuntime,
   sha256,
   stageRuntime,
   verifySha256,
 } from "../../scripts/microsandbox-runtime.mjs"
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>()
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) }
+})
 
 describe("bundled MicroSandbox release staging", () => {
   it("applies a source patch inside another repository without changing the parent", async () => {
@@ -141,4 +148,79 @@ describe("bundled MicroSandbox release staging", () => {
     expect(buildExecutable).toHaveBeenCalledOnce()
     expect(fetchBytes).toHaveBeenCalledTimes(5)
   })
+
+  it("reuses an unchanged compiled runtime but rebuilds when verified embedded agent bytes change", async () => {
+    const appRoot = await mkdtemp(join(tmpdir(), "silo-agentd-cache-test-"))
+    const targetTriple = "aarch64-apple-darwin"
+    const releaseExecutable = Buffer.from("official release fixture")
+    const source = Buffer.from("unchanged source archive fixture")
+    const library = Buffer.from("library fixture")
+    let agentd = Buffer.from("agent revision one")
+    let compilations = 0
+    const sourceArtifact = { url: "https://example.test/source.tar.gz", sha256: sha256(source) }
+    const selected = {
+      ...runtimeTargets[targetTriple],
+      executableSha256: sha256(releaseExecutable),
+      agentdSha256: sha256(agentd),
+      librarySha256: sha256(library),
+    }
+    await mkdir(join(appRoot, "patches"), { recursive: true })
+    await writeFile(join(appRoot, MICROSANDBOX_PATCH_PATH), await readFile(join(process.cwd(), MICROSANDBOX_PATCH_PATH)))
+    const fetchBytes = async (url: string) => {
+      if (url === sourceArtifact.url) return source
+      if (url.endsWith(`/${selected.executableAsset}`)) return releaseExecutable
+      if (url.endsWith(`/${selected.agentdAsset}`)) return agentd
+      if (url.endsWith(`/${selected.libraryAsset}`)) return library
+      throw new Error(`Unexpected download: ${url}`)
+    }
+    // Exercise the real download verifier, build-cache lookup, compiler orchestration,
+    // and staged bytes. Only external tools are replaced with deterministic fixtures.
+    const compiler = ((command: string, args: string[], options: ExecFileSyncOptions) => {
+      if (command === "rustc") return "rustc 1.94.0 (fixture)"
+      if (command === "/usr/bin/tar") {
+        mkdirSync(join(args[args.indexOf("-C") + 1], "source"), { recursive: true })
+        return ""
+      }
+      if (command === "/usr/bin/git") return ""
+      if (command === "cargo") {
+        compilations += 1
+        const output = join(String(options.env?.CARGO_TARGET_DIR), targetTriple, "release")
+        mkdirSync(output, { recursive: true })
+        const embeddedAgent = readFileSync(join(String(options.cwd), "build/agentd"))
+        writeFileSync(join(output, "msb"), Buffer.concat([Buffer.from("compiled runtime:"), embeddedAgent]))
+        return ""
+      }
+      if (command.startsWith(appRoot) && command.endsWith("/msb")) {
+        if (args[0] === "--silo-github-protocol") return "1"
+        if (args[0] === "--version") return `msb ${MICRO_SANDBOX_VERSION}`
+        if (args.includes("--help")) return "--no-start --from-snapshot --progress-json"
+      }
+      throw new Error(`Unexpected tool invocation: ${command} ${args.join(" ")}`)
+    }) as typeof execFileSync
+    try {
+      await vi.mocked(execFileSync).withImplementation(compiler, async () => {
+        const stage = () => stageRuntime({ appRoot, targetTriple, fetchBytes, selected, licenses: [], sourceArtifact, verifyExecutable: false })
+        const first = await stage()
+        const firstBytes = await readFile(first.executablePath)
+        expect(firstBytes.toString()).toBe("compiled runtime:agent revision one")
+        expect(compilations).toBe(1)
+
+        const warm = await stage()
+        expect(await readFile(warm.executablePath)).toEqual(firstBytes)
+        expect(compilations).toBe(1)
+
+        agentd = Buffer.from("agent revision two")
+        selected.agentdSha256 = sha256(agentd)
+        const changed = await stage()
+        expect(await readFile(changed.executablePath, "utf8")).toBe("compiled runtime:agent revision two")
+        expect(compilations).toBe(2)
+        const manifest = JSON.parse(await readFile(changed.manifestPath, "utf8"))
+        expect(manifest.executable.embeddedAgentdReleaseSha256).toBe(sha256(agentd))
+        expect(manifest.executable.sha256).toBe(sha256(await readFile(changed.executablePath)))
+      })
+    } finally {
+      await rm(appRoot, { recursive: true, force: true })
+    }
+  })
+
 })

@@ -1,6 +1,10 @@
 """Protect the release cache boundary using representative filesystem contents."""
 from pathlib import Path
+import json
+import os
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -10,6 +14,30 @@ WORKFLOW = (ROOT / '.github/workflows/release.yml').read_text()
 
 
 class ReleaseCacheTests(unittest.TestCase):
+    def test_ci_installs_the_manifest_toolchain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / 'app/SiloUI/runtime-inputs.json'
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({'toolchain': '9.8.7'}))
+            commands = root / 'bin'
+            commands.mkdir()
+            (commands / 'node').symlink_to(shutil.which('node'))
+            rustup = commands / 'rustup'
+            rustup.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SILO_TOOLCHAIN_LOG"\n')
+            rustup.chmod(0o755)
+            log = root / 'calls'
+            env = dict(os.environ, PATH=str(commands), GITHUB_WORKSPACE=str(root), SILO_TOOLCHAIN_LOG=str(log))
+            for name in ['release.yml', 'warm-release-caches.yml', 'linux-verification.yml']:
+                workflow = (ROOT / '.github/workflows' / name).read_text()
+                blocks = re.findall(r'          runtime_toolchain=.*\n          rustup toolchain install .*\n          rustup default .*', workflow)
+                self.assertEqual(len(blocks), 2 if name == 'release.yml' else 1)
+                for block in blocks:
+                    log.unlink(missing_ok=True)
+                    subprocess.run(['/bin/bash', '-eu', '-c', block], env=env, check=True, capture_output=True)
+                    self.assertEqual(log.read_text().splitlines(), ['toolchain install 9.8.7 --profile minimal', 'default 9.8.7'])
+            self.assertIn('-rust${{ steps.runtime-inputs.outputs.toolchain }}-', ACTION)
+
     def test_cache_allowlist_excludes_compiled_application_and_build_work(self):
         blocks = re.findall(r'        path: \|\n((?:          .+\n)+)', ACTION)
         paths = [block.split() for block in blocks]

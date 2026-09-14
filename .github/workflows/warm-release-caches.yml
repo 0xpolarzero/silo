@@ -54,8 +54,9 @@ jobs:
       - name: Install pinned Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install 1.94.0 --profile minimal
-          rustup default 1.94.0
+          runtime_toolchain=$(node -p "require(process.env.GITHUB_WORKSPACE + '/app/SiloUI/runtime-inputs.json').toolchain")
+          rustup toolchain install "$runtime_toolchain" --profile minimal
+          rustup default "$runtime_toolchain"
           test "$(rustc --print host-tuple)" = '${{ matrix.target }}'
       # No signing environment or GitHub App credentials enter this job.
       - uses: ./.github/actions/prepare-release-runtime
