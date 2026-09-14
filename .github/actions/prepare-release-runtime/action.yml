@@ -10,6 +10,19 @@ inputs:
   save:
     description: Populate default-branch caches from the credential-free warmer
     default: 'false'
+  lookup-only:
+    description: Check exact public-cache availability without restoring or preparing
+    default: 'false'
+  artifact-name:
+    description: Same-run public runtime cache produced on an exact cache miss
+    default: ''
+  artifact-sha256:
+    description: Expected archive SHA256 from the producing job
+    default: ''
+outputs:
+  cache-hit:
+    description: Whether the exact reviewed public runtime cache exists
+    value: ${{ steps.runtime.outputs.cache-hit }}
 runs:
   using: composite
   steps:
@@ -21,9 +34,11 @@ runs:
         node app/SiloUI/scripts/preflight.mjs
         echo "toolchain=$(node -p "require('./app/SiloUI/runtime-inputs.json').toolchain")" >> "$GITHUB_OUTPUT"
     - name: Restore public runtime cache
+      if: inputs.lookup-only == 'true' || inputs.artifact-name == ''
       id: runtime
       uses: actions/cache/restore@v4
       with:
+        lookup-only: ${{ inputs.lookup-only }}
         key: silo-runtime-v1-${{ inputs.runner }}-${{ inputs.target }}-rust${{ steps.runtime-inputs.outputs.toolchain }}-${{ hashFiles('app/SiloUI/runtime-inputs.json', 'app/SiloUI/scripts/preflight.mjs', 'app/SiloUI/scripts/prepare-microsandbox-runtime.mjs', 'app/SiloUI/scripts/microsandbox-runtime.mjs', 'app/SiloUI/scripts/git-runtime.mjs', 'app/SiloUI/scripts/guest-image.mjs', 'app/SiloUI/patches/microsandbox-*.patch', 'app/SiloUI/guest-image/image-lock.json') }}
         # Older cache archives are input candidates only; preparation below
         # rechecks pinned bytes and the source/patch/toolchain build key.
@@ -38,7 +53,23 @@ runs:
           app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb.sha256
           app/SiloUI/src-tauri/target/runtime-cache/dugite
           app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz
+    - name: Report public runtime cache status
+      shell: bash
+      env:
+        EXACT_HIT: ${{ steps.runtime.outputs.cache-hit }}
+        LOOKUP_ONLY: ${{ inputs.lookup-only }}
+        RUNTIME_TARGET: ${{ inputs.target }}
+        SHARED_ARTIFACT: ${{ inputs.artifact-name }}
+      run: |
+        if [[ -n "$SHARED_ARTIFACT" && "$LOOKUP_ONLY" != true ]]; then
+          echo "Runtime cache $RUNTIME_TARGET: consume this platform's verified same-run artifact."
+        elif [[ "$EXACT_HIT" == true ]]; then
+          echo "Runtime cache $RUNTIME_TARGET: exact hit (lookup-only=$LOOKUP_ONLY)."
+        else
+          echo "Runtime cache $RUNTIME_TARGET: exact miss (lookup-only=$LOOKUP_ONLY)."
+        fi
     - name: Restore Cargo downloads
+      if: inputs.lookup-only != 'true'
       id: cargo
       uses: actions/cache/restore@v4
       with:
@@ -48,18 +79,32 @@ runs:
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
+    - name: Download same-run public runtime inputs
+      if: inputs.lookup-only != 'true' && inputs.artifact-name != ''
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/shared-runtime
+    - name: Check and import public runtime cache archive
+      if: inputs.lookup-only != 'true' && inputs.artifact-name != ''
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        RUNTIME_ARCHIVE_SHA256: ${{ inputs.artifact-sha256 }}
+      run: python3 app/SiloUI/scripts/release-runtime-cache.py unpack --archive "$RUNNER_TEMP/shared-runtime/runtime-cache.tar.gz" --sha256 "$RUNTIME_ARCHIVE_SHA256"
     # Always verify and re-stage cached inputs, and regenerate release-info.json.
     - name: Prepare native resources
+      if: inputs.lookup-only != 'true'
       shell: bash
       working-directory: app/SiloUI
       run: python3 scripts/measure-command.py runtime-prepare -- npm run runtime:prepare
     - name: Warm application dependency downloads
-      if: inputs.save == 'true' && github.ref == 'refs/heads/main'
+      if: inputs.lookup-only != 'true' && inputs.save == 'true' && github.ref == 'refs/heads/main'
       shell: bash
       working-directory: app/SiloUI
       run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked --target '${{ inputs.target }}'
     - name: Save public runtime cache
-      if: inputs.save == 'true' && github.ref == 'refs/heads/main' && steps.runtime.outputs.cache-hit != 'true'
+      if: inputs.lookup-only != 'true' && inputs.save == 'true' && github.ref == 'refs/heads/main' && steps.runtime.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         key: ${{ steps.runtime.outputs.cache-primary-key }}
@@ -74,7 +119,7 @@ runs:
           app/SiloUI/src-tauri/target/runtime-cache/dugite
           app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz
     - name: Save Cargo downloads
-      if: inputs.save == 'true' && github.ref == 'refs/heads/main' && steps.cargo.outputs.cache-hit != 'true'
+      if: inputs.lookup-only != 'true' && inputs.save == 'true' && github.ref == 'refs/heads/main' && steps.cargo.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         key: ${{ steps.cargo.outputs.cache-primary-key }}

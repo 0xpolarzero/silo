@@ -120,7 +120,43 @@ focused regressions and the bounded bundle retry. The retry is verified using
 the two exact diagnostic shapes and deterministic subprocesses. It has not
 been claimed as a live successful retry in these earlier runs.
 
-## Not enabled
+## Warm runtime measurement
+
+The main-branch warmer [34864569539](https://github.com/0xpolarzero/silo/actions/runs/34864569539)
+completed successfully on all three platforms. The subsequent artifact-only
+release run [34866074365](https://github.com/0xpolarzero/silo/actions/runs/34866074365)
+at `e50ee59` passed every native, frontend, packaging, signature and metadata
+check. It did not publish a release. Active workflow time was **9m32s**, with
+39m59s summed job time. This replaces the earlier approximately eight-minute
+estimate with a measured result.
+
+| Package job | Complete job | Runtime preparation command | Release build command | Initial bundling |
+| --- | ---: | ---: | ---: | ---: |
+| Linux x64 | 9m23s | 3.110 s | 362.096 s | 92.326 s |
+| Linux ARM64 | 7m47s | 1.206 s | 280.753 s | 96.902 s |
+| macOS ARM64 | 6m59s | 1.765 s | 343.738 s | 7.178 s |
+
+The macOS runtime composite step, including cache restoration, fell from
+630s in the earlier cold parallel run to 7s. Its preparation command fell
+from 623.350s to 1.765s. Native-job preparation also took only 1.240–3.021s;
+all six consumers reused the prepared runtime. This directly demonstrates
+that unchanged runtime compilation can be removed from ordinary releases.
+
+The overall observed difference from the cold parallel benchmark is 8m44s
+(48%). That earlier run failed a Linux download, used an earlier commit, and
+had different runner/compiler timings, so it is not a controlled successful
+release speedup claim. The phase measurements establish runtime reuse;
+the whole-run number describes this successful warm run.
+
+Linux x64 now determines completion. Its longest steps were compilation
+(362s), bundling (92s), installing native prerequisites (36s), collecting and
+checking Linux assets (25s), and uploading packages (11s). Native jobs
+finished in 4m01s–4m19s and frontend checks in 3m13s. They overlap packaging.
+The remaining priority is application dependency compilation, followed by
+Linux packaging. The [sanitized full job and phase timings](measurements/workflow-warm-2026-09-14.json)
+contain the complete breakdown; raw logs remain local.
+
+## Rejected narrow Rust cache
 
 The dependency-cache candidate was rejected and its prototype removed from
 the final source tree and routine CI; local experiment evidence is retained.

@@ -11,6 +11,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 ACTION = (ROOT / '.github/actions/prepare-release-runtime/action.yml').read_text()
 WORKFLOW = (ROOT / '.github/workflows/release.yml').read_text()
+PLATFORM = (ROOT / '.github/workflows/release-platform.yml').read_text()
 
 
 class ReleaseCacheTests(unittest.TestCase):
@@ -28,10 +29,10 @@ class ReleaseCacheTests(unittest.TestCase):
             rustup.chmod(0o755)
             log = root / 'calls'
             env = dict(os.environ, PATH=str(commands), GITHUB_WORKSPACE=str(root), SILO_TOOLCHAIN_LOG=str(log))
-            for name in ['release.yml', 'warm-release-caches.yml', 'linux-verification.yml']:
+            for name in ['release-platform.yml', 'warm-release-caches.yml', 'linux-verification.yml']:
                 workflow = (ROOT / '.github/workflows' / name).read_text()
                 blocks = re.findall(r'          runtime_toolchain=.*\n          rustup toolchain install .*\n          rustup default .*', workflow)
-                self.assertEqual(len(blocks), 2 if name == 'release.yml' else 1)
+                self.assertEqual(len(blocks), 3 if name == 'release-platform.yml' else 1)
                 for block in blocks:
                     log.unlink(missing_ok=True)
                     subprocess.run(['/bin/bash', '-eu', '-c', block], env=env, check=True, capture_output=True)
@@ -87,20 +88,20 @@ class ReleaseCacheTests(unittest.TestCase):
         self.assertIn('node app/SiloUI/scripts/preflight.mjs', validate)
 
     def test_shared_frontend_checks_gate_publication(self):
-        frontend = WORKFLOW.split('\n  frontend:', 1)[1].split('\n  native-tests:', 1)[0]
-        build = WORKFLOW.split('\n  build:', 1)[1].split('\n  draft:', 1)[0]
+        frontend = WORKFLOW.split('\n  frontend:', 1)[1].split('\n  platforms:', 1)[0]
+        build = PLATFORM.split('\n  build:', 1)[1]
         for command in ['npm test --', 'npm run lint', 'npm run test:release']:
             self.assertIn(command, frontend)
             self.assertNotIn(command, build)
         self.assertIn('npm run typecheck', frontend)
-        self.assertIn('needs: [validate, frontend, native-tests, build, macos-minimum-constraints]', WORKFLOW)
-        native = WORKFLOW.split('\n  native-tests:', 1)[1].split('\n  build:', 1)[0]
+        self.assertIn('needs: [validate, frontend, platforms, macos-minimum-constraints]', WORKFLOW)
+        native = PLATFORM.split('\n  native-tests:', 1)[1].split('\n  build:', 1)[0]
         self.assertIn('cargo test --manifest-path', native)
         self.assertIn('Test updater transport and interrupted installation', native)
         self.assertNotIn('secrets.', native)
         self.assertNotIn('TAURI_SIGNING_PRIVATE_KEY', native)
-        self.assertIn("if: inputs.benchmark_schedule != 'sequential'", native)
-        self.assertIn("if: inputs.benchmark_schedule == 'sequential'", build)
+        self.assertIn("inputs.benchmark-schedule != 'sequential'", native)
+        self.assertIn("if: inputs.benchmark-schedule == 'sequential'", build)
         self.assertIn('path: ${{ runner.temp }}/build-phases.jsonl', native)
         self.assertNotIn('path: app/SiloUI/src-tauri/target', native)
         self.assertIn("test_*release*.py", build)

@@ -357,6 +357,32 @@ and guest lockfile, so app version changes alone do not invalidate the runtime.
 Preparation always verifies and stages restored inputs and regenerates package
 metadata. Cache misses follow the normal build path.
 
+Release validation checks exact runtime-cache availability for each target using
+`lookup-only` on the existing validation runner. Warm platforms start their native
+and package jobs directly, without an extra producer runner or artifact transfer.
+A missing exact cache starts one credential-free runtime producer inside that
+platform's `release-platform.yml` invocation. Its native and package jobs wait for
+that producer; another platform's runtime does not block them. Sequential benchmark
+mode still runs native tests in the package job before release compilation.
+
+The cold producer archives only the existing public runtime-cache allowlist. The
+archive preserves executable modes and excludes application build products, local
+configuration, source-build work directories, and staged `release-info.json`.
+Consumers require the producing job's archive SHA256, reject unsafe paths and
+links, and then run normal preparation to validate and stage inputs for the current
+release. No release job saves a shared cache; only the main-branch warmer does.
+If an exact cache is evicted or damaged after lookup, ordinary preparation retains
+its safe local rebuild fallback. Cache reuse is an optimization, not a prerequisite
+for correctness.
+
+The lookup and restore use the same key and literal path list. GitHub's
+[cache version implementation](https://github.com/actions/toolkit/blob/main/packages/cache/src/internal/cacheUtils.ts)
+combines those paths, compression method and format salt; its platform discriminator
+applies only to Windows. Our Linux and macOS runners use zstd. The archive transfer
+adds an explicit digest failure check because GitHub's
+[artifact download validation](https://docs.github.com/en/actions/tutorials/store-and-share-data#validating-artifacts)
+reports a digest mismatch as a warning.
+
 Cargo caches contain only registry indexes, downloaded crates, and Git databases,
 following the [Cargo home guidance](https://doc.rust-lang.org/cargo/guide/cargo-home.html).
 Application executables, Cargo build trees, and local configuration are excluded.

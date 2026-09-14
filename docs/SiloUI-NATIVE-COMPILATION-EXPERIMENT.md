@@ -311,3 +311,54 @@ combined native reports in `preserved-evidence/combined-native/`. Logs, JSON,
 stats, inventories and probe scripts remain at their recorded paths;
 `preserved-evidence/cleanup-manifest.json` records every deletion and the
 retained report paths. The original repository's warm Cargo target was untouched.
+
+## Scoped native C-cache follow-up
+
+A separately authorized follow-up tested only `aws-lc-sys` 0.45.0 public C
+compilations on exact main commit `e50ee59cdb0f0521bb0f2cf20fa08f3fa0fcd71b`.
+The actual optimized Tauri command, built frontend, fixture resources, empty
+stable target path and synthetic configuration matched the release probe above.
+The local toolchain remained rustc 1.91.1, versus 1.94.0 in hosted CI.
+
+The disposable wrapper admitted only `.c` source inside that exact registry
+package and object output inside its Cargo `OUT_DIR`. Unknown packages,
+assembly, compiler probes and application compilation bypassed caching. The
+sccache 0.12.0 child received an environment allowlist without credentials or
+remote-cache settings; SDK and deployment settings were preserved. Direct
+preprocessor caching was disabled, retaining full preprocessing and header
+hashing rather than its documented missing-header caveat. See the
+[pinned local-cache behavior](https://github.com/mozilla/sccache/blob/v0.12.0/docs/Local.md).
+Two boundary tests passed for admission and the credential-free readonly child.
+
+The first population attempt failed in 28.578 s: setting `CC` directly to the
+wrapper hid Xcode clang's path from cc-rs, which omitted its required
+`-isysroot` argument. The failed output was preserved. The corrected invocation
+used `CC_KNOWN_WRAPPER_CUSTOM=cc-wrapper` and `CC="<wrapper> <real clang>"`,
+preserving compiler identity and SDK detection as intended by
+[cc-rs's wrapper interface](https://docs.rs/cc/latest/cc/#external-configuration-via-environment-variables).
+The corrected population started with a fresh target and cache.
+
+| Optimized Tauri build | Wall time | Cargo timing | `aws-lc-sys` native build |
+| --- | ---: | ---: | ---: |
+| Unwrapped control | 72.980 s | 70.85 s | 27.92 s |
+| Corrected population | 84.616 s | 82.59 s | 38.14 s |
+| Readonly consumer | 84.063 s | 81.82 s | 33.15 s |
+
+The consumer hit all **260 C compilation requests**, with no misses, writes
+or cache errors. Its 257 object archives totaled **1,546,691 bytes**. Every
+decoded member was an object file; no synthetic secret sentinel or GitHub
+secret variable was present. The consumer preserved every cache object hash.
+All three successful builds produced byte-identical 24,337,408-byte synthetic
+executables with SHA-256
+`93f3489dc98f6074e491b1ce1bfa2104689078515d7487f80d9fddb03b2c8d2f`.
+
+**Do not adopt this C-cache prototype.** It proved narrow cache admission and
+correct output reuse, but did not improve the measured release. Uncached
+application and Objective-C compilations also slowed, so this single sequence
+does not establish a stable 15% cache penalty. It supplies no positive rollout
+evidence or 30% gain. No shared workflow or production wrapper was added.
+Exact logs, timing reports, boundary tests, driver, decoded inventory and
+before-consumer hashes are retained under `/private/tmp/silo-c-cache/`.
+The synthetic control target was retained for the separately coordinated
+public dependency-artifact experiment; no broad test suite or app/VM run was
+performed for this C-cache probe.
