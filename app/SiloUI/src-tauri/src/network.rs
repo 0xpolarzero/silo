@@ -467,10 +467,7 @@ fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Wor
                 }),
             )
         } else if !listeners.contains_key(&mapping.port) {
-            (
-                "waiting",
-                Some("Waiting for a service inside the VM.".into()),
-            )
+            ("waiting", None)
         } else if matches!(reachable.get(&mapping.port), Some(Ok(true))) {
             ("reachable", None)
         } else if let Some(Err(e)) = reachable.get(&mapping.port) {
