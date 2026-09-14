@@ -209,6 +209,47 @@ remains exact; only the root app version is normalized to permit reuse across
 app releases. Identity is computed before artifact-only signing-key mutation.
 Native tests, signatures, package checks and draft prerequisites are retained.
 
+### Complete cached release result
+
+The final [artifact-only release verification](https://github.com/0xpolarzero/silo/actions/runs/34872424212)
+passed every gate in **6m15s from dispatch**, or **6m11s from the first job's
+start**. Compared consistently with the successful runtime-only warm run's
+9m27s active duration, this saved **3m16s (34.6%)**. Summed job time was
+31m10s, down from 39m59s in the earlier warm run; this is unweighted runner
+work, not billed minutes. Runtime and dependency caches were populated before
+the final run. Cold misses still require compilation.
+
+| Package job | Complete job | Release compilation | Dependency download + validation/restore | Runtime preparation | Initial bundling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Linux x64 | 5m56s | 113.798 s | 18 s | 3.231 s | 94.816 s |
+| Linux ARM64 | 5m46s | 99.162 s | 16 s | 1.223 s | 100.236 s |
+| macOS ARM64 | 4m57s | 145.209 s | 30 s | 2.631 s | 6.642 s |
+
+The full release command includes normal frontend preparation/runtime
+restaging in addition to Rust compilation. All three production restore steps
+reported verified cache restoration, followed by mandatory fresh application
+compilation. Earlier cache miss/rejection messages in the same logs came from
+the deterministic fallback tests, not the production restore steps. All native
+jobs passed (3m13s–4m01s), as did frontend checks (3m15s), minimum-macOS checks,
+package creation, signing and metadata checks. These jobs overlap.
+
+A concurrent 0.5.0 release changed the runtime inputs and occupied the shared
+publication queue. The initial unpinned artifact run `34871663613` was cancelled
+while pending; the active publication was left untouched. Artifact-only runs
+now have independent concurrency and can pin their source. The measured final
+run used workflow `d9850de3341f4cec78f055334d208b401d8e9334` and source
+`a29b211e0da084c8fe1b0cd84135b9ad2ef3b822`, keeping the compiled source and warmed
+inputs fixed. No release was published by this benchmark. Five focused tests
+cover source validation and checkout/concurrency wiring; the prior complete
+release-tooling suite passed 96 tests.
+
+The [complete sanitized job/step and phase timings](measurements/workflow-cached-2026-09-14.json)
+record the breakdown. The approximately 66% observed reduction from the earlier
+18m16s cold run combines runtime reuse and dependency reuse; that cold run had a
+failed download and is not a successful-release control. The successful warm
+9m27s to 6m11s comparison is the end-to-end result for this round, not a promise
+of a minimum duration on every runner.
+
 ## Rejected narrow Rust cache
 
 The dependency-cache candidate was rejected and its prototype removed from
