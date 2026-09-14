@@ -1,5 +1,11 @@
 # silo-ui
 
+## 0.4.1
+
+### Patch Changes
+
+- Add a Linux Menu button with Alt/F10 access and Escape focus restoration. Find update checks, downloads, installation, retries, and installer links through Command-K or Control-K, with confirmation before stopping running sandboxes.
+
 ## 0.4.0
 
 ### Minor Changes

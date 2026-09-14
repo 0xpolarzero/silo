@@ -214,9 +214,12 @@ mod tests {
             Path::new("/usr/bin/git"),
             &["config", "--global", "--includes", "--get", "user.name"],
             &environment,
-            Duration::from_secs(2),
+            // This test checks Git include semantics, not launch latency. The
+            // macOS /usr/bin/git shim can start slowly on a loaded CI runner.
+            // Timeout enforcement has its own deterministic subprocess test.
+            Duration::from_secs(15),
         )
-        .unwrap();
+        .expect("isolated Git config query should read the included identity");
         assert_eq!(name.trim(), "Included Author");
     }
 }
