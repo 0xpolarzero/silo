@@ -138,3 +138,12 @@ size and Docker configuration digest checks before updating the application lock
 The six guest-image staging tests, 16 release-tooling tests, type checking and
 lint passed locally. These checks establish image contents and packaging inputs;
 they do not establish live VM networking or installation/upgrade acceptance.
+
+A disposable ARM64 MicroSandbox VM also booted from the verified downloaded v2
+archive with `--pull never`. `curl --version` and
+`curl -fsS --max-time 20 https://example.com -o /dev/null` both exited successfully.
+The test used a separate `/private/tmp/silo-curl-vm-check` home and the existing
+`app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app/Contents/MacOS/msb` helper
+with its bundled `Contents/Frameworks/libkrunfw.5.dylib`. The disposable VM was
+stopped afterward. This checks the new image on the existing VM engine, not a
+rebuilt or installed 0.4.2 app. No user VM was modified.
