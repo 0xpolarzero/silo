@@ -206,6 +206,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install minisign
       - run: npm ci
+      - name: Resolve public dependency identity before test signing configuration
+        id: dependencies
+        run: python3 scripts/release-dependency-cache.py prepare --target '${{ inputs.target }}' --state "$RUNNER_TEMP/release-dependencies" >> "$GITHUB_OUTPUT"
       - name: Generate isolated test signing key
         if: ${{ !inputs.draft }}
         run: |
@@ -241,8 +244,18 @@ jobs:
       - name: Free test products before release compilation
         if: inputs.benchmark-schedule == 'sequential'
         run: cargo clean --manifest-path src-tauri/Cargo.toml --profile dev
+      - name: Restore public release dependencies only
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/release-dependencies/cache
+          key: ${{ steps.dependencies.outputs.key }}
+      - name: Validate dependencies or fall back to ordinary compilation
+        run: |
+          python3 scripts/release-dependency-cache.py restore --target '${{ inputs.target }}' --state "$RUNNER_TEMP/release-dependencies"
+          echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/app/SiloUI/src-tauri/target/release-compile" >> "$GITHUB_ENV"
       - name: Compile release application
-        run: python3 scripts/measure-command.py release-build -- npm run desktop:build -- --target '${{ inputs.target }}' --no-bundle --ci
+        run: python3 scripts/measure-command.py release-build -- python3 scripts/release-dependency-cache.py build --target '${{ inputs.target }}' --state "$RUNNER_TEMP/release-dependencies"
       - name: Build release bundles
         run: python3 scripts/measure-command.py release-bundle -- python3 scripts/retry-bundle.py --log "$RUNNER_TEMP/silo-bundle.log" -- npx tauri bundle --target '${{ inputs.target }}' --bundles '${{ inputs.bundles }}' --ci --verbose
       - uses: actions/upload-artifact@v4
@@ -254,7 +267,7 @@ jobs:
           retention-days: 7
       - name: Enforce exact macOS runtime libraries and rebuild signed packages
         if: runner.os == 'macOS'
-        run: python3 scripts/package-macos-release.py 'src-tauri/target/${{ inputs.target }}/release/bundle/macos/Silo.app' release-assets
+        run: python3 scripts/package-macos-release.py 'src-tauri/target/release-compile/${{ inputs.target }}/release/bundle/macos/Silo.app' release-assets
       - name: Verify macOS library constraints
         if: runner.os == 'macOS'
         run: python3 scripts/test-macos-library-constraints.py --constraints-only --output "$RUNNER_TEMP/library-constraints"
@@ -262,7 +275,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir -p release-assets
-          bundle='src-tauri/target/${{ inputs.target }}/release/bundle'
+          bundle='src-tauri/target/release-compile/${{ inputs.target }}/release/bundle'
           codesign --verify --deep --strict "$bundle/macos/Silo.app"
           python3 scripts/verify-macos-signing.py "$bundle/macos/Silo.app"
           test -s release-assets/Silo-macos-arm64.app.tar.gz
@@ -272,12 +285,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           mkdir -p release-assets
-          packages=(src-tauri/target/${{ inputs.target }}/release/bundle/deb/*.deb)
+          packages=(src-tauri/target/release-compile/${{ inputs.target }}/release/bundle/deb/*.deb)
           test "${#packages[@]}" -eq 1
           python3 scripts/package-debian-release.py "${packages[0]}"
           dpkg-deb --info "${packages[0]}"
           cp "${packages[0]}" 'release-assets/Silo-${{ inputs.asset }}.deb'
-          images=(src-tauri/target/${{ inputs.target }}/release/bundle/appimage/*.AppImage)
+          images=(src-tauri/target/release-compile/${{ inputs.target }}/release/bundle/appimage/*.AppImage)
           test "${#images[@]}" -eq 1
           cp "${images[0]}" 'release-assets/Silo-${{ inputs.asset }}.AppImage'
           cp "${images[0]}.sig" 'release-assets/Silo-${{ inputs.asset }}.AppImage.sig'

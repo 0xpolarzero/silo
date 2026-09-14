@@ -3,7 +3,7 @@
 Only credential-free trusted producers may export. Signing jobs restore only.
 The context file must identify the exact public compiler/profile/SDK inputs.
 """
-import argparse, hashlib, json, os, re, shutil, stat, sys, tarfile, tomllib
+import argparse, hashlib, importlib.util, json, os, re, shutil, stat, sys, tarfile, tomllib
 from pathlib import Path
 
 SENTINELS = [b'SYNTHETIC-RELEASE-BOUNDARY-SENTINEL', b'SYNTHETIC-DEPENDENCY-ROTATION-SENTINEL', b'SILO_GITHUB_CLIENT_SECRET']
@@ -141,8 +141,19 @@ def identities(args, metadata):
     require(re.fullmatch(r'[a-zA-Z0-9_-]+', args.target), 'invalid target triple')
     require(metadata.get('resolve') and metadata['resolve'].get('nodes'), 'metadata requires resolved dependencies')
     graph = sorted(metadata['resolve']['nodes'], key=lambda n: n['id'])
+    lock_hash = file_hash(args.lockfile)
+    context = read_json(args.context)
+    mode = context.get('identityMode')
+    require(mode in (None, 'semantic-root-version-v1'), 'unknown dependency identity mode')
+    if mode == 'semantic-root-version-v1':
+        spec = importlib.util.spec_from_file_location('dependency_identity', Path(__file__).with_name('cargo-dependency-identity.py'))
+        identity = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(identity)
+        resolution = identity.semantic_resolution(metadata, tomllib.loads(args.lockfile.read_text()))
+        lock_hash = identity.identity_digest(resolution['lock'])
+        graph = resolution['graph']
     return {'target': args.target, 'targetDir': str(args.target_dir.resolve()), 'cargoHome': str(args.cargo_home.resolve()),
-            'contextSha256': file_hash(args.context), 'lockSha256': file_hash(args.lockfile),
+            'contextSha256': file_hash(args.context), 'lockSha256': lock_hash,
             'graphSha256': hashlib.sha256(json.dumps(graph, sort_keys=True).encode()).hexdigest()}
 
 def approve(metadata, lockfile, identifiers, cargo_home):

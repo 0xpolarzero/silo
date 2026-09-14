@@ -16,6 +16,12 @@ on:
       - 'app/SiloUI/runtime-inputs.json'
       - 'app/SiloUI/scripts/preflight.mjs'
       - 'app/SiloUI/src-tauri/Cargo.lock'
+      - 'app/SiloUI/src-tauri/Cargo.toml'
+      - 'app/SiloUI/src-tauri/tauri.conf.json'
+      - 'app/SiloUI/src-tauri/vendor/**'
+      - '**/.cargo/config*'
+      - 'app/SiloUI/scripts/*dependency*.py'
+      - 'app/SiloUI/package-lock.json'
 
 permissions:
   contents: read
@@ -38,19 +44,29 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
+    env:
+      SILO_GITHUB_APP_SLUG: silo-cache-warmer
+      SILO_GITHUB_CLIENT_ID: synthetic-cache-client
+      SILO_GITHUB_CLIENT_SECRET: SILO-CACHE-PRODUCER-CONFIG-SENTINEL
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Validate runtime inputs before installation or downloads
         run: node app/SiloUI/scripts/preflight.mjs
       - name: Install native Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev libcap-ng-dev cmake
+          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev libcap-ng-dev cmake libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev
       - name: Install pinned Rust toolchain
         shell: bash
         run: |
@@ -64,3 +80,30 @@ jobs:
           runner: ${{ matrix.runner }}
           target: ${{ matrix.target }}
           save: 'true'
+      - name: Install frontend toolchain
+        run: npm --prefix app/SiloUI ci
+      - name: Resolve exact public dependency identity
+        id: dependencies
+        working-directory: app/SiloUI
+        run: python3 scripts/release-dependency-cache.py prepare --target '${{ matrix.target }}' --state "$RUNNER_TEMP/release-dependencies" >> "$GITHUB_OUTPUT"
+      - name: Check existing public dependency cache
+        id: dependency-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/release-dependencies/cache
+          key: ${{ steps.dependencies.outputs.key }}
+          lookup-only: true
+      - name: Compile with synthetic configuration on cache miss
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        working-directory: app/SiloUI
+        run: python3 scripts/measure-command.py dependency-warm-build -- python3 scripts/release-dependency-cache.py build --target '${{ matrix.target }}' --state "$RUNNER_TEMP/release-dependencies"
+      - name: Export and audit reviewed public dependencies only
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        working-directory: app/SiloUI
+        run: python3 scripts/release-dependency-cache.py export --target '${{ matrix.target }}' --state "$RUNNER_TEMP/release-dependencies"
+      - name: Save audited public dependency cache from main only
+        if: github.ref == 'refs/heads/main' && steps.dependency-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/release-dependencies/cache
+          key: ${{ steps.dependencies.outputs.key }}

@@ -343,8 +343,9 @@ checks once in a shared job. Draft creation requires that job to pass. Each
 platform still runs Python release checks, native tests, updater checks, and
 its packaging and signing verification.
 
-`warm-release-caches.yml` populates caches on `main` when runtime inputs or the
-Cargo lockfile change; it also supports manual dispatch on `main`. Let its first
+`warm-release-caches.yml` populates caches on `main` when runtime inputs, dependency
+manifests, vendor sources, compiler configuration or cache tooling change; it also
+supports manual dispatch on `main`. Let its first
 cold run finish before tagging a release to benefit from the cache.
 [GitHub cache scope](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
 allows tags to restore default-branch caches, but not caches from other tags.
@@ -383,10 +384,38 @@ adds an explicit digest failure check because GitHub's
 [artifact download validation](https://docs.github.com/en/actions/tutorials/store-and-share-data#validating-artifacts)
 reports a digest mismatch as a warning.
 
-Cargo caches contain only registry indexes, downloaded crates, and Git databases,
+Cargo download caches contain registry indexes, downloaded crates, and Git databases,
 following the [Cargo home guidance](https://doc.rust-lang.org/cargo/guide/cargo-home.html).
-Application executables, Cargo build trees, and local configuration are excluded.
-Rust application compilation still runs for every release.
+A separate reviewed dependency cache contains selected compiled crates.io dependencies
+for the exact release profile and target. It never contains the full Cargo target
+tree, application executables or fingerprints, workspace/path/git package outputs,
+or local configuration. Registry build-script products are included only when the
+exporter attributes them to an approved locked crates.io package.
+
+Only the credential-free `main` warmer compiles and exports that dependency cache,
+using explicit synthetic GitHub configuration and no signing environment. An exact
+cache lookup skips compilation when the cache already exists. Before saving, the
+exporter audits package ownership, artifact hashes, paths and modes, verifies registry
+source bytes against locked crate archives, and rejects the synthetic secret marker.
+Release jobs only restore; they never export or save their credentialed build products.
+
+Dependency keys include compiler and SDK identity, native toolchain versions, target,
+release profile, dependency graph and features, lockfile pins and checksums, vendor
+sources, Cargo configuration, and compiler environment overrides. Only the excluded
+root application's version is normalized across Cargo/Tauri manifests, the lockfile
+and root graph references. Dependency versions and checksums remain exact. Consumers
+compute their own context before artifact-only verification changes the updater key.
+The importer independently validates the current graph and lockfile, then checks all
+cached artifacts and installed registry source bytes before restoring source timestamps
+and approved dependency products. A missing cache, cache-service failure or rejected
+import follows ordinary compilation with an empty dedicated release target.
+
+CI release compilation and bundling use
+`app/SiloUI/src-tauri/target/release-compile/<target>/release/`; bundles are under its
+`bundle/` directory. Local build paths documented above are unchanged. Every release
+still compiles the application, and the build rejects Cargo output reporting the
+application executable as fresh. Native and updater tests retain their ordinary test
+targets and run on every platform; dependency reuse removes no release gates.
 
 The 0.3.1 macOS release spent about 14 minutes preparing its runtime. Reusing the
 patched runtime targets that cost; actual savings must be measured on a release
@@ -414,7 +443,8 @@ individual projects because project limits override the CLI root limit.
 The release workflow runs native and updater checks on all three platforms in
 parallel with package compilation. The draft job requires the entire native
 matrix, frontend checks, package checks and minimum-macOS checks to pass. Native
-test jobs receive no signing credentials. No compiled Cargo products are cached.
+test jobs receive no signing credentials. Only the reviewed public release dependencies
+described above are cached; application and native-test products are excluded.
 
 For a controlled CI comparison, dispatch the same branch commit twice with
 `draft=false`, once with `benchmark_schedule=sequential` and once with

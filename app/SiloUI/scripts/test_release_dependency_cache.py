@@ -101,4 +101,26 @@ class DependencyCacheTests(unittest.TestCase):
         (self.cache/'manifest.json').write_text(json.dumps(manifest))
         with self.assertRaisesRegex(ValueError,'invalid directory timestamp'):self.restore()
         self.assertEqual(marker.stat().st_mtime_ns,new);self.assertFalse(self.target.exists())
+    def semantic_context(self):
+        self.context.write_text('{"identityMode":"semantic-root-version-v1","rustc":"fixture","profile":"release"}')
+        self.lock.write_text(self.lock.read_text()+'\n[[package]]\nname="silo-ui"\nversion="1.0.0"\ndependencies=["itoa"]\n')
+        metadata=CACHE.read_json(self.metadata)
+        metadata['resolve']['nodes'].append({'id':self.workspace,'dependencies':[self.identifier],'features':[]})
+        self.metadata.write_text(json.dumps(metadata))
+    def test_semantic_restore_allows_root_version_bump_without_application_outputs(self):
+        self.semantic_context();self.export();shutil.rmtree(self.target)
+        metadata=CACHE.read_json(self.metadata);new_id=self.workspace.replace('1.0.0','1.0.1')
+        root=next(p for p in metadata['packages'] if p['id']==self.workspace)
+        root.update(id=new_id,version='1.0.1');metadata['workspace_members']=[new_id];metadata['resolve']['root']=new_id
+        next(n for n in metadata['resolve']['nodes'] if n['id']==self.workspace)['id']=new_id
+        self.metadata.write_text(json.dumps(metadata))
+        self.lock.write_text(self.lock.read_text().replace('name="silo-ui"\nversion="1.0.0"','name="silo-ui"\nversion="1.0.1"'))
+        self.restore();self.assertEqual(self.artifact.read_bytes(),b'public artifact')
+        self.assertFalse(any('silo' in p.name for p in self.target.rglob('*')))
+    def test_semantic_restore_rejects_current_resolved_feature_change(self):
+        self.semantic_context();self.export();shutil.rmtree(self.target)
+        metadata=CACHE.read_json(self.metadata);metadata['resolve']['nodes'][0]['features']=['new-feature']
+        self.metadata.write_text(json.dumps(metadata))
+        with self.assertRaisesRegex(ValueError,'identity'):self.restore()
+        self.assertFalse(self.target.exists())
 if __name__=='__main__':unittest.main()

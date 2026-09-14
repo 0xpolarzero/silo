@@ -169,7 +169,14 @@ Object.fromEntries(Object.entries(conditions).map(([job,condition]) => [job,eval
         self.assertIn('needs: [validate, frontend, platforms, macos-minimum-constraints]', WORKFLOW)
         self.assertIn('uses: ./.github/workflows/release-platform.yml', WORKFLOW)
         self.assertEqual(WORKFLOW.count("lookup-only: 'true'"), 3)
-        self.assertNotIn('continue-on-error', WORKFLOW + PLATFORM)
+        optional_cache = re.search(
+            r'      - name: Restore public release dependencies only\n(.*?)(?=      - name:)',
+            PLATFORM, re.S,
+        )
+        self.assertIsNotNone(optional_cache)
+        self.assertIn('uses: actions/cache/restore@v4', optional_cache.group())
+        self.assertIn('continue-on-error: true', optional_cache.group())
+        self.assertNotIn('continue-on-error', WORKFLOW + PLATFORM.replace(optional_cache.group(), ''))
         self.assertLess(ACTION.index('release-runtime-cache.py unpack'), ACTION.index('runtime-prepare -- npm run runtime:prepare'))
         for name in ['Restore Cargo downloads', 'Prepare native resources']:
             self.assertIn(f"- name: {name}\n      if: inputs.lookup-only != 'true'", ACTION)

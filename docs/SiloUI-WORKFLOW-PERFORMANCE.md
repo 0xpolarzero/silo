@@ -177,6 +177,38 @@ mode preservation, excluded files, checksum/path/link rejection, and producer
 failure blocking consumers. The full Python release-tooling suite passed 65
 tests; workflow syntax validation and an independent review passed.
 
+## Accepted public dependency artifacts
+
+The [fresh-runner benchmark](https://github.com/0xpolarzero/silo/actions/runs/34869018584)
+at `6f45d5c` passed on all three platforms. Each platform compiled a cold
+synthetic release, exported only checksum-approved crates.io dependency units,
+then restored them on a new runner with changed synthetic app configuration.
+No application, workspace/path crate, or application build-script output was
+transferred. Source bytes were checked before restoring their timestamps.
+
+| Platform | Cold compilation | Cached compilation | Transfer + validation + restore | Cached total | Reduction |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| macOS ARM64 | 327.632 s | 135.075 s | 74.198 s | 209.273 s | 36.1% |
+| Linux ARM64 | 277.499 s | 86.105 s | 43.430 s | 129.535 s | 53.3% |
+| Linux x64 | 358.814 s | 94.492 s | 37.883 s | 132.375 s | 63.1% |
+
+All 531 macOS and 619 Linux registry compilation units were fresh in the
+consumers. Every application recompiled, contained its new configuration
+marker and excluded the producer marker. Every platform exceeded the 30%
+transfer-inclusive adoption threshold in this pair. These are compilation
+measurements, not whole-release durations or guarantees across future runner
+loads. [Sanitized comparison reports](measurements/dependency-cache-2026-09-14.json)
+retain the precise values and verification results.
+
+Production integration uses the existing main-only synthetic warmer to save
+audited dependency outputs. Packaging jobs restore only, fall back cold on a
+missing or rejected cache, and require fresh app compilation. A dedicated
+`src-tauri/target/release-compile` directory separates these outputs from
+runtime preparation and native tests. Compiler/SDK/feature/dependency identity
+remains exact; only the root app version is normalized to permit reuse across
+app releases. Identity is computed before artifact-only signing-key mutation.
+Native tests, signatures, package checks and draft prerequisites are retained.
+
 ## Rejected narrow Rust cache
 
 The dependency-cache candidate was rejected and its prototype removed from
