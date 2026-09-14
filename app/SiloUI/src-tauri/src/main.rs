@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod titlebar;
 mod applications;
 mod app_menu;
 mod backup;
@@ -175,6 +177,8 @@ fn main() {
                 }
             });
             window.show()?;
+            #[cfg(target_os = "macos")]
+            titlebar::install(&window)?;
             notifications::install(app.handle());
             updates::install(app.handle())?;
             startup::install(app.handle());
