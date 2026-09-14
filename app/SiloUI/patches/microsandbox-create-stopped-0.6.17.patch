@@ -1445,7 +1445,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
          let temp_out = directory.path().join("bundle.tar.zst.tmp");
 --- a/crates/network/lib/secrets/handle.rs
 +++ b/crates/network/lib/secrets/handle.rs
-@@ -3,7 +3,7 @@
+@@ -3,11 +3,11 @@
  //! The proxy layers load the current [`SecretsConfig`] snapshot when they build a per-connection
  //! [`SecretsHandler`](super::handler::SecretsHandler), so swapping the snapshot here makes
  //! rotation, removal, and allowed-host updates take effect for all future guest connections
@@ -1454,6 +1454,11 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 
  use std::sync::{Arc, RwLock};
 
+-use super::config::{HostPattern, SecretsConfig};
++use super::config::{HostPattern, SecretsConfig, ViolationAction};
+
+ //--------------------------------------------------------------------------------------------------
+ // Types
 @@ -19,6 +19,7 @@
  #[derive(Clone)]
  pub struct SecretsHandle {
@@ -1462,9 +1467,19 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
  }
 
  /// A live secrets update that could not be applied.
-@@ -49,8 +50,14 @@
+@@ -47,10 +48,23 @@
+
+ impl SecretsHandle {
      /// Create a handle over the boot-time secrets configuration.
-     pub fn new(config: SecretsConfig) -> Self {
+-    pub fn new(config: SecretsConfig) -> Self {
++    pub fn new(mut config: SecretsConfig) -> Self {
++        // Silo placeholders are public references, not credentials. Migrate legacy
++        // blocking policies at the runtime boundary, including existing VM configs.
++        // Host and TLS checks still decide where real values can be substituted.
++        config.on_violation = ViolationAction::Passthrough(vec![HostPattern::Any]);
++        for secret in &mut config.secrets {
++            secret.on_violation = None;
++        }
          Self {
 +            changes: tokio::sync::watch::channel(()).0,
              inner: Arc::new(RwLock::new(Arc::new(config))),
@@ -1477,7 +1492,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      }
 
      /// Load the current snapshot.
-@@ -76,6 +83,7 @@
+@@ -76,6 +90,7 @@
          let mut config = (**guard).clone();
          config.secrets.retain(|entry| entry.env_var != name);
          *guard = Arc::new(config);
@@ -1485,7 +1500,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      }
 
      /// Replace the allowed hosts of an existing secret.
-@@ -110,6 +118,7 @@
+@@ -110,6 +125,7 @@
              })?;
          mutate(entry);
          *guard = Arc::new(config);
@@ -1493,7 +1508,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
          Ok(())
      }
  }
-@@ -122,6 +131,20 @@
+@@ -122,6 +138,60 @@
  mod tests {
      use super::super::config::{SecretEntry, SecretInjection};
      use super::*;
@@ -1510,6 +1525,46 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +        handle.remove("TOKEN");
 +        assert!(before.has_changed().unwrap());
 +        assert!(after.has_changed().unwrap());
++    }
++
++    #[test]
++    fn agent_tool_results_pass_unchanged_with_legacy_secret_policies() {
++        use super::super::{config::ViolationAction, handler::SecretsHandler};
++        for name in ["SILO_GITHUB", "API_KEY"] {
++            let mut config = config_with_secret(name, "synthetic-host-secret");
++            config.secrets[0].on_violation = Some(ViolationAction::BlockAndTerminate);
++            let handle = SecretsHandle::new(config);
++            for host in ["api.anthropic.com", "generativelanguage.googleapis.com"] {
++                let snapshot = handle.load();
++                let mut handler = SecretsHandler::new_tls_intercepted_via_connect(&snapshot, host);
++                let body = format!(r#"{{"tool_output":"$MSB_{name}"}}"#);
++                let request = format!("POST /messages HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\n\r\n{body}", body.len());
++                // Fragmented tool output and subsequent retries must remain byte-for-byte intact.
++                let mut output = Vec::new();
++                for chunk in request.as_bytes().chunks(7) {
++                    output.extend_from_slice(&handler.substitute(chunk).unwrap());
++                }
++                assert_eq!(output, request.as_bytes());
++            }
++        }
++    }
++
++    #[test]
++    fn passthrough_keeps_substitution_scoped_after_live_updates() {
++        use super::super::handler::SecretsHandler;
++        let handle = SecretsHandle::new(config_with_secret("API_KEY", "old-secret"));
++        handle.rotate_value("API_KEY", "new-secret".into()).unwrap();
++        handle.set_allowed_hosts("API_KEY", &["new.example.com".into()]).unwrap();
++        let snapshot = handle.load();
++        for (host, expected) in [("api.example.com", "$MSB_API_KEY"), ("new.example.com", "new-secret")] {
++            let mut handler = SecretsHandler::new_tls_intercepted_via_connect(&snapshot, host);
++            let request = format!("GET / HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer $MSB_API_KEY\r\n\r\n");
++            let result = handler.substitute(request.as_bytes()).unwrap();
++            assert_eq!(String::from_utf8_lossy(&result), request.replace("$MSB_API_KEY", expected));
++        }
++        let mut plain = SecretsHandler::new(&snapshot, "new.example.com", false);
++        let request = b"GET / HTTP/1.1\r\nHost: new.example.com\r\nAuthorization: Bearer $MSB_API_KEY\r\n\r\n";
++        assert_eq!(&*plain.substitute(request).unwrap(), request);
 +    }
 
      fn config_with_secret(name: &str, value: &str) -> SecretsConfig {
