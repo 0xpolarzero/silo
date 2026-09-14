@@ -40,3 +40,22 @@ it("blocks native navigation behind a dialog without breaking palette toggling",
   act(() => native.receive({ payload: "go-github" }))
   expect(receive).toHaveBeenLastCalledWith("go-github")
 })
+
+it("uses native Linux commands after connecting without firing Ctrl shortcuts twice", async () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("Linux x86_64")
+  const receive = vi.fn()
+  const { result, rerender, unmount } = renderHook(({ menuState }) => useAppMenu(menuState, receive), { initialProps: { menuState: state } })
+  await waitFor(() => expect(result.current).toBe(true))
+  await waitFor(() => expect(native.invoke).toHaveBeenCalledWith("set_app_menu_state", { state }))
+  act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "6", ctrlKey: true })))
+  expect(receive).not.toHaveBeenCalled()
+  act(() => native.receive({ payload: "go-github" }))
+  expect(receive).toHaveBeenCalledExactlyOnceWith("go-github")
+  const busy = { ...state, busy: true }
+  rerender({ menuState: busy })
+  await waitFor(() => expect(native.invoke).toHaveBeenCalledWith("set_app_menu_state", { state: busy }))
+  unmount()
+  receive.mockClear()
+  act(() => native.receive({ payload: "go-github" }))
+  expect(receive).not.toHaveBeenCalled()
+})

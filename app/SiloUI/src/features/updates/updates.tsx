@@ -21,13 +21,13 @@ function description(state: UpdateSnapshot) {
 
 export function UpdatesCard() {
   const updates = useUpdates()
-  const [confirm, setConfirm] = useState(false)
   if (!updates) return null
+  const confirm = updates.installConfirmation
   const { snapshot: state, pending } = updates
   const busy = pending || state?.phase === "checking" || state?.phase === "downloading" || state?.phase === "installing"
   const error = state?.error ?? updates.connectionError
   const installing = state?.phase === "ready" || state?.retryAction === "install"
-  const requestInstall = () => { if (state?.runningSandboxes.length) setConfirm(true); else updates.install(false) }
+  const requestInstall = updates.requestInstall
   const retry = () => {
     if (!state) updates.reconnect()
     else if (state.retryAction === "download") updates.download()
@@ -41,10 +41,10 @@ export function UpdatesCard() {
       <div>
         <ListRow icon={<ListRowIcon><Download aria-hidden="true" className="size-3.5" /></ListRowIcon>}
           title="Silo" detail={state ? description(state) : "Loading update settings…"} detailClassName="whitespace-normal"
-          actions={<InlineConfirmation active={confirm} onDismiss={() => setConfirm(false)}>
+          actions={<InlineConfirmation active={confirm} onDismiss={updates.cancelInstall}>
             {confirm && installing && state ? <span className="flex shrink-0 gap-1.5">
-              <Button size="xs" variant="outline" disabled={busy} onClick={() => setConfirm(false)}>Cancel</Button>
-              <Button size="xs" disabled={busy || !state.canInstall} onClick={() => { setConfirm(false); updates.install(true) }}>Stop sandboxes and update</Button>
+              <Button size="xs" variant="outline" disabled={busy} onClick={updates.cancelInstall}>Cancel</Button>
+              <Button size="xs" disabled={busy || !state.canInstall} onClick={() => updates.install(true)}>Stop sandboxes and update</Button>
             </span> : state?.phase === "available" ? <Button size="xs" variant="outline" disabled={busy} onClick={state.packageKind === "manual" ? updates.openRelease : updates.download}>{state.packageKind === "manual" ? "View installers on GitHub" : "Download update"}</Button>
               : state?.phase === "ready" ? <Button size="xs" variant="outline" disabled={busy || !state.canInstall} onClick={requestInstall}>Restart and update</Button>
                 : error || state?.phase === "downloading" || state?.phase === "installing" ? null : <Button size="xs" variant="outline" disabled={busy || !state} onClick={updates.check}><RefreshCw aria-hidden="true" className="size-3" />Check for updates</Button>}

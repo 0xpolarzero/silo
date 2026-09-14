@@ -56,6 +56,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_state,
+            app_menu::show_app_menu,
             updates::get_update_state,
             updates::check_for_update,
             updates::download_update,

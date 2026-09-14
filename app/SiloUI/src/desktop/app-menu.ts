@@ -22,16 +22,16 @@ export function useAppMenu(state: AppMenuState, onCommand: (command: string) => 
     onCommand(command)
   })
   useEffect(() => {
-    if (!isTauri() || navigator.platform.startsWith("Mac")) return
+    if (!isTauri() || navigator.platform.startsWith("Mac") || connected) return
     const onKeyDown = (event: KeyboardEvent) => {
       const command = desktopShortcutCommand(event)
       if (command) { event.preventDefault(); receive(command) }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [])
+  }, [connected])
   useEffect(() => {
-    if (!isTauri() || !navigator.platform.startsWith("Mac")) return
+    if (!isTauri()) return
     let disposed = false
     let stop: (() => void) | undefined
     void listen<string>("silo://menu-command", ({ payload }) => {

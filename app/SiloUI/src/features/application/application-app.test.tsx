@@ -1829,3 +1829,39 @@ it("prevents app interaction during installation and restores the existing page 
   expect(document.querySelector("#application-panel-settings")?.closest("[inert]")).toBeNull()
   expect(document.querySelector("#application-sidebar")).not.toHaveAttribute("inert")
 })
+
+it.each([
+  ["ready", null, "Restart and update", true],
+  ["error", "install", "Retry", true],
+  ["available", null, "Download update", false],
+] as const)("guards app commands during pending %s action without blocking background downloads", async (phase, retryAction, label, blocked) => {
+  const { UpdatesProvider } = await import("@/features/updates/update-store")
+  const user = userEvent.setup()
+  const state: import("@/features/updates/update-store").UpdateSnapshot = {
+    phase, retryAction, lastChecked: null, currentVersion: "0.3.3", availableVersion: "0.3.4", releaseNotes: null,
+    downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "appimage",
+    releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: retryAction ? "Could not install." : null,
+    errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true,
+  }
+  let failAction!: (error: Error) => void
+  const action = vi.fn(() => new Promise<import("@/features/updates/update-store").UpdateSnapshot>((_, reject) => { failAction = reject }))
+  const backend = {
+    read: async () => state, subscribe: async () => () => {}, check: vi.fn(), download: action, install: action,
+    setAutomaticChecks: vi.fn(), openRelease: vi.fn(),
+  }
+  render(<UpdatesProvider backend={backend}><ApplicationPreview source={applicationSourceForScenario("running")} initialRoute={{ tab: "settings", settingsSection: "general" }} /></UpdatesProvider>)
+  await user.click(await screen.findByRole("button", { name: label }))
+  expect(action).toHaveBeenCalledOnce()
+  const palette = screen.getByRole("button", { name: "Search or jump to" })
+  if (blocked) {
+    expect(palette).toBeDisabled()
+    expect(document.querySelector("#application-sidebar")).toHaveAttribute("inert")
+    expect(document.querySelector("#application-panel-settings")?.closest("[inert]")).not.toBeNull()
+  } else {
+    expect(palette).toBeEnabled()
+    expect(document.querySelector("#application-sidebar")).not.toHaveAttribute("inert")
+  }
+  await act(async () => failAction(new Error("Settings flush or native action failed")))
+  expect(palette).toBeEnabled()
+  expect(document.querySelector("#application-sidebar")).not.toHaveAttribute("inert")
+})

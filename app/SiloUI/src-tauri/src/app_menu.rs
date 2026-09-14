@@ -1,9 +1,12 @@
-//! Native macOS menu actions use the same frontend flows and native operation
+//! Native desktop menu actions use the same frontend flows and native operation
 //! gates as clicks. Unready or busy views cannot receive stale menu commands.
 use serde::Deserialize;
 use tauri::{AppHandle, WebviewWindow};
 
-#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MenuState {
@@ -17,9 +20,25 @@ pub(crate) struct MenuState {
     can_check_updates: bool,
     sidebar_collapsed: bool,
 }
-#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 fn enabled(command: &str, state: &MenuState) -> bool {
-    if matches!(command, "show-window" | "help" | "issues" | "releases") {
+    if matches!(
+        command,
+        "show-window"
+            | "help"
+            | "issues"
+            | "releases"
+            | "quit"
+            | "close-window"
+            | "minimize"
+            | "maximize"
+            | "fullscreen"
+            | "undo"
+            | "redo"
+    ) {
         return true;
     }
     if !state.ready || state.busy {
@@ -46,21 +65,39 @@ pub(crate) fn set_app_menu_state(
     if window.label() != "main" {
         return Err("Only the main window can update the application menu.".into());
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     native::set_state(&app, state)?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let _ = (app, state);
     Ok(())
 }
+#[tauri::command]
+pub(crate) fn show_app_menu(window: WebviewWindow) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Only the main window can show the application menu.".into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let main = window.clone();
+        window
+            .run_on_main_thread(move || linux_menu::show(&main))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+#[path = "linux_menu.rs"]
+mod linux_menu;
+
 pub(crate) fn install(app: &AppHandle) -> tauri::Result<()> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     native::install(app)?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let _ = app;
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod native {
     use super::*;
     use std::sync::Mutex;
@@ -126,13 +163,14 @@ mod native {
                 ..Default::default()
             }),
         )?;
+        #[cfg(target_os = "macos")]
         let app_menu = Submenu::with_items(
             app,
             "Silo",
             true,
             &[
                 &about,
-                &item("settings", "Settings…", Some("Cmd+,"))?,
+                &item("settings", "Settings…", Some("CmdOrCtrl+,"))?,
                 &item("check-updates", "Check for Updates…", None)?,
                 &Standard::separator(app)?,
                 &Standard::services(app, None)?,
@@ -144,16 +182,32 @@ mod native {
                 &Standard::quit(app, Some("Quit Silo"))?,
             ],
         )?;
+        #[cfg(target_os = "linux")]
+        let app_menu = Submenu::with_items(
+            app,
+            "Silo",
+            true,
+            &[
+                &about,
+                &item("settings", "Settings…", Some("CmdOrCtrl+,"))?,
+                &item("check-updates", "Check for Updates…", None)?,
+                &Standard::separator(app)?,
+                &item("quit", "Quit Silo", Some("CmdOrCtrl+Q"))?,
+            ],
+        )?;
         let file = Submenu::with_items(
             app,
             "File",
             true,
             &[
-                &item("new-sandbox", "New Sandbox…", Some("Cmd+N"))?,
+                &item("new-sandbox", "New Sandbox…", Some("CmdOrCtrl+N"))?,
                 &item("create-backup", "Create Backup…", None)?,
                 &item("restore-backup", "Restore Backup…", None)?,
                 &Standard::separator(app)?,
+                #[cfg(target_os = "macos")]
                 &Standard::close_window(app, None)?,
+                #[cfg(target_os = "linux")]
+                &item("close-window", "Close Window", Some("CmdOrCtrl+W"))?,
             ],
         )?;
         let edit = Submenu::with_items(
@@ -161,8 +215,14 @@ mod native {
             "Edit",
             true,
             &[
+                #[cfg(target_os = "macos")]
                 &Standard::undo(app, None)?,
+                #[cfg(target_os = "linux")]
+                &item("undo", "Undo", None)?,
+                #[cfg(target_os = "macos")]
                 &Standard::redo(app, None)?,
+                #[cfg(target_os = "linux")]
+                &item("redo", "Redo", None)?,
                 &Standard::separator(app)?,
                 &Standard::cut(app, None)?,
                 &Standard::copy(app, None)?,
@@ -175,13 +235,16 @@ mod native {
             "View",
             true,
             &[
-                &item("search", "Search or Jump To…", Some("Cmd+K"))?,
+                &item("search", "Search or Jump To…", Some("CmdOrCtrl+K"))?,
                 &Standard::separator(app)?,
-                &item("go-back", "Back", Some("Cmd+["))?,
-                &item("go-forward", "Forward", Some("Cmd+]"))?,
+                &item("go-back", "Back", Some("CmdOrCtrl+["))?,
+                &item("go-forward", "Forward", Some("CmdOrCtrl+]"))?,
                 &Standard::separator(app)?,
-                &item("toggle-sidebar", "Hide Sidebar", Some("Cmd+B"))?,
+                &item("toggle-sidebar", "Hide Sidebar", Some("CmdOrCtrl+B"))?,
+                #[cfg(target_os = "macos")]
                 &Standard::fullscreen(app, None)?,
+                #[cfg(target_os = "linux")]
+                &item("fullscreen", "Toggle Full Screen", Some("F11"))?,
             ],
         )?;
         let go = Submenu::with_items(
@@ -189,16 +252,17 @@ mod native {
             "Go",
             true,
             &[
-                &item("go-sandboxes", "Sandboxes", Some("Cmd+1"))?,
-                &item("go-files", "Files", Some("Cmd+2"))?,
-                &item("go-logs", "Logs", Some("Cmd+3"))?,
-                &item("go-network", "Network", Some("Cmd+4"))?,
-                &item("go-activity", "Activity", Some("Cmd+5"))?,
-                &item("go-github", "GitHub", Some("Cmd+6"))?,
-                &item("go-secrets", "Secrets", Some("Cmd+7"))?,
-                &item("go-backup", "Backup", Some("Cmd+8"))?,
+                &item("go-sandboxes", "Sandboxes", Some("CmdOrCtrl+1"))?,
+                &item("go-files", "Files", Some("CmdOrCtrl+2"))?,
+                &item("go-logs", "Logs", Some("CmdOrCtrl+3"))?,
+                &item("go-network", "Network", Some("CmdOrCtrl+4"))?,
+                &item("go-activity", "Activity", Some("CmdOrCtrl+5"))?,
+                &item("go-github", "GitHub", Some("CmdOrCtrl+6"))?,
+                &item("go-secrets", "Secrets", Some("CmdOrCtrl+7"))?,
+                &item("go-backup", "Backup", Some("CmdOrCtrl+8"))?,
             ],
         )?;
+        #[cfg(target_os = "macos")]
         let window = Submenu::with_items(
             app,
             "Window",
@@ -212,6 +276,17 @@ mod native {
                 &Standard::bring_all_to_front(app, None)?,
             ],
         )?;
+        #[cfg(target_os = "linux")]
+        let window = Submenu::with_items(
+            app,
+            "Window",
+            true,
+            &[
+                &item("show-window", "Show Silo", None)?,
+                &item("minimize", "Minimize", None)?,
+                &item("maximize", "Maximize or Restore", None)?,
+            ],
+        )?;
         let help = Submenu::with_items(
             app,
             "Help",
@@ -222,12 +297,18 @@ mod native {
                 &item("releases", "Release Notes", None)?,
             ],
         )?;
-        app.set_menu(Menu::with_items(
-            app,
-            &[&app_menu, &file, &edit, &view, &go, &window, &help],
-        )?)?;
-        window.set_as_windows_menu_for_nsapp()?;
-        help.set_as_help_menu_for_nsapp()?;
+        let menu = Menu::with_items(app, &[&app_menu, &file, &edit, &view, &go, &window, &help])?;
+        #[cfg(target_os = "macos")]
+        {
+            app.set_menu(menu)?;
+            window.set_as_windows_menu_for_nsapp()?;
+            help.set_as_help_menu_for_nsapp()?;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(main) = app.get_webview_window("main") {
+            main.set_menu(menu)?;
+            super::linux_menu::install(&main)?;
+        }
         app.manage(Controller {
             state: Mutex::new(MenuState::default()),
             items,
@@ -245,6 +326,36 @@ mod native {
             if !enabled(command, &state) {
                 return;
             }
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                let result = match command {
+                    "undo" => Some(window.eval("document.execCommand('undo')")),
+                    "redo" => Some(window.eval("document.execCommand('redo')")),
+                    "quit" => {
+                        app.exit(0);
+                        return;
+                    }
+                    "close-window" => Some(window.close()),
+                    "minimize" => Some(window.minimize()),
+                    "maximize" => Some(window.is_maximized().and_then(|v| {
+                        if v {
+                            window.unmaximize()
+                        } else {
+                            window.maximize()
+                        }
+                    })),
+                    "fullscreen" => Some(
+                        window
+                            .is_fullscreen()
+                            .and_then(|v| window.set_fullscreen(!v)),
+                    ),
+                    _ => None,
+                };
+                if let Some(result) = result {
+                    crate::status_panel::report(result);
+                    return;
+                }
+            }
             if command == "help" || link(command).is_some() {
                 // Help ships with this build; external destinations are fixed project URLs.
                 let destination = if command == "help" {
@@ -258,17 +369,21 @@ mod native {
                 let app = app.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let result = destination.and_then(|destination| {
-                        std::process::Command::new("/usr/bin/open")
-                            .arg(destination)
-                            .status()
-                            .map_err(|_| "The document or browser could not be opened.")
-                            .and_then(|status| {
-                                if status.success() {
-                                    Ok(())
-                                } else {
-                                    Err("The document or browser could not be opened.")
-                                }
-                            })
+                        std::process::Command::new(if cfg!(target_os = "macos") {
+                            "/usr/bin/open"
+                        } else {
+                            "xdg-open"
+                        })
+                        .arg(destination)
+                        .status()
+                        .map_err(|_| "The document or browser could not be opened.")
+                        .and_then(|status| {
+                            if status.success() {
+                                Ok(())
+                            } else {
+                                Err("The document or browser could not be opened.")
+                            }
+                        })
                     });
                     if let Err(message) = result {
                         if let Some(window) = app.get_webview_window("main") {
@@ -296,9 +411,73 @@ mod native {
     }
 }
 
+// Keep gesture policy platform-independent so AltGr and shortcut regressions run on every host.
+#[cfg(any(test, target_os = "linux"))]
+#[derive(Default)]
+struct MenuKeys {
+    alt_pending: bool,
+}
+#[cfg(any(test, target_os = "linux"))]
+#[derive(Clone, Copy)]
+enum MenuKey {
+    LeftAlt,
+    F10,
+    Escape,
+    Other,
+}
+#[cfg(any(test, target_os = "linux"))]
+impl MenuKeys {
+    fn cancel(&mut self) {
+        self.alt_pending = false;
+    }
+    fn press(&mut self, key: MenuKey, modified: bool, visible: bool) -> Option<bool> {
+        self.alt_pending = matches!(key, MenuKey::LeftAlt) && !modified;
+        match key {
+            MenuKey::F10 if !modified => Some(true),
+            MenuKey::Escape if visible => Some(false),
+            _ => None,
+        }
+    }
+    fn release(&mut self, key: MenuKey, visible: bool) -> Option<bool> {
+        let pending = std::mem::take(&mut self.alt_pending);
+        (matches!(key, MenuKey::LeftAlt) && pending).then_some(!visible)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bare_alt_toggles_only_after_release_and_f10_focuses() {
+        let mut keys = MenuKeys::default();
+        assert_eq!(keys.press(MenuKey::LeftAlt, false, false), None);
+        assert_eq!(keys.release(MenuKey::LeftAlt, false), Some(true));
+        assert_eq!(keys.press(MenuKey::LeftAlt, false, true), None);
+        assert_eq!(keys.release(MenuKey::LeftAlt, true), Some(false));
+        assert_eq!(keys.press(MenuKey::F10, false, false), Some(true));
+        assert_eq!(keys.press(MenuKey::Escape, false, true), Some(false));
+        assert_eq!(keys.press(MenuKey::Escape, false, false), None);
+    }
+    #[test]
+    fn altgr_ctrl_alt_chords_and_shift_f10_do_not_reveal_menu() {
+        let mut keys = MenuKeys::default();
+        // AltGr maps to Other; modifier+Alt never arms the bare-Alt gesture.
+        for key in [MenuKey::Other, MenuKey::LeftAlt] {
+            assert_eq!(keys.press(key, true, false), None);
+            assert_eq!(keys.release(key, false), None);
+        }
+        keys.press(MenuKey::LeftAlt, false, false);
+        keys.press(MenuKey::Other, true, false);
+        assert_eq!(keys.release(MenuKey::LeftAlt, false), None);
+        assert_eq!(keys.press(MenuKey::F10, true, false), None);
+    }
+    #[test]
+    fn focus_loss_or_pointer_action_cancels_pending_alt() {
+        let mut keys = MenuKeys::default();
+        keys.press(MenuKey::LeftAlt, false, false);
+        keys.cancel();
+        assert_eq!(keys.release(MenuKey::LeftAlt, false), None);
+    }
     #[test]
     fn unready_or_busy_ui_cannot_receive_navigation_or_mutation_commands() {
         let unready = MenuState::default();

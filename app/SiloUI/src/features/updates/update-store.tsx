@@ -22,10 +22,13 @@ export interface UpdateBackend {
   setAutomaticChecks(enabled: boolean): Promise<UpdateSnapshot>
   openRelease(): Promise<void>
 }
-interface Updates {
+export interface Updates {
   snapshot: UpdateSnapshot | null
   connectionError: string | null
   pending: boolean
+  installConfirmation: boolean
+  requestInstall(): void
+  cancelInstall(): void
   check(): void
   download(): void
   install(stopSandboxes: boolean): void
@@ -40,6 +43,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
   const [snapshot, setSnapshot] = useState<UpdateSnapshot | null>(null)
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  const [confirmVersion, setConfirmVersion] = useState<string | null>(null)
   const [connection, setConnection] = useState(0)
   const mounted = useRef(false)
   const inFlight = useRef(false)
@@ -105,9 +109,19 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
       if (mounted.current) setPending(false)
     })
   }
+  const canRequestInstall = snapshot?.packageKind !== "manual" && snapshot?.canInstall
+    && (snapshot.phase === "ready" || snapshot.retryAction === "install")
+    && !["checking", "downloading", "installing"].includes(snapshot.phase)
   return <Context value={{ snapshot, connectionError, pending,
+    installConfirmation: Boolean(canRequestInstall && confirmVersion && confirmVersion === snapshot?.availableVersion),
+    requestInstall: () => {
+      if (!canRequestInstall || inFlight.current) return
+      if (snapshot?.runningSandboxes.length) setConfirmVersion(snapshot.availableVersion)
+      else { setConfirmVersion(null); run(() => backend.install(false)) }
+    },
+    cancelInstall: () => setConfirmVersion(null),
     check: () => run(backend.check), download: () => run(backend.download),
-    install: (stop) => run(() => backend.install(stop)),
+    install: (stop) => { setConfirmVersion(null); run(() => backend.install(stop)) },
     setAutomaticChecks: (enabled) => run(() => backend.setAutomaticChecks(enabled)),
     openRelease: () => run(backend.openRelease),
     reconnect: () => { setConnectionError(null); setConnection((value) => value + 1) },

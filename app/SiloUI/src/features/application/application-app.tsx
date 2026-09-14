@@ -1,5 +1,6 @@
 import { workspaceTarget } from "./model/remote-computers"
 import { useUpdates } from "@/features/updates/update-store"
+import { updateCommands } from "@/features/updates/update-commands"
 import { useAppMenu } from "@/desktop/app-menu"
 import { UpdateNotice } from "@/features/updates/updates"
 import { createDirectoryStore } from "@/features/application/model/directory-store"
@@ -84,6 +85,7 @@ export function ApplicationApp(props: ApplicationAppProps) {
 function ApplicationContent({ source, actions, backup, initialRoute, routeRequest }: ApplicationAppProps) {
   const updates = useUpdates()
   const installingUpdate = updates?.snapshot?.phase === "installing"
+    || Boolean(updates?.pending && (updates.snapshot?.phase === "ready" || updates.snapshot?.retryAction === "install"))
   const [newSandboxRequest, setNewSandboxRequest] = useState(0)
   const nextSandboxRequest = useRef(0)
   const [searchRequest, setSearchRequest] = useState(0)
@@ -268,7 +270,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       onGoBack={navigation.goBack}
       onGoForward={navigation.goForward}
       reduceMotion={reduceMotion}
-      commandMenu={<ApplicationCommandMenu nativeShortcuts={nativeMenu} openRequest={searchRequest} disabled={installingUpdate} commands={applicationCommands(applicationSource, actions, navigateCommand)} />}
+      commandMenu={<ApplicationCommandMenu nativeShortcuts={nativeMenu} openRequest={searchRequest} disabled={installingUpdate} commands={[...applicationCommands(applicationSource, actions, navigateCommand), ...updateCommands(updates, () => navigation.selectSettingsSection("general"))]} />}
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
