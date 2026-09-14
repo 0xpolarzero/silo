@@ -11,7 +11,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = (ROOT / '.github/workflows/release.yml').read_text()
-GATE = textwrap.dedent(WORKFLOW.split('        run: |\n', 1)[1].split('\n  macos-minimum-constraints:', 1)[0])
+GATE_STEP = WORKFLOW.split('      - name: Validate release inputs before building\n', 1)[1]
+GATE = textwrap.dedent(GATE_STEP.split('        run: |\n', 1)[1].split('\n  macos-minimum-constraints:', 1)[0])
 
 
 class ReleaseWorkflowTests(unittest.TestCase):

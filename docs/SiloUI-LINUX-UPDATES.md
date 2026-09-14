@@ -20,7 +20,9 @@ fallback for users who opted out: **View installers on GitHub** opens the releas
 page, where **Assets** lists the installers. The button does not download a package
 or install an update itself.
 
-Quit Silo before applying a system update. Closing its window is not Quit.
+The **Update** action in Silo refreshes package information and requests system
+authentication before upgrading and restarting. For updates started outside Silo,
+quit Silo before applying the system update. Closing its window is not Quit.
 Quitting stops local VMs; remote VMs keep running. The installer refuses to
 replace a running packaged Silo or its runtime and never kills either process.
 New package versions also refuse startup while installation is in progress.
@@ -174,3 +176,61 @@ the shared installation guard, the affected application/update suites passed
 all 111 tests across four files. The other 76 test files passed in the full run.
 The guard now spans settings-save preparation and onboarding as well as native
 installation; the main application's existing installation guard remains.
+
+## In-app Debian updates, 14 September 2026
+
+The reported machine had Silo 0.4.4 installed and an APT candidate of 0.4.4,
+while the published repository already contained 0.5.0. Silo's GitHub release
+check does not refresh APT's local indexes. The App Center's disabled Install
+button was not reproduced and is not attributed to the stale index alone.
+
+Debian installations now offer **Update** inside Silo. The operation flushes
+settings, acquires the existing installation and VM mutation guards, records
+running local VMs for recovery, and stops them after confirmation. It invokes
+only `/usr/bin/pkexec --disable-internal-agent /usr/lib/silo/silo-system-update`
+with the host PID and validated release version. The root-owned Python helper
+runs in isolated mode, accepts no package/source/command override, and uses a
+fixed environment and absolute executable paths. Its polkit action requires
+administrator authentication for every operation.
+
+The helper refreshes the configured Silo source, treats failed refreshes as
+errors, downloads authenticated packages, and upgrades the exact selected Silo
+version without allowing removals, downgrades, or unauthenticated packages.
+Missing or disabled source configuration remains disabled and produces an
+actionable error. APT lock failures and diagnostics are shown inside Silo.
+Settings and VM disks are not package payloads. The native recovery journal
+restores the prior local running set after restart or a failed operation.
+
+Ordinary Debian installations still refuse replacement while Silo or its VM
+runtime is running. During an in-app update, a root-private permit identifies
+only the guarded app PID/start time and live helper PID/start time. The
+maintainer script permits that inert app alone; other Silo instances and all
+running local runtimes still block installation. The helper removes its permit
+on completion; a dead helper or reused PID cannot authorize a later upgrade.
+After successful version verification, Silo executes `/usr/bin/silo-ui` directly
+to restart, avoiding the deleted old executable and unrelated AppImage paths.
+
+Returning to the main window makes a background check eligible after a one-minute
+cooldown. The native scheduler still honors disabled automatic checks, busy
+operations, pending updates, and offline retry backoff. Progress is visible
+outside the UI installation guard.
+
+This cannot retrofit the Update button into an already running 0.4.4/0.5.0
+binary. Install the first release containing this helper through the existing
+system package route once; later updates use the new in-app action.
+
+Primary references: [APT update/install semantics](https://manpages.debian.org/bookworm/apt/apt-get.8.en.html)
+require refreshing indexes before package selection and document exact versions,
+download-only, and removal/authentication safeguards. [pkexec](https://polkit.pages.freedesktop.org/polkit/pkexec.1.html)
+documents session authentication, policy executable paths, argument validation,
+and cancellation status. The implementation validates its own arguments; polkit
+is not treated as an argument validator.
+
+Verification for the in-app change: 16 native updater tests passed with synthetic
+GitHub configuration; 130 frontend tests passed across the application/update
+suites, followed by the additional production progress-boundary test. The real
+Ubuntu 24.04 disposable-container lifecycle tests passed, including a signed HTTP
+repository initially cached at 0.1.0, publication of 0.2.0, refresh/download/install,
+refusal with a second Silo process, version verification, cleanup, and downgrade
+refusal. The process fixtures use a copied sleep executable, not live VMs. The
+GUI authentication prompt and a live desktop VM restart were not exercised.

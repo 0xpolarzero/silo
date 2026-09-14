@@ -143,3 +143,12 @@ it.each([
   await user.type(screen.getByRole("combobox", { name: "Search commands" }), query)
   expect(screen.getByRole("option", { name: label })).toBeVisible()
 })
+it("runs the Debian update action from the palette without opening GitHub", async () => {
+  const user = userEvent.setup()
+  const { backend } = mount({ phase: "available", packageKind: "debian", availableVersion: "0.5.1" })
+  await screen.findByRole("button", { name: "Update" })
+  await selectCommand(user, "Update Silo")
+  expect(backend.install).toHaveBeenCalledExactlyOnceWith(false)
+  expect(backend.download).not.toHaveBeenCalled()
+  expect(backend.openRelease).not.toHaveBeenCalled()
+})

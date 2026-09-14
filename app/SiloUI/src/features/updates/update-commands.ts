@@ -16,6 +16,9 @@ export function updateCommands(updates: Updates | null, openUpdates: () => void)
   if (state.packageKind === "manual" && (state.phase === "available" || state.phase === "ready" || state.retryAction === "download" || state.retryAction === "install")) {
     return command("installers", "View installers on GitHub", ExternalLink, updates.openRelease)
   }
+  if (state.packageKind === "debian" && state.phase === "available") {
+    return state.canInstall ? command("install", "Update Silo", RefreshCw, updates.requestInstall) : []
+  }
   if (state.phase === "ready" || state.retryAction === "install") {
     return state.canInstall ? command("install", state.retryAction === "install" ? "Retry update installation" : "Restart and update", RefreshCw, updates.requestInstall) : []
   }

@@ -7,9 +7,10 @@ export const updateSnapshotSchema = z.object({
   lastChecked: z.string().nullable(), retryAction: z.enum(["check", "download", "install"]).nullable(),
   currentVersion: z.string(), availableVersion: z.string().nullable(), releaseNotes: z.string().nullable(),
   downloadedBytes: z.number().nonnegative(), totalBytes: z.number().positive().nullable(),
-  automaticChecks: z.boolean(), packageKind: z.enum(["macos", "appimage", "manual"]),
+  automaticChecks: z.boolean(), packageKind: z.enum(["macos", "appimage", "debian", "manual"]),
   releaseUrl: z.string(), error: z.string().nullable(), errorDetails: z.string().nullable(),
   installBlockReason: z.string().nullable(),
+  installStatus: z.string().nullable().optional(),
   runningSandboxes: z.array(z.string()), canInstall: z.boolean(),
 })
 export type UpdateSnapshot = z.infer<typeof updateSnapshotSchema>
@@ -89,9 +90,9 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     const onFocus = () => { void refresh() }
     window.addEventListener("focus", onFocus)
     // VM activity changes the installation gate independently of update progress.
-    const timer = (snapshot?.phase === "ready" || snapshot?.retryAction === "install") ? window.setInterval(onFocus, 3000) : undefined
+    const timer = (snapshot?.phase === "ready" || snapshot?.retryAction === "install" || (snapshot?.packageKind === "debian" && snapshot?.phase === "available")) ? window.setInterval(onFocus, 3000) : undefined
     return () => { disposed = true; window.removeEventListener("focus", onFocus); if (timer !== undefined) window.clearInterval(timer) }
-  }, [backend, snapshot?.phase, snapshot?.retryAction])
+  }, [backend, snapshot?.phase, snapshot?.retryAction, snapshot?.packageKind])
   const run = (action: () => Promise<UpdateSnapshot | void>) => {
     if (inFlight.current) return
     inFlight.current = true
@@ -110,7 +111,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     })
   }
   const canRequestInstall = snapshot?.packageKind !== "manual" && snapshot?.canInstall
-    && (snapshot.phase === "ready" || snapshot.retryAction === "install")
+    && (snapshot.phase === "ready" || snapshot.retryAction === "install" || (snapshot.packageKind === "debian" && snapshot.phase === "available"))
     && !["checking", "downloading", "installing"].includes(snapshot.phase)
   return <Context value={{ snapshot, connectionError, pending,
     installConfirmation: Boolean(canRequestInstall && confirmVersion && confirmVersion === snapshot?.availableVersion),

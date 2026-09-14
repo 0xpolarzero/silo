@@ -89,7 +89,7 @@ function UpdateInstallationBoundary({ preparing, children }: { preparing: boolea
   const installing = updates?.snapshot?.phase === "installing"
   const blocked = preparing || installing
   return <div className="flex h-full min-h-0 flex-col">
-    {blocked && <div role="status" className="border-b bg-muted px-4 py-2 text-xs">{installing ? "Installing update. Silo will restart…" : "Preparing update…"}</div>}
+    {blocked && <div role="status" className="border-b bg-muted px-4 py-2 text-xs">{installing ? updates?.snapshot?.installStatus ?? "Installing update. Silo will restart…" : "Preparing update…"}</div>}
     <div className="flex min-h-0 flex-1 flex-col" inert={blocked} aria-busy={blocked}>{children}</div>
   </div>
 }

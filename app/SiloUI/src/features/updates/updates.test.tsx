@@ -163,3 +163,21 @@ it("surfaces a native automatic discovery without a manual check or download", a
   expect(backend.check).not.toHaveBeenCalled()
   expect(backend.download).not.toHaveBeenCalled()
 })
+
+it("updates Debian through the authenticated installer and confirms running sandboxes", async () => {
+  const user = userEvent.setup()
+  const { backend, emit } = mount({ packageKind: "debian", phase: "available", availableVersion: "0.5.1", runningSandboxes: ["dev"] })
+  await user.click(await screen.findByRole("button", { name: "Update" }))
+  expect(backend.install).not.toHaveBeenCalled()
+  await user.click(screen.getByRole("button", { name: "Stop sandboxes and update" }))
+  expect(backend.install).toHaveBeenCalledWith(true)
+  expect(backend.openRelease).not.toHaveBeenCalled()
+  expect(backend.download).not.toHaveBeenCalled()
+  emit({ phase: "installing", installStatus: "Refreshing Silo’s package list…" })
+  expect(screen.getByText("Refreshing Silo’s package list…")).toBeVisible()
+})
+it("keeps Debian installation disabled while operations are active", async () => {
+  mount({ packageKind: "debian", phase: "available", availableVersion: "0.5.1", canInstall: false, installBlockReason: "Wait for sandbox operations to finish." })
+  expect(await screen.findByRole("button", { name: "Update" })).toBeDisabled()
+  expect(screen.getByText("Wait for sandbox operations to finish.")).toBeVisible()
+})

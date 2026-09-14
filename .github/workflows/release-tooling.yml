@@ -53,6 +53,6 @@ jobs:
       - run: python3 scripts/validate-release-version.py
       - run: python3 -m unittest discover -s scripts -p 'test_*release*.py'
       - run: python3 -m unittest discover -s scripts -p 'test_measure_command.py'
-      - run: sudo apt-get update && sudo apt-get install -y gnupg dpkg-dev
+      - run: sudo apt-get update && sudo apt-get install -y gnupg dpkg-dev pkexec
       - run: python3 -m unittest discover -s scripts -p 'test_apt_repository.py'
       - run: sudo env SILO_APT_LIFECYCLE_TEST=1 python3 -m unittest discover -s scripts -p 'test_debian_installation.py'

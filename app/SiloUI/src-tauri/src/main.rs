@@ -162,6 +162,7 @@ fn main() {
             window.set_decorations(false)?;
             let handle = app.handle().clone();
             window.on_window_event(move |event| {
+                if matches!(event, WindowEvent::Focused(true)) { updates::focused(&handle); }
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     if tray::available(&handle) {

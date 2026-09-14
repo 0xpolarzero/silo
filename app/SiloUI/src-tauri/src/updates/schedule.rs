@@ -8,22 +8,33 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 pub(super) struct Schedule {
     next_check: SystemTime,
     failures: u32,
+    last_check: SystemTime,
 }
 impl Schedule {
     pub(super) fn new(now: SystemTime) -> Self {
         Self {
             next_check: now + POLL_INTERVAL,
             failures: 0,
+            last_check: now,
         }
     }
     pub(super) fn enable(&mut self, now: SystemTime) {
         self.next_check = now;
         self.failures = 0;
     }
+    pub(super) fn focus(&mut self, now: SystemTime) {
+        // Focus must not flood requests or defeat offline retry backoff.
+        if self.failures == 0
+            && now.duration_since(self.last_check).unwrap_or_default() >= Duration::from_secs(60)
+        {
+            self.next_check = now;
+        }
+    }
     pub(super) fn due(&self, now: SystemTime, enabled: bool, busy: bool, has_update: bool) -> bool {
         enabled && !busy && !has_update && now >= self.next_check
     }
     pub(super) fn completed(&mut self, now: SystemTime, success: bool) {
+        self.last_check = now;
         let delay = if success {
             self.failures = 0;
             CHECK_INTERVAL
@@ -41,6 +52,22 @@ mod tests {
     const START: SystemTime = SystemTime::UNIX_EPOCH;
     fn due(schedule: &Schedule, seconds: u64) -> bool {
         schedule.due(START + Duration::from_secs(seconds), true, false, false)
+    }
+    #[test]
+    fn focus_checks_after_cooldown_without_discarding_retry_backoff() {
+        let mut schedule = Schedule::new(START);
+        schedule.completed(START, true);
+        schedule.focus(START + Duration::from_secs(59));
+        assert!(!due(&schedule, 59));
+        schedule.focus(START + Duration::from_secs(60));
+        assert!(due(&schedule, 60));
+        assert!(!schedule.due(START + Duration::from_secs(60), false, false, false));
+        assert!(!schedule.due(START + Duration::from_secs(60), true, false, true));
+        schedule.completed(START, false);
+        schedule.completed(START, false);
+        schedule.focus(START + Duration::from_secs(60));
+        assert!(!due(&schedule, 60));
+        assert!(due(&schedule, 120));
     }
     #[test]
     fn launch_discovers_without_manual_action() {
