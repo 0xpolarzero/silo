@@ -6,6 +6,9 @@ on:
       - 'app/SiloUI/.changeset/**'
       - 'app/SiloUI/scripts/**'
       - 'app/SiloUI/package*.json'
+      - 'app/SiloUI/runtime-inputs.json'
+      - 'app/SiloUI/patches/**'
+      - 'app/SiloUI/src-tauri/src/dependencies.rs'
       - 'app/SiloUI/src-tauri/Cargo.*'
       - '.github/workflows/*release*.yml'
       - '.github/workflows/apt-repository.yml'
@@ -16,6 +19,9 @@ on:
       - 'app/SiloUI/.changeset/**'
       - 'app/SiloUI/scripts/**'
       - 'app/SiloUI/package*.json'
+      - 'app/SiloUI/runtime-inputs.json'
+      - 'app/SiloUI/patches/**'
+      - 'app/SiloUI/src-tauri/src/dependencies.rs'
       - 'app/SiloUI/src-tauri/Cargo.*'
       - '.github/workflows/*release*.yml'
       - '.github/workflows/apt-repository.yml'
@@ -41,10 +47,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: node scripts/preflight.mjs
+      - run: node --test scripts/preflight.test.mjs
       - run: npm ci
       - run: npm run test:release
       - run: python3 scripts/validate-release-version.py
       - run: python3 -m unittest discover -s scripts -p 'test_*release*.py'
+      - run: python3 -m unittest discover -s scripts -p 'test_measure_command.py'
+      - run: python3 -m unittest discover -s scripts/experiments -p 'test_dependency_cache.py'
       - run: sudo apt-get update && sudo apt-get install -y gnupg dpkg-dev
       - run: python3 -m unittest discover -s scripts -p 'test_apt_repository.py'
       - run: sudo env SILO_APT_LIFECYCLE_TEST=1 python3 -m unittest discover -s scripts -p 'test_debian_installation.py'

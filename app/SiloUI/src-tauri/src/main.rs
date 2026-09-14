@@ -9,6 +9,10 @@ mod files;
 mod github;
 mod github_http;
 #[cfg(test)]
+mod github_build_tests;
+#[cfg(test)]
+mod github_permissions_tests;
+#[cfg(test)]
 mod github_live_tests;
 mod github_tokens;
 mod host_identity;

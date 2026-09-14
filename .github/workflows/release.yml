@@ -9,6 +9,11 @@ on:
         description: Create versioned draft after all builds pass (requires vVERSION tag)
         type: boolean
         default: false
+      benchmark_schedule:
+        description: Artifact-only comparison; releases always run native tests in parallel
+        type: choice
+        options: [parallel, sequential]
+        default: parallel
 concurrency:
   group: silo-release-build
   cancel-in-progress: false
@@ -24,6 +29,11 @@ jobs:
       draft: ${{ steps.release.outputs.draft }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate runtime inputs without building
+        run: node app/SiloUI/scripts/preflight.mjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -32,10 +42,15 @@ jobs:
         env:
           CREATE_DRAFT: ${{ github.event_name == 'push' || inputs.draft }}
           RELEASE_REF: ${{ github.ref }}
+          BENCHMARK_SCHEDULE: ${{ inputs.benchmark_schedule }}
         run: |
           set -euo pipefail
           version=$(python3 app/SiloUI/scripts/validate-release-version.py)
           if [[ "$CREATE_DRAFT" == true ]]; then
+            if [[ "${BENCHMARK_SCHEDULE:-parallel}" == sequential ]]; then
+              echo "::error::Sequential benchmarking is artifact-only."
+              exit 1
+            fi
             if [[ "$RELEASE_REF" != "refs/tags/v$version" ]]; then
               echo "::error::Release ref must be refs/tags/v$version."
               exit 1
@@ -89,6 +104,71 @@ jobs:
       - run: npm test -- --maxWorkers=2 --testTimeout=15000
       - run: npm run typecheck
       - run: npm run lint
+
+
+  native-tests:
+    needs: validate
+    if: inputs.benchmark_schedule != 'sequential'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app/SiloUI
+        shell: bash
+    env:
+      SILO_GITHUB_APP_SLUG: silo-unit-test
+      SILO_GITHUB_CLIENT_ID: synthetic-unit-client
+      SILO_GITHUB_CLIENT_SECRET: synthetic-unit-secret
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/SiloUI/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install native Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev libclang-dev libcap-ng-dev cmake
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal
+          rustup default 1.94.0
+          test "$(rustc --print host-tuple)" = '${{ matrix.target }}'
+      - run: npm ci
+      - uses: ./.github/actions/prepare-release-runtime
+        with:
+          runner: ${{ matrix.runner }}
+          target: ${{ matrix.target }}
+      - name: Test build configuration and native behavior
+        run: python3 scripts/measure-command.py native-tests -- cargo test --manifest-path src-tauri/Cargo.toml --locked --timings -- --test-threads=1
+      - name: Test updater transport and interrupted installation
+        run: python3 scripts/measure-command.py updater-tests -- cargo test --manifest-path src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib -- --test-threads=1
+      - name: Upload timing metrics only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-timings-${{ matrix.target }}
+          path: ${{ runner.temp }}/build-phases.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
 
   build:
     needs: validate
@@ -182,13 +262,16 @@ jobs:
           runner: ${{ matrix.runner }}
           target: ${{ matrix.target }}
       - name: Test build configuration and native behavior
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
+        if: inputs.benchmark_schedule == 'sequential'
+        run: python3 scripts/measure-command.py native-tests -- cargo test --manifest-path src-tauri/Cargo.toml --locked --timings -- --test-threads=1
       - name: Test updater transport and interrupted installation
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib -- --test-threads=1
+        if: inputs.benchmark_schedule == 'sequential'
+        run: python3 scripts/measure-command.py updater-tests -- cargo test --manifest-path src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib -- --test-threads=1
       - name: Free test products before release compilation
+        if: inputs.benchmark_schedule == 'sequential'
         run: cargo clean --manifest-path src-tauri/Cargo.toml --profile dev
       - name: Compile release application
-        run: npm run desktop:build -- --target '${{ matrix.target }}' --no-bundle --ci
+        run: python3 scripts/measure-command.py release-build -- npm run desktop:build -- --target '${{ matrix.target }}' --no-bundle --ci
       - name: Build release bundles
         run: |
           set -o pipefail
@@ -242,10 +325,19 @@ jobs:
           path: app/SiloUI/release-assets/*
           if-no-files-found: error
           retention-days: 7
+      - name: Upload timing metrics only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-timings-${{ matrix.target }}
+          path: ${{ runner.temp }}/build-phases.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+
 
   draft:
     if: needs.validate.outputs.draft == 'true'
-    needs: [validate, frontend, build, macos-minimum-constraints]
+    needs: [validate, frontend, native-tests, build, macos-minimum-constraints]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

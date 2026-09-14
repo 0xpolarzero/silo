@@ -19,15 +19,39 @@ const PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(target_os = "linux")]
 const MAX_HASH_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_OUTPUT: u64 = 8 * 1024;
-const EXPECTED_MSB: &str = "0.6.17";
-const EXPECTED_LIBKRUNFW: &str = "5.6.1";
-const EXPECTED_MSB_SOURCE: &str = "5eca4de8bf233e57f114140f8c076ea8c96f21ab";
-const EXPECTED_MSB_SOURCE_ARCHIVE_SHA: &str =
-    "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06";
-const EXPECTED_MSB_PATCH_SHA: &str =
-    "6d9a0177bfce542f741725c82b5d88a5242661a6a86b62b8e905de735c245f5d";
-const EXPECTED_MSB_TOOLCHAIN: &str = "1.94.0";
-const EXPECTED_MSB_FEATURES: &str = "net,ssh";
+// Embed reviewed source inputs; never derive approval from staged package metadata.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeInputs {
+    schema_version: u8,
+    microsandbox_version: String,
+    libkrunfw_version: String,
+    source_commit: String,
+    source_archive_sha256: String,
+    patch_sha256: String,
+    toolchain: String,
+    features: String,
+    targets: std::collections::HashMap<String, RuntimeTarget>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeTarget {
+    executable_asset: String,
+    executable_sha256: String,
+    agentd_asset: String,
+    agentd_sha256: String,
+    library_name: String,
+    library_asset: String,
+    library_sha256: String,
+}
+
+static RUNTIME_INPUTS: std::sync::LazyLock<RuntimeInputs> = std::sync::LazyLock::new(|| {
+    let inputs: RuntimeInputs = serde_json::from_str(include_str!("../../runtime-inputs.json"))
+        .expect("checked-in runtime inputs must be valid");
+    assert_eq!(inputs.schema_version, 1, "unsupported runtime input schema");
+    inputs
+});
 const EXPECTED_GIT: &str = "2.53.0";
 const EXPECTED_GIT_LFS: &str = "3.7.1";
 
@@ -293,47 +317,20 @@ fn expected_runtime_assets(
     &'static str,
     &'static str,
 )> {
-    match target {
-        "aarch64-apple-darwin" => Some((
-            "msb",
-            "msb-darwin-aarch64",
-            "2d3b8883da496ca7ec54f4ea122984022160295f9e4df2af198348fd1f24cdde",
-            "libkrunfw.5.dylib",
-            "libkrunfw-darwin-aarch64.dylib",
-            "20b588c2031519cee3ad93fee4b2a0ca4805f2a3c721198911a6248fd34f65e0",
-        )),
-        "aarch64-unknown-linux-gnu" => Some((
-            "msb",
-            "msb-linux-aarch64",
-            "bab283cb12902838cff629f10b28683d322ae8ce09cc2d720e90d1b169857878",
-            "libkrunfw.so.5.6.1",
-            "libkrunfw-linux-aarch64.so",
-            "b5d205d504c3e1876c47dbb674534436b7aabc09b0fdb32d98b5fff438d9a5b6",
-        )),
-        "x86_64-unknown-linux-gnu" => Some((
-            "msb",
-            "msb-linux-x86_64",
-            "7f79c9d0996fac42b4879f4798c6f985f7981b005af0a9b4b8b1ab5e590daee4",
-            "libkrunfw.so.5.6.1",
-            "libkrunfw-linux-x86_64.so",
-            "d395efaa21984cc6934c900519909a12c8148d9688cfc88f9da3b42132ae32c2",
-        )),
-        _ => None,
-    }
+    let approved = RUNTIME_INPUTS.targets.get(target)?;
+    Some((
+        "msb",
+        &approved.executable_asset,
+        &approved.executable_sha256,
+        &approved.library_name,
+        &approved.library_asset,
+        &approved.library_sha256,
+    ))
 }
 
 fn expected_agentd_asset(target: &str) -> Option<(&'static str, &'static str)> {
-    match target {
-        "aarch64-apple-darwin" | "aarch64-unknown-linux-gnu" => Some((
-            "agentd-aarch64",
-            "04bd19fcc184edc8323f588eb0fbfb9ffec00ae457bd9f6d1c62377223db5f4c",
-        )),
-        "x86_64-unknown-linux-gnu" => Some((
-            "agentd-x86_64",
-            "c6c5e7f719cbde966b4a2a366bff8f6bdec8a45a0fd8afe3fcab27243d01d1f8",
-        )),
-        _ => None,
-    }
+    let approved = RUNTIME_INPUTS.targets.get(target)?;
+    Some((&approved.agentd_asset, &approved.agentd_sha256))
 }
 
 fn expected_git_archive(
@@ -810,8 +807,8 @@ fn microsandbox_check(paths: &ProbePaths) -> DependencyCheck {
 
 fn runtime_manifest_matches(manifest: &MicrosandboxManifest) -> bool {
     manifest.schema_version == 2
-        && manifest.microsandbox_version == EXPECTED_MSB
-        && manifest.libkrunfw_version == EXPECTED_LIBKRUNFW
+        && manifest.microsandbox_version == RUNTIME_INPUTS.microsandbox_version
+        && manifest.libkrunfw_version == RUNTIME_INPUTS.libkrunfw_version
         && Some(manifest.target_triple.as_str()) == expected_target()
         && expected_runtime_assets(&manifest.target_triple).is_some_and(
             |(
@@ -824,11 +821,12 @@ fn runtime_manifest_matches(manifest: &MicrosandboxManifest) -> bool {
             )| {
                 manifest.executable.bundled_name == executable_name
                     && valid_sha256(&manifest.executable.sha256)
-                    && manifest.executable.source_commit == EXPECTED_MSB_SOURCE
-                    && manifest.executable.source_archive_sha256 == EXPECTED_MSB_SOURCE_ARCHIVE_SHA
-                    && manifest.executable.patch_sha256 == EXPECTED_MSB_PATCH_SHA
-                    && manifest.executable.toolchain == EXPECTED_MSB_TOOLCHAIN
-                    && manifest.executable.features == EXPECTED_MSB_FEATURES
+                    && manifest.executable.source_commit == RUNTIME_INPUTS.source_commit
+                    && manifest.executable.source_archive_sha256
+                        == RUNTIME_INPUTS.source_archive_sha256
+                    && manifest.executable.patch_sha256 == RUNTIME_INPUTS.patch_sha256
+                    && manifest.executable.toolchain == RUNTIME_INPUTS.toolchain
+                    && manifest.executable.features == RUNTIME_INPUTS.features
                     && manifest.executable.official_release_asset == executable_asset
                     && manifest.executable.official_release_sha256 == executable_sha
                     && expected_agentd_asset(&manifest.target_triple).is_some_and(|(asset, sha)| {
@@ -844,11 +842,16 @@ fn runtime_manifest_matches(manifest: &MicrosandboxManifest) -> bool {
 
 fn microsandbox_version_result(output: Result<String, ProbeError>) -> DependencyCheck {
     match output {
-        Ok(value) if value == format!("msb {EXPECTED_MSB}") => DependencyCheck::pass(
-            "runtime-microsandbox",
-            "MicroSandbox runtime",
-            format!("Bundled msb {EXPECTED_MSB} · libkrunfw {EXPECTED_LIBKRUNFW}"),
-        ),
+        Ok(value) if value == format!("msb {}", RUNTIME_INPUTS.microsandbox_version) => {
+            DependencyCheck::pass(
+                "runtime-microsandbox",
+                "MicroSandbox runtime",
+                format!(
+                    "Bundled msb {} · libkrunfw {}",
+                    RUNTIME_INPUTS.microsandbox_version, RUNTIME_INPUTS.libkrunfw_version
+                ),
+            )
+        }
         Ok(value) => ProbeError::Malformed(format!(
             "Bundled msb returned an unexpected version: {value}"
         ))
@@ -1132,7 +1135,7 @@ mod tests {
                     "../../patches/microsandbox-create-stopped-0.6.17.patch"
                 ))
             ),
-            EXPECTED_MSB_PATCH_SHA
+            RUNTIME_INPUTS.patch_sha256
         );
     }
 
@@ -1275,27 +1278,45 @@ mod tests {
             library_asset,
             library_sha,
         ) = expected_runtime_assets(target).unwrap();
-        let mut runtime: MicrosandboxManifest = serde_json::from_value(serde_json::json!({
+        let approved = serde_json::json!({
             "schemaVersion": 2,
-            "microsandboxVersion": EXPECTED_MSB,
-            "libkrunfwVersion": EXPECTED_LIBKRUNFW,
+            "microsandboxVersion": RUNTIME_INPUTS.microsandbox_version,
+            "libkrunfwVersion": RUNTIME_INPUTS.libkrunfw_version,
             "targetTriple": target,
             "executable": {
                 "bundledName": executable_name,
                 "sha256": "1".repeat(64),
-                "sourceCommit": EXPECTED_MSB_SOURCE,
-                "sourceArchiveSha256": EXPECTED_MSB_SOURCE_ARCHIVE_SHA,
-                "patchSha256": EXPECTED_MSB_PATCH_SHA,
-                "toolchain": EXPECTED_MSB_TOOLCHAIN,
-                "features": EXPECTED_MSB_FEATURES,
+                "sourceCommit": RUNTIME_INPUTS.source_commit,
+                "sourceArchiveSha256": RUNTIME_INPUTS.source_archive_sha256,
+                "patchSha256": RUNTIME_INPUTS.patch_sha256,
+                "toolchain": RUNTIME_INPUTS.toolchain,
+                "features": RUNTIME_INPUTS.features,
                 "officialReleaseAsset": executable_asset,
                 "officialReleaseSha256": executable_sha,
                 "embeddedAgentdReleaseAsset": expected_agentd_asset(target).unwrap().0,
                 "embeddedAgentdReleaseSha256": expected_agentd_asset(target).unwrap().1
             },
             "library": { "bundledName": library_name, "releaseAsset": library_asset, "sha256": library_sha }
-        })).unwrap();
+        });
+        let mut runtime: MicrosandboxManifest = serde_json::from_value(approved.clone()).unwrap();
         assert!(runtime_manifest_matches(&runtime));
+        for field in [
+            "sourceCommit",
+            "sourceArchiveSha256",
+            "patchSha256",
+            "toolchain",
+            "features",
+            "officialReleaseSha256",
+            "embeddedAgentdReleaseSha256",
+        ] {
+            let mut tampered = approved.clone();
+            tampered["executable"][field] = serde_json::json!("0".repeat(64));
+            let manifest: MicrosandboxManifest = serde_json::from_value(tampered).unwrap();
+            assert!(
+                !runtime_manifest_matches(&manifest),
+                "accepted altered {field}"
+            );
+        }
         runtime.executable.bundled_name = "../../bin/sh".into();
         assert!(!runtime_manifest_matches(&runtime));
     }

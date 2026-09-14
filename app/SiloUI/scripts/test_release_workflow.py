@@ -34,11 +34,20 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.notes.write_text('User-facing release notes')
         self.output = self.root / 'output'
 
-    def run_gate(self, *, draft=True, ref='refs/tags/v1.2.3'):
+    def run_gate(self, *, draft=True, ref='refs/tags/v1.2.3', schedule='parallel'):
         return subprocess.run(['bash', '-c', GATE], cwd=self.root,
                               env={**os.environ, 'CREATE_DRAFT': str(draft).lower(),
-                                   'RELEASE_REF': ref, 'GITHUB_OUTPUT': str(self.output)},
+                                   'RELEASE_REF': ref, 'BENCHMARK_SCHEDULE': schedule, 'GITHUB_OUTPUT': str(self.output)},
                               capture_output=True, text=True)
+
+    def test_sequential_benchmark_cannot_publish(self):
+        result = self.run_gate(schedule='sequential')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('artifact-only', result.stdout)
+        self.assertFalse(self.output.exists())
+        result = self.run_gate(draft=False, ref='refs/heads/benchmark', schedule='sequential')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.output.read_text(), 'draft=false\n')
 
     def test_prepared_tag_produces_draft(self):
         result = self.run_gate()

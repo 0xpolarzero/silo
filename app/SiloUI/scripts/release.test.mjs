@@ -15,7 +15,7 @@ function fixture(t) {
   const repo = mkdtempSync(join(tmpdir(), "silo-release-test-"))
   t.after(() => rmSync(repo, { recursive: true, force: true }))
   const root = join(repo, "app/SiloUI")
-  for (const file of [...metadata, ".changeset/config.json"]) {
+  for (const file of [...metadata, ".changeset/config.json", "runtime-inputs.json", "patches/microsandbox-create-stopped-0.6.17.patch"]) {
     mkdirSync(dirname(join(root, file)), { recursive: true })
     copyFileSync(join(source, file), join(root, file))
   }

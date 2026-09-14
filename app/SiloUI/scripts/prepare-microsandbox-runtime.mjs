@@ -5,9 +5,11 @@ import { dirname, resolve } from "node:path"
 
 import { resolveRuntimeTarget, stageRuntime } from "./microsandbox-runtime.mjs"
 import { stageGitRuntime } from "./git-runtime.mjs"
+import { preflight } from "./preflight.mjs"
 import { stageGuestImage } from "./guest-image.mjs"
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+preflight(appRoot)
 const hostTriple = execFileSync("rustc", ["--print", "host-tuple"], { encoding: "utf8" }).trim()
 const targetTriple = resolveRuntimeTarget(process.env, () => hostTriple)
 

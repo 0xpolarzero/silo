@@ -45,15 +45,30 @@ class ReleaseCacheTests(unittest.TestCase):
             for name in forbidden:
                 self.assertNotIn(root / name, selected)
 
+    def test_preflight_precedes_runtime_downloads(self):
+        self.assertLess(ACTION.index('node app/SiloUI/scripts/preflight.mjs'), ACTION.index('actions/cache/restore'))
+        self.assertIn("'app/SiloUI/runtime-inputs.json'", ACTION)
+        self.assertIn('restore-keys: silo-runtime-v1-', ACTION)
+        validate = WORKFLOW.split('\n  validate:', 1)[1].split('\n  macos-minimum-constraints:', 1)[0]
+        self.assertIn('node app/SiloUI/scripts/preflight.mjs', validate)
+
     def test_shared_frontend_checks_gate_publication(self):
-        frontend = WORKFLOW.split('\n  frontend:', 1)[1].split('\n  build:', 1)[0]
+        frontend = WORKFLOW.split('\n  frontend:', 1)[1].split('\n  native-tests:', 1)[0]
         build = WORKFLOW.split('\n  build:', 1)[1].split('\n  draft:', 1)[0]
         for command in ['npm test --', 'npm run lint', 'npm run test:release']:
             self.assertIn(command, frontend)
             self.assertNotIn(command, build)
         self.assertIn('npm run typecheck', frontend)
-        self.assertIn('needs: [validate, frontend, build, macos-minimum-constraints]', WORKFLOW)
-        self.assertIn('cargo test --manifest-path', build)
+        self.assertIn('needs: [validate, frontend, native-tests, build, macos-minimum-constraints]', WORKFLOW)
+        native = WORKFLOW.split('\n  native-tests:', 1)[1].split('\n  build:', 1)[0]
+        self.assertIn('cargo test --manifest-path', native)
+        self.assertIn('Test updater transport and interrupted installation', native)
+        self.assertNotIn('secrets.', native)
+        self.assertNotIn('TAURI_SIGNING_PRIVATE_KEY', native)
+        self.assertIn("if: inputs.benchmark_schedule != 'sequential'", native)
+        self.assertIn("if: inputs.benchmark_schedule == 'sequential'", build)
+        self.assertIn('path: ${{ runner.temp }}/build-phases.jsonl', native)
+        self.assertNotIn('path: app/SiloUI/src-tauri/target', native)
         self.assertIn("test_*release*.py", build)
         self.assertIn('Test updater transport and interrupted installation', build)
 

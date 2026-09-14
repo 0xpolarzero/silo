@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execFileSync } from "node:child_process"
 
+import { preflight } from "./preflight.mjs"
+
 const app = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
 export function release(action, root = app, run = (command, args) => execFileSync(command, args, { cwd: root, encoding: "utf8", stdio: ["inherit", "pipe", "inherit"] }).trim()) {
@@ -19,6 +21,7 @@ export function release(action, root = app, run = (command, args) => execFileSyn
   if (localTag && run("git", ["rev-parse", `${tag}^{commit}`]) !== head) throw new Error(`${tag} belongs to a different commit. Check out that release or prepare a newer version.`)
 
   if (action === "draft") {
+    preflight(root)
     // The library creates the tag; push only this version, never unrelated local tags.
     if (!localTag) run(process.execPath, [resolve(root, "node_modules/@changesets/cli/bin.js"), "git-tag"])
     if (run("git", ["rev-parse", `${tag}^{commit}`]) !== head) throw new Error(`${tag} does not identify this commit.`)

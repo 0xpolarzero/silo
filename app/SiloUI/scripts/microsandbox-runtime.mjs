@@ -3,73 +3,22 @@ import { execFileSync } from "node:child_process"
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
-export const MICRO_SANDBOX_VERSION = "0.6.17"
-export const LIBKRUNFW_VERSION = "5.6.1"
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+
+const inputs = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../runtime-inputs.json"), "utf8"))
+export const MICRO_SANDBOX_VERSION = inputs.microsandboxVersion
+export const LIBKRUNFW_VERSION = inputs.libkrunfwVersion
 export const RELEASE_BASE_URL = `https://github.com/superradcompany/microsandbox/releases/download/v${MICRO_SANDBOX_VERSION}`
-
-const SOURCE_BASE_URL = "https://raw.githubusercontent.com"
-const MICROSANDBOX_COMMIT = "5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+const MICROSANDBOX_COMMIT = inputs.sourceCommit
 export const MICROSANDBOX_SOURCE_URL = `https://codeload.github.com/superradcompany/microsandbox/tar.gz/${MICROSANDBOX_COMMIT}`
-export const MICROSANDBOX_SOURCE_SHA256 = "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06"
-export const MICROSANDBOX_PATCH_PATH = "patches/microsandbox-create-stopped-0.6.17.patch"
-export const MICROSANDBOX_PATCH_SHA256 = "6d9a0177bfce542f741725c82b5d88a5242661a6a86b62b8e905de735c245f5d"
-export const MICROSANDBOX_BUILD_TOOLCHAIN = "1.94.0"
-export const MICROSANDBOX_BUILD_FEATURES = "net,ssh"
-const LIBKRUNFW_COMMIT = "21cb6dce19a615f63e41ecb913334d18560c1364"
-
-export const runtimeTargets = Object.freeze({
-  "aarch64-apple-darwin": Object.freeze({
-    platform: "darwin",
-    arch: "aarch64",
-    executableAsset: "msb-darwin-aarch64",
-    executableSha256: "2d3b8883da496ca7ec54f4ea122984022160295f9e4df2af198348fd1f24cdde",
-    agentdAsset: "agentd-aarch64",
-    agentdSha256: "04bd19fcc184edc8323f588eb0fbfb9ffec00ae457bd9f6d1c62377223db5f4c",
-    libraryAsset: "libkrunfw-darwin-aarch64.dylib",
-    libraryName: "libkrunfw.5.dylib",
-    librarySha256: "20b588c2031519cee3ad93fee4b2a0ca4805f2a3c721198911a6248fd34f65e0",
-  }),
-  "aarch64-unknown-linux-gnu": Object.freeze({
-    platform: "linux",
-    arch: "aarch64",
-    executableAsset: "msb-linux-aarch64",
-    executableSha256: "bab283cb12902838cff629f10b28683d322ae8ce09cc2d720e90d1b169857878",
-    agentdAsset: "agentd-aarch64",
-    agentdSha256: "04bd19fcc184edc8323f588eb0fbfb9ffec00ae457bd9f6d1c62377223db5f4c",
-    libraryAsset: "libkrunfw-linux-aarch64.so",
-    libraryName: "libkrunfw.so.5.6.1",
-    librarySha256: "b5d205d504c3e1876c47dbb674534436b7aabc09b0fdb32d98b5fff438d9a5b6",
-  }),
-  "x86_64-unknown-linux-gnu": Object.freeze({
-    platform: "linux",
-    arch: "x86_64",
-    executableAsset: "msb-linux-x86_64",
-    executableSha256: "7f79c9d0996fac42b4879f4798c6f985f7981b005af0a9b4b8b1ab5e590daee4",
-    agentdAsset: "agentd-x86_64",
-    agentdSha256: "c6c5e7f719cbde966b4a2a366bff8f6bdec8a45a0fd8afe3fcab27243d01d1f8",
-    libraryAsset: "libkrunfw-linux-x86_64.so",
-    libraryName: "libkrunfw.so.5.6.1",
-    librarySha256: "d395efaa21984cc6934c900519909a12c8148d9688cfc88f9da3b42132ae32c2",
-  }),
-})
-
-export const licenseArtifacts = Object.freeze([
-  Object.freeze({
-    name: "microsandbox-Apache-2.0.txt",
-    url: `${SOURCE_BASE_URL}/superradcompany/microsandbox/${MICROSANDBOX_COMMIT}/LICENSE`,
-    sha256: "a276ca3381fefb9cde42fccae847856085c76027557d62eee83f057eb6c53433",
-  }),
-  Object.freeze({
-    name: "libkrunfw-LGPL-2.1-only.txt",
-    url: `${SOURCE_BASE_URL}/superradcompany/libkrunfw/${LIBKRUNFW_COMMIT}/LICENSE-LGPL-2.1-only`,
-    sha256: "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
-  }),
-  Object.freeze({
-    name: "linux-GPL-2.0-only.txt",
-    url: `${SOURCE_BASE_URL}/superradcompany/libkrunfw/${LIBKRUNFW_COMMIT}/LICENSE-GPL-2.0-only`,
-    sha256: "f6b78c087c3ebdf0f3c13415070dd480a3f35d8fc76f3d02180a407c1c812f79",
-  }),
-])
+export const MICROSANDBOX_SOURCE_SHA256 = inputs.sourceArchiveSha256
+export const MICROSANDBOX_PATCH_PATH = inputs.patchPath
+export const MICROSANDBOX_PATCH_SHA256 = inputs.patchSha256
+export const MICROSANDBOX_BUILD_TOOLCHAIN = inputs.toolchain
+export const MICROSANDBOX_BUILD_FEATURES = inputs.features
+export const runtimeTargets = Object.freeze(Object.fromEntries(Object.entries(inputs.targets).map(([target, value]) => [target, Object.freeze(value)])))
+export const licenseArtifacts = Object.freeze(inputs.licenses.map(Object.freeze))
 
 export function resolveRuntimeTarget(environment, hostTriple) {
   const explicitTarget = environment.SILO_RUNTIME_TARGET?.trim()
@@ -153,6 +102,7 @@ async function buildPatchedExecutable({
   const cacheKey = sha256(Buffer.from([
     MICROSANDBOX_SOURCE_SHA256,
     MICROSANDBOX_PATCH_SHA256,
+    sha256(agentd),
     rustcVersion,
     targetTriple,
     MICROSANDBOX_BUILD_FEATURES,

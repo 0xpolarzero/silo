@@ -173,7 +173,8 @@ variables and recompiles when they change. An explicitly empty environment
 variable fails even when the local file has a value; unset a stale override to
 use the file again. An invalid local JSON file must be repaired or removed.
 
-Native tests also require configuration. CI uses the configured Actions secrets.
+Native tests also require configuration. The isolated CI native-test jobs use
+explicit synthetic configuration; package jobs use configured Actions secrets.
 Contributors running offline unit tests can explicitly supply synthetic values
 for all three variables; such test executables cannot authenticate to GitHub and
 must not be distributed. Frontend tests need no GitHub credentials.
@@ -364,3 +365,43 @@ Rust application compilation still runs for every release.
 The 0.3.1 macOS release spent about 14 minutes preparing its runtime. Reusing the
 patched runtime targets that cost; actual savings must be measured on a release
 with a warm cache. The first cache-warming run still pays the cold build cost.
+
+## Fast feedback and phase measurements
+
+Run `npm --prefix app/SiloUI run preflight` before a native build. This reads the
+approved `runtime-inputs.json`, checks its schema, supported targets, source pins,
+features and the actual patch digest without network access or Rust compilation.
+Runtime preparation and draft creation run it automatically. JavaScript staging
+and Rust dependency validation consume this same file; changing runtime pins
+requires reviewing it and verifying downloaded bytes during staging.
+
+Ordinary GitHub build and permission checks live in the binary's `cfg(test)`
+modules. This preserves their assertions while avoiding Cargo's additional
+normal debug executable build for integration tests. Use a Cargo test filter
+for focused feedback, then run the full native suite once for combined changes.
+
+Vitest runs reviewed browser-independent suites in Node and retains jsdom for
+all other suites. The global worker limit remains overridable with
+`npm --prefix app/SiloUI test -- --maxWorkers=2`; do not inherit that limit into
+individual projects because project limits override the CLI root limit.
+
+The release workflow runs native and updater checks on all three platforms in
+parallel with package compilation. The draft job requires the entire native
+matrix, frontend checks, package checks and minimum-macOS checks to pass. Native
+test jobs receive no signing credentials. No compiled Cargo products are cached.
+
+For a controlled CI comparison, dispatch the same branch commit twice with
+`draft=false`, once with `benchmark_schedule=sequential` and once with
+`benchmark_schedule=parallel`. Sequential mode runs native checks before package
+compilation and is rejected for draft creation. Compare job/step timestamps and
+the `native-timings-*` / `package-timings-*` JSON artifacts. The measurement
+wrapper preserves command failures and records elapsed time, CPU use and peak
+child-process RSS without command arguments, environment variables or logs.
+Runner allocation and caches vary; a single comparison does not establish a
+guaranteed speedup.
+
+Runtime cache fallback restores public input candidates only. Preparation still
+validates downloaded digests and the patched executable's build key. That key
+includes embedded agentd bytes as well as source, patch, target, compiler and
+features. The expanded key requires one initial rebuild of the patched runtime.
+Only the credential-free default-branch warmer may populate shared caches.

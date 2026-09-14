@@ -45,6 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/SiloUI/src-tauri
+      - run: node scripts/preflight.mjs
       - run: npm ci
       - run: npm test -- --maxWorkers=2
       - run: npm run lint
