@@ -47,7 +47,8 @@ not release artifacts.
 
 ## Dependency-cache probe: not enabled in production
 
-The experimental Python wrapper in `app/SiloUI/scripts/experiments/` uses pinned
+The experimental Python wrapper, retained locally in
+`/private/tmp/silo-native-perf/retained-prototype/`, uses pinned
 sccache 0.12.0 and admits only the reviewed registry package `itoa` 1.0.18 library.
 Application crates, build scripts, other dependencies, unknown inputs, missing
 cache setup and version mismatches invoke rustc directly. The cache subprocess
@@ -60,7 +61,7 @@ configuration, package/target admission and the credential-free readonly child
 environment. Run them with:
 
 ```sh
-python3 -m unittest discover -s app/SiloUI/scripts/experiments -p 'test_*.py'
+python3 -m unittest discover -s /private/tmp/silo-native-perf/retained-prototype -p 'test_*.py'
 ```
 
 A real isolated sccache probe compiled public `itoa` with `opt-level=3`, deleting
@@ -162,7 +163,7 @@ signing credentials. Five library variants produced five cache objects.
 The initial population run exposed a Python wrapper bug: direct rustc
 subprocesses closed Cargo's inherited jobserver descriptors. Its timing is
 therefore diagnostic, not a clean population-cost comparison. Both consumer
-runs preserved these descriptors. The checked-in experimental wrapper now
+runs preserved these descriptors. The retained experimental wrapper now
 preserves them on every direct compiler path, with a regression that passes
 real pipe descriptors through the wrapper into a compiler probe. All four
 experimental boundary tests pass.
@@ -201,8 +202,8 @@ runs. It therefore establishes useful hit behavior and residual costs, not
 a statistically established speedup. It also says nothing about optimized
 release compilation, which remains the larger hosted cost.
 
-**Decision: retain the small disabled prototype; do not enable compiler caching
-in release workflows.** The remaining decisive question was the exact optimized Tauri command on a
+**Decision: retain the prototype as local experiment evidence; do not ship
+compiler-cache code or add its tests to ordinary CI.** The remaining decisive question was the exact optimized Tauri command on a
 stable-path runner. The final probe below measures it. Repeating the same
 four-crate debug experiment or broadening the allowlist without measuring the
 new critical path was not justified by this result. Native C compilation
@@ -296,3 +297,17 @@ disabled prototype and measured evidence. The narrow cache boundary works,
 but neither the native nor optimized-release experiment meets the performance
 acceptance gate. Broadening the allowlist, adding hosted cache transfers or
 changing compiler/linker settings is not warranted by these results.
+
+The rejected prototype was removed from the final source tree and routine CI.
+Its small initial implementation remains inspectable in commit `94b3554`; the
+expanded disposable runners and raw measurements remain in the local evidence
+directory above. This preserves the investigation without adding unused
+production tooling or recurring tests for a rejected optimization.
+
+After the decision, disposable targets, compiled objects and stopped-daemon
+sockets were cleaned up: 11.0 GiB freed. Referenced Cargo reports were copied
+first into `preserved-evidence/<original-target-name>/cargo-timings/`, with
+combined native reports in `preserved-evidence/combined-native/`. Logs, JSON,
+stats, inventories and probe scripts remain at their recorded paths;
+`preserved-evidence/cleanup-manifest.json` records every deletion and the
+retained report paths. The original repository's warm Cargo target was untouched.

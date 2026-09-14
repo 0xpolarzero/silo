@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retry only a transient AppImage type2-runtime download failure during bundling.
+"""Retry only confirmed transient AppImage runtime or Tauri tool downloads.
 
 Pass the bundle-only command as argv after --. Never wrap runtime preparation,
 compilation, or a command that also validates/publishes the resulting packages.
@@ -21,8 +21,39 @@ BUNDLE = re.compile(r"(?:Error \[tauri_cli_node\] )?failed to bundle project: `f
 MANUAL = re.compile(r"\[appimage/stderr\] Failed to download runtime file, please download the runtime manually from https://github\.com/AppImage/type2-runtime/releases and pass it to appimagetool with --runtime-file")
 
 
+TOOL_DOWNLOAD = re.compile(r"Downloading \[tauri_bundler::utils::http_utils\] https://(?:github\.com/(?:tauri-apps|linuxdeploy)|raw\.githubusercontent\.com/tauri-apps)/[^\s]+")
+TOOL_BUNDLE = re.compile(r"(?:Error \[tauri_cli_node\] )?failed to bundle project: `http status: (500|502|503|504)`")
+TOOL_RESPONSE = re.compile(r"Debug \[ureq::run\] Response \{ status: (500|502|503|504), .+\}")
+
+
 def transient_download(output):
     lines = [line.strip() for line in output.decode("utf8", errors="replace").splitlines() if line.strip()]
+    return transient_appimage_download(lines) or transient_tool_download(lines)
+
+
+def transient_tool_download(lines):
+    # Require the exact final HTTP response + paired Tauri error, tied to the
+    # most recent known vendor tool URL. An earlier successful download is no proof.
+    if len(lines) < 4:
+        return False
+    response = TOOL_RESPONSE.fullmatch(lines[-3])
+    if response is None:
+        return False
+    status = response.group(1)
+    summary = f"failed to bundle project: `http status: {status}`"
+    if lines[-2:] != [summary, f"Error [tauri_cli_node] {summary}"]:
+        return False
+    downloads = [index for index, line in enumerate(lines[:-3])
+                 if line.startswith("Downloading [tauri_bundler::utils::http_utils]")]
+    if not downloads or not TOOL_DOWNLOAD.fullmatch(lines[downloads[-1]]):
+        return False
+    if not all(line.startswith("Debug [") for line in lines[downloads[-1] + 1:-3]):
+        return False
+    return not any(re.match(r"(?:error\b|fatal\b|failed to\b|.*(?:validation|verification) failed\b)", line, re.IGNORECASE)
+                   and not TOOL_BUNDLE.fullmatch(line) for line in lines)
+
+
+def transient_appimage_download(lines):
     failures = [index for index, line in enumerate(lines) if DOWNLOAD.fullmatch(line)]
     if len(failures) != 1:
         return False
@@ -85,7 +116,7 @@ def retry_bundle(command, log_path, stdout=None, stderr=None, sleep=time.sleep):
             if code == 0 or attempt == 3 or not transient_download(output):
                 return code
             delay = attempt * 2
-            message = f"Transient AppImage runtime download failure; retrying bundle only in {delay}s.\n".encode()
+            message = f"Transient bundle tool download failure; retrying bundle only in {delay}s.\n".encode()
             stderr.write(message)
             stderr.flush()
             log.write(message)

@@ -406,8 +406,8 @@ includes embedded agentd bytes as well as source, patch, target, compiler and
 features. The expanded key requires one initial rebuild of the patched runtime.
 Only the credential-free default-branch warmer may populate shared caches.
 
-Bundling retries only the observed AppImage type2-runtime download failure for
-HTTP 500/502/503/504, at most three attempts with 2s/4s backoff. Every attempt
+Bundling retries the observed AppImage type2-runtime and Tauri vendor-tool
+download failure chains for HTTP 500/502/503/504, at most three attempts with 2s/4s backoff. Every attempt
 streams output and remains in the bundle log. Compilation, runtime preparation
 and package validation are outside this retry boundary; other errors fail
 immediately. This handles transient upstream download failures without

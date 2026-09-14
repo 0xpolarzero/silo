@@ -56,7 +56,10 @@ passed on all three targets; macOS and Linux x64 package jobs passed. ARM64
 bundling failed when AppImage's type2 runtime download returned HTTP 504.
 Consequently this is not a fully successful end-to-end control, and its
 wall time must not be advertised as a successful-release baseline. The
-parallel run will provide the remaining platform verification and phase data.
+parallel run passed all native jobs plus macOS and ARM64 packaging; its x64
+bundler failed downloading linuxdeploy with the same upstream HTTP 504 class.
+Every platform therefore passed package verification in one of these two
+same-commit runs, but neither entire workflow was green.
 
 Control instrumentation (command wall times; excludes runner queue time):
 
@@ -68,22 +71,72 @@ Control instrumentation (command wall times; excludes runner queue time):
 
 The release command includes normal runtime restaging, frontend preparation
 and Rust compilation. The runtime cache-key correction accounts for the
-initial cold preparation. The added bounded bundle-only retry recognizes the exact observed
-AppImage runtime-download failure without repeating these compilation phases.
-Eight deterministic regressions cover retry limits, permanent failures,
+initial cold preparation. The added bounded bundle-only retry recognizes the
+observed AppImage runtime and Tauri tool-download failures without repeating
+these compilation phases.
+Eleven deterministic regressions cover retry limits, permanent failures,
 live stream forwarding, original exit codes and retention of every attempt.
 The retry was added after the frozen comparison commit; its behavior was
 verified against the original failure log and deterministic subprocesses.
 Timing JSON is retained under `/private/tmp/silo-control-metrics/`; job
 metadata is `/private/tmp/silo-control-run.json`.
 
+## Scheduling result and adoption
+
+| Observation | Sequential control | Parallel treatment |
+| --- | ---: | ---: |
+| Active workflow wall time | 24m19s | 18m16s |
+| Successful macOS package job | 23m57s | 18m01s |
+| Sum of non-skipped job wall times | 66m16s | 95m49s |
+| Native tests and updater checks | All targets passed | All targets passed |
+| Package verification | macOS + x64 passed; ARM64 download 504 | macOS + ARM64 passed; x64 download 504 |
+
+The observed workflow difference was 6m03s. It is **not** a clean successful
+release comparison or a statistically established speedup. On macOS, parallel
+scheduling removed 198.611s of serial native/updater work, while runtime
+preparation independently fell by 176.636s and the release command rose by
+31.776s. These phase differences explain why the whole improvement cannot be
+attributed to scheduling. Frontend job time also varied, from 140s to 201s.
+
+**Keep the native/package split as the release default.** The independent
+native jobs passed all three platform gates. macOS package checks passed in
+both runs, and its parallel native checks finished before packaging. The draft
+still requires every verification branch. The verified structural improvement is removal of serial native work
+from each package job; the observed six-minute difference is not a guarantee.
+This choice prioritizes developer elapsed time over cold-run runner usage.
+
+Cold preparation ran twice per target in the treatment. Of its additional
+29m33s of summed job time, 28m07s came from duplicated runtime preparation.
+The existing credential-free main-branch warmer prepares these public inputs
+for ordinary releases; the corrected cache key requires one initial warm.
+The remaining runner overhead and queue behavior should be assessed from
+normal warm releases before adding more workflow complexity.
+
+The [sanitized phase and job metrics](measurements/workflow-2026-09-14.json)
+are committed for durable comparison. Original parallel phase metrics are
+retained in `/private/tmp/silo-parallel-metrics/`, and job metadata in `/private/tmp/silo-parallel-run.json`. Both runs used
+`417deda`; later commits add toolchain selection from the same manifest value,
+focused regressions and the bounded bundle retry. The retry is verified using
+the two exact diagnostic shapes and deterministic subprocesses. It has not
+been claimed as a live successful retry in these earlier runs.
+
 ## Not enabled
 
-The isolated dependency-cache probe is not used in production. An actual
-optimized Tauri control/population/readonly sequence took 68.887 / 68.599 /
+The dependency-cache candidate was rejected and its prototype removed from
+the final source tree and routine CI; local experiment evidence is retained.
+An actual optimized Tauri control/population/readonly sequence took 68.887 / 68.599 /
 91.239 seconds despite five consumer hits and byte-identical executables.
 Uncached work also slowed, so this does not establish a stable cache penalty;
-it does fail to establish the required gain. A cache must
-reduce end-to-end time after transfer/wrapper overhead, preserve rebuilds under
+it does fail to establish the required gain. A cache must reduce end-to-end time after transfer/wrapper overhead, preserve rebuilds under
 configuration changes, and exclude application/signing configuration. A tiny
 cache hit alone does not establish that case.
+
+## Evidence retention
+
+Discarded experiment products and caches consumed 11,849,654,272 allocated
+bytes (about 11 GiB) and were removed. Cargo timing HTML, extracted unit JSON,
+logs, statistics, hash inventories and runners remain in
+`/private/tmp/silo-native-perf/` (29 MiB). The detailed cleanup inventory is
+`preserved-evidence/cleanup-manifest.json`; preserved Cargo reports are under
+`preserved-evidence/`. The user's original Cargo target and runtime cache were
+kept warm.

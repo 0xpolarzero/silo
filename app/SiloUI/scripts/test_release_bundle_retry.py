@@ -18,6 +18,17 @@ ERROR: Failed to run plugin: appimage (exit code: 1)
 failed to bundle project: `failed to run /fixture/linuxdeploy-aarch64.AppImage`
        Error [tauri_cli_node] failed to bundle project: `failed to run /fixture/linuxdeploy-aarch64.AppImage`
 """
+# Sanitized shape of the hosted x86-64 failure before appimagetool starts.
+TOOL_FAILURE = """       Debug [ureq::run] Response { status: 200, version: HTTP/1.1, headers: {} }
+ Downloading [tauri_bundler::utils::http_utils] https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage
+       Debug [ureq::run] GET https://github.com/redacted
+       Debug [ureq::unversioned::transport::tcp] Connected TcpStream to 140.82.114.3:443
+       Debug [ureq::run] Request { method: GET, uri: https://github.com/redacted, version: HTTP/1.1, headers: {} }
+       Debug [rustls::client::hs] ALPN protocol is None
+       Debug [ureq::run] Response { status: 504, version: HTTP/1.1, headers: {} }
+failed to bundle project: `http status: 504`
+       Error [tauri_cli_node] failed to bundle project: `http status: 504`
+"""
 FIXTURE = """
 import json, pathlib, sys
 state = pathlib.Path(sys.argv[1])
@@ -75,6 +86,43 @@ class RetryBundleTests(unittest.TestCase):
             FAILURE + "error: could not compile silo-ui\n",
             "error: could not compile silo-ui\n" + FAILURE,
             "Package validation failed\n" + FAILURE,
+        ):
+            with self.subTest(diagnostic=diagnostic):
+                code, count, _, _, _, delays = self.run_fixture(9, diagnostic)
+                self.assertEqual((code, count, delays), (17, 1, []))
+
+    def test_hosted_tauri_tool_download_failures_retry_and_retain_first_error(self):
+        for status in (500, 502, 503, 504):
+            with self.subTest(status=status):
+                code, count, log, _, _, delays = self.run_fixture(1, TOOL_FAILURE.replace("504", str(status)))
+                self.assertEqual((code, count, delays), (0, 2, [2]))
+                self.assertIn(f'http status: {status}'.encode(), log)
+                self.assertIn(b'bundle succeeded', log)
+
+    def test_tauri_vendor_apprun_and_plugin_downloads_retry(self):
+        original = 'https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage'
+        for url in (
+            'https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-aarch64',
+            'https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh',
+            'https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/master/linuxdeploy-plugin-gstreamer.sh',
+            'https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-aarch64.AppImage',
+        ):
+            with self.subTest(url=url):
+                code, count, _, _, _, delays = self.run_fixture(1, TOOL_FAILURE.replace(original, url))
+                self.assertEqual((code, count, delays), (0, 2, [2]))
+
+    def test_tauri_tool_download_rejects_permanent_unrelated_or_ambiguous_errors(self):
+        for diagnostic in (
+            TOOL_FAILURE.replace("504", "404"), TOOL_FAILURE.replace("504", "501"),
+            TOOL_FAILURE.replace("https://github.com/tauri-apps/", "https://unknown.test/tauri-apps/"),
+            TOOL_FAILURE.replace("github.com/tauri-apps/", "github.com/unknown-vendor/"),
+            TOOL_FAILURE.replace("github.com/tauri-apps/", "github.com/tauri-apps-untrusted/"),
+            TOOL_FAILURE.replace("github.com/tauri-apps/", "raw.githubusercontent.com/unknown-vendor/"),
+            TOOL_FAILURE + "Package validation failed\n",
+            "error: could not compile silo-ui\n" + TOOL_FAILURE,
+            TOOL_FAILURE.replace("Response { status: 504", "Response { status: 200"),
+            TOOL_FAILURE.replace("Debug [ureq::run] GET", "Downloading [tauri_bundler::utils::http_utils]"),
+            TOOL_FAILURE.replace("http status: 504", "http status: 503", 1),
         ):
             with self.subTest(diagnostic=diagnostic):
                 code, count, _, _, _, delays = self.run_fixture(9, diagnostic)
