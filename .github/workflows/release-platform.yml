@@ -86,7 +86,7 @@ jobs:
           path: ${{ runner.temp }}/runtime-cache.tar.gz
           compression-level: 0
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
       - name: Upload timing metrics only
         if: always()
         uses: actions/upload-artifact@v4

@@ -362,3 +362,75 @@ before-consumer hashes are retained under `/private/tmp/silo-c-cache/`.
 The synthetic control target was retained for the separately coordinated
 public dependency-artifact experiment; no broad test suite or app/VM run was
 performed for this C-cache probe.
+
+## Curated public Cargo dependency artifacts
+
+A separate local experiment reused the C-cache experiment's existing 72.980 s
+synthetic control at source `e50ee59`, avoiding another cold build. It restored
+only exact crates.io package units into the original empty target pathname.
+The compiler command, SDK/compiler environment, release profile, explicit
+`aarch64-apple-darwin` target and `tauri/custom-protocol` feature stayed fixed.
+Cargo JSON messages were added for inventory collection. The initial inventory
+recompiled only the application and produced a byte-identical control binary;
+all public dependencies were already fresh. That 31.321 s inventory run is not
+a second baseline or a cache speedup claim.
+
+| Work | Local elapsed time |
+| --- | ---: |
+| Existing cold Tauri control | 72.980 s |
+| First restored Tauri consumer | 34.350 s |
+| First local directory restoration | 1.715 s |
+| Second restored Tauri consumer | 35.349 s |
+| Zstandard archive creation, level 3 | 2.180 s |
+| Archive decompression/restoration | 2.936 s |
+| Restored artifact SHA-256 audit | 1.221 s |
+
+Both consumers kept **531 of 531 approved registry compilation units fresh**,
+while rebuilding the application and its build script. Each used a different
+synthetic GitHub secret. Each resulting binary contained its new sentinel and
+neither previous sentinel; the public snapshot's hashes remained unchanged.
+The first consumer plus local restore took 36.065 s (50.6% below control).
+The repeat plus archive restore and audit took 39.506 s (45.9% below control).
+Network download time is excluded. These are two local warm consumers against
+one preceding cold control, not repeated hosted pairs or a release guarantee.
+
+The export contained **4,786 files from 368 exact registry packages**, totaling
+1,417,067,225 bytes; Zstandard reduced it to **396,381,429 bytes**. Compiler
+artifact package IDs map both host and target units to their `deps`,
+`.fingerprint`, and dependency `build` directories. Every workspace, path and
+Git package was excluded, including `silo-ui`, the vendored updater, and both
+MicroSandbox Git libraries. This is a reviewed public dependency inventory,
+not a Cargo target-tree upload. Its inclusion of approved native build outputs
+avoids the `aws-lc-sys` and `zstd-sys` recompilation left by the rejected narrow
+compiler caches.
+
+The candidate `scripts/cargo-dependency-cache.py` adds strict context, lockfile,
+resolved graph and absolute-path identity checks, explicit file modes, package
+ownership checks, source-byte verification and timestamp repair. Producer
+source verification checks the locked `.crate` archive digest and each
+extracted file against its archive member. A read-only corpus check verified
+**17,110 source files** from all 368 packages in 3.21 s. The cache stores source
+hashes and timestamps, including Cargo's `.cargo-ok` marker, but no source
+contents. Consumers verify the complete source inventory before changing any
+source timestamps, which addresses newly extracted registry sources on hosted
+runners. Content changes reject the cache instead of making changed source
+appear fresh.
+
+The candidate exporter and importer also processed the retained real artifacts
+without another compilation: export plus verification took 8.539 s; import
+including all artifact/source checks took 3.833 s. These operations used the
+already-present original source files; fresh-source timestamp repair is covered
+by temporary fixtures. Thirteen initial boundary tests covered excluded app
+outputs, public native outputs, source/archive tampering, ordered timestamp
+validation, modes, identity changes, symlinks, traversal, missing fingerprints
+and unlisted files. Hosted fresh-runner proof and measured transfer cost remain
+required before adoption; no production release job should populate this cache.
+
+Primary sources: [Cargo build-cache layout and host/target separation](https://doc.rust-lang.org/cargo/reference/build-cache.html),
+[build-script output and timestamp behavior](https://doc.rust-lang.org/cargo/reference/build-scripts.html),
+and [versioned dependency-only cleanup prior art](https://raw.githubusercontent.com/Swatinem/rust-cache/v2.8.2/src/cleanup.ts).
+Raw commands, results, approved/excluded package lists and snapshots remain
+under `/private/tmp/silo-dependency-cache/`, including `result.json`,
+`archive-repeat-result.json`, `validated-times.json`, and the curated manifests.
+No application launch, signing, packaging or publication occurred in this local
+artifact-reuse experiment.

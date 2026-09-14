@@ -156,6 +156,27 @@ The remaining priority is application dependency compilation, followed by
 Linux packaging. The [sanitized full job and phase timings](measurements/workflow-warm-2026-09-14.json)
 contain the complete breakdown; raw logs remain local.
 
+### Shared cold-runtime workflow validation
+
+Commit `6be2779` moves each platform's native/package jobs into a reusable
+workflow with a conditional public-runtime producer. Exact cache lookups run
+inside the existing validation job. On a miss, the producer prepares the
+runtime once and passes only the existing public-cache allowlist to both
+consumers. Each consumer still verifies and stages the inputs. On a hit, the
+producer is skipped and both consumers start independently. Cache eviction or
+corruption after lookup still falls back to normal verified preparation.
+
+Hosted run [34867497410](https://github.com/0xpolarzero/silo/actions/runs/34867497410)
+passed all checks in **9m27s**. All three producers were skipped; the three
+lookups took 3s combined inside the existing validation job. macOS cache lookup
+from the Ubuntu validation runner worked. This confirms the warm scheduling,
+environment configuration, and publication prerequisites on the real service.
+It does not claim a hosted cold-miss transfer measurement. Seven deterministic
+transfer/scheduling tests cover one producer feeding two consumers, executable
+mode preservation, excluded files, checksum/path/link rejection, and producer
+failure blocking consumers. The full Python release-tooling suite passed 65
+tests; workflow syntax validation and an independent review passed.
+
 ## Rejected narrow Rust cache
 
 The dependency-cache candidate was rejected and its prototype removed from
