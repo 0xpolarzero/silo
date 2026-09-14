@@ -9,13 +9,17 @@ on:
         description: Create versioned draft after all builds pass (requires vVERSION tag)
         type: boolean
         default: false
+      benchmark_ref:
+        description: Optional full source commit for artifact-only benchmarks
+        type: string
+        default: ''
       benchmark_schedule:
         description: Artifact-only comparison; releases always run native tests in parallel
         type: choice
         options: [parallel, sequential]
         default: parallel
 concurrency:
-  group: silo-release-build
+  group: ${{ github.event_name == 'workflow_dispatch' && !inputs.draft && format('silo-release-benchmark-{0}', github.run_id) || 'silo-release-build' }}
   cancel-in-progress: false
 
 permissions:
@@ -27,11 +31,33 @@ jobs:
     timeout-minutes: 5
     outputs:
       draft: ${{ steps.release.outputs.draft }}
+      source-ref: ${{ steps.source.outputs.ref }}
       runtime-macos: ${{ steps.runtime-macos.outputs.cache-hit }}
       runtime-x64: ${{ steps.runtime-x64.outputs.cache-hit }}
       runtime-arm64: ${{ steps.runtime-arm64.outputs.cache-hit }}
     steps:
+      - name: Validate source revision before checkout
+        id: source
+        env:
+          BENCHMARK_REF: ${{ inputs.benchmark_ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          CREATE_DRAFT: ${{ github.event_name == 'push' || inputs.draft }}
+          TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source_ref="$TRIGGER_SHA"
+          if [[ -n "$BENCHMARK_REF" ]]; then
+            if [[ "$EVENT_NAME" != workflow_dispatch || "$CREATE_DRAFT" == true || ! "$BENCHMARK_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo '::error::A source override requires an artifact-only dispatch and a full commit SHA.'
+              exit 1
+            fi
+            source_ref="$BENCHMARK_REF"
+          fi
+          echo "ref=$source_ref" >> "$GITHUB_OUTPUT"
+          echo "Workflow commit: $TRIGGER_SHA; source commit: $source_ref"
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -99,6 +125,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.source-ref }}
       - name: Verify library constraints on minimum macOS version
         run: python3 app/SiloUI/scripts/test-macos-library-constraints.py --constraints-only --output "$RUNNER_TEMP/library-constraints"
       - uses: actions/upload-artifact@v4
@@ -118,6 +146,8 @@ jobs:
         working-directory: app/SiloUI
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.source-ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -154,6 +184,7 @@ jobs:
     uses: ./.github/workflows/release-platform.yml
     with:
       runner: ${{ matrix.runner }}
+      source-ref: ${{ needs.validate.outputs.source-ref }}
       target: ${{ matrix.target }}
       bundles: ${{ matrix.bundles }}
       asset: ${{ matrix.asset }}
@@ -176,6 +207,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.source-ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
