@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -19,11 +19,20 @@ async function selectAction(user: ReturnType<typeof userEvent.setup>, name: stri
   await user.click(screen.getByRole("menuitem", { name }))
 }
 describe("managed SSH access", () => {
+  it("clears command copy feedback after a short delay", async () => {
+    const { user } = setup()
+    await expand(user)
+    await selectAction(user, "Copy local SSH command")
+    await user.click(screen.getByRole("button", { name: "More local SSH actions" }))
+    expect(screen.getByRole("menuitem", { name: "Copy local SSH command" })).toHaveTextContent("Command copied")
+    await waitFor(() => expect(screen.getByRole("menuitem", { name: "Copy local SSH command" })).toHaveTextContent("Copy terminal command"), { timeout: 2500 })
+  })
   it("shows two toggles and a ready connection without key setup or advanced settings", async () => {
     const { user, actions } = setup({ keys: [] })
     expect(screen.getByText("SSH listening")).toBeVisible()
     await expand(user)
     expect(screen.getAllByRole("switch")).toHaveLength(2)
+    expect(screen.getByText("User:")).toHaveTextContent("User: root")
     expect(screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" })).toBeChecked()
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument()

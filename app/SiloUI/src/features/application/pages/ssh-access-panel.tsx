@@ -1,6 +1,6 @@
 import { ActionsMenu } from "@/components/actions-menu"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
-import { useId, useState } from "react"
+import { useEffect, useId, useState } from "react"
 import { Check, ChevronDown, Download, Monitor, Network, Pencil, Terminal } from "lucide-react"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Button } from "@/components/ui/button"
@@ -30,6 +30,11 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(null), 1_200)
+    return () => window.clearTimeout(timer)
+  }, [copied])
   const [port, setPort] = useState<string | null>(null)
   const [address, setAddress] = useState<string | null>(null)
   const external = access?.bindAddress !== "127.0.0.1"
@@ -91,7 +96,10 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
               else setAddress(networkAddresses[0] ?? "")
             }} /></div>
             {access.enabled && (!network || external) && <div className="flex flex-wrap items-center gap-1 text-muted-foreground">
-              <Tooltip><TooltipTrigger asChild><code tabIndex={0} className="mr-auto min-w-0 break-all">{host}:{access.port}</code></TooltipTrigger><TooltipContent className="max-w-sm break-all">{access.computerName}{access.fingerprint ? ` · Host key: ${access.fingerprint}` : ""}</TooltipContent></Tooltip>
+              <div className="mr-auto flex min-w-0 flex-wrap items-center gap-x-3">
+                <Tooltip><TooltipTrigger asChild><code tabIndex={0} className="min-w-0 break-all">{host}:{access.port}</code></TooltipTrigger><TooltipContent className="max-w-sm break-all">{access.computerName}{access.fingerprint ? ` · Host key: ${access.fingerprint}` : ""}</TooltipContent></Tooltip>
+                <span>User: <code>root</code></span>
+              </div>
               <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" value={`${host}:${access.port}`} labels={{ idle: network ? "Copy network SSH address" : "Copy SSH address", copied: "SSH address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy address</TooltipContent></Tooltip>
               <ActionsMenu label={`More ${scope} SSH actions`} items={[
                 { icon: Pencil, label: network ? "Edit address and port" : "Edit port", accessibleLabel: network ? "Edit network connection" : "Edit connection", disabled: blocked, onSelect: () => { setPort(String(access.port)); setAddress(network ? access.bindAddress : null) } },
