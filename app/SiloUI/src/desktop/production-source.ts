@@ -5,7 +5,7 @@ import { z } from "zod"
 
 import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
-import type { NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
+import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 
@@ -23,7 +23,13 @@ const bridge: ProductionBridge = {
   listen: (event, handler) => listen(event, handler),
 }
 
+const sshAccessShape = z.object({ workspaces: z.array(z.object({
+  workspace: z.string(), enabled: z.boolean(), port: z.number().int(), bindAddress: z.string(), keys: z.array(z.string()),
+  state: z.enum(["disabled", "waiting", "listening", "error"]), message: z.string().nullable(), fingerprint: z.string().nullable(), computerName: z.string(), addresses: z.array(z.string()),
+})) })
+
 const githubStateShape = z.object({
+  personalToken: z.object({ state: z.enum(["connected", "disconnected"]), saved: z.boolean(), account: z.string().optional(), message: z.string().optional() }).optional(),
   policyRevision: z.number().int().nonnegative().optional(),
   state: z.enum(["disconnected", "connecting", "connected"]),
   account: z.string().nullish().transform((value) => value ?? undefined),
@@ -36,6 +42,7 @@ const githubStateShape = z.object({
   ]).optional(),
   workspaces: z.array(z.object({
     workspace: z.string(), identity: z.object({ name: z.string(), email: z.string(), apply: z.boolean() }),
+    authenticationMethod: z.enum(["oauth", "token"]).optional(),
     repositoryMode: z.enum(["selected", "all"]).default("selected"), allRepositoriesAllowChanges: z.boolean().default(false),
     repositories: z.array(z.object({ repository: z.string(), allowPushes: z.boolean() })),
   })).optional(),
@@ -170,6 +177,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const remoteSnapshots = new Map<string, ApplicationSource>()
   let remoteRefresh: Promise<void> | undefined
   let remoteTimer: ReturnType<typeof setInterval> | undefined
+  let sshAccess: SshAccessState | undefined
+  let sshAccessError: string | null = null
+  let sshRequest: Promise<void> | undefined
+  let sshRevision = 0
+  const sshSaveRevisions = new Map<string, number>()
   let network: NetworkState | undefined
   let networkError: string | null = null
   let networkRequest: Promise<void> | undefined
@@ -186,6 +198,54 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let localBackupOperation: BackupOperation | null = null
   const dismissedBackupResults = new Set<string>()
   let requestedOperation: { operation: "backup" | "restore"; archive: BackupArchive; targetName?: string } | null = null
+
+  function sshOwner(target: string) { return parseRemoteWorkspaceTarget(target)?.hostId ?? "" }
+  function unavailableSshRows(hostId: string, computerName: string, message: string): SshAccessWorkspace[] {
+    const cached = sshAccess?.workspaces.filter(row => sshOwner(row.workspace) === hostId) ?? []
+    const workspaces = hostId ? remoteSnapshots.get(hostId)?.workspaces ?? [] : snapshot.source?.workspaces.filter(w => !w.computer) ?? []
+    const rows = new Map(cached.map(row => [row.workspace, row]))
+    for (const workspace of workspaces.filter(w => w.machine.kind === "vm")) {
+      const target = hostId ? remoteWorkspaceTarget(hostId, workspace.machine.id) : workspace.machine.name
+      if (!rows.has(target)) rows.set(target, { workspace: target, enabled: false, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "error", message, fingerprint: null, computerName, addresses: [] })
+    }
+    return [...rows.values()].map(row => ({ ...row, unavailable: message }))
+  }
+  function refreshSshAccess(): Promise<void> {
+    if (sshRequest) return sshRequest
+    const revision = sshRevision
+    const computers = [...remoteComputers]
+    sshRequest = (async () => {
+      const results = await Promise.allSettled([
+        native.invoke("read_ssh_access_state").then(value => {
+          const state = sshAccessShape.parse(value)
+          if (state.workspaces.some(row => sshOwner(row.workspace) !== "")) throw new Error("SSH response belongs to another computer.")
+          return state
+        }),
+        ...computers.map(async computer => {
+          if (!computer.connected) throw new Error("Computer is offline.")
+          const state = sshAccessShape.parse(await native.invoke("remote_ssh_access_state", { hostId: computer.id }))
+          if (state.workspaces.some(row => sshOwner(row.workspace) !== computer.id)) throw new Error("SSH response belongs to another computer.")
+          return state
+        }),
+      ])
+      if (disposed || revision !== sshRevision) return
+      sshAccessError = results[0].status === "rejected" ? "Could not check SSH access." : null
+      sshAccess = { workspaces: results.flatMap((result, index) => {
+        if (index === 0) return result.status === "fulfilled" ? result.value.workspaces : unavailableSshRows("", remoteManagement?.name ?? "Silo host", "Could not check SSH access.")
+        const computer = computers[index - 1]
+        const current = remoteComputers.find(item => item.id === computer.id)
+        if (!current) return []
+        if (result.status === "fulfilled" && current.connected) return result.value.workspaces
+        const unsupported = current.connected && result.status === "rejected" && errorMessage(result.reason).includes("does not support that remote operation")
+        const message = unsupported
+          ? `Update Silo on ${computer.name} to manage SSH access. That version does not support remote SSH management.`
+          : `SSH status on ${computer.name} is unavailable. Reconnect and refresh before changing access.`
+        return unavailableSshRows(computer.id, computer.name, message)
+      }) }
+      publish({ ...snapshot })
+    })().finally(() => { sshRequest = undefined })
+    return sshRequest
+  }
 
   function refreshNetwork(): Promise<void> {
     if (networkRequest) return networkRequest
@@ -238,7 +298,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
     if (operation?.kind === "result") requestedOperation = null
     next = { ...next, backup: { ...next.backup, operation } }
-    if (next.source) next = { ...next, source: { ...next.source, remoteComputers, remoteManagement, remoteManagementError, network, networkError,
+    if (next.source) next = { ...next, source: { ...next.source, remoteComputers, remoteManagement, remoteManagementError, network, networkError, sshAccess, sshAccessError,
       workspaces: next.source.workspaces.filter(workspace => !workspace.computer).map(workspace => ({ ...workspace, ports: (network?.workspaces.find(item => item.workspace === workspace.machine.name)?.ports ?? []).map(port => ({ port: port.port, listening: !networkError && !network?.workspaces.find(item => item.workspace === workspace.machine.name)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })) }))
     } }
     if (next.source) next = { ...next, source: { ...next.source, workspaces: [
@@ -683,7 +743,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       }
       const message = `GitHub operation failed: ${errorMessage(cause)}`
       if (sequence === githubMutationSequence && snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source, github: { ...snapshot.source.github,
-        ...(command !== "save_github_configuration" && { repositoryCatalogStatus: { status: "unavailable" as const, message, canRetry: command === "refresh_github_repositories" } }),
+        ...(!(["save_github_configuration", "save_github_personal_token", "remove_github_personal_token"].includes(command)) && { repositoryCatalogStatus: { status: "unavailable" as const, message, canRetry: command === "refresh_github_repositories" } }),
       } } })
       throw cause
     } finally {
@@ -728,6 +788,28 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     saveSecret: (request: SecretConfigurationRequest) => changeSecret("save_secret", { request }),
     removeSecret: (id: string) => changeSecret("remove_secret", { id }),
     retrySecret: (id: string) => changeSecret("retry_secret", { id }),
+    refreshSshAccess,
+    sshConnection: (workspace, download, network) => {
+      const remote = parseRemoteWorkspaceTarget(workspace)
+      return native.invoke<string | null>("ssh_connection", remote ? { ...remote, download, ...(network === undefined ? {} : { network }) } : { workspace, download, ...(network === undefined ? {} : { network }) })
+    },
+    saveSshAccess: async request => {
+      const remote = parseRemoteWorkspaceTarget(request.workspace)
+      const owner = remote?.hostId ?? ""
+      if (sshAccess?.workspaces.find(row => row.workspace === request.workspace)?.unavailable || (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected)) throw new Error("Refresh SSH status before changing access.")
+      const revision = ++sshRevision
+      sshSaveRevisions.set(owner, revision)
+      const { workspace: _workspace, ...settings } = request
+      const result = sshAccessShape.parse(await native.invoke(remote ? "remote_save_ssh_access" : "save_ssh_access", remote ? { ...remote, ...settings } : { ...request }))
+      if (result.workspaces.some(row => sshOwner(row.workspace) !== owner)) throw new Error("SSH response belongs to another computer.")
+      if (disposed || sshSaveRevisions.get(owner) !== revision) return
+      if (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected) return
+      ++sshRevision
+      const retained = sshAccess?.workspaces.filter(row => sshOwner(row.workspace) !== owner) ?? []
+      sshAccess = { workspaces: [...retained, ...result.workspaces] }
+      if (!remote) sshAccessError = null
+      publish({ ...snapshot })
+    },
     refreshNetwork,
     saveNetworkPort: request => changeNetwork("save_network_port", { ...request }),
     removeNetworkPort: (workspace, port) => changeNetwork("remove_network_port", { workspace, port }),
@@ -766,6 +848,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     restartWorkspace: (name) => workspaceAction("restart", name),
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
+    saveGitHubPersonalToken: async token => { await githubMutation("save_github_personal_token", { token }) },
+    removeGitHubPersonalToken: async () => { await githubMutation("remove_github_personal_token") },
     connectGitHub: () => { void githubMutation("connect_github").catch(() => {}) },
     cancelGitHubConnection: () => { void githubMutation("cancel_github_connection").catch(() => {}) },
     reopenGitHubAuthorization: () => {

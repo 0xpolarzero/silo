@@ -2038,7 +2038,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      }
 
      fn consume_chunked_body_with_violation_detection(
-@@ -3083,6 +3262,156 @@
+@@ -3083,6 +3262,178 @@
          }
      }
 
@@ -2059,6 +2059,28 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +        SecretsHandler::new_tls_intercepted_via_connect(&make_config(vec![secret]), host)
 +    }
 +
++    #[test]
++    fn personal_token_substitutes_only_authorization_under_verified_tls() {
++        let profile = serde_json::json!({"version":2,"owners":[],"personalToken":"github_pat_synthetic"});
++        let mut secret = make_secret("$MSB_SILO_GITHUB", &profile.to_string(), "api.github.com");
++        secret.env_var = "SILO_GITHUB".into();
++        let config = make_config(vec![secret]);
++        let mut handler = SecretsHandler::new_tls_intercepted_via_connect(&config, "api.github.com");
++        let body = r#"{"name":"first","description":"$MSB_SILO_GITHUB"}"#;
++        let request = format!("POST /user/repos?note=$MSB_SILO_GITHUB HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer $MSB_SILO_GITHUB\r\nX-Note: $MSB_SILO_GITHUB\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
++        let result = handler.substitute(request.as_bytes()).unwrap();
++        let output = std::str::from_utf8(result.as_ref()).unwrap();
++        assert_eq!(output.matches("github_pat_synthetic").count(), 1);
++        assert!(output.contains("Authorization: Bearer github_pat_synthetic"));
++        assert!(output.contains(body));
++        assert!(output.contains("X-Note: $MSB_SILO_GITHUB"));
++        assert!(output.contains("?note=$MSB_SILO_GITHUB"));
++        let mut handler = SecretsHandler::new_tls_intercepted_via_connect(&config, "api.github.com");
++        let basic = BASE64.encode("x-access-token:$MSB_SILO_GITHUB");
++        let request = format!("GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Basic {basic}\r\n\r\n");
++        let result = handler.substitute(request.as_bytes()).unwrap();
++        assert!(std::str::from_utf8(result.as_ref()).unwrap().contains(&BASE64.encode("x-access-token:github_pat_synthetic")));
++    }
 +    #[test]
 +    fn github_owner_lookup_suspends_fragmented_and_pipelined_unsent_bytes() {
 +        let profile = serde_json::json!({"version":1,"owners":[
@@ -2272,10 +2294,16 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
   "system-configuration",
 --- a/crates/cli/bin/main.rs
 +++ b/crates/cli/bin/main.rs
-@@ -275,6 +275,13 @@
+@@ -275,6 +275,19 @@
  //--------------------------------------------------------------------------------------------------
 
  fn main() {
++    if std::env::args_os().skip(1).collect::<Vec<_>>()
++        == [std::ffi::OsString::from("--silo-github-token-protocol")]
++    {
++        println!("1");
++        return;
++    }
 +    if std::env::args_os().skip(1).collect::<Vec<_>>()
 +        == [std::ffi::OsString::from("--silo-github-protocol")]
 +    {
@@ -2288,7 +2316,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      microsandbox_cli::ui::install_panic_hook();
 --- /dev/null
 +++ b/crates/network/lib/secrets/github.rs
-@@ -0,0 +1,948 @@
+@@ -0,0 +1,982 @@
 +//! Credential selection only. GitHub-issued tokens enforce repository authority.
 +//! Never split, replay, or authorize GraphQL fields here.
 +use super::config::ViolationAction;
@@ -2301,6 +2329,11 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +struct Profile {
 +    version: u8,
 +    owners: Vec<Owner>,
++    #[serde(default)]
++    personal_token: Option<String>,
++}
++impl Drop for Profile {
++    fn drop(&mut self) { self.personal_token.zeroize(); }
 +}
 +#[derive(Deserialize)]
 +#[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2364,6 +2397,17 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +) -> Result<String, ViolationAction> {
 +    let deny = || ViolationAction::Block;
 +    let profile: Profile = serde_json::from_str(profile).map_err(|_| deny())?;
++    if profile.version == 2 {
++        if !profile.owners.is_empty() || !matches!(sni, "github.com" | "api.github.com" | "uploads.github.com") {
++            return Err(deny());
++        }
++        let token = profile.personal_token.as_ref().ok_or_else(deny)?;
++        if token.is_empty() || token.len() > 4096 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
++            return Err(deny());
++        }
++        return Ok(token.clone());
++    }
++    if profile.personal_token.is_some() { return Err(deny()); }
 +    let now = std::time::SystemTime::now()
 +        .duration_since(std::time::UNIX_EPOCH)
 +        .map_err(|_| deny())?
@@ -2511,6 +2555,24 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++    #[test]
++    fn personal_token_needs_no_repositories_and_preserves_full_authority() {
++        let profile = serde_json::json!({"version":2,"owners":[],"personalToken":"github_pat_synthetic"}).to_string();
++        for (host, headers, body) in [
++            ("api.github.com", "GET /user HTTP/1.1\r\n", &b""[..]),
++            ("api.github.com", "POST /user/repos HTTP/1.1\r\n", &b"{}"[..]),
++            ("api.github.com", "DELETE /repos/owner/repo HTTP/1.1\r\n", &b""[..]),
++            ("github.com", "GET /owner/repo.git/info/refs?service=git-receive-pack HTTP/1.1\r\n", &b""[..]),
++            ("api.github.com", "POST /graphql HTTP/1.1\r\n", &b"{\"query\":\"mutation { createRepository(input: {name: \"first\", visibility: PRIVATE}) {clientMutationId} }\"}"[..]),
++        ] {
++            assert_eq!(select(&profile, host, headers, body).unwrap(), "github_pat_synthetic");
++        }
++        assert!(select(&profile, "example.com", "GET / HTTP/1.1\r\n", b"").is_err());
++        let missing = r#"{"version":2,"owners":[]}"#;
++        assert!(select(missing, "api.github.com", "GET /user HTTP/1.1\r\n", b"").is_err());
++        let mixed = serde_json::json!({"version":1,"owners":[],"personalToken":"github_pat_synthetic"}).to_string();
++        assert!(select(&mixed, "api.github.com", "GET /user HTTP/1.1\r\n", b"").is_err());
++    }
 +    fn profile() -> String {
 +        serde_json::json!({"version":1,"owners":[{"login":"alice","readToken":"read","writeToken":"write","expiresAt":4102444800u64}]}).to_string()
 +    }
@@ -3414,9 +3476,32 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      fn explicit_authorized_key_does_not_require_local_config() {
          let mut rng = russh::keys::key::safe_rng();
          let key = PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
+@@ -2640,6 +2682,22 @@
+     }
+
+     #[test]
++    fn managed_authorized_key_store_is_explicit_and_empty_fails_closed() {
++        let directory = tempfile::tempdir().unwrap();
++        let path = directory.path().join("client keys");
++        let mut rng = russh::keys::key::safe_rng();
++        let key = PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
++        let public_key = key.public_key().public_key_base64();
++        std::fs::write(&path, key.public_key().to_openssh().unwrap()).unwrap();
++        let options = SshServerOptionsBuilder::default().authorized_keys_path(&path).build();
++        assert_eq!(build_authorized_keys(&options, None).unwrap(), vec![public_key]);
++        std::fs::write(&path, "").unwrap();
++        assert!(build_authorized_keys(&options, None).is_err());
++        std::fs::remove_file(&path).unwrap();
++        assert!(build_authorized_keys(&options, None).is_err());
++    }
++
++    #[test]
+     fn implicit_authorized_key_path_still_requires_local_config() {
+         let options = SshServerOptionsBuilder::default().build();
+
 --- a/crates/cli/lib/commands/ssh.rs
 +++ b/crates/cli/lib/commands/ssh.rs
-@@ -93,6 +93,10 @@
+@@ -93,6 +93,22 @@
      /// Serve one SSH transport over stdin/stdout.
      #[arg(long)]
      pub stdio: bool,
@@ -3424,17 +3509,76 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +    /// Refuse to start a stopped sandbox.
 +    #[arg(long)]
 +    pub no_start: bool,
++
++    /// Read only these authorized client keys, leaving the default store untouched.
++    #[arg(long, value_name = "PATH")]
++    pub authorized_keys: Option<PathBuf>,
++
++    /// Require this Silo machine identity before connecting to the sandbox.
++    #[arg(long, requires = "no_start", value_name = "UUID")]
++    pub expected_machine_id: Option<String>,
++
++    /// Exit when the owner closes stdin. Emits SILO_SSH_READY after TCP bind.
++    #[arg(long, requires = "no_start", conflicts_with = "stdio")]
++    pub exit_on_stdin_close: bool,
  
      /// SSH inactivity timeout options.
      #[command(flatten)]
-@@ -211,7 +215,13 @@
+@@ -210,8 +226,60 @@
+ }
  
  async fn run_serve(args: SshServeArgs) -> anyhow::Result<()> {
++    if args.exit_on_stdin_close {
++        // A dedicated OS thread avoids Tokio stdin's blocking task, which can
++        // prevent runtime shutdown while the parent still holds its pipe open.
++        let closed = owner_stdin_closed(std::io::stdin());
++        tokio::select! {
++            biased;
++            _ = closed => Ok(()),
++            result = run_serve_inner(args) => result,
++        }
++    } else {
++        run_serve_inner(args).await
++    }
++}
++
++fn owner_stdin_closed(mut input: impl Read + Send + 'static) -> tokio::sync::oneshot::Receiver<()> {
++    let (sender, receiver) = tokio::sync::oneshot::channel();
++    std::thread::spawn(move || {
++        let mut buffer = [0u8; 128];
++        loop {
++            match input.read(&mut buffer) {
++                Ok(0) => break,
++                Ok(_) => {}
++                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
++                Err(_) => break,
++            }
++        }
++        let _ = sender.send(());
++    });
++    receiver
++}
++
++async fn run_serve_inner(args: SshServeArgs) -> anyhow::Result<()> {
      let inactivity_timeout = parse_inactivity_timeout(&args.inactivity)?;
 -    let sandbox = super::resolve_and_start(&args.sandbox, args.stdio).await?;
 +    let sandbox = if args.no_start {
 +        let handle = microsandbox::sandbox::Sandbox::get(&args.sandbox).await?;
-+        anyhow::ensure!(handle.status_snapshot() == microsandbox::sandbox::SandboxStatus::Running, "sandbox must already be running");
++        anyhow::ensure!(
++            handle.status_snapshot() == microsandbox::sandbox::SandboxStatus::Running,
++            "sandbox must already be running"
++        );
++        if let Some(expected) = &args.expected_machine_id {
++            let config = handle.config()?;
++            verify_machine_identity(
++                config
++                    .spec
++                    .labels
++                    .get("silo.machine-id")
++                    .map(String::as_str),
++                expected,
++            )?;
++        }
 +        handle.connect().await?
 +    } else {
 +        super::resolve_and_start(&args.sandbox, args.stdio).await?
@@ -3442,6 +3586,148 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      let host = args.host.unwrap_or_else(|| DEFAULT_SSH_HOST.to_string());
      let port = args.port.unwrap_or(DEFAULT_SSH_PORT);
  
+@@ -219,7 +287,11 @@
+         let server = sandbox
+             .ssh()
+             .prepare_server_with(|builder| {
+-                apply_server_inactivity_timeout(builder, inactivity_timeout)
++                let builder = apply_server_inactivity_timeout(builder, inactivity_timeout);
++                match &args.authorized_keys {
++                    Some(path) => builder.authorized_keys_path(path),
++                    None => builder,
++                }
+             })
+             .await?;
+         if args.stdio {
+@@ -227,18 +299,36 @@
+         } else {
+             let listener = TcpListener::bind((host.as_str(), port)).await?;
+             let addr = listener.local_addr()?;
+-            ui::success("SSH listening", &addr.to_string());
++            if args.exit_on_stdin_close {
++                // stdout is the parent's readiness protocol, not a port probe.
++                println!("SILO_SSH_READY");
++                std::io::stdout().flush()?;
++            } else {
++                ui::success("SSH listening", &addr.to_string());
++            }
++            let disconnected = async {
++                if args.no_start && sandbox.local().is_some() {
++                    sandbox.client().closed().await;
++                } else {
++                    std::future::pending::<()>().await;
++                }
++            };
++            tokio::pin!(disconnected);
++            let mut sessions = tokio::task::JoinSet::new();
+             loop {
+                 tokio::select! {
++                    biased;
++                    _ = &mut disconnected => break Ok(()),
+                     accepted = listener.accept() => {
+                         let (stream, _) = accepted?;
+                         let server = server.clone();
+-                        tokio::spawn(async move {
++                        sessions.spawn(async move {
+                             if let Err(error) = server.serve_connection(stream).await {
+                                 tracing::debug!(%error, "SSH connection failed");
+                             }
+                         });
+                     }
++                    _ = sessions.join_next(), if !sessions.is_empty() => {}
+                     signal = tokio::signal::ctrl_c() => {
+                         signal?;
+                         break Ok(());
+@@ -250,6 +340,14 @@
+     .await;
+     super::maybe_stop(&sandbox).await;
+     result.map_err(Into::into)
++}
++
++fn verify_machine_identity(actual: Option<&str>, expected: &str) -> anyhow::Result<()> {
++    anyhow::ensure!(
++        actual == Some(expected),
++        "sandbox identity changed; SSH access refused"
++    );
++    Ok(())
+ }
+
+ fn run_authorize(args: SshAuthorizeArgs) -> anyhow::Result<()> {
+@@ -401,6 +499,74 @@
+ mod tests {
+     use super::*;
+
++    #[derive(clap::Parser)]
++    struct ServeParser {
++        #[command(flatten)]
++        args: SshServeArgs,
++    }
++
++    #[test]
++    fn managed_tcp_requires_no_start_and_rejects_stdio() {
++        use clap::Parser;
++        assert!(ServeParser::try_parse_from(["serve", "box", "--exit-on-stdin-close"]).is_err());
++        assert!(
++            ServeParser::try_parse_from([
++                "serve",
++                "box",
++                "--exit-on-stdin-close",
++                "--no-start",
++                "--stdio"
++            ])
++            .is_err()
++        );
++        let parsed = ServeParser::try_parse_from([
++            "serve",
++            "box",
++            "--exit-on-stdin-close",
++            "--no-start",
++            "--authorized-keys",
++            "/tmp/client keys",
++            "--no-inactivity-timeout",
++        ])
++        .unwrap()
++        .args;
++        assert_eq!(
++            parsed.authorized_keys,
++            Some(PathBuf::from("/tmp/client keys"))
++        );
++        assert!(parsed.no_start && parsed.exit_on_stdin_close);
++        assert_eq!(
++            parse_inactivity_timeout(&parsed.inactivity).unwrap(),
++            Some(None)
++        );
++    }
++
++    #[test]
++    fn managed_identity_refuses_missing_or_replaced_sandbox() {
++        assert!(verify_machine_identity(Some("expected"), "expected").is_ok());
++        assert!(verify_machine_identity(None, "expected").is_err());
++        assert!(verify_machine_identity(Some("replacement"), "expected").is_err());
++    }
++
++    #[cfg(unix)]
++    #[tokio::test]
++    async fn owner_pipe_stays_alive_after_bytes_and_ends_on_eof() {
++        use std::os::unix::net::UnixStream;
++        let (reader, mut writer) = UnixStream::pair().unwrap();
++        let mut closed = owner_stdin_closed(reader);
++        writer.write_all(b"keep alive").unwrap();
++        assert!(
++            tokio::time::timeout(Duration::from_millis(20), &mut closed)
++                .await
++                .is_err()
++        );
++        drop(writer);
++        tokio::time::timeout(Duration::from_secs(1), closed)
++            .await
++            .unwrap()
++            .unwrap();
++    }
++
+     fn args(timeout: Option<&str>, disabled: bool) -> SshInactivityTimeoutArgs {
+         SshInactivityTimeoutArgs {
+             inactivity_timeout: timeout.map(str::to_string),
 --- a/crates/runtime/lib/vm.rs
 +++ b/crates/runtime/lib/vm.rs
 @@ -426,11 +426,17 @@
@@ -3563,7 +3849,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      /// Failure detail when `ok` is false.
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub error: Option<String>,
-@@ -137,6 +166,10 @@
+@@ -137,6 +166,13 @@
  
      /// Live secret rotation, removal, and allowed-host updates are available.
      pub secrets_update: bool,
@@ -3571,6 +3857,9 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
 +    /// Live loopback TCP publications are available.
 +    #[serde(default)]
 +    pub ports_update: bool,
++    /// The running proxy supports full personal-token profiles.
++    #[serde(default)]
++    pub github_personal_token: bool,
  }
  
  /// Memory sizing carried in [`ControlResponse`], all in MiB.
@@ -3584,10 +3873,11 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
  }
  
  //--------------------------------------------------------------------------------------------------
-@@ -387,6 +423,10 @@
+@@ -387,6 +423,11 @@
                  cpu_resize: control.cpu_resize_supported(),
                  memory_resize: control.memory_resize_supported(),
                  secrets_update: context.secrets_update_supported(),
++                github_personal_token: cfg!(feature = "net"),
 +                ports_update: {
 +                    #[cfg(feature = "net")] { context.ports.is_some() }
 +                    #[cfg(not(feature = "net"))] { false }
@@ -3603,10 +3893,11 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      }
  }
  
-@@ -529,6 +570,7 @@
+@@ -529,6 +570,8 @@
                  cpu_resize: true,
                  memory_resize: false,
                  secrets_update: true,
++                github_personal_token: true,
 +                ports_update: true,
              }),
              ..Default::default()
@@ -4108,3 +4399,113 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
              inbound_rx,
              _inbound_tx: inbound_tx,
              connections: Vec::new(),
+--- a/sdk/rust/lib/sandbox/modify.rs
++++ b/sdk/rust/lib/sandbox/modify.rs
+@@ -774,6 +774,15 @@
+     name: &str,
+     changes: Vec<microsandbox_runtime::control::SecretLiveChange>,
+ ) -> MicrosandboxResult<()> {
++    // Do not acknowledge a token profile that an older running proxy cannot use.
++    let personal_token = changes.iter().any(|change| match change {
++        microsandbox_runtime::control::SecretLiveChange::Rotate { name, value } if name == "SILO_GITHUB" =>
++            serde_json::from_str::<serde_json::Value>(&value.0).is_ok_and(|profile| profile["version"] == 2),
++        _ => false,
++    });
++    if personal_token && !control_capabilities(name).await?.github_personal_token {
++        return Err(crate::MicrosandboxError::Runtime("Restart this VM to enable personal GitHub tokens in its updated runtime.".into()));
++    }
+     let request = microsandbox_runtime::control::ControlRequest::SecretsUpdate { changes };
+     let mut line = serde_json::to_string(&request)?;
+     line.push('\n');
+--- a/packages/agent-client/rust/lib/client.rs
++++ b/packages/agent-client/rust/lib/client.rs
+@@ -47,7 +47,7 @@
+ use tokio::net::UnixStream;
+ #[cfg(all(feature = "named-pipe", windows))]
+ use tokio::net::windows::named_pipe::ClientOptions;
+-use tokio::sync::{Mutex, mpsc, oneshot};
++use tokio::sync::{Mutex, mpsc, oneshot, watch};
+ use tokio::task::JoinHandle;
+ #[cfg(feature = "stream")]
+ use tokio::time::Instant;
+@@ -118,6 +118,8 @@
+     reader_handle: JoinHandle<()>,
+     /// Background writer task handle.
+     writer_handle: JoinHandle<()>,
++    /// Closed when the original relay reader terminates, including EOF.
++    disconnected: watch::Receiver<()>,
+     /// Cached `core.ready` frame body (raw CBOR bytes) from the relay handshake.
+     ready_body: Vec<u8>,
+     /// Decoded `core.ready` payload from the relay handshake.
+@@ -267,7 +269,12 @@
+             Arc::new(Mutex::new(HashMap::new()));
+
+         let (writer_tx, writer_rx) = mpsc::channel(WRITER_QUEUE_CAPACITY);
+-        let reader_handle = tokio::spawn(reader_loop(reader, Arc::clone(&pending)));
++        let (disconnected_tx, disconnected) = watch::channel(());
++        let reader_pending = Arc::clone(&pending);
++        let reader_handle = tokio::spawn(async move {
++            reader_loop(reader, reader_pending).await;
++            drop(disconnected_tx);
++        });
+         let writer_handle = tokio::spawn(stream_writer_loop(writer, writer_rx));
+
+         Ok(Self {
+@@ -280,9 +287,16 @@
+             pending,
+             reader_handle,
+             writer_handle,
++            disconnected,
+             ready_body: handshake.ready_body,
+             ready: handshake.ready,
+         })
++    }
++
++    /// Wait for this exact relay transport to close, without reconnecting or
++    /// sending traffic that changes the sandbox idle timer.
++    pub async fn closed(&self) {
++        let _ = self.disconnected.clone().changed().await;
+     }
+
+     /// Close the connection. Drops the writer and aborts the reader task;
+@@ -1178,6 +1192,40 @@
+
+     #[cfg(feature = "stream")]
+     #[tokio::test]
++    async fn closed_observes_idle_relay_eof_and_remembers_it() {
++        use tokio::io::AsyncWriteExt;
++        let (client_io, mut relay) = tokio::io::duplex(4096);
++        let ready = Ready {
++            boot_time_ns: 11,
++            init_time_ns: 22,
++            ready_time_ns: 33,
++            agent_version: "closed-test".into(),
++        };
++        relay.write_all(&1u32.to_be_bytes()).await.unwrap();
++        relay.write_all(&1024u32.to_be_bytes()).await.unwrap();
++        codec::write_message(
++            &mut relay,
++            &Message::with_payload(MessageType::Ready, 0, &ready).unwrap(),
++        )
++        .await
++        .unwrap();
++        let client = AgentClient::connect_stream(client_io).await.unwrap();
++        assert!(
++            tokio::time::timeout(Duration::from_millis(20), client.closed())
++                .await
++                .is_err()
++        );
++        drop(relay);
++        tokio::time::timeout(Duration::from_secs(1), client.closed())
++            .await
++            .unwrap();
++        tokio::time::timeout(Duration::from_secs(1), client.closed())
++            .await
++            .unwrap();
++    }
++
++    #[cfg(feature = "stream")]
++    #[tokio::test]
+     async fn connect_stream_handshakes_and_streams_exec() {
+         use microsandbox_protocol::exec::{ExecExited, ExecRequest, ExecStdout};
+         use tokio::io::AsyncWriteExt;

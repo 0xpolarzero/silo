@@ -23,7 +23,10 @@ mod runtime;
 mod remote;
 mod remote_access;
 mod remote_network;
+mod remote_ssh_access;
 mod secrets;
+mod ssh_access;
+mod ssh_connection;
 mod settings;
 mod startup;
 mod status_panel;
@@ -80,11 +83,16 @@ fn main() {
             network::save_network_port,
             network::remove_network_port,
             network::open_network_port,
+            ssh_access::read_ssh_access_state,
+            ssh_access::save_ssh_access,
+            ssh_connection::ssh_connection,
             secrets::read_secrets_state,
             secrets::save_secret,
             secrets::remove_secret,
             secrets::retry_secret,
             github::read_github_state,
+            github::personal_token::save_github_personal_token,
+            github::personal_token::remove_github_personal_token,
             github::connect_github,
             github::cancel_github_connection,
             github::reopen_github_authorization,
@@ -107,6 +115,8 @@ fn main() {
             remote::remote_authorize_ssh,
             remote::remote_setup_ssh_key,
             remote_network::remote_network_state,
+            remote_ssh_access::remote_ssh_access_state,
+            remote_ssh_access::remote_save_ssh_access,
             remote_network::remote_save_network_port,
             remote_network::remote_remove_network_port,
             remote_network::remote_open_network_port,
@@ -174,13 +184,17 @@ fn main() {
             window.show()?;
             notifications::install(app.handle());
             updates::install(app.handle())?;
+            ssh_access::start_monitor(app.handle());
             startup::install(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("failed to build Silo")
         .run(|_app, _event| {
-            if let tauri::RunEvent::Exit = &_event { remote_network::close_all(); }
+            if let tauri::RunEvent::Exit = &_event {
+                ssh_access::close_all();
+                remote_network::close_all();
+            }
             if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
                 settings::prevent_exit_until_saved(_app, api);
             }

@@ -9,9 +9,7 @@ import { useUpdates, type UpdateSnapshot } from "./update-store"
 function description(state: UpdateSnapshot) {
   switch (state.phase) {
     case "checking": return "Checking for updates…"
-    case "available": return state.packageKind === "manual"
-      ? `Version ${state.availableVersion} is available. If you enabled Silo’s software source, quit Silo and install the update through Software Updater. For a manual installation, view the release on GitHub. On GitHub, open Assets and download the installer for your system.`
-      : `Version ${state.availableVersion} is available.`
+    case "available": return `Version ${state.availableVersion} is available.`
     case "downloading": return "Downloading update…"
     case "ready": return state.canInstall ? "Ready to install. Silo will restart." : state.installBlockReason ?? "Installation is unavailable. Try checking again."
     case "installing": return "Installing update. Silo will restart…"
@@ -60,9 +58,19 @@ export function UpdatesCard() {
           <div className="flex items-center justify-between gap-2"><p>{error}</p>{!confirm && <Button size="xs" variant="outline" disabled={busy || (state?.retryAction === "install" && !state.canInstall)} onClick={retry}>Retry</Button>}</div>
           {state?.errorDetails && <details className="mt-1 text-[11px] text-muted-foreground"><summary className="cursor-pointer">Details</summary><p className="mt-1 whitespace-pre-wrap break-words">{state.errorDetails}</p></details>}
         </div>}
+        {state?.packageKind === "manual" && state.phase === "available" && <details className="px-2 pb-2 text-[11px] text-muted-foreground">
+          <summary className="cursor-pointer">How to install</summary>
+          <div className="mt-1 grid gap-2">
+            <p>Quit Silo before installing. Quitting stops local sandboxes.</p>
+            <p>On Ubuntu, use Software Updater if you enabled Silo’s software source. If it shows no update, refresh the package list and upgrade Silo in Terminal:</p>
+            <code className="whitespace-pre-wrap break-words">sudo apt update &amp;&amp; sudo apt install --only-upgrade silo</code>
+            <p>For a manual download, open Assets on GitHub and choose the installer for your system. If the Debian installer does not open, install it in Terminal, replacing the path below with the downloaded file:</p>
+            <code className="whitespace-pre-wrap break-words">sudo apt install /path/to/silo.deb</code>
+          </div>
+        </details>}
         {state?.releaseNotes && state.availableVersion && <details className="px-2 pb-2 text-[11px] text-muted-foreground"><summary className="cursor-pointer">Release notes</summary><p className="mt-1 whitespace-pre-wrap break-words">{state.releaseNotes}</p></details>}
       </div>
-      <ListRow icon={<ListRowIcon><RefreshCw aria-hidden="true" className="size-3.5" /></ListRowIcon>} title="Automatically check for updates" detail="Checks shortly after launch and daily, and retries failed checks automatically. You choose when to download and install."
+      <ListRow icon={<ListRowIcon><RefreshCw aria-hidden="true" className="size-3.5" /></ListRowIcon>} title="Automatically check for updates" detail="Checks at launch and daily. Downloads and installs only when you choose."
         detailClassName="whitespace-normal" actions={<Switch aria-label="Automatically check for updates" checked={state?.automaticChecks ?? false} disabled={!state || busy} onCheckedChange={updates.setAutomaticChecks} />} />
     </ListCard>
   </section>

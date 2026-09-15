@@ -1,5 +1,79 @@
 # Server-free GitHub access for Silo
 
+## September 14: personal-token UX parity assessment
+
+Conclusion: a pasted personal access token is a feasible alternate connection
+method, but not an exact replacement for current UX and authority boundaries.
+This assessment uses current primary documentation and local code inspection;
+no personal token was requested, generated, or tested live.
+
+`github_tokens.rs::Operation::Scope` requests GitHub-issued child tokens for an
+owner, repository set and permission map. `github.rs` groups read/write authority,
+refreshes credentials, retires superseded grants and catalogs installations.
+The host runtime injects restricted credentials; the guest receives placeholders.
+It does not enforce arbitrary GitHub field-level authorization itself.
+
+| Current behavior | Personal-token alternative |
+| --- | --- |
+| Git clone/pull/push and supported API operations | Can retain ordinary tool UX within the token's permissions; endpoint compatibility must be checked |
+| Select repositories and read/write per VM with live edits | No documented PAT-to-restricted-child-token exchange. Separate exact-scope tokens require GitHub setup; a broad-token proxy needs new authorization enforcement |
+| Automatically renew expiring credentials | PAT expiry requires user replacement; there is no OAuth refresh token |
+| Multiple repository owners through one connection | A fine-grained PAT covers one resource owner; multiple owners need multiple tokens |
+| GitHub tools across supported repository features | Fine-grained PAT gaps include Packages, Checks and outside-collaborator scenarios; not universal parity |
+| Remove the publisher's independent installation access | A user-owned PAT removes that App-owner route, provided credentials remain local; trust in installed software remains |
+
+Sources: GitHub's [scoped token API](https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token)
+requires an App's non-scoped user token and App authentication; it is not a PAT
+attenuation API. The [PAT guide](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+documents one owner per fine-grained token, manual creation, feature gaps and
+prefilled creation URLs (name, owner, permissions and expiration). The
+[credential reference](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/github-credential-types)
+lists manual PAT renewal. Classic PATs broaden repository authority rather than
+solving per-VM permission enforcement.
+
+Engineering inference: keeping an arbitrary pasted PAT in the host proxy does
+not alone preserve selected-repository or read-only guarantees. General REST
+and GraphQL operations can reach several resources; method or starting-path
+filtering is not equivalent to GitHub authorization. A smaller supported-operation
+proxy is possible but changes tool compatibility. An equivalent general proxy
+has not been implemented or proven. Do not present matching UI controls as parity.
+
+A user-owned GitHub App is another candidate for retaining GitHub-issued narrow
+credentials while removing publisher registration ownership. It entails a new
+registration/setup flow, so it is also not "paste one PAT and everything stays
+the same." This is a candidate for a separate prototype, not verified behavior.
+
+Correction to the original trust discussion below: public client ID/secret
+possession is distinct from control of the App registration. The publisher can
+create an App private key and request installation tokens for approved installs.
+Choosing not to create such a key does not remove that capability. See the
+[installation token documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+
+## Original September 9 proposal
+
+### Follow-up: guided user-owned registration
+
+GitHub's [App Manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest)
+supports preconfigured registration: browser POST, user confirms an app name,
+redirect with state and a temporary code, native conversion to app credentials.
+The registering user owns the resulting App. Registration and installation/user
+authorization remain separate actions. This supports a guided Silo flow without
+asking users to paste JSON or find client secrets in developer settings.
+
+Proposed UX: Create my GitHub connection → confirm app creation on GitHub →
+select repositories and authorize → return to Silo's existing VM controls.
+Proposed implementation keeps conversion and credential storage on the user's
+machine, with runtime per-connection App configuration replacing the current
+build-time-only identifiers. Manifest conversion also produces an App private
+key; its lifecycle must be explicitly handled, never sent to publisher services.
+
+Not yet proven: native loopback manifest handoff across supported browsers,
+PKCE installation/authorization sequencing, restart/cancellation recovery,
+reconnecting another machine to the same registration, and organization policy
+restrictions. Private personal Apps cannot simply be installed on other owners;
+organization access needs an intentional ownership/visibility design. Do not
+promise universal one-click setup or claim the prototype exists.
+
 **Recommendation: keep GitHub-issued restricted user tokens and request them directly from Silo's native backend. Remove the proposed hosted service. Keep the existing VM proxy and live policy updates.**
 
 GitHub explicitly supports native public clients distributing their OAuth client secret with PKCE. That value is different from the App private key. The earlier conclusion that a client-secret parameter necessarily requires a hosted service was incorrect. GitHub's own local MCP server documents this distributed-client pattern. [1][2]

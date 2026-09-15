@@ -15,10 +15,11 @@ An older Silo installation needs this installer once. An in-app banner alone
 cannot register the source, and the existing released installers do not contain
 these hooks. After enrollment, the normal system refresh discovers Silo updates.
 No repeated package downloads or terminal commands are needed for normal updates.
-The in-app update card also explains the Software Updater route and retains a
-fallback for users who opted out: **View installers on GitHub** opens the release
-page, where **Assets** lists the installers. The button does not download a package
-or install an update itself.
+The in-app update card shows the available version. Collapsed **How to install**
+help explains the Software Updater route, refreshing APT when no update appears,
+and installing a downloaded Debian package with APT when the graphical installer
+does not work. **View installers on GitHub** opens the release page, where
+**Assets** lists the installers. The button does not download or install a package.
 
 Quit Silo before applying a system update. Closing its window is not Quit.
 Quitting stops local VMs; remote VMs keep running. The installer refuses to
@@ -125,6 +126,19 @@ Xubuntu's graphical updater, native VM health, or a production release upgrade.
 - [Debian repository format](https://wiki.debian.org/DebianRepository/Format): hashes, relative package paths, and signed metadata.
 - [Debconf developer guide](https://manpages.debian.org/unstable/debconf-doc/debconf-devel.7.en.html): installer choices.
 - [GitHub Pages custom workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages): deployment permissions and artifacts.
+
+## Reported empty graphical updater, 14 September 2026
+
+The public [amd64 package index](https://0xpolarzero.github.io/silo/apt/dists/stable/main/binary-amd64/Packages)
+advertised Silo 0.4.4 during investigation. The corresponding
+[APT publication run](https://github.com/0xpolarzero/silo/actions/runs/34852064374)
+succeeded. Missing publication was therefore not reproduced. This does not
+verify the user's installed version, repository enrollment, local APT cache,
+or graphical package installer. Obtain the installed Silo version and
+`apt-cache policy silo` from the affected computer before attributing a cause.
+Automatic retry scheduling already shipped in 0.3.3; no additional scheduler
+change was made for this report. The UI change was checked with frontend
+fixtures, without launching a packaged app or touching live Linux state.
 
 ## Automatic discovery regression, 14 September 2026
 

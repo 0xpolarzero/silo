@@ -49,3 +49,27 @@ it("keeps pending navigation exclusive to main and allows status push dismissal"
     expect(manifest).toContain(`"${command}"`)
   }
 })
+
+
+it("allows SSH management only in the main window", () => {
+  const handlers = readFileSync(resolve(native, "src/main.rs"), "utf8")
+  const manifest = readFileSync(resolve(native, "build.rs"), "utf8")
+  for (const command of ["read_ssh_access_state", "save_ssh_access"]) {
+    expect(handlers).toContain(`ssh_access::${command},`)
+    expect(manifest).toContain(`"${command}"`)
+    expect(permissions("main")).toContain(`allow-${command.replaceAll("_", "-")}`)
+    expect(permissions("status")).not.toContain(`allow-${command.replaceAll("_", "-")}`)
+  }
+})
+
+
+it("allows remote SSH management only in the main window", () => {
+  const handlers = readFileSync(resolve(native, "src/main.rs"), "utf8")
+  const manifest = readFileSync(resolve(native, "build.rs"), "utf8")
+  for (const command of ["remote_ssh_access_state", "remote_save_ssh_access"]) {
+    expect(handlers).toContain(`remote_ssh_access::${command},`)
+    expect(manifest).toContain(`"${command}"`)
+    expect(permissions("main")).toContain(`allow-${command.replaceAll("_", "-")}`)
+    expect(permissions("status")).not.toContain(`allow-${command.replaceAll("_", "-")}`)
+  }
+})

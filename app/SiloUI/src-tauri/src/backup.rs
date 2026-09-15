@@ -41,6 +41,7 @@ impl Cancellation {
 
 #[derive(Clone, Debug)]
 pub(crate) struct MsbCommand {
+    pub(crate) metadata: PathBuf,
     pub(crate) executable: PathBuf,
     pub(crate) home: PathBuf,
     pub(crate) storage_home: Option<PathBuf>,
@@ -78,14 +79,22 @@ impl MsbRunner for SystemMsbRunner {
         if cancellation.cancelled() {
             return Err(BackupError::Cancelled);
         }
+        // Backup stops use their own cancellable process runner. Revoke SSH
+        // before the VM stops, just as the normal lifecycle runner does.
+        if arguments.first().is_some_and(|arg| matches!(arg.as_str(), "stop" | "remove" | "restart")) {
+            if let Some(workspace) = arguments.iter().skip(1).find(|argument| !argument.starts_with('-')) {
+                crate::ssh_access::close_workspace(workspace);
+            }
+        }
         if arguments.first().is_some_and(|arg| arg == "start") {
             // Restart with the same current GitHub and secret material as normal
             // lifecycle actions; the bare CLI command cannot provide that material.
             let paths = crate::runtime::RuntimePaths {
                 executable: command.executable.clone(), library: command.library.clone(),
                 home: command.home.clone(), storage_home: command.storage_home.clone(),
-                // The start adapter reads no configuration/image/volume paths.
-                metadata: PathBuf::new(), volumes: PathBuf::new(), guest_image: PathBuf::new(),
+                // Saved network and SSH access must resume after each restart,
+                // before backup proceeds to the next sandbox or packages its archive.
+                metadata: command.metadata.clone(), volumes: PathBuf::new(), guest_image: PathBuf::new(),
             };
             let result = crate::runtime::run_msb(&paths, arguments, timeout)
                 .map_err(|error| BackupError::CommandFailed { operation: "Restarting sandbox after backup".into(), detail: error.to_string() })?;
@@ -2576,6 +2585,7 @@ mod tests {
     fn service(temp: &tempfile::TempDir, runner: FakeRunner) -> BackupService<FakeRunner> {
         BackupService::with_runner(
             MsbCommand {
+                metadata: temp.path().join("machines.json"),
                 executable: temp.path().join("msb"),
                 home: temp.path().join("home"),
                 storage_home: None,
@@ -2624,6 +2634,56 @@ mod tests {
     }
 
     #[test]
+    fn backup_restart_restores_ssh_before_returning_to_archive_work() {
+        use std::{net::{TcpListener, TcpStream}, os::unix::fs::PermissionsExt};
+        let _guard = crate::runtime::MUTATION_LOCK.lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let name = "backup-ssh-restart-test";
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) { crate::ssh_access::close_workspace("backup-ssh-restart-test"); }
+        }
+        let _cleanup = Cleanup;
+        let command = MsbCommand {
+            metadata: directory.path().join("machines.json"),
+            executable: directory.path().join("msb"),
+            home: directory.path().join("home"), storage_home: None,
+            library: directory.path().join("lib"),
+        };
+        fs::write(&command.library, "fixture").unwrap();
+        fs::write(&command.executable, r#"#!/usr/bin/python3
+import json, os, pathlib, socket, sys
+args = sys.argv[1:]
+home = pathlib.Path(os.environ['MSB_HOME'])
+if args[0] == 'inspect':
+    config = {'labels': {'silo.managed': 'true', 'silo.machine-id': '2f6b739d-ff7a-4be8-aa5e-f6694e4ab0d8'}}
+    print(json.dumps({'name': args[1], 'status': 'Running' if (home/'started').exists() else 'Stopped', 'config': config, 'activeConfig': config}))
+elif args[0] == 'start':
+    (home/'started').touch()
+elif args[:2] == ['ssh', 'serve']:
+    listener = socket.socket()
+    listener.bind((args[args.index('--host')+1], int(args[args.index('--port')+1])))
+    listener.listen()
+    print('SILO_SSH_READY', flush=True)
+    sys.stdin.buffer.read()
+else:
+    raise Exception('Unexpected command: '+str(args))
+"#).unwrap();
+        fs::set_permissions(&command.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let client_key = directory.path().join("client");
+        crate::editor::key(&client_key).unwrap();
+        let public = crate::editor::public_key(&client_key).unwrap();
+        let port = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+        fs::write(&command.metadata, serde_json::json!({"schemaVersion":1,"machines":[machine_config(name)]}).to_string()).unwrap();
+        fs::write(directory.path().join("ssh-access.json"), serde_json::json!([{
+            "workspace":name,"machineId":"2f6b739d-ff7a-4be8-aa5e-f6694e4ab0d8",
+            "enabled":true,"port":port,"bindAddress":"127.0.0.1","keys":[public]
+        }]).to_string()).unwrap();
+        SystemMsbRunner.run(&command, &["start".into(), name.into()], Duration::from_secs(5), &Cancellation::default()).unwrap();
+        assert!(TcpStream::connect(("127.0.0.1", port)).is_ok(), "SSH must be back before backup continues to another VM or archive packaging");
+    }
+
+    #[test]
     fn stop_command_keeps_recovery_out_until_guest_stop_finishes() {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
@@ -2632,7 +2692,7 @@ mod tests {
         fs::create_dir(&home).unwrap();
         fs::write(&executable, b"#!/bin/sh\nprintf ready > \"$MSB_HOME/ready\"\nwhile [ ! -e \"$MSB_HOME/release\" ]; do sleep 0.02; done\n").unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let command = MsbCommand { executable, home: home.clone(), storage_home: None, library: directory.path().join("unused-library") };
+        let command = MsbCommand { metadata: directory.path().join("machines.json"), executable, home: home.clone(), storage_home: None, library: directory.path().join("unused-library") };
         let worker = thread::spawn(move || SystemMsbRunner.run(&command, &["stop".into(), "example".into()], Duration::from_secs(5), &Cancellation::default()));
         let deadline = Instant::now() + Duration::from_secs(3);
         while !home.join("ready").exists() && Instant::now() < deadline { thread::sleep(Duration::from_millis(10)); }

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { fixtureDirectoryLoader } from "./directory-loader"
 import { useApplicationFixture } from "@/fixtures/application-state"
 import { ApplicationApp } from "@/features/application/application-app"
-import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationSource, SshAccessRequest, SshAccessWorkspace } from "@/features/application/model/application-source"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { useBackupFixture, useUnavailableBackup, type BackupFixtureMode } from "@/fixtures/application-backup"
 import { ApplicationCatalogProvider } from "@/features/preferences/application-catalog"
@@ -44,6 +44,12 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
 
 function FixtureApplicationPreview({ source, actions, backupPreviewMode, initialRoute }: Parameters<typeof ApplicationPreview>[0]) {
   const fixture = useApplicationFixture(source)
+  const [sshSettings, setSshSettings] = useState<Record<string, SshAccessRequest>>({})
+  const sshAccess = { workspaces: fixture.source.workspaces.filter(w => w.machine.kind === "vm").map((w, index): SshAccessWorkspace => {
+    const settings = sshSettings[w.machine.name] ?? { workspace: w.machine.name, enabled: index === 0, port: 2222 + index, bindAddress: "127.0.0.1", keys: [] }
+    return { ...settings, state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, computerName: "Ada’s Mac mini", addresses: ["127.0.0.1", "192.168.1.42"] }
+  }) }
+
   const listWorkspaceDirectory = useMemo(() => fixtureDirectoryLoader(source.workspaces), [source.workspaces])
   const backup = useBackupFixture({
     source: fixture.source,
@@ -53,12 +59,13 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
   })
 
   return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp
-    source={{ ...fixture.source, network: fixture.source.network ?? { workspaces: fixture.source.workspaces.map(w => ({ workspace:w.machine.name,error:null,ports:w.ports.map(p => ({port:p.port,hostPort:p.port,scheme:"http" as const,state:p.listening === true ? "reachable" as const : p.listening === false ? "waiting" as const : "unknown" as const,configured:true})) })) } }}
+    source={{ ...fixture.source, sshAccess, network: fixture.source.network ?? { workspaces: fixture.source.workspaces.map(w => ({ workspace:w.machine.name,error:null,ports:w.ports.map(p => ({port:p.port,hostPort:p.port,scheme:"http" as const,state:p.listening === true ? "reachable" as const : p.listening === false ? "waiting" as const : "unknown" as const,configured:true})) })) } }}
     initialRoute={initialRoute}
     routeRequest={initialRoute}
     backup={backup}
     actions={{
       ...inactiveApplicationActions,
+      saveSshAccess: async request => { setSshSettings(current => ({ ...current, [request.workspace]: request })) },
       listWorkspaceDirectory,
       ...actions,
       saveSecret: (request) => {

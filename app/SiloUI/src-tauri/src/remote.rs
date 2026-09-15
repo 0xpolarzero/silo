@@ -674,11 +674,22 @@ pub(crate) fn start(app: AppHandle) -> Result<(), String> {
     });
     Ok(())
 }
+pub(crate) fn ensure_management_enabled() -> Result<(), String> {
+    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    if !read_config()?.enabled { return Err("Remote management is disabled on this computer.".into()); }
+    Ok(())
+}
+
 fn authorize(request: &Value) -> Result<Config, String> {
     let config = {
         let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
         read_config()?
     };
+    validate_authorization(&config, request)?;
+    Ok(config)
+}
+
+fn validate_authorization(config: &Config, request: &Value) -> Result<(), String> {
     if !config.enabled {
         return Err("Remote management is disabled on this computer.".into());
     }
@@ -692,7 +703,7 @@ fn authorize(request: &Value) -> Result<Config, String> {
                 .into(),
         );
     }
-    Ok(config)
+    Ok(())
 }
 
 fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
@@ -720,7 +731,7 @@ fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
     };
     if !matches!(
         method,
-        "runtime.action" | "runtime.upsert" | "runtime.delete"
+        "runtime.action" | "runtime.upsert" | "runtime.delete" | "ssh.access.save"
     ) {
         return execute();
     }
@@ -1098,5 +1109,25 @@ mod setup_tests {
             fs::read_to_string(authorized).unwrap(),
             format!("existing-key-without-final-newline\n{public}\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod ssh_authorization_tests {
+    use super::*;
+    #[test]
+    fn ssh_settings_require_management_protocol_and_pinned_owner() {
+        let mut config = Config { host_id: uuid::Uuid::new_v4().to_string(), enabled: true, hosts: vec![] };
+        for method in ["ssh.access.state", "ssh.access.save", "ssh.access.connection"] {
+            let request = json!({"version":VERSION,"hostId":config.host_id,"method":method});
+            validate_authorization(&config, &request).unwrap();
+            config.enabled = false;
+            assert!(validate_authorization(&config, &request).is_err());
+            config.enabled = true;
+            let mut changed = request.clone(); changed["hostId"] = json!(uuid::Uuid::new_v4().to_string());
+            assert!(validate_authorization(&config, &changed).is_err());
+            changed = request; changed["version"] = json!(VERSION + 1);
+            assert!(validate_authorization(&config, &changed).is_err());
+        }
     }
 }

@@ -562,6 +562,7 @@ fn run_msb_with_progress(
             drop(guard);
             if result.is_ok() {
                 crate::network::reconcile_started(paths, workspace);
+                crate::ssh_access::reconcile(paths);
             }
             return result;
         }
@@ -580,6 +581,7 @@ fn run_msb_with_progress(
         drop(guard);
         if temporary_boot {
             crate::network::reconcile_started(paths, workspace);
+            crate::ssh_access::reconcile(paths);
         }
         let result = run_msb_process(paths, args, timeout, report);
         if temporary_boot {
@@ -593,6 +595,8 @@ fn run_msb_with_progress(
                 STOP_TIMEOUT,
                 &|_| {},
             );
+            drop(_guard);
+            crate::ssh_access::reconcile(paths);
             return match (result, stopped) {
                 (Ok(output), Ok(_)) => Ok(output),
                 (Err(error), Ok(_)) => Err(error),
@@ -604,7 +608,11 @@ fn run_msb_with_progress(
         }
         return result;
     }
-    run_msb_process(paths, args, timeout, report)
+    let result = run_msb_process(paths, args, timeout, report);
+    if args.first().is_some_and(|command| matches!(command.as_str(), "stop" | "remove")) {
+        crate::ssh_access::reconcile(paths);
+    }
+    result
 }
 
 fn run_msb_process(
@@ -613,6 +621,13 @@ fn run_msb_process(
     timeout: Duration,
     report: &dyn Fn(Value),
 ) -> Result<CommandOutput, RuntimeError> {
+    // Tear down client sessions before any runtime command can end or replace
+    // their VM. This also covers exec's temporary boot and stop cleanup path.
+    if args.first().is_some_and(|command| matches!(command.as_str(), "stop" | "remove" | "restart")) {
+        if let Some(workspace) = args.iter().skip(1).find(|argument| !argument.starts_with('-')) {
+            crate::ssh_access::close_workspace(workspace);
+        }
+    }
     for (description, path) in [
         ("bundled MicroSandbox executable", &paths.executable),
         ("bundled MicroSandbox library", &paths.library),
@@ -1262,6 +1277,15 @@ pub(crate) fn scoped_cached_tokens(
     Ok(tokens)
 }
 
+/// Check the attachment cache as well as the grant cache. Failed updates clear this cache.
+pub(crate) fn github_policy_is_cached(app: &AppHandle, workspace: &str, profile: &Value) -> Result<bool, String> {
+    let paths = runtime_paths(app)?;
+    let serialized = serde_json::to_string(profile).map_err(|_| "Invalid GitHub profile.")?;
+    Ok(GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock()
+        .map_err(|_| "GitHub runtime state is unavailable.")?
+        .get(&(paths.home, workspace.into())) == Some(&serialized))
+}
+
 /// A managed VM receives credentials through a host-only environment reference.
 /// The JSON profile is never a command argument, a config value or captured log.
 pub(crate) fn apply_github_policy(
@@ -1271,7 +1295,7 @@ pub(crate) fn apply_github_policy(
     profiles: &Value,
 ) -> Result<(), String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
-    if profiles["version"] != 1 || !profiles["owners"].is_array() {
+    if !matches!(profiles["version"].as_u64(), Some(1 | 2)) || !profiles["owners"].is_array() {
         return Err("Invalid GitHub access profile.".into());
     }
     let paths = runtime_paths(app)?;
@@ -1290,7 +1314,7 @@ pub(crate) fn apply_github_policy(
         .map_err(|_| "GitHub runtime state is unavailable.")?
         .remove(&(paths.home.clone(), workspace.into()));
     let capability =
-        run_msb(&paths, &["--silo-github-protocol".into()], READ_TIMEOUT).map_err(|_| {
+        run_msb(&paths, &[if profiles["version"] == 2 { "--silo-github-token-protocol".into() } else { "--silo-github-protocol".into() }], READ_TIMEOUT).map_err(|_| {
             "This Silo runtime must be updated before GitHub access can be enabled.".to_string()
         })?;
     if capability.stdout.trim() != "1" {
@@ -1347,8 +1371,7 @@ pub(crate) fn apply_github_policy(
         match child.try_wait() {
             Ok(Some(status)) if status.success() => break,
             Ok(Some(_)) => return Err(
-                "The sandbox rejected the GitHub access update. Retry after checking its state."
-                    .into(),
+                if profiles["version"] == 2 { "The sandbox rejected the token update. If Silo was updated while this VM was running, restart the VM and retry.".into() } else { "The sandbox rejected the GitHub access update. Retry after checking its state.".into() },
             ),
             Err(_) => return Err("Could not verify the GitHub access update.".into()),
             Ok(None) if Instant::now() >= deadline => {

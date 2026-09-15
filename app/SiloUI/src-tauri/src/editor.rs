@@ -122,7 +122,7 @@ fn remote_uri(alias: &str, path: &str, zed: bool) -> Result<String, String> {
     Ok(uri.into())
 }
 
-fn private_directory(path: &Path) -> Result<(), String> {
+pub(crate) fn private_directory(path: &Path) -> Result<(), String> {
     if let Ok(metadata) = fs::symlink_metadata(path) {
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err(FAILED.into());
@@ -132,7 +132,7 @@ fn private_directory(path: &Path) -> Result<(), String> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|_| FAILED.into())
 }
 
-fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
     match fs::symlink_metadata(path) {
         Ok(metadata)
             if metadata.is_file()
@@ -149,7 +149,7 @@ fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
     }
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     read_regular(path)?;
     let mut file =
         tempfile::NamedTempFile::new_in(path.parent().ok_or(FAILED)?).map_err(|_| FAILED)?;
@@ -162,7 +162,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn key(path: &Path) -> Result<(), String> {
+pub(crate) fn key(path: &Path) -> Result<(), String> {
     if !read_regular(path)?.is_empty() {
         return Ok(());
     }
@@ -173,7 +173,7 @@ fn key(path: &Path) -> Result<(), String> {
     run(&mut command, Duration::from_secs(5))
 }
 
-fn public_key(path: &Path) -> Result<String, String> {
+pub(crate) fn public_key(path: &Path) -> Result<String, String> {
     let output = Command::new("/usr/bin/ssh-keygen")
         .args(["-y", "-f"])
         .arg(path)

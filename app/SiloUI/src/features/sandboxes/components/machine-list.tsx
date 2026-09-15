@@ -1,3 +1,4 @@
+import { ActionsMenu, type MenuAction } from "@/components/actions-menu"
 import { parseRemoteWorkspaceTarget } from "@/features/application/model/remote-computers"
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
 import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Server, Trash2, X } from "lucide-react"
@@ -25,6 +26,8 @@ import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
+  expandedContent?: ReactNode
+  menuActions?: MenuAction[]
   kindBadge?: ReactNode
   badge?: ReactNode
   detail?: ReactNode
@@ -475,9 +478,15 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       >
                         <GripVertical className="size-4" aria-hidden="true" />
                       </span>}
-                      actions={presentation?.actions}
+                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && !presentation.suppressInteractions && <ActionsMenu label={`More actions for ${machine.name}`} onClose={() => setPendingDelete(null)} items={[
+                        ...presentation.menuActions,
+                        { label: "Edit", icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled, onSelect: () => startEdit(machine) },
+                        { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: interactionDisabled, onSelect: () => startDuplicate(machine) },
+                        ...(deleteArmed ? [{ label: "Cancel deletion", icon: X, accessibleLabel: `Cancel deletion of ${machine.name}`, onSelect: () => setPendingDelete(null) }] : []),
+                        { icon: deleteArmed ? Check : Trash2, label: deleteArmed ? `Confirm deletion${computerName ? ` on ${computerName}` : ""}` : "Delete", accessibleLabel: deleteArmed ? `Confirm deletion of ${deletionName}` : `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled, keepOpen: true, onSelect: () => { void remove(machine) } },
+                      ]} />}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
-                      hoverActions={presentation?.suppressInteractions ? undefined : <>
+                      hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
                         <SandboxAction label={`Edit ${machine.name}`} disabled={interactionDisabled} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
                         {deleteArmed && computerName && <span className="text-[10px] text-destructive">Delete on {computerName}?</span>}
                         <InlineConfirmation active={deleteArmed} onDismiss={() => setPendingDelete(null)}>
@@ -496,6 +505,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       </>}
                     />
                   )}
+                  {!isEditing && presentation?.expandedContent}
                 </SandboxListItem>
               )
             })}

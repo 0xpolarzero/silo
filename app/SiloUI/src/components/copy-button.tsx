@@ -1,6 +1,6 @@
 import type { ComponentProps } from "react"
 import { useEffect, useRef, useState } from "react"
-import { AlertCircle, Check, Copy } from "lucide-react"
+import { AlertCircle, Check, Copy, type LucideIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 
@@ -9,12 +9,13 @@ type CopyStatus = "idle" | "copied" | "failed"
 type CopyLabels = Record<CopyStatus, string>
 
 interface CopyButtonProps extends Omit<ComponentProps<typeof Button>, "aria-label" | "children"> {
+  icon?: LucideIcon
   value: string
   labels: CopyLabels
   text?: CopyLabels
 }
 
-export function CopyButton({ value, labels, text, type = "button", onClick, ...props }: CopyButtonProps) {
+export function CopyButton({ value, labels, text, icon: IdleIcon = Copy, type = "button", onClick, ...props }: CopyButtonProps) {
   const [status, setStatus] = useState<CopyStatus>("idle")
   const resetTimer = useRef<number | undefined>(undefined)
 
@@ -31,7 +32,7 @@ export function CopyButton({ value, labels, text, type = "button", onClick, ...p
     resetTimer.current = window.setTimeout(() => setStatus("idle"), 1_200)
   }
 
-  const Icon = status === "copied" ? Check : status === "failed" ? AlertCircle : Copy
+  const Icon = status === "copied" ? Check : status === "failed" ? AlertCircle : IdleIcon
 
   return (
     <Button

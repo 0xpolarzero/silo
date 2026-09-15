@@ -928,7 +928,8 @@ describe("application", () => {
     expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox error" })).toHaveTextContent("1")
     expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox warning" })).toHaveTextContent("1")
 
-    await user.click(within(rows[0]).getByRole("button", { name: "Duplicate error" }))
+    await user.click(screen.getByRole("button", { name: "More actions for error" }))
+    await user.click(screen.getByRole("menuitem", { name: "Duplicate error" }))
     expect(within(list).getAllByRole("listitem").map((row) => row.getAttribute("data-sandbox-name"))).toEqual(["error", "error-copy", "warning", "normal"])
     await user.click(overview.getByRole("button", { name: "Cancel" }))
 
@@ -944,7 +945,7 @@ describe("application", () => {
     const app = renderApplication("running", source)
     const panel = within(appPanel("Sandboxes"))
     expect(panel.getByText("Restarting…")).toBeVisible()
-    expect(panel.getByRole("button", { name: "Restart dev" })).toBeDisabled()
+    expect(panel.queryByRole("button", { name: "More actions for dev" })).not.toBeInTheDocument()
     expect(panel.getByRole("button", { name: "Stop dev" })).toBeDisabled()
     app.unmount()
   })
@@ -972,14 +973,15 @@ describe("application", () => {
       const devRow = rows.find((row) => row.getAttribute("data-sandbox-name") === "dev") as HTMLElement
       const controls = within(devRow).getByLabelText("Controls for dev")
       const stop = within(controls).queryByRole("button", { name: "Stop dev" })
-      const restart = within(controls).getByRole("button", { name: "Restart dev" })
       if (stopEnabled) expect(stop).toBeEnabled()
       else {
         expect(stop).not.toBeInTheDocument()
         expect(within(controls).getByRole("button", { name: "Start dev" })).toBeEnabled()
       }
-      if (restartEnabled) expect(restart).toBeEnabled()
-      else expect(restart).toBeDisabled()
+      await application.user.click(within(controls).getByRole("button", { name: "More actions for dev" }))
+      const restart = screen.getByRole("menuitem", { name: "Restart dev" })
+      if (restartEnabled) expect(restart).not.toHaveAttribute("data-disabled")
+      else expect(restart).toHaveAttribute("data-disabled")
       application.unmount()
     }
   })
@@ -1050,11 +1052,10 @@ describe("application", () => {
     const devRow = within(list).getByText("dev").closest("li")
     expect(devRow).not.toBeNull()
 
-    const management = within(devRow as HTMLElement).getByLabelText("Manage dev")
-    expect(management).toHaveClass("sandbox-hover-actions")
-    expect(within(management).getByRole("button", { name: "Edit dev" })).toBeVisible()
-    expect(within(management).getByRole("button", { name: "Duplicate dev" })).toBeVisible()
-    expect(within(management).getByRole("button", { name: "Delete dev" })).toBeVisible()
+    expect(within(devRow as HTMLElement).queryByLabelText("Manage dev")).not.toBeInTheDocument()
+    await user.click(within(devRow as HTMLElement).getByRole("button", { name: "More actions for dev" }))
+    for (const action of ["Edit dev", "Duplicate dev", "Delete dev"]) expect(screen.getByRole("menuitem", { name: action })).toBeVisible()
+    await user.keyboard("{Escape}")
     await user.hover(devRow as HTMLElement)
 
     await user.click(overview.getByRole("button", { name: "Add" }))
@@ -1081,7 +1082,8 @@ describe("application", () => {
     const navigation = within(appNavigation())
     const overview = within(appPanel("Sandboxes"))
 
-    await user.click(overview.getByRole("button", { name: "Edit dev" }))
+    await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+    await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
     const name = overview.getByRole("textbox", { name: "Machine name" })
     expect(name).toHaveAttribute("readonly")
     expect(overview.getByText("Existing VMs cannot be renamed or have their disks resized.")).toBeVisible()
@@ -1117,8 +1119,9 @@ describe("application", () => {
     const { actions, user } = renderApplication()
     const overview = within(appPanel("Sandboxes"))
 
-    await user.click(overview.getByRole("button", { name: "Delete playgrounds" }))
-    await user.click(overview.getByRole("button", { name: "Confirm deletion of playgrounds" }))
+    await user.click(screen.getByRole("button", { name: "More actions for playgrounds" }))
+    await user.click(screen.getByRole("menuitem", { name: "Delete playgrounds" }))
+    await user.click(screen.getByRole("menuitem", { name: "Confirm deletion of playgrounds" }))
 
     const row = overview.getByText("playgrounds").closest("li") as HTMLElement
     expect(row).toHaveAttribute("aria-busy", "true")
@@ -1141,7 +1144,8 @@ describe("application", () => {
     await user.hover(label)
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Restart dev to apply secret changes: DATABASE_URL, SERVICE_TOKEN.")
     await user.unhover(label)
-    await user.click(overview.getByRole("button", { name: "Restart dev" }))
+    await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+    await user.click(screen.getByRole("menuitem", { name: "Restart dev" }))
     expect(actions.restartWorkspace).toHaveBeenCalledWith("dev")
     expect(label).toBeVisible()
 
@@ -1211,16 +1215,18 @@ describe("application", () => {
     expect(within(devControls).queryByRole("button", { name: "Start dev" })).not.toBeInTheDocument()
     await running.user.click(within(devControls).getByRole("button", { name: "Stop dev" }))
     expect(running.actions.stopWorkspace).toHaveBeenCalledWith("dev")
-    await running.user.click(within(devControls).getByRole("button", { name: "Restart dev" }))
+    await running.user.click(within(devControls).getByRole("button", { name: "More actions for dev" }))
+    await running.user.click(screen.getByRole("menuitem", { name: "Restart dev" }))
     expect(running.actions.restartWorkspace).toHaveBeenCalledWith("dev")
     const startPlaygrounds = within(playgroundsControls).getByRole("button", { name: "Start playgrounds" })
     const stopPlaygrounds = within(playgroundsControls).queryByRole("button", { name: "Stop playgrounds" })
-    const restartPlaygrounds = within(playgroundsControls).getByRole("button", { name: "Restart playgrounds" })
+    await running.user.click(within(playgroundsControls).getByRole("button", { name: "More actions for playgrounds" }))
+    const restartPlaygrounds = screen.getByRole("menuitem", { name: "Restart playgrounds" })
     expect(startPlaygrounds).toBeEnabled()
     expect(stopPlaygrounds).not.toBeInTheDocument()
-    expect(restartPlaygrounds).toBeDisabled()
+    expect(restartPlaygrounds).toHaveAttribute("data-disabled")
+    await running.user.keyboard("{Escape}")
     await running.user.click(startPlaygrounds)
-    await running.user.click(restartPlaygrounds)
     expect(running.actions.startWorkspace).toHaveBeenCalledWith("playgrounds")
     expect(running.actions.stopWorkspace).not.toHaveBeenCalledWith("playgrounds")
     expect(running.actions.restartWorkspace).not.toHaveBeenCalledWith("playgrounds")
@@ -1681,13 +1687,12 @@ describe("application", () => {
     }
   })
 
-  it("explains unavailable identity and repository catalog data without disabling manual identity", async () => {
+  it("allows manual identity without host identity and explains unavailable repository catalog data", async () => {
     const source = applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "missing-host-identity")
     const { unmount, user } = renderApplication("running", source)
     await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
     const github = within(appPanel("GitHub"))
 
-    expect(github.getByText("No host Git identity is available. Enter values manually; Reset is unavailable.")).toBeVisible()
     expect(github.getByRole("button", { name: "Reset Git identity for dev" })).toBeDisabled()
     expect(github.getByLabelText("Git name for dev")).toBeEnabled()
     expect(github.getByLabelText("Git name for dev")).toHaveValue("")

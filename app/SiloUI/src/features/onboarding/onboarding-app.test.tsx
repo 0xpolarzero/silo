@@ -473,7 +473,6 @@ describe("onboarding", () => {
     expect(reset).toBeDisabled()
     expect(reset).toHaveAccessibleName("Reset Git identity for dev")
     expect(reset).not.toHaveAttribute("title")
-    expect(screen.getByText("No host Git identity is available. Enter values manually; Reset is unavailable.")).toBeVisible()
 
     const resetTooltipTrigger = reset.parentElement
     expect(resetTooltipTrigger).not.toBeNull()

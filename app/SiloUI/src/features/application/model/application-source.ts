@@ -83,6 +83,14 @@ export interface NetworkPort {
   message?: string | null
 }
 export interface NetworkState { workspaces: { workspace: string; ports: NetworkPort[]; error: string | null }[] }
+export interface SshAccessWorkspace {
+  unavailable?: string
+  workspace: string; enabled: boolean; port: number; bindAddress: string; keys: string[]
+  state: "disabled" | "waiting" | "listening" | "error"; message: string | null
+  fingerprint: string | null; computerName: string; addresses: string[]
+}
+export interface SshAccessState { workspaces: SshAccessWorkspace[] }
+export type SshAccessRequest = Pick<SshAccessWorkspace, "workspace" | "enabled" | "port" | "bindAddress" | "keys">
 export interface NetworkPortRequest { workspace: string; port: number; hostPort: number | null; scheme: "http" | "https" | null }
 
 export interface ApplicationPort {
@@ -171,6 +179,7 @@ export interface ApplicationGitHubRepositoryPolicy {
 }
 
 export interface ApplicationGitHubWorkspacePolicy {
+  authenticationMethod?: "oauth" | "token"
   repositoryMode?: "selected" | "all"
   allRepositoriesAllowChanges?: boolean
   workspace: string
@@ -201,6 +210,8 @@ export interface ApplicationSource {
   remoteComputers?: RemoteComputer[]
   remoteManagement?: RemoteManagement
   remoteManagementError?: string
+  sshAccess?: SshAccessState
+  sshAccessError?: string | null
   network?: NetworkState
   networkError?: string | null
   runtimeRepair: RuntimeRepairPresentation | null
@@ -209,6 +220,7 @@ export interface ApplicationSource {
   sandboxConfigurationOperation: SandboxConfigurationOperation | null
   repositoryPushOperations: RepositoryPushOperation[]
   github: {
+    personalToken?: { state: "connected" | "disconnected"; saved: boolean; account?: string; message?: string }
     policyRevision?: number
     state: "disconnected" | "connecting" | "connected"
     account?: string
@@ -248,6 +260,9 @@ export interface ApplicationActions {
   removeComputer?: (hostId: string) => Promise<void>
   saveRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
   deleteRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration) => Promise<void>
+  sshConnection?: (workspace: string, download: boolean, network?: boolean) => Promise<string | null>
+  refreshSshAccess?: () => Promise<void>
+  saveSshAccess?: (request: SshAccessRequest) => Promise<void>
   refreshNetwork?: () => Promise<void>
   saveNetworkPort?: (request: NetworkPortRequest) => Promise<void>
   removeNetworkPort?: (workspace: string, port: number) => Promise<void>
@@ -267,6 +282,8 @@ export interface ApplicationActions {
   openEditor: (workspace: string, path?: string) => void
   cancelGitHubConnection?: () => void
   reopenGitHubAuthorization?: () => void
+  saveGitHubPersonalToken?: (token: string) => Promise<void>
+  removeGitHubPersonalToken?: () => Promise<void>
   connectGitHub?: () => void
   disconnectGitHub?: () => void
   setGitHubAccessEnabled?: (enabled: boolean) => void

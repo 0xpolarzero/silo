@@ -7,7 +7,7 @@ fn main_window_can_cancel_and_reopen_github_authorization() {
         serde_json::from_str(include_str!("../gen/schemas/acl-manifests.json")).unwrap();
     let capabilities: Value =
         serde_json::from_str(include_str!("../gen/schemas/capabilities.json")).unwrap();
-    for command in ["cancel_github_connection", "reopen_github_authorization"] {
+    for command in ["cancel_github_connection", "reopen_github_authorization", "save_github_personal_token", "remove_github_personal_token"] {
         let permission = format!("allow-{}", command.replace('_', "-"));
         assert_eq!(
             manifests["__app-acl__"]["permissions"][&permission]["commands"]["allow"],

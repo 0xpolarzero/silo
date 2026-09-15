@@ -116,7 +116,7 @@ async function buildPatchedExecutable({
     const execHelp = runBuildTool(cachedExecutable, ["exec", "--help"])
     const sshHelp = runBuildTool(cachedExecutable, ["ssh", "serve", "--help"])
     const githubProtocol = runBuildTool(cachedExecutable, ["--silo-github-protocol"]).trim()
-    if (sshHelp.includes("--no-start") && execHelp.includes("--no-start") && githubProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
+    if (sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && githubProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
       return readFile(cachedExecutable)
     }
   }
@@ -152,6 +152,10 @@ async function buildPatchedExecutable({
     "microsandbox-cli",
   ], { cwd: source[0], env: { ...process.env, CARGO_TARGET_DIR: cargoTarget } })
   const built = join(cargoTarget, targetTriple, "release", "msb")
+  const managedSshHelp = runBuildTool(built, ["ssh", "serve", "--help"])
+  if (!managedSshHelp.includes("--authorized-keys") || !managedSshHelp.includes("--exit-on-stdin-close") || !managedSshHelp.includes("--expected-machine-id")) {
+    throw new Error("The built MicroSandbox is missing managed SSH access support")
+  }
   if (runBuildTool(built, ["--silo-github-protocol"]).trim() !== "1") {
     throw new Error("The built MicroSandbox is missing the restricted GitHub credential boundary")
   }
@@ -249,8 +253,9 @@ export async function stageRuntime({
     const version = runBuildTool(executableTemporary, ["--version"], { env: environment }).trim()
     const createHelp = runBuildTool(executableTemporary, ["create", "--help"], { env: environment })
     const execHelp = runBuildTool(executableTemporary, ["exec", "--help"], { env: environment })
-    if (!execHelp.includes("--no-start") || version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--from-snapshot") || !createHelp.includes("--no-start") || !createHelp.includes("--progress-json")) {
-      throw new Error("Patched MicroSandbox executable failed its version or stopped-create capability check")
+    const sshHelp = runBuildTool(executableTemporary, ["ssh", "serve", "--help"], { env: environment })
+    if (!sshHelp.includes("--no-start") || !sshHelp.includes("--authorized-keys") || !sshHelp.includes("--exit-on-stdin-close") || !sshHelp.includes("--expected-machine-id") || !execHelp.includes("--no-start") || version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--from-snapshot") || !createHelp.includes("--no-start") || !createHelp.includes("--progress-json")) {
+      throw new Error("Patched MicroSandbox executable failed its version, stopped-create, or managed SSH capability check")
     }
     await rm(isolatedHome, { recursive: true, force: true })
   }

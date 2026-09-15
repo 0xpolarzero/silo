@@ -28,6 +28,7 @@ fn vm_name(app: &AppHandle, params: &Value) -> Result<String, String> {
 }
 pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
     match method {
+        "ssh.access.state" | "ssh.access.save" | "ssh.access.connection" => crate::ssh_access::remote_dispatch(app, method, params),
         "files.list" => {
             let _guard = runtime::MUTATION_LOCK
                 .try_lock()

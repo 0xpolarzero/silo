@@ -157,6 +157,7 @@ describe("bundled MicroSandbox release staging", () => {
     const library = Buffer.from("library fixture")
     let agentd = Buffer.from("agent revision one")
     let compilations = 0
+    let outdatedCachedSsh = false
     const sourceArtifact = { url: "https://example.test/source.tar.gz", sha256: sha256(source) }
     const selected = {
       ...runtimeTargets[targetTriple],
@@ -193,7 +194,12 @@ describe("bundled MicroSandbox release staging", () => {
       if (command.startsWith(appRoot) && command.endsWith("/msb")) {
         if (args[0] === "--silo-github-protocol") return "1"
         if (args[0] === "--version") return `msb ${MICRO_SANDBOX_VERSION}`
-        if (args.includes("--help")) return "--no-start --from-snapshot --progress-json"
+        if (args.includes("--help")) {
+          const oldFlags = "--no-start --from-snapshot --progress-json"
+          return outdatedCachedSsh && !command.includes("cargo-target") && args[0] === "ssh"
+            ? oldFlags
+            : `${oldFlags} --authorized-keys --exit-on-stdin-close --expected-machine-id`
+        }
       }
       throw new Error(`Unexpected tool invocation: ${command} ${args.join(" ")}`)
     }) as typeof execFileSync
@@ -209,11 +215,16 @@ describe("bundled MicroSandbox release staging", () => {
         expect(await readFile(warm.executablePath)).toEqual(firstBytes)
         expect(compilations).toBe(1)
 
+        outdatedCachedSsh = true
+        await stage()
+        expect(compilations).toBe(2)
+        outdatedCachedSsh = false
+
         agentd = Buffer.from("agent revision two")
         selected.agentdSha256 = sha256(agentd)
         const changed = await stage()
         expect(await readFile(changed.executablePath, "utf8")).toBe("compiled runtime:agent revision two")
-        expect(compilations).toBe(2)
+        expect(compilations).toBe(3)
         const manifest = JSON.parse(await readFile(changed.manifestPath, "utf8"))
         expect(manifest.executable.embeddedAgentdReleaseSha256).toBe(sha256(agentd))
         expect(manifest.executable.sha256).toBe(sha256(await readFile(changed.executablePath)))

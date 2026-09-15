@@ -25,6 +25,7 @@ has been exercised.
 Research records the inputs to a decision. Follow the implementation documents
 above for current behavior and build commands.
 
+- [Development and release optimization plan](SiloUI-WORKFLOW-OPTIMIZATION-PLAN.md): measured bottlenecks, ranked changes, and benchmark acceptance gates.
 - [Server-free GitHub research](SiloUI-GITHUB-SERVER-FREE-RESEARCH.md): primary sources and authorization constraints behind the native implementation.
 - [GitHub client-secret release audit](SiloUI-OAUTH-RELEASE-AUDIT.md): public 0.1.1 package inspection, live App settings, and independent PKCE enforcement checks.
 - [Workflow performance](SiloUI-WORKFLOW-PERFORMANCE.md): implementation, controlled measurements and hosted comparison.
@@ -37,3 +38,5 @@ above for current behavior and build commands.
 Shared branding files live in [`assets/`](../assets/). Generated native bundles,
 logs, and Rust outputs belong in the ignored `app/SiloUI/src-tauri/target/` tree;
 frontend build output belongs in the ignored `app/SiloUI/dist/` tree.
+
+- [Managed SSH access](SiloUI-MANAGED-SSH.md): client keys, local/network listeners, ownership, lifecycle and verification.

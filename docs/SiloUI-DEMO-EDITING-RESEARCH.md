@@ -72,3 +72,36 @@ camera reveal, and keeps the actual UI still during ordinary interactions.
 Three brief chapter wipes separate preparation, connection, and development;
 other feature changes cut directly. Sparse original sound effects replace music.
 The final port result is followed only by a one-second brand close.
+
+## Next production stage: tools and diagnosis
+
+First draft preserved in commit `c432f54`. Research reviewed September 14, 2026.
+No new visual direction or tool installation has been applied.
+
+- [Higgsfield AI Motion Designer](https://higgsfield.ai/ai-motion-designer)
+  documents an agent working directly in After Effects with native editable
+  layers, text, timing and animation, using the user's assets and references.
+  Higgsfield documents both a ChatGPT entry point and MCP access. These are
+  vendor capabilities, not a workflow tested in this repository.
+- [Higgsfield's local After Effects bridge](https://github.com/higgsfield-ai/fnf-local-pluging-bridge-mcp)
+  documents a local stdio runtime and Codex installer. This local adapter says
+  it requires an installed/licensed After Effects and scripting permissions,
+  but no Higgsfield account or cloud relay. Do not conflate it with the hosted
+  generation product and its subscription requirements. Neither AE nor a
+  Higgsfield control tool was available in this session's tool inventory.
+- [Remotion's Three.js integration](https://www.remotion.dev/docs/three)
+  provides a code-based route for 3D composition; changing editors is not a
+  prerequisite for changing the visual treatment.
+
+Editorial assessment: v10 remains a feature walkthrough. Its repeated full-window
+framing leaves controls small, the device illustrations are schematic, and the
+rhythm follows settings pages rather than a dramatic action/result sequence.
+More transitions or sound effects would not resolve those structural weaknesses.
+
+Recommended next proof: design one 8–12 second remote-control sequence using
+faithful UI footage, intentional framing, clear action matching, and readable
+results. Compare that short sequence directly against the chosen reference
+before rebuilding the whole film. Preserve the user's constraints: neutral
+surroundings, direct cuts, no invented Silo controls, no decorative sound effects.
+After Effects is a candidate finishing tool; retain Remotion as a source of
+repeatable, exact UI footage. Use 3D only if it makes computer ownership clearer.

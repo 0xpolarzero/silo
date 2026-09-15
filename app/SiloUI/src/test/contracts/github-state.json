@@ -46,7 +46,11 @@
         "status": "applying",
         "message": "Native contract applying"
       }
-    ]
+    ],
+    "personalToken": {
+      "state": "disconnected",
+      "saved": false
+    }
   },
   {
     "policyRevision": 7,
@@ -95,7 +99,11 @@
         "status": "succeeded",
         "message": "Native contract succeeded"
       }
-    ]
+    ],
+    "personalToken": {
+      "state": "disconnected",
+      "saved": false
+    }
   },
   {
     "policyRevision": 7,
@@ -145,6 +153,10 @@
         "message": "Native contract failed",
         "canRetry": true
       }
-    ]
+    ],
+    "personalToken": {
+      "state": "disconnected",
+      "saved": false
+    }
   }
 ]

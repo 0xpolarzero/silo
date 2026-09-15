@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Check, Loader2, TriangleAlert } from "lucide-react"
 
+import { PersonalTokenConnection } from "@/features/github/components/personal-token-connection"
 import { CopyButton } from "@/components/copy-button"
 import { githubFailure } from "./github-failure"
 
@@ -47,7 +48,7 @@ function draftFromSource(
   }))
 
   return {
-    access: Object.fromEntries(policies.map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }])),
+    access: Object.fromEntries(policies.map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, ...(policy.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}) }])),
     selections: Object.fromEntries(policies.map((policy) => [
       policy.workspace,
       policy.repositories.map((repository) => ({ ...repository })),
@@ -338,6 +339,9 @@ export function GitHubPage({
         compactConnection
         workspaces={source.workspaces.filter(w => !w.computer).map(({ machine }) => ({ name: machine.name }))}
         connectionState={connectionState}
+        tokenConnected={source.github.personalToken?.state === "connected"}
+        tokenConnection={<PersonalTokenConnection status={source.github.personalToken}
+          onSave={actions.saveGitHubPersonalToken} onRemove={actions.removeGitHubPersonalToken} />}
         repositoryOptions={source.github.repositoryCatalog ?? []}
         workspaceSelections={draft.selections}
         workspaceRepositoryAccess={draft.access}

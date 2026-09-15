@@ -31,6 +31,59 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("prepares connection commands and key exports on the selected owner", async () => {
+    const mock = native()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "ssh_connection" ? (args?.download ? null : "ssh -i '/private/key' root@127.0.0.1") : mock.invoke(command, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    expect(await store.applicationActions.sshConnection!("dev", false)).toContain("ssh -i")
+    expect(invoke).toHaveBeenLastCalledWith("ssh_connection", { workspace: "dev", download: false })
+    const hostId = "00000000-0000-4000-8000-000000000010"
+    const vmId = "00000000-0000-4000-8000-000000000011"
+    expect(await store.applicationActions.sshConnection!(`silo-remote:${hostId}:${vmId}`, true)).toBeNull()
+    expect(invoke).toHaveBeenLastCalledWith("ssh_connection", { hostId, vmId, download: true })
+    store.dispose()
+  })
+
+  it("refreshes SSH state, persists explicit exposure, and preserves rows on refresh failure", async () => {
+    const mock = native()
+    let failed = false
+    const row = { workspace: "dev", enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "waiting", message: null, fingerprint: null, computerName: "Ada Mac", addresses: ["192.168.1.42"] }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "read_ssh_access_state") { if (failed) throw new Error("private runtime details"); return { workspaces: [row] } }
+      if (command === "save_ssh_access") return { workspaces: [{ ...row, ...args }] }
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    await store.applicationActions.refreshSshAccess!()
+    expect(store.getSnapshot().source?.sshAccess?.workspaces[0]).toEqual(row)
+    const request = { workspace: "dev", enabled: true, port: 2223, bindAddress: "192.168.1.42", keys: [] }
+    await store.applicationActions.saveSshAccess!(request)
+    expect(invoke).toHaveBeenCalledWith("save_ssh_access", request)
+    await store.refresh()
+    expect(store.getSnapshot().source?.sshAccess?.workspaces[0].bindAddress).toBe("192.168.1.42")
+    failed = true
+    await store.applicationActions.refreshSshAccess!()
+    expect(store.getSnapshot().source?.sshAccessError).toBe("Could not check SSH access.")
+    expect(store.getSnapshot().source?.sshAccess?.workspaces[0].port).toBe(2223)
+    store.dispose()
+  })
+
+  it("keeps personal-token connection independent from OAuth and never publishes its value", async () => {
+    const mock = native()
+    const base = await mock.invoke("read_application_state") as { github: Record<string, unknown> }
+    const github = { ...base.github, state: "connected", personalToken: { state: "connected", saved: true, account: "token-user" } }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "save_github_personal_token" ? github : mock.invoke(command, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    await store.applicationActions.saveGitHubPersonalToken!("github_pat_synthetic")
+    expect(invoke).toHaveBeenCalledWith("save_github_personal_token", { token: "github_pat_synthetic" })
+    expect(store.getSnapshot().source?.github.state).toBe("connected")
+    expect(store.getSnapshot().source?.github.personalToken?.account).toBe("token-user")
+    expect(JSON.stringify(store.getSnapshot())).not.toContain("github_pat_synthetic")
+    store.dispose()
+  })
+
   it("passes status destinations and dismisses completed push results natively", async () => {
     const mock = native()
     const store = createProductionSource(mock.bridge)
@@ -745,5 +798,108 @@ describe("production application bridge", () => {
     store.backupActions.startRestore(backup.archives[0], "dev-restored")
     await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_restore", { archivePath: "/tmp/dev.silo-backup", newName: "dev-restored" }))
     store.dispose()
+  })
+})
+
+describe("remote SSH access", () => {
+  const vmId = source.workspaces[0].machine.id
+  const target = `silo-remote:office:${encodeURIComponent(vmId)}`
+  const request = { workspace: target, enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [] }
+  const row = { ...request, state: "listening", message: null, fingerprint: "SHA256:fixture", computerName: "Office Mac", addresses: ["192.168.1.42"] }
+  function fixture() {
+    const mock = native()
+    let failOffice: string | undefined
+    let failLocal = false
+    let officeRead: Promise<unknown> | undefined
+    let officeSave: Promise<unknown> | undefined
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
+      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }, { id: "lab", name: "Lab Mac", address: "user@lab" }]
+      if (command === "remote_host_snapshot") return { ...source, workspaces: [source.workspaces[0]] }
+      if (command === "read_ssh_access_state") { if (failLocal) throw new Error("Local failed"); return { workspaces: [{ ...row, workspace: "dev", computerName: "Laptop" }] } }
+      if (command === "remote_ssh_access_state") {
+        if (args?.hostId === "office") { if (failOffice) throw new Error(failOffice); if (officeRead) return officeRead }
+        return { workspaces: [{ ...row, workspace: `silo-remote:${args?.hostId}:${encodeURIComponent(vmId)}`, computerName: args?.hostId === "office" ? "Office Mac" : "Lab Mac" }] }
+      }
+      if (command === "remote_save_ssh_access") { if (officeSave) return officeSave; const { hostId, vmId: id, ...settings } = args!; return { workspaces: [{ ...row, ...settings, workspace: `silo-remote:${hostId}:${encodeURIComponent(String(id))}` }] } }
+      if (command === "save_ssh_access") return { workspaces: [{ ...row, ...args, computerName: "Laptop" }] }
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    return { store, invoke, failOffice: (message = "private remote details") => { failOffice = message }, failLocal: () => { failLocal = true }, delayOffice: (promise: Promise<unknown>) => { officeRead = promise }, delaySave: (promise: Promise<unknown>) => { officeSave = promise } }
+  }
+  it("routes same-name remote sandboxes by immutable owner and VM IDs and retains other owners", async () => {
+    const { store, invoke } = fixture()
+    try {
+      await store.initialize(); await store.applicationActions.refreshSshAccess!()
+      expect(store.getSnapshot().source?.sshAccess?.workspaces.map(item => item.workspace)).toEqual(["dev", target, `silo-remote:lab:${encodeURIComponent(vmId)}`])
+      await store.applicationActions.saveSshAccess!({ ...request, keys: ["ssh-ed25519 synthetic-public-key"] })
+      expect(invoke).toHaveBeenCalledWith("remote_save_ssh_access", { hostId: "office", vmId, enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: ["ssh-ed25519 synthetic-public-key"] })
+      expect(invoke).not.toHaveBeenCalledWith("save_ssh_access", expect.anything())
+      expect(store.getSnapshot().source?.sshAccess?.workspaces).toHaveLength(3)
+      await store.applicationActions.saveSshAccess!({ ...request, workspace: "dev", enabled: false })
+      expect(store.getSnapshot().source?.sshAccess?.workspaces).toHaveLength(3)
+      expect(store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace === target)?.keys).toEqual(["ssh-ed25519 synthetic-public-key"])
+    } finally { store.dispose() }
+  })
+  it("retains cached keys while a failed owner becomes unavailable and healthy owners remain writable", async () => {
+    const { store, failOffice, failLocal } = fixture()
+    try {
+      await store.initialize(); await store.applicationActions.refreshSshAccess!()
+      await store.applicationActions.saveSshAccess!({ ...request, keys: ["ssh-ed25519 retained-key"] })
+      failOffice(); await store.applicationActions.refreshSshAccess!()
+      const rows = store.getSnapshot().source?.sshAccess?.workspaces
+      expect(rows?.find(item => item.workspace === target)).toMatchObject({ enabled: true, keys: ["ssh-ed25519 retained-key"], unavailable: expect.stringContaining("Office Mac") })
+      expect(rows?.find(item => item.workspace === "dev")?.unavailable).toBeUndefined()
+      expect(rows?.find(item => item.workspace.startsWith("silo-remote:lab:"))?.unavailable).toBeUndefined()
+      await expect(store.applicationActions.saveSshAccess!({ ...request, keys: [] })).rejects.toThrow("Refresh SSH status")
+      await store.applicationActions.saveSshAccess!({ ...request, workspace: "dev", enabled: false })
+      failLocal(); await store.applicationActions.refreshSshAccess!()
+      expect(store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace === "dev")?.unavailable).toBeDefined()
+      expect(store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace.startsWith("silo-remote:lab:"))?.unavailable).toBeUndefined()
+    } finally { store.dispose() }
+  })
+  it("explains that an older owner must update Silo instead of reconnecting", async () => {
+    const { store, failOffice } = fixture()
+    try {
+      await store.initialize(); await store.applicationActions.refreshSshAccess!()
+      failOffice("This Silo version does not support that remote operation.")
+      await store.applicationActions.refreshSshAccess!()
+      const row = store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace === target)
+      expect(row?.unavailable).toBe("Update Silo on Office Mac to manage SSH access. That version does not support remote SSH management.")
+      expect(row?.unavailable).not.toContain("Reconnect")
+      await expect(store.applicationActions.saveSshAccess!(request)).rejects.toThrow("Refresh SSH status")
+      expect(store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace === "dev")?.unavailable).toBeUndefined()
+    } finally { store.dispose() }
+  })
+  it("rejects old read results even when polling starts during a pending revocation", async () => {
+    const { store, delayOffice, delaySave } = fixture()
+    let resolveRead!: (value: unknown) => void
+    let resolveSave!: (value: unknown) => void
+    try {
+      await store.initialize(); await store.applicationActions.refreshSshAccess!()
+      delaySave(new Promise(resolve => { resolveSave = resolve }))
+      const saving = store.applicationActions.saveSshAccess!({ ...request, keys: [] })
+      delayOffice(new Promise(resolve => { resolveRead = resolve }))
+      const refreshing = store.applicationActions.refreshSshAccess!()
+      resolveSave({ workspaces: [{ ...row, keys: [] }] })
+      await saving
+      resolveRead({ workspaces: [{ ...row, keys: ["ssh-ed25519 revoked-key"] }] })
+      await refreshing
+      expect(store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace === target)?.keys).toEqual([])
+    } finally { store.dispose() }
+  })
+  it("does not let a delayed remote refresh restore a revoked key", async () => {
+    const { store, delayOffice, invoke } = fixture()
+    let resolveRead!: (value: unknown) => void
+    try {
+      await store.initialize(); await store.applicationActions.refreshSshAccess!()
+      delayOffice(new Promise(resolve => { resolveRead = resolve }))
+      const refresh = store.applicationActions.refreshSshAccess!()
+      await vi.waitFor(() => expect(invoke.mock.calls.filter(call => call[0] === "remote_ssh_access_state" && call[1]?.hostId === "office")).toHaveLength(2))
+      await store.applicationActions.saveSshAccess!({ ...request, keys: [] })
+      resolveRead({ workspaces: [{ ...row, keys: ["ssh-ed25519 revoked-key"] }] })
+      await refresh
+      expect(store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace === target)?.keys).toEqual([])
+    } finally { store.dispose() }
   })
 })

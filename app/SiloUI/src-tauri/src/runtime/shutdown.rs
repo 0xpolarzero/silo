@@ -26,6 +26,9 @@ pub(crate) fn stop_local_vms(app: &AppHandle) -> Result<(), String> {
         "A sandbox operation failed unexpectedly. Check local VM status before retrying Quit."
             .to_string()
     })?;
+    // Quit has stopped admission and owns the runtime lock: the SSH monitor
+    // cannot restore listeners while local VM shutdown is in progress.
+    crate::ssh_access::close_all();
     let paths = runtime_paths(app)?;
     let result =
         stop_local_vms_with(&ProcessRunner, &paths).map_err(|error| safe_activity_error(&error));

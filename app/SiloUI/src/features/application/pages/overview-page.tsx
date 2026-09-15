@@ -1,9 +1,11 @@
+import { useSshAccessRefresh } from "./use-ssh-access-refresh"
+import { SshAccessRow, SshAccessBadges } from "./ssh-access-panel"
 import { StatusFolderPicker } from "@/features/status-bar/status-folder-picker"
 import { workspaceAvailability } from "../model/workspace-availability"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
-import { CircleAlert, Code, Loader2, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronDown, CircleAlert, Code, Loader2, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useState } from "react"
 
 import { ListRowIcon } from "@/components/list-row"
@@ -191,24 +193,26 @@ function WorkspaceActions({ machine, target, state, actions, disabled = false }:
       {canStop
         ? <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={() => actions.stopWorkspace(target ?? machine.name)}><Square /></SandboxAction>
         : <SandboxAction label={`Start ${machine.name}`} disabled={disabled} onClick={() => actions.startWorkspace(target ?? machine.name)}><Play /></SandboxAction>}
-      <SandboxAction label={`Restart ${machine.name}`} disabled={disabled || (state !== "running" && state !== "failed")} onClick={() => actions.restartWorkspace(target ?? machine.name)}><RotateCw /></SandboxAction>
     </>
   )
 }
 
-export function OverviewPage({
+export function OverviewPage({ active = true,
   source,
   actions,
   onMachinesChange,
   newSandboxRequest,
   onNewSandboxRequestHandled,
 }: {
+  active?: boolean
   newSandboxRequest?: number
   onNewSandboxRequestHandled?: (id: number) => void
   source: ApplicationSource
   actions: ApplicationActions
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
 }) {
+  useSshAccessRefresh(actions.refreshSshAccess, active)
+  const [expandedSsh, setExpandedSsh] = useState<Set<string>>(() => new Set())
   const [folderWorkspaceId, setFolderWorkspaceId] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [pendingStart, setPendingStart] = useState<string | null>(null)
@@ -308,11 +312,20 @@ export function OverviewPage({
                 actionsClassName: failed ? "mt-1 self-start" : undefined,
               }
             }
+            const access = workspace && source.sshAccess?.workspaces.find(row => row.workspace === workspaceTarget(workspace))
+            const sshAvailable = machine.kind === "vm" && workspace && Boolean(source.sshAccess || actions.refreshSshAccess)
+            const sshStale = Boolean((source.sshAccessError && !workspace?.computer) || workspace?.computer?.connected === false || workspace?.freshness === "stale")
+            const expanded = expandedSsh.has(machine.id)
             const lifecycle = workspace?.lifecycleAction
             const lifecycleLabel = lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
             return {
               kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
-              badge,
+              badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
+              menuActions: [{ label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale") || (state !== "running" && state !== "failed"), onSelect: () => {
+                if (!workspace?.computer && source.vmOperationsUnavailable) setOperationUnavailable(true)
+                else actions.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name)
+              } }],
+              expandedContent: sshAvailable && expanded ? <div id={`ssh-${machine.id}`}><SshAccessRow embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div> : undefined,
               busy: Boolean(lifecycle) || Boolean(workspace?.computer?.busy),
               suppressInteractions: Boolean(lifecycle) || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
               icon: lifecycle ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
@@ -336,7 +349,9 @@ export function OverviewPage({
                 },
                 stopWorkspace: (name) => !workspace?.computer && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
                 restartWorkspace: (name) => !workspace?.computer && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
-              }} disabled={configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale")} /></>,
+              }} disabled={configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale")} />
+                {sshAvailable && <SandboxAction label={`SSH controls for ${machine.name}`} className="w-auto gap-0.5 px-1.5 text-[11px]" aria-expanded={expanded} aria-controls={`ssh-${machine.id}`} onClick={() => setExpandedSsh(current => { const next = new Set(current); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next })}>SSH<ChevronDown className={`size-2.5 transition-transform ${expanded ? "rotate-180" : ""}`} /></SandboxAction>}
+              </>,
             }
           }}
         />
