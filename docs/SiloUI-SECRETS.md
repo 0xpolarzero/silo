@@ -20,6 +20,21 @@ checked after updates, including source reference, allowed hosts, placeholder, a
 TLS requirement. The bundled runtime patch closes active proxy connections after
 secret policy changes. Already delivered requests cannot be recalled.
 
+TLS interception applies only to destinations matching an assigned secret's
+allowed hosts. Other destinations retain their normal server certificates, so
+clients that discard inherited CA settings can still connect. Exact hosts,
+wildcards, and the explicitly acknowledged `*` assignment all use the same host
+matching as secret injection. A `*` assignment therefore still intercepts all
+destinations. Network policy is checked before this routing decision.
+
+Changing or removing a secret updates the interception scope live and closes
+existing proxy connections so their next connection uses the current policy.
+This is a Silo-specific behavior of the bundled runtime; it does not disable
+certificate verification or learn exceptions from failed TLS handshakes. Clients
+connecting to secret destinations must still trust the sandbox CA. See the
+[ZCode TLS investigation](SiloUI-ZCODE-TLS-INVESTIGATION.md) for the regression
+and design rationale.
+
 Every boot resolves the current desired secret configuration; unavailable required
 credentials block startup rather than restoring old material. Start completion
 clears pending state only when the desired revision still matches. Secret and

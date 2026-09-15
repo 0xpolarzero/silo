@@ -1571,7 +1571,33 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
          SecretsConfig {
 --- a/crates/network/lib/tls/proxy.rs
 +++ b/crates/network/lib/tls/proxy.rs
-@@ -300,6 +300,54 @@
+@@ -195,9 +195,13 @@
+             return Ok(());
+         }
+
++        // Subscribe before the route decision so a concurrent policy update
++        // cannot leave a direct connection open after its host becomes eligible
++        // for secret injection. Reconnecting re-evaluates the current policy.
++        let secret_changes = tls_state.secrets.subscribe();
+         if tls_state.should_bypass(&sni_name) {
+             tracing::debug!(sni = %sni_name, dst = %connect_dst, guest_dst = %guest_dst, "TLS bypass");
+-            bypass_relay(
++            let relay = bypass_relay(
+                 connect_target,
+                 initial_buf,
+                 from_smoltcp,
+@@ -206,8 +210,8 @@
+                 proxy_connect,
+                 upstream_stream,
+                 outbound_proxy,
+-            )
+-            .await
++            );
++            until_policy_change(secret_changes, relay).await
+         } else {
+             tracing::debug!(sni = %sni_name, dst = %connect_dst, guest_dst = %guest_dst, "TLS intercept");
+             intercept_relay(
+@@ -300,6 +304,54 @@
      sni_name: &str,
      via_connect: bool,
      initial_buf: Vec<u8>,
@@ -1626,7 +1652,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      mut from_smoltcp: mpsc::Receiver<Bytes>,
      to_smoltcp: mpsc::Sender<Bytes>,
      shared: Arc<SharedState>,
-@@ -308,7 +356,7 @@
+@@ -308,7 +360,7 @@
      upstream_stream: Option<TcpStream>,
      outbound_proxy: Option<Arc<ResolvedOutboundProxy>>,
  ) -> io::Result<()> {
@@ -1635,7 +1661,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      let secrets = tls_state.secrets.load();
      let mut secrets_handler = if via_connect {
          SecretsHandler::new_tls_intercepted_via_connect(&secrets, sni_name)
-@@ -523,7 +571,7 @@
+@@ -523,7 +575,7 @@
              continue;
          }
 
@@ -1644,7 +1670,7 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
              Ok(data) => {
                  if !data.is_empty() {
                      server_tls.write_all(&data).await?;
-@@ -576,3 +624,45 @@
+@@ -576,3 +628,45 @@
      }
      Ok(())
  }
@@ -4509,3 +4535,56 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
      async fn connect_stream_handshakes_and_streams_exec() {
          use microsandbox_protocol::exec::{ExecExited, ExecRequest, ExecStdout};
          use tokio::io::AsyncWriteExt;
+
+--- a/crates/network/lib/tls/state.rs
++++ b/crates/network/lib/tls/state.rs
+@@ -187,12 +187,18 @@
+         Ok(cert)
+     }
+
+-    /// Check if a domain should bypass TLS interception.
++    /// Silo intercepts only destinations that can receive an assigned secret.
++    /// Other TLS connections retain their public server certificates, including
++    /// clients that sanitize inherited CA environment variables. Load the live
++    /// policy on every connection; wildcard and Any assignments still intercept.
+     pub fn should_bypass(&self, sni: &str) -> bool {
+         let sni_lower = normalize_domain(sni);
+         self.bypass_patterns
+             .iter()
+             .any(|pattern| pattern.matches_normalized(&sni_lower))
++            || !self.secrets.load().secrets.iter().any(|secret| {
++                secret.allowed_hosts.iter().any(|host| host.matches(&sni_lower))
++            })
+     }
+
+     /// Select the upstream connector for the given server name.
+@@ -537,6 +543,29 @@
+     use crate::secrets::handle::SecretsHandle;
+
+     #[test]
++    fn silo_tls_intercepts_only_current_secret_destinations() {
++        let _ = rustls::crypto::ring::default_provider().install_default();
++        let config: SecretsConfig = serde_json::from_value(serde_json::json!({
++            "secrets": [{"env_var":"TOKEN", "value":"synthetic", "placeholder":"$MSB_TOKEN",
++                "allowed_hosts":[{"exact":"api.github.com"}], "require_tls_identity":true}]
++        })).unwrap();
++        let handle = SecretsHandle::new(config);
++        let state = TlsState::new(TlsConfig::default(), handle.clone()).unwrap();
++        assert!(!state.should_bypass("API.GITHUB.COM"));
++        assert!(state.should_bypass("api.z.ai"));
++        assert!(state.should_bypass("api.github.com.attacker.test"));
++        handle.set_allowed_hosts("TOKEN", &["*.z.ai".into()]).unwrap();
++        assert!(!state.should_bypass("api.z.ai"));
++        assert!(state.should_bypass("api.github.com"));
++        handle.set_allowed_hosts("TOKEN", &["*".into()]).unwrap();
++        assert!(!state.should_bypass("api.github.com"));
++        assert!(!state.should_bypass("api.z.ai"));
++        handle.remove("TOKEN");
++        assert!(state.should_bypass("api.github.com"));
++        assert!(state.should_bypass("api.z.ai"));
++    }
++
++    #[test]
+     fn regenerates_cached_domain_cert_when_near_expiry() {
+         let _ = rustls::crypto::ring::default_provider().install_default();
+         let state = TlsState::new(
