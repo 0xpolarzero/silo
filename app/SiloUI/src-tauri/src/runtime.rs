@@ -1429,7 +1429,7 @@ pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource,
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         let mut source = read_application_snapshot(&ProcessRunner, &paths, &MUTATION_LOCK)?;
-        source.repository_push_operations = crate::host_push::operations();
+        source.repository_push_operations = crate::host_push_operations::merge(&app, crate::host_push::operations())?;
         runtime_activity::load_logs(&ProcessRunner, &paths, &mut source);
         for workspace in &mut source.workspaces {
             if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running) {

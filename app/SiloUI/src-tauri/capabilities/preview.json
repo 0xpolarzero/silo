@@ -42,7 +42,7 @@
     "allow-start-restore",
     "allow-cancel-backup-operation",
     "allow-dismiss-backup-operation",
-    "allow-read-application-state", "allow-dismiss-repository-push", "allow-push-repository",
+    "allow-read-application-state", "allow-dismiss-repository-push", "allow-push-repository", "allow-start-repository-push", "allow-repository-push-status",
     "allow-read-machine-configuration",
     "allow-list-workspace-directory", "allow-remote-ssh-access-state", "allow-remote-save-ssh-access", "allow-read-ssh-access-state", "allow-save-ssh-access", "allow-ssh-connection", "allow-read-network-state", "allow-save-network-port", "allow-remove-network-port", "allow-open-network-port",
     "allow-read-secrets-state",

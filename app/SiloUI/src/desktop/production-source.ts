@@ -194,6 +194,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const unlisten: Array<() => void> = []
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
+  const pushPollTimers = new Set<ReturnType<typeof setTimeout>>()
+  const pendingRepositoryPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
+  const remotePushRevisions = new Map<string, number>()
   const pendingLifecycle = new Map<string, "start" | "stop" | "restart" | "dismiss-error">()
   let pendingBackupOperation = false
   let localBackupOperation: BackupOperation | null = null
@@ -334,6 +337,14 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         }),
       ],
     } }
+    // Remote polling can return a snapshot captured before the push started.
+    // Keep the operation loading until its host supplies a terminal result.
+    if (next.source && pendingRepositoryPushes.size) next = { ...next, source: { ...next.source,
+      repositoryPushOperations: [
+        ...next.source.repositoryPushOperations.filter(operation => !pendingRepositoryPushes.has(JSON.stringify([operation.workspace, operation.repositoryPath]))),
+        ...pendingRepositoryPushes.values(),
+      ],
+    } }
     snapshot = next.source ? { ...next, source: { ...next.source, workspaces: next.source.workspaces.map(({ lifecycleAction: _previous, ...workspace }) => ({ ...workspace, ...(pendingLifecycle.has(workspaceTarget(workspace)) && { lifecycleAction: pendingLifecycle.get(workspaceTarget(workspace)) }) })) } } : next
     listeners.forEach((listener) => listener())
   }
@@ -376,8 +387,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const computers = z.array(remoteComputerSchema).parse(await native.invoke("remote_host_list"))
         const next = await Promise.all(computers.map(async computer => {
           try {
+            // A push result delivered during this read is newer than this snapshot.
+            const revision = remotePushRevisions.get(computer.id)
             const source = parseApplicationSource(await native.invoke("remote_host_snapshot", { hostId: computer.id }))
-            remoteSnapshots.set(computer.id, source)
+            if (revision === remotePushRevisions.get(computer.id)) remoteSnapshots.set(computer.id, source)
             return { ...computer, connected: true, lastSeen: Date.now() }
           } catch (cause) {
             if (errorMessage(cause).includes("SILO_SANDBOX_UPDATE_IN_PROGRESS")) return { ...computer, connected: true, busy: true, lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
@@ -827,22 +840,71 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const operation = snapshot.source?.sandboxConfigurationOperation
       if (operation) void configureMachines(operation.candidate, workspace).catch(() => {})
     },
+    dismissRepositoryPush: (workspace, repositoryPath) => statusActions.dismissRepositoryPush(workspace, repositoryPath),
     pushRepository: (workspace, repositoryPath) => {
-      void native.invoke("push_repository", { workspace, repositoryPath }).then(refresh).catch((cause) => {
-        const message = `Repository push failed: ${errorMessage(cause)}`
+      const key = JSON.stringify([workspace, repositoryPath])
+      if (pendingRepositoryPushes.has(key) || snapshot.source?.repositoryPushOperations.some(operation => operation.workspace === workspace && operation.repositoryPath === repositoryPath && (operation.status === "pushing" || operation.status === "unknown"))) return
+      const commitCount = snapshot.source?.workspaces.find(item => workspaceTarget(item) === workspace)?.repositories.find(repository => repository.path === repositoryPath)?.ahead ?? 0
+      pendingRepositoryPushes.set(key, { workspace, repositoryPath, commitCount, status: "pushing" })
+      publish({ ...snapshot })
+      const finish = (operation?: ApplicationSource["repositoryPushOperations"][number], error?: string) => {
+        pendingRepositoryPushes.delete(key)
+        ++refreshSequence
         const remote = parseRemoteWorkspaceTarget(workspace)
+        if (remote) remotePushRevisions.set(remote.hostId, (remotePushRevisions.get(remote.hostId) ?? 0) + 1)
         const owner = remote && remoteSnapshots.get(remote.hostId)
-        if (remote && owner) {
+        if (operation && remote && owner) {
           const name = owner.workspaces.find(workspace => workspace.machine.id === remote.vmId)?.machine.name
           if (name) remoteSnapshots.set(remote.hostId, { ...owner, repositoryPushOperations: [
             ...owner.repositoryPushOperations.filter(operation => operation.workspace !== name || operation.repositoryPath !== repositoryPath),
-            { workspace: name, repositoryPath, commitCount: 0, status: "failed", message },
+            { ...operation, workspace: name },
           ] })
         }
-        if (snapshot.source) publish({ ...snapshot, error: message, source: { ...snapshot.source,
-          repositoryPushOperations: [...snapshot.source.repositoryPushOperations.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath), { workspace, repositoryPath, commitCount: 0, status: "failed", message }],
+        if (snapshot.source) publish({ ...snapshot, error: error ?? snapshot.error, source: { ...snapshot.source,
+          repositoryPushOperations: [...snapshot.source.repositoryPushOperations.filter(operation => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath), ...(operation ? [{ ...operation, workspace }] : [])],
         } })
-      })
+      }
+      let operationId: string = crypto.randomUUID()
+      const terminalShape = z.discriminatedUnion("status", [
+        z.object({ operationId: z.string().optional(), status: z.literal("succeeded"), commitCount: z.number() }),
+        z.object({ operationId: z.string().optional(), status: z.literal("unknown"), commitCount: z.number(), message: z.string() }),
+        z.object({ operationId: z.string().optional(), status: z.literal("failed"), commitCount: z.number(), message: z.string(), diagnosticDetails: z.string().optional() }),
+      ])
+      const schedule = () => {
+        if (disposed) return
+        const timer = setTimeout(() => {
+          pushPollTimers.delete(timer)
+          void observe(false)
+        }, 2_000)
+        pushPollTimers.add(timer)
+      }
+      const observe = async (start: boolean): Promise<void> => {
+        if (disposed) return
+        try {
+          const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", { workspace, repositoryPath, operationId })
+          if (disposed) return
+          // No saved job means the first request never arrived. Reuse its identifier.
+          if (result === null && !start) return observe(true)
+          const parsed = terminalShape.safeParse(result)
+          if (parsed.success) {
+            const { operationId: _id, ...operation } = parsed.data
+            finish({ ...operation, workspace, repositoryPath })
+            if (operation.status === "succeeded") void refresh()
+            return
+          }
+          const active = z.object({ operationId: z.string(), status: z.literal("pushing") }).parse(result)
+          operationId = active.operationId
+          pendingRepositoryPushes.set(key, { workspace, repositoryPath, commitCount, status: "pushing" })
+          publish({ ...snapshot })
+        } catch (cause) {
+          // A lost connection is not a failed push. Keep the button disabled and
+          // query the host-owned operation until it supplies an actual result.
+          pendingRepositoryPushes.set(key, { workspace, repositoryPath, commitCount, status: "pushing", message: `Waiting for push status: ${errorMessage(cause)}` })
+          publish({ ...snapshot })
+        }
+        schedule()
+      }
+      void observe(true)
     },
     startWorkspace: (name) => workspaceAction("start", name),
     stopWorkspace: (name) => workspaceAction("stop", name),
@@ -953,7 +1015,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     openSite: (workspace, port) => { void native.invoke("open_network_port", { workspace, port }).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
     dismissRepositoryPush: (workspace, repositoryPath) => {
       void native.invoke("dismiss_repository_push", { workspace, repositoryPath }).then(() => {
+        ++refreshSequence
         const remote = parseRemoteWorkspaceTarget(workspace)
+        if (remote) remotePushRevisions.set(remote.hostId, (remotePushRevisions.get(remote.hostId) ?? 0) + 1)
         const owner = remote && remoteSnapshots.get(remote.hostId)
         if (remote && owner) {
           const name = owner.workspaces.find(workspace => workspace.machine.id === remote.vmId)?.machine.name
@@ -984,7 +1048,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", refresh); listeners.clear() },
+    dispose() { pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", refresh); listeners.clear() },
   }
 }
 

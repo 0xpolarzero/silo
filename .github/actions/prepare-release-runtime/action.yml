@@ -39,7 +39,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         lookup-only: ${{ inputs.lookup-only }}
-        key: silo-runtime-v1-${{ inputs.runner }}-${{ inputs.target }}-rust${{ steps.runtime-inputs.outputs.toolchain }}-${{ hashFiles('app/SiloUI/runtime-inputs.json', 'app/SiloUI/scripts/preflight.mjs', 'app/SiloUI/scripts/prepare-microsandbox-runtime.mjs', 'app/SiloUI/scripts/microsandbox-runtime.mjs', 'app/SiloUI/scripts/git-runtime.mjs', 'app/SiloUI/scripts/guest-image.mjs', 'app/SiloUI/patches/microsandbox-*.patch', 'app/SiloUI/guest-image/image-lock.json') }}
+        key: silo-runtime-v1-${{ inputs.runner }}-${{ inputs.target }}-rust${{ steps.runtime-inputs.outputs.toolchain }}-${{ hashFiles('app/SiloUI/runtime-inputs.json', 'app/SiloUI/scripts/preflight.mjs', 'app/SiloUI/scripts/prepare-microsandbox-runtime.mjs', 'app/SiloUI/scripts/microsandbox-runtime.mjs', 'app/SiloUI/scripts/git-runtime.mjs', 'app/SiloUI/scripts/lfs-transfer-runtime.mjs', 'app/SiloUI/scripts/guest-image.mjs', 'app/SiloUI/patches/microsandbox-*.patch', 'app/SiloUI/guest-image/image-lock.json') }}
         # Older cache archives are input candidates only; preparation below
         # rechecks pinned bytes and the source/patch/toolchain build key.
         restore-keys: silo-runtime-v1-${{ inputs.runner }}-${{ inputs.target }}-rust${{ steps.runtime-inputs.outputs.toolchain }}-
@@ -52,6 +52,8 @@ runs:
           app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb
           app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb.sha256
           app/SiloUI/src-tauri/target/runtime-cache/dugite
+          app/SiloUI/src-tauri/target/runtime-cache/git-lfs-transfer/*/source.tar.gz
+          app/SiloUI/src-tauri/target/runtime-cache/git-lfs-transfer/*/builds
           app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz
     - name: Report public runtime cache status
       shell: bash
@@ -92,6 +94,12 @@ runs:
       env:
         RUNTIME_ARCHIVE_SHA256: ${{ inputs.artifact-sha256 }}
       run: python3 app/SiloUI/scripts/release-runtime-cache.py unpack --archive "$RUNNER_TEMP/shared-runtime/runtime-cache.tar.gz" --sha256 "$RUNTIME_ARCHIVE_SHA256"
+    - name: Install Go for the pinned guest LFS transfer server
+      if: inputs.lookup-only != 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.x'
+        cache: false
     # Always verify and re-stage cached inputs, and regenerate release-info.json.
     - name: Prepare native resources
       if: inputs.lookup-only != 'true'
@@ -117,6 +125,8 @@ runs:
           app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb
           app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb.sha256
           app/SiloUI/src-tauri/target/runtime-cache/dugite
+          app/SiloUI/src-tauri/target/runtime-cache/git-lfs-transfer/*/source.tar.gz
+          app/SiloUI/src-tauri/target/runtime-cache/git-lfs-transfer/*/builds
           app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz
     - name: Save Cargo downloads
       if: inputs.lookup-only != 'true' && inputs.save == 'true' && github.ref == 'refs/heads/main' && steps.cargo.outputs.cache-hit != 'true'

@@ -63,7 +63,8 @@ export type RepositoryPushOperation = {
   repositoryPath: string
   commitCount: number
 } & (
-  | { status: "pushing" }
+  | { status: "pushing"; message?: string }
+  | { status: "unknown"; message: string }
   | { status: "succeeded" }
   | { status: "failed"; message: string; diagnosticDetails?: string }
 )
@@ -275,6 +276,7 @@ export interface ApplicationActions {
   retryRuntimeChecks: () => void
   saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void
   retryMachineConfiguration: (workspace: string) => void
+  dismissRepositoryPush?: (workspace: string, repositoryPath: string) => void
   pushRepository: (workspace: string, repositoryPath: string) => void
   startWorkspace: (workspace: string) => void
   stopWorkspace: (workspace: string) => void

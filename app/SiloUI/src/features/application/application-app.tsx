@@ -191,8 +191,9 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   }
 
   const dismissRepositoryPush = useCallback((workspace: string, repositoryPath: string) => {
+    if (actions.dismissRepositoryPush) { actions.dismissRepositoryPush(workspace, repositoryPath); return }
     setRepositoryPushOperations((current) => current.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath))
-  }, [])
+  }, [actions])
 
   function navigateCommand(route: ApplicationInitialRoute) {
     if (route.workspace || (route.workspaceSection && route.workspaceSection !== "overview")) {

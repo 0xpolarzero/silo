@@ -29,9 +29,16 @@ export function RepositoryPushFeedback({
     return (
       <div className="flex h-6 items-center gap-1.5 text-xs text-muted-foreground" role="status" aria-live="polite" aria-atomic="true">
         <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-        Pushing {commitLabel(operation.commitCount)}…
+        {operation.message ?? `Pushing ${commitLabel(operation.commitCount)}…`}
       </div>
     )
+  }
+  if (operation.status === "unknown") {
+    return <div className="flex min-h-6 flex-wrap items-center gap-1.5 text-xs text-muted-foreground" role="status">
+      <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+      <span>{operation.message}</span>
+      <Button variant="outline" size="xs" onClick={() => onDismiss(workspace, repositoryPath)}>I’ve checked GitHub</Button>
+    </div>
   }
   if (operation.status === "succeeded") {
     return (

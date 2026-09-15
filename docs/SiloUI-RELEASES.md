@@ -14,7 +14,8 @@ pushing its version tag builds a draft. Publication is a separate explicit step.
 Normal branch pushes do not release the app.
 
 Run these commands from `app/SiloUI`. Install dependencies with `npm ci` first.
-Use Node.js 24, Python 3.11 or newer, Git, and GitHub CLI (`gh auth login` for
+Use Node.js 24, Python 3.11 or newer, Go 1.25 or newer for cold native runtime
+preparation, Git, and GitHub CLI (`gh auth login` for
 publication). Your Git remote `origin` must point to the Silo repository, and
 your account needs push and Actions permissions. CI holds the signing keys;
 local release preparation needs no signing credentials or VM runtime.
@@ -352,7 +353,12 @@ allows tags to restore default-branch caches, but not caches from other tags.
 Release jobs restore caches without saving them.
 
 The shared `prepare-release-runtime` action caches pinned public downloads,
-patched MicroSandbox executables and their checksums, and the guest archive.
+patched MicroSandbox executables and their checksums, the pinned Git LFS transfer
+source and compiled guest server, and the guest archive. Cold LFS server builds
+use Go 1.25 or newer; CI installs Go 1.25.x. The source archive is SHA-256 checked
+before extraction and Go verifies module downloads against the pinned go.sum.
+The server is cross-compiled with CGO disabled for the Linux guest architecture,
+including on macOS hosts.
 Keys include the runner, target, Rust toolchain, staging scripts, runtime patch,
 and guest lockfile, so app version changes alone do not invalidate the runtime.
 Preparation always verifies and stages restored inputs and regenerates package

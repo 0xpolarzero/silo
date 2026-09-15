@@ -288,16 +288,46 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("invokes explicit host push and shows a native command failure without success", async () => {
+  it("shows an authoritative host push failure without success", async () => {
     const mock = native()
     const original = mock.invoke.getMockImplementation()!
-    mock.invoke.mockImplementation((command, args) => command === "push_repository" ? Promise.reject(new Error("Repository authorization was removed")) : original(command, args))
+    let failed = false
+    const failure = { workspace: "dev", repositoryPath: "/workspace/repo", status: "failed" as const, commitCount: 0, message: "Repository authorization was removed" }
+    mock.invoke.mockImplementation((command, args) => {
+      if (command === "start_repository_push") { failed = true; return Promise.resolve(failure) }
+      if (command === "read_application_state" && failed) return Promise.resolve({ ...structuredClone(source), repositoryPushOperations: [failure] })
+      return original(command, args)
+    })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.applicationActions.pushRepository("dev", "/workspace/repo")
-    await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toContainEqual({ workspace: "dev", repositoryPath: "/workspace/repo", commitCount: 0, status: "failed", message: "Repository push failed: Repository authorization was removed" }))
-    expect(mock.invoke).toHaveBeenCalledWith("push_repository", { workspace: "dev", repositoryPath: "/workspace/repo" })
+    await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toContainEqual({ workspace: "dev", repositoryPath: "/workspace/repo", commitCount: 0, status: "failed", message: "Repository authorization was removed" }))
+    expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String) })
     store.dispose()
+  })
+
+  it("blocks an unknown push until the user acknowledges checking GitHub", async () => {
+    const mock = native()
+    const original = mock.invoke.getMockImplementation()!
+    const unknown = { workspace: "dev", repositoryPath: "/workspace/repo", status: "unknown" as const, commitCount: 0, message: "Check this branch on GitHub before retrying." }
+    let acknowledged = false
+    mock.invoke.mockImplementation((command, args) => {
+      if (command === "read_application_state") return Promise.resolve({ ...structuredClone(source), repositoryPushOperations: acknowledged ? [] : [unknown] })
+      if (command === "dismiss_repository_push") { acknowledged = true; return Promise.resolve() }
+      if (command === "start_repository_push") return Promise.resolve({ status: "failed", commitCount: 0, message: "Test completed" })
+      return original(command, args)
+    })
+    const store = createProductionSource(mock.bridge)
+    try {
+      await store.initialize()
+      store.applicationActions.pushRepository("dev", "/workspace/repo")
+      expect(mock.invoke.mock.calls.some(([command]) => command === "start_repository_push")).toBe(false)
+      store.applicationActions.dismissRepositoryPush!("dev", "/workspace/repo")
+      await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toEqual([]))
+      expect(mock.invoke.mock.calls.some(([command]) => command === "start_repository_push")).toBe(false)
+      store.applicationActions.pushRepository("dev", "/workspace/repo")
+      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String) }))
+    } finally { store.dispose() }
   })
 
   it("reports a failed account connection once without inventing sandbox failures", async () => {

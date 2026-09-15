@@ -350,3 +350,154 @@ host_push::tests` passed all eight tests with synthetic GitHub configuration.
 Fixtures cover binary copying, actual kernel file-size enforcement, missing-file
 stderr and exit status, and bounded diagnostics that drain noisy output. This
 run did not inspect a packaged app or reproduce the failure on `dev-zeronival`.
+
+### Empty LFS objects and push progress (2026-09-16)
+
+A push failed while copying
+`lfs/objects/e3/b0/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+This is SHA-256 of empty content. Git LFS's
+[pointer decoder](https://github.com/git-lfs/git-lfs/blob/main/lfs/pointer.go)
+recognizes empty Git blobs as empty pointers. Its
+[uploader](https://github.com/git-lfs/git-lfs/blob/main/commands/uploader.go)
+prints these pointers in `UploadPointers` dry-run output, but `prepareUpload`
+skips zero-size objects during real uploads. A cache file is unnecessary.
+
+Silo filters this empty-content identifier from the guest-to-host transfer plan.
+Nonempty objects still require copying and SHA-256 verification. Missing
+nonempty objects still fail; the fix does not enable incomplete LFS pushes.
+The bundled-Git regression imports a committed empty file and a nonempty LFS
+pointer, checks the real dry-run output and absent empty-object cache, and
+verifies that only the nonempty identifier requires transfer.
+
+Push progress belongs to the production source while the native invocation is
+pending. Cached remote snapshots must not erase it or allow a duplicate request.
+The command result supplies the terminal state before subsequent remote polls.
+
+Validation: the bundled-Git regression failed before the empty-object filter and
+passed afterward. `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml
+host_push::tests` passed all nine tests with synthetic GitHub configuration.
+Frontend regression coverage includes stale remote snapshots during a pending
+push, duplicate clicks, both terminal outcomes, and a snapshot arriving after
+completion. No packaged app or live `dev-zeronival` push was inspected in this run.
+
+### Proposed replacement for host-push transfer planning (2026-09-16)
+
+Research only; this replacement is not implemented or benchmarked. Preserve
+explicit host-authorized publishing while the VM's GitHub policy remains
+read-only. Running guest `git push` under temporarily elevated VM-wide policy
+would change that boundary. Running in the guest also executes its hooks;
+current Host Push intentionally does not execute those hooks on the host.
+
+Prototype a host-owned bare publishing repository, with ordinary Git fetch from
+the guest and ordinary Git/LFS upload to GitHub. Keep guest hooks and
+configuration out of the host repository. Pin the selected commit and target
+branch before transfer. Test standard LFS transport before designing any Silo
+adapter: Git LFS supports pure SSH, and charmbracelet/git-lfs-transfer provides
+an existing server implementation. This is a candidate dependency requiring
+compatibility, packaging, permissions and maintenance evaluation, not an
+established Silo capability. Silo's existing bridge would carry the commands and
+bytes; it must not interpret packfiles, pointer contents, or human dry-run output.
+
+Primary sources:
+
+- [Git remote helpers](https://git-scm.com/docs/gitremote-helpers.html): native
+  Git service connections, including upload-pack.
+- [Git LFS server discovery](https://github.com/git-lfs/git-lfs/blob/main/docs/api/server-discovery.md): SSH transfer discovery.
+- [git-lfs-transfer](https://github.com/charmbracelet/git-lfs-transfer): existing
+  pure-SSH server implementation.
+- [Git LFS fetch](https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-fetch.adoc): `--all` covers all commits reachable from selected refs,
+  whereas a default fetch is not a complete publication-history migration.
+- [Git LFS local file adapter](https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-standalone-file.adoc): an alternative only where the source is
+  already exposed as a local filesystem; avoid introducing a filesystem mount
+  solely for this feature.
+
+The proof must include LFS objects referenced only by historical commits,
+empty files, pruned guest caches whose objects still exist upstream, truly
+missing objects, non-fast-forward rejection, dirty worktrees, linked worktrees,
+custom LFS storage, and denied concurrent guest writes. Compare final refs and
+fresh-clone LFS bytes against a normal Git/LFS push in disposable fixtures.
+Measure cold and repeated push bytes, disk use and duration before selecting a
+bounded per-repository cache. A remote operation ID must outlive the requesting
+connection; disconnect is an unknown outcome until reconciled, not proof of failure.
+
+### Standard host publishing implementation (2026-09-16)
+
+This supersedes the earlier empty-object filter and proposed replacement above.
+The production path no longer builds full Git bundles, parses LFS dry-run
+output, computes LFS object paths, or copies/hash-checks those objects itself.
+
+1. Authorize the host for the selected GitHub repository; do not elevate the VM's
+   GitHub permission. Capture the source branch and commit in a temporary Git ref.
+2. Run bundled host Git `fetch` through a private OpenSSH connection to the VM's
+   Git upload-pack service. Keep SSH configuration outside the user's SSH config.
+3. Run standard `git lfs fetch --all` for the captured ref over pure SSH. The
+   pinned upstream `git-lfs-transfer` server is installed in an operation-specific
+   guest temporary directory. Its read view points to `LocalMediaDir` resolved by
+   guest `git lfs env`, supporting linked worktrees and custom LFS storage without
+   reproducing storage-resolution rules. This parses storage metadata, not a
+   human-readable transfer plan. No source cache directory is created if absent.
+4. Ask Git to reject a non-fast-forward before LFS transfer. Let Git LFS determine
+   required uploads and verify their bytes. A failed LFS upload permits one
+   standard upstream LFS fetch/retry to recover pruned historical objects. No Git
+   ref is updated until Git LFS reports success; incomplete pushes stay disabled.
+5. Run standard non-force Git push of the captured commit to the captured branch.
+   Record the result and update source tracking metadata to that exact commit.
+   Remove the temporary source ref and server directory on normal completion.
+
+The host publishing repository is private and contains only host-created
+configuration. Guest hooks, credential helpers and `.git/config` are never
+imported or executed on the host. This is explicit committed-state publication;
+it does not promise to execute the sandbox's custom pre-push hooks or honor its
+arbitrary push configuration. The final Git push still checks concurrent remote
+updates. Guest changes made after capture do not change the published commit.
+
+The cache is keyed by sandbox, source path and GitHub repository and bounded to
+2 GiB across repositories between operations. Oversized individual caches are
+removed after use; otherwise least-recently-used caches are evicted. A process
+lock excludes simultaneous use/eviction and is inherited by Git so an application
+crash cannot let a new host process reuse files still being written. Commands
+also enforce per-file disk limits, preserve free disk space, bound/drain output,
+and keep sanitized Git failure diagnostics. Persistent cache data has no tokens.
+The GitHub LFS upload remains the authority for missing-object errors; a source
+transfer alone cannot prove publication will succeed.
+
+`repository.push.start` persists a client operation ID before dispatch and returns
+immediately. `repository.push.status` observes that same job. Lost replies are
+queried before reusing the same ID, and duplicate clicks for a repository return
+the existing job. Old hosts receive an update-required message instead of a
+fallback to the custom synchronous transfer. The owner process records terminal
+results independently of its SSH observer. The main window and status panel both
+persist dismissals.
+
+A host restart with no recorded terminal result yields `unknown`, not a fabricated
+failure or success. The user must check the branch on GitHub and explicitly choose
+“I’ve checked GitHub” before a separate retry. This does not automatically verify
+GitHub. The inherited cache lock prevents reuse while surviving Git children still
+hold it. For idempotency, journal records are not silently evicted: the current
+journal has a 10,000-record/16 MiB limit and refuses new starts at capacity. Future
+retention changes must reject expired IDs rather than replay them.
+
+Verification uses disposable local repositories, bundled Git/LFS, an upstream
+SSH-server prototype, journal fixtures, and frontend fixtures. It does not claim
+an authenticated GitHub push from a live VM, a two-computer session, or a packaged
+app inspection. The opt-in authenticated VM test continues to invoke the same
+production publication function; the obsolete custom binary-copy check was removed.
+
+Final focused verification for the replacement:
+
+- `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml host_push -- --test-threads=1`
+  with synthetic GitHub configuration: 24 passed; one subprocess helper is ignored
+  by the ordinary harness and executed by its parent lock-inheritance test.
+- `cargo test ... editor::tests`: five passed; one opt-in live test skipped.
+- Frontend production-source, remote-computer, application-window and status-panel
+  tests: 183 passed; `npm --prefix app/SiloUI run typecheck` and `lint` passed.
+- `npm --prefix app/SiloUI run test:release`: 33 passed before the additional
+  license-permission regression; the final packaging file's three tests passed.
+- Runtime-cache, artifact-transfer and release-workflow Python checks: 35 passed.
+- Both Linux ARM64 and AMD64 helper builds were verified; the current local staged
+  helper remains ARM64. The stage cache restored without network access.
+
+Failed publications discard their cache. A synced `.active` marker also causes
+cache recreation after a crash once the inherited process lock is free, avoiding
+stale Git lock files. Incremental fetch verifies incoming objects using
+`fetch.fsckObjects`; publication does not rescan every cached object on each push.

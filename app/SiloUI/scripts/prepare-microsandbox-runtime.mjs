@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
 
 import { resolveRuntimeTarget, stageRuntime } from "./microsandbox-runtime.mjs"
+import { stageLfsTransferRuntime } from "./lfs-transfer-runtime.mjs"
 import { stageGitRuntime } from "./git-runtime.mjs"
 import { preflight } from "./preflight.mjs"
 import { stageGuestImage } from "./guest-image.mjs"
@@ -33,6 +34,12 @@ const git = await stageGitRuntime({
     return new Uint8Array(await response.arrayBuffer())
   },
 })
+
+await stageLfsTransferRuntime({ appRoot, targetTriple, fetchBytes: async url => {
+  const response = await fetch(url, { redirect: "follow" })
+  if (!response.ok) throw new Error(`Git LFS transfer source download failed (${response.status})`)
+  return new Uint8Array(await response.arrayBuffer())
+} })
 
 console.log(`Prepared bundled MicroSandbox ${prepared.targetTriple}`)
 console.log(`Prepared bundled Git ${git.targetTriple}`)

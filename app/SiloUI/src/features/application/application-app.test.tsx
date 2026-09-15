@@ -836,6 +836,18 @@ describe("application", () => {
     expect(within(row).queryByRole("button", { name: /^Push / })).not.toBeInTheDocument()
   })
 
+  it("sends unknown-result acknowledgement to the host before showing push again", async () => {
+    const source = applicationSourceForScenario("running")
+    source.repositoryPushOperations = [{ workspace: "dev", repositoryPath: source.workspaces[0].repositories[0].path, commitCount: 2, status: "unknown", message: "Check this branch on GitHub before retrying." }]
+    const dismissRepositoryPush = vi.fn()
+    const pushRepository = vi.fn()
+    render(<ApplicationPreview source={source} actions={{ dismissRepositoryPush, pushRepository }} initialRoute={{ workspace: "dev", workspaceSection: "files" }} />)
+    await userEvent.setup().click(screen.getByRole("button", { name: "I’ve checked GitHub" }))
+    expect(dismissRepositoryPush).toHaveBeenCalledExactlyOnceWith("dev", source.workspaces[0].repositories[0].path)
+    expect(pushRepository).not.toHaveBeenCalled()
+    expect(screen.getByRole("button", { name: "I’ve checked GitHub" })).toBeVisible()
+  })
+
   it("shows a repository push error with details and immediate retry", async () => {
     const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "failed")
     const application = renderApplication("running", source)

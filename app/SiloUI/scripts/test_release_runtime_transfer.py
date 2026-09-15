@@ -42,12 +42,15 @@ class RuntimeTransferTests(unittest.TestCase):
         self.write(MSB + '.sha256', hashlib.sha256(executable).hexdigest().encode())
         self.write('app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz')
         self.write('app/SiloUI/src-tauri/target/runtime-cache/dugite/v1/git.tar.gz')
+        self.write('app/SiloUI/src-tauri/target/runtime-cache/git-lfs-transfer/pin/source.tar.gz')
+        self.write('app/SiloUI/src-tauri/target/runtime-cache/git-lfs-transfer/pin/builds/linux-arm64/git-lfs-transfer', executable, 0o755)
         forbidden = [
             'app/SiloUI/github-build.local.json',
             'app/SiloUI/src-tauri/target/release/silo-ui',
             'app/SiloUI/src-tauri/runtime/release-info.json',
             'app/SiloUI/src-tauri/target/runtime-cache/v0.6.17/patched-builds/key/cargo-target/private',
             'app/SiloUI/src-tauri/target/runtime-cache/v0.6.17/patched-builds/key/work/private',
+            'app/SiloUI/src-tauri/target/runtime-cache/git-lfs-transfer/pin/source-123/main.go',
         ]
         for name in forbidden:
             self.write(name, b'private sentinel')

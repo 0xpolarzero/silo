@@ -2,7 +2,6 @@
 use crate::runtime::{self, RuntimePaths};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::os::unix::process::CommandExt;
 use std::{
     collections::HashMap,
@@ -52,9 +51,18 @@ pub async fn dismiss_repository_push(
 ) -> Result<(), String> {
     if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
         return tauri::async_runtime::spawn_blocking(move || {
-            crate::remote::call_remote(&app, &host, "repository.dismiss", json!({"vmId":vm,"path":repository_path})).map(|_| ())
-        }).await.map_err(|_| "Remote repository request failed.".to_string())?;
+            crate::remote::call_remote(
+                &app,
+                &host,
+                "repository.dismiss",
+                json!({"vmId":vm,"path":repository_path}),
+            )
+            .map(|_| ())
+        })
+        .await
+        .map_err(|_| "Remote repository request failed.".to_string())?;
     }
+    crate::host_push_operations::dismiss(&app, &workspace, &repository_path)?;
     let mut entries = results().lock().map_err(|_| "Push state unavailable.")?;
     dismiss_result(&mut entries, &format!("{workspace}\0{repository_path}"));
     drop(entries);
@@ -164,18 +172,36 @@ struct HostGit {
     directory: PathBuf,
     home: PathBuf,
     support: PathBuf,
+    ssh_command: Option<String>,
+    cache_lock_fd: Option<std::os::fd::RawFd>,
 }
 impl HostGit {
     fn run(&self, args: &[&str], token: Option<&str>, remote: &str) -> Result<String, String> {
         let mut command = Command::new(&self.executable);
         command.process_group(0);
+        let file_budget = temporary_budget(&self.directory)? as libc::rlim_t;
+        let cache_lock_fd = self.cache_lock_fd;
         unsafe {
-            command.pre_exec(|| {
+            command.pre_exec(move || {
+                // Keep the cache locked until this Git process exits, even if
+                // Silo crashes. The parent owns the file for the entire command.
+                if let Some(fd) = cache_lock_fd {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
                 let zero = libc::rlimit {
                     rlim_cur: 0,
                     rlim_max: 0,
                 };
                 if libc::setrlimit(libc::RLIMIT_CORE, &zero) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let limit = libc::rlimit {
+                    rlim_cur: file_budget,
+                    rlim_max: file_budget,
+                };
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -199,6 +225,10 @@ impl HostGit {
                 "fetch.fsckObjects=true",
                 "-c",
                 "transfer.fsckObjects=true",
+                "-c",
+                "gc.auto=0",
+                "-c",
+                "maintenance.auto=false",
             ])
             .args(args)
             .current_dir(&self.directory)
@@ -222,7 +252,12 @@ impl HostGit {
             .env("LC_ALL", "C")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
+        if let Some(ssh_command) = &self.ssh_command {
+            command
+                .env("GIT_SSH_COMMAND", ssh_command)
+                .env("GIT_SSH_VARIANT", "ssh");
+        }
         if cfg!(target_os = "linux") {
             command.env("GIT_SSL_CAINFO", self.support.join("ssl/cacert.pem"));
         }
@@ -244,32 +279,99 @@ impl HostGit {
             .spawn()
             .map_err(|_| "Bundled Git could not start. Repair Silo and retry.")?;
         let stdout = child.stdout.take().ok_or("Cannot capture Git output.")?;
-        let output_reader = thread::spawn(move || {
-            let mut bytes = Vec::new();
-            stdout
-                .take(1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .map(|_| bytes)
-        });
-        let deadline = Instant::now() + Duration::from_secs(300);
-        loop {
-            match child.try_wait().map_err(|_|"Cannot read Git process status.")? {
-                Some(status) if status.success()=>break,
-                Some(_)=>return Err("Git push preparation or transfer failed. Check repository access and branch protection, then retry.".into()),
-                None if Instant::now()>=deadline=>{unsafe {libc::kill(-(child.id() as i32),libc::SIGKILL);}let _=child.wait();return Err("Git operation timed out. Check the remote before retrying.".into())},
-                None=>thread::sleep(Duration::from_millis(25)),
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or("Cannot capture Git diagnostics.")?;
+        let output_reader = thread::spawn(move || read_bounded(stdout, 1024 * 1024));
+        let diagnostic_reader = thread::spawn(move || read_bounded(stderr, 16_384));
+        let deadline = Instant::now() + Duration::from_secs(1800);
+        let mut space_check = Instant::now();
+        let outcome = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Err(_) => break Err("Cannot read Git process status."),
+                Ok(None) if Instant::now() >= deadline => {
+                    break Err("Git operation timed out. Check the remote before retrying.");
+                }
+                Ok(None) => {
+                    if space_check.elapsed() >= Duration::from_secs(1) {
+                        if temporary_budget(&self.directory).is_err() {
+                            break Err("Host push stopped to preserve free disk space.");
+                        }
+                        space_check = Instant::now();
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
             }
+        };
+        // The process group belongs only to this invocation. Close inherited
+        // pipes on failure so a helper cannot leave the readers blocked.
+        if outcome.as_ref().map_or(true, |status| !status.success()) {
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.wait();
         }
-        let output = output_reader
+        let (output, overflow) = output_reader
             .join()
-            .map_err(|_| "Cannot capture Git output.")?
-            .map_err(|_| "Cannot read Git output.")?;
-        if output.len() > 1024 * 1024 {
+            .map_err(|_| "Cannot capture Git output.")??;
+        let (diagnostic, _) = diagnostic_reader
+            .join()
+            .map_err(|_| "Cannot capture Git diagnostics.")??;
+        let mut diagnostic = String::from_utf8_lossy(&diagnostic).into_owned();
+        if let Some(token) = token {
+            diagnostic = diagnostic.replace(token, "[redacted]").replace(
+                &STANDARD.encode(format!("x-access-token:{token}")),
+                "[redacted]",
+            );
+        }
+        let diagnostic = transfer_diagnostic(diagnostic.as_bytes());
+        let mut command_args = args;
+        while command_args.first() == Some(&"-c") && command_args.len() >= 2 {
+            command_args = &command_args[2..];
+        }
+        let stage = command_args
+            .iter()
+            .take(if command_args.first() == Some(&"lfs") {
+                2
+            } else {
+                1
+            })
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        match outcome {
+            Ok(status) if !status.success() => {
+                return Err(format!("Git {stage} failed ({status}). {diagnostic}"))
+            }
+            Err(message) => return Err(format!("{message} {diagnostic}")),
+            _ => {}
+        }
+        if overflow {
             return Err("Git returned too much output to verify safely.".into());
         }
         String::from_utf8(output).map_err(|_| "Invalid Git output.".into())
     }
 }
+fn read_bounded(mut input: impl Read, limit: usize) -> Result<(Vec<u8>, bool), String> {
+    let mut retained = Vec::new();
+    let mut overflow = false;
+    let mut buffer = [0; 8192];
+    loop {
+        let count = input
+            .read(&mut buffer)
+            .map_err(|_| "Cannot read Git output.")?;
+        if count == 0 {
+            break;
+        }
+        let keep = count.min(limit - retained.len());
+        retained.extend_from_slice(&buffer[..keep]);
+        overflow |= keep < count;
+    }
+    Ok((retained, overflow))
+}
+
 fn temporary_budget(directory: &Path) -> Result<u64, String> {
     let path = std::ffi::CString::new(directory.as_os_str().as_encoded_bytes())
         .map_err(|_| "Invalid temporary directory.")?;
@@ -319,123 +421,6 @@ fn transfer_diagnostic(mut input: impl Read) -> String {
         .collect()
 }
 
-// A binary stream into one host-created file cannot turn into a guest-directed
-// recursive directory copy. The child kernel limit applies before its first write.
-fn copy(
-    paths: &RuntimePaths,
-    name: &str,
-    source: &str,
-    target: &Path,
-    remaining: &mut u64,
-) -> Result<(), String> {
-    if *remaining == 0 {
-        return Err("The host push exhausted its temporary space budget.".into());
-    }
-    runtime::prepare_runtime_home(&paths.home, paths.storage_home.as_deref())
-        .map_err(|e| e.to_string())?;
-    let output = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(target)
-        .map_err(|_| "Cannot create a private object file.")?;
-    let args = vec![
-        "exec".into(),
-        name.into(),
-        "--no-tty".into(),
-        "--stream".into(),
-        "--quiet".into(),
-        "--workdir".into(),
-        "/".into(),
-        "--timeout".into(),
-        "120s".into(),
-        "--".into(),
-        "cat".into(),
-        "--".into(),
-        source.into(),
-    ];
-    let mut command = Command::new(&paths.executable);
-    command
-        .args(&args)
-        .env("MSB_HOME", &paths.home)
-        .env("MSB_PATH", &paths.executable)
-        .env("MSB_LIBKRUNFW_PATH", &paths.library)
-        .env("SILO_GITHUB", runtime::github_environment(paths, &args))
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(output))
-        .stderr(Stdio::piped());
-    let limit = *remaining as libc::rlim_t;
-    unsafe {
-        command.pre_exec(move || {
-            let zero = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: 0,
-            };
-            if libc::setrlimit(libc::RLIMIT_CORE, &zero) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let limits = libc::rlimit {
-                rlim_cur: limit,
-                rlim_max: limit,
-            };
-            if libc::setrlimit(libc::RLIMIT_FSIZE, &limits) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|_| "Cannot start the bounded object transfer.")?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("Cannot capture object transfer diagnostics.")?;
-    let diagnostic = thread::spawn(move || transfer_diagnostic(stderr));
-    let deadline = Instant::now() + Duration::from_secs(150);
-    loop {
-        match child
-            .try_wait()
-            .map_err(|_| "Cannot read object transfer status.")?
-        {
-            Some(status) if status.success() => break,
-            Some(status) => {
-                use std::os::unix::process::ExitStatusExt;
-                // Also close pipes inherited by runtime descendants before joining.
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
-                }
-                let detail = diagnostic.join().unwrap_or_default();
-                let size = fs::metadata(target).map(|m| m.len()).unwrap_or(0);
-                let reason = if status.signal() == Some(libc::SIGXFSZ) {
-                    "Object transfer exceeded its temporary file size limit"
-                } else {
-                    "Object transfer failed"
-                };
-                return Err(format!(
-                    "{reason} while copying {source} from sandbox {name} to its host ({status}; {size} bytes copied; {} bytes available in the transfer budget). {detail}",
-                    *remaining
-                ));
-            }
-            None if Instant::now() >= deadline => {
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
-                }
-                let _ = child.wait();
-                let detail = diagnostic.join().unwrap_or_default();
-                return Err(format!("Object transfer timed out while copying {source} from sandbox {name} to its host. {detail}"));
-            }
-            None => thread::sleep(Duration::from_millis(25)),
-        }
-    }
-    let size = fs::metadata(target)
-        .map_err(|_| "Missing transferred object.")?
-        .len();
-    *remaining = remaining
-        .checked_sub(size)
-        .ok_or("Object transfer exceeded its space budget.")?;
-    Ok(())
-}
 fn require_running(paths: &RuntimePaths, workspace: &str) -> Result<(), String> {
     let inspected = runtime::run_msb(
         paths,
@@ -499,10 +484,149 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
         .resource_dir()
         .map_err(|_| "Cannot locate Git support.")?
         .join("git-support");
-    push_committed(&paths, workspace, path, &repo, &token, &executable, &support)
+    push_committed(
+        &paths,
+        workspace,
+        path,
+        &repo,
+        &token,
+        &executable,
+        &support,
+    )
 }
 
-// The same object-transfer path is exercised with disposable VMs and scoped
+// The host owns all configuration and credentials. The source remote supplies
+// Git/LFS data through their standard protocols, never hooks or configuration.
+fn publish_committed(
+    git: &HostGit,
+    source: &str,
+    source_lfs: &str,
+    source_ref: &str,
+    expected_commit: &str,
+    branch: &str,
+    remote: &str,
+    token: Option<&str>,
+) -> Result<u64, String> {
+    git.run(&["check-ref-format", "--branch", branch], None, "")?;
+    git.run(&["init", "--bare", "--quiet"], None, "")?;
+    // This host-owned cache contains only Silo's configuration. Repoint both
+    // remotes for every invocation; no guest configuration crosses this seam.
+    git.run(
+        &["config", "--replace-all", "remote.origin.url", remote],
+        None,
+        "",
+    )?;
+    git.run(
+        &["config", "--replace-all", "remote.silo-source.url", source],
+        None,
+        "",
+    )?;
+    git.run(
+        &[
+            "fetch",
+            "--no-tags",
+            "silo-source",
+            &format!("+{source_ref}:refs/silo/push"),
+        ],
+        None,
+        "",
+    )?;
+    let imported = git.run(&["rev-parse", "refs/silo/push"], None, "")?;
+    if imported.trim() != expected_commit {
+        return Err("The sandbox repository changed during export. Retry the push.".into());
+    }
+    // fetch.fsckObjects verifies incoming objects without rescanning the
+    // complete trusted cache on every incremental push.
+    // Only the currently advertised destination ref may exclude LFS uploads.
+    // A previous cached branch must not suppress objects for a new destination.
+    git.run(
+        &["update-ref", "-d", "refs/remotes/origin/published"],
+        None,
+        "",
+    )?;
+    let target_ref = format!("refs/heads/{branch}");
+    let remote_head = git.run(
+        &["ls-remote", "--heads", "origin", &target_ref],
+        token,
+        remote,
+    )?;
+    let range = if remote_head.trim().is_empty() {
+        "refs/silo/push"
+    } else {
+        git.run(
+            &[
+                "fetch",
+                "--no-tags",
+                "origin",
+                &format!("+{target_ref}:refs/remotes/origin/published"),
+            ],
+            token,
+            remote,
+        )?;
+        // Ask Git before spending time transferring LFS data. The final push
+        // still performs Git's own concurrent-update/non-fast-forward checks.
+        git.run(&["merge-base", "--is-ancestor", "refs/remotes/origin/published", "refs/silo/push"], None, "")
+            .map_err(|_| "The remote branch has commits missing from this sandbox. Fetch and integrate them before pushing.".to_string())?;
+        "refs/remotes/origin/published..refs/silo/push"
+    };
+    let count = git
+        .run(&["rev-list", "--count", range], None, "")?
+        .trim()
+        .parse()
+        .map_err(|_| "Invalid commit count.")?;
+
+    // --all includes LFS data referenced only by historical commits. An object
+    // absent from the sandbox may already exist upstream. LFS itself decides
+    // whether such an object is needed; a source fetch alone is not the gate.
+    let source_result = git.run(
+        &[
+            "-c",
+            &format!("lfs.url={source_lfs}"),
+            "-c",
+            "lfs.sshtransfer=always",
+            "-c",
+            "lfs.ssh.variant=ssh",
+            "lfs",
+            "fetch",
+            "--all",
+            "silo-source",
+            "refs/silo/push",
+        ],
+        None,
+        "",
+    );
+    if let Err(first_push) = git.run(&["lfs", "push", "origin", "refs/silo/push"], token, remote) {
+        // Standard LFS fetch fills pruned historical data from the destination.
+        // Content-addressed LFS uploads can safely be retried before any Git ref
+        // update. Never enable allowincompletepush or parse a human transfer plan.
+        let upstream_result = git.run(
+            &["lfs", "fetch", "--all", "origin", "refs/silo/push"],
+            token,
+            remote,
+        );
+        git.run(&["lfs", "push", "origin", "refs/silo/push"], token, remote)
+            .map_err(|error| {
+                format!(
+                    "{error} Source transfer: {} Upstream recovery: {} First upload: {first_push}",
+                    source_result.err().unwrap_or_else(|| "completed".into()),
+                    upstream_result.err().unwrap_or_else(|| "completed".into())
+                )
+            })?;
+    }
+    git.run(
+        &[
+            "push",
+            "--porcelain",
+            "origin",
+            &format!("refs/silo/push:{target_ref}"),
+        ],
+        token,
+        remote,
+    )?;
+    Ok(count)
+}
+
+// The same publication path is exercised with disposable VMs and scoped
 // credentials in the opt-in live regression. Authorization stays in perform.
 pub(crate) fn push_committed(
     paths: &RuntimePaths,
@@ -513,158 +637,77 @@ pub(crate) fn push_committed(
     executable: &Path,
     support: &Path,
 ) -> Result<u64, String> {
-    let export = format!("/tmp/silo-push-{}", uuid::Uuid::new_v4());
+    let id = uuid::Uuid::new_v4();
+    let export = format!("/tmp/silo-push-{id}");
+    let export_ref = format!("refs/silo/export/{id}");
     let result = (|| {
+        let temp = tempfile::tempdir().map_err(|_| "Cannot create isolated host Git directory.")?;
+        let root = temp.path();
+        let cache_key = format!("{workspace}\0{path}\0{repo}");
+        let cache = crate::host_push_cache::acquire(&paths.home.join("push-cache"), &cache_key)?;
+        let mut transport =
+            crate::host_push_transport::prepare(paths, workspace, &root.join("ssh"))?;
+        transport.install_lfs_server(&support.join("lfs-transfer/git-lfs-transfer"), &export)?;
         let data = guest(
-            &paths,
+            paths,
             workspace,
             r#"set -eu
-mkdir -m 700 "$2"
-git -C "$1" bundle create "$2/commits.bundle" HEAD >/dev/null
-git -C "$1" symbolic-ref --quiet --short HEAD
-git -C "$1" rev-parse --git-common-dir"#,
-            &[path, &export],
+branch=$(git -C "$1" symbolic-ref --quiet --short HEAD)
+commit=$(git -C "$1" rev-parse --verify "refs/heads/$branch^{commit}")
+git -C "$1" update-ref "$3" "$commit"
+# Use Git LFS's own storage resolution, including linked worktrees and lfs.storage.
+media=$(git -C "$1" lfs env | sed -n 's/^LocalMediaDir=//p')
+case "$media" in /*) ;; *) echo 'Git LFS returned no absolute media directory' >&2; exit 1;; esac
+mkdir -p "$2/source.git/lfs"
+if [ -d "$media" ]; then
+    ln -s -- "$media" "$2/source.git/lfs/objects"
+else
+    mkdir "$2/source.git/lfs/objects"
+fi
+printf '%s\n%s\n' "$branch" "$commit"
+"#,
+            &[path, &export, &export_ref],
         )?;
         let mut lines = data.lines();
         let branch = lines.next().ok_or("Missing Git branch.")?;
-        let common = lines.next().ok_or("Missing Git object directory.")?;
-        let common = if common.starts_with('/') {
-            common.into()
-        } else {
-            format!("{path}/{common}")
-        };
-        let temp = tempfile::tempdir().map_err(|_| "Cannot create isolated host Git directory.")?;
-        let root = temp.path();
-        let mut remaining = temporary_budget(root)?;
-        let bundle = root.join("commits.bundle");
-        copy(
-            &paths,
-            workspace,
-            &format!("{export}/commits.bundle"),
-            &bundle,
-            &mut remaining,
-        )?;
+        let commit = lines.next().ok_or("Missing Git commit.")?;
+        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err("Invalid exported Git commit.".into());
+        }
         let git = HostGit {
             executable: executable.to_path_buf(),
-            directory: root.join("repository.git"),
+            directory: cache.directory.join("repository.git"),
             home: root.join("home"),
             support: support.to_path_buf(),
+            ssh_command: Some(transport.ssh_command.clone()),
+            cache_lock_fd: Some(cache.lock_fd()),
         };
         fs::create_dir_all(&git.directory)
             .and_then(|_| fs::create_dir_all(git.home.join("empty-templates")))
             .map_err(|_| "Cannot create isolated host Git directory.")?;
-        git.run(&["check-ref-format", "--branch", branch], None, "")?;
-        git.run(&["init", "--bare", "--quiet"], None, "")?;
-        git.run(
-            &[
-                "fetch",
-                "--keep",
-                "--no-tags",
-                bundle.to_str().ok_or("Invalid bundle path.")?,
-                "HEAD:refs/silo/push",
-            ],
-            None,
-            "",
-        )?;
-        git.run(&["fsck", "--strict", "--no-reflogs"], None, "")?;
-        let remote = format!("https://github.com/{repo}.git");
-        git.run(&["remote", "add", "origin", &remote], None, "")?;
-        let lfs = git.run(
-            &["lfs", "push", "--dry-run", "origin", "refs/silo/push"],
-            Some(&token),
-            &remote,
-        )?;
-        for line in lfs.lines() {
-            let oid = line
-                .strip_prefix("push ")
-                .and_then(|value| value.split_whitespace().next())
-                .ok_or("Invalid LFS transfer plan.")?;
-            if oid.len() != 64 || !oid.bytes().all(|c| c.is_ascii_hexdigit()) {
-                return Err("Invalid LFS object identifier.".into());
-            }
-            let relative = format!("lfs/objects/{}/{}/{oid}", &oid[..2], &oid[2..4]);
-            let target = git.directory.join(&relative);
-            fs::create_dir_all(target.parent().unwrap()).map_err(|_| "Cannot store LFS object.")?;
-            copy(
-                &paths,
-                workspace,
-                &format!("{common}/{relative}"),
-                &target,
-                &mut remaining,
-            )?;
-            let mut file = fs::File::open(&target).map_err(|_| "Cannot read LFS object.")?;
-            let mut hash = Sha256::new();
-            let mut buffer = [0; 65536];
-            loop {
-                let n = file
-                    .read(&mut buffer)
-                    .map_err(|_| "Cannot verify LFS object.")?;
-                if n == 0 {
-                    break;
-                }
-                hash.update(&buffer[..n]);
-            }
-            if format!("{:x}", hash.finalize()) != oid {
-                return Err("The sandbox returned an LFS object with the wrong hash.".into());
-            }
+        let source = transport.repository_url(path)?;
+        let source_lfs = format!("ssh://root@{}{export}/source.git", transport.alias);
+        let publication = publish_committed(
+            &git,
+            &source,
+            &source_lfs,
+            &export_ref,
+            commit,
+            branch,
+            &format!("https://github.com/{repo}.git"),
+            Some(token),
+        );
+        if publication.is_err() {
+            cache.discard();
         }
-        git.run(
-            &["lfs", "push", "origin", "refs/silo/push"],
-            Some(&token),
-            &remote,
-        )?;
-        let remote_head = git.run(
-            &[
-                "ls-remote",
-                "--heads",
-                "origin",
-                &format!("refs/heads/{branch}"),
-            ],
-            Some(&token),
-            &remote,
-        )?;
-        let range = if remote_head.trim().is_empty() {
-            "refs/silo/push".to_string()
-        } else {
-            git.run(
-                &[
-                    "fetch",
-                    "--keep",
-                    "--no-tags",
-                    "origin",
-                    &format!("refs/heads/{branch}:refs/silo/remote"),
-                ],
-                Some(&token),
-                &remote,
-            )?;
-            "refs/silo/remote..refs/silo/push".to_string()
-        };
-        let count = git
-            .run(&["rev-list", "--count", &range], None, "")?
-            .trim()
-            .parse()
-            .map_err(|_| "Invalid commit count.")?;
-        git.run(
-            &[
-                "push",
-                "--porcelain",
-                "origin",
-                &format!("refs/silo/push:refs/heads/{branch}"),
-            ],
-            Some(&token),
-            &remote,
-        )?;
-        let pushed = git.run(&["rev-parse", "refs/silo/push"], None, "")?;
-        // Only local tracking metadata changes; the guest never receives credentials.
+        let count = publication?;
+        // Tracking metadata describes the commit actually published, even if
+        // the sandbox branch advanced while this operation was running.
         let _ = guest(
-            &paths,
+            paths,
             workspace,
             "git -C \"$1\" update-ref \"$2\" \"$3\"",
-            &[
-                path,
-                &format!("refs/remotes/origin/{branch}"),
-                pushed.trim(),
-            ],
+            &[path, &format!("refs/remotes/origin/{branch}"), commit],
         );
         if let Some(cache) = DISCOVERIES.get() {
             if let Ok(mut cache) = cache.lock() {
@@ -673,7 +716,12 @@ git -C "$1" rev-parse --git-common-dir"#,
         }
         Ok(count)
     })();
-    let _ = guest(&paths, workspace, "rm -rf -- \"$1\"", &[&export]);
+    let _ = guest(
+        paths,
+        workspace,
+        "git -C \"$1\" update-ref -d \"$3\"; rm -rf -- \"$2\"",
+        &[path, &export, &export_ref],
+    );
     result
 }
 #[tauri::command]
@@ -684,8 +732,15 @@ pub async fn push_repository(
 ) -> Result<Value, String> {
     if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
         return tauri::async_runtime::spawn_blocking(move || {
-            crate::remote::call_remote(&app, &host, "repository.push", json!({"vmId":vm,"path":repository_path}))
-        }).await.map_err(|_| "Remote repository request failed.".to_string())?;
+            crate::remote::call_remote(
+                &app,
+                &host,
+                "repository.push",
+                json!({"vmId":vm,"path":repository_path}),
+            )
+        })
+        .await
+        .map_err(|_| "Remote repository request failed.".to_string())?;
     }
     let key = format!("{workspace}\0{repository_path}");
     let planned_count = runtime::runtime_paths(&app)
@@ -718,37 +773,6 @@ pub async fn push_repository(
         results().lock().map_err(|_|"Push state unavailable.")?.insert(key,(value.clone(),Instant::now()));let _=app.emit("silo://application-state-changed",());Ok(value)
     }).await.map_err(|_|"Host push task failed.")?
 }
-#[cfg(test)]
-pub(crate) fn verify_disposable_binary_transfer(
-    paths: &RuntimePaths,
-    name: &str,
-) -> Result<(), String> {
-    guest(
-        paths,
-        name,
-        "printf '\\000\\377\\001\\376' > /tmp/silo-test-binary",
-        &[],
-    )?;
-    let temporary =
-        tempfile::tempdir().map_err(|_| "Cannot prepare binary transfer verification.")?;
-    let target = temporary.path().join("binary");
-    let mut remaining = 64 * 1024 * 1024;
-    copy(
-        paths,
-        name,
-        "/tmp/silo-test-binary",
-        &target,
-        &mut remaining,
-    )?;
-    if fs::read(&target).map_err(|_| "Cannot read binary transfer verification.")?
-        != [0, 255, 1, 254]
-        || remaining != 64 * 1024 * 1024 - 4
-    {
-        return Err("VM binary transfer changed bytes or did not account for their size.".into());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -804,60 +828,6 @@ mod tests {
         assert!(validate_running(&inspected, "dev").is_err());
     }
     #[test]
-    fn binary_transfer_preserves_bytes_and_kernel_limit_stops_oversized_guest_output() {
-        use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let executable = root.join("msb");
-        fs::write(
-            &executable,
-            "#!/bin/sh\n[ \"$4\" = \"--stream\" ] || exit 42\nprintf '\\000\\377'\n",
-        )
-        .unwrap();
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let paths = RuntimePaths {
-            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("runtime/guest-image"),
-            executable: executable.clone(),
-            home: root.join("runtime"),
-            storage_home: None,
-            library: root.join("unused-library"),
-            metadata: root.join("metadata"),
-            volumes: root.join("volumes"),
-        };
-        let mut budget = 1024;
-        let target = root.join("bytes");
-        copy(&paths, "dev", "/guest/object", &target, &mut budget).unwrap();
-        assert_eq!(fs::read(target).unwrap(), vec![0, 255]);
-        assert_eq!(budget, 1022);
-        fs::write(
-            &executable,
-            "#!/bin/sh\nexec /bin/dd if=/dev/zero bs=512 count=4\n",
-        )
-        .unwrap();
-        let target = root.join("oversized");
-        let error = copy(&paths, "dev", "/guest/object", &target, &mut budget).unwrap_err();
-        assert!(error.contains("temporary file size limit"), "{error}");
-        assert!(fs::metadata(target).unwrap().len() <= 1022);
-        fs::write(
-            &executable,
-            "#!/bin/sh\nprintf 'cat: missing object: No such file or directory\n' >&2\nexit 7\n",
-        )
-        .unwrap();
-        let error = copy(
-            &paths,
-            "dev",
-            "/guest/missing",
-            &root.join("missing"),
-            &mut budget,
-        )
-        .unwrap_err();
-        assert!(error.contains("/guest/missing"), "{error}");
-        assert!(error.contains("exit status: 7"), "{error}");
-        assert!(error.contains("No such file or directory"), "{error}");
-        assert!(!error.contains("exceeded"), "{error}");
-    }
-    #[test]
     fn transfer_diagnostics_are_bounded_and_drain_noisy_output() {
         let bytes = vec![b'x'; 100_000];
         let mut input = std::io::Cursor::new(bytes);
@@ -886,6 +856,8 @@ mod tests {
             directory: directory.path().into(),
             home: directory.path().into(),
             support: directory.path().into(),
+            ssh_command: None,
+            cache_lock_fd: None,
         };
         assert!(git.run(&[], None, "").is_err());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
@@ -897,95 +869,8 @@ mod tests {
             assert!(!valid_path(path));
         }
     }
-    #[test]
-    fn bundle_import_uses_commits_without_guest_worktree_or_configuration() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let executable = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/git/bin/git");
-        assert!(
-            executable.is_file(),
-            "prepare the bundled Git runtime before testing"
-        );
-        let make = |name: &str| {
-            let directory = root.join(name);
-            let home = root.join(format!("{name}-home"));
-            fs::create_dir_all(&directory).unwrap();
-            fs::create_dir_all(home.join("empty-templates")).unwrap();
-            HostGit {
-                executable: executable.clone(),
-                directory,
-                home,
-                support: root.into(),
-            }
-        };
-        let source = make("guest");
-        source.run(&["init", "--quiet"], None, "").unwrap();
-        fs::write(source.directory.join("README"), "committed\n").unwrap();
-        source.run(&["add", "README"], None, "").unwrap();
-        source
-            .run(
-                &[
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.invalid",
-                    "commit",
-                    "-m",
-                    "test",
-                    "--quiet",
-                ],
-                None,
-                "",
-            )
-            .unwrap();
-        fs::write(source.directory.join("README"), "dirty secret\n").unwrap();
-        fs::write(source.directory.join("untracked"), "untracked secret\n").unwrap();
-        source
-            .run(
-                &[
-                    "config",
-                    "credential.helper",
-                    "!echo guest-credential-helper",
-                ],
-                None,
-                "",
-            )
-            .unwrap();
-        let bundle = root.join("commits.bundle");
-        source
-            .run(
-                &["bundle", "create", bundle.to_str().unwrap(), "HEAD"],
-                None,
-                "",
-            )
-            .unwrap();
-        let host = make("host.git");
-        host.run(&["init", "--bare", "--quiet"], None, "").unwrap();
-        host.run(
-            &[
-                "fetch",
-                "--keep",
-                "--no-tags",
-                bundle.to_str().unwrap(),
-                "HEAD:refs/silo/push",
-            ],
-            None,
-            "",
-        )
-        .unwrap();
-        host.run(&["fsck", "--strict", "--no-reflogs"], None, "")
-            .unwrap();
-        assert_eq!(
-            host.run(&["show", "refs/silo/push:README"], None, "")
-                .unwrap(),
-            "committed\n"
-        );
-        assert!(!host
-            .run(&["ls-tree", "--name-only", "refs/silo/push"], None, "")
-            .unwrap()
-            .contains("untracked"));
-        assert!(!fs::read_to_string(host.directory.join("config"))
-            .unwrap()
-            .contains("guest-credential-helper"));
-    }
 }
+
+#[cfg(test)]
+#[path = "host_push_protocol_tests.rs"]
+mod protocol_tests;

@@ -8,6 +8,7 @@ export function statusBarHealth(source: ApplicationSource) {
     || source.repositoryPushOperations.some(({ status }) => status === "failed")) {
     return { label: "Sandbox error", tone: "error" } as const
   }
+  if (source.repositoryPushOperations.some(({ status }) => status === "unknown")) return { label: "Check push result", tone: "warning" } as const
   if (source.workspaces.some(({ freshness }) => freshness === "stale")) return { label: "Last known status", tone: "warning" } as const
   if (source.workspaces.some(({ attention }) => attention?.level === "warning")) return { label: "Sandbox warning", tone: "warning" } as const
   if (source.sandboxConfigurationOperation?.status === "awaiting-approval") return { label: "Approval needed", tone: "warning" } as const

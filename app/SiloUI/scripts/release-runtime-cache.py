@@ -20,10 +20,12 @@ FILES = (
     'app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb',
     'app/SiloUI/src-tauri/target/runtime-cache/v*/patched-builds/*/msb.sha256',
     'app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz',
+    'app/SiloUI/src-tauri/target/runtime-cache/git-lfs-transfer/*/source.tar.gz',
 )
 DIRECTORIES = (
     'app/SiloUI/src-tauri/target/runtime-cache/v*/licenses',
     'app/SiloUI/src-tauri/target/runtime-cache/dugite',
+    'app/SiloUI/src-tauri/target/runtime-cache/git-lfs-transfer/*/builds',
 )
 
 

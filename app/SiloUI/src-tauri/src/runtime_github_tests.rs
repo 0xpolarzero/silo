@@ -204,7 +204,6 @@ fn github_guest_bootstrap_and_live_identity() {
         if after != boot_id {
             return Err("GitHub profile update restarted the VM".into());
         }
-        crate::host_push::verify_disposable_binary_transfer(&paths, name)?;
         if inspect_workspace(&runner, &paths, name)
             .map_err(|e| e.to_string())?
             .status

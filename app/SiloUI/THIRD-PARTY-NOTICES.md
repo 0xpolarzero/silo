@@ -31,3 +31,21 @@ Upstream provenance:
 - Git source: https://github.com/git/git/tree/67ad42147a7acc2af6074753ebd03d904476118f
 - Git LFS source: https://github.com/git-lfs/git-lfs/tree/b84b33847fe6458f36ef521534dc0eac953cb379
 Exact license texts are bundled under `git-support/licenses/`. Git LFS's license includes the copied Go code terms and directs distributors to the licenses of its Go modules; external distribution still requires that dependency-license review. Linux Debian and RPM packages depend on the distribution's libcurl package. AppImage builds copy the build distribution's eligible libcurl dependency chain and must retain the licenses collected by linuxdeploy. Exact target archives, SHA-256 values, packaged path rules, platform limits, and corresponding-source review requirements are recorded in `docs/SiloUI-RUNTIME-PACKAGING.md` in Silo's source tree.
+
+# Bundled Git LFS SSH transfer server
+
+Silo builds charmbracelet/git-lfs-transfer from commit
+`971c0284dc33b1ed3f7ed9dde5d4fc0cee62db6b`, licensed under MIT, for Linux
+ARM64 or x86-64 guests. This server implements the upstream Git LFS pure SSH
+protocol. Silo copies it into a temporary guest directory for each authorized
+publish operation; the guest does not receive GitHub write credentials.
+
+- Source: https://github.com/charmbracelet/git-lfs-transfer/tree/971c0284dc33b1ed3f7ed9dde5d4fc0cee62db6b
+- Source archive SHA-256: `92d6720202aa5a059c6683df78f1fa47722c0c48ff1dc4ebfc0bc8137d988702`
+- Upstream dependencies: https://github.com/charmbracelet/git-lfs-transfer/blob/971c0284dc33b1ed3f7ed9dde5d4fc0cee62db6b/go.mod
+
+The MIT license, Go runtime license, and license/notice files for every linked
+external Go module are bundled under `git-support/lfs-transfer/`. The module
+list comes from `go list -deps` for the actual guest build target; upstream
+`go.sum` and the Go checksum database verify module source. Corresponding
+source and redistribution review remain part of release preparation.

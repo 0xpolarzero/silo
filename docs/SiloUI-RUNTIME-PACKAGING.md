@@ -150,3 +150,42 @@ That MicroSandbox work did not test Linux Tauri bundling, KVM access, VM startup
 - The production UI source did not change. No screenshots were written or overwritten. The existing Git and Git LFS rows remain unchanged.
 
 Tauri's AppImage source path was inspected: it creates Debian-style data first, so the external Git executables are in `usr/bin` before linuxdeploy scans existing ELF files. This coverage does not include a produced Linux Tauri bundle, so it does not prove the final AppImage's libcurl chain. It also excludes an actual HTTPS or GitHub push, real credentials, VM forwarding, KVM, a VM, native preflight commands, oldest supported hosts, notarization, and release-identity signing. It does not implement either approved push route. No user repository changed, and no installer, repair flow, sandbox command, or `msb doctor` ran.
+
+
+## Git LFS pure SSH publishing server (2026-09-16)
+
+Host-authorized publishing stages a Linux guest helper from
+[charmbracelet/git-lfs-transfer](https://github.com/charmbracelet/git-lfs-transfer/tree/971c0284dc33b1ed3f7ed9dde5d4fc0cee62db6b),
+commit `971c0284dc33b1ed3f7ed9dde5d4fc0cee62db6b`. The source archive SHA-256 is
+`92d6720202aa5a059c6683df78f1fa47722c0c48ff1dc4ebfc0bc8137d988702`.
+There is no stable release asset; the only published binary release is a mutable
+2023 nightly. Preparation therefore verifies the pinned source archive and builds
+it with Go 1.25 or newer, `CGO_ENABLED=0`, `GOOS=linux`, `-mod=readonly`,
+`-trimpath`, and `-buildvcs=false`. The host target selects ARM64 or AMD64 guest
+code. Runtime preparation stages `runtime/lfs-transfer/`; Tauri packages it under
+`git-support/lfs-transfer/`. The manifest records the source pin, archive hash,
+guest architecture, and executable SHA-256. Source and verified builds are cached
+under `target/runtime-cache/git-lfs-transfer/`; dependency modules are checked
+against upstream `go.sum` and the public Go checksum database.
+
+The package includes the upstream MIT license, compiler runtime license, and
+license/notice files for the external modules actually linked for that guest
+architecture. The Go compiler is a build dependency, not an application runtime
+dependency. The helper is copied to an operation-specific guest temporary directory;
+existing sandboxes need no image rebuild.
+
+The upstream server uses a conventional `lfs/objects` tree and does not resolve
+`lfs.storage` or linked-worktree configuration itself. Silo asks guest Git LFS for
+`LocalMediaDir` and exposes that directory through an operation-specific server
+view. Git LFS continues to choose and validate objects through its native protocol.
+An absent guest cache uses an empty view, preserving the guest repository state.
+
+Prototype evidence uses bundled Git LFS 3.7.1 and the pinned server over a local
+SSH shim. It covers empty content, objects reachable only from earlier commits,
+source-pruned objects already present at the destination, and new objects missing
+from both locations. The final ordinary `git lfs push` rejects missing required
+objects. Pure SSH fetch can exit successfully with server-side objects absent;
+fetch success alone does not establish completeness. On two historical 6 MB
+versions, a cold source transfer used 12,001,358 protocol bytes; a repeat with an
+existing host cache used 275 bytes. Local timings were 0.209 s and 0.157 s. These
+measurements establish cache bandwidth savings, not live VM or SSH-network latency.

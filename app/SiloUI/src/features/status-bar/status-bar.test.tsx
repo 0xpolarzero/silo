@@ -57,6 +57,15 @@ describe("status bar", () => {
     expect(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev" })).toBeDisabled()
   })
 
+  it("requires acknowledgement of an unknown result without retrying the push", async () => {
+    const { user, actions } = setup({ repositoryPushOperations: [{ workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "unknown", message: "Silo restarted before recording the result. Check this branch on GitHub before retrying." }] })
+    expect(screen.getByRole("button", { name: "Silo status bar" })).toHaveAccessibleDescription("Check push result")
+    expect(screen.queryByRole("button", { name: "Retry push for acme/silo" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "I’ve checked GitHub" }))
+    expect(actions.dismissRepositoryPush).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo")
+    expect(actions.pushRepository).not.toHaveBeenCalled()
+  })
+
   it("keeps a failed push pinned with a retry action", async () => {
     const { user, actions } = setup({ repositoryPushOperations: [{ workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "failed", message: "Remote unavailable." }] })
     const issue = screen.getByRole("alert", { name: "Push failed · dev" })

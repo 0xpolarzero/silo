@@ -235,6 +235,96 @@ it("merges remote repository results and activity idempotently without same-name
     expect(source.github).toMatchObject(local.github)
     expect(source.secrets).toEqual(local.secrets)
     store.applicationActions.pushRepository(target, "/workspace/repo")
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("push_repository", { workspace: target, repositoryPath: "/workspace/repo" }))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("start_repository_push", { workspace: target, repositoryPath: "/workspace/repo", operationId: expect.any(String) }))
+  } finally { store.dispose() }
+})
+
+it.each(["succeeded", "failed"] as const)("keeps a remote push loading across refreshes until its %s result arrives", async status => {
+  const local = applicationSourceForScenario("running")
+  const remote = structuredClone(local)
+  remote.workspaces = [remote.workspaces[0]]
+  const workspace = remoteWorkspaceTarget("office", remote.workspaces[0].machine.id)
+  const repositoryPath = remote.workspaces[0].repositories[0].path
+  let finishPush!: (result: unknown) => void
+  const pending = new Promise(resolve => { finishPush = resolve })
+  let finishStaleRead: ((result: unknown) => void) | undefined
+  let holdRemoteRead = false
+  const invoke = vi.fn(async (command: string) => {
+    if (command === "read_application_state") return local
+    if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+    if (command === "remote_host_snapshot") return holdRemoteRead ? new Promise(resolve => { finishStaleRead = resolve }) : remote
+    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
+    if (command === "read_network_state" || command === "remote_network_state") return { workspaces: [] }
+    if (command === "read_setup_activity") return []
+    if (command === "start_repository_push") return pending
+    return undefined
+  })
+  const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
+  try {
+    await store.initialize()
+    store.applicationActions.pushRepository(workspace, repositoryPath)
+    const pushing = { workspace, repositoryPath, commitCount: remote.workspaces[0].repositories[0].ahead, status: "pushing" }
+    expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual(pushing)
+    const remoteReads = invoke.mock.calls.filter(([command]) => command === "remote_host_snapshot").length
+    await store.refresh()
+    await vi.waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "remote_host_snapshot").length).toBeGreaterThan(remoteReads))
+    await store.applicationActions.refreshNetwork!()
+    expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual(pushing)
+    store.applicationActions.pushRepository(workspace, repositoryPath)
+    expect(invoke.mock.calls.filter(([command]) => command === "start_repository_push")).toHaveLength(1)
+    holdRemoteRead = true
+    await store.refresh()
+    await vi.waitFor(() => expect(finishStaleRead).toBeDefined())
+    const staleRemote = structuredClone(remote)
+    const result = { workspace: remote.workspaces[0].machine.name, repositoryPath, commitCount: 2, ...(status === "failed" ? { status, message: "Missing LFS object" } : { status }) }
+    remote.repositoryPushOperations = [result]
+    finishPush(result)
+    await vi.waitFor(() => expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual({ ...result, workspace }))
+    holdRemoteRead = false
+    finishStaleRead!(staleRemote)
+    await store.applicationActions.refreshNetwork!()
+    expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual({ ...result, workspace })
+  } finally { store.dispose() }
+})
+
+it.each([true, false])("reconciles a lost start reply without another push (host accepted: %s)", async accepted => {
+  const local = applicationSourceForScenario("running")
+  const remote = structuredClone(local)
+  remote.workspaces = [remote.workspaces[0]]
+  const workspace = remoteWorkspaceTarget("office", remote.workspaces[0].machine.id)
+  const repositoryPath = remote.workspaces[0].repositories[0].path
+  let attempts = 0
+  const success = { workspace: remote.workspaces[0].machine.name, repositoryPath, status: "succeeded" as const, commitCount: 2 }
+  const invoke = vi.fn(async (command: string) => {
+    if (command === "read_application_state") return local
+    if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+    if (command === "remote_host_snapshot") return remote
+    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
+    if (command === "read_network_state" || command === "remote_network_state") return { workspaces: [] }
+    if (command === "read_setup_activity") return []
+    if (command === "start_repository_push") {
+      if (++attempts === 1) throw new Error("SSH connection closed")
+      remote.repositoryPushOperations = [success]
+      return success
+    }
+    if (command === "repository_push_status") {
+      if (accepted) remote.repositoryPushOperations = [success]
+      return accepted ? success : null
+    }
+    return undefined
+  })
+  const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
+  try {
+    await store.initialize()
+    store.applicationActions.pushRepository(workspace, repositoryPath)
+    await vi.waitFor(() => expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual(expect.objectContaining({ status: "pushing", message: expect.stringContaining("Waiting for push status") })))
+    store.applicationActions.pushRepository(workspace, repositoryPath)
+    expect(attempts).toBe(1)
+    await vi.waitFor(() => expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual({ workspace, repositoryPath, status: "succeeded", commitCount: 2 }), { timeout: 4_000 })
+    expect(attempts).toBe(accepted ? 1 : 2)
+    const calls = invoke.mock.calls as unknown as Array<[string, { operationId?: string }]>
+    const requestIds = calls.filter(([command]) => command === "start_repository_push" || command === "repository_push_status").map(([, args]) => args.operationId)
+    expect(new Set(requestIds).size).toBe(1)
+    expect(requestIds[0]).toEqual(expect.any(String))
   } finally { store.dispose() }
 })

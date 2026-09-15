@@ -216,6 +216,48 @@ fn prepare(
     name: &str,
 ) -> Result<(String, PathBuf), String> {
     let root = paths.home.join("ssh");
+    let config = root.join(format!("{name}.conf"));
+    let known_hosts = root.join(format!("{name}.known_hosts"));
+    let alias = prepare_configuration(paths, name, &config, &known_hosts)?;
+    let ssh_root = user_home.join(".ssh");
+    private_directory(&ssh_root)?;
+    let user_config = ssh_root.join("config");
+    let old = read_regular(&user_config)?;
+    let include = format!("Include {}\n", ssh_quote(&root.join("*.conf"))?);
+    if !old
+        .split(|byte| *byte == b'\n')
+        .any(|line| line == include.trim_end().as_bytes())
+    {
+        let mut new = include.into_bytes();
+        new.extend_from_slice(&old);
+        write_private(&user_config, &new)?;
+    }
+    Ok((alias, config))
+}
+
+/// Private connections share the editor's host-only identity, without installing
+/// an Include in the user's SSH configuration or changing editor connection files.
+pub(crate) fn prepare_private_transport(
+    paths: &RuntimePaths,
+    name: &str,
+    directory: &Path,
+) -> Result<(String, PathBuf), String> {
+    let _guard = LOCK.lock().map_err(|_| FAILED)?;
+    runtime::validate_name(name).map_err(|error| error.to_string())?;
+    private_directory(directory)?;
+    let config = directory.join("ssh_config");
+    let known_hosts = directory.join("known_hosts");
+    let alias = prepare_configuration(paths, name, &config, &known_hosts)?;
+    Ok((alias, config))
+}
+
+fn prepare_configuration(
+    paths: &RuntimePaths,
+    name: &str,
+    config: &Path,
+    known_hosts: &Path,
+) -> Result<String, String> {
+    let root = paths.home.join("ssh");
     private_directory(&root)?;
     let client = root.join("silo_ed25519");
     key(&client)?;
@@ -240,12 +282,10 @@ fn prepare(
         .and_then(|name| name.to_str())
         .ok_or(FAILED)?;
     let alias = format!("silo-{suffix}-{name}");
-    let known_hosts = root.join(format!("{name}.known_hosts"));
     write_private(
         &known_hosts,
         format!("{alias} {}\n", public_key(&host_key)?).as_bytes(),
     )?;
-    let config = root.join(format!("{name}.conf"));
     let proxy = [
         "/usr/bin/env".to_owned(),
         format!("MSB_HOME={}", paths.home.display()),
@@ -265,20 +305,7 @@ fn prepare(
     .join(" ");
     let content = format!("Host {alias}\n  HostName {alias}\n  User root\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, content.as_bytes())?;
-    let ssh_root = user_home.join(".ssh");
-    private_directory(&ssh_root)?;
-    let user_config = ssh_root.join("config");
-    let old = read_regular(&user_config)?;
-    let include = format!("Include {}\n", ssh_quote(&root.join("*.conf"))?);
-    if !old
-        .split(|byte| *byte == b'\n')
-        .any(|line| line == include.trim_end().as_bytes())
-    {
-        let mut new = include.into_bytes();
-        new.extend_from_slice(&old);
-        write_private(&user_config, &new)?;
-    }
-    Ok((alias, config))
+    Ok(alias)
 }
 
 fn run(command: &mut Command, timeout: Duration) -> Result<(), String> {

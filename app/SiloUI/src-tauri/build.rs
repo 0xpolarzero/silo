@@ -89,6 +89,8 @@ fn main() {
             "remove_network_port",
             "open_network_port",
             "push_repository",
+            "start_repository_push",
+            "repository_push_status",
             "dismiss_repository_push",
             "take_main_route",
             "read_secrets_state",

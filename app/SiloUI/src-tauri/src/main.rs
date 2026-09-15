@@ -19,6 +19,9 @@ mod github_live_tests;
 mod github_tokens;
 mod host_identity;
 mod host_push;
+mod host_push_cache;
+mod host_push_transport;
+mod host_push_operations;
 mod network;
 mod notifications;
 mod runtime;
@@ -79,6 +82,8 @@ fn main() {
             status_panel::quit_app,
             tray::update_tray,
             host_push::push_repository,
+            host_push_operations::start_repository_push,
+            host_push_operations::repository_push_status,
             host_push::dismiss_repository_push,
             files::list_workspace_directory,
             network::read_network_state,

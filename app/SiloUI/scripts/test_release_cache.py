@@ -57,10 +57,13 @@ class ReleaseCacheTests(unittest.TestCase):
                    runtime + 'v0.6.17/msb-linux.tar.gz',
                    runtime + 'v0.6.17/licenses/LICENSE',
                    runtime + 'dugite/version/archive.tar.gz',
+                   runtime + 'git-lfs-transfer/pin/source.tar.gz',
+                   runtime + 'git-lfs-transfer/pin/builds/linux-arm64/git-lfs-transfer',
                    'app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz',
                    '.cargo/registry/cache/index/crate.tar.gz']
         forbidden = [runtime + 'v0.6.17/patched-builds/key/cargo-target/release/msb',
                      runtime + 'v0.6.17/patched-builds/key/work/source.rs',
+                     runtime + 'git-lfs-transfer/pin/source-123/main.go',
                      'app/SiloUI/src-tauri/target/release/silo-ui',
                      'app/SiloUI/src-tauri/target/debug/build/silo/output',
                      'app/SiloUI/github-build.local.json',
