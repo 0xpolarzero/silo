@@ -569,7 +569,7 @@ describe("onboarding", () => {
     expect(panel.queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
     expect(panel.getByLabelText("Elapsed time")).toHaveTextContent("02:18")
     expect(panel.getByText("27 of 36 operations complete")).toBeVisible()
-    expect(panel.getByText("12 configured · 12 VM · 0 SSH")).toBeVisible()
+    expect(panel.getByText("12 sandboxes · 12 on this computer · 0 remote")).toBeVisible()
     const list = panel.getByRole("list", { name: "Configured sandboxes" })
     expect(within(list).getAllByRole("listitem")).toHaveLength(12)
     expect(within(list).getByText("client-alpha-integration")).toBeVisible()

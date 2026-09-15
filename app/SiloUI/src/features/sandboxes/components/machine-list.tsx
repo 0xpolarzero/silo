@@ -404,13 +404,15 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     setDraggedID(null)
   }
 
+  const remoteCount = machines.filter(machine => getComputerId?.(machine) || machine.kind === "ssh").length
+
   return (
     <>
       <div aria-labelledby="machine-list-heading" className="flex h-full min-h-0 flex-col">
         <div className="mb-2 flex min-w-0 shrink-0 flex-wrap items-center justify-between gap-2 text-xs">
           <div className="min-w-0">
             <h3 id="machine-list-heading" className="font-medium">Sandboxes</h3>
-            <p className="text-[11px] text-muted-foreground">{summary ?? <>{machines.length} configured · {machines.filter(({ kind }) => kind === "vm").length} VM · {machines.filter(({ kind }) => kind === "ssh").length} SSH</>}</p>
+            <p className="text-[11px] text-muted-foreground">{summary ?? <>{machines.length} {machines.length === 1 ? "sandbox" : "sandboxes"} · {machines.length - remoteCount} on this computer · {remoteCount} remote</>}</p>
           </div>
           <Popover open={addOpen} onOpenChange={setAddOpen}>
             <PopoverTrigger asChild>

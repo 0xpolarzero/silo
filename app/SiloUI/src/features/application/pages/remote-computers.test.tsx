@@ -37,6 +37,7 @@ it("keeps the existing VM list and shows remote ownership through a focusable ba
 
 it("disables remote lifecycle operations while preserving last-known rows when the computer is unavailable", () => {
   const { remote } = setup(false)
+  expect(screen.getByText("4 sandboxes · 3 on this computer · 1 remote")).toBeVisible()
   const row = within(screen.getByLabelText(/Remote VM on Office Mac/).closest("li")!)
   expect(row.getByText("Unavailable")).toBeVisible()
   expect(row.getByRole("button", { name: `Stop ${remote.machine.name}` })).toBeDisabled()
@@ -77,7 +78,7 @@ it("removes the last VM from a remote computer and can create from an empty list
   await user.click(screen.getByRole("button", { name: `Confirm deletion of ${remote.machine.name} on Office Mac` }))
   expect(actions.deleteRemoteMachine).toHaveBeenCalledWith("office", remote.machine)
   view.rerender(<OverviewPage source={{ ...source, workspaces: [] }} actions={actions} onMachinesChange={onMachinesChange} />)
-  expect(screen.getByText("0 configured · 0 VM · 0 SSH")).toBeVisible()
+  expect(screen.getByText("0 sandboxes · 0 on this computer · 0 remote")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")

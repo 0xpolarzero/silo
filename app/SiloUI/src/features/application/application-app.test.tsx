@@ -338,10 +338,9 @@ describe("application", () => {
 
     const overview = within(appPanel("Sandboxes"))
     expect(overview.queryByRole("heading", { name: "Overview" })).not.toBeInTheDocument()
-    expect(overview.queryByText(/3 sandboxes/)).not.toBeInTheDocument()
     expect(overview.queryByText(/Updated just now/)).not.toBeInTheDocument()
     expect(overview.getByRole("heading", { name: "Sandboxes" })).toBeVisible()
-    expect(overview.getByText("3 configured · 3 VM · 0 SSH")).toBeVisible()
+    expect(overview.getByText("3 sandboxes · 3 on this computer · 0 remote")).toBeVisible()
     expect(overview.getByRole("button", { name: "Add" })).toBeVisible()
     const sandboxList = overview.getByRole("list", { name: "Configured sandboxes" })
     expect(sandboxList).toBeVisible()
