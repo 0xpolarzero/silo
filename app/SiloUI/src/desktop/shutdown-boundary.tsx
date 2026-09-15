@@ -20,7 +20,9 @@ export function ShutdownBoundary({ children, compact = false }: { children: Reac
     }).catch(error => console.error("Silo shutdown status:", error))
     return () => { disposed = true; unsubscribe?.() }
   }, [])
-  return <div className={compact ? "flex min-h-0 flex-col" : "flex h-full min-h-0 flex-col"}>
+  // The status window measures this wrapper before resizing. Preserve its
+  // natural height even while the window still has the previous page's size.
+  return <div className={compact ? "flex shrink-0 flex-col" : "flex h-full min-h-0 flex-col"}>
     {quitting && <div role="status" className="border-b bg-muted px-4 py-2 text-xs">Stopping local VMs…</div>}
     <div className="flex min-h-0 flex-1 flex-col" inert={quitting} aria-busy={quitting}>{children}</div>
   </div>

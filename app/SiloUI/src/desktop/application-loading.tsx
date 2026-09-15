@@ -29,15 +29,17 @@ export function ApplicationLoading({ machines, statusPanel = false }: { machines
   useStatusPanelSize(content)
   const detail = <span className="flex h-4 items-center"><Skeleton className="h-2.5 w-20" /></span>
   if (statusPanel) return <div ref={content} role="dialog" aria-label="Silo" aria-busy="true" className="silo-window flex max-h-[520px] w-[380px] flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground">
-    <span role="status" className="sr-only">Loading sandbox state</span>
-    <div className="shrink-0 px-2 pt-2" />
-    <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">{machines.length ? <ListCard className="border-0"><ol aria-label="Sandboxes" className="divide-y">
-      {machines.map((machine) => <SandboxListItem key={machine.id}><SandboxListRow name={machine.name} kind={machine.kind} detail={detail} actions={<LoadingControls />} /></SandboxListItem>)}
-    </ol></ListCard> : <div className="grid justify-items-center gap-1.5 py-8 text-center"><ListRowIcon><Monitor className="size-3.5" /></ListRowIcon><p className="text-[13px] font-medium">No sandboxes yet</p><p className="text-[11px] text-muted-foreground">Add your first sandbox in Silo.</p></div>}</div>
-    <footer className="flex shrink-0 items-center justify-between border-t px-2 py-2">
-      <Button variant="ghost" size="sm" className="gap-2" disabled><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
-      <Button variant="ghost" size="icon-xs" aria-label="Quit Silo" disabled><Power /></Button>
-    </footer>
+    <div className="flex max-h-[518px] shrink-0 flex-col overflow-hidden">
+      <span role="status" className="sr-only">Loading sandbox state</span>
+      <div className="shrink-0 px-2 pt-2" />
+      <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">{machines.length ? <ListCard className="border-0"><ol aria-label="Sandboxes" className="divide-y">
+        {machines.map((machine) => <SandboxListItem key={machine.id}><SandboxListRow name={machine.name} kind={machine.kind} detail={detail} actions={<LoadingControls />} /></SandboxListItem>)}
+      </ol></ListCard> : <div className="grid justify-items-center gap-1.5 py-8 text-center"><ListRowIcon><Monitor className="size-3.5" /></ListRowIcon><p className="text-[13px] font-medium">No sandboxes yet</p><p className="text-[11px] text-muted-foreground">Add your first sandbox in Silo.</p></div>}</div>
+      <footer className="flex shrink-0 items-center justify-between border-t px-2 py-2">
+        <Button variant="ghost" size="sm" className="gap-2" disabled><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
+        <Button variant="ghost" size="icon-xs" aria-label="Quit Silo" disabled><Power /></Button>
+      </footer>
+    </div>
   </div>
   return <ApplicationShell activeTab="workspaces" workspaceSection="overview" settingsSection="general"
     systemIssueStatus={null} workspaceAttention={{ errors: 0, warnings: 0 }} navigationDisabled
