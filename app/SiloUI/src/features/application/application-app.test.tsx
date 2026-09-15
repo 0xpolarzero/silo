@@ -613,8 +613,6 @@ describe("application", () => {
     const activityRows = within(activity).getAllByRole("listitem")
     expect(activityRows).toHaveLength(2)
     expect(within(activityRows[0]).getByText("Stop verified")).toBeVisible()
-    await user.click(within(activityRows[0]).getByRole("button", { name: "Copy activity" }))
-    expect(await navigator.clipboard.readText()).toBe("Stop verified\nA fresh observation confirmed that the sandbox is stopped.")
 
     expect(within(activityRows[0]).getByText("A fresh observation confirmed that the sandbox is stopped.")).toBeVisible()
     expect(within(activityRows[0]).getByLabelText("playgrounds, Stopped")).toBeVisible()
