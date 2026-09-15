@@ -330,3 +330,23 @@ The repeatable runner and its exact boundaries are documented in
 [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token)
 and [rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
 The tests keep permission refusal distinct from network/rate-limit failures.
+
+### Object transfer failure diagnostics (2026-09-15)
+
+The guest-to-host copy in [`host_push.rs`](../app/SiloUI/src-tauri/src/host_push.rs)
+previously discarded stderr and mapped every nonzero exit to “Object transfer
+failed or exceeded the available temporary space budget.” That message did not
+establish disk exhaustion. Remote `repository.push` executes this copy on the
+computer hosting the VM, before the host uploads the imported objects to GitHub.
+
+Failures now include the source object, sandbox, process status, copied bytes,
+remaining transfer budget, and bounded runtime stderr with sensitive-looking
+words redacted. Only SIGXFSZ establishes the temporary file size limit failure;
+other process failures retain their own diagnostics. These details travel in the
+existing failed push result. They do not add a separate activity journal.
+
+Validation: `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml
+host_push::tests` passed all eight tests with synthetic GitHub configuration.
+Fixtures cover binary copying, actual kernel file-size enforcement, missing-file
+stderr and exit status, and bounded diagnostics that drain noisy output. This
+run did not inspect a packaged app or reproduce the failure on `dev-zeronival`.

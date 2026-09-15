@@ -285,6 +285,40 @@ fn temporary_budget(directory: &Path) -> Result<u64, String> {
     }
     Ok(budget)
 }
+// Drain stderr while retaining a bounded diagnostic so a noisy runtime cannot
+// block the binary stream or consume unbounded memory.
+fn transfer_diagnostic(mut input: impl Read) -> String {
+    let mut retained = Vec::new();
+    let mut buffer = [0; 4096];
+    while let Ok(count) = input.read(&mut buffer) {
+        if count == 0 {
+            break;
+        }
+        let keep = count.min(16_384 - retained.len());
+        retained.extend_from_slice(&buffer[..keep]);
+    }
+    String::from_utf8_lossy(&retained)
+        .split_whitespace()
+        .map(|word| {
+            if word.contains('/')
+                || word.contains('@')
+                || word.contains('=')
+                || word.to_ascii_lowercase().contains("token")
+                || word.len() > 80
+            {
+                "[redacted]"
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(2000)
+        .collect()
+}
+
 // A binary stream into one host-created file cannot turn into a guest-directed
 // recursive directory copy. The child kernel limit applies before its first write.
 fn copy(
@@ -329,7 +363,7 @@ fn copy(
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::from(output))
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     let limit = *remaining as libc::rlim_t;
     unsafe {
         command.pre_exec(move || {
@@ -353,6 +387,11 @@ fn copy(
     let mut child = command
         .spawn()
         .map_err(|_| "Cannot start the bounded object transfer.")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Cannot capture object transfer diagnostics.")?;
+    let diagnostic = thread::spawn(move || transfer_diagnostic(stderr));
     let deadline = Instant::now() + Duration::from_secs(150);
     loop {
         match child
@@ -360,18 +399,31 @@ fn copy(
             .map_err(|_| "Cannot read object transfer status.")?
         {
             Some(status) if status.success() => break,
-            Some(_) => {
-                return Err(
-                    "Object transfer failed or exceeded the available temporary space budget."
-                        .into(),
-                )
+            Some(status) => {
+                use std::os::unix::process::ExitStatusExt;
+                // Also close pipes inherited by runtime descendants before joining.
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let detail = diagnostic.join().unwrap_or_default();
+                let size = fs::metadata(target).map(|m| m.len()).unwrap_or(0);
+                let reason = if status.signal() == Some(libc::SIGXFSZ) {
+                    "Object transfer exceeded its temporary file size limit"
+                } else {
+                    "Object transfer failed"
+                };
+                return Err(format!(
+                    "{reason} while copying {source} from sandbox {name} to its host ({status}; {size} bytes copied; {} bytes available in the transfer budget). {detail}",
+                    *remaining
+                ));
             }
             None if Instant::now() >= deadline => {
                 unsafe {
                     libc::kill(-(child.id() as i32), libc::SIGKILL);
                 }
                 let _ = child.wait();
-                return Err("Object transfer timed out.".into());
+                let detail = diagnostic.join().unwrap_or_default();
+                return Err(format!("Object transfer timed out while copying {source} from sandbox {name} to its host. {detail}"));
             }
             None => thread::sleep(Duration::from_millis(25)),
         }
@@ -784,9 +836,40 @@ mod tests {
         )
         .unwrap();
         let target = root.join("oversized");
-        assert!(copy(&paths, "dev", "/guest/object", &target, &mut budget).is_err());
+        let error = copy(&paths, "dev", "/guest/object", &target, &mut budget).unwrap_err();
+        assert!(error.contains("temporary file size limit"), "{error}");
         assert!(fs::metadata(target).unwrap().len() <= 1022);
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'cat: missing object: No such file or directory\n' >&2\nexit 7\n",
+        )
+        .unwrap();
+        let error = copy(
+            &paths,
+            "dev",
+            "/guest/missing",
+            &root.join("missing"),
+            &mut budget,
+        )
+        .unwrap_err();
+        assert!(error.contains("/guest/missing"), "{error}");
+        assert!(error.contains("exit status: 7"), "{error}");
+        assert!(error.contains("No such file or directory"), "{error}");
+        assert!(!error.contains("exceeded"), "{error}");
     }
+    #[test]
+    fn transfer_diagnostics_are_bounded_and_drain_noisy_output() {
+        let bytes = vec![b'x'; 100_000];
+        let mut input = std::io::Cursor::new(bytes);
+        let detail = transfer_diagnostic(&mut input);
+        assert_eq!(input.position(), 100_000);
+        assert_eq!(detail, "[redacted]");
+        assert_eq!(
+            transfer_diagnostic(&b"error token=secret /private/path user@host"[..]),
+            "error [redacted] [redacted] [redacted]"
+        );
+    }
+
     #[test]
     fn host_git_rejects_oversized_output_without_spooling_to_disk() {
         use std::os::unix::fs::PermissionsExt;
