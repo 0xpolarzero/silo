@@ -1,5 +1,11 @@
 # silo-ui
 
+## 0.6.2
+
+### Patch Changes
+
+- 826fae1: Allow updating and quitting when a sandbox has crashed. Add Dismiss to acknowledge a sandbox crash and show it as stopped without deleting its data or starting it; later crashes remain visible.
+
 ## 0.6.1
 
 ### Patch Changes
