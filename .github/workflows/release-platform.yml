@@ -3,6 +3,9 @@ name: Build and verify one Silo platform
 on:
   workflow_call:
     inputs:
+      source-ref:
+        default: ''
+        type: string
       runner:
         required: true
         type: string
@@ -49,6 +52,8 @@ jobs:
       archive-sha256: ${{ steps.archive.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -114,6 +119,8 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -175,6 +182,8 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

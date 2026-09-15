@@ -46,7 +46,12 @@ class DebianReleaseTests(unittest.TestCase):
                 path = tree / 'usr/lib/Silo/bin' / name
                 self.assertEqual(path.read_text(), f'private {name}')
                 self.assertEqual(path.stat().st_mode & 0o777, 0o755)
-            self.assertIn('debconf', (tree / 'DEBIAN/control').read_text())
+            for dependency in ('debconf', 'python3', 'pkexec'):
+                self.assertIn(dependency, (tree / 'DEBIAN/control').read_text())
+            helper = tree / 'usr/lib/silo/silo-system-update'
+            self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+            self.assertTrue(helper.read_text().startswith('#!/usr/bin/python3 -I'))
+            self.assertIn('<allow_active>auth_admin</allow_active>', (tree / 'usr/share/polkit-1/actions/org.silo.update.policy').read_text())
             self.assertIn('Signed-By: /usr/share/keyrings/silo-archive-keyring.gpg', (tree / 'usr/share/silo/apt/silo.sources').read_text())
             for script in ('config', 'preinst', 'postinst', 'postrm'):
                 self.assertEqual((tree / 'DEBIAN' / script).stat().st_mode & 0o777, 0o755)

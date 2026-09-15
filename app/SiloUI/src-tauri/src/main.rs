@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod titlebar;
 mod applications;
 mod app_menu;
 mod backup;
@@ -170,6 +172,7 @@ fn main() {
             window.set_decorations(false)?;
             let handle = app.handle().clone();
             window.on_window_event(move |event| {
+                if matches!(event, WindowEvent::Focused(true)) { updates::focused(&handle); }
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     if tray::available(&handle) {
@@ -182,6 +185,8 @@ fn main() {
                 }
             });
             window.show()?;
+            #[cfg(target_os = "macos")]
+            titlebar::install(&window)?;
             notifications::install(app.handle());
             updates::install(app.handle())?;
             ssh_access::start_monitor(app.handle());

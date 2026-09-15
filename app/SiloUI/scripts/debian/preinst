@@ -9,6 +9,15 @@ case "$1" in install|upgrade)
         target=$(readlink "$executable" 2>/dev/null) || continue
         case "$target" in
             /usr/bin/silo-ui|'/usr/bin/silo-ui (deleted)'|/usr/lib/Silo/bin/msb|'/usr/lib/Silo/bin/msb (deleted)')
+                # Only the authenticated updater may keep its inert UI alive.
+                # Other Silo instances and all running local runtimes still block.
+                pid=${executable#/proc/}; pid=${pid%/exe}
+                case "$target" in /usr/bin/silo-ui|'/usr/bin/silo-ui (deleted)')
+                    if [ -x /usr/lib/silo/silo-system-update ] && /usr/lib/silo/silo-system-update --allows-running "$pid"; then
+                        continue
+                    fi
+                    ;;
+                esac
                 rm -f /var/lib/silo/package-update-in-progress
                 echo 'Quit Silo on this computer, then retry the update. Running local VMs must stop before Silo can be replaced.' >&2
                 exit 1

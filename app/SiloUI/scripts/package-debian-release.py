@@ -25,15 +25,15 @@ with tempfile.TemporaryDirectory(prefix='silo-deb-') as directory:
         if destination.exists():raise RuntimeError('Refusing to overwrite existing maintainer script '+name)
         shutil.copyfile(support/name, destination)
         destination.chmod(0o644 if name == 'templates' else 0o755)
-    for source, target in [('silo.sources', 'usr/share/silo/apt/silo.sources'), ('silo-archive-keyring.gpg', 'usr/share/keyrings/silo-archive-keyring.gpg')]:
+    for source, target in [('silo-system-update', 'usr/lib/silo/silo-system-update'), ('org.silo.update.policy', 'usr/share/polkit-1/actions/org.silo.update.policy'), ('silo.sources', 'usr/share/silo/apt/silo.sources'), ('silo-archive-keyring.gpg', 'usr/share/keyrings/silo-archive-keyring.gpg')]:
         destination=root/target;destination.parent.mkdir(parents=True,exist_ok=True)
-        shutil.copyfile(support/source,destination);destination.chmod(0o644)
+        shutil.copyfile(support/source,destination);destination.chmod(0o755 if source == 'silo-system-update' else 0o644)
     control=root/'DEBIAN/control'
     text=control.read_text()
     import re
     if re.search(r'^Depends:',text,re.M):
-        text=re.sub(r'^Depends: ', 'Depends: debconf (>= 0.5) | debconf-2.0, ca-certificates, ',text, count=1, flags=re.M)
-    else:text = text.rstrip() + '\nDepends: debconf (>= 0.5) | debconf-2.0, ca-certificates\n'
+        text=re.sub(r'^Depends: ', 'Depends: debconf (>= 0.5) | debconf-2.0, ca-certificates, python3, pkexec, ',text, count=1, flags=re.M)
+    else:text = text.rstrip() + '\nDepends: debconf (>= 0.5) | debconf-2.0, ca-certificates, python3, pkexec\n'
     control.write_text(text)
     sums=root/'DEBIAN/md5sums'
     if sums.exists():

@@ -446,7 +446,14 @@ matrix, frontend checks, package checks and minimum-macOS checks to pass. Native
 test jobs receive no signing credentials. Only the reviewed public release dependencies
 described above are cached; application and native-test products are excluded.
 
-For a controlled CI comparison, dispatch the same branch commit twice with
+Artifact-only runs have independent concurrency groups, so they do not queue
+behind or displace a pending publication. Tagged and draft publications retain
+the shared release concurrency group. Optional `benchmark_ref` pins every
+checkout to a full 40-character source commit while using the dispatched
+workflow definition. It is rejected for publication; validation logs both
+workflow and source commits before checkout. Omit it for normal releases.
+
+For a controlled CI comparison, dispatch the same source commit twice with
 `draft=false`, once with `benchmark_schedule=sequential` and once with
 `benchmark_schedule=parallel`. Sequential mode runs native checks before package
 compilation and is rejected for draft creation. Compare job/step timestamps and

@@ -1,5 +1,27 @@
 # silo-ui
 
+## 0.5.2
+
+### Patch Changes
+
+- 5b65788: Align the macOS window controls with the sidebar and navigation buttons across macOS SDK versions.
+
+## 0.5.1
+
+### Patch Changes
+
+- fba6ede: Update Debian installations directly in Silo with system authentication, package-list refresh, progress, and restart. Check for updates when returning to Silo, with throttling and offline retries. Older installations need this release installed once before the new Update action is available.
+
+## 0.5.0
+
+### Minor Changes
+
+- a188454: Connect a personal GitHub token alongside GitHub OAuth and choose the connection for each VM. Tokens stay on the host, support accounts with no repositories, and provide their full GitHub permissions. Disconnected methods are unavailable without switching VMs to another connection. Existing VMs running an older Silo runtime need one restart before using a personal token.
+
+### Patch Changes
+
+- e2faa5d: Remove the redundant caption beneath network ports waiting for a service.
+
 ## 0.4.4
 
 ### Patch Changes

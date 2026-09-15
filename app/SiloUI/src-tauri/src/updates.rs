@@ -1,4 +1,5 @@
 //! Host-owned signed updates. The webview never chooses an endpoint, key or installer.
+mod debian;
 mod schedule;
 use schedule::Schedule;
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,7 @@ pub(crate) struct Snapshot {
     running_sandboxes: Vec<String>,
     can_install: bool,
     install_block_reason: Option<String>,
+    install_status: Option<String>,
 }
 struct State {
     schedule: Schedule,
@@ -108,6 +110,11 @@ fn package_kind(
         && appimage.is_some_and(|p| p.is_absolute() && p.is_file())
     {
         "appimage"
+    } else if cfg!(target_os = "linux")
+        && matches!(bundle, Some(tauri::utils::config::BundleType::Deb))
+        && executable == Path::new("/usr/bin/silo-ui")
+    {
+        "debian"
     } else {
         "manual"
     }
@@ -129,7 +136,7 @@ fn fail(app: &AppHandle, message: &str, details: impl ToString) -> Result<Snapsh
         s.snapshot.error = Some(message.into());
         s.snapshot.error_details = Some(details.to_string());
         s.snapshot.retry_action = Some(
-            if s.bytes.is_some() {
+            if s.bytes.is_some() || (s.snapshot.package_kind == "debian" && s.update.is_some()) {
                 "install"
             } else if s.update.is_some() {
                 "download"
@@ -203,6 +210,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
                 running_sandboxes: vec![],
                 can_install: false,
                 install_block_reason: None,
+                install_status: None,
             },
         }),
     });
@@ -214,6 +222,15 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         }
     });
     Ok(())
+}
+pub(crate) fn focused(app: &AppHandle) {
+    // The first window event can precede updater setup.
+    let Some(controller) = app.try_state::<Controller>() else {
+        return;
+    };
+    if let Ok(mut state) = controller.state.lock() {
+        state.schedule.focus(SystemTime::now());
+    };
 }
 #[tauri::command]
 pub(crate) async fn get_update_state(app: AppHandle) -> Result<Snapshot, String> {
@@ -343,7 +360,7 @@ pub(crate) async fn download_update(app: AppHandle) -> Result<Snapshot, String> 
         if busy(&state.snapshot.phase) {
             return Err("An update operation is already running.".into());
         }
-        if state.snapshot.package_kind == "manual" {
+        if matches!(state.snapshot.package_kind.as_str(), "manual" | "debian") {
             return Err("Download the package from Releases to update this installation.".into());
         }
         let update = state
@@ -479,7 +496,7 @@ pub(crate) async fn install_update(
     app: AppHandle,
     stop_sandboxes: bool,
 ) -> Result<Snapshot, String> {
-    let (update, bytes) = {
+    let (update, bytes, is_debian) = {
         let controller = app.state::<Controller>();
         let mut state = controller
             .state
@@ -495,15 +512,21 @@ pub(crate) async fn install_update(
             .update
             .clone()
             .ok_or("Download and verify an update before installing.")?;
-        let bytes = state
-            .bytes
-            .take()
-            .ok_or("Download and verify an update before installing.")?;
+        let is_debian = state.snapshot.package_kind == "debian";
+        let bytes = if is_debian {
+            vec![]
+        } else {
+            state
+                .bytes
+                .take()
+                .ok_or("Download and verify an update before installing.")?
+        };
         state.snapshot.phase = "installing".into();
+        state.snapshot.install_status = None;
         state.snapshot.error = None;
         state.snapshot.error_details = None;
         let _ = app.emit("silo://update-state", &state.snapshot);
-        (update, bytes)
+        (update, bytes, is_debian)
     };
     let worker = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
@@ -520,14 +543,18 @@ pub(crate) async fn install_update(
         })();
         let (_admission, _backup, _github, _secrets, _runtime) = match admission {
             Ok(guards) => guards,
-            Err(error) => { let _ = modify(&worker, |s| s.bytes = Some(bytes)); return Err(error); }
+            Err(error) => { let _ = modify(&worker, |s| { if !is_debian { s.bytes = Some(bytes); } }); return Err(error); }
         };
-        let result = installation_preflight(&bytes)
+        let result = (if is_debian { debian::preflight() } else { installation_preflight(&bytes) })
             .and_then(|_| crate::settings::flush_for_update(&worker))
-            .and_then(|_| crate::runtime::update_recovery::prepare(&worker, stop_sandboxes)).and_then(|_| update.install(&bytes).map_err(|e| e.to_string()));
+            .and_then(|_| crate::runtime::update_recovery::prepare(&worker, stop_sandboxes)).and_then(|_| {
+                if is_debian { debian::install(&update.version, |status| {
+                    let _ = modify(&worker, |s| s.snapshot.install_status = Some(status.into()));
+                }) } else { update.install(&bytes).map_err(|e| e.to_string()) }
+            });
         if let Err(error) = result {
             let restore = crate::runtime::update_recovery::restore_locked(&worker);
-            let _ = modify(&worker, |s| s.bytes = Some(bytes));
+            let _ = modify(&worker, |s| { if !is_debian { s.bytes = Some(bytes); } });
             return Err(match restore { Ok(()) => error, Err(resume) => format!("{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry.") });
         }
         // Settings are flushed before installation and the UI stays inert.
@@ -536,13 +563,22 @@ pub(crate) async fn install_update(
         // journal retains the running set for startup to restore after restart.
         crate::runtime::shutdown::begin();
         drop((_admission, _backup, _github, _secrets, _runtime));
+        if is_debian {
+            let result = debian::restart();
+            crate::runtime::shutdown::cancel();
+            result?;
+        }
         worker.restart()
     }).await.unwrap_or_else(|_| Err("Update installation was interrupted. Relaunch Silo to restore the saved sandbox state, then download the update again.".into()));
     match result {
         Ok(()) => get_update_state(app).await,
         Err(e) => fail(
             &app,
-            "The update could not be installed. Try again, or download the latest installer.",
+            if is_debian {
+                debian::failure_message(&e)
+            } else {
+                "The update could not be installed. Try again, or download the latest installer."
+            },
             e,
         ),
     }
@@ -619,7 +655,7 @@ mod tests {
         assert!(unpacked_size(b"not an archive", true).is_err());
     }
     #[test]
-    fn debian_with_stray_appimage_environment_remains_manual() {
+    fn debian_with_stray_appimage_environment_uses_system_installer() {
         let image = tempfile::NamedTempFile::new().unwrap();
         assert_eq!(
             package_kind(
@@ -627,7 +663,11 @@ mod tests {
                 Some(image.path()),
                 Some(tauri::utils::config::BundleType::Deb)
             ),
-            "manual"
+            if cfg!(target_os = "linux") {
+                "debian"
+            } else {
+                "manual"
+            }
         );
     }
 

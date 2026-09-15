@@ -12,7 +12,7 @@ function description(state: UpdateSnapshot) {
     case "available": return `Version ${state.availableVersion} is available.`
     case "downloading": return "Downloading update…"
     case "ready": return state.canInstall ? "Ready to install. Silo will restart." : state.installBlockReason ?? "Installation is unavailable. Try checking again."
-    case "installing": return "Installing update. Silo will restart…"
+    case "installing": return state.installStatus ?? "Installing update. Silo will restart…"
     default: return state.phase === "idle" && state.lastChecked ? `Version ${state.currentVersion} · Silo is up to date` : `Version ${state.currentVersion}`
   }
 }
@@ -24,7 +24,7 @@ export function UpdatesCard() {
   const { snapshot: state, pending } = updates
   const busy = pending || state?.phase === "checking" || state?.phase === "downloading" || state?.phase === "installing"
   const error = state?.error ?? updates.connectionError
-  const installing = state?.phase === "ready" || state?.retryAction === "install"
+  const installing = state?.phase === "ready" || state?.retryAction === "install" || (state?.packageKind === "debian" && state?.phase === "available")
   const requestInstall = updates.requestInstall
   const retry = () => {
     if (!state) updates.reconnect()
@@ -43,7 +43,8 @@ export function UpdatesCard() {
             {confirm && installing && state ? <span className="flex shrink-0 gap-1.5">
               <Button size="xs" variant="outline" disabled={busy} onClick={updates.cancelInstall}>Cancel</Button>
               <Button size="xs" disabled={busy || !state.canInstall} onClick={() => updates.install(true)}>Stop sandboxes and update</Button>
-            </span> : state?.phase === "available" ? <Button size="xs" variant="outline" disabled={busy} onClick={state.packageKind === "manual" ? updates.openRelease : updates.download}>{state.packageKind === "manual" ? "View installers on GitHub" : "Download update"}</Button>
+            </span> : state?.phase === "available" && state.packageKind === "debian" ? <Button size="xs" variant="outline" disabled={busy || !state.canInstall} onClick={requestInstall}>Update</Button>
+              : state?.phase === "available" ? <Button size="xs" variant="outline" disabled={busy} onClick={state.packageKind === "manual" ? updates.openRelease : updates.download}>{state.packageKind === "manual" ? "View installers on GitHub" : "Download update"}</Button>
               : state?.phase === "ready" ? <Button size="xs" variant="outline" disabled={busy || !state.canInstall} onClick={requestInstall}>Restart and update</Button>
                 : error || state?.phase === "downloading" || state?.phase === "installing" ? null : <Button size="xs" variant="outline" disabled={busy || !state} onClick={updates.check}><RefreshCw aria-hidden="true" className="size-3" />Check for updates</Button>}
           </InlineConfirmation>} />
@@ -68,9 +69,10 @@ export function UpdatesCard() {
             <code className="whitespace-pre-wrap break-words">sudo apt install /path/to/silo.deb</code>
           </div>
         </details>}
+        {state?.packageKind === "debian" && state.phase === "available" && <p className="px-2 pb-2 text-[11px] text-muted-foreground">{state.installBlockReason ?? "Your system will ask for authentication. Silo will update and restart."}</p>}
         {state?.releaseNotes && state.availableVersion && <details className="px-2 pb-2 text-[11px] text-muted-foreground"><summary className="cursor-pointer">Release notes</summary><p className="mt-1 whitespace-pre-wrap break-words">{state.releaseNotes}</p></details>}
       </div>
-      <ListRow icon={<ListRowIcon><RefreshCw aria-hidden="true" className="size-3.5" /></ListRowIcon>} title="Automatically check for updates" detail="Checks at launch and daily. Downloads and installs only when you choose."
+      <ListRow icon={<ListRowIcon><RefreshCw aria-hidden="true" className="size-3.5" /></ListRowIcon>} title="Automatically check for updates" detail="Checks after launch, when you return to Silo, and daily. Failed checks retry automatically. You choose when to download and install."
         detailClassName="whitespace-normal" actions={<Switch aria-label="Automatically check for updates" checked={state?.automaticChecks ?? false} disabled={!state || busy} onCheckedChange={updates.setAutomaticChecks} />} />
     </ListCard>
   </section>
