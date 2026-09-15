@@ -300,6 +300,7 @@ mod tests {
     #[test]
     fn separates_live_revocation_and_rotation_from_pending_additions() {
         let inspected = InspectedSandbox {
+            updated_at: None,
             name: "dev".into(),
             status: "Running".into(),
             config: config(&["OLD", "KEEP", "NEW", "SILO_GITHUB"]),
@@ -326,6 +327,7 @@ mod tests {
     #[test]
     fn stopped_additions_apply_on_next_boot_without_pending_restart() {
         let inspected = InspectedSandbox {
+            updated_at: None,
             name: "dev".into(),
             status: "Stopped".into(),
             config: config(&[]),

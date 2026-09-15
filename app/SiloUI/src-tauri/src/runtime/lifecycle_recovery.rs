@@ -128,7 +128,7 @@ fn stable(
 fn stopped(value: &InspectedSandbox) -> bool {
     matches!(
         value.status.to_ascii_lowercase().as_str(),
-        "stopped" | "created"
+        "stopped" | "created" | "crashed"
     )
 }
 fn advance(
@@ -155,7 +155,7 @@ fn advance(
         let command = match intent.phase {
             Phase::StopPending if observed.status.eq_ignore_ascii_case("running") => "stop",
             Phase::StartPending
-                if stopped(&observed) || observed.status.eq_ignore_ascii_case("crashed") =>
+                if stopped(&observed) =>
             {
                 validate_inspected_resources(&intent.name, &observed.config, host)?;
                 "start"
@@ -268,6 +268,21 @@ pub(super) fn perform(
     store(paths, &intent)?;
     settle(runner, paths, host, &mut intent, initial)
 }
+// The caller inspected this exact VM and confirmed Crashed while holding the
+// mutation lock. Dismissal must not leave a failed start queued for recovery.
+pub(super) fn dismiss_crashed_intent(paths: &RuntimePaths, machine: &MachineConfiguration) -> Result<(), RuntimeError> {
+    let target = path(paths, machine.id());
+    if let Some(intent) = load(&target)? {
+        if intent.machine_id != machine.id() || intent.name != machine.name() {
+            return Err(error("Saved sandbox action has a different identity; it was preserved."));
+        }
+        fs::remove_file(target).map_err(|_| error("The failed sandbox action could not be dismissed."))?;
+        File::open(directory(paths)).and_then(|f| f.sync_all())
+            .map_err(|_| error("The dismissed action could not be synced."))?;
+    }
+    Ok(())
+}
+
 // Called only after configuration deletion verified this exact ID and removed
 // it from saved metadata, including its crash-recovery path.
 pub(super) fn forget_removed(
@@ -495,7 +510,7 @@ mod tests {
         }
     }
     #[test]
-    fn stop_is_resumed_and_returned_for_startup_exclusion_but_crashed_is_not_success() {
+    fn stop_is_resumed_and_crashed_is_already_stopped() {
         let (_dir, paths, _) = setup();
         pending(&paths, "stop", Phase::StopPending);
         let runner = Fake::new("Running");
@@ -505,10 +520,30 @@ mod tests {
         );
         assert_eq!(runner.mutations(), vec!["stop"]);
         let crashed = Fake::new("Crashed");
-        assert!(perform(&crashed, &paths, &host(), "stop", "dev").is_err());
-        assert!(path(&paths, ID).exists());
+        perform(&crashed, &paths, &host(), "stop", "dev").unwrap();
+        assert!(!path(&paths, ID).exists());
         assert!(crashed.mutations().is_empty());
     }
+    #[test]
+    fn dismissal_cancels_failed_start_recovery_and_preserves_activity() {
+        let (_dir, paths, machine) = setup();
+        pending(&paths, "start", Phase::StartPending);
+        let history = runtime_activity::read(&paths).unwrap();
+        dismiss_crashed_intent(&paths, &machine).unwrap();
+        let crashed = Fake::new("Crashed");
+        assert!(recover_with(&crashed, &paths, &host()).unwrap().is_empty());
+        assert!(crashed.mutations().is_empty());
+        assert_eq!(runtime_activity::read(&paths).unwrap(), history);
+    }
+
+    #[test]
+    fn restart_of_crashed_vm_starts_without_attempting_a_stop() {
+        let (_dir, paths, _) = setup();
+        let runner = Fake::new("Crashed");
+        perform(&runner, &paths, &host(), "restart", "dev").unwrap();
+        assert_eq!(runner.mutations(), vec!["start"]);
+    }
+
     #[test]
     fn failed_start_keeps_intent_and_same_session_retry_reuses_activity() {
         let (_dir, paths, _) = setup();

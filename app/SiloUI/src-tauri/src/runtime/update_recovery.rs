@@ -116,7 +116,7 @@ fn running(
         let inspected = inspect_exact(runner, paths, &machine)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => result.push(machine),
-            "created" | "stopped" => (),
+            "created" | "stopped" | "crashed" => (),
             _ => {
                 return Err(format!(
                     "Wait until {} has finished its current action before updating.",
@@ -327,6 +327,31 @@ mod tests {
         restore_pending(&paths, |_| panic!("no machines to resume")).unwrap();
         assert!(load(&paths).unwrap().is_none());
     }
+    #[test]
+    fn crashed_sandbox_does_not_block_update_but_transitions_and_unknown_states_do() {
+        struct Inspect(Value);
+        impl RuntimeRunner for Inspect {
+            fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+                assert_eq!(args[0], "inspect");
+                Ok(CommandOutput { stdout: self.0.to_string(), stderr: String::new() })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let id = uuid::Uuid::new_v4().to_string();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        write_metadata(&paths.metadata, &request).unwrap();
+        for status in ["Crashed", "Stopped", "Created", "Running", "Starting", "Draining", "Unknown"] {
+            let runner = Inspect(json!({"name":"dev","status":status,"config":{"labels":{"silo.managed":"true","silo.machine-id":id}}}));
+            let result = running(&runner, &paths);
+            match status {
+                "Crashed" | "Stopped" | "Created" => assert!(result.unwrap().is_empty(), "{status}"),
+                "Running" => assert_eq!(result.unwrap()[0].name, "dev"),
+                _ => assert!(result.is_err(), "{status}"),
+            }
+        }
+    }
+
     #[test]
     fn replacement_runtime_identity_is_never_accepted() {
         struct Inspect(Value);

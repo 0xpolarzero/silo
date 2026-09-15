@@ -295,6 +295,7 @@ mod tests {
         let paths = super::super::tests::paths(&dir);
         let mut source = read_application_state_with(&LogRunner, &paths).unwrap();
         source.workspaces.push(ApplicationWorkspace {
+            can_dismiss_error: false,
             machine: serde_json::from_value(serde_json::json!({
                 "kind": "vm", "id": "00000000-0000-4000-8000-000000000001", "name": "dev",
                 "cpus": 4, "maxCPUs": 4, "memoryGiB": 16, "maxMemoryGiB": 16,

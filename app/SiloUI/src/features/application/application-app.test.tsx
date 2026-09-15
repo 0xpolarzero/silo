@@ -18,6 +18,7 @@ function renderApplication(scenario: Parameters<typeof applicationSourceForScena
     startWorkspace: vi.fn(),
     stopWorkspace: vi.fn(),
     restartWorkspace: vi.fn(),
+    dismissWorkspaceError: vi.fn(),
     openTerminal: vi.fn(),
     openEditor: vi.fn(),
     connectGitHub: vi.fn(),
@@ -937,6 +938,23 @@ describe("application", () => {
     await user.keyboard("{ArrowDown}")
     expect(screen.getByText("error can only be reordered within its status group.")).toBeInTheDocument()
     expect(actions.saveMachineConfiguration).not.toHaveBeenCalled()
+  })
+
+  it("dismisses a known crash and disables dismissal for stale observations", async () => {
+    const source = structuredClone(applicationSourceForScenario("running"))
+    source.workspaces[0] = { ...source.workspaces[0], state: "failed", canDismissError: true }
+    const app = renderApplication("running", source)
+    await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss dev error" }))
+    expect(app.actions.dismissWorkspaceError).toHaveBeenCalledWith("dev")
+    expect(app.actions.startWorkspace).not.toHaveBeenCalled()
+    app.unmount()
+    source.workspaces[0].freshness = "stale"
+    const stale = renderApplication("running", source)
+    expect(screen.getByRole("button", { name: "Dismiss dev error" })).toBeDisabled()
+    stale.unmount()
+    source.workspaces[0].canDismissError = false
+    renderApplication("running", source)
+    expect(screen.queryByRole("button", { name: "Dismiss dev error" })).not.toBeInTheDocument()
   })
 
   it("shows Restarting and disables lifecycle controls while the runtime works", async () => {

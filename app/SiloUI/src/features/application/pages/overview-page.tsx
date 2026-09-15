@@ -317,7 +317,7 @@ export function OverviewPage({ active = true,
             const sshStale = Boolean((source.sshAccessError && !workspace?.computer) || workspace?.computer?.connected === false || workspace?.freshness === "stale")
             const expanded = expandedSsh.has(machine.id)
             const lifecycle = workspace?.lifecycleAction
-            const lifecycleLabel = lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
+            const lifecycleLabel = lifecycle === "dismiss-error" ? "Dismissing…" : lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
             return {
               kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
               badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
@@ -338,6 +338,7 @@ export function OverviewPage({ active = true,
                 </span>
               ),
               actions: <>
+                {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || Boolean(lifecycle) || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}
                 <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={!workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction>
                 <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => setFolderWorkspaceId(machine.id)}><Code /></SandboxAction>
                 {sshAvailable && <SandboxAction label={`SSH controls for ${machine.name}`} className="w-auto gap-0.5 px-1.5 text-[11px]" aria-expanded={expanded} aria-controls={`ssh-${machine.id}`} onClick={() => setExpandedSsh(current => { const next = new Set(current); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next })}>SSH<ChevronDown className={`size-2.5 transition-transform ${expanded ? "rotate-180" : ""}`} /></SandboxAction>}

@@ -22,6 +22,7 @@ const inactiveApplicationActions: ApplicationActions = {
   startWorkspace: () => undefined,
   stopWorkspace: () => undefined,
   restartWorkspace: () => undefined,
+  dismissWorkspaceError: () => undefined,
   openTerminal: () => undefined,
   openEditor: () => undefined,
   disconnectGitHub: () => undefined,

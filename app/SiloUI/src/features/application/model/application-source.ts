@@ -131,7 +131,8 @@ export interface ApplicationWorkspace {
   purpose: string
   state: WorkspaceState
   stateDetail: string
-  lifecycleAction?: "start" | "stop" | "restart"
+  canDismissError?: boolean
+  lifecycleAction?: "start" | "stop" | "restart" | "dismiss-error"
   attention?: {
     level: "warning" | "error"
     message: string
@@ -278,6 +279,7 @@ export interface ApplicationActions {
   startWorkspace: (workspace: string) => void
   stopWorkspace: (workspace: string) => void
   restartWorkspace: (workspace: string) => void
+  dismissWorkspaceError: (workspace: string) => void
   openTerminal: (workspace: string) => void
   openEditor: (workspace: string, path?: string) => void
   cancelGitHubConnection?: () => void

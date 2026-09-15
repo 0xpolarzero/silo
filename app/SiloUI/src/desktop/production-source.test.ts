@@ -188,6 +188,25 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("dismisses a crash through the native owner and waits for its confirmed state", async () => {
+    let finish!: (value: unknown) => void
+    const command = new Promise((resolve) => { finish = resolve })
+    const mock = native()
+    const crashed = { ...source, workspaces: source.workspaces.map(w => ({ ...w, state: "failed", canDismissError: true })) }
+    const invoke = vi.fn(async (name: string, args?: Record<string, unknown>) => name === "workspace_action" ? command : name === "read_application_state" ? crashed : mock.invoke(name, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    store.applicationActions.dismissWorkspaceError("dev")
+    expect(invoke).toHaveBeenCalledWith("workspace_action", { action: "dismiss-error", name: "dev" })
+    expect(store.getSnapshot().source?.workspaces[0].state).toBe("failed")
+    expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBe("dismiss-error")
+    store.applicationActions.startWorkspace("dev")
+    expect(invoke.mock.calls.filter(([name]) => name === "workspace_action")).toHaveLength(1)
+    finish(crashed)
+    await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBeUndefined())
+    store.dispose()
+  })
+
   it("shows restart immediately, keeps it through refresh, and blocks conflicting actions", async () => {
     let finish!: (value: unknown) => void
     const command = new Promise((resolve) => { finish = resolve })

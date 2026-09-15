@@ -30,7 +30,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
                     .find(|m| m.id() == vm_id && m.is_vm())
                     .ok_or("This VM no longer exists on this computer.")?;
                 let action = params["action"].as_str().ok_or("Missing VM action.")?;
-                if !matches!(action, "start" | "stop" | "restart") {
+                if !matches!(action, "start" | "stop" | "restart" | "dismiss-error") {
                     return Err("Unsupported remote lifecycle action.".into());
                 }
                 workspace_action_with(&ProcessRunner, &paths, &resources, action, machine.name())

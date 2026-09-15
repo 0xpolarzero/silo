@@ -9,6 +9,7 @@ mod runtime_activity;
 mod secrets_runtime;
 pub(crate) mod configuration_recovery;
 pub(crate) mod lifecycle_recovery;
+mod crash_acknowledgement;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
@@ -230,6 +231,7 @@ struct ApplicationWorkspace {
     purpose: String,
     state: WorkspaceState,
     state_detail: String,
+    can_dismiss_error: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     attention: Option<WorkspaceAttention>,
     freshness: Freshness,
@@ -309,6 +311,8 @@ pub(crate) struct InspectedSandbox {
     pub(crate) config: Value,
     #[serde(default)]
     pub(crate) active_config: Option<Value>,
+    #[serde(default)]
+    pub(crate) updated_at: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2171,6 +2175,7 @@ fn read_application_state_with(
                 workspaces.push(vm_workspace(paths, machine, &inspected));
             }
             MachineConfiguration::Ssh { host, .. } => workspaces.push(ApplicationWorkspace {
+                can_dismiss_error: false,
                 machine: machine.clone(),
                 purpose: "SSH sandbox".into(),
                 state: WorkspaceState::Stopped,
@@ -2317,6 +2322,9 @@ fn vm_workspace(
             configuration_attention(paths, &machine, inspected),
         ),
         "Paused" => (WorkspaceState::Stopped, "Paused".into(), None),
+        "Crashed" if crash_acknowledgement::is_acknowledged(paths, &machine, inspected) => (
+            WorkspaceState::Stopped, "Stopped".into(), configuration_attention(paths, &machine, inspected),
+        ),
         "Crashed" => (
             WorkspaceState::Failed,
             "The MicroSandbox runtime reported a crash.".into(),
@@ -2339,6 +2347,7 @@ fn vm_workspace(
         purpose: "Local MicroSandbox".into(),
         state,
         state_detail,
+        can_dismiss_error: inspected.status == "Crashed" && inspected.updated_at.as_ref().is_some_and(|value| !value.is_empty()) && matches!(state, WorkspaceState::Failed),
         attention,
         freshness: Freshness::Fresh,
         host: "127.0.0.1".into(),
@@ -2489,6 +2498,12 @@ fn workspace_action_with(
     action: &str,
     name: &str,
 ) -> Result<(), RuntimeError> {
+    if action == "dismiss-error" {
+        return crash_acknowledgement::dismiss(runner, paths, name);
+    }
+    if matches!(action, "start" | "stop" | "restart") {
+        crash_acknowledgement::clear(paths, name)?;
+    }
     lifecycle_recovery::perform(runner, paths, host, action, name)
 }
 
@@ -3344,6 +3359,47 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .expect("missing stub output")
+        }
+    }
+
+    #[test]
+    fn dismiss_crash_persists_only_that_crash_without_mutating_the_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        let machine = vm();
+        write_metadata(&paths.metadata, &request(vec![machine.clone()])).unwrap();
+        let crash = json!({"name":"dev", "status":"Crashed", "updated_at":"2026-09-16T00:00:00.123Z",
+            "config":{"labels":{"silo.managed":"true","silo.machine-id":machine.id()}}});
+        let runner = StubRunner::successful_json(vec![crash.clone()]);
+        let inspected: InspectedSandbox = serde_json::from_value(crash.clone()).unwrap();
+        assert!(matches!(vm_workspace(&paths, machine.clone(), &inspected).state, WorkspaceState::Failed));
+        workspace_action_with(&runner, &paths, &generous_host(), "dismiss-error", "dev").unwrap();
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        assert_eq!(runner.calls.lock().unwrap()[0][0], "inspect");
+        let view = vm_workspace(&paths, machine.clone(), &inspected);
+        assert!(matches!(view.state, WorkspaceState::Stopped));
+        assert!(!view.can_dismiss_error);
+        let mut new_crash = crash.clone();
+        new_crash["updated_at"] = json!("2026-09-16T00:00:00.456Z");
+        let inspected = serde_json::from_value(new_crash).unwrap();
+        assert!(matches!(vm_workspace(&paths, machine.clone(), &inspected).state, WorkspaceState::Failed));
+        // Clearing before a new lifecycle attempt also prevents masking same-timestamp failures.
+        crash_acknowledgement::clear(&paths, "dev").unwrap();
+        let inspected = serde_json::from_value(crash).unwrap();
+        assert!(matches!(vm_workspace(&paths, machine, &inspected).state, WorkspaceState::Failed));
+    }
+
+    #[test]
+    fn dismiss_crash_rejects_running_unknown_and_replaced_sandboxes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        let machine = vm();
+        write_metadata(&paths.metadata, &request(vec![machine.clone()])).unwrap();
+        for (status, id, timestamp) in [("Running", machine.id(), Some("now")), ("Unknown", machine.id(), Some("now")), ("Crashed", "replacement", Some("now")), ("Crashed", machine.id(), None)] {
+            let runner = StubRunner::successful_json(vec![json!({"name":"dev", "status":status, "updated_at":timestamp,
+                "config":{"labels":{"silo.managed":"true","silo.machine-id":id}}})]);
+            assert!(workspace_action_with(&runner, &paths, &generous_host(), "dismiss-error", "dev").is_err());
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
         }
     }
 

@@ -19,6 +19,10 @@ Closing the window retains the existing status-bar behavior. **Quit Silo** block
 
 The existing screen shows **Stopping local VMs…** while shutdown runs. A stop or settings-save failure keeps Silo open with an actionable error and restores manual controls. VMs already stopped are not automatically restarted after a failed Quit. Failed provisioning before metadata publication is handled using its validated recovery journal; unknown managed identities block a successful Quit rather than being silently abandoned.
 
+A confirmed `Crashed` VM has no active runtime and counts as already stopped for Quit and update preparation. It is not added to the updater's resume list. Inspection failures, unknown states, and replaced identities still require resolution. This follows the pinned MicroSandbox [status definition](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/crates/db/lib/entity/sandbox.rs) and [terminal-state handling](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/sdk/rust/lib/sandbox/handle.rs).
+
+**Dismiss** on a crashed sandbox acknowledges that crash and displays the VM as stopped. The owner verifies the VM identity and crash state, saves the acknowledgement against its runtime update timestamp, and removes any pending failed lifecycle intent. It does not start the VM, delete data, rewrite runtime status, or erase activity history. A later runtime timestamp or a new explicit lifecycle action invalidates the acknowledgement. Remote dismissal is performed by the owning Silo instance.
+
 This describes graceful Quit, not process crashes or forced OS termination. Silo must remain running on the owner for remote management. Disabling remote management ends Silo guest sessions and rejects new management requests; already accepted VM operations retain their owner. It does not revoke an OS account's pre-existing general SSH permissions.
 
 ## Implementation boundaries

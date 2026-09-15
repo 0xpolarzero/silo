@@ -72,6 +72,7 @@ const applicationSourceShape = z.object({
     purpose: z.string(),
     state: z.enum(["running", "starting", "stopped", "failed"]),
     stateDetail: z.string(),
+    canDismissError: z.boolean().optional(),
     freshness: z.enum(["fresh", "stale"]),
     host: z.string(),
     repositories: z.array(z.unknown()), files: z.array(z.unknown()), ports: z.array(z.unknown()), logs: z.array(z.unknown()),
@@ -193,7 +194,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const unlisten: Array<() => void> = []
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
-  const pendingLifecycle = new Map<string, "start" | "stop" | "restart">()
+  const pendingLifecycle = new Map<string, "start" | "stop" | "restart" | "dismiss-error">()
   let pendingBackupOperation = false
   let localBackupOperation: BackupOperation | null = null
   const dismissedBackupResults = new Set<string>()
@@ -497,7 +498,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const key = `${action}:${name}`
     if (pendingWorkspaceActions.has(key) || pendingLifecycle.has(name)) return
     pendingWorkspaceActions.add(key)
-    const lifecycle = action === "start" || action === "stop" || action === "restart"
+    const lifecycle = action === "start" || action === "stop" || action === "restart" || action === "dismiss-error"
     if (lifecycle) { pendingLifecycle.set(name, action); publish({ ...snapshot }) }
     void native.invoke<unknown>(remote && lifecycle ? "remote_workspace_action" : "workspace_action", remote && lifecycle ? { ...remote, action, ...extras } : { action, name, ...extras })
       .then((result) => {
@@ -846,6 +847,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     startWorkspace: (name) => workspaceAction("start", name),
     stopWorkspace: (name) => workspaceAction("stop", name),
     restartWorkspace: (name) => workspaceAction("restart", name),
+    dismissWorkspaceError: (name) => workspaceAction("dismiss-error", name),
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
     saveGitHubPersonalToken: async token => { await githubMutation("save_github_personal_token", { token }) },

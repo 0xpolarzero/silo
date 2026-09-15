@@ -153,7 +153,7 @@ fn stop_uncommitted_vm(
     loop {
         let observed = inspect()?;
         match observed.status.to_ascii_lowercase().as_str() {
-            "stopped" | "created" => return Ok(()),
+            "stopped" | "created" | "crashed" => return Ok(()),
             "running" if !requested_stop => {
                 runner.run(
                     paths,
@@ -239,6 +239,21 @@ mod tests {
             fail: fail.map(str::to_owned),
         }
     }
+    #[test]
+    fn quit_accepts_crashed_vm_and_still_stops_running_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = setup(&dir);
+        let runner = runner(None);
+        runner.states.lock().unwrap().insert("first".into(), "Crashed".into());
+        stop_local_vms_with(&runner, &paths).unwrap();
+        assert_eq!(runner.states.lock().unwrap()["first"], "Crashed");
+        assert_eq!(runner.states.lock().unwrap()["second"], "Stopped");
+        let calls = runner.calls.lock().unwrap();
+        assert!(!calls.iter().any(|args| args[0] == "stop" && args[1] == "first"));
+        assert!(calls.iter().any(|args| args[0] == "stop" && args[1] == "second"));
+        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 2);
+    }
+
     #[test]
     fn quit_stops_and_verifies_each_local_vm_without_removing_it() {
         let dir = tempfile::tempdir().unwrap();
