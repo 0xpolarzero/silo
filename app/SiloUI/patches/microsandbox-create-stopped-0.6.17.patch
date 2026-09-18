@@ -3755,10 +3755,10 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
          SshInactivityTimeoutArgs {
              inactivity_timeout: timeout.map(str::to_string),
 diff --git a/crates/runtime/lib/vm.rs b/crates/runtime/lib/vm.rs
-index 0c2e480..a1259d3 100644
+index 0c2e480..e246a87 100644
 --- a/crates/runtime/lib/vm.rs
 +++ b/crates/runtime/lib/vm.rs
-@@ -426,11 +426,17 @@ type NetworkSecretsHandle = microsandbox_network::secrets::handle::SecretsHandle
+@@ -426,13 +426,20 @@ type NetworkSecretsHandle = microsandbox_network::secrets::handle::SecretsHandle
  #[cfg(not(feature = "net"))]
  type NetworkSecretsHandle = ();
 
@@ -3775,16 +3775,22 @@ index 0c2e480..a1259d3 100644
 +    Option<NetworkPortsHandle>,
      Vec<u8>,
      BindIdentityMapRegistration,
++    Option<std::fs::File>, // Keep the console pipe alive until vm.enter opens /dev/fd.
  );
-@@ -885,6 +891,7 @@ fn run(config: Config) -> RuntimeResult<std::convert::Infallible> {
+
+ //--------------------------------------------------------------------------------------------------
+@@ -885,8 +892,10 @@ fn run(config: Config) -> RuntimeResult<std::convert::Infallible> {
          _network_termination_handle,
          network_metrics_handle,
          _network_secrets_handle,
 +        _network_ports_handle,
          bootstrap_frame,
          bind_identity_map,
++        _kernel_output,
      ) = match build_result {
-@@ -941,7 +948,7 @@ fn run(config: Config) -> RuntimeResult<std::convert::Infallible> {
+         Ok(vm) => vm,
+         Err(e) => {
+@@ -941,7 +950,7 @@ fn run(config: Config) -> RuntimeResult<std::convert::Infallible> {
          let secrets = _network_secrets_handle.clone();
          #[cfg(not(feature = "net"))]
          let secrets: Option<()> = None;
@@ -3793,7 +3799,7 @@ index 0c2e480..a1259d3 100644
          {
              let control_sock_path =
                  crate::control::control_socket_path_for(&config.agent_sock_path);
-@@ -949,6 +956,8 @@ fn run(config: Config) -> RuntimeResult<std::convert::Infallible> {
+@@ -949,6 +958,8 @@ fn run(config: Config) -> RuntimeResult<std::convert::Infallible> {
                  vm: control,
                  #[cfg(feature = "net")]
                  secrets,
@@ -3802,7 +3808,7 @@ index 0c2e480..a1259d3 100644
              };
              match crate::control::spawn_control_listener(control_sock_path.clone(), context) {
                  Ok(()) => {
-@@ -1737,6 +1746,7 @@ fn build_vm(
+@@ -1737,6 +1748,7 @@ fn build_vm(
      let mut network_termination_handle = None;
      let mut network_metrics_handle = None;
      let mut network_secrets_handle = None;
@@ -3810,7 +3816,7 @@ index 0c2e480..a1259d3 100644
 
      // Vsock routes are independent of virtio-net. Microsandbox owns the host
      // local IPC endpoints while libkrun retains framing, queues and credits.
-@@ -1845,11 +1855,13 @@ fn build_vm(
+@@ -1845,11 +1857,13 @@ fn build_vm(
                  .map_err(|err| RuntimeError::Custom(format!("initialize network: {err}")))?;
          network_termination_handle = Some(network.termination_handle());
          network_metrics_handle = Some(network.metrics_handle());
@@ -3824,36 +3830,71 @@ index 0c2e480..a1259d3 100644
          }
 
          network.start(tokio_handle.clone());
-@@ -1898,6 +1910,17 @@ fn build_vm(
+@@ -1898,6 +1912,19 @@ fn build_vm(
 
      // Console — ring-buffer-based custom backend for agent protocol, plus
      // console output routed to kernel.log for kernel/init logs.
-+    // Open a pipe through /dev/fd on supported Unix hosts. libkrun duplicates
-+    // its write end during build; the capture thread applies the same retention
-+    // as exec/runtime instead of leaving an unbounded kernel file descriptor.
++    // libkrun opens this path during vm.enter, after build_vm returns. Return
++    // the owned write end with the VM so /dev/fd remains valid for that lifetime.
++    // The capture thread applies the same retention as exec/runtime.
 +    #[cfg(unix)]
-+    let (_kernel_output, kernel_log_path) = {
++    let (kernel_output, kernel_log_path) = {
 +        let (read, write) = create_pipe()?;
 +        let path = PathBuf::from(format!("/dev/fd/{}", write.as_raw_fd()));
 +        spawn_log_thread("log-kernel", read, &config.log_dir, "kernel", None)?;
-+        (write, path)
++        (Some(std::fs::File::from(write)), path)
 +    };
++    #[cfg(windows)]
++    let kernel_output = None;
 +    #[cfg(windows)]
      let kernel_log_path = config.log_dir.join("kernel.log");
      #[cfg(unix)]
      {
-@@ -1936,6 +1959,7 @@ fn build_vm(
+@@ -1936,8 +1963,10 @@ fn build_vm(
          network_termination_handle,
          network_metrics_handle,
          network_secrets_handle,
 +        network_ports_handle,
          bootstrap_frame,
          bind_identity_map,
++        kernel_output,
      ))
-@@ -3217,6 +3241,21 @@ mod tests {
+ }
+
+@@ -2446,19 +2475,12 @@ fn spawn_log_thread(
+
+     const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+
+-    let log_dir = log_dir.to_path_buf();
+-    let log_prefix = log_prefix.to_string();
++    // Fail setup before libkrun receives a pipe whose reader cannot persist output.
++    let mut log = RotatingLog::new(log_dir, log_prefix, MAX_LOG_BYTES)?;
+
+     std::thread::Builder::new()
+         .name(name.into())
+         .spawn(move || {
+-            let mut log = match RotatingLog::new(&log_dir, &log_prefix, MAX_LOG_BYTES) {
+-                Ok(log) => log,
+-                Err(e) => {
+-                    let _ = writeln!(std::io::stderr(), "failed to create {log_prefix} log: {e}");
+-                    return;
+-                }
+-            };
+             let mut reader = unsafe { std::fs::File::from_raw_fd(pipe_read.into_raw_fd()) };
+             let mut fwd = forward;
+             let mut buf = [0u8; 4096];
+@@ -3217,6 +3239,29 @@ mod tests {
          );
      }
 
++    #[test]
++    #[cfg(unix)]
++    fn log_capture_reports_storage_setup_failure_synchronously() {
++        let file = tempfile::NamedTempFile::new().unwrap();
++        let (read, _write) = super::create_pipe().unwrap();
++        assert!(super::spawn_log_thread("log-kernel", read, file.path(), "kernel", None).is_err());
++    }
++
 +    #[test]
 +    #[cfg(unix)]
 +    fn kernel_console_pipe_reopens_through_dev_fd() {
@@ -4644,7 +4685,7 @@ index 3423dc8..179d633 100644
  use std::path::Path;
  use std::sync::Mutex;
 diff --git a/crates/runtime/lib/logging.rs b/crates/runtime/lib/logging.rs
-index 2ce7a7b..23040fa 100644
+index 2ce7a7b..71b0671 100644
 --- a/crates/runtime/lib/logging.rs
 +++ b/crates/runtime/lib/logging.rs
 @@ -16,7 +16,11 @@ use crate::RuntimeResult;
@@ -4688,7 +4729,7 @@ index 2ce7a7b..23040fa 100644
          Ok(Self {
              path,
              file,
-@@ -120,12 +139,34 @@ impl RotatingLog {
+@@ -120,12 +139,37 @@ impl RotatingLog {
 
      /// Write data to the log file, rotating if necessary.
      pub fn write(&mut self, data: &[u8]) -> RuntimeResult<()> {
@@ -4704,6 +4745,9 @@ index 2ce7a7b..23040fa 100644
 +        }
 +        let dir = self.path.parent().expect("log parent");
 +        retention::enforce(dir)?;
++        if self.file.metadata()?.len() == 0 {
++            self.file = OpenOptions::new().create(true).append(true).open(&self.path)?;
++        }
 +        self.written = self.file.metadata()?.len();
 +        let now = std::time::SystemTime::now();
 +        if self.written > 0
@@ -4725,7 +4769,7 @@ index 2ce7a7b..23040fa 100644
          Ok(())
      }
 
-@@ -144,18 +185,25 @@ impl RotatingLog {
+@@ -144,18 +188,25 @@ impl RotatingLog {
      fn rotate(&mut self) -> RuntimeResult<()> {
          self.file.flush()?;
 
@@ -4760,7 +4804,7 @@ index 2ce7a7b..23040fa 100644
 
          // Open a fresh log file
          self.file = OpenOptions::new()
-@@ -184,7 +232,66 @@ impl fmt::Display for LogLevel {
+@@ -184,7 +235,66 @@ impl fmt::Display for LogLevel {
 
  #[cfg(test)]
  mod tests {
@@ -4830,10 +4874,10 @@ index 2ce7a7b..23040fa 100644
      fn test_log_level_cli_flags() {
 diff --git a/crates/runtime/lib/logging_retention.rs b/crates/runtime/lib/logging_retention.rs
 new file mode 100644
-index 0000000..d1fb4eb
+index 0000000..236ab44
 --- /dev/null
 +++ b/crates/runtime/lib/logging_retention.rs
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,186 @@
 +//! Shared with the pinned runtime patch. Only call from Silo for stopped VMs.
 +//! Live runtime writers serialize retention and writes with their process lock.
 +use std::{
@@ -4844,6 +4888,7 @@ index 0000000..d1fb4eb
 +
 +pub const MAX_BYTES: u64 = 250 * 1024 * 1024;
 +pub const MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
++#[allow(dead_code)] // Used by the live runtime writer; desktop only cleans stopped logs.
 +pub const SEGMENT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 +
 +pub fn marker(path: &Path) -> PathBuf {
@@ -4924,8 +4969,14 @@ index 0000000..d1fb4eb
 +            continue;
 +        }
 +        if path.extension().is_some_and(|ext| ext == "log") {
-+            // Preserve the inode held by an idle writer; it detects length zero next write.
++            // Release bytes held by idle writers, then replace the inode so followers
++            // detect expiry. The writer reopens the current path after seeing length zero.
 +            fs::OpenOptions::new().write(true).open(&path)?.set_len(0)?;
++            fs::remove_file(&path)?;
++            fs::OpenOptions::new()
++                .write(true)
++                .create_new(true)
++                .open(&path)?;
 +            mark(&path, now)?;
 +        } else {
 +            fs::remove_file(&path)?;
@@ -4971,7 +5022,7 @@ index 0000000..d1fb4eb
 +        fs::remove_dir_all(dir).unwrap();
 +    }
 +    #[test]
-+    fn budget_is_shared_and_current_inode_survives_expiry() {
++    fn budget_is_shared_and_current_path_survives_expiry() {
 +        let dir = dir();
 +        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
 +        for (name, seconds) in [("exec.log.1", 3), ("runtime.log.1", 2), ("kernel.log", 1)] {
@@ -4988,6 +5039,23 @@ index 0000000..d1fb4eb
 +        assert!(dir.join("unrelated").exists());
 +        fs::remove_dir_all(dir).unwrap();
 +    }
++    #[test]
++    #[cfg(unix)]
++    fn expiry_releases_open_file_bytes_and_changes_generation_for_followers() {
++        use std::os::unix::fs::MetadataExt;
++        let dir = dir();
++        let path = dir.join("kernel.log");
++        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
++        fs::write(&path, "expired").unwrap();
++        mark(&path, now - MAX_AGE).unwrap();
++        let held = fs::File::open(&path).unwrap();
++        let old_inode = held.metadata().unwrap().ino();
++        enforce_at(&dir, now, MAX_BYTES, MAX_AGE).unwrap();
++        assert_eq!(held.metadata().unwrap().len(), 0);
++        assert_ne!(fs::metadata(&path).unwrap().ino(), old_inode);
++        fs::remove_dir_all(dir).unwrap();
++    }
++
 +    #[test]
 +    fn only_known_streams_and_numeric_archives_are_logs() {
 +        assert!(is_log("exec.log.42"));

@@ -8,6 +8,7 @@ use std::{
 
 pub const MAX_BYTES: u64 = 250 * 1024 * 1024;
 pub const MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+#[allow(dead_code)] // Used by the live runtime writer; desktop only cleans stopped logs.
 pub const SEGMENT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub fn marker(path: &Path) -> PathBuf {
@@ -88,8 +89,14 @@ pub fn enforce_at(
             continue;
         }
         if path.extension().is_some_and(|ext| ext == "log") {
-            // Preserve the inode held by an idle writer; it detects length zero next write.
+            // Release bytes held by idle writers, then replace the inode so followers
+            // detect expiry. The writer reopens the current path after seeing length zero.
             fs::OpenOptions::new().write(true).open(&path)?.set_len(0)?;
+            fs::remove_file(&path)?;
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
             mark(&path, now)?;
         } else {
             fs::remove_file(&path)?;
@@ -135,7 +142,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
-    fn budget_is_shared_and_current_inode_survives_expiry() {
+    fn budget_is_shared_and_current_path_survives_expiry() {
         let dir = dir();
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
         for (name, seconds) in [("exec.log.1", 3), ("runtime.log.1", 2), ("kernel.log", 1)] {
@@ -152,6 +159,23 @@ mod tests {
         assert!(dir.join("unrelated").exists());
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    #[cfg(unix)]
+    fn expiry_releases_open_file_bytes_and_changes_generation_for_followers() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = dir();
+        let path = dir.join("kernel.log");
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        fs::write(&path, "expired").unwrap();
+        mark(&path, now - MAX_AGE).unwrap();
+        let held = fs::File::open(&path).unwrap();
+        let old_inode = held.metadata().unwrap().ino();
+        enforce_at(&dir, now, MAX_BYTES, MAX_AGE).unwrap();
+        assert_eq!(held.metadata().unwrap().len(), 0);
+        assert_ne!(fs::metadata(&path).unwrap().ino(), old_inode);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn only_known_streams_and_numeric_archives_are_logs() {
         assert!(is_log("exec.log.42"));
