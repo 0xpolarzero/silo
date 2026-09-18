@@ -1,0 +1,40 @@
+WEBVTT
+
+00:00.000 --> 00:01.000
+Silo: prepare your development sandbox.
+
+00:01.000 --> 00:05.000
+Choose which GitHub repositories a sandbox can access.
+
+00:05.000 --> 00:08.000
+Assign an API secret to a sandbox and an allowed HTTPS domain.
+
+00:08.000 --> 00:10.000
+Back up a local sandbox to an archive.
+
+00:10.000 --> 00:12.000
+Enable remote management on Office Mac.
+
+00:12.000 --> 00:15.000
+Connect Office Mac from the laptop. Its sandbox joins the local list.
+
+00:15.000 --> 00:20.000
+Start the remote sandbox from the laptop. Its status updates on both computers.
+
+00:20.000 --> 00:22.000
+Run a development server in the sandbox's terminal.
+
+00:22.000 --> 00:26.500
+Connect the discovered port in Network and open the site in a local browser.
+
+00:26.500 --> 00:33.000
+Enable SSH for the sandbox. Copy its address and save a connection key.
+
+00:33.000 --> 00:40.000
+Add the SSH connection to an illustrated coding agent on the laptop.
+
+00:40.000 --> 00:46.500
+Choose the project and submit a prompt. The agent reads files in the remote sandbox.
+
+00:46.500 --> 00:47.500
+Silo. Your tools here. Your sandbox there.

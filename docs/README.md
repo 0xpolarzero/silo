@@ -23,6 +23,8 @@ has been exercised.
 
 ## Research and design evidence
 
+- [Landing page reference](SiloUI-LANDING-REFERENCES.md): approved Zed direction, product evidence, and website implementation.
+
 Research records the inputs to a decision. Follow the implementation documents
 above for current behavior and build commands.
 

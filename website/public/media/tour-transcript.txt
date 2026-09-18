@@ -1,0 +1,23 @@
+Silo product tour (48 seconds)
+
+This silent product demonstration uses sample data and inert backend actions.
+The Silo interface uses production components. Terminals, editors, agent clients,
+computer silhouettes, and native notifications are illustrations.
+
+0:00 — Prepare a sandbox.
+0:01 — Connect GitHub and choose a repository for the sandbox. Access is read-only by default.
+0:05 — Create an API secret with a sandbox assignment and an allowed HTTPS domain.
+0:08 — Save a local sandbox backup archive.
+0:10 — Enable remote management on Office Mac.
+0:12 — Connect Office Mac from a laptop; its sandbox appears alongside the local sandbox.
+0:15 — Start the remote sandbox from the laptop. Both computers show its running status.
+0:20 — Open the sandbox terminal and start a development server.
+0:22 — Connect the discovered development-server port in Network, then open the local address in a browser.
+0:26 — Enable SSH for the sandbox, copy its address, and save a key.
+0:33 — Add the connection in an illustrated coding agent client.
+0:40 — Choose the project and submit a prompt; the agent begins reading files in the remote sandbox.
+0:46 — Silo. Your tools here. Your sandbox there.
+
+To connect computers, install Silo on both, enable SSH on the host, and enable
+Allow remote management. Keep Silo running on the host. The illustrated SSH
+connection assumes an existing network route between the two computers.
