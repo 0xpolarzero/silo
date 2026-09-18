@@ -47,6 +47,24 @@ function appPanel(name: string) {
 }
 
 describe("application", () => {
+  it("opens failed activity logs in a diagnostic window and keeps a cleared range cleared", async () => {
+    const source = applicationSourceForScenario("running")
+    const workspace = source.workspaces[0]
+    source.activities = [{ id: "failed-start", category: "sandbox", title: "Start failed", detail: "Runtime failed", occurredAt: "2026-09-18T10:00:00Z", time: "Now", tone: "danger", status: "completed", workspace: workspace.machine.name }]
+    const queryLogs = vi.fn(async () => ({ entries: [], nextCursor: null, oldestAvailableTimestamp: null, newestAvailableTimestamp: null, totalMatches: 0, timestampEstimated: false }))
+    const user = userEvent.setup()
+    render(<ApplicationPreview source={source} actions={{ queryLogs }} initialRoute={{ workspaceSection: "activity" }} />)
+    await user.click(screen.getByRole("button", { name: "Show logs" }))
+    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ sandboxId: workspace.machine.id, since: "2026-09-18T09:55:00.000Z", until: "2026-09-18T10:05:00.000Z" })))
+    await user.click(screen.getByRole("button", { name: "All retained history" }))
+    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ since: undefined, until: undefined })))
+    const sections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+    await user.click(sections.getByRole("button", { name: "Activity" }))
+    await user.click(sections.getByRole("button", { name: "Logs" }))
+    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ since: undefined, until: undefined })))
+    expect(screen.getByLabelText("Logs from")).toHaveValue("")
+  })
+
   it("shows the recorded time for runtime logs without an embedded timestamp", async () => {
     const source = structuredClone(applicationSourceForScenario("running"))
     const occurredAt = "2026-09-09T19:03:05.952Z"
@@ -672,7 +690,7 @@ describe("application", () => {
     await application.user.click(sandboxSections.getByRole("button", { name: "Logs" }))
 
     const rows = within(within(appPanel("Sandboxes")).getByRole("table", { name: "Logs" })).getAllByRole("row").slice(1)
-    expect(rows.map((row) => within(row).getAllByRole("cell")[0].textContent)).toEqual(["19:18:42", "19:18:40", "19:18:37", "17:02:11", "09:41:02"])
+    expect(rows.map((row) => row.querySelector("time")?.textContent)).toEqual(["19:18:42", "19:18:40", "19:18:37", "17:02:11", "09:41:02"])
   })
 
   it("shows one truthful network table and uses the selected browser for opening ports", async () => {

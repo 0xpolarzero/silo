@@ -14,6 +14,7 @@ export interface LogQuery {
 }
 export const logEntrySchema = z.object({
   id: z.string(), line: z.string(), occurredAt: z.string(), sandboxId: z.string(),
+  sandboxName: z.string().optional(), computerName: z.string().optional(),
   computerId: z.string(), source: z.string(), session: z.string().nullish(),
 })
 export const logPageSchema = z.object({
@@ -28,7 +29,9 @@ export function logIdentity(workspace: ApplicationWorkspace): Pick<LogQuery, "sa
   return { sandboxId: workspace.computer?.vmId ?? workspace.machine.id, ...(workspace.computer && { computerId: workspace.computer.id }) }
 }
 export function formatLog(entry: LogEntry): string {
-  return `${entry.occurredAt}\t${entry.computerId}\t${entry.sandboxId}\t${entry.source}\t${entry.session ?? ""}\t${entry.line}`
+  const computer = entry.computerName ? `${entry.computerName} (${entry.computerId})` : entry.computerId
+  const sandbox = entry.sandboxName ? `${entry.sandboxName} (${entry.sandboxId})` : entry.sandboxId
+  return `${entry.occurredAt}\t${computer}\t${sandbox}\t${entry.source}\t${entry.session ?? ""}\t${entry.line}`
 }
 /** Deterministic browser fixtures supply their entire history, never a production fallback. */
 export function fixtureLogPage(workspace: ApplicationWorkspace, request: LogQuery): LogPage {
