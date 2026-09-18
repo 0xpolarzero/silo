@@ -154,8 +154,28 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
     Ok(result)
 }
 
+pub(super) fn strip_ansi(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut clean = String::with_capacity(text.len());
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' { clean.push(ch); continue; }
+        match chars.next() {
+            Some('[') => { for ch in chars.by_ref() { if ('@'..='~').contains(&ch) { break; } } }
+            Some(']') => {
+                let mut escape = false;
+                for ch in chars.by_ref() {
+                    if ch == '\u{7}' || (escape && ch == '\\') { break; }
+                    escape = ch == '\u{1b}';
+                }
+            }
+            Some(_) | None => {}
+        }
+    }
+    clean
+}
+
 pub(super) fn log_text(body: &str) -> String {
-    body.lines()
+    strip_ansi(body).lines()
         .map(|line| {
             let lower = line.to_ascii_lowercase();
             if [

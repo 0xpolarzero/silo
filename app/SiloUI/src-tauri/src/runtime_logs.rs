@@ -440,8 +440,9 @@ fn read(
                 }
                 let id = record_id(segment.inode, offset, &bytes);
                 offset += count as u64;
-                // An unfinished write is not a record in this snapshot.
-                if bytes.last() != Some(&b'\n') {
+                // An unfinished JSON write is not a record. Plain console chunks can
+                // rotate without a newline; their captured bytes remain searchable.
+                if segment.stream == "exec" && bytes.last() != Some(&b'\n') {
                     break;
                 }
                 let raw = String::from_utf8_lossy(&bytes);
@@ -459,7 +460,8 @@ fn read(
                         value["id"].as_u64().map(|id| id.to_string()),
                     )
                 } else {
-                    let prefix = raw
+                    let clean = runtime_activity::strip_ansi(&raw);
+                    let prefix = clean
                         .split_whitespace()
                         .next()
                         .unwrap_or("")
@@ -808,6 +810,57 @@ mod tests {
         query.query = Some("historical failure".into());
         let page = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
         assert_eq!(page.entries[0].line, body);
+    }
+
+    #[test]
+    fn plain_text_rotation_fragments_remain_searchable_and_exportable() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("kernel.log.1"),
+            b"historical kernel failure",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("runtime.log"),
+            b"current runtime failure",
+        )
+        .unwrap();
+        fs::write(directory.path().join("exec.log"), b"{\"t\":").unwrap();
+        let mut query = request();
+        query.query = Some("failure".into());
+        let page = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
+        assert_eq!(page.entries.len(), 2);
+        assert!(page
+            .entries
+            .iter()
+            .any(|entry| entry.line == "historical kernel failure"));
+        assert!(page
+            .entries
+            .iter()
+            .any(|entry| entry.line == "current runtime failure"));
+    }
+
+    #[test]
+    fn ansi_diagnostics_preserve_dates_search_and_redaction() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("runtime.log"), b"\x1b[32m2026-09-18T08:00:00Z\x1b[0m red \x1b[31mfailure\x1b[0m\nAuth\x1b[31morization: private-value\n").unwrap();
+        let page = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+        assert!(page
+            .entries
+            .iter()
+            .any(|entry| entry.line == "[Sensitive runtime output hidden]"));
+        assert!(page
+            .entries
+            .iter()
+            .all(|entry| !entry.line.contains("[31m") && !entry.line.contains("private-value")));
+        let mut query = request();
+        query.query = Some("red failure".into());
+        let found = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
+        assert_eq!(found.entries.len(), 1);
+        assert_eq!(
+            found.entries[0].occurred_at,
+            "2026-09-18T08:00:00.000000000Z"
+        );
     }
 
     #[test]
