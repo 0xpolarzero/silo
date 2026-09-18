@@ -1,3 +1,4 @@
+import { logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { useSyncExternalStore } from "react"
@@ -766,6 +767,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   const applicationActions: ApplicationActions = {
+    queryLogs: async request => logPageSchema.parse(await native.invoke("query_sandbox_logs", { request })),
+    exportLogs: async requests => z.boolean().parse(await native.invoke("export_workspace_logs", { requests })),
+    cancelLogExport: async () => { await native.invoke("cancel_log_export") },
     setRemoteManagement: async enabled => {
       remoteManagement = remoteManagementSchema.parse(await native.invoke("set_remote_management", { enabled }))
       remoteManagementError = undefined

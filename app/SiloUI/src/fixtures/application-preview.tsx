@@ -1,3 +1,4 @@
+import { fixtureLogPage, type LogLoader } from "@/features/application/model/logs"
 import { useMemo, useState } from "react"
 import { fixtureDirectoryLoader } from "./directory-loader"
 import { useApplicationFixture } from "@/fixtures/application-state"
@@ -51,6 +52,11 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
     return { ...settings, state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, computerName: "Ada’s Mac mini", addresses: ["127.0.0.1", "192.168.1.42"] }
   }) }
 
+  const queryLogs = useMemo<LogLoader>(() => async request => {
+    const workspace = fixture.source.workspaces.find(item => (item.computer?.vmId ?? item.machine.id) === request.sandboxId && item.computer?.id === request.computerId)
+    if (!workspace) throw new Error("Sandbox unavailable")
+    return fixtureLogPage(workspace, request)
+  }, [fixture.source.workspaces])
   const listWorkspaceDirectory = useMemo(() => fixtureDirectoryLoader(source.workspaces), [source.workspaces])
   const backup = useBackupFixture({
     source: fixture.source,
@@ -68,6 +74,7 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
       ...inactiveApplicationActions,
       saveSshAccess: async request => { setSshSettings(current => ({ ...current, [request.workspace]: request })) },
       listWorkspaceDirectory,
+      queryLogs,
       ...actions,
       saveSecret: (request) => {
         fixture.saveSecret(request)

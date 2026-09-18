@@ -1,3 +1,4 @@
+import type { LogLoader, LogQuery } from "./logs"
 import type { RemoteComputer, RemoteManagement, WorkspaceComputer } from "./remote-computers"
 import type { DirectoryLoader } from "./directory-store"
 import type {
@@ -255,6 +256,9 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
+  cancelLogExport?: () => Promise<void>
+  queryLogs?: LogLoader
+  exportLogs?: (requests: LogQuery[]) => Promise<boolean>
   setRemoteManagement?: (enabled: boolean) => Promise<void>
   setupComputerKey?: (address: string) => Promise<void>
   authorizeComputer?: (address: string) => Promise<void>

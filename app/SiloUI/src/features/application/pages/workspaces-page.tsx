@@ -1,19 +1,18 @@
+import { Logs, type LogWindow } from "./logs-page"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { NetworkPage } from "./network-page"
 import { FolderActions } from "@/features/application/components/folder-actions"
 import { WorkspaceFileTree } from "@/features/application/components/workspace-file-tree"
 import type { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useMemo, useState } from "react"
-import { Activity, Archive, Box, Check, CircleAlert, Cloud, GitBranch, KeyRound, Loader2, Search, TriangleAlert, Wrench } from "lucide-react"
+import { Activity, Archive, Box, Check, CircleAlert, Cloud, GitBranch, KeyRound, Loader2, TriangleAlert, Wrench } from "lucide-react"
 
-import { CopyButton } from "@/components/copy-button"
 import { DisclosureHeader } from "@/components/disclosure-header"
 import { FilterCombobox, type FilterOption } from "@/components/filter-combobox"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
-import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { RepositoryPushFeedback } from "@/features/application/components/repository-push-feedback"
@@ -178,85 +177,6 @@ function Files({
   )
 }
 
-interface LogRow {
-  id: string
-  raw: string
-  occurredAt: string
-  timestamp: string
-  workspace: string
-  workspaceState: ApplicationWorkspace["state"]
-  message: string
-}
-
-function logRows(workspaces: ApplicationWorkspace[]): LogRow[] {
-  return workspaces.flatMap((workspace) => workspace.logs.map((log, index) => {
-    const match = /^(\d{2}:\d{2}:\d{2})\s{2,}(.*)$/.exec(log.line)
-    return {
-      id: `${workspace.machine.id}:${index}`,
-      raw: log.line,
-      occurredAt: log.occurredAt,
-      timestamp: match?.[1] ?? new Date(log.occurredAt).toLocaleTimeString(),
-      workspace: workspace.machine.name,
-      workspaceState: workspace.state,
-      message: match?.[2] ?? log.line,
-    }
-  })).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
-}
-
-function Logs({ workspaces, query, onQueryChange }: { workspaces: ApplicationWorkspace[]; query: string; onQueryChange: (query: string) => void }) {
-  if (workspaces.length === 0) return <EmptyState title="No sandboxes selected" description="Select at least one sandbox to see its logs." />
-  const rows = logRows(workspaces)
-  const normalizedQuery = query.trim().toLowerCase()
-  const filteredRows = rows.filter((row) => !normalizedQuery || `${row.timestamp} ${row.workspace} ${row.message}`.toLowerCase().includes(normalizedQuery))
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="mb-3 flex shrink-0 items-center gap-2">
-        <div className="relative min-w-0 flex-1">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          <Input aria-label="Search logs" placeholder="Search logs" value={query} onChange={(event) => onQueryChange(event.target.value)} className="h-7 pl-8" />
-        </div>
-        <CopyButton
-          variant="outline"
-          size="xs"
-          value={filteredRows.map(({ raw }) => raw).join("\n")}
-          disabled={filteredRows.length === 0}
-          labels={{ idle: "Copy all logs", copied: "All logs copied", failed: "Copy all logs failed" }}
-          text={{ idle: "Copy all", copied: "Copied", failed: "Copy failed" }}
-        />
-      </div>
-      {filteredRows.length > 0 ? (
-        <div role="table" aria-label="Logs" className="flex max-h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border text-xs">
-          <div role="row" className="grid shrink-0 grid-cols-[5.5rem_minmax(0,1fr)_7rem_1.5rem] gap-3 border-b border-border bg-muted/45 px-3 py-2 font-medium text-muted-foreground">
-            <span role="columnheader">Time</span>
-            <span role="columnheader">Message</span>
-            <span role="columnheader">Sandbox</span>
-            <span role="columnheader" className="sr-only">Actions</span>
-          </div>
-          <div className="min-h-0 divide-y divide-border overflow-y-auto overscroll-contain bg-card" data-table-scroll="logs">
-            {filteredRows.map((row) => (
-              <div key={row.id} role="row" className="group/log-row grid grid-cols-[5.5rem_minmax(0,1fr)_7rem_1.5rem] items-center gap-3 px-3 py-2 transition-colors hover:bg-muted/55 focus-within:bg-muted/55">
-                <span role="cell" className="font-mono text-muted-foreground">{row.timestamp}</span>
-                <span role="cell" className="min-w-0 break-words font-mono text-foreground/85">{row.message}</span>
-                <span role="cell" className="flex items-center"><WorkspaceBadge name={row.workspace} state={row.workspaceState} /></span>
-                <span role="cell">
-                  <CopyButton
-                    variant="ghost"
-                    size="icon-xs"
-                    className="opacity-0 transition-opacity group-hover/log-row:opacity-100 group-focus-within/log-row:opacity-100 focus-visible:opacity-100"
-                    value={row.raw}
-                    labels={{ idle: `Copy log line from ${row.workspace} at ${row.timestamp}`, copied: "Log line copied", failed: "Copy log line failed" }}
-                  />
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : <EmptyState title={normalizedQuery ? "No matching logs" : "No logs yet"} description={normalizedQuery ? `No logs match “${query}”.` : "Logs from the selected sandboxes will appear here."} />}
-    </div>
-  )
-}
-
 const activityCategoryOptions: ReadonlyArray<FilterOption<ApplicationActivityCategory>> = [
   { value: "sandbox", label: "Sandbox" },
   { value: "git", label: "Git" },
@@ -275,7 +195,7 @@ const activityCategoryPresentation = {
   system: { label: "System", icon: Wrench },
 } as const
 
-function ActivityLog({ workspaces, sourceActivities }: { workspaces: ApplicationWorkspace[]; sourceActivities: ApplicationActivity[] }) {
+function ActivityLog({ workspaces, sourceActivities, onShowLogs }: { workspaces: ApplicationWorkspace[]; sourceActivities: ApplicationActivity[]; onShowLogs: (activity: ApplicationActivity) => void }) {
   const [selectedCategories, setSelectedCategories] = useState<Set<ApplicationActivityCategory>>(() => new Set())
   const workspacesByTarget = new Map(workspaces.map((workspace) => [workspaceTarget(workspace), workspace]))
   const allActivities = [...sourceActivities]
@@ -344,6 +264,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
                 detail={
                   <div className="min-w-0 space-y-1" data-activity-content>
                     <p>{item.detail}</p>
+                    {workspace && item.tone === "danger" && <Button size="xs" variant="outline" onClick={() => onShowLogs(item)}>Show logs</Button>}
                     {item.status === "running" && item.progress !== undefined && (
                       <div className="flex max-w-sm items-center gap-2 pt-1">
                         <Progress value={item.progress * 100} aria-label={item.progressLabel ?? `${item.title} progress`} />
@@ -376,7 +297,7 @@ function ActivityLog({ workspaces, sourceActivities }: { workspaces: Application
 }
 
 export function WorkspacesPage({
-  network, networkError, networkActions,
+  network, networkError, networkActions, onSectionChange,
   editor,
   onOpenEditor,
   directoryStore,
@@ -393,6 +314,7 @@ export function WorkspacesPage({
   onPushRepository,
   onDismissRepositoryPush,
 }: {
+  onSectionChange: (section: WorkspaceDetailSection) => void
   network?: ApplicationSource["network"]
   networkError?: string | null
   networkActions: ApplicationActions
@@ -412,6 +334,7 @@ export function WorkspacesPage({
   onPushRepository: (workspace: string, repositoryPath: string, commitCount: number) => void
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
 }) {
+  const [logWindow, setLogWindow] = useState<LogWindow>()
   const visibleWorkspaces = useMemo(
     () => selectedWorkspaceIds.size === 0 ? workspaces : workspaces.filter(({ machine }) => selectedWorkspaceIds.has(machine.id)),
     [workspaces, selectedWorkspaceIds],
@@ -421,9 +344,16 @@ export function WorkspacesPage({
     <div className="mx-auto grid h-full min-h-0 w-full max-w-4xl grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6">
       <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />
       {section === "files" && <Files editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
-      {section === "logs" && <Logs workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} />}
+      {section === "logs" && <Logs key={JSON.stringify([visibleWorkspaces.map(workspaceTarget), logWindow])} workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} actions={networkActions} active={active} window={logWindow} />}
       {section === "network" && <NetworkPage workspaces={visibleWorkspaces} browser={browser} network={network} error={networkError} actions={networkActions} active={active} />}
-      {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} />}
+      {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} onShowLogs={activity => {
+        const workspace = workspaces.find(item => workspaceTarget(item) === activity.workspace)
+        if (workspace) onWorkspaceFilterChange(new Set([workspace.machine.id]))
+        const time = new Date(activity.occurredAt).getTime()
+        setLogWindow({ since: new Date(time - 5 * 60000).toISOString(), until: new Date(time + 5 * 60000).toISOString() })
+        onLogQueryChange("")
+        onSectionChange("logs")
+      }} />}
     </div>
   )
 }

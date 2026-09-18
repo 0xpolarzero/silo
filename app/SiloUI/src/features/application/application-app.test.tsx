@@ -47,12 +47,12 @@ function appPanel(name: string) {
 }
 
 describe("application", () => {
-  it("shows the recorded time for runtime logs without an embedded timestamp", () => {
+  it("shows the recorded time for runtime logs without an embedded timestamp", async () => {
     const source = structuredClone(applicationSourceForScenario("running"))
     const occurredAt = "2026-09-09T19:03:05.952Z"
     source.workspaces[0].logs = [{ line: "[  61.851852] reboot: Power down", occurredAt }]
     render(<ApplicationPreview source={source} initialRoute={{ workspace: "dev", workspaceSection: "logs" }} />)
-    const logs = within(screen.getByRole("table", { name: "Logs" }))
+    const logs = within(await screen.findByRole("table", { name: "Logs" }))
     expect(logs.getByText("[ 61.851852] reboot: Power down")).toBeVisible()
     expect(logs.getByText(new Date(occurredAt).toLocaleTimeString())).toBeVisible()
   })
@@ -587,14 +587,14 @@ describe("application", () => {
     expect(copyLine).toHaveClass("opacity-0", "group-hover/log-row:opacity-100", "group-focus-within/log-row:opacity-100")
     const copy = vi.spyOn(navigator.clipboard, "writeText")
     await user.click(copyLine)
-    expect(copy).toHaveBeenCalledWith("17:02:11  silo  Workspace stopped cleanly")
+    expect(copy).toHaveBeenCalledWith("2026-09-03T17:02:11Z\tlocal\t00000000-0000-4000-8000-000000000002\toutput\t\t17:02:11  silo  Workspace stopped cleanly")
     const copiedLine = within(playgroundsRow).getByRole("button", { name: "Log line copied" })
     expect(copiedLine).toHaveAttribute("data-copy-status", "copied")
     expect(copiedLine.querySelector("svg")).toHaveClass("lucide-check")
 
-    await user.click(panel.getByRole("button", { name: "Copy all logs" }))
-    expect(copy).toHaveBeenLastCalledWith("17:02:11  silo  Workspace stopped cleanly\n09:41:02  silo  Workspace stopped cleanly")
-    const copiedLogs = panel.getByRole("button", { name: "All logs copied" })
+    await user.click(panel.getByRole("button", { name: "Copy loaded logs" }))
+    expect(copy).toHaveBeenLastCalledWith(expect.stringMatching(/2026-09-03T17:02:11Z\tlocal\t.*\n.*09:41:02.*\tlocal\t.*Workspace stopped cleanly/))
+    const copiedLogs = panel.getByRole("button", { name: "Loaded logs copied" })
     expect(copiedLogs).toHaveTextContent("Copied")
     expect(copiedLogs.querySelector("svg")).toHaveClass("lucide-check")
 

@@ -952,3 +952,26 @@ describe("remote SSH access", () => {
     } finally { store.dispose() }
   })
 })
+
+describe("retained log bridge", () => {
+  it("passes opaque computer and sandbox identities and rejects malformed pages", async () => {
+    const mock = native()
+    const invoke = vi.fn(async () => ({ entries: "not a log page" }))
+    const store = createProductionSource({ ...mock.bridge, invoke } as unknown as ProductionBridge)
+    const request = { sandboxId: "sandbox-id", computerId: "office-id", query: "old failure", limit: 200 }
+    await expect(store.applicationActions.queryLogs!(request)).rejects.toThrow()
+    expect(invoke).toHaveBeenCalledWith("query_sandbox_logs", { request })
+    store.dispose()
+  })
+  it("distinguishes a canceled native export from a saved export and validates the reply", async () => {
+    const mock = native()
+    const invoke = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true).mockResolvedValueOnce("yes")
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    const requests = [{ sandboxId: "sandbox-id", query: "failure" }]
+    expect(await store.applicationActions.exportLogs!(requests)).toBe(false)
+    expect(await store.applicationActions.exportLogs!(requests)).toBe(true)
+    await expect(store.applicationActions.exportLogs!(requests)).rejects.toThrow()
+    expect(invoke).toHaveBeenCalledWith("export_workspace_logs", { requests })
+    store.dispose()
+  })
+})

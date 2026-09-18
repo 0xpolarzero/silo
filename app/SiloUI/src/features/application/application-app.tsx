@@ -278,6 +278,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
           <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} source={applicationSource} actions={actions} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
+            onSectionChange={navigation.selectWorkspaceSection}
             network={source.network}
             networkError={source.networkError}
             networkActions={actions}
