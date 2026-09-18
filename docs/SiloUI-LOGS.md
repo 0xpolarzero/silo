@@ -27,7 +27,7 @@ count limits.
 
 Select sandboxes in Logs, enter text, and optionally choose a source and date
 range. Search runs against retained files, including rotated segments and stopped
-sandboxes. The view reports matches and the available history boundary. Older
+sandboxes. The view reports matching record counts. Older
 records load in pages. Follow refreshes the latest results; pause before browsing
 older pages. Surrounding logs show nearby records without the search filter.
 Activity entries can open the associated time window.
@@ -95,3 +95,13 @@ Generated test output is under the ignored
 establish behavior for their supplied data; they do not prove a running installed
 app, Linux VM console capture or a live two-computer workflow. No packaged bundle
 was built or inspected. No running user VM was stopped or changed for verification.
+
+Subsequent native preview on 2026-09-18: `npm --prefix app/SiloUI run
+desktop:build:debug` built the debug bundle at
+`app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`. Launching this exact
+bundle exposed missing Tauri permissions for the three log commands. The command
+manifest and main-window grants were fixed; three regression tests passed, along
+with nine focused Logs tests, typecheck and lint. The rebuilt app was launched
+and its Logs view inspected against actual local state: the query completed
+without a permission error and returned no records. Retention and search-scope
+commentary were removed from the view. No VM was started for this preview.
