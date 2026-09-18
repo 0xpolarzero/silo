@@ -25,8 +25,9 @@ count limits.
 
 ## Search and investigation
 
-Select sandboxes in Logs, enter text, and optionally choose a source and date
-range. Search runs against retained files, including rotated segments and stopped
+Select sandboxes in Logs, enter text, and add optional source or date filters.
+No date range applies by default. Filter chips can be removed individually or
+reset with Clear; opening or cancelling the date editor leaves the search unchanged. Search runs against retained files, including rotated segments and stopped
 sandboxes. The view reports matching record counts. Older
 records load in pages. Follow refreshes the latest results; pause before browsing
 older pages. Surrounding logs show nearby records without the search filter.

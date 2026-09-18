@@ -56,13 +56,13 @@ describe("application", () => {
     render(<ApplicationPreview source={source} actions={{ queryLogs }} initialRoute={{ workspaceSection: "activity" }} />)
     await user.click(screen.getByRole("button", { name: "Show logs" }))
     await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ sandboxId: workspace.machine.id, since: "2026-09-18T09:55:00.000Z", until: "2026-09-18T10:05:00.000Z" })))
-    await user.click(screen.getByRole("button", { name: "Clear dates" }))
+    await user.click(screen.getByRole("button", { name: /^Remove Date/ }))
     await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ since: undefined, until: undefined })))
     const sections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
     await user.click(sections.getByRole("button", { name: "Activity" }))
     await user.click(sections.getByRole("button", { name: "Logs" }))
     await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ since: undefined, until: undefined })))
-    expect(screen.getByLabelText("Logs from")).toHaveValue("")
+    expect(screen.queryByLabelText("Logs from")).not.toBeInTheDocument()
   })
 
   it("shows the recorded time for runtime logs without an embedded timestamp", async () => {

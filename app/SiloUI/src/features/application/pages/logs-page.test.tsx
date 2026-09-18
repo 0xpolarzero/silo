@@ -13,6 +13,45 @@ function fixture() {
   return { workspace, queryLogs, actions }
 }
 describe("retained logs", () => {
+  it("starts without source or date filters and uses a quiet empty state", async () => {
+    const { workspace, actions, queryLogs } = fixture()
+    workspace.logs = []
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    expect(await screen.findByText("No logs yet")).toBeVisible()
+    expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ source: undefined, since: undefined, until: undefined }))
+    expect(screen.queryByLabelText("Logs from")).not.toBeInTheDocument()
+    expect(screen.queryByText(/No logs in this time range/)).not.toBeInTheDocument()
+  })
+  it("adds, removes and clears optional filters without applying an unfinished date", async () => {
+    const { workspace, actions, queryLogs } = fixture()
+    workspace.logs = []
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    await screen.findByText("No logs yet")
+    const add = (name: string) => {
+      fireEvent.click(screen.getByRole("combobox", { name: "Filter logs" }))
+      fireEvent.click(screen.getByRole("option", { name }))
+    }
+    add("Date filter")
+    expect(screen.getByLabelText("From date")).toHaveValue("")
+    fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-09-18" } })
+    expect(queryLogs).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(screen.queryByRole("button", { name: "Remove Date filter" })).not.toBeInTheDocument()
+    add("Date filter")
+    fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-09-18" } })
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }))
+    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ since: new Date(2026, 8, 18).toISOString(), until: undefined })))
+    add("Source: runtime")
+    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ source: "runtime", since: expect.any(String) })))
+    fireEvent.click(screen.getByRole("button", { name: "Remove Date filter" }))
+    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ source: "runtime", since: undefined, until: undefined })))
+    add("Date filter")
+    fireEvent.click(screen.getByRole("button", { name: "Last hour" }))
+    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ source: "runtime", since: expect.any(String) })))
+    fireEvent.click(within(screen.getByRole("group", { name: "Log filters" })).getByRole("button", { name: "Clear" }))
+    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ source: undefined, since: undefined, until: undefined })))
+    expect(await screen.findByText("No logs yet")).toBeVisible()
+  })
   it("finds an error outside 100,000 newer records and shows its surrounding records", async () => {
     const { workspace, actions, queryLogs } = fixture()
     render(<Logs workspaces={[workspace]} actions={actions} active query="needle" onQueryChange={vi.fn()} />)
@@ -131,7 +170,8 @@ describe("retained logs", () => {
     actions.queryLogs = queryLogs
     render(<Logs workspaces={[remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
     await waitFor(() => expect(queryLogs).toHaveBeenCalledWith(expect.objectContaining({ computerId: "office", sandboxId: "remote-vm" })))
-    fireEvent.change(screen.getByRole("combobox", { name: "Log source" }), { target: { value: "runtime" } })
+    fireEvent.click(screen.getByRole("combobox", { name: "Filter logs" }))
+    fireEvent.click(screen.getByRole("option", { name: "Source: runtime" }))
     await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ computerId: "office", sandboxId: "remote-vm", source: "runtime" })))
   })
 

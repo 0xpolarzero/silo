@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
-import { Search } from "lucide-react"
+import { Search, ScrollText } from "lucide-react"
+import { LogFilters } from "../components/log-filters"
 import { CopyButton } from "@/components/copy-button"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -107,22 +108,20 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
   // Fixed-height rows keep DOM work bounded while full messages remain selectable in context.
   const rowHeight = 52, start = Math.max(0, Math.floor(scrollTop / rowHeight) - 8)
   const visible = rows.slice(start, start + 60)
-  const updateTime = (value: string, field: "since" | "until") => {
-    const iso = value ? new Date(value).toISOString() : ""
-    if (field === "since") setSince(iso); else setUntil(iso)
-    onWindowChange?.({ since, until, [field]: iso })
-  }
   if (!workspaces.length) return <p>No sandboxes selected. Select at least one sandbox to see its logs.</p>
   return <div className="flex h-full min-h-0 flex-col gap-3">
     <div className="flex shrink-0 flex-wrap items-center gap-2">
       <div className="relative min-w-40 flex-1"><Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" /><Input aria-label="Search logs" placeholder="Search logs" value={query} onChange={event => { setContext(undefined); onQueryChange(event.target.value) }} className="h-7 pl-8" /></div>
-      <select aria-label="Log source" value={source} onChange={event => { setContext(undefined); setSource(event.target.value) }} className="h-7 rounded border bg-background text-xs"><option value="">All sources</option>{["stdout", "stderr", "output", "system", "runtime", "kernel"].map(value => <option key={value}>{value}</option>)}</select>
       <Button size="xs" variant="outline" aria-pressed={following} onClick={() => setFollowing(value => !value)}>{following ? "Pause" : "Follow"}</Button>
       <CopyButton variant="outline" size="xs" title="Copy the logs in this list" value={rows.map(({ entry }) => formatLog(entry)).join("\n")} disabled={!rows.length || invalidRange} labels={{ idle: "Copy logs", copied: "Logs copied", failed: "Copy logs failed" }} text={{ idle: "Copy", copied: "Copied", failed: "Copy failed" }} />
       {actions.exportLogs && <Button size="xs" variant="outline" title={context ? "Save these logs to a file" : "Save all logs matching your search and filters to a file"} disabled={busy || invalidRange || Boolean(error) || query !== searchQuery || !results.length || exportState === "Exporting…"} onClick={() => void exportMatches()}>Export…</Button>}
       {exportState === "Exporting…" && actions.cancelLogExport && <Button size="xs" variant="outline" onClick={() => void actions.cancelLogExport?.().catch(cause => setExportState(`Cancellation failed: ${String(cause)}`))}>Cancel export</Button>}
     </div>
-    <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs"><label>From <input aria-label="Logs from" type="datetime-local" value={since ? localTime(since) : ""} onChange={event => { setContext(undefined); updateTime(event.target.value, "since") }} className="rounded border bg-background" /></label><label>To <input aria-label="Logs to" type="datetime-local" value={until ? localTime(until) : ""} onChange={event => { setContext(undefined); updateTime(event.target.value, "until") }} className="rounded border bg-background" /></label>{(since || until) && <Button size="xs" variant="ghost" onClick={() => { setSince(""); setUntil(""); onWindowChange?.(undefined) }}>Clear dates</Button>}</div>
+    <LogFilters source={source} since={since} until={until} onChange={filters => {
+      setContext(undefined)
+      setSource(filters.source); setSince(filters.since); setUntil(filters.until)
+      onWindowChange?.(filters.since || filters.until ? { since: filters.since, until: filters.until } : undefined)
+    }} />
     {invalidRange && <p role="alert">The start must precede the end.</p>}
     {error && <div role="alert" className="text-xs text-destructive">Logs unavailable: {error} <Button size="xs" variant="outline" onClick={() => setRevision(value => value + 1)}>Retry</Button></div>}
     {!invalidRange && (busy || rows.length > 0 || exportState) && <p role="status" className="shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{busy ? "Loading logs…" : rows.length > 0 ? context ? `Showing ${rows.length} surrounding records.` : `Showing ${rows.length} of ${total} matching records.` : ""} {exportState}</p>}
@@ -140,11 +139,9 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
         })}
         <div style={{ height: Math.max(0, rows.length - start - visible.length) * rowHeight }} aria-hidden="true" />
       </div>
-    </div> : !busy && !error && !invalidRange && <p className="text-sm">{query ? "No matching logs." : "No logs in this time range."}</p>}
+    </div> : !busy && !error && !invalidRange && <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-border px-6 text-center">
+      <div><ScrollText aria-hidden="true" className="mx-auto mb-3 size-5 text-muted-foreground" /><p className="text-sm font-medium">{query || source || since || until ? "No results" : "No logs yet"}</p></div>
+    </div>}
     {results.some(result => result.page.nextCursor) && <Button className="shrink-0 self-start" size="xs" variant="outline" disabled={busy || invalidRange} onClick={() => void older()}>Load older</Button>}
   </div>
-}
-function localTime(iso: string): string {
-  const date = new Date(iso)
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
 }
