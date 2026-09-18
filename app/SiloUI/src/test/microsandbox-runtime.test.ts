@@ -24,6 +24,17 @@ vi.mock("node:child_process", async (importOriginal) => {
 })
 
 describe("bundled MicroSandbox release staging", () => {
+  it("pins the runtime patch and shares retention rules with stopped sandboxes", () => {
+    const patch = readFileSync(MICROSANDBOX_PATCH_PATH, "utf8")
+    const inputs = JSON.parse(readFileSync("runtime-inputs.json", "utf8"))
+    expect(sha256(Buffer.from(patch))).toBe(inputs.patchSha256)
+    const marker = "+++ b/crates/runtime/lib/logging_retention.rs\n"
+    const section = patch.split(marker)[1]?.split("diff --git ")[0]
+    expect(section).toBeDefined()
+    const source = section!.split("\n").filter((line) => line.startsWith("+")).map((line) => line.slice(1)).join("\n") + "\n"
+    expect(source).toBe(readFileSync("src-tauri/src/log_retention.rs", "utf8"))
+  })
+
   it("applies a source patch inside another repository without changing the parent", async () => {
     const parent = await mkdtemp(join(tmpdir(), "silo-nested-patch-"))
     try {
