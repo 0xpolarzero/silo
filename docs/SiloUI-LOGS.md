@@ -42,8 +42,8 @@ memory pressure. Refresh to begin a new snapshot. Search indexes store record
 offsets rather than log bodies, with a shared 128 MiB index budget; an oversized
 query returns an explicit request to narrow its time range or search text.
 
-Copy loaded copies the records currently fetched, with identifying context.
-Export matches saves all matching pages through the native save dialog as JSON
+Copy copies the records currently fetched, with identifying context.
+Export… saves all matching pages through the native save dialog as JSON
 Lines. It includes coverage metadata and complete record identities. Export
 queries each sandbox as a separate snapshot. Cancellation or a failed page leaves
 the selected destination untouched and removes partial output.

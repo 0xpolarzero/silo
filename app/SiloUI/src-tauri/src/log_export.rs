@@ -80,7 +80,7 @@ pub(crate) async fn export_workspace_logs(
             .dialog()
             .file()
             .set_parent(&window)
-            .set_title("Export matching logs")
+            .set_title("Export logs")
             .set_file_name("silo-logs.jsonl")
             .add_filter("JSON Lines", &["jsonl"])
             .blocking_save_file()

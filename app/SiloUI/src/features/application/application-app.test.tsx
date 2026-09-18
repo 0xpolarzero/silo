@@ -56,7 +56,7 @@ describe("application", () => {
     render(<ApplicationPreview source={source} actions={{ queryLogs }} initialRoute={{ workspaceSection: "activity" }} />)
     await user.click(screen.getByRole("button", { name: "Show logs" }))
     await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ sandboxId: workspace.machine.id, since: "2026-09-18T09:55:00.000Z", until: "2026-09-18T10:05:00.000Z" })))
-    await user.click(screen.getByRole("button", { name: "All retained history" }))
+    await user.click(screen.getByRole("button", { name: "Clear dates" }))
     await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ since: undefined, until: undefined })))
     const sections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
     await user.click(sections.getByRole("button", { name: "Activity" }))
@@ -610,9 +610,9 @@ describe("application", () => {
     expect(copiedLine).toHaveAttribute("data-copy-status", "copied")
     expect(copiedLine.querySelector("svg")).toHaveClass("lucide-check")
 
-    await user.click(panel.getByRole("button", { name: "Copy loaded logs" }))
+    await user.click(panel.getByRole("button", { name: "Copy logs" }))
     expect(copy).toHaveBeenLastCalledWith(expect.stringMatching(/2026-09-03T17:02:11Z\tlocal\t.*\n.*09:41:02.*\tlocal\t.*Workspace stopped cleanly/))
-    const copiedLogs = panel.getByRole("button", { name: "Loaded logs copied" })
+    const copiedLogs = panel.getByRole("button", { name: "Logs copied" })
     expect(copiedLogs).toHaveTextContent("Copied")
     expect(copiedLogs.querySelector("svg")).toHaveClass("lucide-check")
 

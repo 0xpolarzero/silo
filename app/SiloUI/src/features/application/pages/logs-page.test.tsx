@@ -31,9 +31,9 @@ describe("retained logs", () => {
     await screen.findByText(/Showing 400 of 100001/)
     expect(within(screen.getByRole("table")).getAllByRole("row").length).toBeLessThan(70)
     expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "200" }))
-    fireEvent.click(screen.getByRole("button", { name: "Export matches" }))
+    fireEvent.click(screen.getByRole("button", { name: "Export…" }))
     expect(actions.exportLogs).toHaveBeenCalledWith([expect.not.objectContaining({ cursor: expect.any(String) })])
-    await screen.findByText(/Export saved/)
+    await screen.findByText(/Logs saved/)
   })
   it("ignores an old response after switching sandboxes and preserves explicit errors", async () => {
     const { workspace, actions } = fixture()
@@ -104,7 +104,7 @@ describe("retained logs", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load older" }))
     await screen.findByText(/Showing 4 of 4/)
     expect(screen.getByRole("alert")).toHaveTextContent("Offline owner")
-    expect(screen.getByRole("button", { name: "Export matches" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Export…" })).toBeDisabled()
   })
   it("waits for a slow follow scan instead of invalidating its response", async () => {
     vi.useFakeTimers()
