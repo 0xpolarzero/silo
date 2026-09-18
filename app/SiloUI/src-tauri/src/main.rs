@@ -25,6 +25,8 @@ mod host_push_operations;
 mod network;
 mod notifications;
 mod runtime;
+mod log_export;
+mod log_retention;
 mod remote;
 mod remote_access;
 mod remote_network;
@@ -152,6 +154,9 @@ fn main() {
             backup_controller::cancel_backup_operation,
             backup_controller::dismiss_backup_operation,
             runtime::read_application_state,
+            runtime::runtime_logs::query_sandbox_logs,
+            log_export::export_workspace_logs,
+            log_export::cancel_log_export,
             runtime::read_application_shell,
             runtime::read_machine_configuration,
             runtime::configure_workspace_identities,

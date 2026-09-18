@@ -154,7 +154,7 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
     Ok(result)
 }
 
-fn log_text(body: &str) -> String {
+pub(super) fn log_text(body: &str) -> String {
     body.lines()
         .map(|line| {
             let lower = line.to_ascii_lowercase();
@@ -183,7 +183,6 @@ fn log_text(body: &str) -> String {
             } else {
                 line.chars()
                     .filter(|ch| !ch.is_control() || *ch == '\t')
-                    .take(4096)
                     .collect::<String>()
             }
         })
@@ -191,129 +190,9 @@ fn log_text(body: &str) -> String {
         .join("\n")
 }
 
-fn parse_logs(output: &str) -> Result<Vec<Value>, RuntimeError> {
-    let mut result = Vec::new();
-    for line in output.lines().filter(|line| !line.trim().is_empty()) {
-        let entry: Value = serde_json::from_str(line)
-            .map_err(|_| RuntimeError::Malformed("Runtime logs contained invalid data.".into()))?;
-        let occurred = entry["t"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::Malformed("Runtime log timestamp is missing.".into()))?;
-        time::OffsetDateTime::parse(occurred, &time::format_description::well_known::Rfc3339)
-            .map_err(|_| RuntimeError::Malformed("Runtime log timestamp is invalid.".into()))?;
-        let body = entry["d"]
-            .as_str()
-            .ok_or_else(|| RuntimeError::Malformed("Runtime log text is missing.".into()))?;
-        let text = if entry["e"].as_str() == Some("b64") {
-            "[Binary runtime output]".into()
-        } else {
-            log_text(body)
-        };
-        result.push(serde_json::json!({"line": text, "occurredAt": occurred}));
-    }
-    if result.len() > LIMIT {
-        result.drain(..result.len() - LIMIT);
-    }
-    Ok(result)
-}
-
-pub(super) fn load_logs(
-    runner: &dyn RuntimeRunner,
-    paths: &RuntimePaths,
-    source: &mut ApplicationSource,
-) {
-    let started = Instant::now();
-    for workspace in source
-        .workspaces
-        .iter_mut()
-        .filter(|workspace| workspace.machine.is_vm())
-    {
-        // Read captured output and lifecycle/runtime diagnostics, never inspect config or environment.
-        let remaining = Duration::from_secs(3).saturating_sub(started.elapsed());
-        let result = if remaining.is_zero() {
-            Err(RuntimeError::TimedOut {
-                operation: "Reading runtime logs".into(),
-            })
-        } else {
-            runner
-                .run(
-                    paths,
-                    &[
-                        "logs".into(),
-                        workspace.machine.name().into(),
-                        "--tail".into(),
-                        LIMIT.to_string(),
-                        "--source".into(),
-                        "all".into(),
-                        "--json".into(),
-                    ],
-                    remaining,
-                )
-                .and_then(|output| parse_logs(&output.stdout))
-        };
-        workspace.logs = match result {
-            Ok(logs) => logs,
-            Err(_) => vec![
-                serde_json::json!({"line": "Runtime logs could not be read. Retry after checking the sandbox state.", "occurredAt": timestamp(activity_timestamp())}),
-            ],
-        };
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn logs_keep_real_timestamps_and_reject_bad_data() {
-        let logs = parse_logs("{\"t\":\"2026-09-09T12:00:00Z\",\"d\":\"VM started\\n\",\"s\":\"system\",\"e\":null}\n").unwrap();
-        assert_eq!(logs[0]["line"], "VM started");
-        assert!(!log_text("Authorization: Bearer sensitive\nTOKEN=secret").contains("secret"));
-        assert_eq!(logs[0]["occurredAt"], "2026-09-09T12:00:00Z");
-        assert!(parse_logs("not json").is_err());
-        assert!(parse_logs(r#"{"t":"bad","d":"text"}"#).is_err());
-    }
-    #[test]
-    fn log_refresh_reads_captured_output_for_stopped_sandboxes() {
-        struct LogRunner;
-        impl RuntimeRunner for LogRunner {
-            fn run(&self, _: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
-                if args[0] == "list" {
-                    return Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() });
-                }
-                assert_eq!(args, ["logs", "dev", "--tail", "200", "--source", "all", "--json"]);
-                assert!(timeout <= Duration::from_secs(3));
-                Ok(CommandOutput {
-                    stdout: concat!(
-                        "{\"t\":\"2026-09-10T07:30:28.097Z\",\"d\":\"VM stopped\\n\",\"s\":\"system\",\"e\":null}\n",
-                        "{\"t\":\"2026-09-10T07:30:29.000Z\",\"d\":\"Authorization: Bearer private-value\",\"s\":\"stderr\",\"e\":null}\n"
-                    ).into(),
-                    stderr: String::new(),
-                })
-            }
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let paths = super::super::tests::paths(&dir);
-        let mut source = read_application_state_with(&LogRunner, &paths).unwrap();
-        source.workspaces.push(ApplicationWorkspace {
-            can_dismiss_error: false,
-            machine: serde_json::from_value(serde_json::json!({
-                "kind": "vm", "id": "00000000-0000-4000-8000-000000000001", "name": "dev",
-                "cpus": 4, "maxCPUs": 4, "memoryGiB": 16, "maxMemoryGiB": 16,
-                "workspaceStorageGiB": 60, "runtimeStorageGiB": 80
-            })).unwrap(),
-            purpose: String::new(), state: WorkspaceState::Stopped, state_detail: String::new(),
-            attention: None, freshness: Freshness::Fresh, host: String::new(),
-            repositories: Vec::new(), files: Vec::new(), ports: Vec::new(), logs: Vec::new(),
-            github_repositories: Vec::new(), secret_names: Vec::new(),
-        });
-        load_logs(&LogRunner, &paths, &mut source);
-        let logs = &source.workspaces[0].logs;
-        assert_eq!(logs.len(), 2);
-        assert_eq!(logs[0]["line"], "VM stopped");
-        assert_eq!(logs[0]["occurredAt"], "2026-09-10T07:30:28.097Z");
-        assert_eq!(logs[1]["line"], "[Sensitive runtime output hidden]");
-    }
-
     #[test]
     fn durable_lifecycle_records_verified_results_without_raw_failure_output() {
         let dir = tempfile::tempdir().unwrap();

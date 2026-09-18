@@ -5,6 +5,8 @@ pub(crate) mod update_recovery;
 pub(crate) mod guest_image;
 #[path = "runtime_activity.rs"]
 mod runtime_activity;
+#[path = "runtime_logs.rs"]
+pub(crate) mod runtime_logs;
 #[path = "secrets_runtime.rs"]
 mod secrets_runtime;
 pub(crate) mod configuration_recovery;
@@ -1429,8 +1431,17 @@ pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource,
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         let mut source = read_application_snapshot(&ProcessRunner, &paths, &MUTATION_LOCK)?;
+        if let Ok(_guard) = MUTATION_LOCK.try_lock() {
+            for workspace in &mut source.workspaces {
+                if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Stopped)
+                    && inspect_workspace(&ProcessRunner, &paths, workspace.machine.name()).is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status))
+                    && crate::log_retention::enforce(&paths.home.join("sandboxes").join(workspace.machine.name()).join("logs")).is_err()
+                {
+                    workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message: "Expired logs could not be cleaned up.".into() });
+                }
+            }
+        }
         source.repository_push_operations = crate::host_push_operations::merge(&app, crate::host_push::operations())?;
-        runtime_activity::load_logs(&ProcessRunner, &paths, &mut source);
         for workspace in &mut source.workspaces {
             if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running) {
                 match crate::host_push::discover(&paths, workspace.machine.name()) {

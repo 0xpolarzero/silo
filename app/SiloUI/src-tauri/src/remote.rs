@@ -1131,3 +1131,8 @@ mod ssh_authorization_tests {
         }
     }
 }
+
+pub(crate) fn log_identity() -> Result<(String, String), String> {
+    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    Ok((read_config()?.host_id, name()))
+}

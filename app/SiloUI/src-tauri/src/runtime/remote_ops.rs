@@ -9,6 +9,11 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
         ))?)
         .map_err(|e| e.to_string());
     }
+    if method == "runtime.logs" {
+        let request = serde_json::from_value(params).map_err(|_| "Invalid log query.")?;
+        let (id, name) = crate::remote::log_identity()?;
+        return serde_json::to_value(runtime_logs::query_local(&paths, request, &id, &name)?).map_err(|e| e.to_string());
+    }
     if method == "runtime.configuration" {
         return serde_json::to_value(read_metadata(&paths.metadata).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string());
