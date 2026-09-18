@@ -76,9 +76,22 @@ in a local debug run. Export tests cover complete pagination, identity,
 cancellation, failed writes and a non-advancing remote cursor. UI tests cover
 search, bounded rendered rows, owner failures and follow/pause.
 
-The pinned runtime patch applies cleanly; eight upstream logging tests, the
-kernel pipe test and six upstream SDK log-stream tests passed. Runtime staging
-tests and release-tooling tests also passed. A browser fixture inspection checked
-the Logs layout. These tests establish behavior for their supplied data; they do
-not prove a running installed app, Linux VM console capture or a live
-two-computer workflow. No packaged bundle was inspected.
+Final verification on 2026-09-18:
+
+| Check | Result |
+| --- | --- |
+| `npm --prefix app/SiloUI test` | 827 tests passed across 90 files |
+| `npm --prefix app/SiloUI run lint` | Passed |
+| `npm --prefix app/SiloUI run build` | TypeScript and production frontend build passed; Vite reports a large-chunk advisory |
+| `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml` with explicit synthetic GitHub configuration | 416 passed, 11 ignored |
+| Patched upstream runtime | Compiled; nine logging tests, kernel pipe ownership test and synchronous storage-failure test passed |
+| Upstream SDK log streams | Six tests passed, including archives beyond the previous four-file discovery limit |
+| Runtime staging | 13 tests passed; final patch applied to the pinned archive and matched intended sources |
+| `npm --prefix app/SiloUI run test:release` | 34 release-tooling tests passed |
+| Browser fixture | Inspected layout, visible dates, search and surrounding-record navigation |
+
+Generated test output is under the ignored
+`app/SiloUI/src-tauri/target/verification/logs-*-tests*.log` paths. These tests
+establish behavior for their supplied data; they do not prove a running installed
+app, Linux VM console capture or a live two-computer workflow. No packaged bundle
+was built or inspected. No running user VM was stopped or changed for verification.

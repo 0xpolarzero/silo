@@ -1,5 +1,8 @@
 # Logging and retention audit
 
+Historical findings before the retained-history implementation. See
+[Retained logs](SiloUI-LOGS.md) for the implemented policy and controls.
+
 Source inspection, 2026-09-18. This records implemented behavior and proposed
 improvements, not an approved retention policy. No live logs or installed app
 were inspected, and no runtime behavior was changed.
