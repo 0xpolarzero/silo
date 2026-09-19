@@ -16,12 +16,27 @@
     <meta property="og:type" content="website" />
     <title>Silo — A space for your work</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- First-paint sizing also applies before external styles arrive. -->
+    <style>
+      html { background: #f7f7f4; }
+      body { margin: 0; }
+      .symbols { position: absolute; width: 0; height: 0; overflow: hidden; }
+      .brand { display: inline-flex; align-items: center; gap: 7px; font-size: 20px; font-weight: 500; }
+      .brand svg { width: 22px; height: 22px; }
+      .icon { width: 17px; height: 17px; }
+      .skip-link { position: fixed; top: -80px; left: 20px; z-index: 20; }
+      .skip-link:focus { top: 10px; }
+      @media (max-width: 640px) {
+        .site-header .brand { font-size: 18px; gap: 6px; }
+        .site-header .brand svg { width: 20px; height: 20px; }
+      }
+    </style>
     <link rel="stylesheet" href="/fonts/fonts.css" />
     <link rel="stylesheet" href="/src/style.css" />
     <script type="module" src="/src/main.js"></script>
   </head>
   <body>
-    <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <svg class="symbols" width="0" height="0" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <defs>
         <symbol id="silo" viewBox="21.5 21.5 85 85">
           <g fill="none" stroke-width="7" stroke-linecap="round">
@@ -84,7 +99,7 @@
     <div class="page-shell">
       <header class="site-header joint">
         <a class="brand" href="#" aria-label="Silo home"
-          ><svg aria-hidden="true"><use href="#silo" /></svg
+          ><svg width="22" height="22" aria-hidden="true"><use href="#silo" /></svg
           ><span>Silo</span></a
         >
         <nav aria-label="Main navigation">
@@ -166,32 +181,22 @@
             </p>
           </div>
         </div>
-        <section class="product-showcase joint" aria-label="See Silo in action">
+        <section id="demo" class="product-showcase joint" aria-label="See Silo in action">
           <div class="showcase-heading">
             <span
-              ><span class="status-dot"></span> A place for every project</span
+              ><span class="status-dot"></span> Explore the app</span
             ><button class="text-button" data-tour="0">
               <svg class="icon" aria-hidden="true"><use href="#play" /></svg
               >Watch the tour <span class="muted">0:48</span>
             </button>
           </div>
-          <button
-            class="product-image"
-            data-tour="0"
-            aria-label="Play the Silo product tour"
-          >
-            <img
-              src="/media/overview.png"
-              alt="Silo showing a local personal sandbox and a development sandbox on Office Mac, with editor, terminal, and lifecycle controls."
-              width="1920"
-              height="1080"
-              fetchpriority="high"
-            />
-            <span class="play-overlay"
-              ><svg class="icon" aria-hidden="true"><use href="#play" /></svg>
-              See Silo in action</span
-            >
-          </button>
+          <iframe
+            class="interactive-demo"
+            src="/demo.html"
+            title="Explore Silo with read-only sample data"
+            loading="lazy"
+            sandbox="allow-scripts allow-same-origin"
+          ></iframe>
           <noscript
             ><p>
               <a href="/media/silo-tour.mp4">Watch the Silo tour</a> ·
@@ -199,8 +204,8 @@
             </p></noscript
           >
           <div class="showcase-caption">
-            <span>Your computers. Your tools. Your workspace.</span
-            ><span>Product demo · Sample data</span>
+            <span>Try the sidebar to explore Silo.</span
+            ><span>Read-only · Sample data</span>
           </div>
         </section>
         <section
@@ -636,7 +641,7 @@
       <footer class="site-footer joint">
         <div>
           <a class="brand" href="#" aria-label="Silo home"
-            ><svg aria-hidden="true"><use href="#silo" /></svg
+            ><svg width="22" height="22" aria-hidden="true"><use href="#silo" /></svg
             ><span>Silo</span></a
           >
           <p>A space for your work.</p>

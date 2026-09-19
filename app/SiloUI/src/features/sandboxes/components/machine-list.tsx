@@ -453,6 +453,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                     <SandboxListRow
                       name={machine.name}
                       kind={machine.kind}
+                      remote={Boolean(getComputerId?.(machine)) || machine.kind === "ssh"}
                       kindBadge={presentation?.kindBadge}
                       badge={presentation?.badge}
                       iconState={presentation?.iconState}
@@ -460,7 +461,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       tone={presentation?.tone}
                       detail={presentation?.detail ?? machineSummary(machine)}
                       detailClassName={presentation?.detailClassName}
-                      leading={presentation?.suppressInteractions ? <span className="size-7 shrink-0" aria-hidden="true" /> : <span
+                      leading={presentation?.suppressInteractions ? <span data-slot="sandbox-reorder-placeholder" className="size-7 shrink-0" aria-hidden="true" /> : <span
                         role="button"
                         tabIndex={interactionDisabled ? -1 : 0}
                         draggable={!editor && !interactionDisabled}

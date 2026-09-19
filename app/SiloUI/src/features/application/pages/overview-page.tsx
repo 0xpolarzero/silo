@@ -197,7 +197,7 @@ function WorkspaceActions({ machine, target, state, actions, disabled = false }:
   )
 }
 
-export function OverviewPage({ active = true,
+export function OverviewPage({ active = true, readOnly = false,
   source,
   actions,
   onMachinesChange,
@@ -205,13 +205,14 @@ export function OverviewPage({ active = true,
   onNewSandboxRequestHandled,
 }: {
   active?: boolean
+  readOnly?: boolean
   newSandboxRequest?: number
   onNewSandboxRequestHandled?: (id: number) => void
   source: ApplicationSource
   actions: ApplicationActions
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
 }) {
-  useSshAccessRefresh(actions.refreshSshAccess, active)
+  useSshAccessRefresh(readOnly ? undefined : actions.refreshSshAccess, active)
   const [expandedSsh, setExpandedSsh] = useState<Set<string>>(() => new Set())
   const [folderWorkspaceId, setFolderWorkspaceId] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
@@ -222,7 +223,7 @@ export function OverviewPage({ active = true,
   const committedWorkspaces = new Map(source.workspaces.map((workspace) => [workspace.machine.id, workspace]))
   const machines = visibleWorkspaces.map(({ machine }) => machine)
   const configurationOperation = source.sandboxConfigurationOperation
-  const configurationLocked = configurationOperation !== null
+  const configurationLocked = readOnly || configurationOperation !== null
   const localMachines = machines.filter(machine => !workspaces.get(machine.id)?.computer)
   function updateLocal(machine: SetupMachineConfiguration, original?: SetupMachineConfiguration) {
     onMachinesChange(original ? localMachines.map(item => item.id === original.id ? machine : item) : [...localMachines, machine])
@@ -240,7 +241,7 @@ export function OverviewPage({ active = true,
       <div className="min-h-0 flex-1">
         {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
         <MachineList
-          newSandboxRequest={newSandboxRequest}
+          newSandboxRequest={readOnly ? undefined : newSandboxRequest}
           onNewSandboxRequestHandled={onNewSandboxRequestHandled}
           machines={machines}
           computers={source.remoteComputers}
@@ -307,7 +308,7 @@ export function OverviewPage({ active = true,
                 detailClassName: failed ? "overflow-visible whitespace-normal text-xs" : "overflow-visible",
                 detail: <ConfigurationDetail view={configuration} />,
                 actions: failed && configuration.retryable
-                  ? <SandboxAction label={`Retry ${machine.name} configuration`} onClick={() => actions.retryMachineConfiguration(machine.name)}><RotateCw /></SandboxAction>
+                  ? <SandboxAction label={`Retry ${machine.name} configuration`} disabled={readOnly} onClick={() => actions.retryMachineConfiguration(machine.name)}><RotateCw /></SandboxAction>
                   : undefined,
                 actionsClassName: failed ? "mt-1 self-start" : undefined,
               }
@@ -320,14 +321,14 @@ export function OverviewPage({ active = true,
             const lifecycleLabel = lifecycle === "dismiss-error" ? "Dismissing…" : lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
             return {
               kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
-              badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
+              badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} readOnly={readOnly} /></>,
               menuActions: [{ label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale") || (state !== "running" && state !== "failed"), onSelect: () => {
                 if (!workspace?.computer && source.vmOperationsUnavailable) setOperationUnavailable(true)
                 else actions.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name)
               } }],
-              expandedContent: sshAvailable && expanded ? <div id={`ssh-${machine.id}`}><SshAccessRow embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div> : undefined,
+              expandedContent: sshAvailable && expanded ? <div id={`ssh-${machine.id}`}><SshAccessRow readOnly={readOnly} embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div> : undefined,
               busy: Boolean(lifecycle) || Boolean(workspace?.computer?.busy),
-              suppressInteractions: Boolean(lifecycle) || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
+              suppressInteractions: readOnly || Boolean(lifecycle) || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
               icon: lifecycle ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
               iconState: visualState,
               tone: lifecycle ? "starting" as const : workspaceRowTone(workspace),
@@ -341,8 +342,8 @@ export function OverviewPage({ active = true,
                 </span>
               ),
               actions: <>
-                <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={!workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction>
-                <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => setFolderWorkspaceId(machine.id)}><Code /></SandboxAction>
+                <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={readOnly || !workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction>
+                <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={readOnly || !workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => setFolderWorkspaceId(machine.id)}><Code /></SandboxAction>
                 {sshAvailable && <SandboxAction label={`SSH controls for ${machine.name}`} className="w-auto gap-0.5 px-1.5 text-[11px]" aria-expanded={expanded} aria-controls={`ssh-${machine.id}`} onClick={() => setExpandedSsh(current => { const next = new Set(current); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next })}>SSH<ChevronDown className={`size-2.5 transition-transform ${expanded ? "rotate-180" : ""}`} /></SandboxAction>}
                 <WorkspaceActions target={workspace && workspaceTarget(workspace)} machine={machine} state={state} actions={{
                 ...actions,

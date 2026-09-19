@@ -1,5 +1,7 @@
+import "./sandbox-list.css"
+import { ConnectionIcon } from "@/components/connection-icon"
 import type { ComponentProps, ReactNode } from "react"
-import { CircleAlert, Monitor, Server, TriangleAlert } from "lucide-react"
+import { CircleAlert, TriangleAlert } from "lucide-react"
 
 import { ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
@@ -16,7 +18,7 @@ export function SandboxList({ label, className, children, ...props }: {
 } & Omit<ComponentProps<typeof ScrollArea>, "children">) {
   return (
     <TooltipProvider delayDuration={150}>
-      <ScrollArea className={cn("rounded-md border border-border", className)} {...props}>
+      <ScrollArea className={cn("sandbox-list rounded-md border border-border", className)} {...props}>
         <ol className="divide-y divide-border p-0" aria-label={label}>{children}</ol>
       </ScrollArea>
     </TooltipProvider>
@@ -27,7 +29,7 @@ export function SandboxListItem({ className, ...props }: ComponentProps<"li">) {
   return <li className={cn("min-w-0 bg-background", className)} {...props} />
 }
 
-function SandboxIcon({ kind, state }: { kind: "vm" | "ssh"; state: SandboxIconState }) {
+function SandboxIcon({ kind, state, remote }: { kind: "vm" | "ssh"; state: SandboxIconState; remote: boolean }) {
   return (
     <ListRowIcon
       className={cn(
@@ -37,16 +39,13 @@ function SandboxIcon({ kind, state }: { kind: "vm" | "ssh"; state: SandboxIconSt
       data-sandbox-icon-state={state}
       role={state === "normal" ? undefined : "img"}
       aria-label={state === "normal" ? undefined : `${state} status`}
-      aria-hidden={state === "normal" ? "true" : undefined}
     >
       {state === "error" ? (
         <CircleAlert className="size-3.5" aria-hidden="true" />
       ) : state === "warning" ? (
         <TriangleAlert className="size-3.5" aria-hidden="true" />
-      ) : kind === "vm" ? (
-        <Monitor className="size-3.5" aria-hidden="true" />
       ) : (
-        <Server className="size-3.5" aria-hidden="true" />
+        <ConnectionIcon kind={kind} network={remote} label={kind === "vm" ? `${remote ? "Remote" : "Local"} VM` : `${remote ? "Network" : "Local"} SSH`} />
       )}
     </ListRowIcon>
   )
@@ -55,6 +54,7 @@ function SandboxIcon({ kind, state }: { kind: "vm" | "ssh"; state: SandboxIconSt
 export function SandboxListRow({
   name,
   kind,
+  remote = false,
   badge,
   kindBadge,
   iconState = "normal",
@@ -69,6 +69,7 @@ export function SandboxListRow({
 }: {
   name: string
   kind: "vm" | "ssh"
+  remote?: boolean
   badge?: ReactNode
   kindBadge?: ReactNode
   iconState?: SandboxIconState
@@ -94,7 +95,7 @@ export function SandboxListRow({
       )}
       data-sandbox-row-tone={tone}
       leading={leading}
-      icon={icon ?? <SandboxIcon kind={kind} state={iconState} />}
+      icon={icon ?? <SandboxIcon kind={kind} state={iconState} remote={remote} />}
       title={
         <>
           <span className="truncate" title={name}>{name}</span>

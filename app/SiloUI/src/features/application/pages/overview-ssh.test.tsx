@@ -37,3 +37,23 @@ it("keeps Network limited to service ports", () => {
   expect(screen.getByRole("button", { name: "Add port" })).toBeVisible()
   expect(screen.queryByRole("button", { name: /SSH controls/ })).not.toBeInTheDocument()
 })
+
+it("allows read-only SSH disclosure without refreshing, copying, or changing the sandbox", async () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  source.sshAccess = { workspaces: [{ workspace: "dev", enabled: true, port: 2222, bindAddress: "192.168.1.42", keys: [], state: "listening", message: null, fingerprint: null, computerName: "This computer", addresses: ["127.0.0.1", "192.168.1.42"] }] }
+  const actions = { refreshSshAccess: vi.fn(), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn(), stopWorkspace: vi.fn() } as unknown as ApplicationActions
+  const user = userEvent.setup()
+  render(<OverviewPage readOnly source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Stop dev" })).toBeDisabled()
+  const disclosure = screen.getByRole("button", { name: "SSH controls for dev" })
+  await user.click(disclosure)
+  expect(disclosure).toHaveAttribute("aria-expanded", "true")
+  expect(screen.getByText("192.168.1.42:2222")).toBeVisible()
+  for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Copy SSH address" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Copy Local SSH address for dev" })).toBeDisabled()
+  await user.click(disclosure)
+  expect(disclosure).toHaveAttribute("aria-expanded", "false")
+  for (const action of Object.values(actions)) expect(action).not.toHaveBeenCalled()
+})

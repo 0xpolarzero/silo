@@ -1,3 +1,7 @@
 node_modules/
 dist/
 .verification/
+
+.vercel/
+.vercel
+.env*

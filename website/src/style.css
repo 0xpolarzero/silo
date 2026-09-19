@@ -182,14 +182,14 @@ svg {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  font-size: 25px;
+  gap: 7px;
+  font-size: 20px;
   font-weight: 500;
   letter-spacing: -0.8px;
 }
 .brand svg {
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
 }
 .site-header nav {
   display: flex;
@@ -391,53 +391,14 @@ svg {
 .muted {
   color: var(--muted);
 }
-.product-image {
+.interactive-demo {
   display: block;
   width: 100%;
-  position: relative;
-  aspect-ratio: 1720/796;
-  overflow: hidden;
+  height: 680px;
   border: 1px solid #d7d9d7;
   border-radius: 6px;
   background: #fff;
   box-shadow: 0 8px 25px #4837270a;
-  padding: 0;
-}
-.product-image img {
-  position: absolute;
-  width: 111.628%;
-  max-width: none;
-  height: auto;
-  top: -16.332%;
-  left: -5.814%;
-}
-.play-overlay {
-  position: absolute;
-  bottom: 22px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  padding: 10px 15px;
-  border: 1px solid #d8cebd;
-  background: #fffffff2;
-  border-radius: 4px;
-  box-shadow: 0 3px 10px #533e2213;
-  font-size: 12px;
-  white-space: nowrap;
-  transition:
-    color 0.15s,
-    border-color 0.15s;
-}
-.product-image:hover .play-overlay {
-  color: var(--accent-ink);
-  border-color: var(--accent-ink);
-}
-.play-overlay .icon {
-  width: 13px;
-  height: 13px;
 }
 .showcase-caption {
   margin-top: 14px;
@@ -823,11 +784,11 @@ details p {
   gap: 32px;
 }
 .site-footer .brand {
-  font-size: 22px;
+  font-size: 20px;
 }
 .site-footer .brand svg {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
 }
 .site-footer p {
   font-size: 12px;
@@ -1038,12 +999,12 @@ body:has(dialog[open]) {
     height: 61px;
   }
   .brand {
-    font-size: 23px;
-    gap: 7px;
+    font-size: 18px;
+    gap: 6px;
   }
   .brand svg {
-    width: 25px;
-    height: 25px;
+    width: 20px;
+    height: 20px;
   }
   .site-header nav {
     gap: 15px;
@@ -1123,18 +1084,8 @@ body:has(dialog[open]) {
   .text-button .muted {
     display: none;
   }
-  .product-image {
-    aspect-ratio: 1.8;
-  }
-  .product-image img {
-    width: 133.4%;
-    left: -14%;
-    top: -16.1%;
-  }
-  .play-overlay {
-    bottom: 10px;
-    padding: 7px 9px;
-    font-size: 10px;
+  .interactive-demo {
+    height: 680px;
   }
   .showcase-caption {
     font-size: 7px;
@@ -1299,6 +1250,9 @@ body:has(dialog[open]) {
   }
 }
 @media (max-width: 370px) {
+  .site-header nav a[href="#features"] {
+    display: none;
+  }
   .site-header {
     gap: 12px;
     padding: 0 12px;

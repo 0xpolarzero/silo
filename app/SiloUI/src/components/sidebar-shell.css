@@ -49,7 +49,7 @@
   position: relative;
   z-index: 10;
   width: 13.5rem;
-  padding-inline: 12px;
+  padding-inline: 8px;
   transition: width var(--sidebar-motion), padding var(--sidebar-motion), box-shadow var(--sidebar-motion);
 }
 
@@ -63,7 +63,7 @@
 }
 
 .sidebar-brand {
-  padding-inline: 12px;
+  padding-inline: 4px;
   transition: padding var(--sidebar-motion), gap var(--sidebar-motion);
 }
 
@@ -119,9 +119,9 @@
 }
 
 .silo-sidebar .sidebar-subnav {
-  margin-left: 12px;
-  width: calc(100% - 12px);
-  padding-left: 9px;
+  margin-left: 0;
+  width: 100%;
+  padding-left: 0;
   transition: width var(--sidebar-motion), margin var(--sidebar-motion), padding var(--sidebar-motion);
 }
 
@@ -142,11 +142,13 @@
 }
 
 .silo-sidebar .sidebar-secondary {
-  padding-inline: 10px;
+  padding-left: 13px;
+  padding-right: 10px;
 }
 
 .silo-sidebar[data-collapsed="true"] .sidebar-secondary {
-  padding-inline: 14px;
+  padding-left: 13px;
+  padding-right: 13px;
   gap: 0;
 }
 
@@ -157,8 +159,8 @@
 }
 
 .silo-sidebar[data-collapsed="true"] .sidebar-section-icon {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 .sidebar-footer-divider {

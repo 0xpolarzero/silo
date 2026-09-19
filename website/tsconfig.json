@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "allowArbitraryExtensions": true,
+    "types": ["vite/client", "node"],
+    "paths": { "@/*": ["../app/SiloUI/src/*"] }
+  },
+  "include": ["src/demo/**/*.ts", "src/demo/**/*.tsx", "vite.config.ts"]
+}
