@@ -6,7 +6,7 @@
 @container (max-width: 560px) {
   .sandbox-row { flex-wrap: wrap; }
   .sandbox-row > [data-slot="sandbox-reorder-placeholder"] { display: none; }
-  .sandbox-row [data-slot="list-row-content"] { flex-basis: calc(100% - 90px); }
+  .sandbox-row [data-slot="list-row-content"] { flex-basis: min(12rem, calc(100% - 40px)); }
   .sandbox-row [data-slot="list-row-title"] { flex-wrap: wrap; row-gap: 4px; }
   .sandbox-row > [aria-label^="Controls for"],
   .sandbox-row > .sandbox-hover-actions { margin-left: auto; }
