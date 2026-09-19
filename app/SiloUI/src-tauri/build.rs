@@ -107,6 +107,7 @@ fn main() {
             "connect_github",
             "cancel_github_connection",
             "reopen_github_authorization",
+            "manage_github_repositories",
             "disconnect_github",
             "set_github_access_enabled",
             "save_github_configuration",

@@ -416,6 +416,29 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("loads newly authorized repositories once when returning from GitHub", async () => {
+    const mock = native()
+    const updatedGitHub = { ...source.github, state: "connected", repositoryCatalog: ["acme/new-repository"] }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "refresh_github_repositories") return updatedGitHub
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    try {
+      window.dispatchEvent(new Event("focus"))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(invoke.mock.calls.filter(([command]) => command === "refresh_github_repositories")).toHaveLength(0)
+      store.applicationActions.manageGitHubRepositories!()
+      expect(invoke).toHaveBeenCalledWith("manage_github_repositories")
+      window.dispatchEvent(new Event("focus"))
+      await vi.waitFor(() => expect(store.getSnapshot().source?.github.repositoryCatalog).toEqual(["acme/new-repository"]))
+      window.dispatchEvent(new Event("focus"))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(invoke.mock.calls.filter(([command]) => command === "refresh_github_repositories")).toHaveLength(1)
+    } finally { store.dispose() }
+  })
+
   it("reopens the browser without replacing an active connection attempt", async () => {
     const mock = native()
     const original = mock.invoke.getMockImplementation()!

@@ -5,6 +5,30 @@ import { describe, expect, it, vi } from "vitest"
 import { GitHubAccessEditor } from "@/features/github/components/github-access-editor"
 
 describe("GitHubAccessEditor", () => {
+  it("offers repository authorization as the final search item, including empty results", async () => {
+    const user = userEvent.setup()
+    const onManageRepositories = vi.fn()
+    render(<GitHubAccessEditor
+      workspaces={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={["acme/silo"]} workspaceSelections={{}} workspaceIdentities={{}}
+      currentHostGitIdentity={null} onConnect={vi.fn()}
+      onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
+      onManageRepositories={onManageRepositories}
+    />)
+    expect(screen.queryByRole("option", { name: "Add more repositories on GitHub" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("combobox"))
+    expect(screen.getAllByRole("option").at(-1)).toHaveTextContent("Add more repositories on GitHub")
+    await user.keyboard("{ArrowDown}{Enter}")
+    expect(onManageRepositories).toHaveBeenCalledOnce()
+    onManageRepositories.mockClear()
+    await user.type(screen.getByRole("combobox"), "missing-repository")
+    expect(screen.getByText("No repositories found.")).toBeVisible()
+    await user.click(screen.getByRole("option", { name: "Add more repositories on GitHub" }))
+    expect(onManageRepositories).toHaveBeenCalledOnce()
+    await user.click(screen.getByRole("combobox"))
+    expect(screen.queryByRole("option", { name: "Refresh repositories" })).not.toBeInTheDocument()
+  })
+
   it("chooses all current and future authorized repositories with changes off by default", async () => {
     const user = userEvent.setup()
     const onAccess = vi.fn()

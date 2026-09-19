@@ -291,6 +291,7 @@ export interface ApplicationActions {
   openEditor: (workspace: string, path?: string) => void
   cancelGitHubConnection?: () => void
   reopenGitHubAuthorization?: () => void
+  manageGitHubRepositories?: () => void
   saveGitHubPersonalToken?: (token: string) => Promise<void>
   removeGitHubPersonalToken?: () => Promise<void>
   connectGitHub?: () => void

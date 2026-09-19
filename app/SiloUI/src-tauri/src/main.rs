@@ -113,6 +113,7 @@ fn main() {
             github::connect_github,
             github::cancel_github_connection,
             github::reopen_github_authorization,
+            github::manage_github_repositories,
             github::disconnect_github,
             github::set_github_access_enabled,
             github::save_github_configuration,

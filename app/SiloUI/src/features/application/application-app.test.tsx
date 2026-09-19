@@ -1485,6 +1485,24 @@ describe("application", () => {
     expect(github.getByLabelText("Git name for dev")).toHaveValue("")
   })
 
+  it("settles a newer GitHub revision even when its completion matches the previous save", async () => {
+    const source = applicationSourceForScenario("running", "connected")
+    source.github.policyRevision = 10
+    source.github.workspaceOperations = [{ workspace: "dev", status: "succeeded", message: "GitHub access verified." }]
+    const application = renderApplication("running", source)
+    await application.user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    await application.user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
+    expect(github.getByRole("status")).toHaveTextContent("Applying repository access…")
+    const completed = structuredClone(source)
+    completed.github.policyRevision = 11
+    completed.github.workspaces = vi.mocked(application.actions.saveGitHubConfiguration!).mock.calls[0][0].workspaces
+    application.rerender(<ApplicationPreview source={completed} actions={application.actions} />)
+    expect(github.queryByText("Applying repository access…")).not.toBeInTheDocument()
+    expect(github.getByRole("status")).toHaveTextContent("GitHub access verified.")
+    expect(github.getByRole("button", { name: "Disable access" })).toBeEnabled()
+  })
+
   it("stops applying and permits correction when a native GitHub save rejects", async () => {
     const { actions, user } = renderApplication()
     vi.mocked(actions.saveGitHubConfiguration!).mockRejectedValueOnce(new Error("Invalid Git identity settings."))

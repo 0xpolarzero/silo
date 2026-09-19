@@ -158,7 +158,7 @@ export function GitHubPage({
   const rejectedSaves = useRef(new Set<string>())
   const pendingSaves = useRef(new Map<string, number>())
   const sourceDraftKey = useRef(JSON.stringify(sourceDraft))
-  const sourceOperationsKey = useRef(JSON.stringify(source.github.workspaceOperations))
+  const sourceOperationsKey = useRef(JSON.stringify([source.github.policyRevision, source.github.workspaceOperations]))
   const catalogAvailable = source.github.repositoryCatalogStatus?.status !== "unavailable"
   const applying = Object.values(workspaceOperations).some((operation) => operation.status === "applying")
   const busy = connectionState === "connecting" || applying
@@ -197,13 +197,14 @@ export function GitHubPage({
   }, [source.github.state, source.github.accessEnabled])
 
   useEffect(() => {
-    const key = JSON.stringify(source.github.workspaceOperations)
+    const key = JSON.stringify([source.github.policyRevision, source.github.workspaceOperations])
     if (sourceOperationsKey.current === key) return
     sourceOperationsKey.current = key
-    // A native replacement publishes the latest desired-versus-runtime state per workspace.
+    // Consecutive saves can finish with identical messages before an applying snapshot reaches the UI.
+    // A new revision still settles the optimistic progress for that save.
     // oxlint-disable-next-line react/set-state-in-effect
     setWorkspaceOperations(operationsFromSource(source.github.workspaceOperations))
-  }, [source.github.workspaceOperations])
+  }, [source.github.policyRevision, source.github.workspaceOperations])
 
   useEffect(() => {
     const timers = Object.values(workspaceOperations)
@@ -354,6 +355,7 @@ export function GitHubPage({
         }}
         onCancelConnection={actions.cancelGitHubConnection}
         onReopenAuthorization={actions.reopenGitHubAuthorization}
+        onManageRepositories={actions.manageGitHubRepositories}
         onWorkspaceSelectionsChange={updateSelections}
         onWorkspaceIdentityChange={updateIdentity}
         onCommitWorkspaceIdentity={commitIdentity}

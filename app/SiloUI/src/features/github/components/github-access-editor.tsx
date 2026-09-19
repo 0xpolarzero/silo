@@ -1,5 +1,5 @@
 import { useId, useMemo, useState, type ReactNode } from "react"
-import { Check, GitBranch, Info, LoaderCircle, RotateCcw, Search, Trash2, X } from "lucide-react"
+import { Check, ExternalLink, GitBranch, Info, LoaderCircle, RotateCcw, Search, Trash2, X } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { DisclosureHeader } from "@/components/disclosure-header"
@@ -40,6 +40,7 @@ interface RepositoryComboboxProps {
   repositoryOptions: readonly string[]
   selectedRepositories: readonly GitHubRepositorySelection[]
   disabled?: boolean
+  onManageRepositories?: () => void
   onAdd: (repository: string) => void
 }
 
@@ -64,7 +65,7 @@ function WorkspaceDisclosure({ name, actions, children }: { name: string; action
 
 const repositoryGridColumns = "grid-cols-[minmax(0,1fr)_10rem_1.5rem]"
 
-function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories, disabled = false, onAdd }: RepositoryComboboxProps) {
+function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories, disabled = false, onAdd, onManageRepositories }: RepositoryComboboxProps) {
   const listboxId = useId()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
@@ -76,6 +77,17 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
   const results = repositoryOptions.filter((repository) => (
     !selectedNames.has(repository.toLowerCase()) && repository.toLowerCase().includes(query.trim().toLowerCase())
   ))
+
+  const searchActions = [
+    ...(onManageRepositories ? [{ label: "Add more repositories on GitHub", run: onManageRepositories, icon: ExternalLink }] : []),
+  ]
+  const optionCount = results.length + searchActions.length
+
+  function runAction(index: number) {
+    searchActions[index]?.run()
+    setOpen(false)
+    setActiveIndex(0)
+  }
 
   function add(repository: string) {
     if (disabled || selectedNames.has(repository.toLowerCase())) return
@@ -96,7 +108,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
             aria-autocomplete="list"
             aria-expanded={!disabled && open}
             aria-controls={listboxId}
-            aria-activedescendant={open && results[activeIndex] ? `${listboxId}-${activeIndex}` : undefined}
+            aria-activedescendant={open && activeIndex < optionCount ? `${listboxId}-${activeIndex}` : undefined}
             className="pl-8 text-xs"
             disabled={disabled}
             placeholder="Search repositories…"
@@ -112,13 +124,14 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
               if (event.key === "ArrowDown") {
                 event.preventDefault()
                 setOpen(true)
-                setActiveIndex((current) => Math.min(current + 1, Math.max(0, results.length - 1)))
+                setActiveIndex((current) => Math.min(current + 1, Math.max(0, optionCount - 1)))
               } else if (event.key === "ArrowUp") {
                 event.preventDefault()
                 setActiveIndex((current) => Math.max(0, current - 1))
-              } else if (event.key === "Enter" && open && results[activeIndex]) {
+              } else if (event.key === "Enter" && open && activeIndex < optionCount) {
                 event.preventDefault()
-                add(results[activeIndex])
+                if (results[activeIndex]) add(results[activeIndex])
+                else runAction(activeIndex - results.length)
               } else if (event.key === "Escape") {
                 setOpen(false)
               }
@@ -151,6 +164,22 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
         )) : (
           <p className="px-2 py-1.5 text-xs text-muted-foreground">No repositories found.</p>
         )}
+        {searchActions.map((action, index) => (
+          <button
+            key={action.label}
+            id={`${listboxId}-${results.length + index}`}
+            type="button"
+            role="option"
+            aria-selected={activeIndex === results.length + index}
+            className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent ${index === 0 ? "mt-1 border-t border-border" : ""}`}
+            onMouseDown={(event) => event.preventDefault()}
+            onMouseEnter={() => setActiveIndex(results.length + index)}
+            onClick={() => runAction(index)}
+          >
+            <action.icon aria-hidden="true" className="size-3 shrink-0" />
+            {action.label}
+          </button>
+        ))}
       </PopoverContent>
     </Popover>
   )
@@ -168,6 +197,7 @@ export interface GitHubAccessEditorProps {
   workspaceIdentities: Readonly<Record<string, GitHubIdentity>>
   currentHostGitIdentity: { name: string; email: string } | null
   onCancelConnection?: () => void
+  onManageRepositories?: () => void
   onReopenAuthorization?: () => void
   onConnect: () => void
   onWorkspaceSelectionsChange: (workspace: string, selections: GitHubRepositorySelection[]) => void
@@ -203,6 +233,7 @@ export function GitHubAccessEditor({
   onConnect,
   onCancelConnection,
   onReopenAuthorization,
+  onManageRepositories,
   onWorkspaceSelectionsChange,
   onWorkspaceIdentityChange,
   onCommitWorkspaceIdentity,
@@ -398,6 +429,7 @@ export function GitHubAccessEditor({
                             workspace={name}
                             repositoryOptions={repositoryOptions}
                             selectedRepositories={selections}
+                            onManageRepositories={onManageRepositories}
                             disabled={workspaceDisabled}
                             onAdd={(repository) => onWorkspaceSelectionsChange(name, [...selections, { repository, allowPushes: false }])}
                           />

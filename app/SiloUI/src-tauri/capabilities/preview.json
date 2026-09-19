@@ -73,6 +73,7 @@
     "allow-connect-github",
     "allow-cancel-github-connection",
     "allow-reopen-github-authorization",
+    "allow-manage-github-repositories",
     "allow-disconnect-github",
     "allow-set-github-access-enabled",
     "allow-save-github-configuration",

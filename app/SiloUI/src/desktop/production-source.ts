@@ -190,6 +190,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let networkRevision = 0
   let disposed = false
   let refreshSequence = 0
+  let refreshRepositoriesOnReturn = false
   let githubMutationSequence = 0
   let githubMutationPending = false
   const unlisten: Array<() => void> = []
@@ -464,6 +465,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     void refreshComputers()
   }
 
+  async function onWindowFocus() {
+    await refresh()
+    if (disposed || !refreshRepositoriesOnReturn) return
+    refreshRepositoriesOnReturn = false
+    if (snapshot.source?.github.state === "connected") {
+      await githubMutation("refresh_github_repositories").catch(() => {})
+    }
+  }
+
   async function initialize() {
     try {
       unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
@@ -483,7 +493,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       publish({ ...snapshot, loading: false, error })
       throw new Error(error)
     }
-    window.addEventListener("focus", refresh)
+    window.addEventListener("focus", onWindowFocus)
     await Promise.all([refresh(), readSetupActivity(), refreshComputers()])
     remoteTimer = setInterval(() => { void refreshComputers() }, 10_000)
   }
@@ -930,6 +940,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         if (sequence === githubMutationSequence) publish({ ...snapshot, error: `Could not reopen GitHub authorization: ${errorMessage(cause)}` })
       })
     },
+    manageGitHubRepositories: () => {
+      refreshRepositoriesOnReturn = true
+      void native.invoke("manage_github_repositories").catch((cause: unknown) => {
+        refreshRepositoriesOnReturn = false
+        publish({ ...snapshot, error: `Could not open GitHub repository access: ${errorMessage(cause)}` })
+      })
+    },
     disconnectGitHub: () => { void githubMutation("disconnect_github").catch(() => {}) },
     setGitHubAccessEnabled: (enabled) => { void githubMutation("set_github_access_enabled", { enabled }).catch(() => {}) },
     saveGitHubConfiguration: async (configuration) => { await githubMutation("save_github_configuration", { configuration }) },
@@ -1056,7 +1073,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", refresh); listeners.clear() },
+    dispose() { pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); listeners.clear() },
   }
 }
 

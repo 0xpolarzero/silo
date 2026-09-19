@@ -1753,6 +1753,18 @@ pub async fn reopen_github_authorization(window: tauri::WebviewWindow) -> Result
 }
 
 #[tauri::command]
+pub async fn manage_github_repositories(window: tauri::WebviewWindow) -> Result<(), String> {
+    require_main(window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let slug = APP_SLUG.ok_or("GitHub App is not configured in this build.")?;
+        if !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err("Invalid GitHub App slug.".into());
+        }
+        open_browser(&format!("https://github.com/apps/{slug}/installations/new"))
+    }).await.map_err(|_| "Cannot open GitHub repository access.")?
+}
+
+#[tauri::command]
 pub async fn refresh_github_repositories(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
