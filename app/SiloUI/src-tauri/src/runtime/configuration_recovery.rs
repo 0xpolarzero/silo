@@ -128,6 +128,14 @@ fn reconcile(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal
             verify_machine_configuration(runner, paths, machine)?;
             if !current.machines.iter().any(|entry| entry.id() == machine.id()) {
                 verify_guest_tools(runner, paths, machine.name())?;
+                if let Some(desktop) = crate::desktop::configuration(machine) {
+                    crate::desktop::configure_with(runner, paths, machine.name(), None, desktop)?;
+                    let restored = inspect_workspace(runner, paths, machine.name())?;
+                    ensure_managed(&restored)?;
+                    if !matches!(restored.status.as_str(), "Created" | "Stopped") {
+                        return Err(failure("Desktop installation did not restore the new sandbox's stopped state."));
+                    }
+                }
                 current.machines.push(machine.clone());
             }
         } else {
@@ -276,7 +284,7 @@ mod tests {
         let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
         let current = MachineConfigurationRequest { schema_version: 1, machines: vec![remote.clone()] };
         write_metadata(&paths.metadata, &current).unwrap();
-        let new = MachineConfiguration::Vm { id: uuid::Uuid::new_v4().to_string(), name: "dev".into(), cpus: 1, max_cpus: 2, memory_gib: 4, max_memory_gib: 8, workspace_storage_gib: 10, runtime_storage_gib: 10 };
+        let new = MachineConfiguration::Vm { id: uuid::Uuid::new_v4().to_string(), name: "dev".into(), cpus: 1, max_cpus: 2, memory_gib: 4, max_memory_gib: 8, workspace_storage_gib: 10, runtime_storage_gib: 10, desktop: None };
         let request = MachineConfigurationRequest { schema_version: 1, machines: vec![remote, new] };
         begin(&paths, &request).unwrap();
         assert!(blocks_snapshot(&paths, false).unwrap());

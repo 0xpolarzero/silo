@@ -31,6 +31,30 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it.each(["dev", "silo-remote:00000000-0000-4000-8000-000000000010:00000000-0000-4000-8000-000000000011"])("opens the desktop for the exact selected target %s", async workspace => {
+    const mock = native()
+    const store = createProductionSource(mock.bridge)
+    await store.applicationActions.openDesktop!(workspace)
+    expect(mock.invoke).toHaveBeenCalledWith("open_desktop", { workspace })
+    expect(mock.invoke.mock.calls.some(([command]) => command === "workspace_action")).toBe(false)
+    store.dispose()
+  })
+
+  it("reports desktop opening failure without changing the sandbox state", async () => {
+    const mock = native()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "open_desktop") throw new Error("Owning computer unavailable")
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    const before = store.getSnapshot().source?.workspaces
+    await store.applicationActions.openDesktop!("dev")
+    expect(store.getSnapshot().error).toContain("Owning computer unavailable")
+    expect(store.getSnapshot().source?.workspaces).toEqual(before)
+    store.dispose()
+  })
+
   it("prepares connection commands and key exports on the selected owner", async () => {
     const mock = native()
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "ssh_connection" ? (args?.download ? null : "ssh -i '/private/key' root@127.0.0.1") : mock.invoke(command, args))

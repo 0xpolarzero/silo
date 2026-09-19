@@ -1387,8 +1387,9 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
         "workspaceStorageGiB",
         "runtimeStorageGiB",
     ];
-    if object.len() != FIELDS.len()
-        || object.keys().any(|key| !FIELDS.contains(&key.as_str()))
+    if object.len() != FIELDS.len() + usize::from(object.contains_key("desktop"))
+        || object.keys().any(|key| key != "desktop" && !FIELDS.contains(&key.as_str()))
+        || object.get("desktop").is_some_and(|desktop| serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err())
         || object.get("kind").and_then(Value::as_str) != Some("vm")
         || object.get("name").and_then(Value::as_str) != Some(name)
         || object
@@ -2566,6 +2567,21 @@ mod tests {
                 }
             }));
         config
+    }
+
+    #[test]
+    fn backup_preserves_optional_desktop_preferences_and_rejects_unknown_settings() {
+        let mut config = machine_config("dev");
+        assert!(validate_machine_config("dev", &config).is_ok());
+        config["desktop"] = serde_json::json!({"startWithSandbox":false});
+        validate_machine_config("dev", &config).unwrap();
+        let decoded: crate::runtime::MachineConfiguration = serde_json::from_value(config.clone()).unwrap();
+        assert_eq!(crate::desktop::configuration(&decoded).unwrap().start_with_sandbox, false);
+        assert_eq!(serde_json::to_value(decoded).unwrap(), config);
+        config["desktop"]["password"] = serde_json::json!("unexpected");
+        assert!(validate_machine_config("dev", &config).is_err());
+        config["desktop"] = serde_json::json!({"startWithSandbox":"false"});
+        assert!(validate_machine_config("dev", &config).is_err());
     }
 
     fn machine_config(name: &str) -> Value {

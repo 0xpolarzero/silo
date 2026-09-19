@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 
+import { LinuxDesktopPreview } from "./linux-desktop-preview"
 import { ApplicationPreview } from "./application-preview"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { OnboardingPreview } from "./onboarding-preview"
@@ -76,7 +77,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   }, [activityMode])
   return (
     <>
-      {surface === "app" ? (
+      {surface === "desktop" ? <LinuxDesktopPreview /> : surface === "app" ? (
         <ApplicationPreview
           key={`${scenario}:${githubState ?? "source"}:${workspaceMode ?? "source"}:${sandboxConfigurationMode ?? "source"}:${systemIssueMode ?? "source"}:${repositoryPushMode ?? "source"}:${activityMode ?? "source"}:${githubManagementMode ?? "source"}`}
           backupPreviewMode={backupMode}

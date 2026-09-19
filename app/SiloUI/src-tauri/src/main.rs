@@ -6,6 +6,9 @@ mod backup;
 mod bundled_tools;
 mod backup_controller;
 mod dependencies;
+mod desktop;
+mod desktop_proxy;
+mod desktop_viewer;
 mod editor;
 mod files;
 mod github;
@@ -69,6 +72,11 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            desktop::read_desktop_state,
+            desktop::desktop_action,
+            desktop_viewer::open_desktop,
+            desktop_viewer::desktop_viewer_attach,
+            desktop_viewer::desktop_viewer_detach,
             app_menu::set_app_menu_state,
             app_menu::show_app_menu,
             updates::get_update_state,

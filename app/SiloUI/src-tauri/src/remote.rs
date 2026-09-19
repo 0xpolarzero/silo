@@ -146,6 +146,7 @@ pub fn remove_remote_host(host_id: String) -> Result<(), String> {
     save_config(&config)?;
     drop(_guard);
     crate::remote_network::close_host(&host_id);
+    crate::desktop_viewer::close_host(&host_id);
     Ok(())
 }
 fn validate_address(address: &str) -> Result<(), String> {
@@ -343,6 +344,13 @@ pub fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(), Strin
     let application = crate::applications::selected_terminal(&app)?;
     crate::applications::open_terminal(&app, &application, &command)
 }
+fn request_timeout(request: &Value) -> Duration {
+    if request["method"] == "runtime.upsert" && request.pointer("/params/machine/desktop").is_some_and(|v| !v.is_null()) {
+        Duration::from_secs(2100)
+    } else {
+        Duration::from_secs(600)
+    }
+}
 fn exchange(address: &str, request: Value) -> Result<Value, String> {
     validate_address(address)?;
     let stdout = tempfile::tempfile().map_err(|e| e.to_string())?;
@@ -366,7 +374,7 @@ fn exchange(address: &str, request: Value) -> Result<Value, String> {
         let _ = child.wait();
         return Err(error);
     }
-    let deadline = Instant::now() + Duration::from_secs(600);
+    let deadline = Instant::now() + request_timeout(&request);
     let exit = loop {
         if let Some(exit) = child.try_wait().map_err(|e| e.to_string())? {
             break exit;
@@ -468,6 +476,7 @@ pub async fn remote_host_snapshot(app: AppHandle, host_id: String) -> Result<Val
             .is_err_and(|error| error != "SILO_SANDBOX_UPDATE_IN_PROGRESS")
         {
             crate::remote_network::close_host(&host_id);
+    crate::desktop_viewer::close_host(&host_id);
         }
         result
     })
@@ -532,10 +541,8 @@ pub async fn remote_delete_machine(
 pub(crate) fn run_bridge() -> Result<(), String> {
     let mut socket = UnixStream::connect(directory()?.join("control.sock"))
         .map_err(|_| "Silo is not running on this computer.".to_string())?;
-    socket
-        .set_read_timeout(Some(Duration::from_secs(600)))
-        .map_err(|e| e.to_string())?;
     let request = read_frame(std::io::stdin().lock())?;
+    socket.set_read_timeout(Some(request_timeout(&request))).map_err(|e| e.to_string())?;
     let streaming = request["method"] == "guest.ssh";
     write_frame(&mut socket, &request)?;
     let response = read_frame(&mut socket)?;
@@ -731,7 +738,7 @@ fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
     };
     if !matches!(
         method,
-        "runtime.action" | "runtime.upsert" | "runtime.delete" | "ssh.access.save"
+        "runtime.action" | "runtime.upsert" | "runtime.delete" | "ssh.access.save" | "desktop.action"
     ) {
         return execute();
     }

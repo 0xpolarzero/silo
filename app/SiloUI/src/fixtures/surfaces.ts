@@ -1,4 +1,4 @@
-export const surfaceNames = ["onboarding", "app", "status-bar"] as const
+export const surfaceNames = ["onboarding", "app", "status-bar", "desktop"] as const
 export type SurfaceName = (typeof surfaceNames)[number]
 
 export function surfaceFromSearch(search: string): SurfaceName {

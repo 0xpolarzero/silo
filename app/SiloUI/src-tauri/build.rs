@@ -21,6 +21,7 @@ fn main() {
     }
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "read_desktop_state", "desktop_action", "open_desktop", "desktop_viewer_attach", "desktop_viewer_detach",
             "set_app_menu_state",
             "show_app_menu",
             "get_update_state",

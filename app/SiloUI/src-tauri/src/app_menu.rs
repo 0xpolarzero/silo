@@ -56,6 +56,14 @@ fn enabled(command: &str, state: &MenuState) -> bool {
         _ => false,
     }
 }
+/// Quit must enter Tauri's ExitRequested gate even when no frontend is ready.
+/// Native macOS `terminate:` skips that gate and cannot own VM shutdown.
+fn request_menu_quit(id: &str, request_exit: impl FnOnce()) -> bool {
+    if id != "silo-menu:quit" { return false; }
+    request_exit();
+    true
+}
+
 #[tauri::command]
 pub(crate) fn set_app_menu_state(
     app: AppHandle,
@@ -179,7 +187,7 @@ mod native {
                 &Standard::hide_others(app, None)?,
                 &Standard::show_all(app, None)?,
                 &Standard::separator(app)?,
-                &Standard::quit(app, Some("Quit Silo"))?,
+                &item("quit", "Quit Silo", Some("CmdOrCtrl+Q"))?,
             ],
         )?;
         #[cfg(target_os = "linux")]
@@ -314,6 +322,9 @@ mod native {
             items,
         });
         app.on_menu_event(|app, event| {
+            if super::request_menu_quit(event.id().as_ref(), || app.exit(0)) {
+                return;
+            }
             let Some(command) = event.id().as_ref().strip_prefix("silo-menu:") else {
                 return;
             };
@@ -331,10 +342,6 @@ mod native {
                 let result = match command {
                     "undo" => Some(window.eval("document.execCommand('undo')")),
                     "redo" => Some(window.eval("document.execCommand('redo')")),
-                    "quit" => {
-                        app.exit(0);
-                        return;
-                    }
                     "close-window" => Some(window.close()),
                     "minimize" => Some(window.minimize()),
                     "maximize" => Some(window.is_maximized().and_then(|v| {
@@ -447,6 +454,19 @@ impl MenuKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quit_enters_exit_gate_without_frontend_readiness_or_a_main_window() {
+        let requests = std::cell::Cell::new(0);
+        assert!(request_menu_quit("silo-menu:quit", || requests.set(requests.get() + 1)));
+        assert_eq!(requests.get(), 1);
+        for other in ["quit", "silo-menu:close-window", "silo-menu:settings"] {
+            assert!(!request_menu_quit(other, || requests.set(requests.get() + 1)));
+        }
+        assert_eq!(requests.get(), 1);
+        assert!(enabled("quit", &MenuState::default()));
+        assert!(enabled("quit", &MenuState { busy: true, ..Default::default() }));
+    }
+
     #[test]
     fn bare_alt_toggles_only_after_release_and_f10_focuses() {
         let mut keys = MenuKeys::default();

@@ -459,6 +459,7 @@ mod tests {
             max_memory_gib: 1,
             workspace_storage_gib: 1,
             runtime_storage_gib: 1,
+            desktop: None,
         };
         write_metadata(
             &paths.metadata,

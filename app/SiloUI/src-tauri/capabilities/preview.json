@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "preview",
   "description": "The main window owns shared settings and onboarding drafts, and can drag, resize, minimize, and close itself.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
@@ -42,12 +44,25 @@
     "allow-start-restore",
     "allow-cancel-backup-operation",
     "allow-dismiss-backup-operation",
-    "allow-read-application-state", "allow-dismiss-repository-push", "allow-push-repository", "allow-start-repository-push", "allow-repository-push-status",
+    "allow-read-application-state",
+    "allow-dismiss-repository-push",
+    "allow-push-repository",
+    "allow-start-repository-push",
+    "allow-repository-push-status",
     "allow-read-machine-configuration",
     "allow-query-sandbox-logs",
     "allow-export-workspace-logs",
     "allow-cancel-log-export",
-    "allow-list-workspace-directory", "allow-remote-ssh-access-state", "allow-remote-save-ssh-access", "allow-read-ssh-access-state", "allow-save-ssh-access", "allow-ssh-connection", "allow-read-network-state", "allow-save-network-port", "allow-remove-network-port", "allow-open-network-port",
+    "allow-list-workspace-directory",
+    "allow-remote-ssh-access-state",
+    "allow-remote-save-ssh-access",
+    "allow-read-ssh-access-state",
+    "allow-save-ssh-access",
+    "allow-ssh-connection",
+    "allow-read-network-state",
+    "allow-save-network-port",
+    "allow-remove-network-port",
+    "allow-open-network-port",
     "allow-read-secrets-state",
     "allow-save-secret",
     "allow-remove-secret",
@@ -63,7 +78,6 @@
     "allow-save-github-configuration",
     "allow-retry-github-configuration",
     "allow-refresh-github-repositories",
-
     "allow-workspace-action",
     "allow-retry-workspace-start",
     "allow-configure-workspace-identities",
@@ -87,6 +101,9 @@
     "allow-remote-delete-machine",
     "allow-remote-save-network-port",
     "allow-remote-remove-network-port",
-    "allow-cancel-settings-flush"
+    "allow-cancel-settings-flush",
+    "allow-read-desktop-state",
+    "allow-desktop-action",
+    "allow-open-desktop"
   ]
 }

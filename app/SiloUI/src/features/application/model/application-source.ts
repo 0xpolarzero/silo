@@ -256,6 +256,7 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
+  openDesktop?: (workspace: string) => void | Promise<void>
   cancelLogExport?: () => Promise<void>
   queryLogs?: LogLoader
   exportLogs?: (requests: LogQuery[]) => Promise<boolean>

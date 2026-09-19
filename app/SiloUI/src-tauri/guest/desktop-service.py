@@ -1,0 +1,235 @@
+#!/usr/bin/python3
+"""Guest-only desktop lifecycle. No harness or host credentials are involved."""
+import fcntl
+import json
+import os
+import pwd
+from pathlib import Path
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import time
+
+STATE = Path('/var/lib/silo-desktop')
+RUN = Path('/run/silo-desktop')
+USER = 'silo-desktop'
+HOME = Path('/home/silo-desktop')
+SELF = '/usr/local/bin/silo-desktop'
+LOG = Path('/var/log/silo-desktop.log')
+
+
+def read(name, default=None):
+    try:
+        return json.loads((STATE / name).read_text())
+    except FileNotFoundError:
+        return default
+
+
+def write(path, value):
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(value) + '\n')
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def identity(pid):
+    try:
+        # Field 22, accounting for spaces in the parenthesized process name.
+        return (Path('/proc/sys/kernel/random/boot_id').read_text().strip() + ':' +
+                Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19])
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+
+
+def supervisor():
+    try:
+        saved = json.loads((RUN / 'supervisor.json').read_text())
+        return saved['pid'] if identity(saved['pid']) == saved['start'] else None
+    except FileNotFoundError:
+        return None
+
+
+def listening():
+    try:
+        with socket.create_connection(('127.0.0.1', 6901), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def status():
+    config = read('config.json', {'autoStart': True})
+    state = 'running' if supervisor() and listening() else 'starting' if supervisor() else 'failed' if (RUN / 'failed').exists() else 'stopped'
+    return dict(installed=(STATE / 'installed.json').exists(), version='1', state=state,
+                autoStart=config['autoStart'], port=6901, user=USER, display=':1')
+
+
+def start():
+    if supervisor():
+        return
+    (RUN / 'failed').unlink(missing_ok=True)
+    account = pwd.getpwnam(USER)
+    runtime = RUN / 'user'
+    runtime.mkdir(mode=0o700, exist_ok=True)
+    os.chown(runtime, account.pw_uid, account.pw_gid)
+    os.chmod(runtime, 0o700)
+    subprocess.Popen([SELF, 'supervise'], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    for _ in range(100):
+        if supervisor() and listening():
+            return
+        if (RUN / 'failed').exists():
+            raise RuntimeError('Desktop failed to start; inspect /var/log/silo-desktop.log')
+        time.sleep(0.1)
+    raise RuntimeError('Desktop is still starting; check status before retrying')
+
+
+def stop():
+    pid = supervisor()
+    if pid:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(150):
+            if not supervisor():
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError('Desktop did not stop; inspect its service log')
+    (RUN / 'failed').unlink(missing_ok=True)
+
+
+def trim_logs():
+    # Bound logs without following links writable by the desktop user.
+    for path in [LOG, *HOME.glob('.vnc/*.log')]:
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'r+b') as log:
+                info = os.fstat(log.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size <= 1024 * 1024:
+                    continue
+                log.seek(-256 * 1024, os.SEEK_END)
+                tail = log.read()
+                log.seek(0)
+                log.write(tail)
+                log.truncate()
+        except OSError:
+            continue
+
+
+def stop_display():
+    subprocess.run(['runuser', '-u', USER, '--', 'env', f'HOME={HOME}',
+                    'vncserver', '-kill', ':1'], stdin=subprocess.DEVNULL,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+
+
+def supervise():
+    with (RUN / 'supervisor.lock').open('w') as guard:
+        try:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        write(RUN / 'supervisor.json', {'pid': os.getpid(), 'start': identity(os.getpid())})
+        stopping = False
+        child = None
+
+        def terminate(_signum, _frame):
+            nonlocal stopping
+            stopping = True
+            if child and child.poll() is None:
+                os.killpg(child.pid, signal.SIGTERM)
+
+        signal.signal(signal.SIGTERM, terminate)
+        signal.signal(signal.SIGINT, terminate)
+        try:
+            for attempt in range(3):
+                if stopping:
+                    break
+                log = LOG
+                if log.exists() and log.stat().st_size > 1024 * 1024:
+                    log.replace(log.with_suffix('.log.1'))
+                with log.open('ab') as output:
+                    child = subprocess.Popen(['runuser', '-u', USER, '--', 'env',
+                        f'HOME={HOME}', 'USER=' + USER, 'LOGNAME=' + USER,
+                        'XDG_RUNTIME_DIR=/run/silo-desktop/user',
+                        'vncserver', ':1', '-fg', '-autokill', '-prompt', '0',
+                        '-xstartup', str(HOME / '.vnc/xstartup')],
+                        stdin=subprocess.DEVNULL, stdout=output, stderr=output, start_new_session=True)
+                    if stopping and child.poll() is None:
+                        os.killpg(child.pid, signal.SIGTERM)
+                    while child.poll() is None:
+                        trim_logs()
+                        try:
+                            child.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            continue
+                    # A desktop exit ends its own session, never unrelated terminal jobs.
+                    try:
+                        os.killpg(child.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                stop_display()
+                if not stopping:
+                    time.sleep(attempt + 1)
+            if not stopping:
+                (RUN / 'failed').write_text('Desktop exited after three attempts\n')
+        except Exception as error:
+            (RUN / 'failed').write_text('Desktop service failed; inspect /var/log/silo-desktop.log\n')
+            with LOG.open('a') as output:
+                output.write(str(error) + '\n')
+            raise
+        finally:
+            try:
+                stop_display()
+            finally:
+                (RUN / 'supervisor.json').unlink(missing_ok=True)
+
+
+def main():
+    if os.geteuid() != 0:
+        raise RuntimeError('Run sudo silo-desktop to manage the desktop')
+    RUN.mkdir(mode=0o755, parents=True, exist_ok=True)
+    action = sys.argv[1] if len(sys.argv) > 1 else 'status'
+    if action == 'supervise':
+        supervise()
+        return
+    with (RUN / 'operation.lock').open('w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        boot = Path('/proc/sys/kernel/random/boot_id')
+        if boot.exists():
+            epoch = boot.read_text()
+            marker = RUN / 'boot-id'
+            if not marker.exists() or marker.read_text() != epoch:
+                (RUN / 'failed').unlink(missing_ok=True)
+                marker.write_text(epoch)
+        if action == 'status':
+            pass
+        elif action == 'connection':
+            print(json.dumps(read('connection.json')))
+            return
+        elif action == 'start':
+            start()
+        elif action == 'stop':
+            stop()
+        elif action == 'restart':
+            stop()
+            start()
+        elif action == 'autostart' and len(sys.argv) == 3 and sys.argv[2] in ('true', 'false'):
+            enabled = sys.argv[2] == 'true'
+            write(STATE / 'config.json', {'autoStart': enabled})
+            if enabled:
+                start()
+        elif action == 'boot':
+            if read('config.json', {'autoStart': True})['autoStart']:
+                start()
+        else:
+            raise RuntimeError('Usage: silo-desktop status|connection|start|stop|restart|boot|autostart true|false')
+        print(json.dumps(status()))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

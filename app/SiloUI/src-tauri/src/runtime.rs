@@ -184,6 +184,8 @@ pub enum MachineConfiguration {
         workspace_storage_gib: u32,
         #[serde(rename = "runtimeStorageGiB")]
         runtime_storage_gib: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        desktop: Option<crate::desktop::DesktopConfiguration>,
     },
     Ssh {
         id: String,
@@ -1682,6 +1684,7 @@ fn machine_progress(
 ) -> MachineConfigurationProgress {
     let message = match (step, fraction) {
         ("workspace-configuration", 0) => format!("Configuring {workspace}…"),
+        ("desktop-installation", _) => "Installing the Linux desktop.".into(),
         ("workspace-configuration", _) => format!("{workspace} configured."),
         ("workspace-verification", 0) => format!("Verifying {workspace}…"),
         ("workspace-verification", _) => format!("{workspace} verified."),
@@ -1711,7 +1714,7 @@ fn machine_progress(
         fraction: (!step.starts_with("setup-")
             && matches!(
                 step,
-                "workspace-configuration" | "workspace-verification" | "workspace-removal"
+                "desktop-installation" | "workspace-configuration" | "workspace-verification" | "workspace-removal"
             ))
         .then_some(fraction),
         message,
@@ -1987,7 +1990,7 @@ fn read_activity(
     }
     for event in &mut events {
         event.message = match event.step.as_str() {
-            "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-image-preparation" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
+            "desktop-installation" | "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-image-preparation" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
             "image-resolving" => format!("{}: Resolving the VM image…", event.workspace),
             "image-resolved" => format!("{}: VM image resolved; preparing the download…", event.workspace),
             "image-download" => format!("{}: Downloading the VM image…", event.workspace),
@@ -2651,6 +2654,9 @@ fn validate_machine_update(
     previous: &MachineConfiguration,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
+    if crate::desktop::configuration(previous).is_some() && crate::desktop::configuration(machine).is_none() {
+        return Err(RuntimeError::Invalid("Desktop removal is not supported. Turn off automatic startup instead.".into()));
+    }
     if previous.name() != machine.name() {
         return Err(RuntimeError::Invalid(format!("Bundled MicroSandbox cannot rename sandbox '{}'. Keep its name or create a new sandbox.", previous.name())));
     }
@@ -2721,6 +2727,7 @@ fn create_machine_with_progress(
         max_memory_gib,
         workspace_storage_gib,
         runtime_storage_gib,
+        desktop,
     } = machine
     else {
         return Ok(());
@@ -2826,6 +2833,16 @@ fn create_machine_with_progress(
             cleanup_failed_create(runner, paths, name, id),
         ));
     }
+    if let Some(desktop) = desktop {
+        progress("desktop-installation", name, 0);
+        crate::desktop::configure_with(runner, paths, name, None, desktop)?;
+        let inspected = inspect_workspace(runner, paths, name)?;
+        ensure_managed(&inspected)?;
+        if !matches!(inspected.status.as_str(), "Created" | "Stopped") {
+            return Err(RuntimeError::Malformed("Desktop installation completed, but the sandbox did not return to its stopped state.".into()));
+        }
+        progress("desktop-installation", name, 1);
+    }
     Ok(())
 }
 
@@ -2860,6 +2877,7 @@ pub(crate) fn create_disposable_test_machine(
         max_memory_gib: 1,
         workspace_storage_gib: 1,
         runtime_storage_gib: 2,
+        desktop: None,
     };
     let mut request = read_metadata(&paths.metadata)?;
     request.machines.push(machine.clone());
@@ -3022,6 +3040,9 @@ fn update_machine(
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
     validate_machine_update(previous, machine)?;
+    if crate::desktop::only_desktop_changed(previous, machine) {
+        return crate::desktop::configure_with(runner, paths, machine.name(), crate::desktop::configuration(previous), crate::desktop::configuration(machine).ok_or_else(|| RuntimeError::Invalid("Desktop removal is not supported.".into()))?);
+    }
     if previous.name() != machine.name() {
         return Err(RuntimeError::Invalid(format!(
             "Bundled MicroSandbox 0.6.17 cannot rename persistent sandbox '{}'. Keep its current name or create a new sandbox.",
@@ -3103,6 +3124,11 @@ fn update_machine(
                 ],
                 MUTATION_TIMEOUT,
             )?;
+            if let Some(desktop) = crate::desktop::configuration(machine) {
+                if crate::desktop::configuration(previous) != Some(desktop) {
+                    crate::desktop::configure_with(runner, paths, name, crate::desktop::configuration(previous), desktop)?;
+                }
+            }
             Ok(())
         }
         _ => Err(RuntimeError::Invalid(format!(
@@ -3371,6 +3397,83 @@ mod tests {
                 .pop_front()
                 .expect("missing stub output")
         }
+    }
+
+    #[test]
+    fn desktop_guest_configuration_preserves_vm_lifecycle_even_when_guest_fails() {
+        let _guard = MUTATION_LOCK.lock().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        for installed in [false, true] {
+            for running in [false, true] {
+                for guest_fails in [false, true] {
+                    let directory = tempfile::tempdir().unwrap();
+                    let paths = paths(&directory);
+                    fs::create_dir_all(&paths.home).unwrap();
+                    fs::write(&paths.library, b"test").unwrap();
+                    fs::write(paths.home.join("state"), if running { "Running" } else { "Stopped" }).unwrap();
+                    if guest_fails { fs::write(paths.home.join("fail"), b"1").unwrap(); }
+                    fs::write(&paths.executable, r#"#!/bin/sh
+set -eu
+printf '%s\n' "$1" >> "$MSB_HOME/calls"
+case "$1" in
+  --silo-desktop-protocol) printf '1\n' ;;
+  inspect) state=$(cat "$MSB_HOME/state"); printf '{"name":"desktop-preserve-test","status":"%s","config":{"labels":{"silo.managed":"true"}},"active_config":{}}\n' "$state" ;;
+  start) printf Running > "$MSB_HOME/state" ;;
+  stop) printf Stopped > "$MSB_HOME/state" ;;
+  exec) if [ -f "$MSB_HOME/fail" ]; then echo 'Synthetic desktop setup failure' >&2; exit 1; fi ;;
+  *) echo 'Unexpected runtime operation' >&2; exit 1 ;;
+esac
+"#).unwrap();
+                    fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+                    let old = crate::desktop::DesktopConfiguration { start_with_sandbox: true };
+                    let desired = crate::desktop::DesktopConfiguration { start_with_sandbox: false };
+                    let result = crate::desktop::configure_with(&ProcessRunner, &paths, "desktop-preserve-test", installed.then_some(&old), &desired);
+                    assert_eq!(result.is_err(), guest_fails, "{result:?}");
+                    assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), if running { "Running" } else { "Stopped" });
+                    let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
+                    assert_eq!(calls.lines().filter(|v| *v == "start").count(), usize::from(!running));
+                    assert_eq!(calls.lines().filter(|v| *v == "stop").count(), usize::from(!running));
+                    if !installed { assert_eq!(calls.lines().next(), Some("--silo-desktop-protocol")); }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn desktop_only_configuration_does_not_stop_or_modify_running_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let previous = vm();
+        let mut desired = previous.clone();
+        if let MachineConfiguration::Vm { desktop, .. } = &mut desired {
+            *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: true });
+        }
+        let runner = StubRunner::successful_json(vec![json!(1), json!({})]);
+        update_machine(&runner, &paths(&dir), &previous, &desired).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1][0], "exec");
+        assert!(calls[1].last().unwrap().contains("silo-desktop autostart true"));
+    }
+
+    #[test]
+    fn desktop_configuration_removal_is_rejected_before_guest_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let desired = vm();
+        let mut previous = desired.clone();
+        if let MachineConfiguration::Vm { desktop, .. } = &mut previous {
+            *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: true });
+        }
+        let runner = StubRunner::successful_json(vec![]);
+        assert!(update_machine(&runner, &paths(&dir), &previous, &desired).unwrap_err().to_string().contains("removal"));
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_vm_configuration_does_not_enable_desktop() {
+        let value = serde_json::to_value(vm()).unwrap();
+        assert!(value.get("desktop").is_none());
+        let decoded: MachineConfiguration = serde_json::from_value(value).unwrap();
+        assert!(crate::desktop::configuration(&decoded).is_none());
     }
 
     #[test]
@@ -3779,6 +3882,7 @@ mod tests {
             max_memory_gib: 32,
             workspace_storage_gib: 60,
             runtime_storage_gib: 80,
+            desktop: None,
         }
     }
 
@@ -3830,6 +3934,36 @@ mod tests {
         assert!(!paths.metadata.with_file_name("configuration-operation.json").exists());
         assert!(!paths.volumes.join("dev/.silo-configuration-owner").exists());
         assert!(!runner.calls.lock().unwrap().iter().any(|args| args[0] == "create" || args[0] == "remove"));
+    }
+
+    #[test]
+    fn interrupted_desktop_creation_is_retried_before_metadata_adoption() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut machine = vm();
+        if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+            *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: false });
+        }
+        let candidate = request(vec![machine.clone()]);
+        configuration_recovery::begin(&paths, &candidate).unwrap();
+        configuration_recovery::claim(&paths, &machine).unwrap();
+        let mut actual = inspect(&paths, "Stopped");
+        actual["config"]["labels"]["silo.machine-id"] = json!(machine.id());
+        let outputs = || vec![json!([{"name":"dev","status":"Stopped","image":"ubuntu"}]), actual.clone(), actual.clone(), json!(null), actual.clone(), json!(1)];
+        let mut failure_outputs: Vec<_> = outputs().into_iter().map(|v| Ok(CommandOutput { stdout: v.to_string(), stderr: String::new() })).collect();
+        failure_outputs.push(Err(RuntimeError::Unavailable("Desktop download interrupted".into())));
+        let interrupted = StubRunner::new(failure_outputs);
+        assert!(configuration_recovery::recover_at_paths(&interrupted, &paths, &generous_host(), &|_, _, _| {}).is_err());
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        assert!(paths.metadata.with_file_name("configuration-operation.json").exists());
+        let mut success = outputs();
+        success.push(json!(null));
+        success.push(actual);
+        let retry = StubRunner::successful_json(success);
+        configuration_recovery::recover_at_paths(&retry, &paths, &generous_host(), &|_, _, _| {}).unwrap();
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
+        assert!(!paths.metadata.with_file_name("configuration-operation.json").exists());
+        assert!(!retry.calls.lock().unwrap().iter().any(|args| matches!(args[0].as_str(), "create" | "remove")));
     }
 
     #[test]
@@ -4097,6 +4231,25 @@ mod tests {
         assert!(calls[2]
             .windows(2)
             .any(|pair| pair == ["--label", MANAGED_LABEL]));
+    }
+
+    #[test]
+    fn desktop_creation_installs_after_base_tools_and_verifies_stopped_state() {
+        for final_state in ["Stopped", "Running"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let mut machine = vm();
+            if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+                *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: true });
+            }
+            let runner = StubRunner::successful_json(vec![json!([]), json!(1), json!(null), inspect(&paths, "Created"), json!(null), inspect(&paths, "Stopped"), json!(1), json!(null), inspect(&paths, final_state)]);
+            let result = create_machine(&runner, &paths, &machine);
+            assert_eq!(result.is_ok(), final_state == "Stopped");
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls[7][0], "exec");
+            assert!(calls[7].last().unwrap().contains("silo-desktop autostart true"));
+            assert!(calls[2].contains(&"--no-start".into()));
+        }
     }
 
     #[test]
@@ -5112,4 +5265,9 @@ pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String])
         ensure_managed(&inspected).map_err(|_| "Secrets can only be assigned to managed Silo sandboxes.".to_string())?;
     }
     Ok(())
+}
+
+/// Caller holds the mutation lock and has verified the stable VM identity.
+pub(crate) fn start_for_desktop(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeError> {
+    workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", workspace)
 }

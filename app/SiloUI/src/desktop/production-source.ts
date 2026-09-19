@@ -914,6 +914,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     stopWorkspace: (name) => workspaceAction("stop", name),
     restartWorkspace: (name) => workspaceAction("restart", name),
     dismissWorkspaceError: (name) => workspaceAction("dismiss-error", name),
+    openDesktop: async (workspace) => {
+      try { await native.invoke("open_desktop", { workspace }) }
+      catch (cause) { publish({ ...snapshot, error: errorMessage(cause) }) }
+    },
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
     saveGitHubPersonalToken: async token => { await githubMutation("save_github_personal_token", { token }) },

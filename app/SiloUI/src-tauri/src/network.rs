@@ -714,6 +714,25 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn desktop_reuses_existing_publication_without_changing_its_port() {
+        use std::os::unix::net::UnixListener;
+        let directory = tempfile::tempdir_in("/tmp").unwrap();
+        let path = directory.path().join("control.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&request).unwrap()["op"], "ports_list");
+            stream.write_all(b"{\"ok\":true,\"ports\":[{\"guest_port\":6901,\"host_port\":43000,\"host_bind\":\"127.0.0.1\"}]}\n").unwrap();
+            // A second request would fail after this listener closes.
+        });
+        assert_eq!(desktop_port(&path, 6901).unwrap(), 43000);
+        server.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn runtime_errors_are_short_and_do_not_expose_raw_details() {
         let conflict = control_reply("{\"ok\":false,\"error\":\"Address already in use: private runtime diagnostics\"}\n").unwrap_err();
         assert_eq!(conflict, "This local port is already in use. Choose another or use Automatic.");
@@ -797,4 +816,23 @@ mod tests {
         let input="sl local_address rem_address st\n0: 00000000000000000000000001000000:0BB8 00000000:0000 0A\n";
         assert_eq!(parse_listeners(input).unwrap().get(&3000), Some(&false));
     }
+}
+
+/// Internal desktop publications live until the VM stops. Closing one viewer must
+/// not revoke a mapping used by another viewer or an explicit user configuration.
+pub(crate) fn desktop_endpoint(paths: &RuntimePaths, workspace: &str, guest_port: u16) -> Result<u16, String> {
+    if guest_port == 0 { return Err("Invalid desktop port.".into()); }
+    let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+    let inspected = configured_vm(paths, workspace)?;
+    if inspected.status != "Running" { return Err("Start this sandbox before opening its desktop.".into()); }
+    desktop_port(&socket_path(paths, workspace), guest_port)
+}
+
+fn desktop_port(socket: &Path, guest_port: u16) -> Result<u16, String> {
+    let ports = control(socket, json!({"op":"ports_list"}))?;
+    if let Some(existing) = ports.into_iter().find(|p| p.guest_port == guest_port) {
+        return Ok(existing.host_port);
+    }
+    let ports = control(socket, json!({"op":"port_add","guest_port":guest_port,"host_port":0}))?;
+    ports.into_iter().find(|p| p.guest_port == guest_port).map(|p| p.host_port).ok_or_else(|| "Desktop forwarding is unavailable.".into())
 }

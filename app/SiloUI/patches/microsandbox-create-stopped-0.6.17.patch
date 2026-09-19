@@ -2320,10 +2320,16 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
   "system-configuration",
 --- a/crates/cli/bin/main.rs
 +++ b/crates/cli/bin/main.rs
-@@ -275,6 +275,19 @@
+@@ -275,6 +275,25 @@
  //--------------------------------------------------------------------------------------------------
 
  fn main() {
++    if std::env::args_os().skip(1).collect::<Vec<_>>()
++        == [std::ffi::OsString::from("--silo-desktop-protocol")]
++    {
++        println!("1");
++        return;
++    }
 +    if std::env::args_os().skip(1).collect::<Vec<_>>()
 +        == [std::ffi::OsString::from("--silo-github-token-protocol")]
 +    {
@@ -5174,3 +5180,35 @@ index 01bfa40..0d7495e 100644
              &[make_jsonl_line(
                  "2026-04-30T20:30:00.000Z",
                  "stdout",
+
+--- a/sdk/rust/lib/backend/local/sandbox/create.rs
++++ b/sdk/rust/lib/backend/local/sandbox/create.rs
+@@ -556,6 +556,28 @@
+             Self::wait_for_relay(&agent_sock_path, &log_dir, &mut handle, &config.spec.name)
+                 .await?;
+ 
++        // Silo's optional guest service is started on every actual boot, including
++        // CLI/SSH starts. Missing/broken desktops must never prevent shell access.
++        if config.spec.labels.get("silo.managed").map(String::as_str) == Some("true") {
++            let request = crate::sandbox::build_exec_request(
++                &config, "/bin/sh".into(),
++                vec!["-c".into(), "if [ -x /usr/local/bin/silo-desktop ]; then /usr/local/bin/silo-desktop boot >/dev/null 2>&1; fi".into()],
++                Some("/".into()), Some("root".into()), &[], &[], false, 0, 0,
++            );
++            let boot = async {
++                let (_, mut messages) = client.stream(
++                    microsandbox_protocol::message::MessageType::ExecRequest, &request,
++                ).await?;
++                while let Some(message) = messages.recv().await {
++                    if matches!(message.t, microsandbox_protocol::message::MessageType::ExecExited | microsandbox_protocol::message::MessageType::ExecFailed) { break; }
++                }
++                Ok::<(), crate::agent::AgentClientError>(())
++            };
++            if !matches!(tokio::time::timeout(std::time::Duration::from_secs(15), boot).await, Ok(Ok(()))) {
++                tracing::warn!("optional guest desktop startup did not complete; sandbox remains available");
++            }
++        }
++
+         if let Ok(ready) = client.ready() {
+             tracing::info!(
+                 boot_time_ms = ready.boot_time_ns / 1_000_000,

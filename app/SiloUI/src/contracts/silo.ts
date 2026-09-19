@@ -32,6 +32,10 @@ export const siloBootstrapConfigurationSchema = z.object({
   return new Set(names).size === names.length
 }, { message: "workspace names must be unique" })
 
+export const desktopConfigurationSchema = z.object({
+  startWithSandbox: z.boolean(),
+}).strict()
+
 export const setupWorkspaceConfigurationSchema = z.object({
   id: z.uuid(),
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
@@ -41,6 +45,7 @@ export const setupWorkspaceConfigurationSchema = z.object({
   maxMemoryGiB: z.number().int().min(1).max(4_294_967_295),
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
   runtimeStorageGiB: z.number().int().min(1).max(4_194_303),
+  desktop: desktopConfigurationSchema.optional(),
 }).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "Combined storage exceeds the runtime limit", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpus <= workspace.maxCPUs, {
   message: "cpus must not exceed maxCPUs",
 }).refine((workspace) => workspace.memoryGiB <= workspace.maxMemoryGiB, {

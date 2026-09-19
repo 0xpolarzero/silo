@@ -6,6 +6,8 @@ import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Server, Trash2, X
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { SetupMachineConfiguration, SetupVirtualMachineConfiguration } from "@/contracts/silo"
@@ -141,6 +143,12 @@ function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, o
   const [draft, setDraft] = useState(editor.draft)
   const [errors, setErrors] = useState<MachineValidationErrors>({})
   const firstField = useRef<HTMLInputElement>(null)
+  const original = machines.find(machine => machine.id === editor.originalID)
+  const desktopInstalled = created && original?.kind === "vm" && Boolean(original.desktop)
+  const desktopOnlyChange = original?.kind === "vm" && draft.kind === "vm"
+    && JSON.stringify(original.desktop) !== JSON.stringify(draft.desktop)
+    && JSON.stringify({ ...original, desktop: undefined }) === JSON.stringify({ ...draft, desktop: undefined })
+  const requiresStop = running && !desktopOnlyChange
 
   useEffect(() => {
     firstField.current?.focus()
@@ -218,9 +226,22 @@ function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, o
         </div>
       )}
 
+      {draft.kind === "vm" && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
+        {desktopInstalled ? <label className="flex items-center justify-between gap-3 text-xs">
+          <span>Start desktop with sandbox<span className="mt-1 block text-[11px] text-muted-foreground">When off, start the desktop from its viewer.</span></span>
+          <Switch aria-label="Start desktop with sandbox" checked={draft.desktop?.startWithSandbox ?? true} disabled={saving} onCheckedChange={startWithSandbox => update({ desktop: { startWithSandbox } })} />
+        </label> : created ? <div className="flex items-center justify-between gap-3">
+          <div className="text-xs">Linux desktop<p className="mt-1 text-[11px] text-muted-foreground">Use graphical applications in this sandbox.</p></div>
+          {draft.desktop ? <span className="text-xs text-muted-foreground">Installs when you save</span> : <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => update({ desktop: { startWithSandbox: true } })}>Add desktop</Button>}
+        </div> : <label className="flex items-start gap-2 text-xs">
+          <Checkbox aria-label="Linux desktop" checked={Boolean(draft.desktop)} disabled={saving} onCheckedChange={checked => update({ desktop: checked === true ? { startWithSandbox: true } : undefined })} />
+          <span>Linux desktop<span className="mt-1 block text-[11px] text-muted-foreground">Run graphical applications. Starts with the sandbox.</span></span>
+        </label>}
+      </section>}
+
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>
-        <Button type="button" size="sm" disabled={saving} onClick={save}>{saving ? "Saving…" : running ? "Stop VM and save" : "Save"}</Button>
+        <Button type="button" size="sm" disabled={saving} onClick={save}>{saving ? "Saving…" : requiresStop ? "Stop VM and save" : "Save"}</Button>
       </div>
       {errors.form && <p className="text-xs text-destructive" role="alert">{errors.form}</p>}
     </div>

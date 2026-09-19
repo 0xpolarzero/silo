@@ -28,6 +28,13 @@ fn vm_name(app: &AppHandle, params: &Value) -> Result<String, String> {
 }
 pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
     match method {
+        "desktop.connect" => crate::desktop_viewer::local_connection(app, &vm_name(app, params)?),
+        "desktop.status" => {
+            let mut state = crate::desktop::dispatch(app, method, params)?;
+            state["name"] = Value::String(vm_name(app, params)?);
+            Ok(state)
+        }
+        "desktop.action" => crate::desktop::dispatch(app, method, params),
         "ssh.access.state" | "ssh.access.save" | "ssh.access.connection" => crate::ssh_access::remote_dispatch(app, method, params),
         "files.list" => {
             let _guard = runtime::MUTATION_LOCK

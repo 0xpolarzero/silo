@@ -6,6 +6,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window"
 import "./index.css"
 import { createApplicationService, emptyApplicationCatalog } from "@/desktop/applications"
 import { createNativeDependencyStore } from "@/desktop/dependencies"
+import { desktopViewerRoute } from "@/desktop/linux-desktop-state"
+import { NativeLinuxDesktopViewer } from "@/desktop/linux-desktop-viewer"
 import { ProductionSurface, Unavailable } from "@/desktop/production-surface"
 import { createProductionSource } from "@/desktop/production-source"
 import { createDesktopSettingsStore, connectSettingsLifecycle } from "@/desktop/settings"
@@ -24,6 +26,12 @@ const production = createProductionSource()
 async function start() {
   if (!desktop) {
     createRoot(document.getElementById("root")!).render(<Unavailable message="Open Silo in the desktop app." />)
+    return
+  }
+
+  const viewer = desktopViewerRoute()
+  if (getCurrentWindow().label.startsWith("desktop-") && viewer) {
+    createRoot(document.getElementById("root")!).render(<NativeLinuxDesktopViewer {...viewer} />)
     return
   }
 

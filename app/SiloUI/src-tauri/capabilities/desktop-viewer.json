@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-viewer",
+  "description": "Only the local desktop shell can manage its assigned desktop. Guest child webviews receive no capabilities.",
+  "windows": [],
+  "webviews": [
+    "desktop-shell-*"
+  ],
+  "permissions": [
+    "allow-read-desktop-state",
+    "allow-desktop-action",
+    "allow-desktop-viewer-attach",
+    "allow-desktop-viewer-detach",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-fullscreen"
+  ]
+}

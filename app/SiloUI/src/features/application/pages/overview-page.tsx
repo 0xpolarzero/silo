@@ -5,7 +5,7 @@ import { workspaceAvailability } from "../model/workspace-availability"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
-import { ChevronDown, CircleAlert, Code, Loader2, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronDown, CircleAlert, Code, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useState } from "react"
 
 import { ListRowIcon } from "@/components/list-row"
@@ -322,7 +322,7 @@ export function OverviewPage({ active = true, readOnly = false,
             return {
               kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
               badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} readOnly={readOnly} /></>,
-              menuActions: [{ label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale") || (state !== "running" && state !== "failed"), onSelect: () => {
+              menuActions: [...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale"), onSelect: () => { void actions.openDesktop!(workspace ? workspaceTarget(workspace) : machine.name) } }] : []), { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale") || (state !== "running" && state !== "failed"), onSelect: () => {
                 if (!workspace?.computer && source.vmOperationsUnavailable) setOperationUnavailable(true)
                 else actions.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name)
               } }],

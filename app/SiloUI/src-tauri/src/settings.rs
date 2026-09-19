@@ -296,7 +296,9 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
         Some("ssh") => &["id", "kind", "name", "host", "user", "port"][..],
         _ => return false,
     };
-    if !only_fields(machine, fields, &[])
+    let optional = if machine["kind"] == "vm" { &["desktop"][..] } else { &[][..] };
+    if !only_fields(machine, fields, optional)
+        || machine.get("desktop").is_some_and(|desktop| serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err())
         || !valid_uuid(&machine["id"])
         || !(if unfinished {
             machine["name"].is_string()
@@ -1188,7 +1190,7 @@ mod tests {
         draft["machines"][0] = json!({
             "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"vm", "name":"dev",
             "cpus":3,"maxCPUs":5,"memoryGiB":10,"maxMemoryGiB":12,
-            "workspaceStorageGiB":35,"runtimeStorageGiB":25
+            "workspaceStorageGiB":35,"runtimeStorageGiB":25,"desktop":{"startWithSandbox":false}
         });
         store.update_draft(draft.clone()).unwrap();
         assert_eq!(SettingsStore::load(Some(path)).snapshot().onboarding_draft, draft);
