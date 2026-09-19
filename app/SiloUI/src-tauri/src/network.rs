@@ -295,13 +295,7 @@ fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Wor
         result.ports = desired
             .iter()
             .filter(|m| m.enabled)
-            .map(|m| {
-                pending(
-                    m,
-                    Some("Start this VM to make the port available.".into()),
-                    "waiting",
-                )
-            })
+            .map(|m| pending(m, None, "waiting"))
             .collect();
         return result;
     }
