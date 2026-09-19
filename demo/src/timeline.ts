@@ -1,8 +1,9 @@
+import { mainSshFrame, mainSshFrames, sshTiming } from "./ssh-timeline.ts";
 export const FPS = 30;
 export const WIDTH = 1920;
 export const HEIGHT = 1080;
 // Source frames select fixture states. Camera framing stays fixed within each shot.
-export const scenes = [
+const originalScenes = [
   { id: "intro", start: 0, end: 1, sourceStart: 0, sourceEnd: 29 },
   { id: "github", start: 1, end: 5, sourceStart: -5, sourceEnd: 155 },
   { id: "secrets", start: 5, end: 8, sourceStart: 10, sourceEnd: 175 },
@@ -16,6 +17,24 @@ export const scenes = [
   { id: "edit", start: 28, end: 34, sourceStart: 0, sourceEnd: 240 },
   { id: "outro", start: 34, end: 35, sourceStart: 0, sourceEnd: 29 },
 ] as const;
+// Keep the existing preparation, handoff and browser sequence intact.
+export const scenes = [
+  ...originalScenes.slice(0, 9),
+  {
+    id: "ssh",
+    start: 26.5,
+    end: 26.5 + mainSshFrames / FPS,
+    sourceStart: 0,
+    sourceEnd: sshTiming.duration - 1,
+  },
+  {
+    id: "outro",
+    start: 26.5 + mainSshFrames / FPS,
+    end: 27.5 + mainSshFrames / FPS,
+    sourceStart: 0,
+    sourceEnd: 29,
+  },
+] as const;
 export type Scene = (typeof scenes)[number];
 export type SceneId = Scene["id"];
 export const DURATION = scenes.at(-1)!.end * FPS;
@@ -25,6 +44,7 @@ export function sceneAt(frame: number): Scene {
 }
 export function sourceFrameAt(frame: number): number {
   const scene = sceneAt(frame);
+  if (scene.id === "ssh") return mainSshFrame(frame - scene.start * FPS);
   const progress = Math.max(
     0,
     Math.min(

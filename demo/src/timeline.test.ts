@@ -8,11 +8,10 @@ import {
   sourceFrameAt,
   typed,
   pastedAddress,
-  liveEditState,
 } from "./timeline.ts";
 
-test("35-second cut has contiguous shots and reaches each action outcome", () => {
-  assert.equal(DURATION, 35 * FPS);
+test("47.5-second cut has contiguous shots and reaches each action outcome", () => {
+  assert.equal(DURATION, 47.5 * FPS);
   for (let i = 0; i < scenes.length; i++) {
     const s = scenes[i];
     assert.equal(s.start, i === 0 ? 0 : scenes[i - 1].end);
@@ -28,7 +27,7 @@ test("35-second cut has contiguous shots and reaches each action outcome", () =>
     backup: 130,
     handoff: 110,
     network: 230,
-    edit: 185,
+    ssh: 790,
   };
   for (const [id, frame] of Object.entries(outcomes))
     assert.ok(scenes.find((s) => s.id === id)!.sourceEnd >= frame);
@@ -50,16 +49,10 @@ test("connection pastes the complete address in a single step", () => {
     "developer@office-mac.local",
   );
 });
-test("port and editor launch precede the live update, which follows save", () => {
-  assert.ok(
-    scenes.findIndex((s) => s.id === "network") <
-      scenes.findIndex((s) => s.id === "files"),
-  );
-  assert.ok(
-    scenes.findIndex((s) => s.id === "files") <
-      scenes.findIndex((s) => s.id === "edit"),
-  );
-  assert.deepEqual(liveEditState(154), { saved: false, browserUpdated: false });
-  assert.deepEqual(liveEditState(155), { saved: true, browserUpdated: false });
-  assert.deepEqual(liveEditState(170), { saved: true, browserUpdated: true });
+test("SSH follows the browser preview and ends with remote agent activity", () => {
+  assert.equal(sceneAt(26.5 * FPS - 1).id, "network");
+  assert.equal(sceneAt(26.5 * FPS).id, "ssh");
+  assert.equal(sceneAt(46.5 * FPS - 1).id, "ssh");
+  assert.equal(sourceFrameAt(46.5 * FPS - 1), 809);
+  assert.equal(sceneAt(46.5 * FPS).id, "outro");
 });

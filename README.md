@@ -6,7 +6,7 @@ Silo is a desktop app for managing Linux development VMs on your computer and re
 
 Create a sandbox, open it in your usual editor or terminal, and connect to its development servers through the app. Manage GitHub access, API secrets, and backups in the same interface, without juggling VM commands and SSH configuration.
 
-https://github.com/user-attachments/assets/c29f8c5c-38f8-4173-861b-a448298c0c54
+https://github.com/user-attachments/assets/4e9cedd1-60a5-40d3-ad60-81cd17d127be
 
 ## Install
 

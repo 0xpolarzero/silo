@@ -1,13 +1,15 @@
 # Silo demo
 
-A 35-second, 1920×1080, 30 fps Remotion product launch film. All app data is
+A 47.5-second, 1920×1080, 30 fps Remotion product launch film. All app data is
 simulated and all backend actions are inert.
 
-The v10 cut pastes the copied computer address in one step. Its ending shows
-automatic port discovery, forwarding and the initial browser page, then opens the VM repository from
-the production Files page in Zed. The final view keeps the VM editor on the left
-and the laptop browser on the right; the browser updates after the edit is saved.
-The Files shot lasts 1.5 seconds, with less than half a second over Open in Zed. The network sequence shows the discovered row before any click and uses the production action tooltips. Plain neutral surroundings, direct cuts, and no audio track remain.
+The v11 cut keeps preparation, remote management, the development server, and
+browser preview through 26.5s. A 20-second SSH ending replaces the Zed/edit
+sequence: enable SSH on the remote VM, add it in an agent client, then smoothly
+pull back to both computers. Choose the repository and submit the prompt on the
+laptop; the Office Mac's VM shows the agent's first directory and file reads.
+The brand close runs 46.5–47.5s. The standalone SSH demo remains 27 seconds;
+the main film shortens pauses and text entry while preserving its camera speed.
 
 ## Run
 
@@ -26,7 +28,7 @@ frame-by-frame inspection, and arbitrary seeking.
 npm --prefix demo run render
 ```
 
-Output: `demo/out/silo-demo-v10.mp4`. The original 110-second export is preserved
+Output: `demo/out/silo-demo-v11.mp4`. The original 110-second export is preserved
 at `demo/out/silo-demo.mp4` when already present. The first render downloads
 Remotion's headless browser; restricted macOS hosts need permission to launch it
 outside the sandbox.
@@ -70,3 +72,34 @@ notification delivery, or release readiness. Production app behavior is unchange
 
 Remotion dependencies are pinned together to 4.0.521. See the
 [Remotion license](https://www.remotion.dev/license) for distribution terms.
+
+## SSH feature demo
+
+`SiloSshDemo` is a separate 27-second, silent 1920×1080 composition. It starts
+in close-up: enable SSH on the Office Mac's VM, copy its address, save its key,
+and add the connection in an illustrated agent app. Clicking Connect begins
+one smooth camera pullback into a laptop beside the Office Mac. The app and
+cursor keep moving in the same shot. Both computers stay visible for folder
+selection, prompt entry, and the remote agent's first directory and file reads.
+There are no cuts back to the close-up after the pullback.
+
+```sh
+npm --prefix demo run render:ssh
+npm --prefix demo run stills -- --ssh
+```
+
+Output: `demo/out/silo-ssh-demo-v4.mp4`. Select **SiloSshDemo** in the existing
+Remotion studio to scrub the sequence. The original **SiloDemo** remains available.
+
+- `src/ssh-film.tsx`: frame-driven SSH setup, continuous camera pullback, and illustrated agent client.
+- `src/ssh-timeline.ts`: shared action times, camera movement, and cursor motion with a pause before each click.
+- `src/ssh-style.css`: client, folder picker, and key-dialog styling.
+- `src/product.tsx`: production overview and SSH controls with inert fixture actions.
+
+The LAN address assumes both computers already have a route to each other.
+The private key filename, native dialogs, computer hardware, owner-side VM view,
+client, folder listing, connection,
+and agent activity are illustrations. This is not an exact Codex or ZCode UI,
+and it makes no real SSH connection, writes no key, and changes no VM state.
+Production copy feedback uses an inert browser clipboard adapter. Verification
+covers rendering and fixture presentation, not live SSH or agent execution.

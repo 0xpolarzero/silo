@@ -18,6 +18,7 @@ export const actions: ApplicationActions = {
   pushRepository: noop,
   startWorkspace: noop,
   stopWorkspace: noop,
+  dismissWorkspaceError: noop,
   restartWorkspace: noop,
   openTerminal: noop,
   openEditor: noop,

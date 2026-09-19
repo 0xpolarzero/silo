@@ -6,11 +6,12 @@
   "scripts": {
     "prepare:css": "tailwindcss -i src/app.css -o src/app.generated.css --minify",
     "start": "npm run prepare && remotion studio src/index.ts --port 3400",
-    "render": "npm run prepare && remotion render src/index.ts SiloDemo out/silo-demo-v10.mp4 --codec=h264 --muted --crf=18 --concurrency=4",
+    "render": "npm run prepare && remotion render src/index.ts SiloDemo out/silo-demo-v11.mp4 --codec=h264 --muted --crf=18 --concurrency=4",
     "stills": "npm run prepare:css && node scripts/stills.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/timeline.test.ts",
-    "prepare": "npm run prepare:css"
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "prepare": "npm run prepare:css",
+    "render:ssh": "npm run prepare && remotion render src/index.ts SiloSshDemo out/silo-ssh-demo-v4.mp4 --codec=h264 --muted --crf=18 --concurrency=4"
   },
   "dependencies": {
     "@remotion/cli": "4.0.521",

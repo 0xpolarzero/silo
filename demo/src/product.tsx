@@ -10,6 +10,7 @@ import { NetworkPage } from "@/features/application/pages/network-page";
 import { SettingsProvider } from "@/features/preferences/settings-store";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { actions, demo, noop, office, sourceFor } from "./fixtures";
+import { sshTiming } from "./ssh-timeline";
 import { pastedAddress } from "./timeline";
 import { WorkspacesPage } from "@/features/application/pages/workspaces-page";
 import { createDirectoryStore } from "@/features/application/model/directory-store";
@@ -25,7 +26,7 @@ const directoryStore = createDirectoryStore(async () => ({
   nextOffset: null,
 }));
 
-type Page = "overview" | "computers" | "connect" | "network" | "files";
+type Page = "ssh" | "overview" | "computers" | "connect" | "network" | "files";
 export function Product({ page, frame }: { page: Page; frame: number }) {
   const surface = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -64,6 +65,34 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
     starting: page === "connect",
     portConnected: page !== "network" || frame >= 110,
   });
+  if (page === "ssh") {
+    source.workspaces = [demo];
+    source.sshAccess = {
+      workspaces: [
+        {
+          workspace: demo.machine.id,
+          computerName: "Office Mac",
+          enabled: frame >= sshTiming.local,
+          port: 2222,
+          bindAddress:
+            frame >= sshTiming.network ? "192.168.1.42" : "127.0.0.1",
+          addresses: ["192.168.1.42"],
+          keys: [],
+          state: frame >= sshTiming.local ? "listening" : "disabled",
+          message: null,
+          fingerprint: null,
+        },
+      ],
+    };
+  }
+  const pageActions =
+    page === "ssh"
+      ? {
+          ...actions,
+          saveSshAccess: async () => undefined,
+          sshConnection: async () => null,
+        }
+      : actions;
   if (page === "network" && frame < 35 && source.network)
     source.network.workspaces[0].ports = [];
   const section = page === "network" || page === "files" ? page : "overview";
@@ -87,6 +116,7 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
     body = (
       <WorkspacesPage
         section="files"
+        onSectionChange={noop}
         workspaces={[
           {
             ...demo,
@@ -132,7 +162,11 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
     );
   else
     body = (
-      <OverviewPage source={source} actions={actions} onMachinesChange={noop} />
+      <OverviewPage
+        source={source}
+        actions={pageActions}
+        onMachinesChange={noop}
+      />
     );
   return (
     <div ref={surface} className="product-surface">

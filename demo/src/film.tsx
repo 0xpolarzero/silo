@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { SiloMark } from "@/components/silo-mark";
 import { Preparation, RemoteHandoff } from "./preparation";
+import { SshFilm } from "./ssh-film";
 import { Product } from "./product";
 import {
   DURATION,
@@ -450,6 +451,7 @@ export function Film() {
   const frame = useCurrentFrame();
   const scene = sceneAt(frame);
   const source = sourceFrameAt(frame);
+  if (scene.id === "ssh") return <SshFilm frameOverride={source} />;
   const labels: Partial<Record<SceneId, string>> = {
     github: "GitHub access",
     secrets: "Secret destinations",

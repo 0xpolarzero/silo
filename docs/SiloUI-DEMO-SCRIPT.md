@@ -1,4 +1,19 @@
-# Current cut: v10, 35 seconds
+# Current cut: v11, 47.5 seconds
+
+- 0–26.5s: Preserve the v10 opening, preparation, remote start, server, port forwarding, and browser preview.
+- 26.5–37.7s: Enable SSH on the Office Mac's VM, copy the network address, save its key, and configure the illustrated agent client on the laptop.
+- 37.7–39.3s: Clicking Connect begins one continuous pullback into the laptop screen, revealing Office Mac beside it. Keep the standalone film's 1.6-second camera move.
+- 39.3–43.5s: Stay with both computers. Connect over SSH, select the remote repository, type and submit the prompt on the laptop.
+- 43.5–46.5s: The agent starts reading the remote repository; show activity inside Office Mac's VM.
+- 46.5–47.5s: Brand close.
+
+The standalone SSH composition retains its 27-second pacing. The main film
+retimes pauses and text entry to 20 seconds; all UI, connection, and agent data
+remain fixtures. No extra captions or audio. Previous exports are preserved.
+
+---
+
+# Previous cut: v10, 35 seconds
 
 The network shot now runs 22–26.5s: start empty, discover port 5173 without a
 click, show the production Connect to this computer tooltip, forward the port,
