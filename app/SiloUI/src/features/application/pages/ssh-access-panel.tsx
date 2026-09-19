@@ -120,14 +120,14 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
 }
 
 
-export function SshAccessBadges({ access, stale = false, readOnly = false }: { access?: SshAccessWorkspace; stale?: boolean; readOnly?: boolean }) {
+export function SshAccessBadges({ access, stale = false }: { access?: SshAccessWorkspace; stale?: boolean }) {
   if (!access?.enabled) return null
-  return <TooltipProvider delayDuration={150}>{["127.0.0.1", ...(access.bindAddress !== "127.0.0.1" ? [access.bindAddress] : [])].map(host => {
-    const local = host === "127.0.0.1"
-    const label = local ? "Local SSH" : "Network SSH"
-    return <span key={host} className={`inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-medium ${local ? "bg-muted text-muted-foreground" : "bg-blue-500/10 text-blue-700 dark:text-blue-300"}`}>
-      <Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label} on ${access.computerName}`} className="inline-flex items-center gap-1"><ConnectionIcon kind="ssh" network={!local} className="mr-1 size-3.5" />SSH</span></TooltipTrigger><TooltipContent>{label} on {access.computerName} · {stale || access.unavailable ? "Status unavailable" : access.state === "listening" ? "Listening" : access.state === "waiting" ? "Waiting for sandbox" : access.message || "Unavailable"} · {host}:{access.port}</TooltipContent></Tooltip>
-      <Tooltip><TooltipTrigger asChild><CopyButton disabled={readOnly} variant="ghost" size="icon-xs" className="size-3.5 rounded-full p-0 [&_svg]:size-2.5" value={`${host}:${access.port}`} labels={{ idle: `Copy ${label} address for ${access.workspace}`, copied: "Address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy {label} address on {access.computerName}</TooltipContent></Tooltip>
+  const network = access.bindAddress !== "127.0.0.1"
+  const label = `SSH from ${access.computerName}${network ? " and other computers" : " only"}`
+  const status = stale || access.unavailable ? "Status unavailable" : access.state === "listening" ? "Listening" : access.state === "waiting" ? "Waiting for sandbox" : access.message || "Unavailable"
+  return <TooltipProvider delayDuration={150}><Tooltip><TooltipTrigger asChild>
+    <span tabIndex={0} aria-label={label} className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ${network ? "border-blue-500/15 bg-blue-500/10 text-blue-700 dark:text-blue-300" : "border-border bg-muted text-muted-foreground"}`}>
+      {network && <ConnectionIcon kind="ssh" network className="size-3" />}SSH
     </span>
-  })}</TooltipProvider>
+  </TooltipTrigger><TooltipContent>{label} · {status}</TooltipContent></Tooltip></TooltipProvider>
 }

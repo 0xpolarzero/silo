@@ -321,7 +321,7 @@ export function OverviewPage({ active = true, readOnly = false,
             const lifecycleLabel = lifecycle === "dismiss-error" ? "Dismissing…" : lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
             return {
               kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
-              badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} readOnly={readOnly} /></>,
+              badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
               menuActions: [...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale"), onSelect: () => { void actions.openDesktop!(workspace ? workspaceTarget(workspace) : machine.name) } }] : []), { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale") || (state !== "running" && state !== "failed"), onSelect: () => {
                 if (!workspace?.computer && source.vmOperationsUnavailable) setOperationUnavailable(true)
                 else actions.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name)

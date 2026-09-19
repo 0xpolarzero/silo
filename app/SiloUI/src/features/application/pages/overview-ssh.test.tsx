@@ -4,31 +4,34 @@ import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
 import { OverviewPage } from "./overview-page"
+import { ConnectionIcon } from "@/components/connection-icon"
+import { SshAccessBadges } from "./ssh-access-panel"
 import { NetworkPage } from "./network-page"
 
-it("keeps independent address-copy badges beside the sandbox and expands its controls", async () => {
+it("shows one SSH scope badge and keeps both addresses in expanded controls", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
   source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "192.168.1.42", keys: [], state: "listening", message: null, fingerprint: null, computerName: "Ada Mac", addresses: ["127.0.0.1", "192.168.1.42"] }] }
   const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), saveSshAccess: vi.fn(), sshConnection: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
-  const row = within(screen.getByLabelText("Local SSH on Ada Mac").closest("li")!)
-  expect(row.getByLabelText("Network SSH on Ada Mac")).toBeVisible()
+  const row = within(screen.getByLabelText("SSH from Ada Mac and other computers").closest("li")!)
+  expect(row.getByLabelText("SSH from Ada Mac and other computers")).toBeVisible()
   expect(row.queryByRole("switch")).not.toBeInTheDocument()
-  await user.click(row.getByRole("button", { name: `Copy Local SSH address for ${workspace.machine.name}` }))
-  expect(await navigator.clipboard.readText()).toBe("127.0.0.1:2222")
-  await user.click(row.getByRole("button", { name: `Copy Network SSH address for ${workspace.machine.name}` }))
-  expect(await navigator.clipboard.readText()).toBe("192.168.1.42:2222")
+  expect(row.queryByLabelText("SSH from Ada Mac only")).not.toBeInTheDocument()
   await user.click(row.getByRole("button", { name: `SSH controls for ${workspace.machine.name}` }))
   expect(row.getAllByRole("switch")).toHaveLength(2)
   expect(row.getByText("127.0.0.1:2222")).toBeVisible()
   expect(row.getByText("192.168.1.42:2222")).toBeVisible()
+  await user.click(row.getByRole("button", { name: "Copy SSH address" }))
+  expect(await navigator.clipboard.readText()).toBe("127.0.0.1:2222")
+  await user.click(row.getByRole("button", { name: "Copy network SSH address" }))
+  expect(await navigator.clipboard.readText()).toBe("192.168.1.42:2222")
   await user.click(row.getByRole("button", { name: `SSH controls for ${workspace.machine.name}` }))
   source.sshAccess.workspaces[0].bindAddress = "127.0.0.1"
   view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
-  expect(row.getByLabelText("Local SSH on Ada Mac")).toBeVisible()
-  expect(row.queryByLabelText("Network SSH on Ada Mac")).not.toBeInTheDocument()
+  expect(row.getByLabelText("SSH from Ada Mac only")).toBeVisible()
+  expect(row.queryByLabelText("SSH from Ada Mac and other computers")).not.toBeInTheDocument()
 })
 
 it("keeps Network limited to service ports", () => {
@@ -52,8 +55,28 @@ it("allows read-only SSH disclosure without refreshing, copying, or changing the
   expect(screen.getByText("192.168.1.42:2222")).toBeVisible()
   for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled()
   expect(screen.getByRole("button", { name: "Copy SSH address" })).toBeDisabled()
-  expect(screen.getByRole("button", { name: "Copy Local SSH address for dev" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Copy network SSH address" })).toBeDisabled()
   await user.click(disclosure)
   expect(disclosure).toHaveAttribute("aria-expanded", "false")
   for (const action of Object.values(actions)) expect(action).not.toHaveBeenCalled()
+})
+
+
+it.each([
+  [false, "off"], [false, "host"], [false, "network"],
+  [true, "off"], [true, "host"], [true, "network"],
+] as const)("communicates remote=%s with SSH scope=%s", (remote, scope) => {
+  const host = remote ? "Office Mac" : "This computer"
+  const { container } = render(<>
+    <ConnectionIcon kind="vm" network={remote} label={remote ? "Remote VM" : "Local VM"} />
+    <SshAccessBadges access={{ workspace: "dev", enabled: scope !== "off", port: 2222, bindAddress: scope === "network" ? "192.168.1.42" : "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, computerName: host, addresses: [] }} />
+  </>)
+  expect(screen.getByRole("img", { name: remote ? "Remote VM" : "Local VM" })).toBeVisible()
+  expect(container.querySelector(remote ? ".lucide-server" : ".lucide-monitor")).toBeInTheDocument()
+  if (scope === "off") expect(screen.queryByText("SSH")).not.toBeInTheDocument()
+  else {
+    expect(screen.getAllByText("SSH")).toHaveLength(1)
+    expect(screen.getByLabelText(`SSH from ${host}${scope === "network" ? " and other computers" : " only"}`)).toBeVisible()
+  }
+  expect(container.querySelectorAll(".lucide-network")).toHaveLength(scope === "network" ? 1 : 0)
 })
