@@ -5,6 +5,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
+import { stagePatchedImago } from "../../scripts/imago-storage-patch.mjs"
+
+// The crate extraction and lockfile override have their own filesystem integration tests.
+vi.mock("../../scripts/imago-storage-patch.mjs", () => ({ stagePatchedImago: vi.fn().mockResolvedValue(undefined) }))
 
 import {
   applyRuntimePatch,
@@ -194,6 +198,7 @@ describe("bundled MicroSandbox release staging", () => {
         return ""
       }
       if (command === "/usr/bin/git") return ""
+      if (command === "cargo" && args.includes("fetch")) return ""
       if (command === "cargo") {
         compilations += 1
         const output = join(String(options.env?.CARGO_TARGET_DIR), targetTriple, "release")
@@ -203,7 +208,7 @@ describe("bundled MicroSandbox release staging", () => {
         return ""
       }
       if (command.startsWith(appRoot) && command.endsWith("/msb")) {
-        if (args[0] === "--silo-github-protocol") return "1"
+        if (["--silo-github-protocol", "--silo-storage-protocol"].includes(args[0])) return "1"
         if (args[0] === "--version") return `msb ${MICRO_SANDBOX_VERSION}`
         if (args.includes("--help")) {
           const oldFlags = "--no-start --from-snapshot --progress-json"
@@ -236,6 +241,7 @@ describe("bundled MicroSandbox release staging", () => {
         const changed = await stage()
         expect(await readFile(changed.executablePath, "utf8")).toBe("compiled runtime:agent revision two")
         expect(compilations).toBe(3)
+        expect(stagePatchedImago).toHaveBeenCalledTimes(3)
         const manifest = JSON.parse(await readFile(changed.manifestPath, "utf8"))
         expect(manifest.executable.embeddedAgentdReleaseSha256).toBe(sha256(agentd))
         expect(manifest.executable.sha256).toBe(sha256(await readFile(changed.executablePath)))
