@@ -468,9 +468,9 @@ pub async fn connect_remote_host(address: String) -> Result<RemoteHost, String> 
 }
 
 #[tauri::command]
-pub async fn remote_host_snapshot(app: AppHandle, host_id: String) -> Result<Value, String> {
+pub async fn remote_host_snapshot(app: AppHandle, host_id: String, refresh_repositories: Option<bool>) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let result = call_remote(&app, &host_id, "runtime.snapshot", json!({}));
+        let result = call_remote(&app, &host_id, "runtime.snapshot", json!({"refreshRepositories": refresh_repositories.unwrap_or(false)}));
         if result
             .as_ref()
             .is_err_and(|error| error != "SILO_SANDBOX_UPDATE_IN_PROGRESS")

@@ -189,6 +189,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let networkRequest: Promise<void> | undefined
   let networkRevision = 0
   let disposed = false
+  let activeRefreshes = 0
   let refreshSequence = 0
   let refreshRepositoriesOnReturn = false
   let githubMutationSequence = 0
@@ -382,8 +383,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
-  async function refreshComputers() {
-    if (remoteRefresh) return remoteRefresh
+  async function refreshComputers(refreshRepositories = false) {
+    if (remoteRefresh) {
+      if (!refreshRepositories) return remoteRefresh
+      await remoteRefresh
+    }
     remoteRefresh = (async () => {
       try {
         const computers = z.array(remoteComputerSchema).parse(await native.invoke("remote_host_list"))
@@ -391,7 +395,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           try {
             // A push result delivered during this read is newer than this snapshot.
             const revision = remotePushRevisions.get(computer.id)
-            const source = parseApplicationSource(await native.invoke("remote_host_snapshot", { hostId: computer.id }))
+            const source = parseApplicationSource(await native.invoke("remote_host_snapshot", { hostId: computer.id, ...(refreshRepositories && { refreshRepositories: true }) }))
             if (revision === remotePushRevisions.get(computer.id)) remoteSnapshots.set(computer.id, source)
             return { ...computer, connected: true, lastSeen: Date.now() }
           } catch (cause) {
@@ -427,10 +431,16 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
-  async function refresh() {
+  async function refresh(refreshRepositories = false) {
+    activeRefreshes++
+    try { await readSnapshots(refreshRepositories) }
+    finally { activeRefreshes-- }
+  }
+
+  async function readSnapshots(refreshRepositories: boolean) {
     const sequence = ++refreshSequence
     const [applicationResult, backupResult] = await Promise.allSettled([
-      native.invoke<unknown>("read_application_state"),
+      refreshRepositories ? native.invoke<unknown>("read_application_state", { refreshRepositories: true }) : native.invoke<unknown>("read_application_state"),
       native.invoke<unknown>("read_backup_state"),
     ])
     if (disposed || sequence !== refreshSequence) return
@@ -495,7 +505,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
     window.addEventListener("focus", onWindowFocus)
     await Promise.all([refresh(), readSetupActivity(), refreshComputers()])
-    remoteTimer = setInterval(() => { void refreshComputers() }, 10_000)
+    if (disposed) return
+    remoteTimer = setInterval(() => {
+      void refreshComputers()
+      // Repository changes inside a VM do not emit application events. Skip
+      // hidden windows and let slow reads finish before starting another poll.
+      if (document.visibilityState !== "hidden" && activeRefreshes === 0) void refresh()
+    }, 10_000)
   }
 
   function reportUnavailable(message: string) {
@@ -777,6 +793,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   const applicationActions: ApplicationActions = {
+    refreshRepositories: async () => {
+      await refresh(true)
+      await refreshComputers(true)
+      if (snapshot.error) throw new Error(snapshot.error)
+    },
     queryLogs: async request => logPageSchema.parse(await native.invoke("query_sandbox_logs", { request })),
     exportLogs: async requests => z.boolean().parse(await native.invoke("export_workspace_logs", { requests })),
     cancelLogExport: async () => { await native.invoke("cancel_log_export") },
@@ -1007,7 +1028,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
       }).finally(() => { pendingBackupOperation = false })
     },
-    cancelOperation() { void native.invoke("cancel_backup_operation").then(refresh).catch((cause) => reportUnavailable(`Backup cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
+    cancelOperation() { void native.invoke("cancel_backup_operation").then(() => refresh()).catch((cause) => reportUnavailable(`Backup cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
     retryStart(name) {
       void native.invoke<unknown>("retry_workspace_start", { name }).then((result) => {
         const source = parseMutationSource(result)

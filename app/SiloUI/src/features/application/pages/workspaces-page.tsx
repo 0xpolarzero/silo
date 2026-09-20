@@ -5,7 +5,7 @@ import { FolderActions } from "@/features/application/components/folder-actions"
 import { WorkspaceFileTree } from "@/features/application/components/workspace-file-tree"
 import type { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useMemo, useState } from "react"
-import { Activity, Archive, Box, Check, CircleAlert, Cloud, GitBranch, KeyRound, Loader2, TriangleAlert, Wrench } from "lucide-react"
+import { Activity, Archive, Box, Check, CircleAlert, Cloud, GitBranch, KeyRound, Loader2, RefreshCw, TriangleAlert, Wrench } from "lucide-react"
 
 import { DisclosureHeader } from "@/components/disclosure-header"
 import { FilterCombobox, type FilterOption } from "@/components/filter-combobox"
@@ -60,6 +60,7 @@ function EmptyState({ title, description }: { title: string; description: string
 }
 
 function Files({
+  onRefreshRepositories,
   workspaces,
   repositoryPushOperations,
   onPushRepository,
@@ -69,6 +70,7 @@ function Files({
   directoryStore,
   active,
 }: {
+  onRefreshRepositories?: () => Promise<void>
   editor: string
   onOpenEditor: (workspace: string, path: string) => void
   directoryStore: ReturnType<typeof createDirectoryStore>
@@ -78,6 +80,16 @@ function Files({
   onPushRepository: (workspace: string, repositoryPath: string, commitCount: number) => void
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
 }) {
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string>()
+  const refreshRepositories = async () => {
+    if (!onRefreshRepositories || refreshing) return
+    setRefreshing(true)
+    setRefreshError(undefined)
+    try { await onRefreshRepositories() }
+    catch { setRefreshError("Could not refresh repositories. Try again.") }
+    finally { setRefreshing(false) }
+  }
   const [repositoriesOpen, setRepositoriesOpen] = useState(true)
   const [fileTreeOpen, setFileTreeOpen] = useState(true)
   if (workspaces.length === 0) return <EmptyState title="No sandboxes selected" description="Select at least one sandbox to browse its files and repositories." />
@@ -105,10 +117,12 @@ function Files({
             title="Repositories"
             titleClassName="text-sm font-medium"
             label={`${repositoriesOpen ? "Collapse" : "Expand"} repositories`}
+            actions={<Button variant="ghost" size="icon" className="size-6" aria-label="Refresh repositories" title="Refresh repositories" disabled={refreshing || !onRefreshRepositories} onClick={() => void refreshRepositories()}><RefreshCw aria-hidden="true" className={cn("size-3.5", refreshing && "motion-safe:animate-spin")} /></Button>}
             controlsLabel="Repository pane controls"
           />
           <CollapsibleContent className="file-pane-content-motion min-h-0 flex-1" data-files-pane-content="repositories">
             <div className="h-full overflow-y-auto overscroll-contain px-2 pt-2" data-files-pane-scroll="repositories">
+              {refreshError && <p role="alert" className="text-xs text-destructive">{refreshError}</p>}
               {repositories.length > 0 ? (
                 <ListCard divided role="list" aria-label="Repositories">
                   {repositories.map(({ workspace, repository }) => {
@@ -343,7 +357,7 @@ export function WorkspacesPage({
   return (
     <div className="mx-auto grid h-full min-h-0 w-full max-w-4xl grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6">
       <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />
-      {section === "files" && <Files editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
+      {section === "files" && <Files onRefreshRepositories={networkActions.refreshRepositories} editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
       {section === "logs" && <Logs key={JSON.stringify(visibleWorkspaces.map(workspaceTarget))} workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} actions={networkActions} active={active} window={logWindow} onWindowChange={setLogWindow} />}
       {section === "network" && <NetworkPage workspaces={visibleWorkspaces} browser={browser} network={network} error={networkError} actions={networkActions} active={active} />}
       {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} onShowLogs={activity => {

@@ -1429,7 +1429,7 @@ pub async fn read_machine_configuration(
 }
 
 #[tauri::command]
-pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource, String> {
+pub async fn read_application_state(app: AppHandle, refresh_repositories: Option<bool>) -> Result<ApplicationSource, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         let mut source = read_application_snapshot(&ProcessRunner, &paths, &MUTATION_LOCK)?;
@@ -1446,7 +1446,7 @@ pub async fn read_application_state(app: AppHandle) -> Result<ApplicationSource,
         source.repository_push_operations = crate::host_push_operations::merge(&app, crate::host_push::operations())?;
         for workspace in &mut source.workspaces {
             if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running) {
-                match crate::host_push::discover(&paths, workspace.machine.name()) {
+                match crate::host_push::discover(&paths, workspace.machine.name(), refresh_repositories.unwrap_or(false)) {
                     Ok(repositories) => workspace.repositories = repositories,
                     Err(message) => {
                         if workspace.attention.is_none() {

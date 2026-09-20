@@ -31,6 +31,65 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("refreshes repository rows while visible without overlapping slow reads and stops on disposal", async () => {
+    vi.useFakeTimers()
+    const mock = native()
+    let complete: ((value: unknown) => void) | undefined
+    let reads = 0
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "read_application_state") {
+        reads++
+        if (reads === 1) return structuredClone(source)
+        return new Promise(resolve => { complete = resolve })
+      }
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(reads).toBe(2)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(reads).toBe(2)
+      const changed = structuredClone(source)
+      changed.workspaces[0].repositories = [{ path: "new-repository", branch: "main", ahead: 0, behind: 0, dirty: false }]
+      complete!(changed)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.getSnapshot().source?.workspaces[0].repositories).toEqual(changed.workspaces[0].repositories)
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(reads).toBe(2)
+      visibility.mockRestore()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(reads).toBe(3)
+      complete!(changed)
+      await vi.advanceTimersByTimeAsync(0)
+      store.dispose()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(reads).toBe(3)
+    } finally {
+      store.dispose()
+      vi.restoreAllMocks()
+      vi.useRealTimers()
+    }
+  })
+
+  it("bypasses local and remote repository caches for an explicit refresh", async () => {
+    const mock = native()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+      if (command === "remote_host_snapshot") return structuredClone(source)
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await store.applicationActions.refreshRepositories!()
+      expect(invoke).toHaveBeenCalledWith("read_application_state", { refreshRepositories: true })
+      expect(invoke).toHaveBeenCalledWith("remote_host_snapshot", { hostId: "office", refreshRepositories: true })
+    } finally { store.dispose() }
+  })
+
   it.each(["dev", "silo-remote:00000000-0000-4000-8000-000000000010:00000000-0000-4000-8000-000000000011"])("opens the desktop for the exact selected target %s", async workspace => {
     const mock = native()
     const store = createProductionSource(mock.bridge)

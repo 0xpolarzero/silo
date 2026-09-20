@@ -116,7 +116,7 @@ fn repository(url: &str) -> Result<String, String> {
     }
     Ok(name.into())
 }
-pub(crate) fn discover(paths: &RuntimePaths, name: &str) -> Result<Vec<Value>, String> {
+pub(crate) fn discover(paths: &RuntimePaths, name: &str, refresh: bool) -> Result<Vec<Value>, String> {
     let key = format!("{}:{name}", paths.home.display());
     let cache = DISCOVERIES.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some((at, result)) = cache
@@ -124,7 +124,7 @@ pub(crate) fn discover(paths: &RuntimePaths, name: &str) -> Result<Vec<Value>, S
         .map_err(|_| "Repository state unavailable.")?
         .get(&key)
     {
-        if at.elapsed() < Duration::from_secs(15) {
+        if !refresh && at.elapsed() < Duration::from_secs(15) {
             return result.clone();
         }
     }
@@ -797,6 +797,32 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn manual_discovery_bypasses_cached_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("missing-msb");
+        let paths = RuntimePaths {
+            executable,
+            home: root.path().to_path_buf(),
+            guest_image: root.path().join("image"),
+            storage_home: None,
+            library: root.path().join("library"),
+            metadata: root.path().join("metadata"),
+            volumes: root.path().join("volumes"),
+        };
+        let key = format!("{}:test", paths.home.display());
+        let cached = vec![json!({"path": "removed-repository"})];
+        DISCOVERIES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
+            .insert(key.clone(), (Instant::now(), Ok(cached.clone())));
+        assert_eq!(discover(&paths, "test", false).unwrap(), cached);
+        // A forced read must reach the missing runtime instead of returning
+        // the fresh cached rows. No real VM or runtime is involved.
+        let refreshed = discover(&paths, "test", true);
+        assert!(refreshed.is_err());
+        assert_eq!(discover(&paths, "test", false), refreshed);
+        DISCOVERIES.get().unwrap().lock().unwrap().remove(&key);
+    }
+
     #[test]
     fn rejects_untrusted_remote_destinations() {
         for url in [

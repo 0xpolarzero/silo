@@ -6,6 +6,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     if method == "runtime.snapshot" {
         return serde_json::to_value(tauri::async_runtime::block_on(read_application_state(
             app.clone(),
+            params.get("refreshRepositories").and_then(Value::as_bool),
         ))?)
         .map_err(|e| e.to_string());
     }

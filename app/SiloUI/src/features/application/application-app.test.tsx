@@ -47,6 +47,20 @@ function appPanel(name: string) {
 }
 
 describe("application", () => {
+  it("refreshes repositories without toggling the pane and disables the button while loading", async () => {
+    let finish!: () => void
+    const refreshRepositories = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+    const user = userEvent.setup()
+    render(<ApplicationPreview source={applicationSourceForScenario("running")} actions={{ refreshRepositories }} initialRoute={{ workspaceSection: "files" }} />)
+    const button = screen.getByRole("button", { name: "Refresh repositories" })
+    await user.click(button)
+    expect(refreshRepositories).toHaveBeenCalledTimes(1)
+    expect(button).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Collapse repositories" })).toHaveAttribute("aria-expanded", "true")
+    finish()
+    await waitFor(() => expect(button).toBeEnabled())
+  })
+
   it("opens failed activity logs in a diagnostic window and keeps a cleared range cleared", async () => {
     const source = applicationSourceForScenario("running")
     const workspace = source.workspaces[0]
