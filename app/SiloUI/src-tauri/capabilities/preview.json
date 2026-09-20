@@ -45,6 +45,8 @@
     "allow-cancel-backup-operation",
     "allow-dismiss-backup-operation",
     "allow-read-application-state",
+    "allow-read-workspace-storage",
+    "allow-reclaim-workspace-storage",
     "allow-dismiss-repository-push",
     "allow-push-repository",
     "allow-start-repository-push",

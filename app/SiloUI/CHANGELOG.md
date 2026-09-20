@@ -1,5 +1,11 @@
 # silo-ui
 
+## 0.7.2
+
+### Patch Changes
+
+- Fix storage measurements and manual space reclamation being blocked by desktop permissions.
+
 ## 0.7.1
 
 ### Minor Changes

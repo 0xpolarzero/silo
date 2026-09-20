@@ -78,6 +78,8 @@ fn main() {
             "cancel_backup_operation",
             "dismiss_backup_operation",
             "read_application_state",
+            "read_workspace_storage",
+            "reclaim_workspace_storage",
             "query_sandbox_logs",
             "export_workspace_logs",
             "cancel_log_export",
