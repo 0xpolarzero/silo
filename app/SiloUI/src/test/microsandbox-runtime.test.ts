@@ -5,10 +5,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
-import { stagePatchedImago } from "../../scripts/imago-storage-patch.mjs"
+const { stagePatchedImago } = vi.hoisted(() => ({ stagePatchedImago: vi.fn().mockResolvedValue(undefined) }))
 
 // The crate extraction and lockfile override have their own filesystem integration tests.
-vi.mock("../../scripts/imago-storage-patch.mjs", () => ({ stagePatchedImago: vi.fn().mockResolvedValue(undefined) }))
+vi.mock("../../scripts/imago-storage-patch.mjs", () => ({ stagePatchedImago }))
 
 import {
   applyRuntimePatch,
