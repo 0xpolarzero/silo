@@ -5,7 +5,7 @@
   "sourceCommit": "5eca4de8bf233e57f114140f8c076ea8c96f21ab",
   "sourceArchiveSha256": "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06",
   "patchPath": "patches/microsandbox-create-stopped-0.6.17.patch",
-  "patchSha256": "215e98a2a396a9b613bcca09ab9846b5f5b37d091965dc429f36cfbdeb0cd3d8",
+  "patchSha256": "36465cd41efca522c32eecb554a0cf514d9dbb61700b59853d3643b3569aeaa7",
   "toolchain": "1.94.0",
   "features": "net,ssh",
   "libkrunfwCommit": "21cb6dce19a615f63e41ecb913334d18560c1364",

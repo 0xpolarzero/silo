@@ -1,3 +1,4 @@
+import { WorkspaceStoragePanel } from "./workspace-storage-panel"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
 import { SshAccessRow, SshAccessBadges } from "./ssh-access-panel"
 import { StatusFolderPicker } from "@/features/status-bar/status-folder-picker"
@@ -5,7 +6,7 @@ import { workspaceAvailability } from "../model/workspace-availability"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
-import { ChevronDown, CircleAlert, Code, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronDown, CircleAlert, Code, HardDrive, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useState } from "react"
 
 import { ListRowIcon } from "@/components/list-row"
@@ -213,6 +214,7 @@ export function OverviewPage({ active = true, readOnly = false,
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
 }) {
   useSshAccessRefresh(readOnly ? undefined : actions.refreshSshAccess, active)
+  const [expandedStorage, setExpandedStorage] = useState<Set<string>>(() => new Set())
   const [expandedSsh, setExpandedSsh] = useState<Set<string>>(() => new Set())
   const [folderWorkspaceId, setFolderWorkspaceId] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
@@ -317,16 +319,17 @@ export function OverviewPage({ active = true, readOnly = false,
             const sshAvailable = machine.kind === "vm" && workspace && Boolean(source.sshAccess || actions.refreshSshAccess)
             const sshStale = Boolean((source.sshAccessError && !workspace?.computer) || workspace?.computer?.connected === false || workspace?.freshness === "stale")
             const expanded = expandedSsh.has(machine.id)
+            const storageExpanded = machine.kind === "vm" && workspace && !workspace.computer && expandedStorage.has(machine.id) && actions.readWorkspaceStorage
             const lifecycle = workspace?.lifecycleAction
             const lifecycleLabel = lifecycle === "dismiss-error" ? "Dismissing…" : lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
             return {
               kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
               badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
-              menuActions: [...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale"), onSelect: () => { void actions.openDesktop!(workspace ? workspaceTarget(workspace) : machine.name) } }] : []), { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale") || (state !== "running" && state !== "failed"), onSelect: () => {
+              menuActions: [...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale"), onSelect: () => { void actions.openDesktop!(workspace ? workspaceTarget(workspace) : machine.name) } }] : []), { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale") || (state !== "running" && state !== "failed"), onSelect: () => {
                 if (!workspace?.computer && source.vmOperationsUnavailable) setOperationUnavailable(true)
                 else actions.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name)
-              } }],
-              expandedContent: sshAvailable && expanded ? <div id={`ssh-${machine.id}`}><SshAccessRow readOnly={readOnly} embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div> : undefined,
+              } }, ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationLocked || Boolean(lifecycle), onSelect: () => setExpandedStorage(previous => { const next = new Set(previous); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next }) }] : [])],
+              expandedContent: (sshAvailable && expanded) || storageExpanded ? <>{sshAvailable && expanded && <div id={`ssh-${machine.id}`}><SshAccessRow readOnly={readOnly} embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div>}{machine.kind === "vm" && workspace && !workspace.computer && expandedStorage.has(machine.id) && actions.readWorkspaceStorage && <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={configurationLocked || Boolean(lifecycle)} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />}</> : undefined,
               busy: Boolean(lifecycle) || Boolean(workspace?.computer?.busy),
               suppressInteractions: readOnly || Boolean(lifecycle) || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
               icon: lifecycle ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,

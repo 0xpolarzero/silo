@@ -169,6 +169,7 @@ fn advance(
         };
         // A surviving detached start can win the runtime's own transition guard.
         // Verify the desired state even when its duplicate command reports failure.
+        if command == "stop" { storage::before_stop(runner, paths, &observed); }
         let result = runner.run(
             paths,
             &[command.into(), intent.name.clone(), "--quiet".into()],
@@ -184,6 +185,7 @@ fn advance(
         } else {
             observed.status.eq_ignore_ascii_case("running")
         };
+        let started_here = command == "start" && result.is_ok();
         if !reached {
             result?;
             return Err(error(format!(
@@ -196,6 +198,7 @@ fn advance(
                 }
             )));
         }
+        if started_here { storage::after_start(runner, paths, &observed); }
     }
 }
 fn settle(
@@ -289,6 +292,7 @@ pub(super) fn forget_removed(
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
+    storage::forget_removed(paths, machine.id());
     let target = path(paths, machine.id());
     if let Some(mut intent) = load(&target)? {
         if intent.machine_id != machine.id() || intent.name != machine.name() {

@@ -1,3 +1,4 @@
+import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
 import { logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
@@ -837,6 +838,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     saveSecret: (request: SecretConfigurationRequest) => changeSecret("save_secret", { request }),
     removeSecret: (id: string) => changeSecret("remove_secret", { id }),
     retrySecret: (id: string) => changeSecret("retry_secret", { id }),
+    readWorkspaceStorage: async workspaceId => workspaceStorageStateSchema.parse(await native.invoke("read_workspace_storage", { workspaceId })),
+    reclaimWorkspaceStorage: async workspaceId => workspaceStorageStateSchema.parse(await native.invoke("reclaim_workspace_storage", { workspaceId })),
     refreshSshAccess,
     sshConnection: (workspace, download, network) => {
       const remote = parseRemoteWorkspaceTarget(workspace)

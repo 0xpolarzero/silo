@@ -4,12 +4,23 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
+static MAINTENANCE_DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
 
 pub(crate) fn begin() {
+    if let Ok(mut deadline) = MAINTENANCE_DEADLINE.lock() {
+        *deadline = Some(Instant::now() + storage::TRIM_BUDGET);
+    }
     QUITTING.store(true, Ordering::SeqCst);
 }
 pub(crate) fn cancel() {
     QUITTING.store(false, Ordering::SeqCst);
+    if let Ok(mut deadline) = MAINTENANCE_DEADLINE.lock() { *deadline = None; }
+}
+
+pub(super) fn maintenance_budget() -> Duration {
+    MAINTENANCE_DEADLINE.lock().map(|deadline| deadline
+        .map_or(storage::TRIM_BUDGET, |at| at.saturating_duration_since(Instant::now())))
+        .unwrap_or(Duration::ZERO)
 }
 
 /// Call after taking the runtime mutation lock, so admission cannot race Quit.

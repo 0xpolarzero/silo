@@ -163,6 +163,8 @@ fn main() {
             backup_controller::cancel_backup_operation,
             backup_controller::dismiss_backup_operation,
             runtime::read_application_state,
+            runtime::storage::read_workspace_storage,
+            runtime::storage::reclaim_workspace_storage,
             runtime::runtime_logs::query_sandbox_logs,
             log_export::export_workspace_logs,
             log_export::cancel_log_export,
@@ -209,6 +211,7 @@ fn main() {
             notifications::install(app.handle());
             updates::install(app.handle())?;
             ssh_access::start_monitor(app.handle());
+            runtime::storage::start_monitor(app.handle());
             startup::install(app.handle());
             Ok(())
         })

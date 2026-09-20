@@ -1,5 +1,6 @@
 pub(crate) mod remote_ops;
 pub(crate) mod shutdown;
+pub(crate) mod storage;
 pub(crate) mod update_recovery;
 #[path = "guest_image.rs"]
 pub(crate) mod guest_image;
@@ -317,6 +318,8 @@ pub(crate) struct InspectedSandbox {
     pub(crate) active_config: Option<Value>,
     #[serde(default)]
     pub(crate) updated_at: Option<String>,
+    #[serde(default)]
+    pub(crate) runtime_instance_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]

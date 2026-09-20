@@ -333,22 +333,22 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     setEditor({ draft: duplicateMachine(machine, machines), insertAt: sourceIndex + 1, displayAfterID: machine.id })
   }
 
-  async function save(machine: SetupMachineConfiguration) {
+  async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetComputerId = computerId) {
     if (interactionDisabled) return
-    const blocked = validateOperation?.(machine, !editor?.originalID, computerId)
+    const blocked = validateOperation?.(machine, !originalID, targetComputerId)
     if (blocked) { setOperationError(blocked); return }
     if (onCommitMachine) {
       setCommitting(true)
       try {
-        await onCommitMachine(machine, machines.find(item => item.id === editor?.originalID), computerId)
+        await onCommitMachine(machine, machines.find(item => item.id === originalID), targetComputerId)
         setEditor(null)
       } catch (cause) { setOperationError(cause instanceof Error ? cause.message : String(cause)) }
       finally { setCommitting(false) }
       return
     }
     const updated = [...machines]
-    if (editor?.originalID) {
-      const index = updated.findIndex(({ id }) => id === editor.originalID)
+    if (originalID) {
+      const index = updated.findIndex(({ id }) => id === originalID)
       if (index < 0) return
       updated[index] = machine
     } else {
@@ -502,8 +502,12 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       </span>}
                       actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && !presentation.suppressInteractions && <ActionsMenu label={`More actions for ${machine.name}`} onClose={() => setPendingDelete(null)} items={[
                         ...presentation.menuActions,
-                        { label: "Edit", icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled, onSelect: () => startEdit(machine) },
+                        { label: "Edit", separatorBefore: presentation.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled, onSelect: () => startEdit(machine) },
                         { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: interactionDisabled, onSelect: () => startDuplicate(machine) },
+                        ...(machine.kind === "vm" && !machine.desktop && isMachineCreated?.(machine) ? [{ label: "Add Linux desktop", icon: Monitor, disabled: interactionDisabled, onSelect: () => {
+                          beginOperation()
+                          void save({ ...machine, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
+                        } }] : []),
                         ...(deleteArmed ? [{ label: "Cancel deletion", icon: X, accessibleLabel: `Cancel deletion of ${machine.name}`, onSelect: () => setPendingDelete(null) }] : []),
                         { icon: deleteArmed ? Check : Trash2, label: deleteArmed ? `Confirm deletion${computerName ? ` on ${computerName}` : ""}` : "Delete", accessibleLabel: deleteArmed ? `Confirm deletion of ${deletionName}` : `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled, keepOpen: true, onSelect: () => { void remove(machine) } },
                       ]} />}</> : undefined}

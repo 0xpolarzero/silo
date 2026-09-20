@@ -939,11 +939,30 @@ index 951c6c8f..7c2b22f6 100644
      #[tokio::test]
      async fn test_builder_from_snapshot_rejects_explicit_oci_image() {
          let err = SandboxBuilder::new("test")
-diff --git a/sdk/rust/lib/sandbox/handle.rs b/sdk/rust/lib/sandbox/handle.rs
-index 4d2f19f1..d0e64be9 100644
 --- a/sdk/rust/lib/sandbox/handle.rs
 +++ b/sdk/rust/lib/sandbox/handle.rs
-@@ -950,7 +950,10 @@ fn is_local_ephemeral_handle(inner: &SandboxHandleInner) -> bool {
+@@ -215,6 +215,20 @@
+             SandboxHandleInner::Local(s) => s.status,
+             SandboxHandleInner::Cloud(s) => s.status,
+         }
++    }
++
++    /// Identity of the active local runtime generation, if it still matches this handle.
++    pub async fn runtime_instance_id(&self) -> MicrosandboxResult<Option<String>> {
++        let Some(local) = self.local() else { return Ok(None); };
++        if local.status != SandboxStatus::Running || local.pid.is_none() {
++            return Ok(None);
++        }
++        let Some(backend) = self.backend.as_local() else { return Ok(None); };
++        let pools = backend.db().await?;
++        let run = crate::backend::LocalBackend::load_active_run(pools.read(), local.db_id).await?;
++        Ok(run.filter(|run| run.pid == local.pid).and_then(|run| {
++            run.started_at.map(|started| format!("{}:{}", run.id, started))
++        }))
+     }
+
+     /// Snapshot of the cloud `last_failure_message`, if any. Returns `None`
+@@ -950,7 +964,10 @@
  }
 
  fn sandbox_status_is_terminal(status: SandboxStatus) -> bool {
@@ -955,7 +974,7 @@ index 4d2f19f1..d0e64be9 100644
  }
 
  fn connect_or_start_action(status: SandboxStatus) -> ConnectOrStartAction {
-@@ -1082,6 +1085,7 @@ mod tests {
+@@ -1082,6 +1099,7 @@
          ] {
              assert_eq!(connect_or_start_action(status), ConnectOrStartAction::Start);
              assert_eq!(restart_action(status), RestartAction::Start);
@@ -2320,10 +2339,16 @@ diff --git a/sdk/rust/lib/snapshot/archive.rs b/sdk/rust/lib/snapshot/archive.rs
   "system-configuration",
 --- a/crates/cli/bin/main.rs
 +++ b/crates/cli/bin/main.rs
-@@ -275,6 +275,25 @@
+@@ -275,6 +275,31 @@
  //--------------------------------------------------------------------------------------------------
 
  fn main() {
++    if std::env::args_os().skip(1).collect::<Vec<_>>()
++        == [std::ffi::OsString::from("--silo-storage-protocol")]
++    {
++        println!("1");
++        return;
++    }
 +    if std::env::args_os().skip(1).collect::<Vec<_>>()
 +        == [std::ffi::OsString::from("--silo-desktop-protocol")]
 +    {
@@ -5186,7 +5211,7 @@ index 01bfa40..0d7495e 100644
 @@ -556,6 +556,28 @@
              Self::wait_for_relay(&agent_sock_path, &log_dir, &mut handle, &config.spec.name)
                  .await?;
- 
+
 +        // Silo's optional guest service is started on every actual boot, including
 +        // CLI/SSH starts. Missing/broken desktops must never prevent shell access.
 +        if config.spec.labels.get("silo.managed").map(String::as_str) == Some("true") {
@@ -5212,3 +5237,81 @@ index 01bfa40..0d7495e 100644
          if let Ok(ready) = client.ready() {
              tracing::info!(
                  boot_time_ms = ready.boot_time_ns / 1_000_000,
+diff --git a/silo-imago-preserve-length.patch b/silo-imago-preserve-length.patch
+new file mode 100644
+--- /dev/null
++++ b/silo-imago-preserve-length.patch
+@@ -0,0 +1,63 @@
++--- a/src/file.rs
+++++ b/src/file.rs
++@@ -880,29 +879,0 @@
++-    /// Attempt to discard range by truncating the file.
++-    ///
++-    /// If the given range is at the end of the file, discard it by simply truncating the file.
++-    /// Return `true` on success.
++-    ///
++-    /// If the range is not at the end of the file, i.e. another method of discarding is needed,
++-    /// return `false`.
++-    fn try_discard_by_truncate(&self, offset: u64, length: u64) -> io::Result<bool> {
++-        // Prevent modifications to the file length
++-        #[allow(clippy::readonly_write_lock)]
++-        let file = self.file.write().unwrap();
++-
++-        let size = self.size.load(Ordering::Relaxed);
++-        if offset >= size {
++-            // Nothing to do
++-            return Ok(true);
++-        }
++-
++-        // If `offset + length` overflows, we can just assume it ends at `size`.  (Anything past
++-        // `size is irrelevant anyway.)
++-        let end = offset.checked_add(length).unwrap_or(size);
++-        if end < size {
++-            return Ok(false);
++-        }
++-
++-        file.set_len(offset)?;
++-        Ok(true)
++-    }
++-
++@@ -911,4 +882,2 @@
++-        if self.try_discard_by_truncate(offset, length)? {
++-            return Ok(());
++-        }
++-
+++        // Keep the backing file length stable: raw disk capacity is derived from
+++        // its length when reopened. Tail truncation silently shrinks the device.
++@@ -1191,0 +1161,23 @@
+++    use crate::StorageExt;
+++
+++    #[test]
+++    fn tail_discard_preserves_length_across_reopen() {
+++        let path = std::env::temp_dir().join(format!("imago-tail-discard-{}", std::process::id()));
+++        let size = 1024 * 1024;
+++        fs::write(&path, vec![0x5a; size]).unwrap();
+++        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+++        runtime.block_on(async {
+++            let disk = File::open(StorageOpenOptions::new().filename(&path).write(true)).await.unwrap();
+++            disk.discard((size / 2) as u64, (size / 2) as u64).await.unwrap();
+++            disk.sync().await.unwrap();
+++            drop(disk);
+++            let reopened = File::open(StorageOpenOptions::new().filename(&path)).await.unwrap();
+++            assert_eq!(reopened.size().unwrap(), size as u64);
+++            assert_eq!(fs::metadata(&path).unwrap().len(), size as u64);
+++            let contents = fs::read(&path).unwrap();
+++            assert!(contents[..size / 2].iter().all(|byte| *byte == 0x5a));
+++            assert!(contents[size / 2..].iter().all(|byte| *byte == 0));
+++        });
+++        fs::remove_file(path).unwrap();
+++    }
+++
+--- a/crates/cli/lib/commands/inspect.rs
++++ b/crates/cli/lib/commands/inspect.rs
+@@ -96,6 +96,7 @@
+         let config: serde_json::Value =
+             serde_json::from_str(handle.config_json()).unwrap_or(serde_json::Value::Null);
+         let mut json = serde_json::json!({
++            "runtime_instance_id": handle.runtime_instance_id().await?,
+             "name": handle.name(),
+             "status": format!("{:?}", handle.status_snapshot()),
+             "config": config,

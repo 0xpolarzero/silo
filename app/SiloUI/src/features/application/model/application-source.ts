@@ -1,3 +1,4 @@
+import type { WorkspaceStorageState } from "./workspace-storage"
 import type { LogLoader, LogQuery } from "./logs"
 import type { RemoteComputer, RemoteManagement, WorkspaceComputer } from "./remote-computers"
 import type { DirectoryLoader } from "./directory-store"
@@ -256,6 +257,8 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
+  readWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
+  reclaimWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   refreshRepositories?: () => Promise<void>
   openDesktop?: (workspace: string) => void | Promise<void>
   cancelLogExport?: () => Promise<void>

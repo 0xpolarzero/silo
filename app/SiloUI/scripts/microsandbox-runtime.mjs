@@ -1,3 +1,4 @@
+import { stagePatchedImago } from "./imago-storage-patch.mjs"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
@@ -115,8 +116,9 @@ async function buildPatchedExecutable({
     const createHelp = runBuildTool(cachedExecutable, ["create", "--help"])
     const execHelp = runBuildTool(cachedExecutable, ["exec", "--help"])
     const sshHelp = runBuildTool(cachedExecutable, ["ssh", "serve", "--help"])
+    const storageProtocol = runBuildTool(cachedExecutable, ["--silo-storage-protocol"]).trim()
     const githubProtocol = runBuildTool(cachedExecutable, ["--silo-github-protocol"]).trim()
-    if (sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && githubProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
+    if (sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && githubProtocol === "1" && storageProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
       return readFile(cachedExecutable)
     }
   }
@@ -134,6 +136,8 @@ async function buildPatchedExecutable({
   const source = entries.filter((entry) => entry.isDirectory()).map((entry) => join(workRoot, entry.name))
   if (source.length !== 1) throw new Error("Pinned MicroSandbox source archive has an unexpected layout")
   applyRuntimePatch(source[0], patchPath)
+  runBuildTool("cargo", [`+${MICROSANDBOX_BUILD_TOOLCHAIN}`, "fetch", "--locked", "--target", targetTriple], { cwd: source[0] })
+  await stagePatchedImago(source[0])
   const agentdPath = join(source[0], "build", "agentd")
   await mkdir(dirname(agentdPath), { recursive: true })
   await writeFile(agentdPath, agentd, { mode: 0o755 })
@@ -158,6 +162,9 @@ async function buildPatchedExecutable({
   }
   if (runBuildTool(built, ["--silo-github-protocol"]).trim() !== "1") {
     throw new Error("The built MicroSandbox is missing the restricted GitHub credential boundary")
+  }
+  if (runBuildTool(built, ["--silo-storage-protocol"]).trim() !== "1") {
+    throw new Error("The built MicroSandbox is missing capacity-preserving storage reclamation")
   }
   const bytes = await readFile(built)
   await mkdir(buildRoot, { recursive: true })
