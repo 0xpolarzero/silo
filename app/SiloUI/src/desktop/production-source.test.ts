@@ -710,6 +710,25 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("retains an unscoped preflight error and lets dismissal unlock the committed configuration", async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return structuredClone(backup)
+      if (command === "read_setup_activity") return []
+      if (command === "save_machine_configuration") throw new Error("Stop sandbox 'dev' before removing it.")
+    })
+    const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
+    await store.initialize()
+    const committedWorkspaces = store.getSnapshot().source?.workspaces.map(({ machine }) => machine)
+    await expect(store.configureMachines({ schemaVersion: 1, machines: [] })).rejects.toThrow("Stop sandbox")
+    expect(store.getSnapshot().source?.sandboxConfigurationOperation).toMatchObject({ status: "failed", error: { workspace: null, message: "Stop sandbox 'dev' before removing it." } })
+    store.applicationActions.dismissMachineConfigurationError()
+    await store.refresh()
+    expect(store.getSnapshot().source?.sandboxConfigurationOperation).toBeNull()
+    expect(store.getSnapshot().source?.workspaces.map(({ machine }) => machine)).toEqual(committedWorkspaces)
+    store.dispose()
+  })
+
   it("retries verification only for the requested sandbox", async () => {
     let attempts = 0
     const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) => {

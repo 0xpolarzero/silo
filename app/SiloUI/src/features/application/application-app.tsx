@@ -275,7 +275,11 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} source={applicationSource} actions={actions} onMachinesChange={updateMachines} />
+          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} source={applicationSource} actions={{ ...actions, dismissMachineConfigurationError: () => {
+            if (sandboxConfigurationOperation?.status !== "failed") return
+            actions.dismissMachineConfigurationError()
+            setSandboxConfigurationOperation(null)
+          } }} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
             onSectionChange={navigation.selectWorkspaceSection}

@@ -18,6 +18,7 @@ const inactiveApplicationActions: ApplicationActions = {
   removeSecret: () => undefined,
   retryRuntimeChecks: () => undefined,
   saveMachineConfiguration: () => undefined,
+  dismissMachineConfigurationError: () => undefined,
   retryMachineConfiguration: () => undefined,
   pushRepository: () => undefined,
   startWorkspace: () => undefined,

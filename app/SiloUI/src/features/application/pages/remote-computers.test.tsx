@@ -17,18 +17,23 @@ function setup(connected = true) {
   source.remoteComputers = [computer]
   const actions = { saveRemoteMachine: vi.fn().mockResolvedValue(undefined), deleteRemoteMachine: vi.fn().mockResolvedValue(undefined), startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(), connectComputer: vi.fn() } as unknown as ApplicationActions
   const onMachinesChange = vi.fn()
-  render(<OverviewPage source={source} actions={actions} onMachinesChange={onMachinesChange} />)
-  return { source, remote, actions, onMachinesChange, user: userEvent.setup() }
+  const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={onMachinesChange} />)
+  return { source, remote, actions, onMachinesChange, view, user: userEvent.setup() }
 }
 
 it("keeps the existing VM list and shows remote ownership through a focusable badge", async () => {
-  const { remote, actions, user } = setup()
+  const { remote, actions, user, source, view, onMachinesChange } = setup()
   const badge = screen.getByLabelText(/Remote VM on Office Mac/)
   expect(badge).toHaveAttribute("tabindex", "0")
   const row = within(badge.closest("li")!)
   expect(row.queryByText("Restart required")).not.toBeInTheDocument()
   await user.click(row.getByRole("button", { name: `Stop ${remote.machine.name}` }))
   expect(actions.stopWorkspace).toHaveBeenCalledWith(remote.machine.id)
+  await user.click(row.getByRole("button", { name: `More actions for ${remote.machine.name}` }))
+  expect(screen.getByRole("menuitem", { name: `Delete ${remote.machine.name} on Office Mac` })).toHaveAttribute("aria-disabled", "true")
+  await user.keyboard("{Escape}")
+  remote.state = "stopped"
+  view.rerender(<OverviewPage source={{ ...source }} actions={actions} onMachinesChange={onMachinesChange} />)
   await user.click(row.getByRole("button", { name: `More actions for ${remote.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${remote.machine.name} on Office Mac` }))
   expect(screen.getByText("Confirm deletion on Office Mac")).toBeVisible()
@@ -68,6 +73,7 @@ it("edits a remote VM with the same name as a local VM using its original config
 it("removes the last VM from a remote computer and can create from an empty list", async () => {
   const source = applicationSourceForScenario("running")
   const original = source.workspaces[0]
+  original.state = "stopped"
   const computer = { id: "office", name: "Office Mac", address: "user@office", connected: true }
   const remote = { ...original, machine: { ...original.machine, id: remoteWorkspaceTarget("office", original.machine.id) }, computer: { ...computer, vmId: original.machine.id } }
   source.workspaces = [remote]
@@ -92,6 +98,7 @@ it("removes the last VM from a remote computer and can create from an empty list
 it("permits removing the last local VM without affecting connected computers", async () => {
   const source = applicationSourceForScenario("running")
   source.workspaces = [source.workspaces[0]]
+  source.workspaces[0].state = "stopped"
   const machine = source.workspaces[0].machine
   const actions = { saveRemoteMachine: vi.fn(), deleteRemoteMachine: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn() } as unknown as ApplicationActions
   const onMachinesChange = vi.fn()

@@ -874,6 +874,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     listWorkspaceDirectory: async (workspace, path, offset, snapshotId) => directoryPageShape.parse(await native.invoke("list_workspace_directory", { workspace, path, offset, snapshotId: snapshotId ?? null })),
     retryRuntimeChecks: () => { void refresh() },
     saveMachineConfiguration,
+    dismissMachineConfigurationError: () => {
+      if (activeConfiguration?.status !== "failed") return
+      activeConfiguration = null
+      publish({ ...snapshot, setupCandidate: undefined, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: null } : null })
+    },
     retryMachineConfiguration: (workspace) => {
       const operation = snapshot.source?.sandboxConfigurationOperation
       if (operation) void configureMachines(operation.candidate, workspace).catch(() => {})

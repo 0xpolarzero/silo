@@ -13,6 +13,7 @@ function renderApplication(scenario: Parameters<typeof applicationSourceForScena
     removeSecret: vi.fn(),
     retryRuntimeChecks: vi.fn(),
     saveMachineConfiguration: vi.fn(),
+    dismissMachineConfigurationError: vi.fn(),
     retryMachineConfiguration: vi.fn(),
     pushRepository: vi.fn(),
     startWorkspace: vi.fn(),
@@ -1175,6 +1176,32 @@ describe("application", () => {
     expect(actions.saveMachineConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
       machines: expect.arrayContaining([expect.objectContaining({ name: "dev", cpus: 4 })]),
     }))
+  })
+
+  it("disables deletion of a running VM with a stop-first explanation but keeps editing available", async () => {
+    const { user, actions } = renderApplication()
+    await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+    const remove = screen.getByRole("menuitem", { name: "Delete dev" })
+    expect(remove).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByRole("menuitem", { name: "Edit dev" })).not.toHaveAttribute("data-disabled")
+    await user.hover(remove.parentElement!)
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Stop the sandbox before deleting it.")
+    expect(actions.saveMachineConfiguration).not.toHaveBeenCalled()
+  })
+
+  it("shows an unscoped removal failure and restores lifecycle controls when dismissed", async () => {
+    const source = structuredClone(applicationSourceForScenario("running"))
+    source.sandboxConfigurationOperation = {
+      id: "removal", status: "failed", result: null, progressEvents: [],
+      candidate: { schemaVersion: 1, machines: source.workspaces.filter(w => w.machine.name !== "dev").map(w => w.machine) },
+      error: { code: "native_bridge_failed", workspace: null, message: "Stop sandbox 'dev' before removing it.", recovery: null, retryable: true },
+    }
+    const { user } = renderApplication("running", source)
+    expect(screen.getAllByText("Stop sandbox 'dev' before removing it.").length).toBeGreaterThan(0)
+    expect(screen.queryByText(/Applying sandbox changes/)).not.toBeInTheDocument()
+    expect(within(appPanel("Sandboxes")).getByText("dev").closest("li")).not.toHaveAttribute("aria-busy")
+    await user.click(screen.getByRole("button", { name: "Dismiss configuration error" }))
+    expect(screen.getByRole("button", { name: "Stop dev" })).toBeEnabled()
   })
 
   it("keeps a removed sandbox as a progress tombstone until the native snapshot changes", async () => {

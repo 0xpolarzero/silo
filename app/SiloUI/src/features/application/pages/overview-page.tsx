@@ -99,7 +99,7 @@ function configurationRowView(
   const removed = Boolean(committedWorkspace && !candidate)
   const addedOrChanged = !committedWorkspace || JSON.stringify(setupMachineConfigurationSchema.parse(committedWorkspace.machine)) !== JSON.stringify(candidate && setupMachineConfigurationSchema.parse(candidate))
   const errorTargetsWorkspace = operation.status === "failed"
-    && operation.error.workspace === candidateName
+    && (operation.error.workspace === candidateName || (!operation.error.workspace && (removed || addedOrChanged)))
 
   if (errorTargetsWorkspace) {
     return {
@@ -109,6 +109,7 @@ function configurationRowView(
       retryable: operation.error.retryable,
     }
   }
+  if (operation.status === "failed") return undefined
   if (removed) {
     return {
       status: "running",
@@ -242,6 +243,10 @@ export function OverviewPage({ active = true, readOnly = false,
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="min-h-0 flex-1">
         {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
+        {configurationOperation?.status === "failed" && <div className="mb-3 rounded-md border border-destructive/30 p-3">
+          <p role="alert" className="text-sm text-destructive">{configurationOperation.error.message}</p>
+          <Button variant="outline" size="sm" className="mt-2" disabled={readOnly} onClick={() => actions.dismissMachineConfigurationError()}>Dismiss configuration error</Button>
+        </div>}
         <MachineList
           newSandboxRequest={readOnly ? undefined : newSandboxRequest}
           onNewSandboxRequestHandled={onNewSandboxRequestHandled}
@@ -277,7 +282,7 @@ export function OverviewPage({ active = true, readOnly = false,
             if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
             return `Not enough storage to create ${machine.name}. About ${notice.requiredGB} GB is needed on ${notice.volume}; ${notice.availableGB} GB is available. No sandbox was created.`
           }}
-          summary={configurationOperation ? <>{source.workspaces.length} configured · Applying sandbox changes</> : undefined}
+          summary={configurationOperation ? <>{source.workspaces.length} configured · {configurationOperation.status === "failed" ? "Sandbox changes failed" : "Applying sandbox changes"}</> : undefined}
           sortPriority={(machine) => {
             const workspace = workspaces.get(machine.id)
             const configuration = workspace && !workspace.computer && configurationOperation

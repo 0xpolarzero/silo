@@ -359,7 +359,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   }
 
   async function remove(machine: SetupMachineConfiguration) {
-    if (interactionDisabled) return
+    if (interactionDisabled || (machine.kind === "vm" && isMachineRunning?.(machine))) return
     if (pendingDelete !== machine.id) {
       beginOperation()
       setPendingDelete(machine.id)
@@ -454,6 +454,8 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
         <SandboxList label="Configured sandboxes" className="max-h-full min-h-0" data-testid="machine-list">
             {displayMachines.map((machine, index) => {
               const isEditing = editor?.draft.id === machine.id
+              const runningVM = machine.kind === "vm" && Boolean(isMachineRunning?.(machine))
+              const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : undefined
               const presentation = getRowPresentation?.(machine)
               const deleteArmed = pendingDelete === machine.id
               const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
@@ -509,7 +511,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                           void save({ ...machine, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
                         } }] : []),
                         ...(deleteArmed ? [{ label: "Cancel deletion", icon: X, accessibleLabel: `Cancel deletion of ${machine.name}`, onSelect: () => setPendingDelete(null) }] : []),
-                        { icon: deleteArmed ? Check : Trash2, label: deleteArmed ? `Confirm deletion${computerName ? ` on ${computerName}` : ""}` : "Delete", accessibleLabel: deleteArmed ? `Confirm deletion of ${deletionName}` : `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled, keepOpen: true, onSelect: () => { void remove(machine) } },
+                        { icon: deleteArmed ? Check : Trash2, label: deleteArmed ? `Confirm deletion${computerName ? ` on ${computerName}` : ""}` : "Delete", accessibleLabel: deleteArmed ? `Confirm deletion of ${deletionName}` : `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled || runningVM, tooltip: deleteTooltip, keepOpen: true, onSelect: () => { void remove(machine) } },
                       ]} />}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
@@ -522,7 +524,8 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                           <SandboxAction
                             label={deleteArmed ? `Confirm deletion of ${deletionName}` : `Delete ${deletionName}`}
                             destructive={deleteArmed}
-                            disabled={interactionDisabled}
+                            tooltip={deleteTooltip}
+                            disabled={interactionDisabled || runningVM}
                             onClick={() => remove(machine)}
                           >
                             {deleteArmed ? <Check /> : <Trash2 />}
