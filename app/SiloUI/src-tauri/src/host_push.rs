@@ -78,6 +78,7 @@ fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Resul
         "--user".into(), user.into(),
         "--env".into(), format!("USER={user}"),
         "--env".into(), format!("LOGNAME={user}"),
+        "--no-start".into(),
         "--no-tty".into(),
         "--quiet".into(),
         "--workdir".into(),
@@ -140,20 +141,18 @@ pub(crate) fn discover(paths: &RuntimePaths, name: &str, refresh: bool) -> Resul
     cache.insert(key, (Instant::now(), result.clone()));
     result
 }
-fn discover_uncached(paths: &RuntimePaths, name: &str) -> Result<Vec<Value>, String> {
-    let output = guest(
-        paths,
-        name,
-        r#"find /workspace -name .git -prune -print 2>/dev/null | head -201 | { count=0; while IFS= read -r directory; do
-count=$((count + 1)); [ "$count" -le 200 ] || exit 1
+// The guest deadline and runtime output budget bound discovery. An entry-count
+// cutoff discards every result when a workspace contains many Git worktrees.
+const DISCOVER_REPOSITORIES: &str = r#"find "$1" -name .git -prune -print 2>/dev/null | while IFS= read -r directory; do
 p=${directory%/.git}
 branch=$(git -C "$p" symbolic-ref --quiet --short HEAD) || continue
 counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD) 0"
 dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null)
 printf '%s\000%s\000%s\000%s\000' "$p" "$branch" "$counts" "$dirty"
-done; }"#,
-        &[],
-    )?;
+done"#;
+
+fn discover_uncached(paths: &RuntimePaths, name: &str) -> Result<Vec<Value>, String> {
+    let output = guest(paths, name, DISCOVER_REPOSITORIES, &["/workspace"])?;
     let fields: Vec<_> = output.split('\0').collect();
     let mut rows = Vec::new();
     for parts in fields.chunks_exact(4) {
@@ -825,6 +824,60 @@ mod tests {
         assert!(refreshed.is_err());
         assert_eq!(discover(&paths, "test", false), refreshed);
         DISCOVERIES.get().unwrap().lock().unwrap().remove(&key);
+    }
+
+    #[test]
+    fn discovery_keeps_repositories_beyond_two_hundred_entries() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let seed = root.path().join("seed");
+        fs::create_dir(&seed).unwrap();
+        for args in [
+            vec!["init", "--quiet", "--initial-branch=main"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&seed)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let workspace = root.path().join("workspace with spaces");
+        fs::create_dir(&workspace).unwrap();
+        for index in 0..216 {
+            let repo = workspace.join(format!("repo-{index}"));
+            fs::create_dir(&repo).unwrap();
+            symlink(seed.join(".git"), repo.join(".git")).unwrap();
+        }
+        let output = Command::new("sh")
+            .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
+            .arg(&workspace)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "scan exited with {}",
+            output.status
+        );
+        let output = String::from_utf8(output.stdout).unwrap();
+        let records: Vec<_> = output.split('\0').collect();
+        assert_eq!(records.len(), 216 * 4 + 1);
+        for record in records.chunks_exact(4) {
+            assert_eq!(record[1], "main");
+            assert_eq!(record[2], "1 0");
+            assert_eq!(record[3], "");
+        }
     }
 
     #[test]

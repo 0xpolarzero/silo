@@ -501,3 +501,35 @@ Failed publications discard their cache. A synced `.active` marker also causes
 cache recreation after a crash once the inherited process lock is free, avoiding
 stale Git lock files. Incremental fetch verifies incoming objects using
 `fetch.fsckObjects`; publication does not rescan every cached object on each push.
+
+### Repository discovery cutoff regression (2026-09-20)
+
+The live `dev` sandbox contained 216 `.git` entries. The discovery script in
+`src-tauri/src/host_push.rs` piped `find` through `head -201`, then exited with
+status 1 at entry 201. `runtime::run_msb` rejected the nonzero exit, discarding
+all earlier records and showing the generic committed-repository read warning.
+A disposable 216-entry fixture reproduced exit 1 after 200 records.
+
+Discovery now scans without an entry-count cutoff. Its existing 30-second guest
+deadline, 45-second host deadline, and 1 MiB runtime output budget still apply.
+Guest repository commands use `--no-start` so a concurrent stop cannot trigger
+an automatic boot. The corrected script completed against the live sandbox,
+returning 182 records; nine ownership rejections and one invalid gitfile remained.
+No Git ownership exceptions were added. Detached HEAD and other entries excluded
+by the existing discovery rules remain outside this fix.
+
+Live script verification used the running debug bundle's `Contents/MacOS/msb`
+at `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`, with `--no-start`.
+This checks discovery against live data, not the updated packaged UI.
+
+`cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml host_push -- --test-threads=1`
+passed 25 tests with one subprocess helper ignored by the ordinary harness.
+The 216-entry regression failed before the change and passed after it.
+
+`npm --prefix app/SiloUI run desktop:build:debug` compiled the updated app and
+assembled the debug bundle, but Tauri's signing step failed intermittently on
+Git helpers, including on an unsandboxed retry. Signing the affected helpers
+individually and resealing the outer bundle with `codesign --force --sign -`
+succeeded; `codesign --verify --deep --strict` then passed for the exact debug
+bundle above. The running app was not quit or relaunched because Quit stops
+Silo-owned local VMs. The updated packaged UI therefore remains unverified.
