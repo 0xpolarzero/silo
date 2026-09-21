@@ -388,29 +388,27 @@ export function GitHubAccessEditor({
                       </TooltipProvider>
                     </div>
                     {onWorkspaceRepositoryAccessChange && (
-                      <div role="radiogroup" aria-label={`GitHub authentication for ${name}`} className="flex flex-wrap items-center gap-4 text-xs">
-                        <label className="flex items-center gap-2">
-                          <input type="radio" name={`github-method-${name}`} aria-label={`Use GitHub OAuth for ${name}`}
-                            checked={(access.authenticationMethod ?? "oauth") === "oauth"}
-                            disabled={workspaceDisabled || connectionState !== "connected"}
-                            onChange={() => onWorkspaceRepositoryAccessChange(name, { ...access, authenticationMethod: "oauth" })} />
-                          Use GitHub OAuth
-                        </label>
-                        <TooltipProvider><Tooltip><TooltipTrigger asChild>
+                      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                        <div role="radiogroup" aria-label={`GitHub authentication for ${name}`} className="flex flex-wrap items-center gap-4 text-xs">
                           <label className="flex items-center gap-2">
-                            <input type="radio" name={`github-method-${name}`} aria-label={`Use token for ${name}`}
-                              checked={access.authenticationMethod === "token"}
-                              disabled={workspaceDisabled || !tokenConnected}
-                              onChange={() => onWorkspaceRepositoryAccessChange(name, { ...access, authenticationMethod: "token" })} />
-                            Use token <Info className="size-3 text-muted-foreground" aria-hidden="true" />
+                            <input type="radio" name={`github-method-${name}`} aria-label={`Use GitHub OAuth for ${name}`}
+                              checked={(access.authenticationMethod ?? "oauth") === "oauth"}
+                              disabled={workspaceDisabled || connectionState !== "connected"}
+                              onChange={() => onWorkspaceRepositoryAccessChange(name, { ...access, authenticationMethod: "oauth" })} />
+                            Use GitHub OAuth
                           </label>
-                        </TooltipTrigger><TooltipContent>Full token access. This VM can perform every action permitted by the token, with no additional Silo repository restrictions. Credentials remain outside the VM.</TooltipContent></Tooltip></TooltipProvider>
-                      </div>
-                    )}
-                    {connectionState === "connected" && access.authenticationMethod !== "token" && (
-                      <>
-                        {onWorkspaceRepositoryAccessChange && (
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                          <TooltipProvider><Tooltip><TooltipTrigger asChild>
+                            <label className="flex items-center gap-2">
+                              <input type="radio" name={`github-method-${name}`} aria-label={`Use token for ${name}`}
+                                checked={access.authenticationMethod === "token"}
+                                disabled={workspaceDisabled || !tokenConnected}
+                                onChange={() => onWorkspaceRepositoryAccessChange(name, { ...access, authenticationMethod: "token" })} />
+                              Use token <Info className="size-3 text-muted-foreground" aria-hidden="true" />
+                            </label>
+                          </TooltipTrigger><TooltipContent>Full token access. This VM can perform every action permitted by the token, with no additional Silo repository restrictions. Credentials remain outside the VM.</TooltipContent></Tooltip></TooltipProvider>
+                        </div>
+                        {connectionState === "connected" && access.authenticationMethod !== "token" && (
+                          <div className="ml-auto flex flex-wrap items-center justify-end gap-x-4 gap-y-2 text-xs">
                             <label className="flex items-center gap-2">
                               <Checkbox aria-label={`All repositories for ${name}`} checked={access.repositoryMode === "all"} disabled={workspaceDisabled || !repositoryControlsAvailable}
                                 onCheckedChange={(checked) => onWorkspaceRepositoryAccessChange(name, { repositoryMode: checked === true ? "all" : "selected", allRepositoriesAllowChanges: false })} />
@@ -423,6 +421,10 @@ export function GitHubAccessEditor({
                             </label>}
                           </div>
                         )}
+                      </div>
+                    )}
+                    {connectionState === "connected" && access.authenticationMethod !== "token" && (
+                      <>
                         {access.repositoryMode === "all" && <p className="text-xs text-muted-foreground">All repositories authorized on GitHub, including future additions.</p>}
                         {access.repositoryMode !== "all" && repositoryControlsAvailable && (
                           <RepositoryCombobox
