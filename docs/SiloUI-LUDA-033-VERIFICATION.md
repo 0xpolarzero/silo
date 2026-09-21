@@ -88,3 +88,10 @@ disposable VM. Verified the VM was not found, removed its isolated runtime and
 disks, and removed downloaded release sources. Retained private test evidence
 and harnesses in the ignored verification directory; scanned them against host
 credential values and found no matches. Existing user VMs and app were untouched.
+
+## Follow-up diagnosis
+
+[Preserved-agent interviews and controlled experiments](SiloUI-LUDA-033-DIAGNOSIS.md)
+reproduced the failure and distinguished unsupported click-equivalence assumptions
+from incorrect visual evidence. The same agent successfully applied the theme
+with activation after its missing effect check was challenged.
