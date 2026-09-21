@@ -98,10 +98,9 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
             }} /></div>
             {access.enabled && (!network || external) && <div className="ssh-endpoint grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1 text-muted-foreground">
               <div className="ssh-endpoint-address flex min-w-0 flex-wrap items-center gap-x-3">
-                <Tooltip><TooltipTrigger asChild><code tabIndex={0} className="min-w-0 break-all">{host}:{access.port}</code></TooltipTrigger><TooltipContent className="max-w-sm break-all">{access.computerName}{access.fingerprint ? ` · Host key: ${access.fingerprint}` : ""}</TooltipContent></Tooltip>
-                <span>User: <code>root</code></span>
+                <Tooltip><TooltipTrigger asChild><code tabIndex={0} className="min-w-0 break-all">root@{host}:{access.port}</code></TooltipTrigger><TooltipContent className="max-w-sm break-all">{access.computerName}{access.fingerprint ? ` · Host key: ${access.fingerprint}` : ""}</TooltipContent></Tooltip>
               </div>
-              <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" value={`${host}:${access.port}`} labels={{ idle: network ? "Copy network SSH address" : "Copy SSH address", copied: "SSH address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy address</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" value={`root@${host}:${access.port}`} labels={{ idle: network ? "Copy network SSH address" : "Copy SSH address", copied: "SSH address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy address</TooltipContent></Tooltip>
               <ActionsMenu label={`More ${scope} SSH actions`} items={[
                 { icon: Pencil, label: network ? "Edit address and port" : "Edit port", accessibleLabel: network ? "Edit network connection" : "Edit connection", disabled: blocked, onSelect: () => { setPort(String(access.port)); setAddress(network ? access.bindAddress : null) } },
                 { icon: copied === scope ? Check : Terminal, label: copied === scope ? "Command copied" : "Copy terminal command", accessibleLabel: `Copy ${scope} SSH command`, disabled: blocked || !connection || (!network && Boolean(workspace.computer)), onSelect: () => { void connect(false, network) } },
