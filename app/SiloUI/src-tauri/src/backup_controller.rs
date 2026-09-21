@@ -1139,6 +1139,9 @@ fn select_archive_source(names: &[String], selected: Option<&str>) -> Result<Str
 }
 
 fn append_restored_settings(arguments: &mut Vec<String>, config: &Value) -> Result<(), String> {
+    if crate::working_account::working_user(config)? == "silo" {
+        arguments.extend(["--label".into(), crate::working_account::UNIFIED_LABEL.into()]);
+    }
     if config.get("network").is_some_and(backup::default_github_network) {
         arguments.extend([
             "--secret".into(), "SILO_GITHUB@github.com,api.github.com,uploads.github.com".into(),
@@ -1754,6 +1757,17 @@ mod tests {
     }
 
     #[test]
+    fn working_account_restore_preserves_both_account_models() {
+        let mut legacy = vec![];
+        append_restored_settings(&mut legacy, &serde_json::json!({})).unwrap();
+        assert!(!legacy.iter().any(|arg| arg.contains("silo.working-account")));
+        let mut unified = vec![];
+        append_restored_settings(&mut unified, &serde_json::json!({"labels":{"silo.working-account":"1"}})).unwrap();
+        assert!(unified.windows(2).any(|pair| pair == ["--label", "silo.working-account=1"]));
+        assert!(append_restored_settings(&mut vec![], &serde_json::json!({"labels":{"silo.working-account":"unknown"}})).is_err());
+    }
+
+    #[test]
     fn restore_preserves_identity_without_shell_interpretation() {
         let mut arguments = vec![];
         append_restored_settings(&mut arguments, &serde_json::json!({"env": [{"key":"GIT_AUTHOR_NAME","value":"A $(literal) Name"},{"key":"GIT_AUTHOR_EMAIL","value":"test@example.test"}]})).unwrap();
@@ -1990,8 +2004,11 @@ mod tests {
         );
         assert!(backup::default_github_network(&restored.config["network"]));
         assert_eq!(restored.config["labels"]["silo.github-protocol"], "1");
+        assert_eq!(restored.config["labels"]["silo.working-account"], "1");
+        let restored_user = crate::working_account::working_user(&restored.config).unwrap();
         run(&["start", restored_name]);
-        assert_eq!(run(&["exec", restored_name, "--", "git", "config", "--global", "--get", "user.email"]).stdout.trim(), "silo-test@example.invalid");
+        assert_eq!(run(&["exec", restored_name, "--user", restored_user, "--", "git", "config", "--global", "--get", "user.email"]).stdout.trim(), "silo-test@example.invalid");
+        assert_eq!(run(&["exec", restored_name, "--user", restored_user, "--", "stat", "-c", "%u:%g", "/home/silo/.gitconfig"]).stdout.trim(), "1001:1001");
         let proof = run(&[
             "exec",
             restored_name,

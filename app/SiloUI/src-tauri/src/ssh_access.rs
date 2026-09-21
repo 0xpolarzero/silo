@@ -275,6 +275,8 @@ fn inspect_running(paths: &RuntimePaths, config: &Configuration) -> Result<bool,
     {
         return Err("The sandbox identity changed. Configure SSH access again.".into());
     }
+    let user = crate::working_account::working_user(&inspected.config)?;
+    crate::working_account::require_runtime(paths, user)?;
     Ok(inspected.status == "Running")
 }
 pub(crate) fn reconcile(paths: &RuntimePaths) {
@@ -500,14 +502,20 @@ fn client_key(paths: &RuntimePaths, id: &str) -> Result<PathBuf, String> {
 // Only an explicit connection/export request reads private material. Ordinary
 // state responses and persisted settings contain public keys only.
 pub(crate) fn connection_material(paths: &RuntimePaths, vm_id: &str) -> Result<serde_json::Value, String> {
+    connection_material_for_client(paths, vm_id, None)
+}
+
+fn connection_material_for_client(paths: &RuntimePaths, vm_id: &str, request: Option<&serde_json::Value>) -> Result<serde_json::Value, String> {
     uuid::Uuid::parse_str(vm_id).map_err(|_| "Invalid sandbox identity.")?;
     let config = read(paths)?.into_iter().find(|c| c.machine_id == vm_id && c.enabled)
         .ok_or("Enable SSH access first.")?;
+    let user = crate::working_account::inspect_user(paths, &config.workspace)?;
+    if let Some(request) = request { crate::working_account::require_client_protocol(user, request)?; }
     save_with(paths, Target::Id(vm_id), Settings { enabled: true, port: config.port,
         bind_address: config.bind_address.clone(), keys: config.keys })?;
     let key = client_key(paths, vm_id)?;
     let private = std::fs::read_to_string(key).map_err(|_| "Could not read the connection key.")?;
-    Ok(serde_json::json!({"privateKey":private,"port":config.port,"address":config.bind_address}))
+    Ok(serde_json::json!({"privateKey":private,"port":config.port,"address":config.bind_address,"user":user}))
 }
 
 fn save_with(
@@ -624,7 +632,7 @@ fn remote_with(
 ) -> Result<serde_json::Value, String> {
     if method == "ssh.access.connection" {
         let id = params["vmId"].as_str().ok_or("Missing sandbox identity.")?;
-        return connection_material(paths, id);
+        return connection_material_for_client(paths, id, Some(params));
     }
     let result = match method {
         "ssh.access.state" => {
@@ -753,6 +761,9 @@ mod tests {
             r#"#!/usr/bin/python3
 import socket, sys, threading
 args = sys.argv[1:]
+if args == ['--silo-working-account-protocol']:
+    print('1')
+    sys.exit(0)
 assert args[:3] == ['ssh', 'serve', 'dev']
 for flag in ['--no-start', '--no-inactivity-timeout', '--exit-on-stdin-close', '--authorized-keys', '--expected-machine-id']:
     assert flag in args
@@ -948,6 +959,50 @@ sys.stdin.buffer.read()
             "enabled":c.enabled,"port":c.port,"bindAddress":c.bind_address,"keys":c.keys
         }})
     }
+    #[test]
+    fn working_account_outdated_runtime_closes_listener_before_reuse_or_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        remote_fixture(&p);
+        fs::write(p.home.join("running"), "running").unwrap();
+        let script = fs::read_to_string(&p.executable).unwrap()
+            .replace("'silo.managed':'true'", "'silo.managed':'true','silo.working-account':'1'")
+            .replace("print('1')", "print('0')");
+        fs::write(&p.executable, script).unwrap();
+        let c = config();
+        let mut owned = Owners::default();
+        owned.listeners.insert(c.workspace.clone(), Listener { children: vec![], config: c.clone() });
+        for _ in 0..2 {
+            let observed = inspect_running(&p, &c);
+            assert!(observed.as_ref().unwrap_err().contains("Repair or update Silo"));
+            reconcile_one(&mut owned, &c, observed, &["127.0.0.1".into()], || panic!("unsafe runtime must not bind a listener"));
+            assert!(!owned.listeners.contains_key(&c.workspace));
+            assert!(owned.errors[&c.workspace].contains("Repair or update Silo"));
+        }
+    }
+
+    #[test]
+    fn working_account_remote_export_requires_protocol_before_creating_client_key() {
+        let _guard = runtime::MUTATION_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        remote_fixture(&p);
+        let script = fs::read_to_string(&p.executable).unwrap().replace(
+            "'silo.managed':'true'", "'silo.managed':'true','silo.working-account':'1'",
+        );
+        fs::write(&p.executable, script).unwrap();
+        let c = config();
+        editor::write_private(&path(&p), &serde_json::to_vec(&vec![c.clone()]).unwrap()).unwrap();
+        let request = serde_json::json!({"vmId":c.machine_id});
+        let error = remote_with(&p, "ssh.access.connection", &request).unwrap_err();
+        assert!(error.contains("Update Silo on the connecting computer"));
+        assert!(!p.home.join("ssh/managed-clients").exists());
+        let request = serde_json::json!({"vmId":c.machine_id,"accountProtocol":1});
+        let exported = remote_with(&p, "ssh.access.connection", &request).unwrap();
+        assert_eq!(exported["user"], "silo");
+        assert!(exported["privateKey"].as_str().unwrap().contains("BEGIN OPENSSH PRIVATE KEY"));
+    }
+
     #[test]
     fn automatic_client_key_is_stable_isolated_and_exported_only_on_request() {
         let _guard = runtime::MUTATION_LOCK.lock().unwrap();

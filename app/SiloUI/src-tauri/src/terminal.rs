@@ -4,9 +4,9 @@ use std::{fs, io::Write, os::unix::fs::PermissionsExt, path::Path, process::{Com
 use tauri::AppHandle;
 
 pub(crate) fn quote(value: &str) -> String { format!("'{}'", value.replace('\'', "'\\''")) }
-fn command(paths: &RuntimePaths, name: &str) -> Result<String, String> {
+fn command(paths: &RuntimePaths, name: &str, user: &str) -> Result<String, String> {
     runtime::validate_name(name).map_err(|e| e.to_string())?;
-    let args = ["/usr/bin/env".to_string(), format!("MSB_HOME={}", paths.home.display()), format!("MSB_PATH={}", paths.executable.display()), format!("MSB_LIBKRUNFW_PATH={}", paths.library.display()), paths.executable.to_str().ok_or("Invalid runtime path.")?.into(), "exec".into(), name.into(), "--no-start".into(), "--workdir".into(), "/workspace".into(), "--tty".into()];
+    let args = ["/usr/bin/env".to_string(), format!("MSB_HOME={}", paths.home.display()), format!("MSB_PATH={}", paths.executable.display()), format!("MSB_LIBKRUNFW_PATH={}", paths.library.display()), paths.executable.to_str().ok_or("Invalid runtime path.")?.into(), "exec".into(), name.into(), "--user".into(), user.into(), "--env".into(), format!("USER={user}"), "--env".into(), format!("LOGNAME={user}"), "--no-start".into(), "--workdir".into(), "/workspace".into(), "--tty".into()];
     Ok(args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "))
 }
 pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
@@ -25,7 +25,8 @@ pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
     let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, name).map_err(|_| "Could not check this VM.")?;
     runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
     if inspected.status != "Running" { return Err("Start this VM before opening its terminal.".into()); }
-    applications::open_terminal(app, &application, &command(&paths, name)?)
+    let user = crate::working_account::working_user(&inspected.config)?;
+    applications::open_terminal(app, &application, &command(&paths, name, user)?)
 }
 
 pub(crate) fn command_file(command: &str) -> Result<std::path::PathBuf, String> {
@@ -60,10 +61,13 @@ mod tests {
     #[test]
     fn opens_in_workspace_without_starting_a_stopped_vm() {
         let paths = RuntimePaths { guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image"), executable: "/tmp/Silo app/msb".into(), home: "/tmp/runtime home".into(), storage_home: None, library: "/tmp/lib.dylib".into(), metadata: "/tmp/meta".into(), volumes: "/tmp/volumes".into() };
-        let text = command(&paths, "dev").unwrap();
-        assert!(text.contains("'--no-start' '--workdir' '/workspace' '--tty'"));
-        assert!(text.contains("'MSB_HOME=/tmp/runtime home'"));
-        assert!(command(&paths, "bad;name").is_err());
+        for user in ["root", "silo"] {
+            let text = command(&paths, "dev", user).unwrap();
+            assert!(text.contains("'--no-start' '--workdir' '/workspace' '--tty'"));
+            assert!(text.contains("'MSB_HOME=/tmp/runtime home'"));
+            assert!(text.contains(&format!("'--user' '{user}' '--env' 'USER={user}' '--env' 'LOGNAME={user}'")));
+        }
+        assert!(command(&paths, "bad;name", "root").is_err());
     }
     #[test]
     fn shell_arguments_stay_literal() {

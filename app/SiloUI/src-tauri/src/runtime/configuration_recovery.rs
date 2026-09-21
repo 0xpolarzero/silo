@@ -127,7 +127,9 @@ fn reconcile(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal
             }
             verify_machine_configuration(runner, paths, machine)?;
             if !current.machines.iter().any(|entry| entry.id() == machine.id()) {
-                verify_guest_tools(runner, paths, machine.name())?;
+                let unified = crate::working_account::working_user(&inspected.config)
+                    .map_err(RuntimeError::Malformed)? == "silo";
+                verify_guest_tools(runner, paths, machine.name(), unified)?;
                 if let Some(desktop) = crate::desktop::configuration(machine) {
                     crate::desktop::configure_with(runner, paths, machine.name(), None, desktop)?;
                     let restored = inspect_workspace(runner, paths, machine.name())?;
@@ -268,6 +270,61 @@ fn recover_inner(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn working_account_recovery_provisions_only_labelled_interrupted_creations() {
+        struct InterruptedRuntime {
+            inspected: Value,
+            calls: Mutex<Vec<Vec<String>>>,
+        }
+        impl RuntimeRunner for InterruptedRuntime {
+            fn run(&self, _paths: &RuntimePaths, args: &[String], _timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+                self.calls.lock().unwrap().push(args.to_vec());
+                let value = match args[0].as_str() {
+                    "list" => json!([{"name":"dev"}]),
+                    "inspect" => self.inspected.clone(),
+                    "exec" => Value::Null,
+                    other => panic!("Unexpected recovery operation: {other}"),
+                };
+                Ok(CommandOutput { stdout: value.to_string(), stderr: String::new() })
+            }
+        }
+        for unified in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            let paths = RuntimePaths { executable: root.join("msb"), library: root.join("library"), home: root.join("home"), storage_home: None, guest_image: root.join("image"), metadata: root.join("machines.json"), volumes: root.join("volumes") };
+            let machine = MachineConfiguration::Vm { id: uuid::Uuid::new_v4().to_string(), name: "dev".into(), cpus: 1, max_cpus: 2, memory_gib: 4, max_memory_gib: 8, workspace_storage_gib: 10, runtime_storage_gib: 10, desktop: None };
+            let request = MachineConfigurationRequest { schema_version: 1, machines: vec![machine.clone()] };
+            begin(&paths, &request).unwrap();
+            claim(&paths, &machine).unwrap();
+            let mut inspected = json!({"name":"dev","status":"Stopped","config":{
+                "image":{"Oci":{"root_disk":{"kind":"managed","size_mib":10240}}},
+                "resources":{"cpus":1,"max_cpus":2,"memory_mib":4096,"max_memory_mib":8192},
+                "labels":{"silo.managed":"true","silo.machine-id":machine.id()},
+                "mounts":[{"type":"DiskImage","host":disk_path(&paths,"dev","workspace"),"guest":"/workspace","format":"Raw","fstype":"ext4"}]
+            }});
+            if unified { inspected["config"]["labels"]["silo.working-account"] = json!("1"); }
+            let runner = InterruptedRuntime { inspected, calls: Mutex::new(Vec::new()) };
+            prepare_retry(&runner, &paths, None).unwrap();
+            assert_eq!(read_metadata(&paths.metadata).unwrap(), request);
+            let calls = runner.calls.lock().unwrap();
+            let commands: Vec<_> = calls.iter().filter(|args| args[0] == "exec").collect();
+            assert_eq!(commands.len(), 1);
+            assert!(commands[0].windows(2).any(|pair| pair == ["--user","root"]));
+            let script = commands[0].last().unwrap();
+            if unified {
+                assert!(script.contains(include_str!("../../guest/setup-working-account.sh")));
+            } else {
+                assert_eq!(script, include_str!("../../guest/verify-tools.sh"));
+                assert!(!script.contains("useradd"));
+            }
+            drop(calls);
+            // Metadata adoption makes a subsequent retry read-only for either policy.
+            runner.calls.lock().unwrap().clear();
+            prepare_retry(&runner, &paths, None).unwrap();
+            assert!(!runner.calls.lock().unwrap().iter().any(|args| args[0] == "exec"));
+        }
+    }
 
     #[test]
     fn failed_recovery_unblocks_verified_current_state_without_discarding_intent() {

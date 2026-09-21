@@ -24,12 +24,18 @@ failed state for explicit recovery.
 
 ## Applications and external tools
 
-The desktop runs as `silo-desktop`, with home `/home/silo-desktop` and
-passwordless sudo. It does not change ownership of existing workspace files.
-Run graphical programs as this user with `DISPLAY=:1` and
-`XAUTHORITY=/home/silo-desktop/.Xauthority`. The session provides D-Bus and an
-accessibility bus. Existing root-owned files retain their normal Linux access
-rules; users can deliberately change permissions or copy files as appropriate.
+New VMs use `silo`, with home `/home/silo`, for terminal, SSH, editor and desktop
+work. Installing the desktop later reuses that account and preserves existing
+workspace files. Existing VMs retain root-based terminal access and the
+`silo-desktop` account with home `/home/silo-desktop`. Both normal accounts have
+passwordless sudo. Adding a desktop never migrates accounts or file ownership.
+
+Run graphical programs as the VM's desktop user with `DISPLAY=:1` and
+`XAUTHORITY` pointing to `.Xauthority` in that user's home. The session provides
+D-Bus and an accessibility bus. Root-owned files retain ordinary Linux access
+rules, including on new VMs when files were deliberately created with sudo.
+Conflicting pre-existing VNC configuration is reported before installation,
+rather than overwritten. See [working accounts](SiloUI-WORKING-ACCOUNT.md).
 
 Silo does not install agent harnesses, computer-use plugins, or MCP servers.
 Users configure compatible Linux tools themselves. Tools running in a remote
@@ -41,6 +47,56 @@ The initial recipe includes a terminal, file manager, text editor and fonts.
 Users install additional applications, including their preferred browser.
 
 ## Recipe and sources
+
+### Account decision audit, 2026-09-21
+
+The separate desktop account is a compatibility compromise with the existing
+root-based terminal/SSH workflow, not a requirement to prevent data corruption.
+The original research recommends a normal account for application compatibility;
+the implementation plan also requires preserving existing identities, credentials
+and ownership. Neither records a same-account corruption reproduction.
+
+Concrete upstream constraints:
+
+- [Chromium's Linux startup code](https://raw.githubusercontent.com/chromium/chromium/main/content/browser/zygote_host/zygote_host_impl_linux.cc)
+  exits when running as root without `--no-sandbox`. A root desktop therefore
+  requires a browser sandbox bypass; VM isolation does not replace browser
+  process isolation inside the guest.
+- [VS Code's Linux launcher](https://raw.githubusercontent.com/microsoft/vscode/main/resources/linux/bin/code.sh)
+  rejects an ordinary root launch, checks for specific override arguments, and
+  instructs users to provide `--no-sandbox` and an alternate user data directory.
+- [KasmVNC 1.5.0's launcher](https://raw.githubusercontent.com/kasmtech/KasmVNC/v1.5.0/unix/vncserver)
+  uses home-relative `.vnc`, `.kasmpasswd`, and default `.Xauthority` paths.
+  Reusing an account requires respecting existing files at those paths. Its
+  environment check does not itself demand a separate non-root account.
+
+The installer already runs as root and modifies system packages for both
+accounts. A separate session account cannot isolate package conflicts or an
+interrupted apt operation. It does avoid writing desktop configuration into
+the existing home. Same-account installation does not inherently require
+changing workspace ownership or moving existing data. A naive port of this
+recipe would overwrite existing `.vnc/kasmvnc.yaml` and `.vnc/xstartup`; those
+specific collisions need preflight checks or dedicated paths, not necessarily
+a separate UID. Session/display conflicts likewise need explicit handling.
+
+The current split has real costs: desktop processes retain ordinary non-root
+access rules for root-owned project files and use a different home for tools,
+Git settings and credentials. Passwordless sudo does not automatically make
+ordinary desktop file operations privileged. Conversely, unrestricted sudo
+means this is not a security boundary against a malicious desktop process.
+Desktop shutdown uses process groups, so independent terminal-job survival
+does not intrinsically require a second UID.
+
+Engineering recommendation: retain the non-root desktop for existing root-based
+VMs; do not replace it with an all-root desktop as a simplification. For a
+unified workflow, use one normal working account for terminal, SSH and desktop,
+with root for administration. Existing VMs need an explicit migration of the
+working environment, separate from installing desktop packages; do not silently
+change ownership or move credentials during desktop installation.
+
+This audit inspected repository code/history and upstream source. It did not
+run a root-desktop A/B test or establish browser sandbox support on the pinned
+guest runtime. Existing verification below explicitly excludes browser workloads.
 
 - Xfce packages come from Ubuntu 24.04 repositories, using a minimal package set.
 - KasmVNC is pinned to 1.5.0, with separate SHA-256-verified Noble packages for

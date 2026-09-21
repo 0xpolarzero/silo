@@ -2,7 +2,10 @@
 
 Silo ships one recommended Ubuntu 24.04 image for the app's CPU architecture.
 curl, Git, Git LFS, gh, CA certificates and Silo's credential helper are installed while
-building that image. No account, token, identity or user data enters the image.
+building that image. The unpublished v3 recipe also bundles sudo, Python 3 and
+OpenSSH's SFTP server for offline working-account provisioning. Silo creates
+the working account when it creates a VM; no Silo working account, token,
+identity or user data enters the image.
 Additional supported Ubuntu releases can be provided as prepared downloads later;
 there is no version picker or arbitrary-image compatibility promise in this change.
 
@@ -50,6 +53,34 @@ After publication, review both attached manifests and copy them into the lock's
 `images.arm64` and `images.amd64` entries. Verify both archives against those
 manifests before committing the lock. Updating a lock does not update existing
 VMs; restored backups also retain their guest systems.
+
+## Guest image v3 candidate
+
+The v3 recipe adds `sudo`, `python3` and `openssh-sftp-server`. Account setup
+uses these tools locally and refuses an image missing them. New-VM creation
+must not download or repair packages to establish the working account. The
+optional desktop retains its separate package and KasmVNC downloads.
+
+Both v3 architecture archives have been built. The checked-in lock now records
+their exact candidate manifests and hashes. ARM64 staging succeeded using the
+local candidate while its download function was forced to fail. This establishes
+local staging without downloads. Both images passed seven Docker tests with
+networking disabled, covering bundled tools, normal-user SFTP, and missing-tool
+or preinstalled-account rejection. Compressed archive sizes are 85,801,668 bytes
+for ARM64 and 87,799,791 bytes for AMD64.
+
+The ARM64 MicroSandbox candidate also passed provisioning, exec/SSH identity,
+SFTP/SCP permissions, Git/LFS roundtrips and restart persistence with `--net none`.
+All eight missing-tool cases failed preflight without package-manager calls;
+package-manager traps stayed untouched throughout the successful workflow.
+Evidence is under `src-tauri/target/verification/working-account/offline-v3/`.
+The isolated macOS debug bundle `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Account Verification.app` built successfully. The full offline suite passed using its bundled runtime, library and guest image; its archive and manifest match the ARM64 lock. Evidence: `target/verification/working-account/offline-v3-packaged/{live.log,image-verification.json}`. The GUI was not launched; Linux/KVM execution remains untested.
+
+V3 has not been published. Publish the exact locked archives before merging or
+shipping; cold builds cannot retrieve the unpublished release. The public v2
+release remains available, but lacks the new account prerequisites. Earlier
+v1/v2 verification below does not establish v3 offline account setup or release
+readiness.
 
 ## Runtime behavior
 

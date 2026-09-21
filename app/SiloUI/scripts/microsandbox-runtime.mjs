@@ -118,7 +118,8 @@ async function buildPatchedExecutable({
     const sshHelp = runBuildTool(cachedExecutable, ["ssh", "serve", "--help"])
     const storageProtocol = runBuildTool(cachedExecutable, ["--silo-storage-protocol"]).trim()
     const githubProtocol = runBuildTool(cachedExecutable, ["--silo-github-protocol"]).trim()
-    if (sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && githubProtocol === "1" && storageProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
+    const workingAccountProtocol = runBuildTool(cachedExecutable, ["--silo-working-account-protocol"]).trim()
+    if (sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && githubProtocol === "1" && storageProtocol === "1" && workingAccountProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
       return readFile(cachedExecutable)
     }
   }
@@ -165,6 +166,9 @@ async function buildPatchedExecutable({
   }
   if (runBuildTool(built, ["--silo-storage-protocol"]).trim() !== "1") {
     throw new Error("The built MicroSandbox is missing capacity-preserving storage reclamation")
+  }
+  if (runBuildTool(built, ["--silo-working-account-protocol"]).trim() !== "1") {
+    throw new Error("The built MicroSandbox is missing normal-user SSH and SFTP support")
   }
   const bytes = await readFile(built)
   await mkdir(buildRoot, { recursive: true })

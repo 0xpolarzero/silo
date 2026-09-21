@@ -44,6 +44,7 @@ mod system_integrations;
 mod tray;
 mod terminal;
 mod updates;
+mod working_account;
 
 use tauri::{Manager, WindowEvent};
 

@@ -14,10 +14,11 @@ struct Material {
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
-fn command(path: &std::path::Path, material: &Material) -> Result<String, String> {
+fn command(path: &std::path::Path, material: &Material, user: &str) -> Result<String, String> {
+    let user = crate::working_account::response_user(&serde_json::json!({"user":user}))?;
     let address: std::net::Ipv4Addr = material.address.parse().map_err(|_| "Invalid SSH address.")?;
     if material.port == 0 || address.is_unspecified() { return Err("Invalid SSH connection.".into()); }
-    Ok(format!("ssh -i {} -o IdentitiesOnly=yes -p {} root@{}", quote(path.to_str().ok_or("Invalid key path.")?), material.port, address))
+    Ok(format!("ssh -i {} -o IdentitiesOnly=yes -p {} {user}@{}", quote(path.to_str().ok_or("Invalid key path.")?), material.port, address))
 }
 
 fn select_endpoint(material: &mut Material, network: Option<bool>, is_remote: bool, download: bool) -> Result<(), String> {
@@ -42,7 +43,7 @@ pub(crate) async fn ssh_connection(app: AppHandle, window: WebviewWindow, worksp
             uuid::Uuid::parse_str(&host).map_err(|_| "Invalid computer identity.")?;
             let vm = vm_id.ok_or("Missing sandbox identity.")?;
             uuid::Uuid::parse_str(&vm).map_err(|_| "Invalid sandbox identity.")?;
-            let value = remote::call_remote(&app, &host, "ssh.access.connection", serde_json::json!({"vmId":vm}))?;
+            let value = remote::call_remote(&app, &host, "ssh.access.connection", serde_json::json!({"vmId":vm,"accountProtocol":1}))?;
             (value, format!("{host}-{vm}"))
         } else {
             let _guard = runtime::MUTATION_LOCK.lock().map_err(|_| "Sandbox operation failed.")?;
@@ -52,6 +53,7 @@ pub(crate) async fn ssh_connection(app: AppHandle, window: WebviewWindow, worksp
             let vm = metadata.machines.iter().find(|m| m.is_vm() && m.name() == name).ok_or("Sandbox no longer exists.")?;
             (ssh_access::connection_material(&paths, vm.id())?, vm.id().to_owned())
         };
+        let user = crate::working_account::response_user(&value)?;
         let mut material: Material = serde_json::from_value(value).map_err(|_| "Invalid connection response. Update Silo on both computers.")?;
         select_endpoint(&mut material, network, is_remote, download)?;
         let root = paths.home.join("ssh/connections");
@@ -66,7 +68,7 @@ pub(crate) async fn ssh_connection(app: AppHandle, window: WebviewWindow, worksp
             let destination = selected.into_path().map_err(|_| "Choose a local file.")?;
             editor::write_private(&destination, material.private_key.as_bytes())?;
             Ok(None)
-        } else { command(&local, &material).map(Some) }
+        } else { command(&local, &material, user).map(Some) }
     }).await.map_err(|_| "Could not prepare SSH connection.".to_owned())?
 }
 
@@ -87,6 +89,8 @@ mod tests {
     #[test]
     fn command_quotes_key_paths_and_uses_explicit_identity() {
         let material = Material { private_key: String::new(), port: 2223, address: "127.0.0.1".into() };
-        assert_eq!(command(std::path::Path::new("/a'b $(bad)/key"), &material).unwrap(), "ssh -i '/a'\\''b $(bad)/key' -o IdentitiesOnly=yes -p 2223 root@127.0.0.1");
+        assert_eq!(command(std::path::Path::new("/a'b $(bad)/key"), &material, "root").unwrap(), "ssh -i '/a'\\''b $(bad)/key' -o IdentitiesOnly=yes -p 2223 root@127.0.0.1");
+        assert!(command(std::path::Path::new("/key"), &material, "silo").unwrap().ends_with("silo@127.0.0.1"));
+        assert!(command(std::path::Path::new("/key"), &material, "unknown").is_err());
     }
 }

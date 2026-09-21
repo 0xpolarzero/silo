@@ -18,6 +18,49 @@ USER = 'silo-desktop'
 HOME = Path('/home/silo-desktop')
 SELF = '/usr/local/bin/silo-desktop'
 LOG = Path('/var/log/silo-desktop.log')
+WORKING_ACCOUNT = Path('/var/lib/silo/working-account.json')
+
+
+def validate_policy_file(path):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise RuntimeError('Working account policy must be a root-owned regular file without group or other write access')
+
+
+def desktop_account():
+    try:
+        WORKING_ACCOUNT.lstat()
+    except FileNotFoundError:
+        return 'silo-desktop', Path('/home/silo-desktop')
+    validate_policy_file(WORKING_ACCOUNT)
+    policy = json.loads(WORKING_ACCOUNT.read_text())
+    if policy != dict(schemaVersion=1, user='silo', home='/home/silo'):
+        raise RuntimeError('Unsupported Silo working account policy')
+    try:
+        account = pwd.getpwnam('silo')
+    except KeyError:
+        raise RuntimeError('Silo working account is missing') from None
+    if account.pw_uid == 0 or account.pw_dir != '/home/silo':
+        raise RuntimeError('Silo working account has an unexpected UID or home')
+    return 'silo', Path(account.pw_dir)
+
+
+def prepare_configuration(home):
+    # Only files claimed before an installation attempt may be replaced on retry.
+    # The account's unrelated files and directory permissions remain untouched.
+    managed = read('configuration-managed.json')
+    if managed is not None and managed != {'home': str(home)}:
+        raise RuntimeError('Desktop configuration belongs to a different home')
+    directory = home / '.vnc'
+    paths = [directory / 'kasmvnc.yaml', directory / 'xstartup', home / '.kasmpasswd']
+    if home.is_symlink() or directory.is_symlink() or any(path.is_symlink() for path in paths):
+        raise RuntimeError('Desktop configuration paths must not be symbolic links')
+    if directory.exists() and not directory.is_dir():
+        raise RuntimeError('Desktop configuration directory is not a directory')
+    if managed is None:
+        if any(path.exists() for path in paths):
+            raise RuntimeError('Existing desktop configuration conflicts with the Silo desktop; preserve or move it before installing')
+        write(STATE / 'configuration-managed.json', {'home': str(home)})
 
 
 def read(name, default=None):
@@ -186,10 +229,16 @@ def supervise():
 
 
 def main():
+    global USER, HOME
     if os.geteuid() != 0:
         raise RuntimeError('Run sudo silo-desktop to manage the desktop')
-    RUN.mkdir(mode=0o755, parents=True, exist_ok=True)
+    USER, HOME = desktop_account()
     action = sys.argv[1] if len(sys.argv) > 1 else 'status'
+    if action == 'prepare-install':
+        prepare_configuration(HOME)
+        print(USER, HOME)
+        return
+    RUN.mkdir(mode=0o755, parents=True, exist_ok=True)
     if action == 'supervise':
         supervise()
         return

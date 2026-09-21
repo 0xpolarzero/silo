@@ -71,9 +71,13 @@ pub async fn dismiss_repository_push(
 }
 
 fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Result<String, String> {
+    let user = crate::working_account::inspect_user(paths, name)?;
     let mut command = vec![
         "exec".into(),
         name.into(),
+        "--user".into(), user.into(),
+        "--env".into(), format!("USER={user}"),
+        "--env".into(), format!("LOGNAME={user}"),
         "--no-tty".into(),
         "--quiet".into(),
         "--workdir".into(),
@@ -686,7 +690,7 @@ printf '%s\n%s\n' "$branch" "$commit"
             .and_then(|_| fs::create_dir_all(git.home.join("empty-templates")))
             .map_err(|_| "Cannot create isolated host Git directory.")?;
         let source = transport.repository_url(path)?;
-        let source_lfs = format!("ssh://root@{}{export}/source.git", transport.alias);
+        let source_lfs = format!("ssh://{}{export}/source.git", transport.alias);
         let publication = publish_committed(
             &git,
             &source,

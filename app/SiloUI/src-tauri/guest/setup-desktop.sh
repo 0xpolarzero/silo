@@ -20,8 +20,17 @@ if [ -f /var/lib/silo-desktop/installed.json ]; then
     /usr/local/bin/silo-desktop status
     exit 0
 fi
+# New VMs already have their working account; old VMs keep their desktop account.
+desktop_user=silo-desktop
+desktop_home=/home/silo-desktop
+if [ -e /var/lib/silo/working-account.json ] || [ -L /var/lib/silo/working-account.json ]; then
+    account=$(python3 "$helper" prepare-install)
+    [ "$account" = 'silo /home/silo' ] || { echo 'Unexpected desktop account' >&2; exit 1; }
+    desktop_user=silo
+    desktop_home=/home/silo
+fi
 # Do not reuse an unrelated existing account or change ownership of user files.
-if getent passwd silo-desktop >/dev/null && [ ! -f /var/lib/silo-desktop/account-created ]; then
+if [ "$desktop_user" = silo-desktop ] && getent passwd silo-desktop >/dev/null && [ ! -f /var/lib/silo-desktop/account-created ]; then
     echo 'The silo-desktop account already exists and is not managed by Silo' >&2
     exit 1
 fi
@@ -46,16 +55,21 @@ printf '%s  %s\n' "$digest" "$package.partial" | sha256sum --check --status || {
 mv "$package.partial" "$package"
 printf '%s\n' installing > /var/lib/silo-desktop/install-stage
 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -y --no-install-recommends "$package"
-if ! getent passwd silo-desktop >/dev/null; then
+if [ "$desktop_user" = silo-desktop ] && ! getent passwd silo-desktop >/dev/null; then
     useradd --create-home --shell /bin/bash --comment 'Silo desktop' silo-desktop
     touch /var/lib/silo-desktop/account-created
 fi
-usermod -a -G ssl-cert silo-desktop
-printf '%s\n' 'silo-desktop ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/silo-desktop
-chmod 0440 /etc/sudoers.d/silo-desktop
-visudo -cf /etc/sudoers.d/silo-desktop >/dev/null
-install -d -m 0700 -o silo-desktop -g silo-desktop /home/silo-desktop/.vnc
-cat > /home/silo-desktop/.vnc/kasmvnc.yaml <<'YAML'
+usermod -a -G ssl-cert "$desktop_user"
+if [ "$desktop_user" = silo-desktop ]; then
+    printf '%s\n' 'silo-desktop ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/silo-desktop
+    chmod 0440 /etc/sudoers.d/silo-desktop
+    visudo -cf /etc/sudoers.d/silo-desktop >/dev/null
+fi
+python3 "$helper" prepare-install >/dev/null
+if [ ! -d "$desktop_home/.vnc" ]; then
+    install -d -m 0700 -o "$desktop_user" -g "$(id -gn "$desktop_user")" "$desktop_home/.vnc"
+fi
+cat > "$desktop_home/.vnc/kasmvnc.yaml" <<'YAML'
 desktop:
   resolution:
     width: 1440
@@ -76,24 +90,24 @@ encoding:
 logging:
   level: 10
 YAML
-cat > /home/silo-desktop/.vnc/xstartup <<'SESSION'
+cat > "$desktop_home/.vnc/xstartup" <<'SESSION'
 #!/bin/sh
 unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
 export DISPLAY=:1
 export XDG_RUNTIME_DIR=/run/silo-desktop/user
 exec dbus-run-session -- xfce4-session
 SESSION
-chmod 0755 /home/silo-desktop/.vnc/xstartup
-chown silo-desktop:silo-desktop /home/silo-desktop/.vnc/kasmvnc.yaml /home/silo-desktop/.vnc/xstartup
-python3 - <<'PY'
-import json, os, pathlib, secrets, subprocess
+chmod 0755 "$desktop_home/.vnc/xstartup"
+chown "$desktop_user:$(id -gn "$desktop_user")" "$desktop_home/.vnc/kasmvnc.yaml" "$desktop_home/.vnc/xstartup"
+python3 - "$desktop_user" "$desktop_home" <<'PY'
+import json, os, pathlib, secrets, subprocess, sys
 root = pathlib.Path('/var/lib/silo-desktop')
 connection = root / 'connection.json'
 if not connection.exists():
     connection.write_text(json.dumps(dict(username='silo', password=secrets.token_hex(32), port=6901)))
     connection.chmod(0o600)
 data = json.loads(connection.read_text())
-subprocess.run(['runuser', '-u', 'silo-desktop', '--', 'kasmvncpasswd', '-u', data['username'], '-r', '-w', '/home/silo-desktop/.kasmpasswd'], input=(data['password']+'\n'+data['password']+'\n').encode(), stdout=subprocess.DEVNULL, check=True)
+subprocess.run(['runuser', '-u', sys.argv[1], '--', 'env', 'HOME=' + sys.argv[2], 'kasmvncpasswd', '-u', data['username'], '-r', '-w', str(pathlib.Path(sys.argv[2]) / '.kasmpasswd')], input=(data['password']+'\n'+data['password']+'\n').encode(), stdout=subprocess.DEVNULL, check=True)
 config = root / 'config.json'
 if not config.exists():
     config.write_text('{"autoStart":true}\n')

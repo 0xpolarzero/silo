@@ -1563,6 +1563,7 @@ pub(crate) fn default_github_network(network: &Value) -> bool {
 }
 
 fn supported_runtime_settings(config: &serde_json::Map<String, Value>) -> bool {
+    if crate::working_account::working_user(&Value::Object(config.clone())).is_err() { return false; }
     let expected = [
         (
             "runtime",
@@ -2857,6 +2858,15 @@ else:
         assert!(validate_snapshottable_config("dev", &config).is_err());
         config = original;
         config["network"]["secrets"]["secrets"][0]["source"] = serde_json::json!({"kind":"file","path":"/private/secret"});
+        assert!(validate_snapshottable_config("dev", &config).is_err());
+    }
+
+    #[test]
+    fn working_account_backup_accepts_supported_policies_only() {
+        let mut config = managed_config("dev");
+        config["labels"] = serde_json::json!({"silo.working-account":"1"});
+        assert!(validate_snapshottable_config("dev", &config).is_ok());
+        config["labels"]["silo.working-account"] = serde_json::json!("unknown");
         assert!(validate_snapshottable_config("dev", &config).is_err());
     }
 

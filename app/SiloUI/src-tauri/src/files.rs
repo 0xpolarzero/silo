@@ -129,6 +129,7 @@ pub(crate) async fn list_workspace_directory(
         let state =
             inspect_workspace(&ProcessRunner, &paths, &workspace).map_err(|_| FAILED.to_owned())?;
         ensure_managed(&state).map_err(|_| FAILED.to_owned())?;
+        let user = crate::working_account::working_user(&state.config)?;
         if state.status != "Running" {
             return Err("Start this VM to browse its files.".into());
         }
@@ -150,6 +151,9 @@ pub(crate) async fn list_workspace_directory(
             &[
                 "exec".into(),
                 workspace,
+                "--user".into(), user.into(),
+                "--env".into(), format!("USER={user}"),
+                "--env".into(), format!("LOGNAME={user}"),
                 "--no-start".into(),
                 "--no-tty".into(),
                 "--quiet".into(),

@@ -1104,7 +1104,8 @@ fn verify_workspace_identities_with(
         }) {
             return Ok(false);
         }
-        if !verify_guest_identity(runner, paths, identity)? {
+        let user = crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Malformed)?;
+        if !verify_guest_identity(runner, paths, identity, user)? {
             return Ok(false);
         }
     }
@@ -1169,9 +1170,10 @@ fn configure_workspace_identities_with(
         }
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
         ensure_managed(&inspected)?;
-        changed.push(identity);
+        let user = crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Malformed)?;
+        changed.push((identity, user));
     }
-    for identity in changed {
+    for (identity, user) in changed {
         // Remove old boot overrides: normal Git/jj configuration must own defaults.
         let mut args = vec!["modify".into(), identity.workspace.clone()];
         for key in [
@@ -1193,8 +1195,8 @@ fn configure_workspace_identities_with(
    jj config set --user -- user.name "$3"
    jj config set --user -- user.email "$4"
  fi"#;
-        run_identity_script(runner, paths, identity, script)?;
-        if !verify_guest_identity(runner, paths, identity)? {
+        run_identity_script(runner, paths, identity, script, user)?;
+        if !verify_guest_identity(runner, paths, identity, user)? {
             return Err(RuntimeError::Malformed(format!(
                 "Silo could not verify the saved Git identity for '{}'. Setup is not complete.",
                 identity.workspace
@@ -1209,6 +1211,7 @@ fn run_identity_script(
     paths: &RuntimePaths,
     identity: &WorkspaceIdentity,
     script: &str,
+    user: &str,
 ) -> Result<CommandOutput, RuntimeError> {
     // exec starts stopped sandboxes temporarily and preserves already-running VMs.
     // Values are positional arguments, never interpolated shell source.
@@ -1217,6 +1220,9 @@ fn run_identity_script(
         &[
             "exec".into(),
             identity.workspace.clone(),
+            "--user".into(), user.into(),
+            "--env".into(), format!("USER={user}"),
+            "--env".into(), format!("LOGNAME={user}"),
             "--no-tty".into(),
             "--workdir".into(),
             "/".into(),
@@ -1243,6 +1249,7 @@ fn verify_guest_identity(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     identity: &WorkspaceIdentity,
+    user: &str,
 ) -> Result<bool, RuntimeError> {
     let script = r#"set -eu
  if [ "$(git config --global --get user.name)" != "$1" ] ||
@@ -1252,7 +1259,7 @@ fn verify_guest_identity(
    [ "$(jj config get user.email)" = "$2" ] || exit 0
  fi
  printf '%s' silo-identity-verified"#;
-    Ok(run_identity_script(runner, paths, identity, script)?
+    Ok(run_identity_script(runner, paths, identity, script, user)?
         .stdout
         .trim()
         == "silo-identity-verified")
@@ -2675,7 +2682,13 @@ fn verify_guest_tools(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
+    provision_account: bool,
 ) -> Result<(), RuntimeError> {
+    let script = if provision_account {
+        format!("{}\n{}", include_str!("../guest/verify-tools.sh"), include_str!("../guest/setup-working-account.sh"))
+    } else {
+        include_str!("../guest/verify-tools.sh").into()
+    };
     runner.run(
         paths,
         &[
@@ -2692,7 +2705,7 @@ fn verify_guest_tools(
             "--".into(),
             "sh".into(),
             "-c".into(),
-            include_str!("../guest/verify-tools.sh").into(),
+            script,
         ],
         Duration::from_secs(45),
     )?;
@@ -2761,6 +2774,12 @@ fn create_machine_with_progress(
                 "The bundled runtime does not support secure GitHub access. Repair Silo before creating sandboxes.".into(),
             ));
         }
+        let protocol = runner.run(paths, &["--silo-working-account-protocol".into()], READ_TIMEOUT)?;
+        if protocol.stdout.trim() != "1" {
+            return Err(RuntimeError::Unavailable(
+                "The bundled runtime does not support normal working accounts. Repair or update Silo before creating sandboxes.".into(),
+            ));
+        }
         Ok(())
     })();
     if let Err(error) = preflight {
@@ -2800,6 +2819,8 @@ fn create_machine_with_progress(
         "--label".into(),
         format!("silo.machine-id={id}"),
         "--label".into(),
+        crate::working_account::UNIFIED_LABEL.into(),
+        "--label".into(),
         format!("silo.workspace-storage-gib={workspace_storage_gib}"),
         "--label".into(),
         format!("silo.runtime-storage-gib={runtime_storage_gib}"),
@@ -2830,7 +2851,7 @@ fn create_machine_with_progress(
             cleanup_failed_create(runner, paths, name, id),
         ));
     }
-    if let Err(error) = verify_guest_tools(runner, paths, name) {
+    if let Err(error) = verify_guest_tools(runner, paths, name, true) {
         return Err(with_cleanup_error(
             error,
             cleanup_failed_create(runner, paths, name, id),
@@ -4197,6 +4218,7 @@ esac
         let runner = StubRunner::successful_json(vec![
             json!([]),
             json!(1),
+            json!(1),
             json!(null),
             inspect(&paths, "Created"),
             json!(null),
@@ -4207,10 +4229,10 @@ esac
 
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
-            &calls[2][..2],
+            &calls[3][..2],
             ["create", "ghcr.io/0xpolarzero/silo-guest:test"]
         );
-        assert!(calls[2]
+        assert!(calls[3]
             .windows(2)
             .any(|pair| pair == ["--root-disk", "80G"]));
         let workspace = disk_path(&paths, "dev", "workspace");
@@ -4219,7 +4241,7 @@ esac
             60 * 1024 * 1024 * 1024
         );
         assert!(!disk_path(&paths, "dev", "runtime").exists());
-        assert!(calls[2].windows(2).any(|pair| {
+        assert!(calls[3].windows(2).any(|pair| {
             pair[0] == "--mount-disk"
                 && pair[1]
                     == format!(
@@ -4228,12 +4250,18 @@ esac
                     )
         }));
         assert_eq!(
-            calls[2].iter().filter(|arg| *arg == "--mount-disk").count(),
+            calls[3].iter().filter(|arg| *arg == "--mount-disk").count(),
             1
         );
-        assert!(calls[2]
+        assert!(calls[3]
             .windows(2)
             .any(|pair| pair == ["--label", MANAGED_LABEL]));
+        assert!(calls[3]
+            .windows(2)
+            .any(|pair| pair == ["--label", "silo.working-account=1"]));
+        let setup = &calls[5];
+        assert!(setup.windows(2).any(|pair| pair == ["--user", "root"]));
+        assert!(setup.last().unwrap().contains("/var/lib/silo/working-account.json"));
     }
 
     #[test]
@@ -4245,13 +4273,13 @@ esac
             if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
                 *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: true });
             }
-            let runner = StubRunner::successful_json(vec![json!([]), json!(1), json!(null), inspect(&paths, "Created"), json!(null), inspect(&paths, "Stopped"), json!(1), json!(null), inspect(&paths, final_state)]);
+            let runner = StubRunner::successful_json(vec![json!([]), json!(1), json!(1), json!(null), inspect(&paths, "Created"), json!(null), inspect(&paths, "Stopped"), json!(1), json!(null), inspect(&paths, final_state)]);
             let result = create_machine(&runner, &paths, &machine);
             assert_eq!(result.is_ok(), final_state == "Stopped");
             let calls = runner.calls.lock().unwrap();
-            assert_eq!(calls[7][0], "exec");
-            assert!(calls[7].last().unwrap().contains("silo-desktop autostart true"));
-            assert!(calls[2].contains(&"--no-start".into()));
+            assert_eq!(calls[8][0], "exec");
+            assert!(calls[8].last().unwrap().contains("silo-desktop autostart true"));
+            assert!(calls[3].contains(&"--no-start".into()));
         }
     }
 
@@ -4260,7 +4288,7 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![json!(null), inspect(&paths, "Running")]);
-        assert!(verify_guest_tools(&runner, &paths, "dev")
+        assert!(verify_guest_tools(&runner, &paths, "dev", false)
             .unwrap_err()
             .to_string()
             .contains("stopped state"));
@@ -4289,13 +4317,14 @@ esac
         let runner = StubRunner::successful_json(vec![
             json!([]),
             json!(1),
+            json!(1),
             json!(null),
             inspect(&paths, "Running"),
             json!([]),
         ]);
         let error = create_machine(&runner, &paths, &vm()).unwrap_err();
         assert!(error.to_string().contains("did not remain stopped"));
-        assert!(runner.calls.lock().unwrap()[2]
+        assert!(runner.calls.lock().unwrap()[3]
             .iter()
             .any(|arg| arg == "--no-start"));
     }
@@ -4664,6 +4693,30 @@ esac
     }
 
     #[test]
+    fn working_account_git_identity_uses_the_same_home_for_write_and_verification() {
+        for user in ["root", "silo"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            let mut state = inspect(&paths, "Running");
+            if user == "silo" {
+                state["config"]["labels"]["silo.working-account"] = json!("1");
+            }
+            let runner = StubRunner::new(vec![
+                identity_output(&state.to_string()),
+                identity_output("{}"),
+                identity_output(""),
+                identity_output("silo-identity-verified"),
+            ]);
+            configure_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap();
+            let calls = runner.calls.lock().unwrap();
+            for command in calls.iter().filter(|args| args[0] == "exec") {
+                assert!(command.windows(2).any(|pair| pair == ["--user", user]));
+            }
+        }
+    }
+
+    #[test]
     fn running_identity_change_uses_normal_config_without_restart() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -4911,6 +4964,7 @@ esac
             let runner = StubRunner::successful_json(vec![
                 json!([]),
                 json!(1),
+                json!(1),
                 json!(null),
                 inspect(&paths, "Created"),
                 json!(null),
@@ -5011,7 +5065,7 @@ esac
             let runner = StubRunner::successful_json(if removing {
                 vec![other_inspect.clone(), other_inspect, json!(null)]
             } else {
-                vec![json!([]), json!(1), json!(null), other_inspect.clone(), json!(null), other_inspect.clone(), other_inspect]
+                vec![json!([]), json!(1), json!(1), json!(null), other_inspect.clone(), json!(null), other_inspect.clone(), other_inspect]
             });
             let events = Mutex::new(Vec::new());
             save_machine_configuration_with_progress(&runner, &paths, &generous_host(), requested.clone(), retry_workspace, &|step, name, fraction| {
@@ -5169,6 +5223,10 @@ esac
                 stderr: String::new(),
             }),
             Ok(CommandOutput {
+                stdout: "1".into(),
+                stderr: String::new(),
+            }),
+            Ok(CommandOutput {
                 stdout: String::new(),
                 stderr: String::new(),
             }),
@@ -5190,6 +5248,10 @@ esac
             }),
             Ok(CommandOutput {
                 stdout: "[]".into(),
+                stderr: String::new(),
+            }),
+            Ok(CommandOutput {
+                stdout: "1".into(),
                 stderr: String::new(),
             }),
             Ok(CommandOutput {

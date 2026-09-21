@@ -25,7 +25,7 @@
     "release:sync": "node scripts/sync-release.mjs",
     "release:draft": "node scripts/release.mjs draft",
     "release:publish": "node scripts/release.mjs publish",
-    "test:release": "node --test scripts/preflight.test.mjs scripts/release.test.mjs scripts/lfs-transfer-runtime.test.mjs scripts/imago-storage-patch.test.mjs"
+    "test:release": "node --test scripts/preflight.test.mjs scripts/release.test.mjs scripts/lfs-transfer-runtime.test.mjs scripts/imago-storage-patch.test.mjs scripts/build-guest-image.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

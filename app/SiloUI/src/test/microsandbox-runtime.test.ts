@@ -173,6 +173,7 @@ describe("bundled MicroSandbox release staging", () => {
     let agentd = Buffer.from("agent revision one")
     let compilations = 0
     let outdatedCachedSsh = false
+    let outdatedCachedAccount = false
     const sourceArtifact = { url: "https://example.test/source.tar.gz", sha256: sha256(source) }
     const selected = {
       ...runtimeTargets[targetTriple],
@@ -208,7 +209,8 @@ describe("bundled MicroSandbox release staging", () => {
         return ""
       }
       if (command.startsWith(appRoot) && command.endsWith("/msb")) {
-        if (["--silo-github-protocol", "--silo-storage-protocol"].includes(args[0])) return "1"
+        if (outdatedCachedAccount && !command.includes("cargo-target") && args[0] === "--silo-working-account-protocol") return "0"
+        if (["--silo-github-protocol", "--silo-storage-protocol", "--silo-working-account-protocol"].includes(args[0])) return "1"
         if (args[0] === "--version") return `msb ${MICRO_SANDBOX_VERSION}`
         if (args.includes("--help")) {
           const oldFlags = "--no-start --from-snapshot --progress-json"
@@ -236,12 +238,17 @@ describe("bundled MicroSandbox release staging", () => {
         expect(compilations).toBe(2)
         outdatedCachedSsh = false
 
+        outdatedCachedAccount = true
+        await stage()
+        expect(compilations).toBe(3)
+        outdatedCachedAccount = false
+
         agentd = Buffer.from("agent revision two")
         selected.agentdSha256 = sha256(agentd)
         const changed = await stage()
         expect(await readFile(changed.executablePath, "utf8")).toBe("compiled runtime:agent revision two")
-        expect(compilations).toBe(3)
-        expect(stagePatchedImago).toHaveBeenCalledTimes(3)
+        expect(compilations).toBe(4)
+        expect(stagePatchedImago).toHaveBeenCalledTimes(4)
         const manifest = JSON.parse(await readFile(changed.manifestPath, "utf8"))
         expect(manifest.executable.embeddedAgentdReleaseSha256).toBe(sha256(agentd))
         expect(manifest.executable.sha256).toBe(sha256(await readFile(changed.executablePath)))

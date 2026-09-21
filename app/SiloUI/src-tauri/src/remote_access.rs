@@ -61,13 +61,15 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 .map_err(|_| "A VM operation is in progress. Retry shortly.")?;
             let name = vm_name(app, params)?;
             let paths = runtime::runtime_paths(app)?;
+            let user = crate::working_account::inspect_user(&paths, &name)?;
+            crate::working_account::require_client_protocol(user, params)?;
             let public = crate::editor::authorize_remote(
                 &paths,
                 &name,
                 string(params, "publicKey")?,
                 string(params, "path")?,
             )?;
-            Ok(json!({"hostPublicKey": public}))
+            Ok(json!({"hostPublicKey": public, "user":user}))
         }
         "network.state" => crate::remote_network::host_state(app),
         "network.publish" => {
@@ -130,6 +132,7 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
     if inspected.status != "Running" {
         return Err("Start this VM before connecting.".into());
     }
+    crate::working_account::require_runtime(&paths, crate::working_account::working_user(&inspected.config)?)?;
     Command::new(&paths.executable)
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)
@@ -155,16 +158,16 @@ pub(crate) fn prepare(
     vm: &str,
     public: &str,
     path: &str,
-) -> Result<String, String> {
+) -> Result<(String, &'static str), String> {
     let result = remote::call_remote(
         app,
         host,
         "guest.prepare",
-        json!({"vmId":vm,"publicKey":public,"path":path}),
+        json!({"vmId":vm,"publicKey":public,"path":path,"accountProtocol":1}),
     )?;
     let key = string(&result, "hostPublicKey")?;
     crate::editor::validate_public_key(key)?;
-    Ok(key.into())
+    Ok((key.into(), crate::working_account::response_user(&result)?))
 }
 
 #[cfg(test)]

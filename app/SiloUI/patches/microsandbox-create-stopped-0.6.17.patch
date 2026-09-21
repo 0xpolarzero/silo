@@ -5315,3 +5315,93 @@ new file mode 100644
              "name": handle.name(),
              "status": format!("{:?}", handle.status_snapshot()),
              "config": config,
+--- a/sdk/rust/lib/sandbox/ssh.rs
++++ b/sdk/rust/lib/sandbox/ssh.rs
+@@ -210,6 +210,23 @@
+
+ #[derive(Clone)]
+ struct SshClientHandler;
++
++// Non-root SFTP must use the guest kernel's file permissions. Agent FS RPCs
++// execute as root and therefore cannot implement a normal user's SFTP session.
++fn guest_sftp_command(user: Option<&str>) -> Option<ExecCommand> {
++    match user {
++        None | Some("root" | "0") => None,
++        Some(_) => Some(ExecCommand::Command("exec /usr/lib/openssh/sftp-server".into())),
++    }
++}
++
++fn set_login_environment(env: &mut Vec<EnvVar>, user: Option<&str>) {
++    if let Some(user) = user.filter(|user| !user.contains(':') && !user.chars().all(|c| c.is_ascii_digit())) {
++        env.retain(|entry| entry.key != "USER" && entry.key != "LOGNAME");
++        env.push(EnvVar::new("USER", user));
++        env.push(EnvVar::new("LOGNAME", user));
++    }
++}
+
+ enum ExecCommand {
+     Shell,
+@@ -1080,6 +1097,7 @@
+             .guest_user
+             .clone()
+             .or_else(|| self.user.clone());
++        set_login_environment(&mut env, user.as_deref());
+         let cwd = self.session_home().await?;
+         let opts = ExecOptions {
+             args,
+@@ -1381,6 +1399,12 @@
+         if name != "sftp" || !self.settings.sftp {
+             session.channel_failure(channel)?;
+             return Ok(());
++        }
++
++        let user = self.settings.guest_user.as_deref().or(self.user.as_deref());
++        if let Some(command) = guest_sftp_command(user) {
++            // A missing helper fails this channel. Never fall back to root RPCs.
++            return self.start_exec(channel, command, session).await;
+         }
+
+         let Some(ChannelState::Pending {
+@@ -2659,6 +2683,26 @@
+     use super::*;
+
+     #[test]
++    fn nonroot_sftp_uses_guest_process_while_root_keeps_legacy_rpc() {
++        assert!(guest_sftp_command(None).is_none());
++        assert!(guest_sftp_command(Some("root")).is_none());
++        assert!(guest_sftp_command(Some("0")).is_none());
++        for user in ["silo", "1001", "1001:1001"] {
++            assert!(matches!(guest_sftp_command(Some(user)), Some(ExecCommand::Command(command)) if command == "exec /usr/lib/openssh/sftp-server"));
++        }
++    }
++
++    #[test]
++    fn authenticated_named_user_overrides_client_login_environment() {
++        let mut env = vec![EnvVar::new("USER", "root"), EnvVar::new("LOGNAME", "root"), EnvVar::new("LANG", "C")];
++        set_login_environment(&mut env, Some("silo"));
++        assert_eq!(env.iter().filter(|entry| entry.key == "USER").count(), 1);
++        assert_eq!(env.iter().find(|entry| entry.key == "USER").unwrap().value, "silo");
++        assert_eq!(env.iter().find(|entry| entry.key == "LOGNAME").unwrap().value, "silo");
++        assert_eq!(env.iter().find(|entry| entry.key == "LANG").unwrap().value, "C");
++    }
++
++    #[test]
+     fn ssh_home_is_absolute_and_preserves_spaces() {
+         assert_eq!(parse_session_home("/root\n").unwrap(), "/root");
+         assert_eq!(parse_session_home("/home/a b\n").unwrap(), "/home/a b");
+--- a/crates/cli/bin/main.rs
++++ b/crates/cli/bin/main.rs
+@@ -275,6 +275,13 @@
+ //--------------------------------------------------------------------------------------------------
+
+ fn main() {
++    if std::env::args_os().skip(1).collect::<Vec<_>>()
++        == [std::ffi::OsString::from("--silo-working-account-protocol")]
++    {
++        println!("1");
++        return;
++    }
++
+     if std::env::args_os().skip(1).collect::<Vec<_>>()
+         == [std::ffi::OsString::from("--silo-storage-protocol")]
+     {

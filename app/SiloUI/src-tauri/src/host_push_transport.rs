@@ -142,7 +142,7 @@ impl Transport {
                 write!(&mut encoded, "%{byte:02X}").expect("writing to String cannot fail");
             }
         }
-        Ok(format!("ssh://root@{}{encoded}", self.alias))
+        Ok(format!("ssh://{}{encoded}", self.alias))
     }
 }
 
@@ -177,7 +177,7 @@ mod tests {
         };
         assert_eq!(
             transport.repository_url("/workspace/a 'b%#é").unwrap(),
-            "ssh://root@silo-runtime-dev/workspace/a%20%27b%25%23%C3%A9"
+            "ssh://silo-runtime-dev/workspace/a%20%27b%25%23%C3%A9"
         );
         for path in [
             "/tmp/repo",
@@ -236,13 +236,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = RuntimePaths {
             guest_image: PathBuf::from("/unused/guest-image"),
-            executable: PathBuf::from("/Applications/Silo.app/Contents/MacOS/msb"),
+            executable: directory.path().join("msb"),
             home: directory.path().join("runtime"),
             storage_home: None,
-            library: PathBuf::from("/Applications/Silo.app/Contents/Frameworks/library"),
+            library: directory.path().join("msb"),
             metadata: directory.path().join("machines.json"),
             volumes: directory.path().join("volumes"),
         };
+        crate::working_account::test_runtime(&paths.executable, false);
         let private = directory.path().join("operation with 'quotes' and %");
         let transport = prepare(&paths, "dev", &private).unwrap();
         assert!(!paths.home.join("ssh/dev.conf").exists());
@@ -269,6 +270,7 @@ mod tests {
         );
         let config = String::from_utf8(output.stdout).unwrap();
         for required in [
+            "user root\n",
             "stricthostkeychecking true",
             "identitiesonly yes",
             "identityagent none",

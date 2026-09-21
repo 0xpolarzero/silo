@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -25,6 +26,12 @@ class DesktopLifecycle(unittest.TestCase):
             mock.start()
             self.addCleanup(mock.stop)
         service.write(service.STATE / 'installed.json', {'version': '1'})
+        marker_patch = patch.object(service, 'WORKING_ACCOUNT', self.root / 'working-account.json', create=True)
+        marker_patch.start()
+        self.addCleanup(marker_patch.stop)
+        identity_patch = patch.multiple(service, USER='silo-desktop', HOME=Path('/home/silo-desktop'))
+        identity_patch.start()
+        self.addCleanup(identity_patch.stop)
 
     def command(self, *arguments):
         with patch.object(service.sys, 'argv', ['silo-desktop', *arguments]), \
@@ -32,6 +39,99 @@ class DesktopLifecycle(unittest.TestCase):
              patch('sys.stdout', new_callable=io.StringIO) as output:
             service.main()
             return json.loads(output.getvalue())
+
+    def test_absent_account_policy_preserves_legacy_desktop(self):
+        self.assertEqual(service.desktop_account(), ('silo-desktop', Path('/home/silo-desktop')))
+
+    def unified_policy(self, **changes):
+        policy = dict(schemaVersion=1, user='silo', home='/home/silo')
+        policy.update(changes)
+        service.WORKING_ACCOUNT.write_text(json.dumps(policy))
+        service.WORKING_ACCOUNT.chmod(0o600)
+
+    def test_unified_policy_uses_existing_normal_account(self):
+        self.unified_policy()
+        account = SimpleNamespace(pw_uid=1000, pw_dir='/home/silo')
+        with patch.object(service, 'validate_policy_file'), patch.object(service.pwd, 'getpwnam', return_value=account):
+            self.assertEqual(service.desktop_account(), ('silo', Path('/home/silo')))
+            self.assertEqual(self.command('status')['user'], 'silo')
+
+    def test_invalid_policy_never_falls_back_to_legacy(self):
+        for changes in ({'schemaVersion': 2}, {'user': 'root'}, {'home': '/root'}):
+            self.unified_policy(**changes)
+            with patch.object(service, 'validate_policy_file'), self.assertRaises(RuntimeError):
+                service.desktop_account()
+
+    def test_policy_account_must_exist_with_expected_home_and_nonroot_uid(self):
+        self.unified_policy()
+        for account in (SimpleNamespace(pw_uid=0, pw_dir='/home/silo'),
+                        SimpleNamespace(pw_uid=1000, pw_dir='/elsewhere')):
+            with patch.object(service, 'validate_policy_file'), patch.object(service.pwd, 'getpwnam', return_value=account), self.assertRaises(RuntimeError):
+                service.desktop_account()
+        with patch.object(service, 'validate_policy_file'), patch.object(service.pwd, 'getpwnam', side_effect=KeyError), self.assertRaises(RuntimeError):
+            service.desktop_account()
+
+    def test_policy_permissions_accept_only_root_owned_regular_files(self):
+        for owner, mode, allowed in ((0, 0o100644, True), (1000, 0o100600, False),
+                                     (0, 0o100620, False), (0, 0o040700, False)):
+            with self.subTest(owner=owner, mode=mode):
+                path = SimpleNamespace(lstat=lambda: SimpleNamespace(st_uid=owner, st_mode=mode))
+                if allowed:
+                    service.validate_policy_file(path)
+                else:
+                    with self.assertRaises(RuntimeError):
+                        service.validate_policy_file(path)
+
+    def test_policy_symlink_and_writable_file_are_rejected(self):
+        self.unified_policy()
+        service.WORKING_ACCOUNT.chmod(0o666)
+        with self.assertRaises(RuntimeError):
+            service.desktop_account()
+        service.WORKING_ACCOUNT.unlink()
+        service.WORKING_ACCOUNT.symlink_to(self.root / 'missing')
+        with self.assertRaises(RuntimeError):
+            service.desktop_account()
+
+    def test_install_preflight_preserves_existing_desktop_configuration(self):
+        home = self.root / 'home'
+        (home / '.vnc').mkdir(parents=True)
+        path = home / '.vnc/xstartup'
+        path.write_text('existing session')
+        with self.assertRaises(RuntimeError):
+            service.prepare_configuration(home)
+        self.assertEqual(path.read_text(), 'existing session')
+        self.assertFalse((service.STATE / 'configuration-managed.json').exists())
+
+    def test_install_preflight_rejects_existing_password_and_symlink_directory(self):
+        home = self.root / 'home'
+        home.mkdir()
+        password = home / '.kasmpasswd'
+        password.write_text('existing password')
+        with self.assertRaises(RuntimeError):
+            service.prepare_configuration(home)
+        password.unlink()
+        target = self.root / 'elsewhere'
+        target.mkdir()
+        (home / '.vnc').symlink_to(target, target_is_directory=True)
+        with self.assertRaises(RuntimeError):
+            service.prepare_configuration(home)
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_unified_display_stop_targets_its_account_and_home(self):
+        with patch.multiple(service, USER='silo', HOME=Path('/home/silo')), patch.object(service.subprocess, 'run') as run:
+            service.stop_display()
+        arguments = run.call_args.args[0]
+        self.assertEqual(arguments[:6], ['runuser', '-u', 'silo', '--', 'env', 'HOME=/home/silo'])
+        self.assertEqual(arguments[-3:], ['vncserver', '-kill', ':1'])
+
+    def test_install_preflight_allows_retry_but_not_a_different_home(self):
+        home = self.root / 'home'
+        home.mkdir()
+        service.prepare_configuration(home)
+        (home / '.kasmpasswd').write_text('managed partial installation')
+        service.prepare_configuration(home)
+        with self.assertRaises(RuntimeError):
+            service.prepare_configuration(self.root / 'other')
 
     def test_disabling_autostart_preserves_current_session(self):
         with patch.object(service, 'start') as start, patch.object(service, 'stop') as stop:

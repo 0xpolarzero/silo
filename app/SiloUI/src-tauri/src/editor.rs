@@ -53,6 +53,7 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     if inspected.status != "Running" {
         return Err("Start this VM before opening its files in your editor.".into());
     }
+    let user = crate::working_account::working_user(&inspected.config)?;
     // Validate the exact folder inside the guest, as positional data, before handoff.
     runtime::run_msb(
         &paths,
@@ -60,6 +61,10 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
             "exec".into(),
             name.into(),
             "--no-start".into(),
+            "--user".into(),
+            user.into(),
+            "--env".into(), format!("USER={user}"),
+            "--env".into(), format!("LOGNAME={user}"),
             "--no-tty".into(),
             "--quiet".into(),
             "--timeout".into(),
@@ -113,7 +118,7 @@ fn validate_path(path: &str) -> Result<(), String> {
 
 fn remote_uri(alias: &str, path: &str, zed: bool) -> Result<String, String> {
     let mut uri = reqwest::Url::parse(&if zed {
-        format!("ssh://root@{alias}/")
+        format!("ssh://{alias}/")
     } else {
         format!("vscode-remote://ssh-remote+{alias}/")
     })
@@ -257,6 +262,7 @@ fn prepare_configuration(
     config: &Path,
     known_hosts: &Path,
 ) -> Result<String, String> {
+    let user = crate::working_account::inspect_user(paths, name)?;
     let root = paths.home.join("ssh");
     private_directory(&root)?;
     let client = root.join("silo_ed25519");
@@ -303,7 +309,7 @@ fn prepare_configuration(
     .map(|part| quote(&part.replace('%', "%%")))
     .collect::<Vec<_>>()
     .join(" ");
-    let content = format!("Host {alias}\n  HostName {alias}\n  User root\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
+    let content = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, content.as_bytes())?;
     Ok(alias)
 }
@@ -356,8 +362,10 @@ pub(crate) fn authorize_remote(paths: &RuntimePaths, name: &str, public: &str, p
     let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, paths, name).map_err(|e| e.to_string())?;
     runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
     if inspected.status != "Running" { return Err("Start this VM before connecting.".into()) }
+    let user = crate::working_account::working_user(&inspected.config)?;
     runtime::run_msb(paths, &[
-        "exec".into(), name.into(), "--no-start".into(), "--no-tty".into(), "--quiet".into(),
+        "exec".into(), name.into(), "--no-start".into(), "--user".into(),
+        user.into(), "--env".into(), format!("USER={user}"), "--env".into(), format!("LOGNAME={user}"), "--no-tty".into(), "--quiet".into(),
         "--timeout".into(), "5s".into(), "--".into(), "test".into(), "-d".into(), path.into(),
     ], Duration::from_secs(8)).map_err(|_| "This folder is unavailable inside the VM.")?;
     let root = paths.home.join("ssh");
@@ -386,7 +394,7 @@ pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) 
     private_directory(&root)?;
     let client = root.join(format!("{host}.key"));
     key(&client)?;
-    let host_public = crate::remote_access::prepare(app, host, vm, &public_key(&client)?, path)?;
+    let (host_public, user) = crate::remote_access::prepare(app, host, vm, &public_key(&client)?, path)?;
     let alias = format!("silo-remote-{host}-{vm}");
     let known_hosts = root.join(format!("{host}-{vm}.known_hosts"));
     write_private(&known_hosts, format!("{alias} {host_public}\n").as_bytes())?;
@@ -395,7 +403,7 @@ pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) 
     let proxy = [executable, "--remote-guest", host, vm].iter()
         .map(|value| quote(&value.replace('%', "%%"))).collect::<Vec<_>>().join(" ");
     let config = root.join(format!("{host}-{vm}.conf"));
-    let contents = format!("Host {alias}\n  HostName {alias}\n  User root\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
+    let contents = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, contents.as_bytes())?;
     let ssh_root = home.join(".ssh");
     private_directory(&ssh_root)?;
@@ -426,7 +434,7 @@ mod tests {
     #[test]
     fn remote_paths_stay_in_uri_and_are_encoded() {
         let uri = remote_uri("silo-test-dev", "/workspace/a b/#test?x", true).unwrap();
-        assert_eq!(uri, "ssh://root@silo-test-dev/workspace/a%20b/%23test%3Fx");
+        assert_eq!(uri, "ssh://silo-test-dev/workspace/a%20b/%23test%3Fx");
         assert!(remote_uri("silo-test-dev", "/workspace", false)
             .unwrap()
             .starts_with("vscode-remote://ssh-remote+silo-test-dev/"));
@@ -465,13 +473,14 @@ mod tests {
         let paths = RuntimePaths {
             guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("runtime/guest-image"),
-            executable: PathBuf::from("/Applications/Silo.app/Contents/MacOS/msb"),
+            executable: directory.path().join("msb"),
             home: directory.path().join("runtime"),
             storage_home: None,
-            library: PathBuf::from("/Applications/Silo.app/Contents/Frameworks/library"),
+            library: directory.path().join("msb"),
             metadata: directory.path().join("machines.json"),
             volumes: directory.path().join("volumes"),
         };
+        crate::working_account::test_runtime(&paths.executable, true);
         let (alias, config) = prepare(&paths, &home, "dev").unwrap();
         let once = fs::read(home.join(".ssh/config")).unwrap();
         prepare(&paths, &home, "dev").unwrap();
@@ -486,6 +495,7 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains("user silo\n"));
         assert!(text.contains("stricthostkeychecking true"));
         assert!(text.contains("identityagent none"));
         assert!(text.contains("forwardagent no"));
