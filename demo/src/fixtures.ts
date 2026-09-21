@@ -15,6 +15,7 @@ export const actions: ApplicationActions = {
   retryRuntimeChecks: noop,
   saveMachineConfiguration: noop,
   retryMachineConfiguration: noop,
+  dismissMachineConfigurationError: noop,
   pushRepository: noop,
   startWorkspace: noop,
   stopWorkspace: noop,

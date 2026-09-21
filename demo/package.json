@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test src/*.test.ts",
     "prepare": "npm run prepare:css",
-    "render:ssh": "npm run prepare && remotion render src/index.ts SiloSshDemo out/silo-ssh-demo-v4.mp4 --codec=h264 --muted --crf=18 --concurrency=4"
+    "render:ssh": "npm run prepare && remotion render src/index.ts SiloSshDemo out/silo-ssh-demo-v4.mp4 --codec=h264 --muted --crf=18 --concurrency=4",
+    "showcase": "../app/SiloUI/node_modules/.bin/vite --config showcase.vite.config.mjs --configLoader native",
+    "build:showcase": "../app/SiloUI/node_modules/.bin/vite build --config showcase.vite.config.mjs --configLoader native"
   },
   "dependencies": {
     "@remotion/cli": "4.0.521",

@@ -1,3 +1,4 @@
+import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { fixtureLogPage, type LogLoader } from "@/features/application/model/logs"
 import { useMemo, useState } from "react"
 import { fixtureDirectoryLoader } from "./directory-loader"
@@ -49,8 +50,10 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
   const fixture = useApplicationFixture(source)
   const [sshSettings, setSshSettings] = useState<Record<string, SshAccessRequest>>({})
   const sshAccess = { workspaces: fixture.source.workspaces.filter(w => w.machine.kind === "vm").map((w, index): SshAccessWorkspace => {
-    const settings = sshSettings[w.machine.name] ?? { workspace: w.machine.name, enabled: index === 0, port: 2222 + index, bindAddress: "127.0.0.1", keys: [] }
-    return { ...settings, state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, computerName: "Ada’s Mac mini", addresses: ["127.0.0.1", "192.168.1.42"] }
+    const target = workspaceTarget(w)
+    const seeded = fixture.source.sshAccess?.workspaces.find(access => access.workspace === target)
+    const settings = sshSettings[target] ?? seeded ?? { workspace: target, enabled: index === 0, port: 2222 + index, bindAddress: "127.0.0.1", keys: [] }
+    return { ...settings, state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, computerName: seeded?.computerName ?? w.computer?.name ?? "Ada’s Mac mini", addresses: seeded?.addresses ?? ["127.0.0.1", "192.168.1.42"] }
   }) }
 
   const queryLogs = useMemo<LogLoader>(() => async request => {

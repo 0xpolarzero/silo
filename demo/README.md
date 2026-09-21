@@ -103,3 +103,40 @@ and agent activity are illustrations. This is not an exact Codex or ZCode UI,
 and it makes no real SSH connection, writes no key, and changes no VM state.
 Production copy feedback uses an inert browser clipboard adapter. Verification
 covers rendering and fixture presentation, not live SSH or agent execution.
+
+
+## GitHub heading screenshot workbench
+
+```sh
+npm --prefix demo run showcase
+```
+
+Open [the showcase](http://localhost:3410/showcase.html). The composition is a
+1600×1100 frame that scales to fit the preview pane. Three staggered windows
+show the Linux desktop, Sandboxes and GitHub access. A light/dark appearance control sits
+outside the frame. The app remains interactive so folders and menus can be
+staged before capture.
+
+The Linux desktop leads with the production viewer and an illustrated Linux desktop with a quiet gradient wallpaper.
+The browser and agent terminal are HTML illustrations of an example Luda task,
+not a recording or proof of a completed agent run. Sandboxes establishes local
+and remote management; GitHub shows per-sandbox repository permissions. All project
+names and state are simulated. Two sandboxes are local; `lab` runs on the fixture
+Studio Mac. No native commands or real account connections are used.
+
+- `src/showcase.tsx`: composition, preview controls and production UI mounting.
+- `src/showcase-desktop.tsx`: production desktop viewer and illustrated agent scenario.
+- `src/showcase-fixtures.ts`: deterministic project data and remote-aware directory loader.
+- `src/showcase.css`: framing, background and screenshot-specific material appearance.
+- `showcase.vite.config.mjs`: standalone browser workbench, reusing the app's Vite dependencies.
+
+For a control-free, unscaled canvas, use `?capture=1` (and optionally
+`&theme=light`). Capture `.showcase-frame` at 1600×1100 or a higher device pixel
+ratio. This is a draft workbench; no final PNG is published automatically.
+The screenshot composition explicitly shows the standard glass appearance even
+if the capture machine requests reduced transparency; production accessibility
+behavior is untouched. The workbench imports actual Silo components rather than
+reconstructing the UI. The existing Remotion film is a separate entry point.
+
+Validation: `npm --prefix demo run typecheck` and `npm --prefix demo run build:showcase`.
+Build output lives in ignored `demo/out/showcase/`.

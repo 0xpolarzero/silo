@@ -1,6 +1,6 @@
 # Silo
 
-<img src="assets/silo-logo.svg" alt="Silo" width="96">
+![Silo: Linux desktops for agents, local and remote sandboxes, and per-sandbox GitHub permissions](docs/silo-showcase.jpg)
 
 Silo is a desktop app for managing Linux development VMs on your computer and remote computers from one place. It runs on macOS and Linux, with MicroSandbox powering the VMs.
 
