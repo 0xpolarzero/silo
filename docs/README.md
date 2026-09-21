@@ -31,6 +31,8 @@ above for current behavior and build commands.
 
 - [Jev for natural-language commands](SiloUI-JEV-RESEARCH.md): primary-source findings, command-palette fit, limitations and proposed evaluation.
 
+- [Domain research](SiloUI-DOMAIN-RESEARCH-2026-09-19.md): domain availability, registrar pricing, and naming options checked on 2026-09-19.
+
 - [Logging and retention audit](SiloUI-LOGGING-AUDIT.md): current storage limits, log and activity presentation, and retention gaps.
 
 - [Development and release optimization plan](SiloUI-WORKFLOW-OPTIMIZATION-PLAN.md): measured bottlenecks, ranked changes, and benchmark acceptance gates.
