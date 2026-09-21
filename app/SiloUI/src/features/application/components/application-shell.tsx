@@ -186,7 +186,6 @@ function SubNavigation<Section extends string>({
 }) {
   return (
     <div role="group" aria-label={label} className="sidebar-subnav relative grid grid-cols-1 gap-1">
-      <span aria-hidden="true" className="sidebar-subnav-guide pointer-events-none absolute inset-y-0 border-l border-border" />
       {items.map(({ id, label: itemLabel, icon: Icon }) => (
         <NavigationTooltip key={id} label={itemLabel} collapsed={collapsed} shortcut={shortcutFor(id === "overview" ? "go-sandboxes" : id === "general" ? "settings" : `go-${id}`)}>
         <button
@@ -330,7 +329,13 @@ export function ApplicationShell({
 
   return (
     <TooltipProvider delayDuration={300} reduceMotion={reduceMotion}>
-    <SiloWindow title="Silo" label="Silo" reduceMotion={reduceMotion} className={cn("silo-application", pinnedCollapsed && "sidebar-pinned-collapsed")} titleBar={
+    <SiloWindow title="Silo" label="Silo" reduceMotion={reduceMotion} className={cn("silo-application", pinnedCollapsed && "sidebar-pinned-collapsed")} backdrop={
+      <div className="application-backdrop" aria-hidden="true">
+        <span className="application-backdrop-ribbon" />
+        <span className="application-backdrop-orbit" />
+        <span className="application-backdrop-orbit application-backdrop-orbit-secondary" />
+      </div>
+    } titleBar={
       <ApplicationTitleBar disabled={navigationDisabled} collapsed={pinnedCollapsed} previewing={previewing} toggleRef={toggleRef} onToggleSidebar={toggle} onPreviewEnter={enterToggle} onPreviewLeave={leaveToggle} canGoBack={canGoBack} canGoForward={canGoForward} onGoBack={onGoBack} onGoForward={onGoForward} commandMenu={commandMenu} />
     }>
       <div className="sidebar-layout grid min-h-0 flex-1" data-sidebar-layout={pinnedCollapsed ? "collapsed" : "expanded"}>
@@ -348,7 +353,7 @@ export function ApplicationShell({
           onBlurCapture={blurSidebar}
           className="silo-sidebar flex min-h-0 min-w-0 flex-col overflow-x-hidden overflow-y-auto border-r border-border bg-sidebar py-4"
         >
-          <div className="sidebar-brand mb-4 flex shrink-0 items-center gap-3 overflow-hidden border-b border-border pb-4">
+          <div className="sidebar-brand mb-2 flex shrink-0 items-center gap-3 overflow-hidden pb-2">
             <SiloMark className="size-8 shrink-0" />
             <span className="sidebar-label text-base font-semibold tracking-tight">Silo</span>
           </div>
@@ -424,7 +429,7 @@ export function ApplicationShell({
             </div>
           </div>
         </nav>
-        <div className="relative flex min-h-0 min-w-0 flex-col">
+        <div className="application-content relative flex min-h-0 min-w-0 flex-col">
           <div className="pointer-events-none absolute inset-x-0 top-3 z-20 mx-auto flex w-full max-w-4xl justify-center px-4 sm:px-6">{notice}</div>
           <div inert={navigationDisabled || undefined} className={cn("min-h-0 min-w-0 flex-1", activeTab === "workspaces" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
         </div>

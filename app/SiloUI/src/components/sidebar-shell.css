@@ -125,25 +125,14 @@
   transition: width var(--sidebar-motion), margin var(--sidebar-motion), padding var(--sidebar-motion);
 }
 
-.sidebar-subnav-guide {
-  /* Keep the guide beneath the solid part of rounded item backgrounds. */
-  left: var(--radius-md);
-  opacity: 1;
-  transition: opacity 120ms ease;
-}
-
 .silo-sidebar[data-collapsed="true"] .sidebar-subnav {
   margin-left: 0;
   width: 100%;
   padding-left: 0;
 }
 
-.silo-sidebar[data-collapsed="true"] .sidebar-subnav-guide {
-  opacity: 0;
-}
-
 .silo-sidebar .sidebar-secondary {
-  padding-left: 13px;
+  padding-left: 20px;
   padding-right: 10px;
 }
 
