@@ -58,8 +58,9 @@ setup attempts. Guest state is `/var/lib/silo-desktop/luda.json`.
 ## Reproducible inputs
 
 [`guest/luda-lock.json`](../app/SiloUI/src-tauri/guest/luda-lock.json) pins
-Luda v0.3.3, commit `eb268e820a9c96f2c934664b5edb18a0bd416c0a`, with source archive
-SHA-256 `d937e6dc2754cb934b6ccdf540f23289326ab3e5a8b0bbd802e4c63bbf05dec2`.
+Luda v0.3.4, commit `e3863fb24dd28bda5910a8c2382a13afd4ee1064`, with source archive
+SHA-256 `a82772fb19db389260b5970d5657da6955700f36450b2da9dec6ea0c91bc0e15`.
+This hash covers the GitHub commit archive consumed by the guest installer.
 The archive is verified before extraction or execution. Luda's upstream installer
 owns Python dependencies and pinned client-registration tooling; Silo does not
 maintain a second set of agent configuration writers.
@@ -69,14 +70,20 @@ would invalidate executable paths. The current Silo installer and lock are
 bundled into the application and staged in the guest for installation/repair.
 No separate guest-image release is required for this optional recipe change.
 
-Primary sources: [Luda image packaging](https://github.com/0xpolarzero/luda/blob/v0.3.3/docs/ENVIRONMENT-PACKAGING.md),
-[installer](https://github.com/0xpolarzero/luda/blob/v0.3.3/scripts/install.sh),
-[agent adapters](https://github.com/0xpolarzero/luda/blob/v0.3.3/src/luda/setup_clients.py),
-and [session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.3/src/luda/session.py).
+Primary sources: [Luda image packaging](https://github.com/0xpolarzero/luda/blob/v0.3.4/docs/ENVIRONMENT-PACKAGING.md),
+[installer](https://github.com/0xpolarzero/luda/blob/v0.3.4/scripts/install.sh),
+[agent adapters](https://github.com/0xpolarzero/luda/blob/v0.3.4/src/luda/setup_clients.py),
+and [session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.4/src/luda/session.py).
 
-## Verification (2026-09-21)
+## Verification
 
-Latest: [Luda 0.3.3 upgrade and fresh-agent verification](SiloUI-LUDA-033-VERIFICATION.md).
+Latest: [Luda 0.3.4 upgrade verification](SiloUI-LUDA-034-VERIFICATION.md).
+This release ships the exact accepted skill from the
+[skill benchmark](SiloUI-LUDA-SKILL-BENCHMARK.md).
+
+### Earlier verification (2026-09-21)
+
+Previous: [Luda 0.3.3 upgrade and fresh-agent verification](SiloUI-LUDA-033-VERIFICATION.md).
 The upgrade and two file-selection trials passed; three theme-change trials
 still stopped at selection without applying the theme. The new tool guidance
 was present in every selection response. The checks below document the original

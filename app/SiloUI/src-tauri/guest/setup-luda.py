@@ -38,7 +38,7 @@ def validate_account():
 
 def read_lock():
     lock = json.loads(LOCK.read_text())
-    if (lock.get('version') != '0.3.3' or
+    if (lock.get('version') != '0.3.4' or
             not re.fullmatch('[0-9a-f]{40}', lock.get('commit', '')) or
             not re.fullmatch('[0-9a-f]{64}', lock.get('sha256', ''))):
         raise RuntimeError('Invalid bundled Luda release lock')

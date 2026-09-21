@@ -67,7 +67,7 @@ class LudaSetup(unittest.TestCase):
 
     def test_repair_upgrades_old_ready_runtime_before_registering_agents(self):
         self.runtime()
-        previous = dict(self.lock, version='0.3.0', commit='0' * 40)
+        previous = dict(self.lock, version='0.3.3', commit='eb268e820a9c96f2c934664b5edb18a0bd416c0a')
         setup.write_state('ready', previous)
         with patch.object(setup, 'run') as run, patch.object(setup, 'install_release') as install:
             setup.provision(repair=True)
