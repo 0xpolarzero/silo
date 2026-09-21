@@ -58,8 +58,8 @@ setup attempts. Guest state is `/var/lib/silo-desktop/luda.json`.
 ## Reproducible inputs
 
 [`guest/luda-lock.json`](../app/SiloUI/src-tauri/guest/luda-lock.json) pins
-Luda v0.3.2, commit `adba0834504d22e42e97a68e87c7f61759d18aba`, with source archive
-SHA-256 `42362e01b174fe66fb181ffdb8b3e0c117ff71bc8c7b31f8408146a3ef36bc2b`.
+Luda v0.3.3, commit `eb268e820a9c96f2c934664b5edb18a0bd416c0a`, with source archive
+SHA-256 `d937e6dc2754cb934b6ccdf540f23289326ab3e5a8b0bbd802e4c63bbf05dec2`.
 The archive is verified before extraction or execution. Luda's upstream installer
 owns Python dependencies and pinned client-registration tooling; Silo does not
 maintain a second set of agent configuration writers.
@@ -69,12 +69,18 @@ would invalidate executable paths. The current Silo installer and lock are
 bundled into the application and staged in the guest for installation/repair.
 No separate guest-image release is required for this optional recipe change.
 
-Primary sources: [Luda image packaging](https://github.com/0xpolarzero/luda/blob/v0.3.2/docs/ENVIRONMENT-PACKAGING.md),
-[installer](https://github.com/0xpolarzero/luda/blob/v0.3.2/scripts/install.sh),
-[agent adapters](https://github.com/0xpolarzero/luda/blob/v0.3.2/src/luda/setup_clients.py),
-and [session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.2/src/luda/session.py).
+Primary sources: [Luda image packaging](https://github.com/0xpolarzero/luda/blob/v0.3.3/docs/ENVIRONMENT-PACKAGING.md),
+[installer](https://github.com/0xpolarzero/luda/blob/v0.3.3/scripts/install.sh),
+[agent adapters](https://github.com/0xpolarzero/luda/blob/v0.3.3/src/luda/setup_clients.py),
+and [session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.3/src/luda/session.py).
 
 ## Verification (2026-09-21)
+
+Latest: [Luda 0.3.3 upgrade and fresh-agent verification](SiloUI-LUDA-033-VERIFICATION.md).
+The upgrade and two file-selection trials passed; three theme-change trials
+still stopped at selection without applying the theme. The new tool guidance
+was present in every selection response. The checks below document the original
+integration verification, not a repeat of that full matrix on 0.3.3.
 
 A disposable ARM64 Ubuntu 24.04 v3 VM used the bundled `msb` from
 `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Account Verification.app`
