@@ -126,7 +126,8 @@
 }
 
 .sidebar-subnav-guide {
-  left: 0;
+  /* Keep the guide beneath the solid part of rounded item backgrounds. */
+  left: var(--radius-md);
   opacity: 1;
   transition: opacity 120ms ease;
 }
