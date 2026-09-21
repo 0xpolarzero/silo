@@ -940,7 +940,7 @@ sys.stdin.buffer.read()
         fs::create_dir_all(&p.home).unwrap();
         let script = fs::read_to_string(&p.executable).unwrap().replace(
             "args = sys.argv[1:]",
-            "args = sys.argv[1:]\nif args[0] == 'inspect':\n    import json, os, pathlib\n    running = (pathlib.Path(os.environ['MSB_HOME'])/'running').exists()\n    print(json.dumps({'name':'dev','status':'Running' if running else 'Stopped','config':{'labels':{'silo.managed':'true','silo.machine-id':'00000000-0000-4000-8000-000000000001'}}}))\n    sys.exit(0)",
+            "args = sys.argv[1:]\nif args[0] == 'inspect':\n    import json, os, pathlib\n    running = (pathlib.Path(os.environ['MSB_HOME'])/'running').exists()\n    print(json.dumps({'name':'dev','status':'Running' if running else 'Stopped','config':{'labels':{'silo.managed':'true','silo.working-account':'1','silo.machine-id':'00000000-0000-4000-8000-000000000001'}}}))\n    sys.exit(0)",
         );
         fs::write(&p.executable, script).unwrap();
         fs::write(&p.library, "fixture").unwrap();
@@ -1025,7 +1025,7 @@ sys.stdin.buffer.read()
         let second = remote_with(&p, "ssh.access.save", &request).unwrap();
         assert_eq!(first["workspaces"][0]["keys"], second["workspaces"][0]["keys"]);
         assert_eq!(first_key, fs::read(&key_path).unwrap());
-        let exported = remote_with(&p, "ssh.access.connection", &serde_json::json!({"vmId":c.machine_id})).unwrap();
+        let exported = remote_with(&p, "ssh.access.connection", &serde_json::json!({"vmId":c.machine_id,"accountProtocol":1})).unwrap();
         assert!(exported["privateKey"].as_str().unwrap().contains("BEGIN OPENSSH PRIVATE KEY"));
         assert_eq!(fs::read_to_string(internal).unwrap(), "internal sentinel");
         assert!(!p.home.join("running").exists());

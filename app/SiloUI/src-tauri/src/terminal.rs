@@ -61,13 +61,12 @@ mod tests {
     #[test]
     fn opens_in_workspace_without_starting_a_stopped_vm() {
         let paths = RuntimePaths { guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image"), executable: "/tmp/Silo app/msb".into(), home: "/tmp/runtime home".into(), storage_home: None, library: "/tmp/lib.dylib".into(), metadata: "/tmp/meta".into(), volumes: "/tmp/volumes".into() };
-        for user in ["root", "silo"] {
-            let text = command(&paths, "dev", user).unwrap();
-            assert!(text.contains("'--no-start' '--workdir' '/workspace' '--tty'"));
-            assert!(text.contains("'MSB_HOME=/tmp/runtime home'"));
-            assert!(text.contains(&format!("'--user' '{user}' '--env' 'USER={user}' '--env' 'LOGNAME={user}'")));
-        }
-        assert!(command(&paths, "bad;name", "root").is_err());
+        let user = "silo";
+        let text = command(&paths, "dev", user).unwrap();
+        assert!(text.contains("'--no-start' '--workdir' '/workspace' '--tty'"));
+        assert!(text.contains("'MSB_HOME=/tmp/runtime home'"));
+        assert!(text.contains(&format!("'--user' '{user}' '--env' 'USER={user}' '--env' 'LOGNAME={user}'")));
+        assert!(command(&paths, "bad;name", "silo").is_err());
     }
     #[test]
     fn shell_arguments_stay_literal() {

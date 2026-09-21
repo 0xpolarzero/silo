@@ -14,8 +14,8 @@ import time
 
 STATE = Path('/var/lib/silo-desktop')
 RUN = Path('/run/silo-desktop')
-USER = 'silo-desktop'
-HOME = Path('/home/silo-desktop')
+USER = 'silo'
+HOME = Path('/home/silo')
 SELF = '/usr/local/bin/silo-desktop'
 LOG = Path('/var/log/silo-desktop.log')
 WORKING_ACCOUNT = Path('/var/lib/silo/working-account.json')
@@ -31,7 +31,7 @@ def desktop_account():
     try:
         WORKING_ACCOUNT.lstat()
     except FileNotFoundError:
-        return 'silo-desktop', Path('/home/silo-desktop')
+        raise RuntimeError('Desktop requires the Silo working account; migrate this VM or create a new VM') from None
     validate_policy_file(WORKING_ACCOUNT)
     policy = json.loads(WORKING_ACCOUNT.read_text())
     if policy != dict(schemaVersion=1, user='silo', home='/home/silo'):
@@ -40,7 +40,7 @@ def desktop_account():
         account = pwd.getpwnam('silo')
     except KeyError:
         raise RuntimeError('Silo working account is missing') from None
-    if account.pw_uid == 0 or account.pw_dir != '/home/silo':
+    if account.pw_uid != 1001 or account.pw_gid != 1001 or account.pw_dir != '/home/silo':
         raise RuntimeError('Silo working account has an unexpected UID or home')
     return 'silo', Path(account.pw_dir)
 
@@ -102,11 +102,25 @@ def listening():
         return False
 
 
+def luda_status():
+    try:
+        data = read('luda.json', {})
+        state = data.get('state', 'missing')
+        version = data.get('version')
+        if state not in ('missing', 'installing', 'ready', 'failed'):
+            state = 'failed'
+        if version != '0.3.0':
+            version = None
+        return dict(ludaState=state, ludaVersion=version)
+    except (ValueError, AttributeError):
+        return dict(ludaState='failed', ludaVersion=None)
+
+
 def status():
     config = read('config.json', {'autoStart': True})
     state = 'running' if supervisor() and listening() else 'starting' if supervisor() else 'failed' if (RUN / 'failed').exists() else 'stopped'
     return dict(installed=(STATE / 'installed.json').exists(), version='1', state=state,
-                autoStart=config['autoStart'], port=6901, user=USER, display=':1')
+                autoStart=config['autoStart'], port=6901, user=USER, display=':1', **luda_status())
 
 
 def start():
@@ -268,11 +282,13 @@ def main():
             write(STATE / 'config.json', {'autoStart': enabled})
             if enabled:
                 start()
+        elif action == 'repair-luda':
+            subprocess.run(['python3', '/usr/local/libexec/silo-setup-luda.py', '--repair'], check=True)
         elif action == 'boot':
             if read('config.json', {'autoStart': True})['autoStart']:
                 start()
         else:
-            raise RuntimeError('Usage: silo-desktop status|connection|start|stop|restart|boot|autostart true|false')
+            raise RuntimeError('Usage: silo-desktop status|connection|start|stop|restart|boot|repair-luda|autostart true|false')
         print(json.dumps(status()))
 
 

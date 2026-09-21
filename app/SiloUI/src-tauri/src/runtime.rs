@@ -2501,6 +2501,7 @@ fn start_at_launch_with(
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
         ensure_managed(&inspected)?;
+        crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Invalid)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
             "created" | "stopped" => {
@@ -2682,13 +2683,8 @@ fn verify_guest_tools(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
-    provision_account: bool,
 ) -> Result<(), RuntimeError> {
-    let script = if provision_account {
-        format!("{}\n{}", include_str!("../guest/verify-tools.sh"), include_str!("../guest/setup-working-account.sh"))
-    } else {
-        include_str!("../guest/verify-tools.sh").into()
-    };
+    let script = format!("{}\n{}", include_str!("../guest/verify-tools.sh"), include_str!("../guest/setup-working-account.sh"));
     runner.run(
         paths,
         &[
@@ -2851,7 +2847,7 @@ fn create_machine_with_progress(
             cleanup_failed_create(runner, paths, name, id),
         ));
     }
-    if let Err(error) = verify_guest_tools(runner, paths, name, true) {
+    if let Err(error) = verify_guest_tools(runner, paths, name) {
         return Err(with_cleanup_error(
             error,
             cleanup_failed_create(runner, paths, name, id),
@@ -3441,7 +3437,7 @@ set -eu
 printf '%s\n' "$1" >> "$MSB_HOME/calls"
 case "$1" in
   --silo-desktop-protocol) printf '1\n' ;;
-  inspect) state=$(cat "$MSB_HOME/state"); printf '{"name":"desktop-preserve-test","status":"%s","config":{"labels":{"silo.managed":"true"}},"active_config":{}}\n' "$state" ;;
+  inspect) state=$(cat "$MSB_HOME/state"); printf '{"name":"desktop-preserve-test","status":"%s","config":{"labels":{"silo.managed":"true","silo.working-account":"1"}},"active_config":{}}\n' "$state" ;;
   start) printf Running > "$MSB_HOME/state" ;;
   stop) printf Stopped > "$MSB_HOME/state" ;;
   exec) if [ -f "$MSB_HOME/fail" ]; then echo 'Synthetic desktop setup failure' >&2; exit 1; fi ;;
@@ -3457,7 +3453,7 @@ esac
                     let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
                     assert_eq!(calls.lines().filter(|v| *v == "start").count(), usize::from(!running));
                     assert_eq!(calls.lines().filter(|v| *v == "stop").count(), usize::from(!running));
-                    if !installed { assert_eq!(calls.lines().next(), Some("--silo-desktop-protocol")); }
+                    if !installed { assert_eq!(calls.lines().nth(1), Some("--silo-desktop-protocol")); }
                 }
             }
         }
@@ -3471,12 +3467,12 @@ esac
         if let MachineConfiguration::Vm { desktop, .. } = &mut desired {
             *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: true });
         }
-        let runner = StubRunner::successful_json(vec![json!(1), json!({})]);
+        let runner = StubRunner::successful_json(vec![inspect(&paths(&dir), "Running"), json!(1), json!({})]);
         update_machine(&runner, &paths(&dir), &previous, &desired).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[1][0], "exec");
-        assert!(calls[1].last().unwrap().contains("silo-desktop autostart true"));
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[2][0], "exec");
+        assert!(calls[2].last().unwrap().contains("silo-desktop autostart true"));
     }
 
     #[test]
@@ -3933,7 +3929,7 @@ esac
                 "name": "dev",
                 "image": {"Oci": {"reference": "ubuntu", "root_disk": {"kind": "managed", "size_mib": 81920}}},
                 "resources": {"cpus": 4, "max_cpus": 6, "memory_mib": 16384, "max_memory_mib": 32768},
-                "labels": {"silo.managed": "true", "silo.machine-id": vm().id()},
+                "labels": {"silo.managed": "true", "silo.working-account": "1", "silo.machine-id": vm().id()},
                 "mounts": [
                     {"type":"DiskImage","host":workspace,"guest":"/workspace","format":"Raw","fstype":"ext4"}
                 ]
@@ -3973,7 +3969,7 @@ esac
         configuration_recovery::claim(&paths, &machine).unwrap();
         let mut actual = inspect(&paths, "Stopped");
         actual["config"]["labels"]["silo.machine-id"] = json!(machine.id());
-        let outputs = || vec![json!([{"name":"dev","status":"Stopped","image":"ubuntu"}]), actual.clone(), actual.clone(), json!(null), actual.clone(), json!(1)];
+        let outputs = || vec![json!([{"name":"dev","status":"Stopped","image":"ubuntu"}]), actual.clone(), actual.clone(), json!(null), actual.clone(), actual.clone(), json!(1)];
         let mut failure_outputs: Vec<_> = outputs().into_iter().map(|v| Ok(CommandOutput { stdout: v.to_string(), stderr: String::new() })).collect();
         failure_outputs.push(Err(RuntimeError::Unavailable("Desktop download interrupted".into())));
         let interrupted = StubRunner::new(failure_outputs);
@@ -4273,12 +4269,12 @@ esac
             if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
                 *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: true });
             }
-            let runner = StubRunner::successful_json(vec![json!([]), json!(1), json!(1), json!(null), inspect(&paths, "Created"), json!(null), inspect(&paths, "Stopped"), json!(1), json!(null), inspect(&paths, final_state)]);
+            let runner = StubRunner::successful_json(vec![json!([]), json!(1), json!(1), json!(null), inspect(&paths, "Created"), json!(null), inspect(&paths, "Stopped"), inspect(&paths, "Stopped"), json!(1), json!(null), inspect(&paths, final_state)]);
             let result = create_machine(&runner, &paths, &machine);
             assert_eq!(result.is_ok(), final_state == "Stopped");
             let calls = runner.calls.lock().unwrap();
-            assert_eq!(calls[8][0], "exec");
-            assert!(calls[8].last().unwrap().contains("silo-desktop autostart true"));
+            assert_eq!(calls[9][0], "exec");
+            assert!(calls[9].last().unwrap().contains("silo-desktop autostart true"));
             assert!(calls[3].contains(&"--no-start".into()));
         }
     }
@@ -4288,7 +4284,7 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![json!(null), inspect(&paths, "Running")]);
-        assert!(verify_guest_tools(&runner, &paths, "dev", false)
+        assert!(verify_guest_tools(&runner, &paths, "dev")
             .unwrap_err()
             .to_string()
             .contains("stopped state"));
@@ -4693,26 +4689,41 @@ esac
     }
 
     #[test]
-    fn working_account_git_identity_uses_the_same_home_for_write_and_verification() {
-        for user in ["root", "silo"] {
+    fn working_account_old_vm_cannot_start_or_restart() {
+        for action in ["start", "restart", "launch"] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
             write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-            let mut state = inspect(&paths, "Running");
-            if user == "silo" {
-                state["config"]["labels"]["silo.working-account"] = json!("1");
-            }
-            let runner = StubRunner::new(vec![
-                identity_output(&state.to_string()),
-                identity_output("{}"),
-                identity_output(""),
-                identity_output("silo-identity-verified"),
-            ]);
-            configure_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap();
-            let calls = runner.calls.lock().unwrap();
-            for command in calls.iter().filter(|args| args[0] == "exec") {
-                assert!(command.windows(2).any(|pair| pair == ["--user", user]));
-            }
+            let mut old_vm = inspect(&paths, "Stopped");
+            old_vm["config"]["labels"].as_object_mut().unwrap().remove(crate::working_account::LABEL);
+            let runner = StubRunner::successful_json(vec![old_vm]);
+            let result = if action == "launch" {
+                start_at_launch_with(&runner, &paths, &generous_host(), vm().id())
+            } else {
+                workspace_action_with(&runner, &paths, &generous_host(), action, "dev")
+            };
+            assert!(result.unwrap_err().to_string().contains("Migrate"));
+            assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        }
+    }
+
+    #[test]
+    fn working_account_git_identity_uses_the_same_home_for_write_and_verification() {
+        let user = "silo";
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let state = inspect(&paths, "Running");
+        let runner = StubRunner::new(vec![
+            identity_output(&state.to_string()),
+            identity_output("{}"),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+        configure_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        for command in calls.iter().filter(|args| args[0] == "exec") {
+            assert!(command.windows(2).any(|pair| pair == ["--user", user]));
         }
     }
 

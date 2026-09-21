@@ -1,6 +1,8 @@
-//! Persisted working identity; unlabelled VMs retain their original root workflow.
+//! The supported VM working identity is the unified silo account.
 use crate::runtime::{self, RuntimePaths};
 use serde_json::Value;
+
+const MIGRATION_REQUIRED: &str = "This VM uses the old account layout. Migrate it to the silo account or create a new VM before using it.";
 
 pub(crate) const LABEL: &str = "silo.working-account";
 pub(crate) const UNIFIED_LABEL: &str = "silo.working-account=1";
@@ -10,13 +12,13 @@ pub(crate) fn working_user(config: &Value) -> Result<&'static str, String> {
         .as_object()
         .ok_or("Invalid VM account policy metadata.")?;
     let Some(labels) = config.get("labels") else {
-        return Ok("root");
+        return Err(MIGRATION_REQUIRED.into());
     };
     let labels = labels
         .as_object()
         .ok_or("Invalid VM account policy metadata.")?;
     match labels.get(LABEL) {
-        None => Ok("root"),
+        None => Err(MIGRATION_REQUIRED.into()),
         Some(Value::String(version)) if version == "1" => Ok("silo"),
         _ => Err("Unsupported VM account policy. Update Silo before accessing this VM.".into()),
     }
@@ -32,9 +34,6 @@ pub(crate) fn inspect_user(paths: &RuntimePaths, name: &str) -> Result<&'static 
 }
 
 pub(crate) fn require_runtime(paths: &RuntimePaths, user: &str) -> Result<(), String> {
-    if user == "root" {
-        return Ok(());
-    }
     if user != "silo" {
         return Err("Unsupported VM working account.".into());
     }
@@ -54,8 +53,8 @@ pub(crate) fn require_runtime(paths: &RuntimePaths, user: &str) -> Result<(), St
 
 pub(crate) fn response_user(response: &Value) -> Result<&'static str, String> {
     match response.get("user") {
-        None => Ok("root"),
-        Some(Value::String(user)) if user == "root" => Ok("root"),
+        None => Err(MIGRATION_REQUIRED.into()),
+        Some(Value::String(user)) if user == "root" => Err(MIGRATION_REQUIRED.into()),
         Some(Value::String(user)) if user == "silo" => Ok("silo"),
         _ => {
             Err("Invalid VM account in connection response. Update Silo on both computers.".into())
@@ -64,7 +63,8 @@ pub(crate) fn response_user(response: &Value) -> Result<&'static str, String> {
 }
 
 pub(crate) fn require_client_protocol(user: &str, request: &Value) -> Result<(), String> {
-    if user == "silo" && request.get("accountProtocol").and_then(Value::as_u64) != Some(1) {
+    if user != "silo" { return Err(MIGRATION_REQUIRED.into()); }
+    if request.get("accountProtocol").and_then(Value::as_u64) != Some(1) {
         return Err(
             "Update Silo on the connecting computer to access this VM's working account.".into(),
         );
@@ -119,13 +119,13 @@ mod tests {
         test_runtime(&paths.executable, false);
         let script = std::fs::read_to_string(&paths.executable).unwrap();
         std::fs::write(&paths.executable, script.replace("printf '1", "printf '0")).unwrap();
-        assert_eq!(inspect_user(&paths, "dev").unwrap(), "root");
+        assert!(inspect_user(&paths, "dev").unwrap_err().contains("Migrate"));
     }
 
     #[test]
-    fn working_account_defaults_only_when_label_is_absent() {
-        assert_eq!(working_user(&json!({})).unwrap(), "root");
-        assert_eq!(working_user(&json!({"labels":{}})).unwrap(), "root");
+    fn working_account_requires_the_unified_policy() {
+        assert!(working_user(&json!({})).unwrap_err().contains("Migrate"));
+        assert!(working_user(&json!({"labels":{}})).unwrap_err().contains("Migrate"));
         assert_eq!(
             working_user(&json!({"labels":{LABEL:"1"}})).unwrap(),
             "silo"
@@ -139,8 +139,8 @@ mod tests {
         }
     }
     #[test]
-    fn working_account_requires_aware_remote_clients_only_for_unified_vms() {
-        assert!(require_client_protocol("root", &json!({})).is_ok());
+    fn working_account_requires_aware_remote_clients() {
+        assert!(require_client_protocol("root", &json!({})).is_err());
         assert!(require_client_protocol("silo", &json!({"accountProtocol":1})).is_ok());
         for request in [
             json!({}),
@@ -152,10 +152,10 @@ mod tests {
         }
     }
     #[test]
-    fn working_account_remote_legacy_defaults_without_accepting_invalid_users() {
-        assert_eq!(response_user(&json!({})).unwrap(), "root");
+    fn working_account_remote_response_requires_silo() {
+        assert!(response_user(&json!({})).is_err());
         assert_eq!(response_user(&json!({"user":"silo"})).unwrap(), "silo");
-        assert_eq!(response_user(&json!({"user":"root"})).unwrap(), "root");
+        assert!(response_user(&json!({"user":"root"})).is_err());
         for user in [json!(null), json!("silo;id"), json!("unknown"), json!(3)] {
             assert!(response_user(&json!({"user":user})).is_err());
         }

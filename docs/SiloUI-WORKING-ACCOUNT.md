@@ -1,15 +1,26 @@
-# Unified VM working account
+# VM working account
 
-New Silo VMs use `silo` (UID/GID 1001, home `/home/silo`) for terminal, SSH,
+Silo VMs use `silo` (UID/GID 1001, home `/home/silo`) for terminal, SSH,
 editor, repository, file-transfer and desktop work. Passwordless sudo provides
 guest administration. Root remains the runtime initialization and management
-identity. Existing VMs retain their root terminal account and optional
-`silo-desktop` account. No migration or recursive ownership change is performed.
+identity. Older VMs must be migrated explicitly before working access, or
+recreated. Silo does not fall back to root or migrate accounts when installing
+the desktop. See [migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md).
+
+## Single-account verification, 2026-09-21
+
+The account simplification passed 467 native tests (12 opt-in tests ignored)
+using synthetic GitHub configuration and local socket access. The desktop
+subset passed again after tightening guest UID/GID validation: 21 passed.
+Guest lifecycle tests passed: 20. `git diff --check` and shell syntax passed.
+These are code and fixture checks; they do not validate an installed app.
+See [migration verification](SiloUI-WORKING-ACCOUNT-MIGRATION.md#verification)
+for the separate disposable ARM64 migration and disk-recovery proof.
 
 ## Persisted policy and provisioning
 
 The runtime label `silo.working-account=1` selects the unified account. Absence
-means legacy behavior; unsupported values fail rather than fall back to root.
+requires migration; unsupported values fail rather than fall back to root.
 Backup, restore and duplication preserve this policy. The desktop reads the
 root-owned `/var/lib/silo/working-account.json` marker, written only after
 provisioning succeeds. Its version, user and home must match the supported
@@ -49,7 +60,7 @@ Generated SSH configs and copied commands use the persisted account. Zed and
 Git transport URLs defer to the generated SSH config. Git/jj identity writes
 and verification target the same working account. Updated owners reject older
 remote clients that do not advertise account protocol 1 when preparing a
-unified VM connection; legacy VMs remain compatible. Update both computers
+VM connection. Update both computers
 before remotely managing unified-account VMs.
 
 ## SFTP runtime fix
@@ -92,14 +103,14 @@ VM test for production account provisioning, exec/SSH identity, SFTP/SCP
 ownership, permission failures, missing-helper behavior and restart persistence.
 It accepts the exact runtime, library, guest-image and evidence paths. It never
 opens the user's normal runtime home. Native account/recovery/backup tests and
-`scripts/test_desktop_service.py` cover policy selection and legacy behavior.
+`scripts/test_desktop_service.py` cover required policy validation and desktop behavior.
 
 Private logs and disposable probes belong under ignored
 `src-tauri/target/verification/working-account/`. No user VM, credential or
 project was used for the live acceptance tests. Cross-architecture and packaged
 UI verification must be reported separately from these ARM64 guest results.
 
-## Verification, 2026-09-21
+## Historical verification of the initial dual-account implementation, 2026-09-21
 
 These results cover the initial implementation using v2 plus provisioning-time
 package installation. They remain evidence for account, desktop and transfer

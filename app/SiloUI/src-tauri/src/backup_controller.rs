@@ -1139,7 +1139,9 @@ fn select_archive_source(names: &[String], selected: Option<&str>) -> Result<Str
 }
 
 fn append_restored_settings(arguments: &mut Vec<String>, config: &Value) -> Result<(), String> {
-    if crate::working_account::working_user(config)? == "silo" {
+    // Preserve archive identity; restored old VMs still require explicit migration.
+    if config.pointer("/labels/silo.working-account").is_some() {
+        crate::working_account::working_user(config)?;
         arguments.extend(["--label".into(), crate::working_account::UNIFIED_LABEL.into()]);
     }
     if config.get("network").is_some_and(backup::default_github_network) {
@@ -1757,7 +1759,7 @@ mod tests {
     }
 
     #[test]
-    fn working_account_restore_preserves_both_account_models() {
+    fn working_account_restore_preserves_policy_without_upgrading_old_vms() {
         let mut legacy = vec![];
         append_restored_settings(&mut legacy, &serde_json::json!({})).unwrap();
         assert!(!legacy.iter().any(|arg| arg.contains("silo.working-account")));
@@ -1770,11 +1772,11 @@ mod tests {
     #[test]
     fn restore_preserves_identity_without_shell_interpretation() {
         let mut arguments = vec![];
-        append_restored_settings(&mut arguments, &serde_json::json!({"env": [{"key":"GIT_AUTHOR_NAME","value":"A $(literal) Name"},{"key":"GIT_AUTHOR_EMAIL","value":"test@example.test"}]})).unwrap();
+        append_restored_settings(&mut arguments, &serde_json::json!({"labels":{"silo.working-account":"1"},"env": [{"key":"GIT_AUTHOR_NAME","value":"A $(literal) Name"},{"key":"GIT_AUTHOR_EMAIL","value":"test@example.test"}]})).unwrap();
         assert!(arguments.contains(&"GIT_AUTHOR_NAME=A $(literal) Name".into()));
         assert!(append_restored_settings(
             &mut vec![],
-            &serde_json::json!({"env":[{"key":"bad=key","value":"value"}]})
+            &serde_json::json!({"labels":{"silo.working-account":"1"},"env":[{"key":"bad=key","value":"value"}]})
         )
         .is_err());
     }

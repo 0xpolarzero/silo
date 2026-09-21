@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn command_quotes_key_paths_and_uses_explicit_identity() {
         let material = Material { private_key: String::new(), port: 2223, address: "127.0.0.1".into() };
-        assert_eq!(command(std::path::Path::new("/a'b $(bad)/key"), &material, "root").unwrap(), "ssh -i '/a'\\''b $(bad)/key' -o IdentitiesOnly=yes -p 2223 root@127.0.0.1");
+        assert_eq!(command(std::path::Path::new("/a'b $(bad)/key"), &material, "silo").unwrap(), "ssh -i '/a'\\''b $(bad)/key' -o IdentitiesOnly=yes -p 2223 silo@127.0.0.1");
         assert!(command(std::path::Path::new("/key"), &material, "silo").unwrap().ends_with("silo@127.0.0.1"));
         assert!(command(std::path::Path::new("/key"), &material, "unknown").is_err());
     }

@@ -4,10 +4,10 @@ import { describe, expect, it, vi } from "vitest"
 import { LinuxDesktopViewer } from "./linux-desktop-viewer"
 import type { LinuxDesktopState } from "./linux-desktop-state"
 
-function viewer(state: LinuxDesktopState, error: string | null = null) {
+function viewer(state: LinuxDesktopState, error: string | null = null, toolsUpdated = false) {
   const onAction = vi.fn()
   const onRetry = vi.fn()
-  render(<LinuxDesktopViewer name="dev · Build computer" state={state} busy={false} error={error} onAction={onAction} onRetry={onRetry} onFullscreen={vi.fn()} />)
+  render(<LinuxDesktopViewer name="dev · Build computer" state={state} busy={false} error={error} toolsUpdated={toolsUpdated} onAction={onAction} onRetry={onRetry} onFullscreen={vi.fn()} />)
   return { onAction, onRetry }
 }
 
@@ -41,6 +41,26 @@ describe("desktop viewer lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Reconnect" }))
     expect(onRetry).toHaveBeenCalledOnce()
     expect(onAction).not.toHaveBeenCalled()
+  })
+  it.each(["stopped", "running", "vm-stopped"] as const)("sets up tools explicitly with a %s desktop", async state => {
+    const user = userEvent.setup()
+    const { onAction } = viewer({ installed: true, autoStart: false, state, ludaState: "missing" })
+    expect(onAction).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "Set up agent tools" }))
+    expect(onAction).toHaveBeenCalledExactlyOnceWith("setup-tools")
+  })
+  it("allows retry after an interrupted installation", async () => {
+    const user = userEvent.setup()
+    const { onAction } = viewer({ installed: true, autoStart: false, state: "stopped", ludaState: "installing" })
+    await user.click(screen.getByRole("button", { name: "Repair agent tools" }))
+    expect(onAction).toHaveBeenCalledWith("setup-tools")
+  })
+  it("offers repair and session reconnection after tools are installed", async () => {
+    const user = userEvent.setup()
+    const { onAction } = viewer({ installed: true, autoStart: false, state: "stopped", ludaState: "ready", ludaVersion: "0.3.0" }, null, true)
+    expect(screen.getByText(/Reconnect existing agent sessions/)).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Repair agent tools" }))
+    expect(onAction).toHaveBeenCalledWith("setup-tools")
   })
   it("does not offer agent control or installation inside the viewer", () => {
     viewer({ installed: false, autoStart: true, state: "uninstalled" })

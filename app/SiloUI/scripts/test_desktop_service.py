@@ -29,19 +29,26 @@ class DesktopLifecycle(unittest.TestCase):
         marker_patch = patch.object(service, 'WORKING_ACCOUNT', self.root / 'working-account.json', create=True)
         marker_patch.start()
         self.addCleanup(marker_patch.stop)
-        identity_patch = patch.multiple(service, USER='silo-desktop', HOME=Path('/home/silo-desktop'))
+        identity_patch = patch.multiple(service, USER='silo', HOME=Path('/home/silo'))
         identity_patch.start()
         self.addCleanup(identity_patch.stop)
+        self.unified_policy()
 
     def command(self, *arguments):
         with patch.object(service.sys, 'argv', ['silo-desktop', *arguments]), \
              patch.object(service.os, 'geteuid', return_value=0), \
+             patch.object(service, 'validate_policy_file'), \
+             patch.object(service.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir='/home/silo')), \
              patch('sys.stdout', new_callable=io.StringIO) as output:
             service.main()
             return json.loads(output.getvalue())
 
-    def test_absent_account_policy_preserves_legacy_desktop(self):
-        self.assertEqual(service.desktop_account(), ('silo-desktop', Path('/home/silo-desktop')))
+    def test_absent_account_policy_requires_migration_even_when_installed(self):
+        service.WORKING_ACCOUNT.unlink()
+        for action in ('status', 'prepare-install', 'start', 'boot'):
+            with self.subTest(action=action), self.assertRaisesRegex(RuntimeError, 'migrate this VM or create a new VM'):
+                self.command(action)
+        self.assertFalse((service.STATE / 'configuration-managed.json').exists())
 
     def unified_policy(self, **changes):
         policy = dict(schemaVersion=1, user='silo', home='/home/silo')
@@ -51,21 +58,22 @@ class DesktopLifecycle(unittest.TestCase):
 
     def test_unified_policy_uses_existing_normal_account(self):
         self.unified_policy()
-        account = SimpleNamespace(pw_uid=1000, pw_dir='/home/silo')
+        account = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir='/home/silo')
         with patch.object(service, 'validate_policy_file'), patch.object(service.pwd, 'getpwnam', return_value=account):
             self.assertEqual(service.desktop_account(), ('silo', Path('/home/silo')))
             self.assertEqual(self.command('status')['user'], 'silo')
 
-    def test_invalid_policy_never_falls_back_to_legacy(self):
+    def test_invalid_policy_is_rejected(self):
         for changes in ({'schemaVersion': 2}, {'user': 'root'}, {'home': '/root'}):
             self.unified_policy(**changes)
             with patch.object(service, 'validate_policy_file'), self.assertRaises(RuntimeError):
                 service.desktop_account()
 
-    def test_policy_account_must_exist_with_expected_home_and_nonroot_uid(self):
+    def test_policy_account_must_exist_with_expected_home_uid_and_gid(self):
         self.unified_policy()
-        for account in (SimpleNamespace(pw_uid=0, pw_dir='/home/silo'),
-                        SimpleNamespace(pw_uid=1000, pw_dir='/elsewhere')):
+        for account in (SimpleNamespace(pw_uid=0, pw_gid=1001, pw_dir='/home/silo'),
+                        SimpleNamespace(pw_uid=1001, pw_gid=1000, pw_dir='/home/silo'),
+                        SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir='/elsewhere')):
             with patch.object(service, 'validate_policy_file'), patch.object(service.pwd, 'getpwnam', return_value=account), self.assertRaises(RuntimeError):
                 service.desktop_account()
         with patch.object(service, 'validate_policy_file'), patch.object(service.pwd, 'getpwnam', side_effect=KeyError), self.assertRaises(RuntimeError):
@@ -199,6 +207,34 @@ class DesktopLifecycle(unittest.TestCase):
             service.trim_logs()
         self.assertEqual(large.read_bytes(), b'b' * (256 * 1024))
         self.assertEqual(target.read_bytes(), original)
+
+    def test_luda_status_is_separate_from_desktop_readiness(self):
+        self.assertEqual(self.command('status')['ludaState'], 'missing')
+        for state in ('installing', 'failed', 'ready'):
+            service.write(service.STATE / 'luda.json', {'state': state, 'version': '0.3.0', 'error': 'private log'})
+            result = self.command('status')
+            self.assertTrue(result['installed'])
+            self.assertEqual(result['ludaState'], state)
+            self.assertEqual(result['ludaVersion'], '0.3.0')
+            self.assertNotIn('private log', json.dumps(result))
+
+    def test_invalid_luda_state_is_sanitized(self):
+        service.write(service.STATE / 'luda.json', {'state': 'private log', 'version': 'private log'})
+        result = self.command('status')
+        self.assertEqual(result['ludaState'], 'failed')
+        self.assertIsNone(result['ludaVersion'])
+
+    def test_boot_does_not_install_or_repair_luda(self):
+        with patch.object(service, 'start'), patch.object(service.subprocess, 'run') as run:
+            self.command('boot')
+        run.assert_not_called()
+
+    def test_luda_repair_preserves_desktop_session(self):
+        with patch.object(service.subprocess, 'run') as run, patch.object(service, 'start') as start, patch.object(service, 'stop') as stop:
+            self.command('repair-luda')
+        run.assert_called_once_with(['python3', '/usr/local/libexec/silo-setup-luda.py', '--repair'], check=True)
+        start.assert_not_called()
+        stop.assert_not_called()
 
     def test_unknown_autostart_value_does_not_modify_preferences(self):
         with self.assertRaises(RuntimeError):

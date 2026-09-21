@@ -243,7 +243,7 @@ mod tests {
             metadata: directory.path().join("machines.json"),
             volumes: directory.path().join("volumes"),
         };
-        crate::working_account::test_runtime(&paths.executable, false);
+        crate::working_account::test_runtime(&paths.executable, true);
         let private = directory.path().join("operation with 'quotes' and %");
         let transport = prepare(&paths, "dev", &private).unwrap();
         assert!(!paths.home.join("ssh/dev.conf").exists());
@@ -270,7 +270,7 @@ mod tests {
         );
         let config = String::from_utf8(output.stdout).unwrap();
         for required in [
-            "user root\n",
+            "user silo\n",
             "stricthostkeychecking true",
             "identitiesonly yes",
             "identityagent none",

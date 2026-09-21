@@ -72,6 +72,23 @@ fn guest(
     Ok(output.stdout)
 }
 
+// Stage the bundled sources for both first installation and explicit tool repair.
+// An existing guest helper may predate Luda, so never delegate repair to that copy.
+fn installer_script(action: &str) -> String {
+    let mut script = String::from("set -eu\ndesktop_stage=$(mktemp -d /tmp/silo-desktop.XXXXXXXX)\ntrap 'rm -rf \"$desktop_stage\"' EXIT\n");
+    for (variable, filename, source, delimiter) in [
+        ("SILO_DESKTOP_SERVICE_SOURCE", "desktop-service.py", include_str!("../guest/desktop-service.py"), "SILO_DESKTOP_SERVICE_EOF"),
+        ("SILO_LUDA_SETUP_SOURCE", "setup-luda.py", include_str!("../guest/setup-luda.py"), "SILO_LUDA_SETUP_EOF"),
+        ("SILO_LUDA_LOCK_SOURCE", "luda-lock.json", include_str!("../guest/luda-lock.json"), "SILO_LUDA_LOCK_EOF"),
+    ] {
+        script.push_str(&format!("export {variable}=\"$desktop_stage/{filename}\"\ncat > \"${variable}\" <<'{delimiter}'\n{source}\n{delimiter}\n"));
+    }
+    script.push_str(&format!("set -- {action}\n(\n"));
+    script.push_str(include_str!("../guest/setup-desktop.sh"));
+    script.push_str("\n)\n");
+    script
+}
+
 pub(crate) fn configure_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
@@ -79,6 +96,9 @@ pub(crate) fn configure_with(
     previous: Option<&DesktopConfiguration>,
     desired: &DesktopConfiguration,
 ) -> Result<(), RuntimeError> {
+    let inspected = runtime::inspect_workspace(runner, paths, name)?;
+    runtime::ensure_managed(&inspected)?;
+    crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Invalid)?;
     let mut script = String::new();
     if previous.is_none() {
         let capability = runner.run(
@@ -89,13 +109,7 @@ pub(crate) fn configure_with(
         if capability.stdout.trim() != "1" {
             return Err(RuntimeError::Unavailable("The bundled runtime does not support desktop startup. Repair or update Silo before adding a desktop.".into()));
         }
-        script.push_str("set -eu\ndesktop_stage=$(mktemp -d /tmp/silo-desktop.XXXXXXXX)\ntrap 'rm -rf \"$desktop_stage\"' EXIT\nexport SILO_DESKTOP_SERVICE_SOURCE=\"$desktop_stage/desktop-service.py\"\ncat > \"$SILO_DESKTOP_SERVICE_SOURCE\" <<'SILO_DESKTOP_SERVICE_EOF'\n");
-        script.push_str(include_str!("../guest/desktop-service.py"));
-        script.push_str("\nSILO_DESKTOP_SERVICE_EOF\nset -- install\n");
-        // The installer runs in a subshell so its exit cannot skip preference persistence.
-        script.push_str("(\n");
-        script.push_str(include_str!("../guest/setup-desktop.sh"));
-        script.push_str("\n)\n");
+        script.push_str(&installer_script("install"));
     }
     script.push_str(&format!(
         "/usr/local/bin/silo-desktop autostart {}\n",
@@ -127,6 +141,7 @@ fn machine(
     let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, workspace)
         .map_err(|e| e.to_string())?;
     runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
+    crate::working_account::working_user(&inspected.config)?;
     if inspected.name != workspace
         || inspected
             .config
@@ -180,7 +195,9 @@ fn public_status(value: Value) -> Result<Value, String> {
         .ok_or("The desktop returned an invalid startup preference.")?;
     Ok(
         json!({"installed":installed,"state":state,"autoStart":auto_start,
-        "version":value["version"].as_str(),"user":value["user"].as_str(),"display":value["display"].as_str()}),
+        "version":value["version"].as_str(),"user":value["user"].as_str(),"display":value["display"].as_str(),
+        "ludaState":value["ludaState"].as_str().filter(|state| matches!(*state, "missing" | "installing" | "ready" | "failed")).unwrap_or("missing"),
+        "ludaVersion":value["ludaVersion"].as_str()}),
     )
 }
 
@@ -207,7 +224,7 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
     let (paths, machine) = machine(app, workspace)?;
     if let Some(action) = action {
         runtime::shutdown::ensure_accepting_operations()?;
-        if !matches!(action, "start" | "stop" | "restart") {
+        if !matches!(action, "start" | "stop" | "restart" | "setup-tools") {
             return Err("Unsupported desktop action.".into());
         }
         if configuration(&machine).is_none() {
@@ -215,7 +232,7 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
         }
         let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, workspace)
             .map_err(|e| e.to_string())?;
-        if action == "start" && matches!(inspected.status.as_str(), "Created" | "Stopped") {
+        if matches!(action, "start" | "setup-tools") && matches!(inspected.status.as_str(), "Created" | "Stopped") {
             runtime::start_for_desktop(&paths, workspace).map_err(|e| e.to_string())?;
         } else if inspected.status != "Running" {
             return Err("Start the sandbox before changing its desktop session.".into());
@@ -224,8 +241,8 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
             &runtime::ProcessRunner,
             &paths,
             workspace,
-            &format!("/usr/local/bin/silo-desktop {action}"),
-            Duration::from_secs(60),
+            &if action == "setup-tools" { installer_script(action) } else { format!("/usr/local/bin/silo-desktop {action}") },
+            Duration::from_secs(if action == "setup-tools" { 1800 } else { 60 }),
             false,
         )
         .map_err(|e| e.to_string())?;
@@ -327,7 +344,9 @@ mod tests {
         ) -> Result<runtime::CommandOutput, RuntimeError> {
             self.calls.lock().unwrap().push(args.to_vec());
             Ok(runtime::CommandOutput {
-                stdout: self.output.clone(),
+                stdout: if args[0] == "inspect" && !self.output.starts_with('{') {
+                    json!({"name":"dev","status":"Stopped","config":{"labels":{"silo.managed":"true","silo.working-account":"1"}}}).to_string()
+                } else { self.output.clone() },
                 stderr: String::new(),
             })
         }
@@ -363,8 +382,20 @@ mod tests {
         assert!(error.to_string().contains("desktop startup"));
         assert_eq!(
             *runner.calls.lock().unwrap(),
-            vec![vec!["--silo-desktop-protocol".to_string()]]
+            vec![vec!["inspect".to_string(), "dev".to_string(), "--format".to_string(), "json".to_string()], vec!["--silo-desktop-protocol".to_string()]]
         );
+    }
+
+    #[test]
+    fn working_account_desktop_rejects_old_vm_before_running_guest() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = Runner {
+            calls: Mutex::new(Vec::new()),
+            output: json!({"name":"dev","status":"Running","config":{"labels":{"silo.managed":"true"}}}).to_string(),
+        };
+        let error = configure_with(&runner, &paths(&dir), "dev", Some(&DesktopConfiguration { start_with_sandbox: true }), &DesktopConfiguration { start_with_sandbox: false }).unwrap_err();
+        assert!(error.to_string().contains("Migrate"));
+        assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
     }
 
     #[test]
@@ -387,12 +418,35 @@ mod tests {
         )
         .unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
+        assert_eq!(calls.len(), 2);
         assert_eq!(
-            calls[0].last().unwrap(),
+            calls[1].last().unwrap(),
             "/usr/local/bin/silo-desktop autostart false\n"
         );
     }
+    #[test]
+    fn fresh_install_stages_agent_tools_before_persisting_startup_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = Runner { calls: Mutex::new(Vec::new()), output: "1".into() };
+        configure_with(&runner, &paths(&dir), "dev", None, &DesktopConfiguration { start_with_sandbox: false }).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        let script = calls.last().unwrap().last().unwrap();
+        assert!(script.contains("SILO_LUDA_SETUP_SOURCE"));
+        assert!(script.contains("SILO_LUDA_LOCK_SOURCE"));
+        assert!(script.contains("set -- install\n"));
+        assert!(script.ends_with("/usr/local/bin/silo-desktop autostart false\n"));
+    }
+
+    #[test]
+    fn status_projects_only_valid_agent_tool_fields() {
+        let status = public_status(json!({"installed":true,"autoStart":false,"state":"stopped","ludaState":"ready","ludaVersion":"0.3.0","ludaError":"private"})).unwrap();
+        assert_eq!(status["ludaState"], "ready");
+        assert_eq!(status["ludaVersion"], "0.3.0");
+        assert!(!status.to_string().contains("private"));
+        let old = public_status(json!({"installed":true,"autoStart":false,"state":"stopped"})).unwrap();
+        assert_eq!(old["ludaState"], "missing");
+    }
+
     #[test]
     fn stopped_status_never_boots_vm() {
         let dir = tempfile::tempdir().unwrap();

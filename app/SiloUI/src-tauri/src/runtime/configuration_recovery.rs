@@ -127,9 +127,8 @@ fn reconcile(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal
             }
             verify_machine_configuration(runner, paths, machine)?;
             if !current.machines.iter().any(|entry| entry.id() == machine.id()) {
-                let unified = crate::working_account::working_user(&inspected.config)
-                    .map_err(RuntimeError::Malformed)? == "silo";
-                verify_guest_tools(runner, paths, machine.name(), unified)?;
+                crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Malformed)?;
+                verify_guest_tools(runner, paths, machine.name())?;
                 if let Some(desktop) = crate::desktop::configuration(machine) {
                     crate::desktop::configure_with(runner, paths, machine.name(), None, desktop)?;
                     let restored = inspect_workspace(runner, paths, machine.name())?;
@@ -305,6 +304,11 @@ mod tests {
             }});
             if unified { inspected["config"]["labels"]["silo.working-account"] = json!("1"); }
             let runner = InterruptedRuntime { inspected, calls: Mutex::new(Vec::new()) };
+            if !unified {
+                assert!(prepare_retry(&runner, &paths, None).unwrap_err().to_string().contains("Migrate"));
+                assert!(!runner.calls.lock().unwrap().iter().any(|args| args[0] == "exec"));
+                continue;
+            }
             prepare_retry(&runner, &paths, None).unwrap();
             assert_eq!(read_metadata(&paths.metadata).unwrap(), request);
             let calls = runner.calls.lock().unwrap();
@@ -312,14 +316,9 @@ mod tests {
             assert_eq!(commands.len(), 1);
             assert!(commands[0].windows(2).any(|pair| pair == ["--user","root"]));
             let script = commands[0].last().unwrap();
-            if unified {
-                assert!(script.contains(include_str!("../../guest/setup-working-account.sh")));
-            } else {
-                assert_eq!(script, include_str!("../../guest/verify-tools.sh"));
-                assert!(!script.contains("useradd"));
-            }
+            assert!(script.contains(include_str!("../../guest/setup-working-account.sh")));
             drop(calls);
-            // Metadata adoption makes a subsequent retry read-only for either policy.
+            // Metadata adoption makes a subsequent retry read-only for the supported policy.
             runner.calls.lock().unwrap().clear();
             prepare_retry(&runner, &paths, None).unwrap();
             assert!(!runner.calls.lock().unwrap().iter().any(|args| args[0] == "exec"));

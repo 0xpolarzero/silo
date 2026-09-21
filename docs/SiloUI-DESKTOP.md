@@ -24,11 +24,11 @@ failed state for explicit recovery.
 
 ## Applications and external tools
 
-New VMs use `silo`, with home `/home/silo`, for terminal, SSH, editor and desktop
-work. Installing the desktop later reuses that account and preserves existing
-workspace files. Existing VMs retain root-based terminal access and the
-`silo-desktop` account with home `/home/silo-desktop`. Both normal accounts have
-passwordless sudo. Adding a desktop never migrates accounts or file ownership.
+VMs use `silo`, with home `/home/silo`, for terminal, SSH, editor and desktop
+work, with passwordless sudo for administration. Installing the desktop later
+reuses that account and preserves existing workspace files. Older VMs require
+[explicit migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md) or recreation first.
+Adding a desktop never migrates accounts or file ownership.
 
 Run graphical programs as the VM's desktop user with `DISPLAY=:1` and
 `XAUTHORITY` pointing to `.Xauthority` in that user's home. The session provides
@@ -37,8 +37,10 @@ rules, including on new VMs when files were deliberately created with sudo.
 Conflicting pre-existing VNC configuration is reported before installation,
 rather than overwritten. See [working accounts](SiloUI-WORKING-ACCOUNT.md).
 
-Silo does not install agent harnesses, computer-use plugins, or MCP servers.
-Users configure compatible Linux tools themselves. Tools running in a remote
+Adding a desktop installs [Luda tools and skill](SiloUI-LUDA.md) for all supported
+agent profiles under `silo`, including agents installed later. Silo does not
+install or authenticate the agents themselves. Existing desktops offer explicit
+agent-tool setup and repair in their viewer. Tools running in a remote
 SSH project must execute inside the guest and target this display; selecting
 an SSH project does not redirect a macOS-only plugin. Human and automated
 input share the ordinary Linux session without Silo arbitrating control.
@@ -48,7 +50,10 @@ Users install additional applications, including their preferred browser.
 
 ## Recipe and sources
 
-### Account decision audit, 2026-09-21
+### Historical account decision audit, 2026-09-21
+
+The single-account requirement above supersedes this audit’s compatibility
+recommendation. The technical reasons for using a normal account still apply.
 
 The separate desktop account is a compatibility compromise with the existing
 root-based terminal/SSH workflow, not a requirement to prevent data corruption.

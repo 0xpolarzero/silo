@@ -1,7 +1,8 @@
 #!/bin/sh
 # Guest-only optional desktop recipe 1. Never run on the host.
 set -eu
-[ "${1:-install}" = install ] || { echo 'Usage: setup-desktop.sh install' >&2; exit 2; }
+action=${1:-install}
+case "$action" in install|setup-tools) ;; *) echo 'Usage: setup-desktop.sh install|setup-tools' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Desktop installation requires guest root' >&2; exit 1; }
 . /etc/os-release
 [ "$ID" = ubuntu ] && [ "$VERSION_ID" = 24.04 ] || { echo 'Desktop requires Ubuntu 24.04' >&2; exit 1; }
@@ -11,28 +12,34 @@ case "$(dpkg --print-architecture)" in
     *) echo 'Desktop requires ARM64 or AMD64' >&2; exit 1 ;;
 esac
 helper=${SILO_DESKTOP_SERVICE_SOURCE:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/desktop-service.py}
+luda_helper=${SILO_LUDA_SETUP_SOURCE:-$(dirname -- "$helper")/setup-luda.py}
+luda_lock=${SILO_LUDA_LOCK_SOURCE:-$(dirname -- "$helper")/luda-lock.json}
+[ -f "$luda_helper" ] && [ -f "$luda_lock" ] || { echo 'Desktop tools recipe is missing' >&2; exit 1; }
 [ -f "$helper" ] || { echo 'Desktop lifecycle helper is missing' >&2; exit 1; }
 mkdir -p /var/lib/silo-desktop
 chmod 0700 /var/lib/silo-desktop
 exec 9>/var/lib/silo-desktop/install.lock
 flock -w 5 9 || { echo 'Desktop installation is already running' >&2; exit 1; }
-if [ -f /var/lib/silo-desktop/installed.json ]; then
+# Desktop sessions share the VM's required working account.
+account=$(python3 "$helper" prepare-install)
+[ "$account" = 'silo /home/silo' ] || { echo 'Unexpected desktop account' >&2; exit 1; }
+desktop_user=silo
+desktop_home=/home/silo
+mkdir -p /usr/local/libexec /usr/local/share/silo
+install -m 0755 "$luda_helper" /usr/local/libexec/silo-setup-luda.py
+install -m 0644 "$luda_lock" /usr/local/share/silo/luda-lock.json
+if [ "$action" = setup-tools ]; then
+    [ -f /var/lib/silo-desktop/installed.json ] || { echo 'Install the Linux desktop first' >&2; exit 1; }
+    install -m 0755 "$helper" /usr/local/bin/silo-desktop
+    python3 /usr/local/libexec/silo-setup-luda.py --repair
     /usr/local/bin/silo-desktop status
     exit 0
 fi
-# New VMs already have their working account; old VMs keep their desktop account.
-desktop_user=silo-desktop
-desktop_home=/home/silo-desktop
-if [ -e /var/lib/silo/working-account.json ] || [ -L /var/lib/silo/working-account.json ]; then
-    account=$(python3 "$helper" prepare-install)
-    [ "$account" = 'silo /home/silo' ] || { echo 'Unexpected desktop account' >&2; exit 1; }
-    desktop_user=silo
-    desktop_home=/home/silo
-fi
-# Do not reuse an unrelated existing account or change ownership of user files.
-if [ "$desktop_user" = silo-desktop ] && getent passwd silo-desktop >/dev/null && [ ! -f /var/lib/silo-desktop/account-created ]; then
-    echo 'The silo-desktop account already exists and is not managed by Silo' >&2
-    exit 1
+if [ -f /var/lib/silo-desktop/installed.json ]; then
+    install -m 0755 "$helper" /usr/local/bin/silo-desktop
+    python3 /usr/local/libexec/silo-setup-luda.py
+    python3 "$helper" status
+    exit 0
 fi
 if command -v Xvnc >/dev/null 2>&1 && [ ! -f /var/lib/silo-desktop/install-stage ]; then
     echo 'An existing unmanaged VNC installation conflicts with the Silo desktop' >&2
@@ -55,17 +62,7 @@ printf '%s  %s\n' "$digest" "$package.partial" | sha256sum --check --status || {
 mv "$package.partial" "$package"
 printf '%s\n' installing > /var/lib/silo-desktop/install-stage
 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -y --no-install-recommends "$package"
-if [ "$desktop_user" = silo-desktop ] && ! getent passwd silo-desktop >/dev/null; then
-    useradd --create-home --shell /bin/bash --comment 'Silo desktop' silo-desktop
-    touch /var/lib/silo-desktop/account-created
-fi
 usermod -a -G ssl-cert "$desktop_user"
-if [ "$desktop_user" = silo-desktop ]; then
-    printf '%s\n' 'silo-desktop ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/silo-desktop
-    chmod 0440 /etc/sudoers.d/silo-desktop
-    visudo -cf /etc/sudoers.d/silo-desktop >/dev/null
-fi
-python3 "$helper" prepare-install >/dev/null
 if [ ! -d "$desktop_home/.vnc" ]; then
     install -d -m 0700 -o "$desktop_user" -g "$(id -gn "$desktop_user")" "$desktop_home/.vnc"
 fi
@@ -125,3 +122,4 @@ printf '%s\n' '{"version":"1","kasmVncVersion":"1.5.0"}' > /var/lib/silo-desktop
 printf '%s\n' installed > /var/lib/silo-desktop/install-stage
 rm -f "$package"
 /usr/local/bin/silo-desktop boot
+python3 /usr/local/libexec/silo-setup-luda.py

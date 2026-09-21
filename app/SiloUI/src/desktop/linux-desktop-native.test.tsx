@@ -101,3 +101,17 @@ it("updates the native inset when the viewport changes even if display bounds ar
   await act(async () => { window.dispatchEvent(new Event("resize")) })
   expect(invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach")).toHaveLength(1)
 })
+
+it("registers tools on an explicit remote action without starting the desktop viewer", async () => {
+  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: false, state: "vm-stopped" }
+    : command === "desktop_action" ? { installed: true, autoStart: false, state: "stopped", ludaState: "ready", ludaVersion: "0.3.0" } : undefined)
+  const user = userEvent.setup()
+  render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
+  await screen.findByRole("button", { name: "Set up agent tools" })
+  expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
+  await user.click(screen.getByRole("button", { name: "Set up agent tools" }))
+  await screen.findByText(/Reconnect existing agent sessions/)
+  expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "owner/vm-id", action: "setup-tools" })
+  expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
+  expect(screen.getByRole("button", { name: "Start desktop" })).toBeVisible()
+})

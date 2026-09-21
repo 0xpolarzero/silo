@@ -1563,7 +1563,11 @@ pub(crate) fn default_github_network(network: &Value) -> bool {
 }
 
 fn supported_runtime_settings(config: &serde_json::Map<String, Value>) -> bool {
-    if crate::working_account::working_user(&Value::Object(config.clone())).is_err() { return false; }
+    // Preserve old VM backups so users can recover before migrating their account.
+    if let Some(labels) = config.get("labels") {
+        let Some(labels) = labels.as_object() else { return false; };
+        if labels.get(crate::working_account::LABEL).is_some_and(|version| version.as_str() != Some("1")) { return false; }
+    }
     let expected = [
         (
             "runtime",
@@ -2536,6 +2540,7 @@ mod tests {
     fn managed_config(name: &str) -> Value {
         serde_json::json!({
             "name": name,
+            "labels": {"silo.working-account":"1"},
             "image": {"Oci": {"reference": "alpine:3.20", "root_disk": {"kind": "managed", "size_mib": 81920}}},
             "mounts": [
                 {
@@ -2672,8 +2677,10 @@ mod tests {
 import json, os, pathlib, socket, sys
 args = sys.argv[1:]
 home = pathlib.Path(os.environ['MSB_HOME'])
-if args[0] == 'inspect':
-    config = {'labels': {'silo.managed': 'true', 'silo.machine-id': '2f6b739d-ff7a-4be8-aa5e-f6694e4ab0d8'}}
+if args[0] == '--silo-working-account-protocol':
+    print('1')
+elif args[0] == 'inspect':
+    config = {'labels': {'silo.managed': 'true', 'silo.working-account': '1', 'silo.machine-id': '2f6b739d-ff7a-4be8-aa5e-f6694e4ab0d8'}}
     print(json.dumps({'name': args[1], 'status': 'Running' if (home/'started').exists() else 'Stopped', 'config': config, 'activeConfig': config}))
 elif args[0] == 'start':
     (home/'started').touch()

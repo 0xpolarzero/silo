@@ -20,8 +20,7 @@ listeners and stores the configuration.
    line using **Edit port** or **Edit address and port** in its menu to choose another port.
 3. The **Copy terminal command** action in each address’s menu prepares a private key file on the computer running the
    UI and copies a ready-to-run `ssh -i KEY_PATH -p PORT USER@ADDRESS` command.
-   `USER` is `silo` for new VMs and `root` for existing VMs. The generated command
-   and editor connection select the VM's account automatically.
+   `USER` is `silo`. Older VMs require migration before SSH or editor access.
    The **Save key file** action in that menu opens a save dialog for clients that take a key file. Exported
    keys have mode 0600. The copied command's path belongs to this computer;
    download the key when setting up a client on another computer.
