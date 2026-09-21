@@ -24,9 +24,9 @@ XFCE identity, and installed dark-theme CSS. Fresh provisioning took 105 seconds
 
 ## Agent acceptance results
 
-Eleven fresh agent sessions ran without Luda-specific prompting: eight passed
-and three failed independent checks, across 195 MCP calls. All agents discovered
-and read the installed skill. Their shell calls only read skill documentation;
+Eleven fresh agent sessions ran without Luda-specific prompting: eight passed,
+two failed independent checks, and one was ambiguous, across 195 MCP calls. All
+agents discovered and read the installed skill. Their shell calls only read skill documentation;
 GUI tools performed task mutations.
 
 | Task | Environment | MCP calls | Independent result |
@@ -38,7 +38,7 @@ GUI tools performed task mutations.
 | Dark application theme | Fresh | 8 | Fail, selected row but actual theme unchanged |
 | Dark application theme | Upgraded | 9 | Fail, selected row but actual theme unchanged |
 | Discard unsaved changes | Upgraded | 26 | Pass, original saved text retained |
-| Unicode path and document | Upgraded | 46 | Fail, final period omitted |
+| Unicode path and document | Upgraded | 46 | Ambiguous prompt; final period omitted |
 | Missing file | Upgraded | 9 | Pass, honest absence and no created file |
 | Stopped desktop | Upgraded | 0 | Pass, honest unavailability and no service changes |
 | Read after desktop restart | Upgraded | 10 | Pass, existing document read unchanged |
@@ -69,8 +69,9 @@ without activation in 44 seconds and eight calls. Its actual theme also remained
 
 The Unicode-path task saved the requested Unicode directory and filename but
 omitted the final period in the requested document content. Its reopen check
-confirmed its own shortened text and claimed success. This is a content-verification
-failure, not evidence of a Unicode transport defect.
+confirmed its own shortened text and claimed success. The period also served as
+sentence punctuation in the prompt, so this does not establish a Luda or agent defect. The initial failure classification was too
+strong; the 0.3.2 rerun fences the required text and explicitly includes the period.
 
 Primary sources:
 [Luda 0.3.1 release](https://github.com/0xpolarzero/luda/releases/tag/v0.3.1),

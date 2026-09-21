@@ -58,8 +58,8 @@ setup attempts. Guest state is `/var/lib/silo-desktop/luda.json`.
 ## Reproducible inputs
 
 [`guest/luda-lock.json`](../app/SiloUI/src-tauri/guest/luda-lock.json) pins
-Luda v0.3.1, commit `979efeb740ef2b1aadcf5f49eebd4f3837ecde2f`, with source archive
-SHA-256 `809b94d63c2cb39e8de90a7e6ee8c3104d1a0b37df158215ff9a82194692205c`.
+Luda v0.3.2, commit `adba0834504d22e42e97a68e87c7f61759d18aba`, with source archive
+SHA-256 `42362e01b174fe66fb181ffdb8b3e0c117ff71bc8c7b31f8408146a3ef36bc2b`.
 The archive is verified before extraction or execution. Luda's upstream installer
 owns Python dependencies and pinned client-registration tooling; Silo does not
 maintain a second set of agent configuration writers.
@@ -69,10 +69,10 @@ would invalidate executable paths. The current Silo installer and lock are
 bundled into the application and staged in the guest for installation/repair.
 No separate guest-image release is required for this optional recipe change.
 
-Primary sources: [Luda image packaging](https://github.com/0xpolarzero/luda/blob/v0.3.1/docs/ENVIRONMENT-PACKAGING.md),
-[installer](https://github.com/0xpolarzero/luda/blob/v0.3.1/scripts/install.sh),
-[agent adapters](https://github.com/0xpolarzero/luda/blob/v0.3.1/src/luda/setup_clients.py),
-and [session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.1/src/luda/session.py).
+Primary sources: [Luda image packaging](https://github.com/0xpolarzero/luda/blob/v0.3.2/docs/ENVIRONMENT-PACKAGING.md),
+[installer](https://github.com/0xpolarzero/luda/blob/v0.3.2/scripts/install.sh),
+[agent adapters](https://github.com/0xpolarzero/luda/blob/v0.3.2/src/luda/setup_clients.py),
+and [session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.2/src/luda/session.py).
 
 ## Verification (2026-09-21)
 
