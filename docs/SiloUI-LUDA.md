@@ -37,9 +37,18 @@ Desktop installation and Luda readiness are recorded separately. A failed tool
 installation leaves the desktop package installation intact; retry completes
 tool setup without reinstalling KasmVNC. Once the matching release is ready,
 ordinary recipe retries do not contact the network. Explicit repair reapplies
-all-agent registration using the installed runtime when available. Upstream
+all-agent registration using the installed runtime when its release matches a
+completed installation. A changed pin or failed/interrupted upgrade reinstalls
+the pinned release before registering agents. Upstream
 setup preserves unrelated settings but updates the named `luda` skill and MCP
 entry. The client registrations are not one atomic transaction.
+
+Fresh setup and existing-desktop repair provide `greybird-gtk-theme` and set
+`XDG_CURRENT_DESKTOP=XFCE` in the managed session startup. Upgrading an existing
+VM is explicit: use **Set up agent tools** or **Repair agent tools**, save open
+work, stop and start the desktop, then reconnect agent sessions. Repair does not
+close live applications; an existing session adopts the new identity only after
+restart. Repeated repair skips package downloads when the theme is installed.
 
 The public status reports `ludaState` and `ludaVersion`; the stopped-VM response
 does not guess installation readiness. Installer diagnostics remain inside the
@@ -49,8 +58,8 @@ setup attempts. Guest state is `/var/lib/silo-desktop/luda.json`.
 ## Reproducible inputs
 
 [`guest/luda-lock.json`](../app/SiloUI/src-tauri/guest/luda-lock.json) pins
-Luda v0.3.0, commit `a0e0ef4f9a1d8b29a9b3456ca32167a711897e42`, with source archive
-SHA-256 `778195f02a429de72f39e9cc7a4f4aef95edef2fbdcffad2078de9c79c0a51e7`.
+Luda v0.3.1, commit `979efeb740ef2b1aadcf5f49eebd4f3837ecde2f`, with source archive
+SHA-256 `809b94d63c2cb39e8de90a7e6ee8c3104d1a0b37df158215ff9a82194692205c`.
 The archive is verified before extraction or execution. Luda's upstream installer
 owns Python dependencies and pinned client-registration tooling; Silo does not
 maintain a second set of agent configuration writers.
@@ -60,10 +69,10 @@ would invalidate executable paths. The current Silo installer and lock are
 bundled into the application and staged in the guest for installation/repair.
 No separate guest-image release is required for this optional recipe change.
 
-Primary sources: [Luda image packaging](https://github.com/0xpolarzero/luda/blob/v0.3.0/docs/ENVIRONMENT-PACKAGING.md),
-[installer](https://github.com/0xpolarzero/luda/blob/v0.3.0/scripts/install.sh),
-[agent adapters](https://github.com/0xpolarzero/luda/blob/v0.3.0/src/luda/setup_clients.py),
-and [session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.0/src/luda/session.py).
+Primary sources: [Luda image packaging](https://github.com/0xpolarzero/luda/blob/v0.3.1/docs/ENVIRONMENT-PACKAGING.md),
+[installer](https://github.com/0xpolarzero/luda/blob/v0.3.1/scripts/install.sh),
+[agent adapters](https://github.com/0xpolarzero/luda/blob/v0.3.1/src/luda/setup_clients.py),
+and [session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.1/src/luda/session.py).
 
 ## Verification (2026-09-21)
 

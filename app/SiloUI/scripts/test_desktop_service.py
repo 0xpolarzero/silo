@@ -224,6 +224,24 @@ class DesktopLifecycle(unittest.TestCase):
         self.assertEqual(result['ludaState'], 'failed')
         self.assertIsNone(result['ludaVersion'])
 
+    def test_status_reports_installed_luda_release_without_requiring_current_pin(self):
+        for version in ('0.3.0', '0.3.1', '1.10.12'):
+            with self.subTest(version=version):
+                service.write(service.STATE / 'luda.json', {'state': 'ready', 'version': version})
+                result = self.command('status')
+                self.assertEqual(result['ludaVersion'], version)
+                self.assertEqual(result['ludaState'], 'ready')
+
+    def test_invalid_luda_versions_do_not_escape_or_break_status(self):
+        for version in (None, 3, True, [], {}, 'private log', '0.3', '0.3.1\n',
+                        'v0.3.1', '0.3.1; secret', '０.３.１'):
+            with self.subTest(version=version):
+                service.write(service.STATE / 'luda.json', {'state': 'ready', 'version': version})
+                result = self.command('status')
+                self.assertIsNone(result['ludaVersion'])
+                self.assertEqual(result['ludaState'], 'ready')
+                self.assertTrue(result['installed'])
+
     def test_boot_does_not_install_or_repair_luda(self):
         with patch.object(service, 'start'), patch.object(service.subprocess, 'run') as run:
             self.command('boot')

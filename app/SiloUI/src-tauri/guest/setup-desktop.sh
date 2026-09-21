@@ -28,15 +28,40 @@ desktop_home=/home/silo
 mkdir -p /usr/local/libexec /usr/local/share/silo
 install -m 0755 "$luda_helper" /usr/local/libexec/silo-setup-luda.py
 install -m 0644 "$luda_lock" /usr/local/share/silo/luda-lock.json
+# Reapply the managed session recipe during upgrades, without closing live apps.
+# Existing sessions adopt this environment on their next desktop restart.
+configure_session() {
+    cat > "$desktop_home/.vnc/xstartup" <<'SESSION'
+#!/bin/sh
+unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
+export DISPLAY=:1
+export XDG_RUNTIME_DIR=/run/silo-desktop/user
+export XDG_CURRENT_DESKTOP=XFCE
+exec dbus-run-session -- xfce4-session
+SESSION
+    chmod 0755 "$desktop_home/.vnc/xstartup"
+    chown "$desktop_user:$(id -gn "$desktop_user")" "$desktop_home/.vnc/xstartup"
+}
+ensure_theme() {
+    if [ "$(dpkg-query -W -f='${Status}' greybird-gtk-theme 2>/dev/null || true)" != 'install ok installed' ]; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
+        apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends greybird-gtk-theme
+    fi
+}
 if [ "$action" = setup-tools ]; then
     [ -f /var/lib/silo-desktop/installed.json ] || { echo 'Install the Linux desktop first' >&2; exit 1; }
     install -m 0755 "$helper" /usr/local/bin/silo-desktop
+    configure_session
+    ensure_theme
     python3 /usr/local/libexec/silo-setup-luda.py --repair
     /usr/local/bin/silo-desktop status
     exit 0
 fi
 if [ -f /var/lib/silo-desktop/installed.json ]; then
     install -m 0755 "$helper" /usr/local/bin/silo-desktop
+    configure_session
+    ensure_theme
     python3 /usr/local/libexec/silo-setup-luda.py
     python3 "$helper" status
     exit 0
@@ -55,7 +80,7 @@ if [ -n "$(dpkg --audit)" ]; then
     dpkg --configure -a || apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -f -y
 fi
 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
-apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ca-certificates ssl-cert curl python3 sudo dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings xfdesktop4 xfwm4 thunar xfce4-terminal mousepad fonts-dejavu-core xauth x11-utils procps
+apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ca-certificates ssl-cert curl python3 sudo dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings xfdesktop4 xfwm4 thunar xfce4-terminal mousepad greybird-gtk-theme fonts-dejavu-core xauth x11-utils procps
 package=/var/lib/silo-desktop/kasmvnc.deb
 curl --silent --show-error --fail --location --retry 2 --connect-timeout 30 --max-time 600 --proto '=https' --tlsv1.2 "https://github.com/kasmtech/KasmVNC/releases/download/v1.5.0/kasmvncserver_noble_1.5.0_${arch}.deb" -o "$package.partial"
 printf '%s  %s\n' "$digest" "$package.partial" | sha256sum --check --status || { echo 'Desktop download checksum mismatch' >&2; exit 1; }
@@ -87,15 +112,8 @@ encoding:
 logging:
   level: 10
 YAML
-cat > "$desktop_home/.vnc/xstartup" <<'SESSION'
-#!/bin/sh
-unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
-export DISPLAY=:1
-export XDG_RUNTIME_DIR=/run/silo-desktop/user
-exec dbus-run-session -- xfce4-session
-SESSION
-chmod 0755 "$desktop_home/.vnc/xstartup"
-chown "$desktop_user:$(id -gn "$desktop_user")" "$desktop_home/.vnc/kasmvnc.yaml" "$desktop_home/.vnc/xstartup"
+configure_session
+chown "$desktop_user:$(id -gn "$desktop_user")" "$desktop_home/.vnc/kasmvnc.yaml"
 python3 - "$desktop_user" "$desktop_home" <<'PY'
 import json, os, pathlib, secrets, subprocess, sys
 root = pathlib.Path('/var/lib/silo-desktop')

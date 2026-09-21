@@ -65,6 +65,38 @@ class LudaSetup(unittest.TestCase):
                          '-m', 'luda.setup', '--prefix', str(setup.PREFIX), '--user', 'silo',
                          '--agent', 'all', '--yes'])
 
+    def test_repair_upgrades_old_ready_runtime_before_registering_agents(self):
+        self.runtime()
+        previous = dict(self.lock, version='0.3.0', commit='0' * 40)
+        setup.write_state('ready', previous)
+        with patch.object(setup, 'run') as run, patch.object(setup, 'install_release') as install:
+            setup.provision(repair=True)
+        install.assert_called_once()
+        self.assertEqual(install.call_args.args[0], self.lock)
+        # The release installer configures every agent. Running the old runtime's
+        # setup command instead would silently leave the old MCP and skill active.
+        run.assert_not_called()
+        self.assertEqual(setup.read_state(), dict(state='ready', version=self.lock['version'],
+                                                  commit=self.lock['commit']))
+        with patch.object(setup, 'install_release') as install:
+            setup.provision()
+        install.assert_not_called()
+
+    def test_failed_upgrade_does_not_mark_old_runtime_ready_and_can_retry(self):
+        self.runtime()
+        setup.write_state('ready', dict(self.lock, version='0.3.0', commit='0' * 40))
+        with patch.object(setup, 'install_release', side_effect=RuntimeError('download failed')):
+            with self.assertRaisesRegex(RuntimeError, 'Desktop tools installation failed'):
+                setup.provision(repair=True)
+        self.assertEqual(setup.read_state()['state'], 'failed')
+        # The old executable can still exist after a failed upgrade. It must not
+        # become eligible for a repair-only run merely because state has the new pin.
+        with patch.object(setup, 'run') as run, patch.object(setup, 'install_release') as install:
+            setup.provision(repair=True)
+        install.assert_called_once()
+        run.assert_not_called()
+        self.assertEqual(setup.read_state()['state'], 'ready')
+
     def test_missing_runtime_or_interrupted_attempt_reinstalls(self):
         for state in ('ready', 'installing', 'failed'):
             setup.write_state(state, self.lock)

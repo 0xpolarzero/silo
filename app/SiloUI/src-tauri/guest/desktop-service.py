@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import pwd
+import re
 from pathlib import Path
 import signal
 import socket
@@ -109,7 +110,7 @@ def luda_status():
         version = data.get('version')
         if state not in ('missing', 'installing', 'ready', 'failed'):
             state = 'failed'
-        if version != '0.3.0':
+        if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
             version = None
         return dict(ludaState=state, ludaVersion=version)
     except (ValueError, AttributeError):

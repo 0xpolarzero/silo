@@ -38,7 +38,7 @@ def validate_account():
 
 def read_lock():
     lock = json.loads(LOCK.read_text())
-    if (lock.get('version') != '0.3.0' or
+    if (lock.get('version') != '0.3.1' or
             not re.fullmatch('[0-9a-f]{40}', lock.get('commit', '')) or
             not re.fullmatch('[0-9a-f]{64}', lock.get('sha256', ''))):
         raise RuntimeError('Invalid bundled Luda release lock')
@@ -101,7 +101,7 @@ def provision(repair=False):
             raise RuntimeError('Luda installation is already running') from None
         previous = read_state()
         python = PREFIX / 'current/.venv/bin/python'
-        matches = previous.get('commit') == lock['commit'] and python.is_file()
+        matches = previous.get('state') == 'ready' and previous.get('commit') == lock['commit'] and python.is_file()
         if matches and previous.get('state') == 'ready' and not repair:
             return
         write_state('installing', lock)
