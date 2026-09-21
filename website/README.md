@@ -87,7 +87,20 @@ See [design research](../docs/SiloUI-LANDING-REFERENCES.md) for the approved dir
 
 Production: https://silo-theta.vercel.app (also set as the GitHub repository website).
 
-Build locally, package the static output, and publish the linked `silo` project:
+The Vercel `silo` project is connected to `0xpolarzero/silo`. Pushes and merges
+to `main` trigger production deployments; other branches receive preview deployments.
+The project settings use Node.js 24 and the repository root with:
+
+- Install command: `npm --prefix app/SiloUI ci && npm --prefix website ci`
+- Build command: `npm --prefix website run build`
+- Output directory: `website/dist`
+
+Both packages are required because the website imports shared app components.
+These settings are saved in Vercel. Git deployment behavior follows Vercel's
+[Git integration documentation](https://vercel.com/docs/git), checked on 2026-09-19.
+
+For a manual deployment, build locally, package the static output, and publish
+the linked `silo` project:
 
 ```sh
 npm --prefix website run typecheck
@@ -99,8 +112,7 @@ npx --yes vercel@59.16.0 deploy --prebuilt --prod --yes --cwd website
 For a new checkout, first run `npx --yes vercel@59.16.0 link --yes --project silo --cwd website`.
 The deployment uploads only compiled public assets from `.vercel/output/`.
 Vercel project metadata and local environment files are ignored. No native
-build inputs or local configuration are published. Git integration is not
-configured; use the explicit CLI deployment above for updates.
+build inputs or local configuration are published by this prebuilt command.
 
 This follows Vercel's [prebuilt deployment](https://vercel.com/docs/cli/deploy)
 and [Build Output API v3](https://vercel.com/docs/build-output-api/configuration)
