@@ -72,6 +72,7 @@ function DemoPages() {
       activeTab={navigation.tab} workspaceSection={navigation.workspaceSection}
       settingsSection={navigation.settingsSection} systemIssueStatus={null}
       workspaceAttention={{ errors: 0, warnings: 0 }}
+      defaultSettingsMenuOpen
       onTabChange={navigation.selectTab} onWorkspaceSectionChange={navigation.selectWorkspaceSection}
       onSettingsSectionChange={navigation.selectSettingsSection}
       canGoBack={navigation.canGoBack} canGoForward={navigation.canGoForward}

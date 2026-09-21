@@ -49,10 +49,17 @@ variables, account, cookies, or analytics are required by the site.
 - `vite.config.ts`: builds both static HTML entries and resolves shared app
   components and one React runtime from `app/SiloUI`. Install both packages
   before building; the deployed output needs neither Node nor the app installed.
-- `public/media/`: portable, versioned website assets. `silo-tour.mp4` is copied
-  from `demo/out/silo-demo-v11.mp4`; still frames come from that same export.
-  GitHub uses 3s; secrets 7s; backup 9.3s; computers 18.8s;
-  network 23.5s; tools 44.5s.
+- `public/media/`: portable, versioned website assets. Six screenshot pairs show
+  the production glass UI with the read-only demo fixtures. Unsuffixed PNGs are
+  light; `-dark.png` variants are dark. Workflow captures are 1280 × 720;
+  GitHub, secrets, and backup captures are 1280 × 800. `overview.png` supplies
+  the computers screenshot. `silo-tour.mp4` and its `silo-tour.png` poster remain
+  the original v11 tour, deliberately unchanged.
+- `public/theme.js`: first-paint theme selection shared by the page and demo.
+  The icon-only navbar selector defaults to System and follows live OS changes.
+  Explicit choices persist in local storage; blocked storage still allows
+  switching during the visit. Picture sources and the iframe follow the same
+  choice. Only same-origin parent messages can update the embedded demo.
 - `public/media/tour.vtt` and `tour-transcript.txt`: descriptions of the silent
   demo. Keep these and the chapter timestamps aligned when replacing the film.
 - `public/fonts/`: self-hosted Latin WOFF2 IBM Plex Sans, Serif, and Mono under
@@ -123,7 +130,27 @@ documentation, checked on 2026-09-18.
 The demo directly imports `ApplicationShell`, `OverviewPage`, and the other
 production page components from `app/SiloUI/src`. It has its own page composition
 and read-only data adapters rather than mounting the native application entry
-point. Its CSS changes the outer window sizing and vertical sidebar spacing;
+point. The demo opens Settings expanded and retains the production sidebar footer placement.
+Its CSS adjusts the outer window sizing and makes the embed canvas transparent so
+the showcase card’s computer-style wallpaper shows through the sidebar and title bar.
+The same wallpaper extends behind the heading and caption;
 sidebar icon positioning belongs to the shared `components/sidebar-shell.css`.
 After the alignment fix, browser measurements found zero x/y/size difference
 across all ten visible navigation icons when toggling sidebar collapse.
+
+## Refresh screenshots
+
+Copy `scripts/capture.html` to `website/capture.html`, start the website dev
+server, and open `/capture.html` or `/capture.html?theme=dark`. The harness
+imports the same production components and inert fixtures as the demo. It
+shows the default glass material even when the capture host has reduced
+transparency enabled; the shipped demo uses the website background instead, disables blur for reduced
+transparency, and uses opaque surfaces for increased contrast.
+Capture Overview, Overview with personal’s SSH disclosure expanded (tools),
+and Network at 1280 × 720. Capture GitHub, Secrets, and Backup at 1280 × 800.
+Click the empty title bar to clear hover styling before saving each PNG.
+Remove the temporary root capture file afterward; it is not a build entry.
+
+Theme verification covers System changes, explicit choices, persistence,
+blocked storage, and synchronization between documents. Screenshot checks
+use fixture data, not live VMs or credentials.

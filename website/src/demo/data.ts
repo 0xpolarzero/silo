@@ -48,6 +48,7 @@ export const demoActions: ApplicationActions = {
   saveSecret: readOnlyOperation, removeSecret: readOnlyOperation,
   retryRuntimeChecks: readOnlyOperation, saveMachineConfiguration: readOnlyOperation,
   retryMachineConfiguration: readOnlyOperation, pushRepository: readOnlyOperation,
+  dismissMachineConfigurationError: readOnlyOperation,
   startWorkspace: readOnlyOperation, stopWorkspace: readOnlyOperation,
   restartWorkspace: readOnlyOperation, dismissWorkspaceError: readOnlyOperation,
   openTerminal: readOnlyOperation, openEditor: readOnlyOperation,

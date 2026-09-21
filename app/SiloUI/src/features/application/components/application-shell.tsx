@@ -260,6 +260,7 @@ export function ApplicationShell({
   workspaceAttention,
   navigationLoading,
   navigationDisabled = false,
+  defaultSettingsMenuOpen = activeTab === "settings",
   toggleSidebarRequest,
   onSidebarCollapsedChange,
   onTabChange,
@@ -281,6 +282,7 @@ export function ApplicationShell({
   workspaceAttention: { errors: number; warnings: number }
   navigationLoading?: ApplicationNavigationLoading
   navigationDisabled?: boolean
+  defaultSettingsMenuOpen?: boolean
   toggleSidebarRequest?: number
   onSidebarCollapsedChange?: (collapsed: boolean) => void
   onTabChange: (tab: ApplicationTab) => void
@@ -296,7 +298,7 @@ export function ApplicationShell({
   children: ReactNode
 }) {
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(activeTab === "workspaces")
-  const [settingsMenuOpen, setSettingsMenuOpen] = useState(activeTab === "settings")
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(defaultSettingsMenuOpen)
   const {
     collapsed: pinnedCollapsed,
     previewing,

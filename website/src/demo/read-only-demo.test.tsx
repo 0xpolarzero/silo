@@ -8,6 +8,8 @@ describe('the embedded production UI', () => {
     const user = userEvent.setup();
     render(<ReadOnlyDemo />);
     const sidebar = screen.getByRole('navigation', { name: 'Silo navigation' });
+    expect(within(sidebar).getByRole('button', { name: 'Collapse Settings menu' })).toHaveAttribute('aria-expanded', 'true');
+    expect(within(sidebar).getByRole('button', { name: 'Computers' })).toBeVisible();
     expect(screen.getByRole('button', { name: /Add/ })).toBeDisabled();
     await user.click(within(sidebar).getByRole('button', { name: /^Secrets/ }));
     expect(screen.getByText('PACKAGE_TOKEN')).toBeVisible();
