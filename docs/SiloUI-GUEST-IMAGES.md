@@ -2,7 +2,7 @@
 
 Silo ships one recommended Ubuntu 24.04 image for the app's CPU architecture.
 curl, Git, Git LFS, gh, CA certificates and Silo's credential helper are installed while
-building that image. The unpublished v3 recipe also bundles sudo, Python 3 and
+building that image. The v3 image also bundles sudo, Python 3 and
 OpenSSH's SFTP server for offline working-account provisioning. Silo creates
 the working account when it creates a VM; no Silo working account, token,
 identity or user data enters the image.
@@ -12,8 +12,8 @@ there is no version picker or arbitrary-image compatibility promise in this chan
 ## Publication and app builds
 
 The public standard container package is
-`ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v2`, with `-arm64` and `-amd64` tags.
-The matching [versioned release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v2)
+`ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v3`, with `-arm64` and `-amd64` tags.
+The matching [versioned release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v3)
 contains compressed Docker-save archives, package inventories in JSON manifests,
 SHA256SUMS, the recipe, setup script and source commit. The image itself retains
 Ubuntu's package copyright files under `/usr/share/doc`.
@@ -54,33 +54,36 @@ After publication, review both attached manifests and copy them into the lock's
 manifests before committing the lock. Updating a lock does not update existing
 VMs; restored backups also retain their guest systems.
 
-## Guest image v3 candidate
+## Guest image v3 publication
 
 The v3 recipe adds `sudo`, `python3` and `openssh-sftp-server`. Account setup
 uses these tools locally and refuses an image missing them. New-VM creation
 must not download or repair packages to establish the working account. The
 optional desktop retains its separate package and KasmVNC downloads.
 
-Both v3 architecture archives have been built. The checked-in lock now records
-their exact candidate manifests and hashes. ARM64 staging succeeded using the
-local candidate while its download function was forced to fail. This establishes
-local staging without downloads. Both images passed seven Docker tests with
-networking disabled, covering bundled tools, normal-user SFTP, and missing-tool
-or preinstalled-account rejection. Compressed archive sizes are 85,801,668 bytes
-for ARM64 and 87,799,791 bytes for AMD64.
+The public [v3 release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v3)
+was produced by [publication run 35546417121](https://github.com/0xpolarzero/silo/actions/runs/35546417121)
+from source `a9827c263df3daee28959b2c2073d85c6f980e9d`. The checked-in lock
+records these published archives:
 
-The ARM64 MicroSandbox candidate also passed provisioning, exec/SSH identity,
-SFTP/SCP permissions, Git/LFS roundtrips and restart persistence with `--net none`.
-All eight missing-tool cases failed preflight without package-manager calls;
-package-manager traps stayed untouched throughout the successful workflow.
-Evidence is under `src-tauri/target/verification/working-account/offline-v3/`.
-The isolated macOS debug bundle `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Account Verification.app` built successfully. The full offline suite passed using its bundled runtime, library and guest image; its archive and manifest match the ARM64 lock. Evidence: `target/verification/working-account/offline-v3-packaged/{live.log,image-verification.json}`. The GUI was not launched; Linux/KVM execution remains untested.
+| Architecture | Compressed bytes | SHA-256 |
+| --- | ---: | --- |
+| ARM64 | 85,767,229 | `03f592e602afb0fff724a1f82a5866571356d398b4a3edae1bc15d3a7360efc0` |
+| AMD64 | 87,768,822 | `8a3bf159c1d038626ef98a6e7c505ba1834a259f41886f4d14eba6a99d4f9566` |
 
-V3 has not been published. Publish the exact locked archives before merging or
-shipping; cold builds cannot retrieve the unpublished release. The public v2
-release remains available, but lacks the new account prerequisites. Earlier
-v1/v2 verification below does not establish v3 offline account setup or release
-readiness.
+Earlier local candidates passed seven Docker tests per architecture with
+networking disabled. The ARM64 candidate passed account provisioning,
+exec/SSH identity, SFTP/SCP permissions, Git/LFS roundtrips and restart
+persistence with `--net none`; all eight missing-tool cases failed preflight
+without package-manager calls. The isolated macOS debug bundle also passed
+this suite using its bundled candidate. Evidence is under
+`target/verification/working-account/offline-v3/` and `offline-v3-packaged/`.
+
+Those candidates differ from the published archive hashes. The actual published
+ARM64 archive subsequently passed all 13 offline live test groups using the
+signed packaged runtime, with its public archive hash verified. Evidence:
+`target/verification/working-account/offline-v3-published/live.log`.
+The GUI was not launched, and Linux/KVM execution remains untested.
 
 ## Runtime behavior
 

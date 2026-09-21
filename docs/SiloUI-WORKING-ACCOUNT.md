@@ -29,14 +29,13 @@ compatibility error; setup never repairs packages online or substitutes a root
 working session. Optional desktop installation still downloads its existing
 Ubuntu packages and KasmVNC archive.
 
-**The v3 image is not published.** Both architecture archives have been built,
-and the checked-in lock records their exact candidate manifests and hashes.
-ARM64 staging succeeded with the download function forced to fail, establishing
-that the locally available artifact needs no download. The ARM64 live test also
-passed provisioning and the account workflow with guest networking disabled and
-package-manager invocation traps installed. Publish the exact locked archives
-before merging or shipping: cold builds cannot
-retrieve the unpublished release. Existing VM startup is unaffected.
+The [v3 image is public](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v3),
+and the checked-in lock records its exact published manifests and hashes.
+[Publication run 35546417121](https://github.com/0xpolarzero/silo/actions/runs/35546417121)
+built source `a9827c263df3daee28959b2c2073d85c6f980e9d`. Earlier offline
+acceptance used local candidates with different hashes. The published ARM64
+archive has now passed all 13 offline live test groups using the signed packaged
+runtime, with its public archive hash verified. Existing VM startup is unaffected.
 
 ## Why runtime initialization remains root
 
@@ -152,7 +151,8 @@ fixture tests. No migration of an existing user VM was performed.
 Both architecture images passed all seven Docker tests with networking disabled,
 including normal-user SFTP and rejection of missing sudo, Python or SFTP support
 and a preinstalled working account. ARM64 and AMD64 compressed archives are
-85,801,668 and 87,799,791 bytes respectively; the lock records their exact hashes.
+85,801,668 and 87,799,791 bytes respectively. These were local candidates;
+the current lock instead records the subsequently published artifacts.
 ARM64 local staging passed with its download function forced to throw.
 
 The ARM64 MicroSandbox test used the candidate image with `--net none`. All eight
@@ -162,11 +162,20 @@ persistence passed. Traps confirmed no package manager ran across the workflow.
 Evidence: `src-tauri/target/verification/working-account/offline-v3/live.log`;
 Docker test logs: `/tmp/silo-guest-image-v3-{arm64,amd64}-tests.log`.
 
-The rebuilt bundle passed the additional verification below. The candidate
-archives are not published; cold builds require publication of these exact artifacts before
-merging or shipping. Desktop and browser evidence above used the earlier image;
+The rebuilt candidate bundle passed the additional verification below.
+Publication subsequently produced different archive hashes. Desktop and browser
+evidence above used the earlier image;
 the offline account test does not claim offline desktop installation.
 
 ### Packaged offline v3 acceptance
 
-The isolated debug bundle `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Account Verification.app` built successfully. All 13 live test groups passed using the runtime, library and v3 guest image inside that exact bundle, with guest networking disabled and no package-manager calls. Its guest archive SHA-256 and manifest match the ARM64 lock. Evidence: `target/verification/working-account/offline-v3-packaged/{live.log,image-verification.json}`. The disposable VM was stopped and removed. No GUI launch or Linux/KVM verification is claimed. Publication of both exact v3 archives remains required for cold builds elsewhere.
+The isolated debug bundle `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Account Verification.app` built successfully. All 13 live test groups passed using the runtime, library and v3 guest image inside that exact bundle, with guest networking disabled and no package-manager calls. Its guest archive SHA-256 and manifest matched the candidate ARM64 lock at the time, not the subsequently published archive. Evidence: `target/verification/working-account/offline-v3-packaged/{live.log,image-verification.json}`. The disposable VM was stopped and removed. No GUI launch or Linux/KVM verification is claimed. The published v3 archives are now available; acceptance of the published ARM64 bytes is recorded below.
+
+### Published v3 acceptance
+
+The actual public ARM64 archive passed all 13 offline live test groups using the
+signed packaged runtime. Its verified SHA-256 is
+`03f592e602afb0fff724a1f82a5866571356d398b4a3edae1bc15d3a7360efc0`.
+Evidence: `target/verification/working-account/offline-v3-published/live.log`.
+This validates the published ARM64 guest bytes separately from the earlier
+candidate tests; it does not add GUI, AMD64 VM or Linux/KVM acceptance.
