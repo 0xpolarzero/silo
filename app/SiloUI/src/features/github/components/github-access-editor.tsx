@@ -403,7 +403,7 @@ export function GitHubAccessEditor({
                                 checked={access.authenticationMethod === "token"}
                                 disabled={workspaceDisabled || !tokenConnected}
                                 onChange={() => onWorkspaceRepositoryAccessChange(name, { ...access, authenticationMethod: "token" })} />
-                              Use token <Info className="size-3 text-muted-foreground" aria-hidden="true" />
+                              Use token
                             </label>
                           </TooltipTrigger><TooltipContent>Full token access. This VM can perform every action permitted by the token, with no additional Silo repository restrictions. Credentials remain outside the VM.</TooltipContent></Tooltip></TooltipProvider>
                         </div>
