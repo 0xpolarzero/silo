@@ -13,7 +13,7 @@ const workspaces: ApplicationWorkspace[] = fixture.workspaces.map((workspace, in
   machine: { ...workspace.machine, id: remoteWorkspaceTarget(office.id, workspace.machine.id) },
   state: 'running' as const,
   stateDetail: 'Running',
-} : workspace);
+} : { ...workspace, machine: { ...workspace.machine, ...(index === 0 ? { desktop: { startWithSandbox: true } } : {}) } });
 
 export const demoSource: ApplicationSource = {
   ...fixture,
@@ -28,7 +28,7 @@ export const demoSource: ApplicationSource = {
   })) },
   remoteComputers: [office],
   remoteManagement: { enabled: false, hostId: 'demo-laptop', name: 'My laptop', address: 'demo@laptop.local' },
-  preferences: { ...fixture.preferences, reduceMotion: true },
+  preferences: { ...fixture.preferences, reduceMotion: false },
   secrets: fixture.secrets.map(secret => ({ ...secret, state: 'active' })),
   network: { workspaces: workspaces.map(workspace => ({
     workspace: workspaceTarget(workspace), error: null,
@@ -45,6 +45,13 @@ export function readOnlyOperation(): never {
 }
 const directories = fixtureDirectoryLoader(workspaces);
 export const demoActions: ApplicationActions = {
+  openDesktop: readOnlyOperation,
+  readWorkspaceStorage: async () => ({
+    workspaceHostBytes: 18 * 1024 ** 3, runtimeHostBytes: 4 * 1024 ** 3,
+    workspaceUsedBytes: 12 * 1024 ** 3, workspaceCapacityBytes: 64 * 1024 ** 3,
+    lastReclaimedBytes: 2 * 1024 ** 3, lastTrimAt: 1789941600, lastError: null,
+    history: [{ at: 1789941600, trigger: 'scheduled', reclaimedBytes: 2 * 1024 ** 3, error: null }],
+  }),
   saveSecret: readOnlyOperation, removeSecret: readOnlyOperation,
   retryRuntimeChecks: readOnlyOperation, saveMachineConfiguration: readOnlyOperation,
   retryMachineConfiguration: readOnlyOperation, pushRepository: readOnlyOperation,

@@ -1,4 +1,6 @@
 import { useState, type ReactNode, type SyntheticEvent } from 'react';
+import { ApplicationCommandMenu } from '@/features/application/components/application-command-menu';
+import { applicationCommands } from '@/features/application/components/application-commands';
 import { ApplicationShell } from '@/features/application/components/application-shell';
 import { useApplicationNavigation } from '@/features/application/model/use-application-navigation';
 import { createDirectoryStore } from '@/features/application/model/directory-store';
@@ -36,6 +38,13 @@ export function ReadOnlyDemo() {
 
 function DemoPages() {
   const navigation = useApplicationNavigation(false);
+  const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<Set<string>>(new Set());
+  const commands = applicationCommands(demoSource, demoActions, route => {
+    setSelectedWorkspaceIds(new Set(route.workspace ? [route.workspace] : []));
+    if (route.workspaceSection) navigation.selectWorkspaceSection(route.workspaceSection);
+    else if (route.settingsSection) navigation.selectSettingsSection(route.settingsSection);
+    else if (route.tab) navigation.selectTab(route.tab);
+  }).filter(command => command.group !== 'Actions');
   const [directoryStore] = useState(() => createDirectoryStore(demoActions.listWorkspaceDirectory));
   const overview = navigation.tab === 'workspaces' && navigation.workspaceSection === 'overview';
   let page: ReactNode;
@@ -47,7 +56,7 @@ function DemoPages() {
           workspaces={demoSource.workspaces} activities={demoSource.activities}
           network={demoSource.network} networkActions={demoActions}
           editor={demoSource.preferences.editor} browser={demoSource.preferences.browser}
-          directoryStore={directoryStore} active selectedWorkspaceIds={new Set()}
+          directoryStore={directoryStore} active selectedWorkspaceIds={selectedWorkspaceIds}
           logQuery="" repositoryPushOperations={[]}
           onOpenEditor={readOnlyOperation} onWorkspaceFilterChange={readOnlyOperation}
           onLogQueryChange={readOnlyOperation} onPushRepository={readOnlyOperation}
@@ -77,12 +86,12 @@ function DemoPages() {
       onSettingsSectionChange={navigation.selectSettingsSection}
       canGoBack={navigation.canGoBack} canGoForward={navigation.canGoForward}
       onGoBack={navigation.goBack} onGoForward={navigation.goForward}
-      reduceMotion
+      commandMenu={<ApplicationCommandMenu commands={commands} />}
     >
       <fieldset disabled={!overview} aria-label="Read-only sample data" className="demo-readonly"
         onClickCapture={overview ? undefined : preventInteraction} onSubmitCapture={preventInteraction}
-        onPointerDownCapture={event => event.stopPropagation()}
-        onMouseDownCapture={event => event.stopPropagation()}
+        onPointerDownCapture={overview ? undefined : event => event.stopPropagation()}
+        onMouseDownCapture={overview ? undefined : event => event.stopPropagation()}
         onDragStartCapture={preventInteraction} onDropCapture={preventInteraction}
         onKeyDownCapture={event => { if (!overview && (event.key === 'Enter' || event.key === ' ')) preventInteraction(event); }}>
         {page}

@@ -51,3 +51,27 @@ it('expands actual local and remote VM SSH controls while keeping actions disabl
     expect(disclosure).toHaveAttribute('aria-expanded', 'false');
   }
 });
+
+it('offers the production command menu for safe navigation', async () => {
+  const user = userEvent.setup();
+  render(<ReadOnlyDemo />);
+  await user.click(screen.getByRole('button', { name: 'Search or jump to' }));
+  const search = screen.getByRole('combobox', { name: 'Search commands' });
+  await user.type(search, 'Secrets');
+  await user.keyboard('{Enter}');
+  expect(screen.getByText('PACKAGE_TOKEN')).toBeVisible();
+  expect(screen.queryByRole('dialog', { name: 'Commands' })).not.toBeInTheDocument();
+});
+
+it('shows sandbox menus and sample storage without allowing native operations', async () => {
+  const user = userEvent.setup();
+  render(<ReadOnlyDemo />);
+  await user.click(screen.getByRole('button', { name: 'More actions for dev' }));
+  expect(screen.getByRole('menuitem', { name: 'Open dev desktop' })).toHaveAttribute('aria-disabled', 'true');
+  expect(screen.getByRole('menuitem', { name: 'Restart dev' })).toHaveAttribute('aria-disabled', 'true');
+  await user.click(screen.getByRole('menuitem', { name: 'Storage for dev' }));
+  expect(await screen.findByText('18.00 GiB')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Reclaim unused space' })).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: 'Reclaim history, 1 attempts' }));
+  expect(screen.getByLabelText('Reclaim history entries')).toBeVisible();
+});

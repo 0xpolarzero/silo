@@ -41,8 +41,11 @@ variables, account, cookies, or analytics are required by the site.
   logs, repositories, secrets, computers, and backups come from bundled fixtures.
   The overview includes local VMs and a VM on Office Mac with expandable local
   and network SSH access. The 680px embed fits both expanded sidebar groups.
-  Sidebar navigation and SSH disclosure work. The shared overview read-only mode
-  disables mutations, clipboard actions, native launches, and reordering; other
+  Sidebar navigation, collapse/hover transitions, the production command palette,
+  SSH disclosures, sandbox action menus, and sample storage/history inspection
+  work. Commands navigate pages and sandbox views; native action commands are
+  omitted. The shared overview read-only mode disables mutations, clipboard
+  actions, native launches, and reordering; other
   pages use a disabled fieldset and captured interaction events. Mutation adapters also reject
   calls. Preferences and integrations use memory-only fixture stores. No native
   application controller or live data source is created.
