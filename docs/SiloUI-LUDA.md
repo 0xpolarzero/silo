@@ -27,11 +27,17 @@ The optional Luda browser provider and Editor Bridge are not installed.
 
 ## Setup and retry
 
-The desktop viewer offers **Set up agent tools** for an existing desktop and
-**Repair agent tools** when needed. Setup is explicit; viewing a desktop or
-booting a VM never installs packages or rewrites agent configuration. These
-actions also work through Silo's remote-computer connection. Update both Silo
-applications when using a new action against a remote owner.
+Adding a Linux desktop installs and registers Luda for all supported agents
+before provisioning succeeds. There is no separate setup step in the viewer.
+Viewing a desktop or booting an existing VM never installs packages or rewrites
+agent configuration.
+
+The viewer shows **Agent tools unavailable · Repair** in its existing header
+only when guest checks report missing tools or a failed installation. Healthy
+and unknown states have no setup banner or repair action. The ellipsis opens a
+dropdown for restarting or stopping the desktop; confirmation stays in the
+header. Repair also works through Silo's remote-computer connection. Update both
+Silo applications when using a new action against a remote owner.
 
 Desktop installation and Luda readiness are recorded separately. A failed tool
 installation leaves the desktop package installation intact; retry completes
@@ -45,13 +51,21 @@ entry. The client registrations are not one atomic transaction.
 
 Fresh setup and existing-desktop repair provide `greybird-gtk-theme` and set
 `XDG_CURRENT_DESKTOP=XFCE` in the managed session startup. Upgrading an existing
-VM is explicit: use **Set up agent tools** or **Repair agent tools**, save open
-work, stop and start the desktop, then reconnect agent sessions. Repair does not
+VM with unavailable tools is explicit: use **Repair**, save open work, stop and
+start the desktop, then reconnect agent sessions. Repair does not
 close live applications; an existing session adopts the new identity only after
 restart. Repeated repair skips package downloads when the theme is installed.
 
-The public status reports `ludaState` and `ludaVersion`; the stopped-VM response
-does not guess installation readiness. Installer diagnostics remain inside the
+The public status reports `ludaState` and `ludaVersion`. Checks read the setup
+receipt, runtime executable, and existing installer lock. A failed receipt,
+missing or nonexecutable runtime after recorded success, or an interrupted
+installation offers repair. An active installer reports progress. An absent
+receipt with no executable reports missing tools; an unrecorded executable,
+unreadable evidence, or an older helper without Luda status remains unknown.
+The stopped-VM response does not guess installation readiness. These checks
+do not test every agent's current registration or live MCP connection.
+
+Installer diagnostics remain inside the
 guest at `/var/log/silo-luda-install.log`. A root-owned lock prevents overlapping
 setup attempts. Guest state is `/var/lib/silo-desktop/luda.json`.
 
@@ -76,6 +90,27 @@ Primary sources: [Luda image packaging](https://github.com/0xpolarzero/luda/blob
 and [session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.4/src/luda/session.py).
 
 ## Verification
+
+The desktop toolbar revision passed 36 focused frontend tests, 7 Rust desktop
+tests with synthetic GitHub configuration, 41 desktop script tests, and 13 Luda
+installer tests. Frontend typechecking, lint, and the production web build passed.
+Browser fixtures verified the healthy header, dropdown, confirmation at the
+640-pixel minimum window width, and repair prompt removal. These checks used
+fixtures and temporary files; no packaged app or live VM was inspected for this
+revision. Native popup placement and live all-agent operation still require a
+packaged application check.
+
+Commands, from the repository root:
+
+```sh
+npm --prefix app/SiloUI test -- src/desktop/linux-desktop-viewer.test.tsx src/desktop/linux-desktop-native.test.tsx src/desktop/linux-desktop-permissions.test.ts src/features/sandboxes/components/machine-desktop.test.tsx
+npm --prefix app/SiloUI run typecheck
+npm --prefix app/SiloUI run lint
+npm --prefix app/SiloUI run build
+python3 -m unittest discover -s app/SiloUI/scripts -p 'test_desktop_*.py'
+python3 -m unittest discover -s app/SiloUI/scripts -p test_luda_setup.py
+SILO_GITHUB_APP_SLUG=silo-test SILO_GITHUB_CLIENT_ID=test-client SILO_GITHUB_CLIENT_SECRET=test-secret cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml desktop:: --quiet
+```
 
 Latest: [Luda 0.3.4 upgrade verification](SiloUI-LUDA-034-VERIFICATION.md).
 This release ships the exact accepted skill from the

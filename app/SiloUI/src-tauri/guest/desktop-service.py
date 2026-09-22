@@ -20,6 +20,7 @@ HOME = Path('/home/silo')
 SELF = '/usr/local/bin/silo-desktop'
 LOG = Path('/var/log/silo-desktop.log')
 WORKING_ACCOUNT = Path('/var/lib/silo/working-account.json')
+LUDA_PYTHON = Path('/opt/luda/current/.venv/bin/python')
 
 
 def validate_policy_file(path):
@@ -103,18 +104,47 @@ def listening():
         return False
 
 
-def luda_status():
+def recorded_luda_status(installing):
     try:
-        data = read('luda.json', {})
-        state = data.get('state', 'missing')
-        version = data.get('version')
-        if state not in ('missing', 'installing', 'ready', 'failed'):
+        missing = object()
+        data = read('luda.json', missing)
+        executable = LUDA_PYTHON.is_file() and os.access(LUDA_PYTHON, os.X_OK)
+        # An unrecorded executable may have been installed independently. Its
+        # registration is unknown; absence of our receipt is not a failure.
+        state = (None if executable else 'missing') if data is missing else data.get('state')
+        version = None if data is missing else data.get('version')
+        if installing:
+            state = 'installing'
+        elif state == 'installing' or (state == 'ready' and not executable):
+            state = 'failed'
+        elif state not in ('missing', 'ready', 'failed', None):
             state = 'failed'
         if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
             version = None
         return dict(ludaState=state, ludaVersion=version)
     except (ValueError, AttributeError):
-        return dict(ludaState='failed', ludaVersion=None)
+        return dict(ludaState='installing' if installing else 'failed', ludaVersion=None)
+    except OSError:
+        return dict(ludaState='installing' if installing else None, ludaVersion=None)
+
+
+def luda_status():
+    try:
+        guard = (STATE / 'luda.lock').open('rb')
+    except FileNotFoundError:
+        return recorded_luda_status(False)
+    except OSError:
+        return dict(ludaState=None, ludaVersion=None)
+    with guard:
+        try:
+            # A shared, nonblocking lock proves no installer is active while
+            # reading its receipt. Never create or rewrite files during a check.
+            fcntl.flock(guard, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return recorded_luda_status(True)
+        except OSError:
+            return dict(ludaState=None, ludaVersion=None)
+        return recorded_luda_status(False)
 
 
 def status():

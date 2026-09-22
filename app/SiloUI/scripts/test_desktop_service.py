@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -32,6 +33,9 @@ class DesktopLifecycle(unittest.TestCase):
         identity_patch = patch.multiple(service, USER='silo', HOME=Path('/home/silo'))
         identity_patch.start()
         self.addCleanup(identity_patch.stop)
+        runtime_patch = patch.object(service, 'LUDA_PYTHON', self.root / 'luda/.venv/bin/python', create=True)
+        runtime_patch.start()
+        self.addCleanup(runtime_patch.stop)
         self.unified_policy()
 
     def command(self, *arguments):
@@ -208,15 +212,63 @@ class DesktopLifecycle(unittest.TestCase):
         self.assertEqual(large.read_bytes(), b'b' * (256 * 1024))
         self.assertEqual(target.read_bytes(), original)
 
+    def luda_runtime(self):
+        service.LUDA_PYTHON.parent.mkdir(parents=True, exist_ok=True)
+        service.LUDA_PYTHON.write_text('#!/bin/sh\nexit 0\n')
+        service.LUDA_PYTHON.chmod(0o755)
+
     def test_luda_status_is_separate_from_desktop_readiness(self):
         self.assertEqual(self.command('status')['ludaState'], 'missing')
-        for state in ('installing', 'failed', 'ready'):
+        self.assertFalse((service.STATE / 'luda.lock').exists())
+        self.luda_runtime()
+        for state in ('failed', 'ready'):
             service.write(service.STATE / 'luda.json', {'state': state, 'version': '0.3.0', 'error': 'private log'})
             result = self.command('status')
             self.assertTrue(result['installed'])
             self.assertEqual(result['ludaState'], state)
             self.assertEqual(result['ludaVersion'], '0.3.0')
             self.assertNotIn('private log', json.dumps(result))
+
+    def test_unrecorded_runtime_has_unknown_status(self):
+        self.luda_runtime()
+        self.assertIsNone(self.command('status')['ludaState'])
+        self.assertFalse((service.STATE / 'luda.json').exists())
+        self.assertFalse((service.STATE / 'luda.lock').exists())
+
+    def test_ready_requires_an_executable_runtime(self):
+        service.write(service.STATE / 'luda.json', {'state': 'ready', 'version': '0.3.4'})
+        self.assertEqual(self.command('status')['ludaState'], 'failed')
+        self.luda_runtime()
+        service.LUDA_PYTHON.chmod(0o644)
+        self.assertFalse(os.access(service.LUDA_PYTHON, os.X_OK))
+        self.assertEqual(self.command('status')['ludaState'], 'failed')
+        service.LUDA_PYTHON.chmod(0o755)
+        self.assertEqual(self.command('status')['ludaState'], 'ready')
+
+    def test_only_a_running_installer_reports_installing(self):
+        service.write(service.STATE / 'luda.json', {'state': 'installing', 'version': '0.3.4'})
+        self.assertEqual(self.command('status')['ludaState'], 'failed')
+        self.assertFalse((service.STATE / 'luda.lock').exists())
+        with (service.STATE / 'luda.lock').open('w') as installer:
+            service.fcntl.flock(installer, service.fcntl.LOCK_EX | service.fcntl.LOCK_NB)
+            self.assertEqual(self.command('status')['ludaState'], 'installing')
+        self.assertEqual(self.command('status')['ludaState'], 'failed')
+        self.assertEqual(service.read('luda.json')['state'], 'installing')
+
+    def test_active_installer_takes_precedence_over_previous_failure(self):
+        service.write(service.STATE / 'luda.json', {'state': 'failed', 'version': '0.3.4'})
+        with (service.STATE / 'luda.lock').open('w') as installer:
+            service.fcntl.flock(installer, service.fcntl.LOCK_EX | service.fcntl.LOCK_NB)
+            self.assertEqual(self.command('status')['ludaState'], 'installing')
+
+    def test_unreadable_luda_receipt_has_unknown_status(self):
+        with patch.object(service, 'read', side_effect=PermissionError('private path')):
+            self.assertEqual(service.luda_status(), dict(ludaState=None, ludaVersion=None))
+
+    def test_uncheckable_installer_lock_has_unknown_status(self):
+        (service.STATE / 'luda.lock').touch()
+        with patch.object(service.fcntl, 'flock', side_effect=OSError('private path')):
+            self.assertEqual(service.luda_status(), dict(ludaState=None, ludaVersion=None))
 
     def test_invalid_luda_state_is_sanitized(self):
         service.write(service.STATE / 'luda.json', {'state': 'private log', 'version': 'private log'})
@@ -225,6 +277,7 @@ class DesktopLifecycle(unittest.TestCase):
         self.assertIsNone(result['ludaVersion'])
 
     def test_status_reports_installed_luda_release_without_requiring_current_pin(self):
+        self.luda_runtime()
         for version in ('0.3.0', '0.3.1', '1.10.12'):
             with self.subTest(version=version):
                 service.write(service.STATE / 'luda.json', {'state': 'ready', 'version': version})
@@ -233,6 +286,7 @@ class DesktopLifecycle(unittest.TestCase):
                 self.assertEqual(result['ludaState'], 'ready')
 
     def test_invalid_luda_versions_do_not_escape_or_break_status(self):
+        self.luda_runtime()
         for version in (None, 3, True, [], {}, 'private log', '0.3', '0.3.1\n',
                         'v0.3.1', '0.3.1; secret', '０.３.１'):
             with self.subTest(version=version):

@@ -139,5 +139,5 @@ dpkg-query -W > /var/lib/silo-desktop/packages.txt
 printf '%s\n' '{"version":"1","kasmVncVersion":"1.5.0"}' > /var/lib/silo-desktop/installed.json
 printf '%s\n' installed > /var/lib/silo-desktop/install-stage
 rm -f "$package"
-/usr/local/bin/silo-desktop boot
 python3 /usr/local/libexec/silo-setup-luda.py
+/usr/local/bin/silo-desktop boot

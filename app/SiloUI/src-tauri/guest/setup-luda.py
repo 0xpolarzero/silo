@@ -47,7 +47,8 @@ def read_lock():
 
 def read_state():
     try:
-        return json.loads((STATE / 'luda.json').read_text())
+        data = json.loads((STATE / 'luda.json').read_text())
+        return data if isinstance(data, dict) else {}
     except (FileNotFoundError, ValueError):
         return {}
 
@@ -101,7 +102,8 @@ def provision(repair=False):
             raise RuntimeError('Luda installation is already running') from None
         previous = read_state()
         python = PREFIX / 'current/.venv/bin/python'
-        matches = previous.get('state') == 'ready' and previous.get('commit') == lock['commit'] and python.is_file()
+        matches = (previous.get('state') == 'ready' and previous.get('commit') == lock['commit']
+                   and python.is_file() and os.access(python, os.X_OK))
         if matches and previous.get('state') == 'ready' and not repair:
             return
         write_state('installing', lock)

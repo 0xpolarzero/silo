@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type ComponentType } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { getCurrentWindow } from "@tauri-apps/api/window"
-import { Ellipsis, Maximize, Monitor } from "lucide-react"
+import { CircleAlert, Maximize, Monitor } from "lucide-react"
 import { linuxDesktopStateSchema, type LinuxDesktopState, type DesktopAction } from "./linux-desktop-state"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { DesktopActionsMenu, NativeDesktopActionsMenu, type DesktopMenuProps } from "./linux-desktop-menu"
 
-export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry, onFullscreen, screenRef, toolsUpdated = false }: {
+export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry, onFullscreen, screenRef, toolsUpdated = false, MenuComponent = DesktopActionsMenu }: {
   name: string
   state: LinuxDesktopState | null
   busy: boolean
@@ -16,32 +17,33 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
   onFullscreen: () => void
   screenRef?: React.RefObject<HTMLDivElement | null>
   toolsUpdated?: boolean
+  MenuComponent?: ComponentType<DesktopMenuProps>
 }) {
-  const [menuOpen, setMenuOpen] = useState(false)
+  const [menuError, setMenuError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<"stop" | "restart" | null>(null)
   const running = state?.state === "running"
-  const toolsLabel = state?.ludaState === "ready" || state?.ludaState === "failed" || state?.ludaState === "installing" ? "Repair agent tools" : "Set up agent tools"
+  const toolsUnavailable = state?.installed && state.state !== "vm-stopped" && (state.ludaState === "missing" || state.ludaState === "failed")
+  const problem = error ?? menuError
   const actionLabel = state?.state === "vm-stopped" ? state.autoStart ? "Start sandbox" : "Start sandbox and desktop" : state?.state === "failed" ? "Restart desktop" : "Start desktop"
   return <TooltipProvider><main className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
       <Monitor aria-hidden="true" className="size-4" /><h1 className="min-w-0 flex-1 truncate text-xs font-medium">{name}</h1>
+      {confirm ? <div role="alert" className="flex min-w-0 items-center gap-2 text-xs">
+        <p className="truncate" title="This closes the desktop's graphical applications.">{confirm === "stop" ? "Stopping" : "Restarting"} the desktop closes its graphical applications.</p>
+        <Button size="xs" variant="ghost" onClick={() => setConfirm(null)}>Cancel</Button>
+        <Button size="xs" disabled={busy} onClick={() => { onAction(confirm); setConfirm(null) }}>{confirm === "stop" ? "Stop desktop" : "Restart desktop"}</Button>
+      </div> : <>
+        {(toolsUnavailable || problem) && <div role="alert" className="flex min-w-0 items-center gap-1 text-xs text-destructive">
+          <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" /><span className="truncate" title={problem ?? undefined}>{toolsUnavailable ? "Agent tools unavailable" : problem}</span>
+          {toolsUnavailable ? <Button size="xs" variant="ghost" disabled={busy} aria-label="Repair agent tools" onClick={() => onAction("setup-tools")}>Repair</Button>
+            : error && <Button size="xs" variant="ghost" disabled={busy} onClick={onRetry}>Reconnect</Button>}
+        </div>}
+        {state?.installed && state.state !== "vm-stopped" && state.ludaState === "installing" && <span role="status" className="text-xs text-muted-foreground">Setting up agent tools…</span>}
+        {toolsUpdated && state?.ludaState === "ready" && <span role="status" className="text-xs text-muted-foreground">Reconnect agent sessions to load the tools.</span>}
+      </>}
       <Button variant="ghost" size="icon-xs" aria-label="Toggle fullscreen" onClick={onFullscreen}><Maximize /></Button>
-      {running && <Button variant="ghost" size="icon-xs" aria-label="Desktop actions" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}><Ellipsis /></Button>}
+      {running && <MenuComponent busy={busy} onSelect={action => { setMenuError(null); setConfirm(action) }} onError={setMenuError} />}
     </header>
-    {running && menuOpen && <div role="group" aria-label="Desktop actions" className="flex shrink-0 justify-end gap-2 border-b border-border px-3 py-2">
-      <Button size="xs" variant="outline" disabled={busy} onClick={() => { setConfirm("restart"); setMenuOpen(false) }}>Restart desktop</Button>
-      <Button size="xs" variant="outline" disabled={busy} onClick={() => { setConfirm("stop"); setMenuOpen(false) }}>Stop desktop</Button>
-    </div>}
-    {state?.installed && <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs" aria-label="Agent desktop tools">
-      <p className="flex-1">{state.ludaState === "ready" ? toolsUpdated ? "Agent tools ready. Reconnect existing agent sessions to load the tools." : "Agent desktop tools ready." : state.ludaState === "installing" ? "Setting up agent tools…" : state.ludaState === "failed" ? "Agent tools need repair." : state.state === "vm-stopped" ? "Start the sandbox to check agent tools, or set them up now." : "Set up Luda so agents can use the desktop."}</p>
-      <Button size="xs" variant="outline" disabled={busy} onClick={() => onAction("setup-tools")}>{toolsLabel}</Button>
-    </div>}
-    {confirm && <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs" role="alert">
-      <p className="flex-1">{confirm === "stop" ? "Stopping" : "Restarting"} the desktop closes its graphical applications.</p>
-      <Button size="xs" variant="outline" onClick={() => setConfirm(null)}>Cancel</Button>
-      <Button size="xs" onClick={() => { onAction(confirm); setConfirm(null) }}>{confirm === "stop" ? "Stop desktop" : "Restart desktop"}</Button>
-    </div>}
-    {error && <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 text-xs"><p className="flex-1">{error}</p><Button size="xs" variant="outline" disabled={busy} onClick={onRetry}>Reconnect</Button></div>}
     {running ? <div ref={screenRef} className="min-h-0 flex-1" aria-label="Linux desktop display" /> : <div className="grid min-h-0 flex-1 place-items-center p-6 text-center" aria-busy={busy}>
       <div className="grid max-w-sm justify-items-center gap-3">
         <Monitor aria-hidden="true" className="size-8 text-muted-foreground" />
@@ -117,17 +119,18 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     operation.current = true
     revision.current += 1
     setBusy(true)
-    if (action === "setup-tools") setState(current => current ? { ...current, ludaState: "installing" } : current)
+    const previous = state
+    if (action === "setup-tools") { setToolsUpdated(false); setState(current => current ? { ...current, ludaState: "installing" } : current) }
     setError(null)
     try {
       const result = linuxDesktopStateSchema.parse(await invoke("desktop_action", { workspace, action }))
       setState(result)
       if (action === "setup-tools") setToolsUpdated(result.ludaState === "ready")
     }
-    catch (cause) { setError(String(cause)); if (action === "setup-tools") setState(current => current ? { ...current, ludaState: "failed" } : current) }
+    catch (cause) { setError(String(cause)); if (action === "setup-tools") setState(previous) }
     finally { operation.current = false; setBusy(false) }
   }
-  return <LinuxDesktopViewer name={name} state={state} busy={busy} error={error ?? connectionError} screenRef={screenRef} toolsUpdated={toolsUpdated}
+  return <LinuxDesktopViewer name={name} state={state} busy={busy} error={error ?? connectionError} screenRef={screenRef} toolsUpdated={toolsUpdated} MenuComponent={NativeDesktopActionsMenu}
     onAction={action => { void handleAction(action) }}
     onRetry={() => { setConnection(value => value + 1); void refresh() }}
     onFullscreen={() => { const window = getCurrentWindow(); void window.isFullscreen().then(value => window.setFullscreen(!value)).catch(cause => setError(String(cause))) }} />

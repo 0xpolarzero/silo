@@ -15,11 +15,13 @@ function permissions(window: string, webview: string) {
     .flatMap(capability => capability.permissions.map(permission => typeof permission === "string" ? permission : permission.identifier))
 }
 
-it("grants the desktop shell only its desktop controls and fullscreen", () => {
+it("grants the desktop shell only its desktop controls, native menu, and fullscreen", () => {
   const allowed = permissions("desktop-shell-example", "desktop-shell-example")
   expect(allowed.sort()).toEqual([
     "allow-read-desktop-state", "allow-desktop-action", "allow-desktop-viewer-attach", "allow-desktop-viewer-detach",
     "core:window:allow-is-fullscreen", "core:window:allow-set-fullscreen",
+    "core:window:allow-inner-size", "core:window:allow-scale-factor",
+    "core:menu:allow-new", "core:menu:allow-popup", "core:resources:allow-close",
   ].sort())
   expect(permissions("main", "main")).toContain("allow-open-desktop")
 })

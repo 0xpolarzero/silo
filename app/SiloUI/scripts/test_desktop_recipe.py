@@ -38,6 +38,8 @@ elif name == 'apt-get':
 elif name == 'python3':
     if 'prepare-install' in args:
         print('silo ' + str(root / 'home/silo'))
+    elif args and args[0].endswith('/silo-setup-luda.py') and os.environ.get('LUDA_FAIL'):
+        sys.exit(23)
 elif name == 'install':
     if '-d' in args:
         pathlib.Path(args[-1]).mkdir(parents=True, exist_ok=True)
@@ -111,6 +113,27 @@ class DesktopRecipe(unittest.TestCase):
         self.assertTrue((self.root / 'theme-installed').exists())
         self.assert_session_identity()
         self.assertIn(['silo-desktop', ['boot']], calls)
+
+    def test_fresh_desktop_provisions_luda_before_starting(self):
+        calls = self.run_recipe()
+        install = ['python3', [str(self.root / 'usr/local/libexec/silo-setup-luda.py')]]
+        self.assertEqual(calls.count(install), 1)
+        self.assertLess(calls.index(install), calls.index(['silo-desktop', ['boot']]))
+
+    def test_luda_failure_fails_installation_and_retry_preserves_desktop(self):
+        result = subprocess.run(['/bin/sh', str(self.recipe), 'install'],
+                                env=dict(self.env, LUDA_FAIL='1'),
+                                text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
+        calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertNotIn(['silo-desktop', ['boot']], calls)
+        self.assertTrue((self.state / 'installed.json').exists())
+        (self.root / 'calls.jsonl').unlink()
+        calls = self.run_recipe()
+        self.assertIn(['python3', [str(self.root / 'usr/local/libexec/silo-setup-luda.py')]], calls)
+        self.assertFalse(any(name in ('curl', 'apt-get') for name, _ in calls))
+        self.assertFalse(any(name == 'silo-desktop' and args in (['boot'], ['stop'])
+                             for name, args in calls))
 
     def test_existing_desktop_install_and_repair_upgrade_session_and_theme(self):
         (self.state / 'installed.json').write_text('{"version":"1"}')

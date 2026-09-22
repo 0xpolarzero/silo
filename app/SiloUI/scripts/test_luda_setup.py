@@ -37,6 +37,7 @@ class LudaSetup(unittest.TestCase):
         executable = setup.PREFIX / 'current/.venv/bin/python'
         executable.parent.mkdir(parents=True)
         executable.touch()
+        executable.chmod(0o755)
 
     def test_first_install_and_subsequent_install_are_network_free(self):
         with patch.object(setup, 'install_release', side_effect=lambda *_: self.runtime()) as install:
@@ -103,6 +104,26 @@ class LudaSetup(unittest.TestCase):
             with patch.object(setup, 'install_release') as install:
                 setup.provision()
             install.assert_called_once()
+
+    def test_repair_reinstalls_nonexecutable_runtime_on_first_attempt(self):
+        self.runtime()
+        executable = setup.PREFIX / 'current/.venv/bin/python'
+        executable.chmod(0o644)
+        setup.write_state('ready', self.lock)
+        with patch.object(setup, 'run') as run, patch.object(setup, 'install_release') as install:
+            setup.provision(repair=True)
+        install.assert_called_once()
+        run.assert_not_called()
+        self.assertEqual(setup.read_state()['state'], 'ready')
+
+    def test_repair_recovers_a_malformed_installation_receipt(self):
+        for receipt in (None, [], 7):
+            with self.subTest(receipt=receipt):
+                (setup.STATE / 'luda.json').write_text(json.dumps(receipt))
+                with patch.object(setup, 'install_release') as install:
+                    setup.provision(repair=True)
+                install.assert_called_once()
+                self.assertEqual(setup.read_state()['state'], 'ready')
 
     def test_concurrent_attempt_does_not_replace_state(self):
         setup.write_state('ready', self.lock)

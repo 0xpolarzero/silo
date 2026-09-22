@@ -5,7 +5,7 @@ export const linuxDesktopStateSchema = z.object({
   version: z.string().nullish(),
   state: z.enum(["running", "starting", "stopped", "failed", "uninstalled", "vm-stopped"]),
   autoStart: z.boolean(),
-  ludaState: z.enum(["missing", "installing", "ready", "failed"]).optional(),
+  ludaState: z.enum(["missing", "installing", "ready", "failed"]).nullish(),
   ludaVersion: z.string().nullish(),
   port: z.number().nullish(),
   user: z.string().nullish(),

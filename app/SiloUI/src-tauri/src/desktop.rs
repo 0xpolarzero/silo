@@ -196,7 +196,7 @@ fn public_status(value: Value) -> Result<Value, String> {
     Ok(
         json!({"installed":installed,"state":state,"autoStart":auto_start,
         "version":value["version"].as_str(),"user":value["user"].as_str(),"display":value["display"].as_str(),
-        "ludaState":value["ludaState"].as_str().filter(|state| matches!(*state, "missing" | "installing" | "ready" | "failed")).unwrap_or("missing"),
+        "ludaState":value["ludaState"].as_str().filter(|state| matches!(*state, "missing" | "installing" | "ready" | "failed")),
         "ludaVersion":value["ludaVersion"].as_str()}),
     )
 }
@@ -444,7 +444,9 @@ mod tests {
         assert_eq!(status["ludaVersion"], "0.3.0");
         assert!(!status.to_string().contains("private"));
         let old = public_status(json!({"installed":true,"autoStart":false,"state":"stopped"})).unwrap();
-        assert_eq!(old["ludaState"], "missing");
+        assert!(old["ludaState"].is_null());
+        let unknown = public_status(json!({"installed":true,"autoStart":false,"state":"stopped","ludaState":"future-state"})).unwrap();
+        assert!(unknown["ludaState"].is_null());
     }
 
     #[test]
