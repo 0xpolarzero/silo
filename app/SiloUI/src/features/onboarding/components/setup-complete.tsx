@@ -70,7 +70,7 @@ export function SetupComplete({ machines, githubSummary }: {
                   icon={<ListRowIcon aria-hidden="true"><Boxes className="size-3.5" /></ListRowIcon>}
                   title={<span className="text-xs">Start sandboxes at launch</span>}
                   detail={null}
-                  actions={<Switch checked={settings.startWorkspacesAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startWorkspacesAtLaunch: enabled }) }} aria-label="Start sandboxes at launch" />}
+                  actions={<Switch checked={settings.startWorkspacesAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startWorkspacesAtLaunch: enabled, ...(enabled ? { startupWorkspaceIds: settings.startupWorkspaceIds } : {}) }) }} aria-label="Start sandboxes at launch" />}
                 />
                 {settings.startWorkspacesAtLaunch && (
                   <ListRowDetails label="Sandboxes to start at launch" className="mx-0 gap-2 px-2">

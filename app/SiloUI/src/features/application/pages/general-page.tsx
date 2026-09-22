@@ -97,7 +97,7 @@ function GeneralPageContent({
             />}
           </div>
           <div>
-            <SettingRow icon={Power} title="Start sandboxes at launch" description="Start selected sandboxes when Silo opens." control={<Switch checked={startAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startWorkspacesAtLaunch: enabled }) }} aria-label="Start sandboxes at launch" />} />
+            <SettingRow icon={Power} title="Start sandboxes at launch" description="Start selected sandboxes when Silo opens." control={<Switch checked={startAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startWorkspacesAtLaunch: enabled, ...(enabled ? { startupWorkspaceIds: settings.startupWorkspaceIds } : {}) }) }} aria-label="Start sandboxes at launch" />} />
             {startAtLaunch && (
               <ListRowDetails label="Sandboxes to start at launch" className="gap-2">
                 <FilterCombobox

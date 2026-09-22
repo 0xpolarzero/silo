@@ -250,9 +250,41 @@ exists.
 | `notifyBackup` | Backup failures | On |
 
 Defaults are applied in TypeScript and are not written on mount. The startup
-default follows the current sandbox list until the user saves a selection. An explicit
+default follows the current sandbox list until the user enables startup or saves
+a selection. Enabling startup saves the displayed IDs and the switch value in
+one preference patch, both in General settings and on the setup completion page. An explicit
 `false` or empty startup selection overrides its default. Startup selections use
 stable machine IDs; temporarily missing machines do not delete saved IDs.
+
+Older settings can contain `startWorkspacesAtLaunch: true` without
+`startupWorkspaceIds`: the switch used to save only its boolean while the UI
+displayed an unsaved default. Native startup resolves that missing field from
+the saved local VM configuration (`dev`, otherwise the first local VM). It does
+this only after onboarding is complete and before excluding recovered explicit
+stops. An explicit empty array still starts nothing; remote SSH configurations
+are never inferred as launch targets. This compatibility default does not rewrite
+settings on startup.
+
+The 2026-09-22 investigation confirmed the missing-field state in local saved
+preferences. The regression tests in
+[`startup.rs`](../app/SiloUI/src-tauri/src/startup.rs),
+[`general-page.test.tsx`](../app/SiloUI/src/features/application/pages/general-page.test.tsx),
+and [`setup-complete.test.tsx`](../app/SiloUI/src/features/onboarding/components/setup-complete.test.tsx)
+cover native default resolution and persistence when enabling the setting.
+
+Verification used live preferences only for read-only diagnosis. The running
+executable was `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app/Contents/MacOS/silo-ui`
+under the repository root. This investigation did not rebuild or relaunch that
+bundle or exercise startup against live VMs. Behavioral checks used temporary
+machine configuration files, a stub start callback, and in-memory frontend
+settings backends:
+
+- `npm --prefix app/SiloUI test -- src/features/application/pages/general-page.test.tsx src/features/onboarding/components/setup-complete.test.tsx`: all 9 component tests passed after both new default-selection cases failed before the fix.
+- `npm --prefix app/SiloUI test -- src/features/application/application-settings.test.tsx --testTimeout 20000`: all 7 passed; the initial concurrent run hit the default 5-second limit in one existing interaction test.
+- `npm --prefix app/SiloUI run typecheck` and `npm --prefix app/SiloUI run lint`: passed.
+- `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --bin silo-ui startup::tests`: all 7 passed after the missing-selection regression failed before the fix. Native runs used explicit synthetic GitHub build configuration as described in the release guide.
+- `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml -- --test-threads=1`: 473 passed, 12 ignored outside the execution sandbox. The restricted parallel run hit socket/process permissions; an unrestricted parallel run left two storage lock failures. All 16 non-live storage tests passed separately, and the full serial run passed. Opt-in live tests remained disabled.
+
 The existing valid `silo-theme` browser value is imported only when the native
 document lacks a theme, and its original key is retained.
 

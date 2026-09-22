@@ -4,9 +4,37 @@ import { expect, it, vi } from "vitest"
 
 import { GeneralPage } from "./general-page"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
+import { createMemorySettingsStore, createSettingsStore, SettingsProvider, type SettingsBackend, type SettingsSnapshot } from "@/features/preferences/settings-store"
 import { SystemIntegrationProvider } from "@/features/preferences/system-integrations-store"
 import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
+
+it.each(["default", "empty"] as const)("persists the %s startup selection when enabled without editing the selection", async (selection) => {
+  const user = userEvent.setup()
+  const source = applicationSourceForScenario("running")
+  const expected = selection === "default" ? [source.workspaces.find(({ machine }) => machine.name === "dev")!.machine.id] : []
+  let saved: SettingsSnapshot = { revision: 0, settings: selection === "empty" ? { startupWorkspaceIds: [] } : {}, onboardingDraft: null, saveError: null }
+  const backend: SettingsBackend = {
+    read: async () => saved,
+    subscribe: async () => () => {},
+    updateSettings: async (patch) => (saved = { ...saved, revision: saved.revision + 1, settings: { ...saved.settings, ...patch } }),
+    updateOnboardingDraft: async () => saved,
+    flush: async () => {},
+  }
+  const settings = createSettingsStore(backend)
+  await settings.initialize()
+  const view = render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)
+
+  await user.click(screen.getByRole("switch", { name: "Start sandboxes at launch" }))
+  await settings.flush()
+  expect(saved.settings).toMatchObject({ startWorkspacesAtLaunch: true, startupWorkspaceIds: expected })
+  view.unmount()
+  settings.dispose()
+
+  const reopened = createSettingsStore(backend)
+  await reopened.initialize()
+  expect(reopened.getSnapshot().settings).toMatchObject({ startWorkspacesAtLaunch: true, startupWorkspaceIds: expected })
+  reopened.dispose()
+})
 
 it("searches a long startup sandbox list and preserves selections when startup is toggled", async () => {
   const user = userEvent.setup()
