@@ -6,6 +6,7 @@ import { ApplicationPreview } from "@/fixtures/application-preview"
 import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { WorkspaceFixtureMode } from "@/fixtures/application-scenarios"
+import { fixtureLogPage, type LogQuery } from "@/features/application/model/logs"
 
 function renderApplication(scenario: Parameters<typeof applicationSourceForScenario>[0] = "running", source?: ApplicationSource) {
   const actions: ApplicationActions = {
@@ -48,6 +49,24 @@ function appPanel(name: string) {
 }
 
 describe("application", () => {
+  it("returns to cached logs after visiting another sandbox page", async () => {
+    const source = applicationSourceForScenario("running")
+    const workspace = source.workspaces[0]
+    const queryLogs = vi.fn(async (query: LogQuery) => fixtureLogPage(workspace, query))
+    const user = userEvent.setup()
+    render(<ApplicationPreview source={source} actions={{ queryLogs }} initialRoute={{ workspace: workspace.machine.name, workspaceSection: "logs" }} />)
+    await screen.findByText(/Showing .* matching records/)
+    const calls = queryLogs.mock.calls.length
+    const sections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+    await user.click(sections.getByRole("button", { name: "Files" }))
+    await user.click(sections.getByRole("button", { name: "Logs" }))
+    expect(screen.getByText(/Showing .* matching records/)).toBeVisible()
+    expect(queryLogs).toHaveBeenCalledTimes(calls)
+    await user.click(sections.getByRole("button", { name: "Overview" }))
+    await user.click(sections.getByRole("button", { name: "Logs" }))
+    expect(screen.getByText(/Showing .* matching records/)).toBeVisible()
+    expect(queryLogs).toHaveBeenCalledTimes(calls)
+  })
   it("refreshes repositories without toggling the pane and disables the button while loading", async () => {
     let finish!: () => void
     const refreshRepositories = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
@@ -606,7 +625,7 @@ describe("application", () => {
     expect(within(logs).getAllByRole("columnheader")[0].parentElement).toHaveClass("shrink-0")
     expect(panel.queryByRole("heading", { name: "Logs" })).not.toBeInTheDocument()
     expect(within(logs).queryByText("dev")).not.toBeInTheDocument()
-    expect(within(logs).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Time", "Message", "Sandbox", "Actions"])
+    expect(within(logs).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Time", "Message", "Sandbox", "Source", "Actions"])
     expect(within(logs).getByLabelText("playgrounds, Stopped")).toBeVisible()
     expect(within(logs).getByLabelText("personal, Stopped")).toBeVisible()
 

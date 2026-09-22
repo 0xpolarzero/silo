@@ -29,9 +29,34 @@ Select sandboxes in Logs, enter text, and add optional source or date filters.
 No date range applies by default. Filter chips can be removed individually or
 reset with Clear; opening or cancelling the date editor leaves the search unchanged. Search runs against retained files, including rotated segments and stopped
 sandboxes. The view reports matching record counts. Older
-records load in pages. Follow refreshes the latest results; pause before browsing
-older pages. Surrounding logs show nearby records without the search filter.
+records load automatically as the viewport approaches the end of the list.
+Rows render only around the viewport, with overscan, and short pages fill the
+available space. Follow refreshes the latest results; pause before browsing
+older pages. The disclosure at the end of each row expands the complete log
+directly below that row. Expanding and collapsing preserve the search and filters
+and make no additional log requests.
 Activity entries can open the associated time window.
+
+The first request shows skeleton rows inside the table. Refreshing keeps the
+previous rows visible until the new response arrives. Returning to Logs restores
+the loaded pages, expanded rows and vertical scroll position from an in-memory session cache;
+use Refresh or Follow to fetch the latest records. Cache keys include the data
+source, computer/sandbox identities, search and filters. Inactive views expire
+after ten minutes and share limits of eight views and 8 MiB of estimated log text.
+Active history remains available while
+browsing. Cached log text is never written to browser storage.
+
+The sandbox badge preserves its state dot and adds the existing remote-VM server
+icon when its owner is another computer. Hovering or focusing the badge shows
+the computer name; local badges show "This computer". Computer ownership has no
+separate column, leaving more room for the log message. Source remains a separate
+column. Narrow windows scroll horizontally instead of cropping metadata. Copy
+and the rotating disclosure chevron occupy the trailing actions column. Expanded
+rows use the shared collapsible animation and measured heights; virtual scroll
+offsets include their full height. Loading another page preserves the
+visible history, deduplicates concurrent requests, and stops on an error or a
+non-advancing cursor. Retry repeats failed page requests; Refresh starts a new
+snapshot.
 
 Each record preserves computer and sandbox identity, timestamp, source and
 execution session when available. Legacy runtime and kernel lines without
@@ -62,12 +87,64 @@ that arbitrary secrets are removed. Review exports before sharing them.
 - [Runtime patch](../app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch):
   execution, runtime and kernel writers.
 - [Logs view](../app/SiloUI/src/features/application/pages/logs-page.tsx):
-  history search and bounded rendered rows.
+  search, filters, refresh and follow controls.
+- [Log history cache](../app/SiloUI/src/features/application/model/use-log-history.ts):
+  session snapshots, owner errors, cursor deduplication and chronological merging.
+- [Logs table](../app/SiloUI/src/features/application/components/logs-table.tsx):
+  skeletons, metadata columns, viewport-sized rendering and automatic pagination.
 - [Native export](../app/SiloUI/src-tauri/src/log_export.rs): paginated,
   cancellable, atomic file export.
 - [Original audit](SiloUI-LOGGING-AUDIT.md): the preceding behavior and findings.
 
+The cache uses immutable snapshots and stable subscriptions as specified in
+[React's useSyncExternalStore documentation](https://react.dev/reference/react/useSyncExternalStore).
+The viewport responds to element size changes through
+[ResizeObserver](https://developer.mozilla.org/en-US/docs/Web/API/ResizeObserver),
+including when a hidden panel becomes visible. Scroll and resize checks share a
+request guard, so they cannot issue the same page concurrently.
+
 ## Verification
+
+Computer badge follow-up on 2026-09-22 removes the Computer column and reuses
+`ConnectionIcon`'s remote-VM server silhouette inside `WorkspaceBadge`, retaining
+the state dot. The shared badge exposes the owning computer in its accessible
+name and in a tooltip on hover or focus. A same-named local/remote fixture verified
+the distinction visually and confirmed the "Office Mac" tooltip. Skeleton and
+expanded rows now span five columns. All 166 affected tests and lint passed.
+The initial full run passed 928 tests with two failures in concurrently added
+`lifecycleFailure` tests. Once those unrelated edits completed, both affected
+suites passed all 67 tests and the TypeScript/production frontend build passed.
+Evidence is under `target/verification/logs-computer-badge-*`. No native bundle
+was rebuilt or inspected.
+
+Inline disclosure follow-up on 2026-09-22 replaces surrounding-log navigation
+with the existing `Collapsible` and `DisclosureIndicator` components. Full multiline
+messages open below their records, and expanding/collapsing makes no log request.
+Regression tests cover retained filters, measured-height virtualization,
+pagination thresholds, and expanded-row restoration across navigation. A browser
+fixture verified expansion, collapse, and navigation away/back with one total
+request, the same 3,200-pixel scroll offset and the complete message still open.
+The viewport rendered 26 records while paging through expanded history. The full
+frontend suite passed 927 tests before the final navigation regression was added;
+the four affected suites, lint and production frontend build were rerun for the
+final change. No native bundle was built or inspected. Evidence uses the ignored
+`target/verification/logs-accordion-*` paths under `app/SiloUI/src-tauri/`.
+
+Logs UI verification on 2026-09-22: all 926 frontend tests across 101 files
+passed, along with lint and the TypeScript/production frontend build. The build
+reports the existing large-chunk advisory. New regressions cover skeleton rows,
+cache restoration through navigation, pending-request deduplication, cache
+expiry/eviction, contextual positioning, failed-page retries, short-page filling,
+and viewport-sized rendering for 10,000 loaded records.
+
+A browser-only fixture with 2,200 deterministic records verified initial
+skeletons, automatic pagination from 200 to 400 records, and navigation away and
+back with two total requests and the same 9,976-pixel scroll offset. The viewport
+rendered 26 rows including its header. At 1,200 × 800 and 900 × 700, computer and
+source remained complete; the narrower viewport kept horizontal scrolling
+inside the table. No native bundle was rebuilt or inspected, and no live VM
+state was used. Test/build logs and the disposable browser fixture are under
+`app/SiloUI/src-tauri/target/verification/logs-ui-*`.
 
 Deterministic backend tests cover an error behind 100,000 newer records,
 pagination during appends and rotation, in-place truncation and replacement,

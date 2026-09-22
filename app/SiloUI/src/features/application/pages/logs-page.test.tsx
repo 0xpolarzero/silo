@@ -12,7 +12,78 @@ function fixture() {
   const actions = { queryLogs } as unknown as ApplicationActions
   return { workspace, queryLogs, actions }
 }
+function scrollNearEnd() {
+  const viewport = screen.getByRole("table", { name: "Logs" }).querySelector('[data-table-scroll="logs"]') as HTMLElement
+  Object.defineProperties(viewport, {
+    clientHeight: { configurable: true, value: 520 },
+    scrollHeight: { configurable: true, get: () => 32 + (Number(screen.getByRole("table", { name: "Logs" }).getAttribute("aria-rowcount")) - 1) * 52 },
+  })
+  fireEvent.scroll(viewport, { target: { scrollTop: Math.max(0, viewport.scrollHeight - viewport.clientHeight) } })
+  return viewport
+}
 describe("retained logs", () => {
+  it("restores expanded logs alongside the cached history after navigation", async () => {
+    const { workspace, actions, queryLogs } = fixture()
+    workspace.logs = workspace.logs.slice(0, 2)
+    const props = { workspaces: [workspace], actions, active: true, query: "", onQueryChange: vi.fn() }
+    const view = render(<Logs {...props} />)
+    await screen.findByText("record 1")
+    fireEvent.click(screen.getAllByRole("button", { name: /^Expand log/ })[0])
+    expect(screen.getByRole("region")).toHaveTextContent("record 1")
+    view.unmount()
+    render(<Logs {...props} />)
+    expect(screen.getByRole("region")).toHaveTextContent("record 1")
+    expect(queryLogs).toHaveBeenCalledTimes(1)
+  })
+  it("renders skeleton rows in the log table until the first page arrives", async () => {
+    const { workspace, actions } = fixture()
+    workspace.logs = workspace.logs.slice(0, 2)
+    let resolve!: (page: LogPage) => void
+    actions.queryLogs = vi.fn(() => new Promise<LogPage>(done => { resolve = done }))
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    const table = screen.getByRole("table", { name: "Logs" })
+    expect(table).toHaveAttribute("aria-busy", "true")
+    expect(within(table).getAllByRole("columnheader").map(header => header.textContent)).toContain("Message")
+    expect(table.querySelectorAll('[data-log-skeleton]').length).toBeGreaterThan(1)
+    expect(screen.queryByText("Loading logs…")).not.toBeInTheDocument()
+    await act(async () => resolve(fixtureLogPage(workspace, { sandboxId: workspace.machine.id })))
+    expect(screen.getByText("old diagnostic needle")).toBeVisible()
+    expect(table.querySelector('[data-log-skeleton]')).toBeNull()
+  })
+  it("reuses cached pages and scroll position after leaving and returning to logs", async () => {
+    const { workspace, actions, queryLogs } = fixture()
+    const props = { workspaces: [workspace], actions, active: true, query: "", onQueryChange: vi.fn() }
+    const view = render(<Logs {...props} />)
+    await screen.findByText(/Showing 200 of 100001/)
+    scrollNearEnd()
+    await screen.findByText(/Showing 400 of 100001/)
+    view.unmount()
+    render(<Logs {...props} />)
+    expect(screen.getByText(/Showing 400 of 100001/)).toBeVisible()
+    expect(screen.getByRole("table", { name: "Logs" }).querySelector('[data-table-scroll="logs"]')?.scrollTop).toBe(9912)
+    expect(queryLogs).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole("button", { name: "Load older" })).not.toBeInTheDocument()
+  })
+  it("preserves the current rows while refreshing and does not reload on reactivation", async () => {
+    const { workspace, actions } = fixture()
+    workspace.logs = workspace.logs.slice(0, 2)
+    let resolve!: (page: LogPage) => void
+    const queryLogs = vi.fn()
+      .mockImplementationOnce(async (request: LogQuery) => fixtureLogPage(workspace, request))
+      .mockImplementationOnce(() => new Promise<LogPage>(done => { resolve = done }))
+    actions.queryLogs = queryLogs
+    const props = { workspaces: [workspace], actions, query: "", onQueryChange: vi.fn() }
+    const view = render(<Logs {...props} active />)
+    await screen.findByText("old diagnostic needle")
+    view.rerender(<Logs {...props} active={false} />)
+    view.rerender(<Logs {...props} active />)
+    expect(queryLogs).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole("button", { name: "Refresh logs" }))
+    expect(screen.getByText("old diagnostic needle")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Refresh logs" })).toBeDisabled()
+    await act(async () => resolve(fixtureLogPage(workspace, { sandboxId: workspace.machine.id })))
+    expect(screen.getByRole("button", { name: "Refresh logs" })).toBeEnabled()
+  })
   it("starts without source or date filters and uses a quiet empty state", async () => {
     const { workspace, actions, queryLogs } = fixture()
     workspace.logs = []
@@ -48,25 +119,39 @@ describe("retained logs", () => {
     add("Date filter")
     fireEvent.click(screen.getByRole("button", { name: "Last hour" }))
     await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ source: "runtime", since: expect.any(String) })))
+    const callsBeforeClear = queryLogs.mock.calls.length
     fireEvent.click(within(screen.getByRole("group", { name: "Log filters" })).getByRole("button", { name: "Clear" }))
-    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ source: undefined, since: undefined, until: undefined })))
+    expect(queryLogs).toHaveBeenCalledTimes(callsBeforeClear)
+    expect(screen.queryByRole("button", { name: "Remove Source: runtime filter" })).not.toBeInTheDocument()
     expect(await screen.findByText("No logs yet")).toBeVisible()
   })
-  it("finds an error outside 100,000 newer records and shows its surrounding records", async () => {
+  it("expands a matching record inline without fetching surrounding records or clearing filters", async () => {
     const { workspace, actions, queryLogs } = fixture()
-    render(<Logs workspaces={[workspace]} actions={actions} active query="needle" onQueryChange={vi.fn()} />)
-    expect(await screen.findByText("old diagnostic needle")).toBeVisible()
-    expect(queryLogs).toHaveBeenCalledWith(expect.objectContaining({ query: "needle", limit: 200 }))
-    fireEvent.click(screen.getByRole("button", { name: "Show surrounding logs for 0" }))
-    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ aroundId: "0", query: undefined })))
-    expect(await screen.findByText("record 1")).toBeInTheDocument()
+    workspace.logs[0].line = "old diagnostic needle\nThe complete diagnostic message remains visible when expanded."
+    const window = { since: "2023-11-14T00:00:00Z", until: "2023-11-15T00:00:00Z" }
+    const time = new Date(workspace.logs[0].occurredAt).toLocaleTimeString()
+    const label = `log from ${workspace.machine.name} at ${time}`
+    render(<Logs workspaces={[workspace]} actions={actions} active query="needle" window={window} onQueryChange={vi.fn()} />)
+    expect(await screen.findByText(/old diagnostic needle/)).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: `Expand ${label}` }))
+    const details = screen.getByRole("region", { name: `Log details from ${workspace.machine.name} at ${time}` })
+    expect(details).toBeVisible()
+    expect(details).toHaveTextContent("old diagnostic needle")
+    expect(details).toHaveTextContent("The complete diagnostic message remains visible when expanded.")
+    expect(screen.getByLabelText("Search logs")).toHaveValue("needle")
+    expect(screen.getByText("Showing 1 of 1 matching records.")).toBeVisible()
+    expect(queryLogs).toHaveBeenCalledTimes(1)
+    expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ query: "needle", ...window, limit: 200 }))
+    fireEvent.click(screen.getByRole("button", { name: `Collapse ${label}` }))
+    expect(screen.queryByRole("region", { name: /Log details/ })).not.toBeInTheDocument()
+    expect(queryLogs).toHaveBeenCalledTimes(1)
   })
   it("loads older pages with bounded DOM rows, and exports the query rather than the page", async () => {
     const { workspace, actions, queryLogs } = fixture()
     actions.exportLogs = vi.fn(async () => true)
     render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
     await screen.findByText(/Showing 200 of 100001/)
-    fireEvent.click(screen.getByRole("button", { name: "Load older" }))
+    scrollNearEnd()
     await screen.findByText(/Showing 400 of 100001/)
     expect(within(screen.getByRole("table")).getAllByRole("row").length).toBeLessThan(70)
     expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "200" }))
@@ -123,7 +208,7 @@ describe("retained logs", () => {
     render(<Logs workspaces={[workspace, quiet]} actions={actions} active query="" onQueryChange={vi.fn()} />)
     await screen.findByText(/Showing 2 of 5/)
     expect(screen.queryByText("quiet 06")).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Load older" }))
+    scrollNearEnd()
     await screen.findByText(/Showing 5 of 5/)
     const rows = within(screen.getByRole("table")).getAllByRole("row").slice(1)
     expect(rows.map(row => within(row).getAllByRole("cell")[1].textContent)).toEqual(["busy 10", "busy 09", "busy 08", "busy 07", "quiet 06"])
@@ -140,8 +225,9 @@ describe("retained logs", () => {
     })
     render(<Logs workspaces={[workspace, offline]} actions={actions} active query="" onQueryChange={vi.fn()} />)
     await screen.findByRole("alert")
-    fireEvent.click(screen.getByRole("button", { name: "Load older" }))
-    await screen.findByText(/Showing 4 of 4/)
+    scrollNearEnd()
+    // An owner error pauses automatic pagination until the user retries.
+    expect(screen.getByText(/Showing 2 of 4/)).toBeVisible()
     expect(screen.getByRole("alert")).toHaveTextContent("Offline owner")
     expect(screen.getByRole("button", { name: "Export…" })).toBeDisabled()
   })

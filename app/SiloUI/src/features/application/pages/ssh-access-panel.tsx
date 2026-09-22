@@ -61,7 +61,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
   const networkAddresses = access?.addresses.filter(value => value !== "127.0.0.1") ?? []
   const badge = stale ? "SSH status unavailable" : access ? statuses[access.state] : "SSH unavailable"
   const header = <div className="flex items-center gap-3 px-3 py-2">
-      <WorkspaceBadge name={workspace.machine.name} state={workspace.state} />
+      <WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} />
       <span className="rounded border border-border px-1.5 py-0.5 text-muted-foreground">{badge}{access?.enabled && external ? " · Network" : ""}</span>
       <Tooltip><TooltipTrigger asChild><CollapsibleTrigger asChild><Button variant="ghost" size="icon-xs" className="group ml-auto w-auto gap-0.5 px-1.5 text-[11px]" aria-label={`SSH controls for ${workspace.machine.name}`}>SSH<ChevronDown className="size-2.5 transition-transform group-aria-expanded:rotate-180" /></Button></CollapsibleTrigger></TooltipTrigger><TooltipContent>SSH controls</TooltipContent></Tooltip>
     </div>

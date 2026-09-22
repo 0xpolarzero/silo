@@ -1,10 +1,13 @@
 import type { ReactNode } from "react"
 import { AlertTriangle } from "lucide-react"
 
+import { ConnectionIcon } from "@/components/connection-icon"
 import { StatusBadge } from "@/components/status-badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { WorkspaceState } from "@/features/application/model/application-source"
+import type { WorkspaceComputer } from "@/features/application/model/remote-computers"
 
 export function PageHeader({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
   return (
@@ -38,15 +41,18 @@ export function WorkspaceStateDot({ state, className }: { state: WorkspaceState;
   return <span className={cn("size-2 rounded-full", workspaceStateStyles[state], className)} data-workspace-state-dot={state} aria-hidden="true" />
 }
 
-export function WorkspaceBadge({ name, state }: { name: string; state: WorkspaceState }) {
+export function WorkspaceBadge({ name, state, computer }: { name: string; state: WorkspaceState; computer?: WorkspaceComputer }) {
   const stateLabel = state.charAt(0).toUpperCase() + state.slice(1)
   return (
-    <StatusBadge
+    <TooltipProvider delayDuration={150}><Tooltip><TooltipTrigger asChild><StatusBadge
       indicator={<WorkspaceStateDot state={state} className="size-1.5" />}
-      aria-label={`${name}, ${stateLabel}`}
+      aria-label={`${name}, ${stateLabel}${computer ? `, on ${computer.name}` : ""}`}
+      tabIndex={0}
+      className="outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {name}
-    </StatusBadge>
+      {computer && <ConnectionIcon kind="vm" network className="ml-1 size-2.5 align-[-1px]" />}
+    </StatusBadge></TooltipTrigger><TooltipContent>{computer?.name ?? "This computer"}</TooltipContent></Tooltip></TooltipProvider>
   )
 }
 

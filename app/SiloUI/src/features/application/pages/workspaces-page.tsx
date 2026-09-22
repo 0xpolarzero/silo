@@ -138,7 +138,7 @@ function Files({
                             <TooltipContent className="max-w-sm break-all">{repository.path}</TooltipContent>
                           </Tooltip></TooltipProvider>}
                           detail={`${repository.branch} · ${repository.ahead} ahead, ${repository.behind} behind`}
-                          actions={<><FolderActions editor={editor} path={repository.path} onOpen={() => onOpenEditor(workspaceTarget(workspace), repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} /></>}
+                          actions={<><FolderActions editor={editor} path={repository.path} onOpen={() => onOpenEditor(workspaceTarget(workspace), repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></>}
                         />
                         {(operation || repository.ahead > 0) && (
                           <div className="flex min-h-6 items-start pr-2 pb-2 pl-10" data-repository-actions>
@@ -291,7 +291,7 @@ function ActivityLog({ workspaces, sourceActivities, onShowLogs }: { workspaces:
                   <div className="flex max-w-[40%] shrink-0 flex-col items-end gap-1" data-activity-meta>
                     <time dateTime={item.occurredAt} className="text-[10px] text-muted-foreground">{new Date(item.occurredAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" })}</time>
                     <div className="flex flex-wrap justify-end gap-1">
-                      {item.workspace && workspace && <WorkspaceBadge name={workspace.machine.name} state={workspace.state} />}
+                      {item.workspace && workspace && <WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} />}
                       <StatusBadge indicator={<CategoryIcon className="size-2.5" />} aria-label={`Category: ${category.label}`}>{category.label}</StatusBadge>
                     </div>
                   </div>

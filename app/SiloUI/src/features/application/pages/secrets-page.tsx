@@ -133,7 +133,7 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret, onRetrySecre
                           {secret.workspaces.map((name) => {
                             const workspace = source.workspaces.find(({ machine }) => machine.name === name)
                             return workspace
-                              ? <WorkspaceBadge key={name} name={name} state={workspace.state} />
+                              ? <WorkspaceBadge key={name} name={name} state={workspace.state} computer={workspace.computer} />
                               : <StatusBadge key={name} indicator={<Box className="size-2" />}>{name}</StatusBadge>
                           })}
                         </div>
