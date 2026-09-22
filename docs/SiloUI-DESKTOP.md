@@ -206,3 +206,111 @@ workload or complete IME compatibility. The remote implementation and AMD64
 recipe require those environment-specific acceptance runs before claiming
 cross-platform release readiness. Installed desktops are not automatically
 upgraded by this first recipe.
+
+## Native viewer input investigation, 2026-09-22
+
+The macOS viewer has a concrete clipboard compatibility gap. This investigation
+used repository source, pinned upstream source and an isolated WKWebView probe.
+It did not launch or inspect a packaged Silo bundle, connect to a guest, read the
+host clipboard, or reproduce the reported typing/Enter delays in a live session.
+No production behavior changed.
+
+### Confirmed mechanism
+
+1. `desktop_viewer.rs` creates a nonpersistent child webview with the default
+   browser user agent and navigates to `/?resize=scale`. It does not explicitly
+   disable seamless clipboard. The installed Wry 0.55.1 implementation only
+   overrides WKWebView's user agent when the caller supplies one.
+2. Silo pins KasmVNC 1.5.0. Its [release submodule metadata](https://api.github.com/repos/kasmtech/KasmVNC/contents/kasmweb?ref=v1.5.0)
+   pins the browser client to `475ecfa5356579ef222983c7ce4619a7576a3bce`.
+   That client's [browser detection](https://github.com/kasmtech/noVNC/blob/475ecfa5356579ef222983c7ce4619a7576a3bce/core/util/browser.js)
+   recognizes Safari by the literal `Safari` token. Its [settings and connection code](https://github.com/kasmtech/noVNC/blob/475ecfa5356579ef222983c7ce4619a7576a3bce/app/ui.js)
+   disable seamless clipboard for recognized Safari; both safeguards depend on
+   that token.
+3. An isolated nonpersistent WKWebView on this host returned
+   `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)`.
+   This fails both Safari safeguards. Executing the exact upstream detection,
+   default-setting, connection-safeguard and clipboard-check functions with this
+   measured user agent enabled seamless clipboard and called the mocked clipboard
+   reader once. A Safari-token control and an explicit seamless-off control each
+   produced zero clipboard reads.
+4. The pinned client's [input code](https://github.com/kasmtech/noVNC/blob/475ecfa5356579ef222983c7ce4619a7576a3bce/core/rfb.js)
+   checks the clipboard on canvas mousedown when its resend flag is set. Window
+   focus/blur and canvas focus set that flag. [WebKit documents](https://webkit.org/blog/10855/async-clipboard-api/)
+   that programmatic clipboard reads without explicit paste intent or same-origin
+   clipboard content show a native macOS Paste context menu.
+
+This establishes a path from ordinary clicks to a native Paste prompt. Kasm's
+[earlier upstream fix](https://github.com/kasmtech/noVNC/pull/110) explicitly
+disabled seamless clipboard for Safari and Firefox to prevent this experience.
+The embedded WKWebView identity escapes that existing protection.
+
+The matching upstream report is [KasmVNC #219](https://github.com/kasmtech/KasmVNC/issues/219):
+ordinary left and right clicks open a menu containing only Paste; dismissing it
+helps until the pointer leaves and re-enters the viewer. In the linked fix,
+the maintainer explicitly identifies clipboard reads during clicks as the trigger.
+This is an input correctness defect, not evidence of insufficient VM resources
+or a frame-rate tuning problem.
+
+Other upstream macOS input reports have different triggers:
+[KasmVNC #341](https://github.com/kasmtech/KasmVNC/issues/341) reports broken mouse
+and keyboard input after the macOS screenshot shortcut, on Chrome with KasmVNC
+1.3.4; [#236](https://github.com/kasmtech/KasmVNC/issues/236) reports an Alt-key
+translation failure on Chrome with KasmVNC 1.2.0. Neither establishes the cause
+of this user's delayed ordinary typing/Enter in Silo's WebKit viewer.
+
+### Coverage and next action
+
+The [later published-app test report](SiloUI-LUDA-AGENT-TESTS.md#silo-user-flow-coverage)
+already records repeated native Paste prompts and no clean keyboard acceptance
+result. Earlier limited ASCII/Unicode success above does not establish reliable
+click, focus, clipboard or keyboard behavior across sessions. The frontend viewer
+tests mock native attachment and do not exercise guest input.
+
+The selection and delayed text/Enter symptoms still need a live event trace;
+this investigation does not attribute them to the clipboard defect. Packaged-app
+acceptance must cover click, drag/release, text, Enter, explicit paste and focus
+transitions before claiming those symptoms are resolved.
+
+Ignored evidence is in `app/SiloUI/src-tauri/target/verification/desktop-input/`:
+`probe.swift`, `webkit-probe.json`, pinned source files, `reproduce.mjs` and
+`reproduction.json`. The sandboxed Swift attempt timed out because WebKit services
+could not start; the permitted unsandboxed rerun passed. Commands that passed:
+
+```sh
+swift -module-cache-path /private/tmp/silo-desktop-input-swift-cache app/SiloUI/src-tauri/target/verification/desktop-input/probe.swift
+node app/SiloUI/src-tauri/target/verification/desktop-input/reproduce.mjs
+```
+
+### Clipboard fix
+
+The native viewer now explicitly opens KasmVNC with
+`resize=scale&clipboard_seamless=false` on initial attachment and reconnect,
+for both local and remote desktops. This applies the supported client setting
+without relying on browser identification or updating existing guest packages.
+KasmVNC's [settings parser](https://github.com/kasmtech/noVNC/blob/475ecfa5356579ef222983c7ce4619a7576a3bce/app/ui.js)
+gives URL settings precedence over saved preferences. Manual clipboard upload
+and download remain enabled; users transfer text through the viewer's Clipboard
+panel, as described in [upstream's clipboard documentation](https://kasmweb.com/kasmvnc/docs/latest/clientside.html#clipboard-seamless).
+
+Verification uses the real production URL and the pinned client's settings
+parser, checkbox conversion, clipboard reader and manual-send functions, with
+mocked DOM controls, clipboard and transport. Before the fix, three simulated
+focus changes caused three clipboard reads. After the fix, there were zero
+reads with either clean settings or a previously saved `clipboard_seamless=true`;
+manual transfer still delivered the supplied Unicode text. Evidence and the
+one-command reproducer are in `target/verification/desktop-input/verify-url.mjs`,
+`client-red.log` and `url-verification.json` under `app/SiloUI/src-tauri/`.
+
+The native regression asserts the navigation contract for fresh loopback origins,
+including preserved scaling and manual clipboard defaults. It failed before the
+fix; all four viewer tests passed afterward with:
+
+```sh
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --target-dir app/SiloUI/src-tauri/target/local-signing --release --offline --quiet desktop_viewer::
+node app/SiloUI/src-tauri/target/verification/desktop-input/verify-url.mjs
+```
+
+These checks do not replace packaged-app or live guest input acceptance; no
+bundle was launched for this change. The change takes effect when the updated
+application opens or reconnects a desktop viewer.

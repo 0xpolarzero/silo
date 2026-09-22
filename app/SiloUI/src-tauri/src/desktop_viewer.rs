@@ -237,6 +237,13 @@ fn desktop_position(
     ))
 }
 
+fn viewer_url(origin: &str) -> tauri::Url {
+    // Native viewers use WebKit. Its user agent can omit "Safari", bypassing
+    // KasmVNC's safeguard against clipboard reads opening Paste menus on clicks.
+    // Set the client option explicitly; its manual clipboard panel stays enabled.
+    tauri::Url::parse(&format!("{origin}/?resize=scale&clipboard_seamless=false")).unwrap()
+}
+
 #[tauri::command]
 pub(crate) async fn desktop_viewer_attach(
     app: AppHandle,
@@ -325,11 +332,7 @@ pub(crate) async fn desktop_viewer_attach(
                 .path("/")
                 .http_only(true)
                 .build();
-        if view.set_cookie(cookie).is_err()
-            || view
-                .navigate(tauri::Url::parse(&format!("{origin}/?resize=scale")).unwrap())
-                .is_err()
-        {
+        if view.set_cookie(cookie).is_err() || view.navigate(viewer_url(&origin)).is_err() {
             let _ = view.close();
             return Err("Could not authenticate desktop viewer.".into());
         }
@@ -426,6 +429,30 @@ mod geometry_tests {
         );
         for invalid in [0., -1., f64::INFINITY, f64::NAN] {
             assert!(desktop_position(0, 0, invalid, 0., 0.).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+
+    #[test]
+    fn every_viewer_connection_disables_implicit_clipboard_reads() {
+        // Local and SSH-tunneled desktops both receive a fresh loopback origin.
+        for port in [42001, 53102] {
+            let origin = format!("http://127.0.0.1:{port}");
+            let url = viewer_url(&origin);
+            assert_eq!(url.origin().ascii_serialization(), origin);
+            let settings: HashMap<_, _> = url.query_pairs().into_owned().collect();
+            assert_eq!(
+                settings.get("clipboard_seamless").map(String::as_str),
+                Some("false")
+            );
+            assert_eq!(settings.get("resize").map(String::as_str), Some("scale"));
+            // Manual clipboard transfer keeps the client's enabled defaults.
+            assert!(!settings.contains_key("clipboard_up"));
+            assert!(!settings.contains_key("clipboard_down"));
         }
     }
 }
