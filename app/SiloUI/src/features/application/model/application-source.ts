@@ -135,6 +135,7 @@ export interface ApplicationWorkspace {
   state: WorkspaceState
   stateDetail: string
   canDismissError?: boolean
+  lifecycleFailure?: string
   lifecycleAction?: "start" | "stop" | "restart" | "dismiss-error"
   attention?: {
     level: "warning" | "error"

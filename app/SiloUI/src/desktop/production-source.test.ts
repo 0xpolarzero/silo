@@ -787,21 +787,33 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("publishes exact bridge failures and never records a successful state change", async () => {
+  it("keeps a sandbox action failure through refresh and clears it after a successful retry", async () => {
     const mock = native()
+    let refuse = true
     mock.invoke.mockImplementation(async (command: string) => {
       if (command === "read_application_state") return structuredClone(source)
       if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "workspace_action") throw new Error("runtime refused stop")
+      if (command === "workspace_action") {
+        if (refuse) throw new Error("runtime refused stop")
+        return structuredClone(source)
+      }
       return undefined
     })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.applicationActions.stopWorkspace("dev")
-    await vi.waitFor(() => expect(store.getSnapshot().source?.vmOperationsUnavailable).toBe("Stop failed for dev: runtime refused stop Refresh to confirm its current state."))
+    await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(({ machine }) => machine.name === "dev")?.lifecycleFailure).toBe("Stop failed: runtime refused stop"))
     expect(store.getSnapshot().source?.workspaces.find(({ machine }) => machine.name === "dev")?.state).toBe("running")
-    expect(store.getSnapshot().source?.workspaces.every(({ freshness }) => freshness === "stale")).toBe(true)
+    expect(store.getSnapshot().source?.vmOperationsUnavailable).toBeUndefined()
+    expect(store.getSnapshot().source?.workspaces.find(({ machine }) => machine.name === "dev")?.freshness).toBe("stale")
     expect(store.getSnapshot().source?.workspaces.find(({ machine }) => machine.name === "dev")?.lifecycleAction).toBeUndefined()
+    await store.refresh()
+    expect(store.getSnapshot().source?.workspaces.find(({ machine }) => machine.name === "dev")?.lifecycleFailure).toContain("runtime refused stop")
+    expect(store.getSnapshot().source?.workspaces.find(({ machine }) => machine.name === "dev")?.freshness).toBe("fresh")
+    expect(store.getSnapshot().source?.workspaces.filter(({ machine }) => machine.name !== "dev").every(workspace => !workspace.lifecycleFailure && workspace.freshness === "fresh")).toBe(true)
+    refuse = false
+    store.applicationActions.stopWorkspace("dev")
+    await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(({ machine }) => machine.name === "dev")?.lifecycleFailure).toBeUndefined())
     store.dispose()
   })
 

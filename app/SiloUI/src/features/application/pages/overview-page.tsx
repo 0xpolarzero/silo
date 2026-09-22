@@ -334,12 +334,14 @@ export function OverviewPage({ active = true, readOnly = false,
                 if (!workspace?.computer && source.vmOperationsUnavailable) setOperationUnavailable(true)
                 else actions.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name)
               } }, ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationOperation !== null || Boolean(lifecycle), onSelect: () => setExpandedStorage(previous => { const next = new Set(previous); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next }) }] : [])],
-              expandedContent: (sshAvailable && expanded) || storageExpanded ? <>{sshAvailable && expanded && <div id={`ssh-${machine.id}`}><SshAccessRow readOnly={readOnly} embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div>}{machine.kind === "vm" && workspace && !workspace.computer && expandedStorage.has(machine.id) && actions.readWorkspaceStorage && <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={configurationLocked || Boolean(lifecycle)} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />}</> : undefined,
+              expandedContent: workspace?.lifecycleFailure || (sshAvailable && expanded) || storageExpanded ? <>
+                {workspace?.lifecycleFailure && <div role="alert" className="mx-3 mb-2 max-h-48 overflow-auto rounded-md border border-destructive/20 bg-destructive/[.06] px-3 py-2 text-xs whitespace-pre-wrap break-words text-destructive">{workspace.lifecycleFailure}</div>}
+                {sshAvailable && expanded && <div id={`ssh-${machine.id}`}><SshAccessRow readOnly={readOnly} embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div>}{machine.kind === "vm" && workspace && !workspace.computer && expandedStorage.has(machine.id) && actions.readWorkspaceStorage && <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={configurationLocked || Boolean(lifecycle)} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />}</> : undefined,
               busy: Boolean(lifecycle) || Boolean(workspace?.computer?.busy),
               suppressInteractions: Boolean(lifecycle) || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
               icon: lifecycle ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
-              iconState: visualState,
-              tone: lifecycle ? "starting" as const : workspaceRowTone(workspace),
+              iconState: workspace?.lifecycleFailure ? "error" as const : visualState,
+              tone: lifecycle ? "starting" as const : workspace?.lifecycleFailure ? "error" as const : workspaceRowTone(workspace),
               detail: (
                 <span className="inline-flex max-w-full items-center gap-1 align-middle">
                   <span className="truncate" title={workspace?.attention?.message}>

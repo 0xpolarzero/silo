@@ -277,7 +277,7 @@ function ActivityLog({ workspaces, sourceActivities, onShowLogs }: { workspaces:
                 detailClassName="whitespace-normal"
                 detail={
                   <div className="min-w-0 space-y-1" data-activity-content>
-                    <p>{item.detail}</p>
+                    <p className="whitespace-pre-wrap break-words">{item.detail}</p>
                     {workspace && item.tone === "danger" && <Button size="xs" variant="outline" onClick={() => onShowLogs(item)}>Show logs</Button>}
                     {item.status === "running" && item.progress !== undefined && (
                       <div className="flex max-w-sm items-center gap-2 pt-1">

@@ -211,7 +211,7 @@ fn settle(
     intent: &mut Intent,
     initial: InspectedSandbox,
 ) -> Result<(), RuntimeError> {
-    runtime_activity::resume(paths, &mut intent.event).map_err(error)?;
+    runtime_activity::resume(paths, &mut intent.event, &intent.machine_id).map_err(error)?;
     let result = advance(runner, paths, host, intent, initial);
     runtime_activity::finish(paths, &mut intent.event, &result).map_err(error)?;
     if result.is_ok() {
@@ -255,7 +255,7 @@ pub(super) fn perform(
             } else {
                 Phase::StopPending
             },
-            event: runtime_activity::begin(paths, action, name).map_err(error)?,
+            event: runtime_activity::begin(paths, action, name, machine.id()).map_err(error)?,
         }
     };
     let initial = match inspect(runner, paths, &intent).and_then(|initial| {
@@ -485,7 +485,7 @@ mod tests {
             name: "dev".into(),
             action: action.into(),
             phase,
-            event: runtime_activity::begin(paths, action, "dev").unwrap(),
+            event: runtime_activity::begin(paths, action, "dev", ID).unwrap(),
         };
         store(paths, &value).unwrap();
         value
@@ -687,7 +687,7 @@ mod tests {
                         name: name.into(),
                         action: action.into(),
                         phase,
-                        event: runtime_activity::begin(&paths, action, name).map_err(error)?,
+                        event: runtime_activity::begin(&paths, action, name, machine.id()).map_err(error)?,
                     },
                 )
             };

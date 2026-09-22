@@ -80,7 +80,8 @@ pub(super) fn dismiss(
         file.persist(&target)?;
         File::open(directory)?.sync_all()
     };
-    save().map_err(|_| RuntimeError::Unavailable("The crash could not be dismissed. Retry.".into()))
+    save().map_err(|_| RuntimeError::Unavailable("The crash could not be dismissed. Retry.".into()))?;
+    runtime_activity::acknowledge_failure(paths, machine.id())
 }
 pub(super) fn clear(paths: &RuntimePaths, name: &str) -> Result<(), RuntimeError> {
     let machine = machine(paths, name)?;

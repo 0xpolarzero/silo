@@ -75,6 +75,7 @@ const applicationSourceShape = z.object({
     state: z.enum(["running", "starting", "stopped", "failed"]),
     stateDetail: z.string(),
     canDismissError: z.boolean().optional(),
+    lifecycleFailure: z.string().optional(),
     freshness: z.enum(["fresh", "stale"]),
     host: z.string(),
     repositories: z.array(z.unknown()), files: z.array(z.unknown()), ports: z.array(z.unknown()), logs: z.array(z.unknown()),
@@ -202,6 +203,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const pendingRepositoryPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
   const remotePushRevisions = new Map<string, number>()
   const pendingLifecycle = new Map<string, "start" | "stop" | "restart" | "dismiss-error">()
+  const workspaceFailures = new Map<string, { machineId: string; action: string; message: string }>()
   let pendingBackupOperation = false
   let localBackupOperation: BackupOperation | null = null
   const dismissedBackupResults = new Set<string>()
@@ -349,7 +351,14 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         ...pendingRepositoryPushes.values(),
       ],
     } }
-    snapshot = next.source ? { ...next, source: { ...next.source, workspaces: next.source.workspaces.map(({ lifecycleAction: _previous, ...workspace }) => ({ ...workspace, ...(pendingLifecycle.has(workspaceTarget(workspace)) && { lifecycleAction: pendingLifecycle.get(workspaceTarget(workspace)) }) })) } } : next
+    snapshot = next.source ? { ...next, source: { ...next.source, workspaces: next.source.workspaces.map(({ lifecycleAction: _previous, ...workspace }) => {
+      const target = workspaceTarget(workspace)
+      const failure = workspaceFailures.get(target)
+      return { ...workspace,
+        ...(failure?.machineId === workspace.machine.id && { lifecycleFailure: failure.message }),
+        ...(pendingLifecycle.has(target) && { lifecycleAction: pendingLifecycle.get(target) }),
+      }
+    }) } } : next
     listeners.forEach((listener) => listener())
   }
 
@@ -522,12 +531,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function setWorkspaceFailure(action: string, name: string, cause: unknown) {
-    if (!snapshot.source) return
+    const workspace = snapshot.source?.workspaces.find(workspace => workspaceTarget(workspace) === name)
+    if (!workspace) return
     const label = `${action[0].toUpperCase()}${action.slice(1)}`
-    publish({
-      ...snapshot,
-      source: { ...snapshot.source, workspaces: snapshot.source.workspaces.map((workspace) => ({ ...workspace, freshness: "stale" })), vmOperationsUnavailable: `${label} failed for ${name}: ${errorMessage(cause)} Refresh to confirm its current state.` },
-    })
+    workspaceFailures.set(name, { machineId: workspace.machine.id, action, message: `${label} failed: ${errorMessage(cause)}` })
+    publish({ ...snapshot, source: snapshot.source ? { ...snapshot.source,
+      workspaces: snapshot.source.workspaces.map(item => workspaceTarget(item) === name ? { ...item, freshness: "stale" } : item),
+    } : null })
   }
 
   function workspaceAction(action: string, name: string, extras: Record<string, unknown> = {}) {
@@ -545,6 +555,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       .then((result) => {
         if (remote && !lifecycle) return refreshComputers()
         const source = parseMutationSource(result, remote ? remoteSnapshots.get(remote.hostId) ?? null : snapshot.source)
+        if (lifecycle || workspaceFailures.get(name)?.action === action) workspaceFailures.delete(name)
         if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
         if (remote) {
           remoteSnapshots.set(remote.hostId, source)

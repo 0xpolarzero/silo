@@ -238,6 +238,8 @@ struct ApplicationWorkspace {
     state_detail: String,
     can_dismiss_error: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    lifecycle_failure: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     attention: Option<WorkspaceAttention>,
     freshness: Freshness,
     host: String,
@@ -1651,7 +1653,7 @@ pub async fn workspace_action(
         let _ = app.emit("silo://application-state-changed", ());
         let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
         drop(guard);
-        result.map_err(|error| safe_activity_error(&error))
+        result.map_err(|error| runtime_activity::failure_message(&error))
     }).await.map_err(|_| "Sandbox action worker failed.".to_string())?;
     if result.is_err() {
         crate::notifications::action_failed(&app, "Sandbox action failed");
@@ -2200,6 +2202,7 @@ fn read_application_state_with(
             }
             MachineConfiguration::Ssh { host, .. } => workspaces.push(ApplicationWorkspace {
                 can_dismiss_error: false,
+                lifecycle_failure: None,
                 machine: machine.clone(),
                 purpose: "SSH sandbox".into(),
                 state: WorkspaceState::Stopped,
@@ -2224,7 +2227,12 @@ fn read_application_state_with(
 
 fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<ApplicationWorkspace>) -> Result<ApplicationSource, RuntimeError> {
     let secrets = crate::secrets::snapshot().map_err(RuntimeError::Unavailable)?;
+    // Journal read failures are reported as an Activity warning by read() below.
+    let mut failures = runtime_activity::failures(paths).unwrap_or_default();
     for workspace in &mut workspaces {
+        if workspace.machine.is_vm() {
+            workspace.lifecycle_failure = failures.remove(workspace.machine.id());
+        }
         workspace.secret_names = secrets.iter().filter(|secret| secret["removing"] != true && secret["workspaces"].as_array().is_some_and(|names| names.iter().any(|name| name.as_str() == Some(workspace.machine.name()))))
             .filter_map(|secret| secret["name"].as_str().map(str::to_owned)).collect();
     }
@@ -2372,6 +2380,7 @@ fn vm_workspace(
         state,
         state_detail,
         can_dismiss_error: inspected.status == "Crashed" && inspected.updated_at.as_ref().is_some_and(|value| !value.is_empty()) && matches!(state, WorkspaceState::Failed),
+        lifecycle_failure: None,
         attention,
         freshness: Freshness::Fresh,
         host: "127.0.0.1".into(),

@@ -71,6 +71,28 @@ static CACHE: std::sync::OnceLock<
 fn cache() -> &'static std::sync::Mutex<HashMap<String, (Instant, std::sync::Arc<Cached>)>> {
     CACHE.get_or_init(Default::default)
 }
+
+// The runtime writes this as one atomic, pretty-printed JSON document, not JSONL.
+fn boot_record(raw: &str) -> Result<(String, String), String> {
+    #[derive(Deserialize)]
+    struct BootError {
+        t: String,
+        stage: String,
+        errno: Option<i32>,
+        message: String,
+    }
+    let error: BootError = serde_json::from_str(raw)
+        .map_err(|_| "The retained boot failure contains invalid data.")?;
+    let errno = error.errno.map(|value| format!(", errno {value}")).unwrap_or_default();
+    Ok((stamp(&error.t)?, format!("Boot failed ({}{errno}): {}", error.stage, error.message)))
+}
+
+fn read_record(reader: &mut impl BufRead, stream: &str, bytes: &mut Vec<u8>, limit: u64) -> std::io::Result<usize> {
+    let mut bounded = reader.take(limit.min(1024 * 1024 + 1));
+    if stream == "boot-error" { bounded.read_to_end(bytes) }
+    else { bounded.read_until(b'\n', bytes) }
+}
+
 fn cached_page(
     directory: &Path,
     token: &str,
@@ -127,15 +149,7 @@ fn cached_page(
             .seek(SeekFrom::Start(location.offset))
             .map_err(|_| "Retained log read failed.")?;
         let mut raw_bytes = Vec::new();
-        reader
-            .by_ref()
-            .take(
-                segment
-                    .bytes
-                    .saturating_sub(location.offset)
-                    .min(1024 * 1024 + 1),
-            )
-            .read_until(b'\n', &mut raw_bytes)
+        read_record(reader, &segment.stream, &mut raw_bytes, segment.bytes.saturating_sub(location.offset))
             .map_err(|_| "Retained log read failed.")?;
         if record_id(location.file, location.offset, &raw_bytes) != location.id {
             return Err("Retained log data changed or expired. Refresh the search.".into());
@@ -153,6 +167,8 @@ fn cached_page(
                 },
                 value["id"].as_u64().map(|id| id.to_string()),
             )
+        } else if segment.stream == "boot-error" {
+            ("runtime".into(), boot_record(&raw)?.1, None)
         } else {
             (segment.stream.clone(), raw.trim_end().to_string(), None)
         };
@@ -212,7 +228,7 @@ fn files(directory: &Path) -> Result<Vec<(PathBuf, Segment)>, String> {
     for file in directory {
         let file = file.map_err(|_| "Retained logs could not be read.")?;
         let name = file.file_name().to_string_lossy().into_owned();
-        let Some(stream) = ["exec", "runtime", "kernel"].into_iter().find(|stream| {
+        let stream = if name == "boot-error.json" { Some("boot-error") } else { ["exec", "runtime", "kernel"].into_iter().find(|stream| {
             let base = format!("{stream}.log");
             name == base
                 || name
@@ -220,7 +236,8 @@ fn files(directory: &Path) -> Result<Vec<(PathBuf, Segment)>, String> {
                     .is_some_and(|suffix| {
                         !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
                     })
-        }) else {
+        }) };
+        let Some(stream) = stream else {
             continue;
         };
         let metadata = file
@@ -427,10 +444,7 @@ fn read(
             let mut offset = 0;
             loop {
                 let mut bytes = Vec::new();
-                let count = reader
-                    .by_ref()
-                    .take(1024 * 1024 + 1)
-                    .read_until(b'\n', &mut bytes)
+                let count = read_record(&mut reader, &segment.stream, &mut bytes, segment.bytes.saturating_sub(offset))
                     .map_err(|_| "Retained logs could not be read.")?;
                 if count == 0 {
                     break;
@@ -459,6 +473,9 @@ fn read(
                         },
                         value["id"].as_u64().map(|id| id.to_string()),
                     )
+                } else if segment.stream == "boot-error" {
+                    let (timestamp, message) = boot_record(&raw)?;
+                    (timestamp, "runtime".into(), message, None)
                 } else {
                     let clean = runtime_activity::strip_ansi(&raw);
                     let prefix = clean
@@ -625,6 +642,54 @@ fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn boot_failure_is_searchable_with_its_timestamp_context_and_pagination() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("runtime.log"), "2026-09-22T09:19:32.455Z entering VM\n").unwrap();
+        fs::write(directory.path().join("boot-error.json"), serde_json::to_string_pretty(&json!({
+            "t": "2026-09-22T09:19:32.467Z", "stage": "build_vm", "errno": null,
+            "message": "libkrunfw could not load: different Team IDs\nTOKEN=private-value",
+        })).unwrap()).unwrap();
+        let mut query = request();
+        query.query = Some("different Team IDs".into());
+        query.source = Some("runtime".into());
+        query.since = Some("2026-09-22T09:19:32Z".into());
+        query.until = Some("2026-09-22T09:19:33Z".into());
+        let page = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
+        assert_eq!(page.total_matches, 1);
+        assert_eq!(page.entries[0].source, "runtime");
+        assert_eq!(page.entries[0].occurred_at, "2026-09-22T09:19:32.467000000Z");
+        assert!(page.entries[0].line.contains("build_vm"));
+        assert!(!page.entries[0].line.contains("private-value"));
+        assert!(!page.timestamp_estimated);
+        let mut context = request();
+        context.around_id = Some(page.entries[0].id.clone());
+        assert_eq!(read(directory.path(), context, "dev", "pc", "Desktop").unwrap().entries.len(), 2);
+        let mut query = request();
+        query.limit = Some(1);
+        let first = read(directory.path(), query.clone(), "dev", "pc", "Desktop").unwrap();
+        assert_eq!(first.entries[0].id, page.entries[0].id);
+        query.cursor = first.next_cursor;
+        let second = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
+        assert_eq!(second.entries.len(), 1);
+        assert!(second.entries[0].line.contains("entering VM"));
+    }
+
+    #[test]
+    fn replacing_a_boot_failure_expires_the_old_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("runtime.log"), "2026-09-22T09:19:30Z entering VM\n").unwrap();
+        let boot = |message| serde_json::to_vec(&json!({ "t": "2026-09-22T09:19:32Z", "stage": "build_vm", "message": message })).unwrap();
+        fs::write(directory.path().join("boot-error.json"), boot("first attempt")).unwrap();
+        let mut query = request();
+        query.limit = Some(1);
+        let first = read(directory.path(), query.clone(), "dev", "pc", "Desktop").unwrap();
+        fs::write(directory.path().join("next-boot-error.json"), boot("next attempt")).unwrap();
+        fs::rename(directory.path().join("next-boot-error.json"), directory.path().join("boot-error.json")).unwrap();
+        query.cursor = first.next_cursor;
+        assert!(read(directory.path(), query, "dev", "pc", "Desktop").err().unwrap().contains("expired"));
+    }
+
     fn request() -> Query {
         Query {
             sandbox_id: "vm-1".into(),

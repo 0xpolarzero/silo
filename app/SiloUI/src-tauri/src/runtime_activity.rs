@@ -8,9 +8,13 @@ pub(super) struct Event {
     id: String,
     action: String,
     workspace: String,
+    #[serde(default)]
+    machine_id: String,
     timestamp: u64,
     completed: bool,
     failure: Option<String>,
+    #[serde(default)]
+    dismissed: bool,
     process: u32,
 }
 
@@ -50,6 +54,17 @@ fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
     if entries.len() > LIMIT {
         entries.remove(0);
     }
+    // Detailed failures must not make the journal exceed its own read limit.
+    let sizes: Vec<usize> = entries.iter().map(|entry| serde_json::to_vec(entry).map(|bytes| bytes.len() + 1))
+        .collect::<Result<_, _>>().map_err(|_| "Sandbox activity could not be saved.")?;
+    let mut bytes = 1 + sizes.iter().sum::<usize>();
+    let mut drop_count = 0;
+    while bytes > MAX_OUTPUT_BYTES as usize && drop_count + 1 < entries.len() {
+        bytes -= sizes[drop_count];
+        drop_count += 1;
+    }
+    if bytes > MAX_OUTPUT_BYTES as usize { return Err("Sandbox activity is too large to save.".into()); }
+    entries.drain(..drop_count);
     let target = path(paths);
     let parent = target
         .parent()
@@ -68,7 +83,7 @@ fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
         .map_err(|_| "Sandbox activity could not be synced.".to_string())
 }
 
-pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str) -> Result<Event, String> {
+pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str, machine_id: &str) -> Result<Event, String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
     if !matches!(action, "start" | "stop" | "restart") {
         return Err("Unknown sandbox action.".into());
@@ -85,9 +100,11 @@ pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str) -> Resu
         ),
         action: action.into(),
         workspace: workspace.into(),
+        machine_id: machine_id.into(),
         timestamp,
         completed: false,
         failure: None,
+        dismissed: false,
         process: std::process::id(),
     };
     store(paths, &event)?;
@@ -98,10 +115,12 @@ pub(super) fn matches(event: &Event, action: &str, workspace: &str) -> bool {
     event.action == action && event.workspace == workspace
 }
 
-pub(super) fn resume(paths: &RuntimePaths, event: &mut Event) -> Result<(), String> {
+pub(super) fn resume(paths: &RuntimePaths, event: &mut Event, machine_id: &str) -> Result<(), String> {
+    event.machine_id = machine_id.into();
     event.process = std::process::id();
     event.completed = false;
     event.failure = None;
+    event.dismissed = false;
     store(paths, event)
 }
 
@@ -111,8 +130,41 @@ pub(super) fn finish(
     result: &Result<(), RuntimeError>,
 ) -> Result<(), String> {
     event.completed = true;
-    event.failure = result.as_ref().err().map(safe_activity_error);
+    event.failure = result.as_ref().err().map(failure_message);
     store(paths, event)
+}
+
+pub(super) fn failure_message(error: &RuntimeError) -> String {
+    let summary = safe_activity_error(error);
+    let RuntimeError::Failed { detail, .. } = error else { return summary };
+    // Keep the runtime's explanation, using the same sensitive-output filtering
+    // as Logs. Bound the journal and IPC payload even for noisy CLI failures.
+    let diagnostic = log_text(detail);
+    let diagnostic = diagnostic.trim();
+    if diagnostic.is_empty() { return summary; }
+    let bounded: String = diagnostic.chars().take(8_192).collect();
+    format!("{summary}\n{bounded}{}", if bounded.len() < diagnostic.len() { "\n[Diagnostic truncated]" } else { "" })
+}
+
+pub(super) fn failures(paths: &RuntimePaths) -> Result<HashMap<String, String>, RuntimeError> {
+    let mut latest = HashMap::new();
+    for event in events(paths)? {
+        // Legacy records remain in Activity, but cannot be attributed safely to
+        // a current VM: names can be reused after deletion or restoration.
+        if !event.machine_id.is_empty() { latest.insert(event.machine_id.clone(), event); }
+    }
+    Ok(latest.into_iter().filter_map(|(name, event)| {
+        let label = match event.action.as_str() { "start" => "Start", "stop" => "Stop", _ => "Restart" };
+        event.failure.filter(|_| !event.dismissed).map(|message| (name, format!("{label} failed: {message}")))
+    }).collect())
+}
+
+pub(super) fn acknowledge_failure(paths: &RuntimePaths, machine_id: &str) -> Result<(), RuntimeError> {
+    if let Some(mut event) = events(paths)?.into_iter().rev().find(|event| event.machine_id == machine_id) {
+        event.dismissed = true;
+        store(paths, &event).map_err(RuntimeError::Unavailable)?;
+    }
+    Ok(())
 }
 
 fn timestamp(value: u64) -> String {
@@ -214,10 +266,31 @@ pub(super) fn log_text(body: &str) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn lifecycle_failure_keeps_diagnostics_and_survives_read_until_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+        finish(&paths, &mut event, &Err(RuntimeError::Failed {
+            operation: "Starting the sandbox".into(),
+            detail: "exit code 1: \u{1b}[31mlibkrunfw could not load: different Team IDs\u{1b}[0m\nTOKEN=private-value".into(),
+        })).unwrap();
+        let detail = read(&paths).unwrap()[0]["detail"].as_str().unwrap().to_string();
+        assert!(detail.contains("libkrunfw could not load: different Team IDs"));
+        assert!(!detail.contains("private-value"));
+        assert!(!detail.contains('\u{1b}'));
+        assert!(failures(&paths).unwrap()["vm-1"].contains("different Team IDs"));
+        assert!(!failures(&paths).unwrap().contains_key("replacement-vm"));
+        let mut retry = begin(&paths, "start", "dev", "vm-1").unwrap();
+        finish(&paths, &mut retry, &Ok(())).unwrap();
+        assert!(!failures(&paths).unwrap().contains_key("vm-1"));
+        assert!(read(&paths).unwrap().iter().any(|entry| entry["detail"].as_str().is_some_and(|text| text.contains("different Team IDs"))));
+    }
+
+    #[test]
     fn durable_lifecycle_records_verified_results_without_raw_failure_output() {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let mut event = begin(&paths, "restart", "dev").unwrap();
+        let mut event = begin(&paths, "restart", "dev", "vm-1").unwrap();
         assert_eq!(read(&paths).unwrap()[0]["status"], "running");
         finish(
             &paths,
@@ -239,11 +312,41 @@ mod tests {
     fn unfinished_previous_process_is_not_reported_running_or_successful() {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let mut event = begin(&paths, "stop", "dev").unwrap();
+        let mut event = begin(&paths, "stop", "dev", "vm-1").unwrap();
         event.process = 0;
         store(&paths, &event).unwrap();
         let values = read(&paths).unwrap();
         assert_eq!(values[0]["tone"], "warning");
         assert_eq!(values[0]["status"], "completed");
+    }
+
+    #[test]
+    fn acknowledging_a_failure_preserves_activity_but_clears_overview() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+        finish(&paths, &mut event, &Err(RuntimeError::Invalid("Boot failed".into()))).unwrap();
+        acknowledge_failure(&paths, "replacement-vm").unwrap();
+        assert!(failures(&paths).unwrap().contains_key("vm-1"));
+        acknowledge_failure(&paths, "vm-1").unwrap();
+        assert!(failures(&paths).unwrap().is_empty());
+        assert_eq!(read(&paths).unwrap()[0]["detail"], "Boot failed");
+    }
+
+    #[test]
+    fn detailed_failure_retention_stays_within_the_journal_read_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+        event.completed = true;
+        event.failure = Some("failure detail ".repeat(500));
+        let entries: Vec<_> = (0..133).map(|index| { let mut entry = event.clone(); entry.id = index.to_string(); entry }).collect();
+        fs::write(path(&paths), serde_json::to_vec(&entries).unwrap()).unwrap();
+        finish(&paths, &mut event, &Err(RuntimeError::Failed {
+            operation: "Starting the sandbox".into(), detail: "💥".repeat(20_000),
+        })).unwrap();
+        assert!(fs::metadata(path(&paths)).unwrap().len() <= MAX_OUTPUT_BYTES);
+        assert!(events(&paths).unwrap().len() < 134);
+        assert!(events(&paths).unwrap().last().unwrap().failure.as_ref().unwrap().contains("[Diagnostic truncated]"));
     }
 }
