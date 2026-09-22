@@ -134,3 +134,16 @@ The native fixture rebuilt and opened successfully; sidebar collapse/redraw was 
 Release rebundling failed during code signing; inspection confirmed the user was running that exact release bundle. The process was left running. Subsequent packaging uses the separate debug output. Failure logs are preserved under `src-tauri/target/verification/window-buttons-build*.log`.
 
 `npm --prefix app/SiloUI run desktop:build:debug` succeeded. The corrected bundle is `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`; deep strict code-signature verification passed. The actual bundle was not launched alongside the user’s running production services.
+
+
+### Material legibility refinement
+
+Following a native screenshot showing readable background text competing with navigation, switch NSGlassEffectView from Clear to Regular. Apple describes Regular as adaptive and Clear as permanently transparent requiring extra legibility treatment: https://developer.apple.com/videos/play/wwdc2025/219/. Main content now uses 99% fill opacity in both light and dark themes (previously 94% and 98%). This percentage is a design starting point, not an accessibility certification; the native material remains visible in the sidebar and toolbar. Reduced-transparency and increased-contrast opaque fallbacks remain in place. WCAG text and non-text contrast checks should use the final composited background: https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html and https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html.
+
+The optimized local build completed at `src-tauri/target/release/bundle/macos/Silo.app`; deep strict signature verification passed. The user’s running debug bundle was left untouched. This revision has not yet been visually inspected in the actual app over a busy desktop background.
+
+For the requested Dock-like appearance, native sidebar and toolbar fills now expose Regular glass directly instead of adding a teal CSS wash. Navigation uses neutral theme foreground colors. Main content retains its 99% fill; opaque accessibility rules still take precedence. This uses the public AppKit material and does not claim an exact reproduction of the Dock’s private composition.
+
+The Dock-like refinement built successfully at `src-tauri/target/debug/bundle/macos/Silo.app` and passed deep strict signature verification. The running release app was not restarted; final visual review of this material refinement remains pending.
+
+Final refinement: main content is now 100% opaque in both themes, removing the remaining 1% transparency. Native Regular glass remains visible only through the sidebar and toolbar. The existing built bundles predate this final CSS change.

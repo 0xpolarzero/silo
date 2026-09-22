@@ -4,7 +4,7 @@
   isolation: isolate;
   background: var(--background);
   --application-glass: rgb(246 255 253 / 32%);
-  --application-content: rgb(250 253 252 / 94%);
+  --application-content: rgb(250 253 252);
   --application-navigation: #395757;
   --application-navigation-active: #174d50;
   --application-hover: rgb(255 255 255 / 25%);
@@ -15,7 +15,7 @@
 html.dark .silo-application {
   background: var(--background);
   --application-glass: rgb(21 44 50 / 55%);
-  --application-content: rgb(21 29 33 / 98%);
+  --application-content: rgb(21 29 33);
   --application-navigation: #c2dbd7;
   --application-navigation-active: #e1fff4;
   --application-hover: rgb(255 255 255 / 6%);
@@ -77,6 +77,14 @@ html.dark .silo-application {
   .silo-application .sidebar-secondary:hover::before { visibility: hidden; }
   .silo-application .sidebar-secondary:hover + .sidebar-secondary::before { top: 8px; }
   .silo-application .sidebar-secondary:has(+ .sidebar-secondary:hover)::before { bottom: 8px; }
+}
+
+/* Native Regular glass supplies the chrome's color, diffusion, and highlights.
+   Avoid painting a second tinted material over it. */
+html.native-material .silo-application {
+  --application-glass: transparent;
+  --application-navigation: var(--foreground);
+  --application-navigation-active: var(--foreground);
 }
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {

@@ -20,7 +20,8 @@ pub(crate) fn install(window: &tauri::WebviewWindow) -> Result<(), Box<dyn std::
             .ok_or("Missing main window content view")?;
         let bounds = content.bounds();
         let glass = NSGlassEffectView::initWithFrame(mtm.alloc(), bounds);
-        glass.setStyle(NSGlassEffectViewStyle::Clear);
+        // Regular adapts the material to preserve legibility over busy backgrounds.
+        glass.setStyle(NSGlassEffectViewStyle::Regular);
         glass.setCornerRadius(10.0);
         glass.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
