@@ -1,4 +1,4 @@
-"""The release-only, exact-engine signing policy. Never edits installed apps."""
+"""The optimized macOS exact-engine signing policy. Never edits installed apps."""
 from pathlib import Path
 import plistlib
 import re

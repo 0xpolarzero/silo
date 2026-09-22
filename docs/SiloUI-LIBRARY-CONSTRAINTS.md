@@ -106,6 +106,10 @@ first-launch behavior or the user’s update interaction.
   regenerate the constraint. Do not approve libraries by signing identifier alone.
 - Release packaging now applies this rule to the final helper, verifies the exact
   policy using Apple’s signer, then creates and signs the updater archive and DMG.
+- Optimized local macOS builds use the same finalization and verification through
+  `npm --prefix app/SiloUI run desktop:build`. Tauri's generic app signature alone
+  does not grant the VM helper permission to load its engine. Local builds create
+  only the finalized `.app`; distribution archives remain a later release step.
 
 ## Primary sources
 

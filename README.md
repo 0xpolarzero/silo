@@ -178,10 +178,13 @@ For an optimized app you can launch without the development terminal, use the co
 **macOS:**
 
 ```sh
-npm --prefix app/SiloUI run desktop:build -- --bundles app \
-  --config '{"bundle":{"createUpdaterArtifacts":false}}'
+npm --prefix app/SiloUI run desktop:build
 open app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app
 ```
+
+The macOS command applies and verifies the VM helper's exact-engine ad-hoc
+signature before succeeding. It creates a local app without a DMG or updater
+archive; no Apple distribution certificate is required.
 
 **Linux:**
 

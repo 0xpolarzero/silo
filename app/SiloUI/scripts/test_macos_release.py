@@ -1,6 +1,7 @@
 """Exercise the release signing gate against real disposable macOS signatures."""
 from pathlib import Path
 import importlib.util
+import json
 import os
 import plistlib
 import re
@@ -22,7 +23,15 @@ class MacOSReleaseSigningTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory(prefix='silo-release-signing-')
         cls.root = Path(cls.temporary.name)
         source = cls.root / 'main.c'
-        source.write_text('int main(void){return 0;}')
+        source.write_text('''#include <dlfcn.h>
+#include <stdio.h>
+int main(int argc, char **argv) {
+    if (argc != 2) return 0;
+    void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    if (!library) { fprintf(stderr, "%s\\n", dlerror()); return 1; }
+    int (*value)(void) = dlsym(library, "value");
+    return value && value() == 7 ? 0 : 2;
+}''')
         cls.run_command('clang', '-arch', 'arm64', source, '-o', cls.root / 'executable')
         source.write_text('int value(void){return 7;}')
         cls.run_command('clang', '-arch', 'arm64', '-dynamiclib', source, '-o', cls.root / 'engine.dylib')
@@ -39,7 +48,7 @@ class MacOSReleaseSigningTests(unittest.TestCase):
 
     def setUp(self):
         self.case = Path(tempfile.mkdtemp(dir=self.root))
-        self.app = self.case / 'Silo.app'
+        self.app = self.case / 'target/release/bundle/macos/Silo.app'
         self.binaries = self.app / 'Contents/MacOS'
         self.frameworks = self.app / 'Contents/Frameworks'
         self.binaries.mkdir(parents=True)
@@ -95,6 +104,46 @@ class MacOSReleaseSigningTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, 'Unsafe bundle passed signing gate')
 
     def test_exact_constraint_accepted(self):
+        self.verify(True)
+
+    def test_local_build_repairs_tauri_signature_before_reporting_success(self):
+        # Tauri gives the helper the app's entitlements. Its signature is valid,
+        # but dyld rejects the engine until local packaging finalizes the helper.
+        self.sign(self.binaries / 'msb', entitlements={
+            'com.apple.security.hypervisor': True,
+            'com.apple.security.automation.apple-events': True,
+        })
+        self.seal()
+        self.run_command('codesign', '--verify', '--deep', '--strict', self.app)
+
+        # Exercise the public npm command with only compilation replaced. This
+        # also fails if package.json is ever changed back to plain tauri build.
+        scripts = self.case / 'scripts'
+        scripts.mkdir()
+        for name in ('build_desktop.py', 'macos_release_signing.py'):
+            shutil.copy2(SCRIPT.with_name(name), scripts / name)
+        shutil.copy2(SCRIPT.parent.parent / 'package.json', self.case / 'package.json')
+        (self.case / 'src-tauri').mkdir()
+        shutil.copy2(SCRIPT.parent.parent / 'src-tauri/Entitlements.plist',
+                     self.case / 'src-tauri/Entitlements.plist')
+        cli = self.case / 'node_modules/@tauri-apps/cli/tauri.js'
+        cli.parent.mkdir(parents=True)
+        cli.write_text('#!/usr/bin/env node\nprocess.exit(0)\n')
+        cli.chmod(0o755)
+        (self.case / 'node_modules/.bin').mkdir()
+        (self.case / 'node_modules/.bin/tauri').symlink_to(cli)
+        tools = self.case / 'tools'
+        tools.mkdir()
+        cargo = tools / 'cargo'
+        metadata = json.dumps({'target_directory': str(self.case / 'target')})
+        cargo.write_text(f'#!{sys.executable}\nprint({metadata!r})\n')
+        cargo.chmod(0o755)
+        result = subprocess.run(['npm', 'run', 'desktop:build'], cwd=self.case,
+                                env=dict(os.environ, PATH=f'{tools}{os.pathsep}{os.environ["PATH"]}'),
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        loaded = subprocess.run([str(self.binaries / 'msb'), str(self.engine)], capture_output=True, text=True)
+        self.assertEqual(loaded.returncode, 0, loaded.stderr)
         self.verify(True)
 
     def test_broad_exception_without_constraint_rejected(self):

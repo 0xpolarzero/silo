@@ -51,10 +51,10 @@ Output: `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`.
 For an optimized local macOS app without installer or updater signing:
 
 ```sh
-npm --prefix app/SiloUI run desktop:build -- --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+npm --prefix app/SiloUI run desktop:build
 ```
 
-Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. This command disables updater artifact creation for this invocation only. The normal `desktop:build` command builds host-platform distribution packages and requires updater signing credentials. Follow the release guide for distributable packages; a local app build does not publish anything.
+Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. On macOS, this command creates only a local app, applies the existing exact-engine VM signing policy, and verifies the final bundle. No distribution certificate or updater key is required. The previous explicit `--bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'` arguments remain supported. Linux builds retain the native Tauri packaging behavior. Follow the release guide for distributable packages; a local app build does not publish anything. Set an absolute `CARGO_TARGET_DIR` to rebuild separately from an app currently running from the usual output.
 
 ## Running and debugging
 

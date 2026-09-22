@@ -162,7 +162,9 @@ npm --prefix app/SiloUI run desktop:build
 
 Only run the command needed: `desktop` starts development mode;
 `desktop:build:debug` builds the local macOS app with ad-hoc signing;
-`desktop:build` produces release-mode packages for the host. Platform resource
+`desktop:build` produces a verified optimized local app on macOS and native
+release-mode packages on Linux. macOS DMG and updater artifacts are produced
+by the release workflow, after VM signature finalization. Platform resource
 preparation runs before native compilation and needs network access on a cold
 cache. Install Rust 1.94.0 (`rustup toolchain install 1.94.0`) for the pinned
 MicroSandbox source build, plus the host's Tauri prerequisites.
@@ -192,11 +194,50 @@ Output: `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`.
 For an optimized local app without installer or updater artifacts:
 
 ```sh
-npm --prefix app/SiloUI run desktop:build -- --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+npm --prefix app/SiloUI run desktop:build
 ```
 
 Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`.
-These commands do not install or publish the app.
+These commands do not install or publish the app. On macOS, `desktop:build`
+wraps Tauri's app bundling with `sign_runtime` and `verify_bundle` from
+`scripts/macos_release_signing.py`. It retains hardened runtime and applies
+the existing exact-engine constraint to the VM helper. It forces app-only
+output and disables updater artifact creation, so no distribution certificate
+or updater signing key is needed. A signing or policy-verification failure
+fails the build. Plain `npx tauri build` bypasses this finalization and is not
+the supported local macOS app build command.
+
+The previous explicit `--bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'`
+arguments remain supported.
+`--target aarch64-apple-darwin` and `CARGO_TARGET_DIR` are resolved through
+Cargo's output directory. Set `CARGO_TARGET_DIR` to an absolute separate path
+when the usual output bundle is running. Debug and `--no-bundle` builds and
+non-macOS targets retain their Tauri behavior. DMG/all bundle requests use the
+release workflow instead; generating an archive before helper finalization
+would package the wrong signature.
+
+The September 22 startup investigation matched a successful 11:07 local VM
+start to the debug bundle and the 11:16 failure to an optimized local bundle.
+The latter had ordinary app entitlements on `msb`, so hardened runtime rejected
+its ad-hoc engine for lack of a matching Team ID. The local build command had
+omitted the finalization already used by release packaging. See
+[the library-loading proof](SiloUI-LIBRARY-CONSTRAINTS.md) for the policy and
+its primary sources. `scripts/test_macos_release.py` now reproduces that
+loader failure with real disposable signatures and verifies local build
+finalization; `scripts/test_desktop_release.py` covers output selection,
+build/signature failures, and pass-through behavior. Both are included in the
+existing release workflow's Python test discovery.
+
+Verification on September 22 used the unchanged packaged helper and engine from
+`src-tauri/target/local-signing/release/bundle/macos/Silo.app`, built with an
+absolute `CARGO_TARGET_DIR` to leave the running release app untouched. Its
+signature-policy gate passed. With a fresh temporary `MSB_HOME`, the helper
+imported the packaged guest image, created and started a one-CPU, 512 MB VM
+with networking disabled, executed `LOCAL_BUILD_VM_OK`, and stopped it. The
+temporary home was removed after successful stop. Results and the disposable
+probe are under the ignored `src-tauri/target/verification/local-signing/`.
+This validates packaged VM startup and execution; the native UI was not
+relaunched, and no installed app or existing VM was modified.
 
 ### Verify a change
 
