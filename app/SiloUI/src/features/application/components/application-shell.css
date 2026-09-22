@@ -1,9 +1,8 @@
-/* Native WebKit uses ordinary backdrop blur. Keep SVG displacement in the
-   material study until it is verified on the supported native renderers. */
+/* Desktop sampling and refraction belong to AppKit, outside the webview. */
 .silo-application {
   position: relative;
   isolation: isolate;
-  background: #e9eeed;
+  background: var(--background);
   --application-glass: rgb(246 255 253 / 32%);
   --application-content: rgb(250 253 252 / 94%);
   --application-navigation: #395757;
@@ -14,7 +13,7 @@
 }
 
 html.dark .silo-application {
-  background: #101e26;
+  background: var(--background);
   --application-glass: rgb(21 44 50 / 55%);
   --application-content: rgb(21 29 33 / 98%);
   --application-navigation: #c2dbd7;
@@ -22,51 +21,6 @@ html.dark .silo-application {
   --application-hover: rgb(255 255 255 / 6%);
   --application-selection: rgb(255 255 255 / 9%);
   --application-selection-hover: rgb(255 255 255 / 12%);
-}
-
-.application-backdrop {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse at 1% 75%, #307e84, transparent 46%),
-    radial-gradient(ellipse at 94% 13%, #a7b8da, transparent 47%),
-    radial-gradient(ellipse at 80% 97%, #c6dcd3, transparent 55%);
-}
-
-html.dark .application-backdrop { opacity: .48; }
-
-.application-backdrop-ribbon {
-  position: absolute;
-  width: 120%;
-  height: 330px;
-  left: -30%;
-  top: 45%;
-  transform: rotate(-32deg);
-  border-radius: 50%;
-  background: linear-gradient(180deg, #ddf8ef00, #effff099 25%, #5eb0a9aa 26%, #13778255 31%, #d8f7d766 75%, transparent);
-}
-
-.application-backdrop-orbit {
-  position: absolute;
-  width: 1200px;
-  height: 650px;
-  left: -230px;
-  top: 70px;
-  border: 2px solid #f4fffba0;
-  border-radius: 50%;
-  transform: rotate(-36deg);
-  box-shadow: 0 12px 0 #ffffff26, 0 50px 0 #ffffff12;
-}
-
-.application-backdrop-orbit-secondary {
-  left: 60%;
-  top: 40%;
-  width: 800px;
-  height: 400px;
-  border-width: 30px;
-  border-color: #fbf1d444;
 }
 
 .silo-application > header,
@@ -126,15 +80,19 @@ html.dark .application-backdrop { opacity: .48; }
 }
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
-  .silo-application .application-backdrop { display: none; }
   .silo-application > header,
   .silo-application .silo-sidebar {
     background: var(--sidebar);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+  .silo-application > header,
   .silo-application .application-content { background: var(--background); }
-  .silo-application {
+  .silo-application .silo-titlebar-controls { background: var(--sidebar); }
+  .silo-application.sidebar-pinned-collapsed .silo-titlebar-controls { background: transparent; }
+  /* Match the dark palette selector so glass colors cannot override this fallback. */
+  html .silo-application,
+  html.dark .silo-application {
     --application-navigation: var(--foreground);
     --application-navigation-active: var(--foreground);
     --application-hover: var(--secondary);
@@ -142,3 +100,40 @@ html.dark .application-backdrop { opacity: .48; }
     --application-selection-hover: var(--border);
   }
 }
+
+/* Only the native macOS window has a compositor material behind the webview. */
+html.native-material, html.native-material body,
+html.native-material #root,
+html.native-material .silo-application { background: transparent; }
+html.native-material .silo-application > header,
+html.native-material .silo-application .silo-sidebar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  html.native-material .silo-application { background: var(--background); }
+}
+
+/* Native signal covers WKWebView versions that do not expose the media query. */
+
+html.native-opaque .silo-application > header,
+html.native-opaque .silo-application .silo-sidebar {
+  background: var(--sidebar);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html.native-opaque .silo-application > header,
+html.native-opaque .silo-application .application-content { background: var(--background); }
+html.native-opaque .silo-application .silo-titlebar-controls { background: var(--sidebar); }
+html.native-opaque .silo-application.sidebar-pinned-collapsed .silo-titlebar-controls { background: transparent; }
+/* Match the dark palette selector so glass colors cannot override this fallback. */
+html.native-opaque .silo-application,
+html.native-opaque.dark .silo-application {
+  --application-navigation: var(--foreground);
+  --application-navigation-active: var(--foreground);
+  --application-hover: var(--secondary);
+  --application-selection: var(--border);
+  --application-selection-hover: var(--border);
+}
+
+html.native-material.native-opaque .silo-application { background: var(--background); }

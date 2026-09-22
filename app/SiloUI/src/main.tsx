@@ -20,6 +20,7 @@ import { initializeTheme } from "@/features/preferences/theme"
 const desktop = isTauri()
 const statusPanel = desktop && getCurrentWindow().label === "status"
 document.documentElement.classList.toggle("native-status", statusPanel)
+document.documentElement.classList.toggle("native-material", desktop && getCurrentWindow().label === "main" && /Mac/.test(navigator.platform))
 const settings = createDesktopSettingsStore({}, !statusPanel)
 const production = createProductionSource()
 

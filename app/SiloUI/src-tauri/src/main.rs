@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 mod titlebar;
+#[cfg(target_os = "macos")]
+mod window_material;
 mod applications;
 mod app_menu;
 mod backup;
@@ -70,6 +72,16 @@ fn main() {
         return;
     }
     tauri::Builder::default()
+        .on_page_load(|webview, _| {
+            #[cfg(target_os = "macos")]
+            if webview.label() == "main" {
+                if let Some(window) = webview.get_webview_window("main") {
+                    window_material::sync_accessibility(&window);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = webview;
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -206,6 +218,8 @@ fn main() {
                     }
                 }
             });
+            #[cfg(target_os = "macos")]
+            window_material::install(&window)?;
             window.show()?;
             #[cfg(target_os = "macos")]
             titlebar::install(&window)?;

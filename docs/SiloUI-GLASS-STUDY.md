@@ -1,6 +1,6 @@
 # Glass material study
 
-The approved shell is now implemented in `src/features/application/components/application-shell.css` and `application-shell.tsx`. The study below records the design and Linux investigation; see the production implementation record at the end.
+The native material correction below supersedes the original production implementation. The original implementation incorrectly shipped the study’s artificial wallpaper and ordinary blur; it did not implement desktop refraction. The browser study and its Linux measurements remain historical evidence only.
 
 Browser-only design experiment, 2026-09-21. Run `npm --prefix app/SiloUI run dev -- --port 1421` and open `http://localhost:1421/glass.html`.
 
@@ -75,7 +75,7 @@ Primary references:
 Preview URLs now accept `material=original|frosted|glass` and `appearance=light|dark` for deterministic rendering comparisons.
 
 
-## Production implementation
+## Original production implementation (superseded)
 
 The main application shell now owns the static teal backdrop, frosted navigation and complete title bar, and 94% light / 98% dark content surfaces. It preserves the existing border widths and corner radii, removes the logo divider, tightens logo-to-menu spacing, and gives submenu guides equal clearance around selected or hovered rows. Native danger/warning navigation tones are preserved. Onboarding and the separate status window retain their existing surfaces.
 
@@ -95,3 +95,31 @@ Validation:
 - No packaged native UI was launched or inspected. The existing `/Applications/Silo.app/Contents/MacOS/silo-ui` process belongs to the user and was left running. A successful bundle build does not establish live VM health or hardware-rendered native glass parity.
 
 Release note: `.changeset/glass-application-shell.md` (minor). No version bump or publication.
+
+
+## Native material correction, 2026-09-22
+
+The application no longer paints the prototype wallpaper. On macOS 26+, `window_material.rs` wraps the existing webview content in AppKit `NSGlassEffectView` using its Clear style. The native compositor owns the glass material; CSS does not capture or displace desktop pixels. The Tauri window and main webview background are transparent, with the approved tinted sidebar/title bar and more opaque content surfaces above the material. Status and Linux desktop viewer webviews do not receive the main-window transparent CSS marker.
+
+macOS 14/15 use native Sidebar vibrancy instead, which is not the same refractive effect. Linux retains an opaque application background: no equivalent desktop refraction is implemented there. The website demonstration’s independent wallpaper remains a presentation prop. No screen capture permission or wallpaper capture is involved.
+
+Primary API references checked against the local macOS 26 SDK:
+
+- [Apple NSGlassEffectView](https://developer.apple.com/documentation/appkit/nsglasseffectview)
+- [Apple contentView](https://developer.apple.com/documentation/appkit/nsglasseffectview/contentview): the webview belongs inside the glass view’s content, not an unrelated sibling above it.
+- [Tauri window-vibrancy native implementation](https://github.com/tauri-apps/window-vibrancy/blob/dev/src/macos/liquid_glass.rs) provides prior art for the public AppKit integration.
+
+Verification uses `src-tauri/examples/material_preview.rs`, a native window hosting production components with deterministic fixture data and no Silo services. Start the frontend on port 1422, then run `cargo run --manifest-path app/SiloUI/src-tauri/Cargo.toml --example material_preview`. It does not acquire Silo’s runtime lock or manage VMs.
+
+Rust compilation and frontend typecheck/lint passed; all 112 focused application/sidebar/onboarding tests passed. The isolated fixture bundle at `src-tauri/target/verification/Silo Material Preview.app` was launched and its populated native window visually inspected on macOS 26.5. The system’s Reduce Transparency preference is enabled and was left unchanged. This proves native composition starts and the fixture renders, **not visible refraction with transparency enabled**. Full-effect visual verification, older macOS fallback execution, Linux native execution, and native GPU/memory measurements remain outstanding. The existing installed Silo and its VMs were not restarted.
+
+
+### Reduced-transparency detection correction
+
+The native preview did not apply the CSS media-query fallback despite the macOS preference being enabled. The app now also reads `NSWorkspace.accessibilityDisplayShouldReduceTransparency` and increased contrast directly, synchronizes them after page loads, and observes `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification` for live updates. An explicit native class restores opaque theme surfaces and neutral navigation colors. The CSS media query remains useful in supporting browser previews. Dark-theme selector specificity was corrected so the fallback overrides the glass palette.
+
+References: [Apple accessibility preference](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayshouldreducetransparency), [Apple change notification](https://developer.apple.com/documentation/appkit/nsworkspace/accessibilitydisplayoptionsdidchangenotification), [CSS media feature](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/prefers-reduced-transparency).
+
+After rebuilding the isolated material preview, visually verified the neutral opaque dark sidebar, toolbar, and content with the existing macOS Reduce Transparency preference enabled. Rust check and fixture build passed. Live preference toggling was not exercised because the system preference was left unchanged.
+
+The corrected actual app was built successfully with `npm --prefix app/SiloUI run desktop:build -- --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'`. Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. This is an optimized local bundle; no updater artifacts or publication. It was not launched over the user’s running Silo instance. Private build log: `src-tauri/target/verification/native-glass-build.log`.

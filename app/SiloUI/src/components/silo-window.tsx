@@ -10,12 +10,11 @@ interface SiloWindowProps {
   label: string
   children: ReactNode
   className?: string
-  backdrop?: ReactNode
   titleBar?: ReactNode
   reduceMotion?: boolean
 }
 
-export function SiloWindow({ title, label, children, className, titleBar, backdrop, reduceMotion }: SiloWindowProps) {
+export function SiloWindow({ title, label, children, className, titleBar, reduceMotion }: SiloWindowProps) {
   const desktop = isTauri()
   return (
     <main className={desktop ? "h-dvh" : "grid min-h-dvh place-items-center bg-muted/50 p-0 sm:p-4"}>
@@ -28,7 +27,6 @@ export function SiloWindow({ title, label, children, className, titleBar, backdr
         aria-label={label}
         data-reduce-motion={reduceMotion || undefined}
       >
-        {backdrop}
         {titleBar ?? <WindowTitleBar title={title} />}
         {children}
       </section>
