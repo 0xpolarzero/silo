@@ -1,6 +1,9 @@
 //! UI-only native fixture harness; does not initialize Silo services or touch VM state.
 //! Run the frontend on localhost:1422, then `cargo run --example material_preview`.
 #[cfg(target_os = "macos")]
+#[path = "../src/titlebar.rs"]
+mod titlebar;
+#[cfg(target_os = "macos")]
 #[path = "../src/window_material.rs"]
 mod window_material;
 
@@ -30,6 +33,8 @@ fn main() {
             #[cfg(target_os = "macos")]
             window_material::install(&window)?;
             window.show()?;
+            #[cfg(target_os = "macos")]
+            titlebar::install(&window)?;
             Ok(())
         })
         .run(context)

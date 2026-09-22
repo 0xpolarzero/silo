@@ -123,3 +123,14 @@ References: [Apple accessibility preference](https://developer.apple.com/documen
 After rebuilding the isolated material preview, visually verified the neutral opaque dark sidebar, toolbar, and content with the existing macOS Reduce Transparency preference enabled. Rust check and fixture build passed. Live preference toggling was not exercised because the system preference was left unchanged.
 
 The corrected actual app was built successfully with `npm --prefix app/SiloUI run desktop:build -- --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'`. Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. This is an optimized local bundle; no updater artifacts or publication. It was not launched over the user’s running Silo instance. Private build log: `src-tauri/target/verification/native-glass-build.log`.
+
+
+### Native window-button alignment correction
+
+Removed `trafficLightPosition` from Tauri configuration. Tao 0.35.3 calls `inset_traffic_lights` on every `draw_rect`, moving the title-bar container after Silo’s independent button alignment. Silo now owns horizontal and vertical button alignment, accounts for flipped parent coordinates, and reapplies alignment on focus, resize, and scale changes. The fixture harness now installs the same titlebar handler as the real app. Source evidence: `tao-0.35.3/src/platform_impl/macos/view.rs`, `draw_rect` and `inset_traffic_lights`.
+
+The native fixture rebuilt and opened successfully; sidebar collapse/redraw was exercised. The macOS screen-sharing indicator obscured the native buttons in screenshots, so final button positioning still needs an unobstructed visual check.
+
+Release rebundling failed during code signing; inspection confirmed the user was running that exact release bundle. The process was left running. Subsequent packaging uses the separate debug output. Failure logs are preserved under `src-tauri/target/verification/window-buttons-build*.log`.
+
+`npm --prefix app/SiloUI run desktop:build:debug` succeeded. The corrected bundle is `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`; deep strict code-signature verification passed. The actual bundle was not launched alongside the user’s running production services.

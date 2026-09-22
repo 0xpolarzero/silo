@@ -15,11 +15,21 @@ fn align(window: &WebviewWindow) -> tauri::Result<()> {
         if native.styleMask().contains(NSWindowStyleMask::FullScreen) {
             return;
         }
-        for kind in [
+        let Some(close) = native.standardWindowButton(NSWindowButton::CloseButton) else {
+            return;
+        };
+        let Some(minimize) = native.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
+            return;
+        };
+        let spacing = minimize.frame().origin.x - close.frame().origin.x;
+        for (index, kind) in [
             NSWindowButton::CloseButton,
             NSWindowButton::MiniaturizeButton,
             NSWindowButton::ZoomButton,
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let Some(button) = native.standardWindowButton(kind) else {
                 continue;
             };
@@ -27,9 +37,15 @@ fn align(window: &WebviewWindow) -> tauri::Result<()> {
             let center_from_top =
                 native.frame().size.height - rect.origin.y - rect.size.height / 2.0;
             let mut origin = button.frame().origin;
-            // AppKit's bottom-origin coordinates increase upward. Tao/Wry
-            // preserve this origin when applying trafficLightPosition.
-            origin.y += center_from_top - TOOLBAR_CENTER_Y;
+            // Keep all placement here. A configured trafficLightPosition would
+            // make Tao reposition the title-bar container on every redraw.
+            origin.x = 12.0 + index as f64 * spacing;
+            let correction = center_from_top - TOOLBAR_CENTER_Y;
+            origin.y += if unsafe { button.superview() }.is_some_and(|view| view.isFlipped()) {
+                -correction
+            } else {
+                correction
+            };
             button.setFrameOrigin(origin);
         }
     })
@@ -41,9 +57,13 @@ pub(crate) fn install(window: &WebviewWindow) -> tauri::Result<()> {
     window.on_window_event(move |event| {
         if matches!(
             event,
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
+            WindowEvent::Resized(_)
+                | WindowEvent::ScaleFactorChanged { .. }
+                | WindowEvent::Focused(_)
         ) {
-            crate::status_panel::report(align(&handle));
+            if let Err(error) = align(&handle) {
+                eprintln!("Window button alignment failed: {error}");
+            }
         }
     });
     Ok(())
