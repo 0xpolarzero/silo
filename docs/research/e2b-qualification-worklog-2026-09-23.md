@@ -389,3 +389,37 @@ vanilla v1.14.0 and v1.14.4 (both reject the fork's vmstate; E2B's fork
 source is private). All synthetic catalog rows, the copied closure and every
 run-owned sandbox were removed afterward; the pinned orchestrator was
 re-verified healthy (`e5052cb5…`) with zero Firecracker processes.
+
+## 2026-09-24: Gate A/C/R closures, provider repo, durability barrier
+
+The user authorized a disposable private GitHub repo for provider
+qualification and confirmed no second physical machine exists (Gate H
+recorded as not run with that exact dependency). Work proceeded in parallel:
+a subagent ran the real-provider matrix while the orchestrator held the
+deployment lease.
+
+Gate A live checks completed: a SIGKILL landed inside an in-flight checkpoint
+(client `RemoteProtocolError`; record reconciled truthfully to `running`,
+desktop unharmed), and killing a desktop's Firecracker by exact PID produced
+honest failures (screenshot 500, pause 502, record reclassified `missing`).
+`Sandbox.connect()` was again observed auto-creating a runtime for a stopped
+sandbox — the adapter must never poll through connect.
+
+Gate R: the pause lifecycle path now blocks until the sandbox's
+upload-success marker and records its hash; `shutdown.py` requires the
+marker for every paused desktop, syncs canonical storage and fails closed on
+timeout with a truthful undurable record. Live: pause waited 3.2 s for its
+marker; the full barrier check passed on the diagnostic deployment. Local
+suite now 94 passing (`test_shutdown.py` extended; a first version's timeout
+test spun a real clock for 300 s and was caught by the runner hang — fixed
+with a fake clock before commit).
+
+Gate C: all nine real-provider cases passed against
+`0xpolarzero/silo-e2b-provider-qualification` (see the
+[real-provider note](e2b-real-provider-qualification-2026-09-24.md));
+credential-host accounting shows the token reaching only github.com,
+lfs.github.com and api.github.com, with presigned LFS object hosts receiving
+none. Revocation-with-rotated-token remains blocked on a second token.
+
+Everything committed as it landed (docs + PoC code); the disposable repo
+retains its qualification branches as remote evidence.
