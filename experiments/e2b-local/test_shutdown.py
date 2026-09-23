@@ -35,8 +35,11 @@ class ShutdownTests(unittest.TestCase):
                 'name': 'Work', 'status': 'running', 'mode': 'agent', 'epoch': 3}
             manager.handles['workspace'] = Mock(sandbox_id='sbx1')
             logs = Mock(returncode=0, stdout='', stderr='')
+            # began=0, deadline=100+300, first while-check=200, second=400 exits.
+            clock = iter([0.0, 100.0, 200.0, 400.0, 400.0])
             with patch.object(runtime.subprocess, 'run', return_value=logs), \
-                 patch.object(runtime.time, 'sleep'):
+                 patch.object(runtime.time, 'sleep'), \
+                 patch.object(runtime.time, 'time', side_effect=lambda: next(clock)):
                 result = manager.lifecycle('workspace', 'pause')
             self.assertEqual(result['status'], 'paused')
             self.assertTrue(result['durable_upload'].get('timeout'))
@@ -61,8 +64,12 @@ class ShutdownTests(unittest.TestCase):
             (state / 'desktops.json').write_text(json.dumps({'desktops': {
                 'workspace': {'sandbox_id': 'sbx1', 'status': 'paused',
                               'durable_upload': {'marker_sha256': 'a' * 64}}}}))
+            def fake_run(argv, **kwargs):
+                # pgrep must report "no firecracker" (rc 1); sync must succeed.
+                return Mock(returncode=1 if argv[:1] == ['pgrep'] else 0)
             with patch.object(shutdown, 'STATE', state), \
-                 patch.object(shutdown.subprocess, 'run', return_value=Mock(returncode=1)) as run, \
+                 patch.object(shutdown.os, 'geteuid', return_value=0), \
+                 patch.object(shutdown.subprocess, 'run', side_effect=fake_run) as run, \
                  patch.object(shutdown, 'configure'), \
                  patch.object(shutdown.Sandbox, 'get_info',
                               return_value=Mock(state=Mock(value='paused'))):
