@@ -246,3 +246,65 @@ Next action: build a disposable proof on an existing terminal-only VM. Have the 
 create a file in a native editor, upload it through a browser's file picker to
 a local test page, and verify its contents. Repeat after VM restart and viewer
 reconnect, recording resource use and action failures on the supported hosts.
+
+## Stack overview and Luda compatibility, 2026-09-22
+
+Silo's choices occupy separate layers: Ubuntu is the operating system; Xfce
+provides panels, settings and window management; X11 provides the display/input
+system; KasmVNC supplies the virtual X server and browser streaming; Silo embeds
+the browser client in the host's native webview. Luda acts inside the guest on
+the desktop, independently of the human viewer. The choice was based on package
+availability and integration fit. No comparative benchmark established the
+complete stack as the lightest, fastest or best supported.
+
+Main desktop families, described by their projects rather than a measured
+resource ranking:
+
+| Desktop | Design emphasis |
+| --- | --- |
+| [Xfce](https://www.xfce.org/about) | Lightweight, modular, traditional full desktop; current Silo choice. |
+| [LXQt](https://lxqt-project.org/about/) | Another lightweight, modular desktop, built with Qt; supports X11 and selected Wayland compositors. |
+| [MATE](https://mate-desktop.org/) | Traditional desktop continuing GNOME 2. |
+| [Cinnamon](https://linuxmint-installation-guide.readthedocs.io/en/latest/choose.html) | Linux Mint's full-featured traditional desktop. |
+| [GNOME](https://www.gnome.org/) | Integrated applications and an overview/workspace-oriented workflow. |
+| [KDE Plasma](https://kde.org/plasma-desktop/) | Full desktop with extensive customization and integrated features. |
+| [i3](https://i3wm.org/) and other standalone window managers | Window arrangement rather than a complete desktop suite; the integrator supplies additional components. |
+
+[Wayland](https://wayland.freedesktop.org/) is a different display architecture,
+not a theme or desktop environment. Xwayland lets X11 applications run under a
+Wayland compositor; that does not make the whole desktop a native X11 session.
+
+Main delivery alternatives:
+
+- [KasmVNC](https://github.com/kasmtech/KasmVNC/blob/v1.5.0/README.md): integrated
+  browser delivery, current Silo choice. Standard native VNC viewers cannot
+  connect to its modified protocol.
+- [TigerVNC](https://tigervnc.org/) with [noVNC](https://novnc.com/info.html):
+  separate VNC server and browser client, plus WebSocket proxy; native VNC
+  clients are another delivery option.
+- [Selkies](https://github.com/selkies-project/selkies): browser streaming with
+  CPU/GPU encoding and X11/Wayland support; [LinuxServer Webtop](https://docs.linuxserver.io/images/docker-webtop/)
+  provides deployment precedent. These documented capabilities are not Silo
+  performance or embedded-WebKit acceptance results.
+- [xrdp](https://github.com/neutrinolabs/xrdp): Linux RDP server for RDP clients;
+  embedding and shared-session ownership would need integration work.
+- [Xpra](https://github.com/Xpra-org/xpra/): persistent remote applications and
+  desktop sessions, with native and HTML5 clients; relevant especially to
+  forwarding individual applications.
+
+Silo currently pins Luda 0.3.4. Its [README](https://github.com/0xpolarzero/luda/blob/v0.3.4/README.md)
+identifies Ubuntu 24.04/Xfce as its tested starting point. Its
+[backend boundary](https://github.com/0xpolarzero/luda/blob/v0.3.4/docs/BACKEND-SUPPORT.md)
+explicitly rejects Wayland and Xwayland. Other native X11 desktops are potential
+integration targets, not qualified replacements: automatic
+[session discovery](https://github.com/0xpolarzero/luda/blob/v0.3.4/src/luda/session.py)
+looks specifically for `xfce4-session` unless a session PID is supplied, and
+[independent input routing](https://github.com/0xpolarzero/luda/blob/v0.3.4/docs/BACKGROUND-EXPERIENCE.md)
+states that other window managers require qualification. Application toolkit
+and accessibility support also affect the available input routes.
+
+Engineering inference: changing the human streamer while preserving the same
+native X11 session is the smallest compatibility change for Luda. It still
+requires testing the new server's X11 extensions, shared session, clipboard and
+input behavior. Changing the desktop does not itself address the confirmed
+KasmVNC/WKWebView clipboard defect documented in `SiloUI-DESKTOP.md`.

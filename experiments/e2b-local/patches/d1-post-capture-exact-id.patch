@@ -1,0 +1,32 @@
+--- a/packages/orchestrator/pkg/server/sandboxes.go
++++ b/packages/orchestrator/pkg/server/sandboxes.go
+@@ -8,7 +8,9 @@
+ 	"fmt"
+ 	"io/fs"
+ 	"maps"
++	"os"
+ 	"slices"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/google/uuid"
+@@ -1313,6 +1315,19 @@
+ 		return nil, status.Errorf(codes.Internal, "error snapshotting sandbox '%s': %s", in.GetSandboxId(), err)
+ 	}
+ 
++	// Diagnostic D1 fault only: the process starts with an owned trigger-file
++	// path, then the operator writes one exact SDK-created sandbox ID to it.
++	// A missing, unreadable, or empty file does nothing. The source has already
++	// taken the destroy-path snapshot when this check runs.
++	if os.Getenv("SILO_D1_FAULT_AFTER_SNAPSHOT") == "1" && in.GetSandboxId() != "" {
++		if targetPath := os.Getenv("SILO_D1_FAULT_TARGET_FILE"); targetPath != "" {
++			if target, readErr := os.ReadFile(targetPath); readErr == nil &&
++				strings.TrimSpace(string(target)) == in.GetSandboxId() {
++				return nil, status.Errorf(codes.Internal, "injected D1 failure after snapshot/cache for sandbox '%s'", in.GetSandboxId())
++			}
++		}
++	}
++
+ 	// Get the template for resume
+ 	template, err := s.templateCache.GetTemplate(ctx, in.GetBuildId(), true, false,
+ 		sbxtemplate.GetTemplateOpts{MaxSandboxLengthHours: sbx.Config.MaxSandboxLengthHours})

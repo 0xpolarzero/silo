@@ -34,3 +34,37 @@ save; gzip; tar -czf for the current app; du -sk for installed app allocation.
 
 Background sources: [MicroSandbox OCI images](https://microsandbox.dev/platform/local)
 and [Docker image build practices](https://docs.docker.com/build/building/best-practices/).
+
+## Current v3 archives and Bluefin comparison, 2026-09-22
+
+The September 9 experiment above predates the current published image. Reading
+`app/SiloUI/guest-image/image-lock.json` gives these pinned v3 archive sizes
+(decimal MB):
+
+| Architecture | Compressed archive | Uncompressed Docker-save archive |
+| --- | ---: | ---: |
+| ARM64 | 85.77 MB | 295.77 MB |
+| AMD64 | 87.77 MB | 269.18 MB |
+
+These are archive lengths, not measured allocated disk use inside a VM. The
+base includes Ubuntu and the CLI/account tools described in
+[guest images](SiloUI-GUEST-IMAGES.md). Xfce, KasmVNC and desktop tools are
+installed separately by `src-tauri/guest/setup-desktop.sh`. Local candidate
+archives have different hashes; the table uses the published lock, not those
+candidates.
+
+The [desktop research](SiloUI-LINUX-DESKTOP-RESEARCH.md#costs-and-limits) budgets
+an additional 0.5–1.5 GB download and 2–5 GB installed for the desktop plus light
+browser use. Both ranges are explicitly unmeasured estimates, excluding
+profiles and caches. They do not establish the current recipe's actual size.
+
+[Bluefin's installation documentation](https://docs.projectbluefin.io/installation/#disk-usage),
+checked September 22, reports approximately 12.4 GB installed for Bluefin and
+13.2 GB for Bluefin LTS, including their default Flatpak applications. Developer
+mode raises these to 17.4 GB and 14.5 GB respectively. These are upstream disk
+usage figures, not compressed download sizes or measurements made in Silo.
+
+An exact desktop-to-desktop ratio remains unmeasured. A valid comparison needs
+fresh installations with the same applications, separate compressed transfer
+and installed-space measurements, and explicit treatment of shared image
+caches and per-VM writable data. No VM was launched or changed for this check.

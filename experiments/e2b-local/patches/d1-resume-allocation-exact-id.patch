@@ -1,0 +1,148 @@
+diff -ruN a/packages/orchestrator/pkg/server/d1_resume_fault.go b/packages/orchestrator/pkg/server/d1_resume_fault.go
+--- a/packages/orchestrator/pkg/server/d1_resume_fault.go	1970-01-01 01:00:00
++++ b/packages/orchestrator/pkg/server/d1_resume_fault.go	1970-01-01 00:00:00
+@@ -0,0 +1,45 @@
++//go:build linux
++
++package server
++
++import (
++	"os"
++	"path/filepath"
++	"syscall"
++)
++
++// consumeD1ResumeAllocationFault is diagnostic-only. The orchestrator must
++// start with SILO_D1_RESUME_FAULT_DIR set to a private owned 0700 directory.
++// An owned 0600 file named <sandbox-id>.trigger must contain the exact ID and
++// a newline. Rename before firing makes the fault one-shot across processes.
++func consumeD1ResumeAllocationFault(sandboxID string) bool {
++	dir := os.Getenv("SILO_D1_RESUME_FAULT_DIR")
++	if dir == "" || sandboxID == "" || filepath.Base(sandboxID) != sandboxID {
++		return false
++	}
++	if !d1OwnedRegular(dir, os.ModeDir, 0o700) {
++		return false
++	}
++	trigger := filepath.Join(dir, sandboxID+".trigger")
++	if !d1OwnedRegular(trigger, 0, 0o600) {
++		return false
++	}
++	contents, err := os.ReadFile(trigger)
++	if err != nil || string(contents) != sandboxID+"\n" {
++		return false
++	}
++	fired := trigger + ".fired"
++	if _, err := os.Lstat(fired); !os.IsNotExist(err) {
++		return false
++	}
++	return os.Rename(trigger, fired) == nil
++}
++
++func d1OwnedRegular(path string, wantedType os.FileMode, wantedPerm os.FileMode) bool {
++	info, err := os.Lstat(path)
++	if err != nil || info.Mode()&os.ModeType != wantedType || info.Mode().Perm() != wantedPerm {
++		return false
++	}
++	stat, ok := info.Sys().(*syscall.Stat_t)
++	return ok && stat.Uid == uint32(os.Geteuid())
++}
+diff -ruN a/packages/orchestrator/pkg/server/d1_resume_fault_test.go b/packages/orchestrator/pkg/server/d1_resume_fault_test.go
+--- a/packages/orchestrator/pkg/server/d1_resume_fault_test.go	1970-01-01 01:00:00
++++ b/packages/orchestrator/pkg/server/d1_resume_fault_test.go	1970-01-01 00:00:00
+@@ -0,0 +1,37 @@
++//go:build linux
++
++package server
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestD1ResumeAllocationFaultTargetsOneSandboxOnce(t *testing.T) {
++	dir := t.TempDir()
++	if err := os.Chmod(dir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("SILO_D1_RESUME_FAULT_DIR", dir)
++	const target = "d1-owned-sandbox"
++	trigger := filepath.Join(dir, target+".trigger")
++	if err := os.WriteFile(trigger, []byte(target+"\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if consumeD1ResumeAllocationFault("other-sandbox") {
++		t.Fatal("wrong sandbox consumed the fault")
++	}
++	if _, err := os.Stat(trigger); err != nil {
++		t.Fatalf("wrong sandbox changed trigger: %v", err)
++	}
++	if !consumeD1ResumeAllocationFault(target) {
++		t.Fatal("target sandbox did not consume fault")
++	}
++	if consumeD1ResumeAllocationFault(target) {
++		t.Fatal("fault fired twice")
++	}
++	if _, err := os.Stat(trigger + ".fired"); err != nil {
++		t.Fatalf("missing fired marker: %v", err)
++	}
++}
+diff -ruN a/packages/orchestrator/pkg/server/sandboxes.go b/packages/orchestrator/pkg/server/sandboxes.go
+--- a/packages/orchestrator/pkg/server/sandboxes.go	1970-01-01 00:00:00
++++ b/packages/orchestrator/pkg/server/sandboxes.go	1970-01-01 00:00:00
+@@ -1326,25 +1326,35 @@
+ 	// the API, routing catalog, and analytics) but with a fresh LifecycleID
+ 	// so the old sandbox's cleanup goroutine won't
+ 	// accidentally evict the resumed sandbox from the map.
+-	resumedSbx, err := s.sandboxFactory.ResumeSandbox(
+-		ctx,
+-		template,
+-		sbx.Config,
+-		sandboxtypes.RuntimeMetadata{
+-			TemplateID:  sbx.Runtime.TemplateID,
+-			SandboxID:   sbx.Runtime.SandboxID,
+-			ExecutionID: sbx.Runtime.ExecutionID,
+-			TeamID:      sbx.Runtime.TeamID,
+-			BuildID:     sbx.Runtime.BuildID,
+-			SandboxType: sbx.Runtime.SandboxType,
+-		},
+-		sbx.GetStartedAt(),
+-		sbx.GetEndAt(),
+-		sbx.APIStoredConfig,
+-		// Defer routing until after the upgrade's post-/init (markSandboxLive below).
+-		sandbox.WithDeferredLiveRegistration(),
+-		sandbox.WithExecutionStartedAt(sbx.GetExecutionStartedAt()),
+-	)
++	// Diagnostic D1 fault: after destructive capture and template lookup,
++	// substitute an immediate ResumeSandbox error for one exact sandbox ID.
++	// The ordinary error branch below must handle it unchanged. This does
++	// not exercise any allocation or partial ResumeSandbox cleanup.
++	var resumedSbx *sandbox.Sandbox
++	if consumeD1ResumeAllocationFault(in.GetSandboxId()) {
++		err = fmt.Errorf("injected D1 replacement allocation failure for sandbox '%s'", in.GetSandboxId())
++	} else {
++		resumedSbx, err = s.sandboxFactory.ResumeSandbox(
++			ctx,
++			template,
++			sbx.Config,
++			sandboxtypes.RuntimeMetadata{
++				TemplateID:  sbx.Runtime.TemplateID,
++				SandboxID:   sbx.Runtime.SandboxID,
++				ExecutionID: sbx.Runtime.ExecutionID,
++				TeamID:      sbx.Runtime.TeamID,
++				BuildID:     sbx.Runtime.BuildID,
++				SandboxType: sbx.Runtime.SandboxType,
++			},
++			sbx.GetStartedAt(),
++			sbx.GetEndAt(),
++			sbx.APIStoredConfig,
++			// Defer routing until after the upgrade's post-/init (markSandboxLive below).
++			sandbox.WithDeferredLiveRegistration(),
++			sandbox.WithExecutionStartedAt(sbx.GetExecutionStartedAt()),
++		)
++	}
++
+ 	if err != nil {
+ 		telemetry.ReportCriticalError(ctx, "error resuming sandbox after checkpoint", err, telemetry.WithSandboxID(in.GetSandboxId()))
+ 

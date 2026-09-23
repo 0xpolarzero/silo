@@ -42,9 +42,34 @@ above for current behavior and build commands.
 - [Native compilation experiment](SiloUI-NATIVE-COMPILATION-EXPERIMENT.md): measured test-target reduction and the compiler-cache acceptance gate.
 - [Frontend test performance](SiloUI-FRONTEND-TEST-PERFORMANCE.md): controlled environment-split measurements.
 - [Guest image size experiment](SiloUI-GUEST-IMAGE-SIZE.md): measured image-size tradeoffs.
+- [E2B fit for Silo](research/e2b-fit-2026-09-22.md): agent desktop capabilities, snapshots, local hosting requirements and the proposed comparison workflow.
+- [Executed local E2B desktop PoC](research/e2b-local-poc-2026-09-22.md): working ARM64 nested desktops, human handoff, memory snapshots, host restart recovery and measured resource costs.
+- [E2B + LCU qualification](research/e2b-lcu-qualification-2026-09-22.md): historical LCU, credentials, Git/LFS, SSH and native viewer results, with corrected limits on checkpoint/pause/restore attribution.
+- [E2B PoC investigation and completion handoff](SiloUI-E2B-QUALIFICATION-HANDOFF.md): current orchestrator brief, minimal failure reproductions, evidence corrections, model/delegation policy and full remaining qualification gates.
+- [E2B qualification work log](research/e2b-qualification-worklog-2026-09-23.md): scratch deployment, isolated SDK controls, changes made, and remaining runtime gates.
+- [E2B qualification gate matrix](research/e2b-qualification-gates-2026-09-23.md): investigation status, execution verdicts, evidence, and exact blocked or unrun work.
+- [E2B lifecycle source audit](research/e2b-lifecycle-source-audit-2026-09-23.md): D1/D2 call graphs and pause-upload shutdown boundary for the captured source.
+- [E2B D1 post-capture reproduction](research/e2b-d1-post-capture-repro-2026-09-23.md): controlled source-built failure, independent state oracles, survivor inventory, and restore limit.
+- [E2B D3 artifact audit](research/e2b-d3-artifact-audit-2026-09-23.md): exact failed restore identity, catalog row, panic/upload timeline, and canonical file hashes.
+- [E2B D3 controlled restarts](research/e2b-d3-controlled-restarts-2026-09-23.md): exact SDK control across orchestrator and clean host restart, including canonical readback and recovery limits.
+- [E2B fresh desktop and synthetic Git qualification](research/e2b-fresh-desktop-qualification-2026-09-23.md): two scratch-candidate runs, current-grant restore, browser/native viewer observations, cleanup, and remaining limits.
+- [E2B viewer input readiness](research/e2b-viewer-input-readiness-2026-09-23.md): native pointer/modifier diagnosis and two-viewer ownership evidence.
+- [E2B upstream report readiness](research/e2b-d1-report-readiness-2026-09-23.md): D1 checkpoint attribution and exact reproduction threshold; see also [D2 report review](research/e2b-d2-independent-review-2026-09-23.md), [D3 restore review](research/e2b-d3-report-readiness-2026-09-23.md), and [release-source mapping](research/e2b-release-source-mapping-2026-09-23.md).
+- [E2B causal bounds, late session](research/e2b-causal-bounds-2026-09-23-late.md): D1 fault at the real `ResumeSandbox` call boundary, an actual kernel `fsync` EIO reproducing the exact historical pause error on the pinned release binary, D3 cache-topology finding plus an activity control, Gate A/R live results, a real-ENOMEM checkpoint reproduction on the release binary, the D2 physical-cause bound, and upstream issues e2b-dev/runtime#3658 and #3659.
+- [E2B D3 root cause](research/e2b-d3-root-cause-2026-09-23.md): deterministic 3/3 reproduction of the 41919-descriptor restore panic from hash-verified stored artifacts, clean previous-generation control, capture-time corruption during the documented full-disk window; upstream issue e2b-dev/runtime#3659.
+- [E2B canonical control readback](research/e2b-canonical-readback-2026-09-23.md): exact SDK pause control, transitive file hashes, and why current readback does not prove restart durability.
+- [E2B D2 error audit](research/e2b-d2-error-audit-2026-09-23.md): exact rootfs sync error, process/catalog timeline, and present artifact inventory.
+- [E2B D2 rootfs sync reproduction](research/e2b-d2-rootfs-sync-repro-2026-09-23.md): controlled source-built pause failure, SDK recovery checks, and limits of the synthetic EIO.
+- [E2B credential contract audit](research/e2b-credential-contract-2026-09-23.md): current Silo grant policy, PoC broker gaps, and synthetic receipt evidence.
+- [E2B access and viewer audit](research/e2b-access-viewer-audit-2026-09-23.md): transport, native editor, and viewer qualification gaps.
+- [E2B replacement plan](SiloUI-E2B-REPLACEMENT-PLAN.md): proposed breaking replacement, before/after flows, explicit deletion map, security and access gates, and implementation acceptance criteria.
+- [Codex, E2B and Luda computer use](research/codex-e2b-luda-computer-use-2026-09-22.md): observed native Codex interface, public API distinction, simplicity hypothesis and controlled comparison.
+- [Codex Linux engine probe](research/codex-linux-engine-probe-2026-09-22.md): official package distribution and a passing ARM64/X11 accessibility, input and screenshot test.
 - [Luda integration plan](SiloUI-LUDA-IMPLEMENTATION-PLAN.md): pinned installer research, single-account scope and verification gates.
 - Luda agent evidence: [acceptance tests](SiloUI-LUDA-AGENT-TESTS.md), [initial skill evaluation](SiloUI-LUDA-SKILL-EVALUATION.md), [accepted skill benchmark](SiloUI-LUDA-SKILL-BENCHMARK.md), and [upstream handoff](SiloUI-LUDA-UPSTREAM-HANDOFF.md).
 - [Linux desktops for agents](SiloUI-LINUX-DESKTOP-RESEARCH.md): proposed guest desktop, agent compatibility, estimated costs and prototype acceptance.
+- [Desktop and streaming assessment](SiloUI-DESKTOP-STACK-ASSESSMENT.md): September 2026 comparison of desktop environments, viewer stacks, Luda compatibility, maintenance evidence and selection criteria.
+- [Independent desktop and viewer selection](SiloUI-DESKTOP-SELECTION.md): current selection recommendation without agent-library constraints, evidence notation, weighted measurement rubric, candidate leaderboards, primary-source annexes and qualification protocol.
 - [Optional desktop implementation plan](SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md): desktop installation, automatic/manual lifecycle, minimal viewer and verification gates.
 - [Historical ext4 discard investigation](../artifacts/ext4-raw-image-root-cause.html): upstream MicroSandbox v0.6.8 reproduction and regression requirements; not current app validation.
 - Branding studies: [logo system](../artifacts/silo-logo-system.html), [proportions](../artifacts/silo-proportion-study.html), [structure](../artifacts/silo-structure-study.html), and [top-down study](../artifacts/silo-top-down-study.html).

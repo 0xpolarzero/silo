@@ -99,6 +99,23 @@ cannot report completion.
 See [the real-app testing guide](SiloUI-DEPENDENCIES-BACKUP-TESTING.md) for commands,
 observed evidence and platform limits.
 
+### Btrfs and rollback scope, 2026-09-22
+
+[Btrfs](https://btrfs.readthedocs.io/en/latest/Introduction.html) is a Linux
+filesystem with copy-on-write snapshots. It is a storage choice, independent of
+the desktop environment or remote viewer. Its
+[snapshot documentation](https://btrfs.readthedocs.io/en/stable/btrfs-subvolume.html)
+states that snapshots initially share data blocks, are not independent backups,
+and exclude nested subvolumes unless those are snapshotted separately.
+
+Btrfs support alone therefore does not establish a whole-sandbox rollback
+guarantee. Recovery needs a defined disk scope, a captured checkpoint, and a
+tested restore path. Silo's existing stopped-VM disk backup and restore above
+does not require a Btrfs guest filesystem. It restores a new stopped VM rather
+than rewinding a running one. Neither filesystem rollback nor Silo's disk
+restore reverses external effects such as an email sent or a remote API update.
+This documentation comparison did not exercise a live backup or restore.
+
 ## Native picker threading
 
 The native walkthrough reproduced a main-thread deadlock in the synchronous

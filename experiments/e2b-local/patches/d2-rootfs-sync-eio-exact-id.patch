@@ -1,0 +1,207 @@
+--- a/packages/orchestrator/pkg/sandbox/build/local_diff.go
++++ b/packages/orchestrator/pkg/sandbox/build/local_diff.go
+@@ -6,6 +6,7 @@
+ 	"context"
+ 	"fmt"
+ 	"os"
++	"syscall"
+ 
+ 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
+ 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
+@@ -54,6 +55,19 @@
+ func (f *LocalDiffFile) CloseToDiff(
+ 	blockSize int64,
+ ) (d Diff, e error) {
++	return f.closeToDiff(blockSize, f.File.Sync)
++}
++
++// CloseToDiffWithSyncEIO is only used by the disposable D2 diagnostic build.
++// It returns EIO at the rootfs diff's Sync boundary after export has written
++// the file. It does not induce a kernel writeback error.
++func (f *LocalDiffFile) CloseToDiffWithSyncEIO(blockSize int64) (Diff, error) {
++	return f.closeToDiff(blockSize, func() error {
++		return &os.PathError{Op: "sync", Path: f.File.Name(), Err: syscall.EIO}
++	})
++}
++
++func (f *LocalDiffFile) closeToDiff(blockSize int64, syncFile func() error) (d Diff, e error) {
+ 	defer f.File.Close()
+ 
+ 	// On any failure to produce a usable Diff (e.g. an fsync/stat error after the
+@@ -68,7 +82,7 @@
+ 		}
+ 	}()
+ 
+-	err := f.File.Sync()
++	err := syncFile()
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to sync file: %w", err)
+ 	}
+--- a/packages/orchestrator/pkg/sandbox/build/local_diff_test.go
++++ b/packages/orchestrator/pkg/sandbox/build/local_diff_test.go
+@@ -3,6 +3,9 @@
+ package build
+ 
+ import (
++	"errors"
++	"os"
++	"syscall"
+ 	"testing"
+ 
+ 	"github.com/stretchr/testify/require"
+@@ -35,6 +38,23 @@
+ 	require.NoFileExists(t, cachePath, "partial diff file must be removed on materialization failure")
+ }
+ 
++func TestD2RootfsSyncEIOHasHistoricalErrorAndRemovesPartialDiff(t *testing.T) {
++	t.Parallel()
++
++	f, err := NewLocalDiffFile(t.TempDir(), "d2-build", Rootfs)
++	require.NoError(t, err)
++	_, err = f.File.WriteAt([]byte("d2 dirty rootfs block"), 0)
++	require.NoError(t, err)
++	path := f.cachePath
++
++	diff, err := f.CloseToDiffWithSyncEIO(blockSize)
++	require.Nil(t, diff)
++	require.ErrorContains(t, err, "failed to sync file: sync "+path+": input/output error")
++	require.True(t, errors.Is(err, syscall.EIO))
++	_, statErr := os.Stat(path)
++	require.True(t, os.IsNotExist(statErr), "failed diff remained on disk: %v", statErr)
++}
++
+ // TestLocalDiffFileCloseToDiffRemovesEmptyCacheFile verifies the zero-size NoDiff
+ // branch removes the cache file: NoDiff owns no path, so nothing downstream can.
+ func TestLocalDiffFileCloseToDiffRemovesEmptyCacheFile(t *testing.T) {
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/d2_fault.go
+@@ -0,0 +1,47 @@
++//go:build linux
++
++package sandbox
++
++import (
++	"os"
++	"path/filepath"
++	"syscall"
++)
++
++// consumeD2RootfsSyncEIO arms a single synchronous, destroy-path rootfs diff
++// sync failure for one sandbox. The diagnostic orchestrator must receive a
++// private, owned 0700 directory in SILO_D2_ROOTFS_SYNC_EIO_DIR. An owned 0600
++// file named <sandbox-id>.trigger must contain exactly "<sandbox-id>\n".
++// Renaming it to .fired records which request consumed the one-shot fault.
++func consumeD2RootfsSyncEIO(sandboxID string) bool {
++	dir := os.Getenv("SILO_D2_ROOTFS_SYNC_EIO_DIR")
++	if dir == "" || sandboxID == "" || filepath.Base(sandboxID) != sandboxID {
++		return false
++	}
++	if !d2OwnedRegular(dir, os.ModeDir, 0o700) {
++		return false
++	}
++
++	trigger := filepath.Join(dir, sandboxID+".trigger")
++	if !d2OwnedRegular(trigger, 0, 0o600) {
++		return false
++	}
++	contents, err := os.ReadFile(trigger)
++	if err != nil || string(contents) != sandboxID+"\n" {
++		return false
++	}
++	fired := trigger + ".fired"
++	if _, err := os.Lstat(fired); !os.IsNotExist(err) {
++		return false
++	}
++	return os.Rename(trigger, fired) == nil
++}
++
++func d2OwnedRegular(path string, wantedType os.FileMode, wantedPerm os.FileMode) bool {
++	info, err := os.Lstat(path)
++	if err != nil || info.Mode()&os.ModeType != wantedType || info.Mode().Perm() != wantedPerm {
++		return false
++	}
++	stat, ok := info.Sys().(*syscall.Stat_t)
++	return ok && stat.Uid == uint32(os.Geteuid())
++}
+--- /dev/null
++++ b/packages/orchestrator/pkg/sandbox/d2_fault_test.go
+@@ -0,0 +1,39 @@
++//go:build linux
++
++package sandbox
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestD2RootfsSyncFaultTargetsOneSandboxOnce(t *testing.T) {
++	dir := t.TempDir()
++	if err := os.Chmod(dir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("SILO_D2_ROOTFS_SYNC_EIO_DIR", dir)
++
++	const target = "d2-owned-sandbox"
++	trigger := filepath.Join(dir, target+".trigger")
++	if err := os.WriteFile(trigger, []byte(target+"\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	if consumeD2RootfsSyncEIO("other-sandbox") {
++		t.Fatal("wrong sandbox consumed the fault")
++	}
++	if _, err := os.Stat(trigger); err != nil {
++		t.Fatalf("wrong sandbox changed trigger: %v", err)
++	}
++	if !consumeD2RootfsSyncEIO(target) {
++		t.Fatal("target sandbox did not consume fault")
++	}
++	if consumeD2RootfsSyncEIO(target) {
++		t.Fatal("fault fired twice")
++	}
++	if _, err := os.Stat(trigger + ".fired"); err != nil {
++		t.Fatalf("missing consumed marker: %v", err)
++	}
++}
+--- a/packages/orchestrator/pkg/sandbox/sandbox.go
++++ b/packages/orchestrator/pkg/sandbox/sandbox.go
+@@ -3240,6 +3240,7 @@
+ 			originalHeader,
+ 			&RootfsDiffCreator{rootfs: s.rootfs},
+ 			s.config.DefaultCacheDir,
++			"",
+ 		)
+ 		if err != nil {
+ 			return nil, nil, nil, fmt.Errorf("synchronous in-place rootfs export failed: %w", err)
+@@ -3273,6 +3274,7 @@
+ 			closeHook: s.Close,
+ 		},
+ 		s.config.DefaultCacheDir,
++		s.Runtime.SandboxID,
+ 	)
+ 	if err != nil {
+ 		return nil, nil, nil, fmt.Errorf("synchronous rootfs export failed: %w", err)
+@@ -3288,6 +3290,7 @@
+ 	originalHeader *header.Header,
+ 	diffCreator DiffCreator,
+ 	cacheDir string,
++	d2SandboxID string,
+ ) (d build.Diff, h *header.Header, e error) {
+ 	rootfsDiffFile, err := build.NewLocalDiffFile(cacheDir, buildID.String(), build.Rootfs)
+ 	if err != nil {
+@@ -3303,7 +3306,12 @@
+ 	telemetry.ReportEvent(ctx, "exported rootfs")
+ 	recordSnapshotDiff(ctx, "rootfs", rootfsDiffMetadata, originalHeader)
+ 
+-	rootfsDiff, err := rootfsDiffFile.CloseToDiff(int64(originalHeader.Metadata.BlockSize))
++	var rootfsDiff build.Diff
++	if consumeD2RootfsSyncEIO(d2SandboxID) {
++		rootfsDiff, err = rootfsDiffFile.CloseToDiffWithSyncEIO(int64(originalHeader.Metadata.BlockSize))
++	} else {
++		rootfsDiff, err = rootfsDiffFile.CloseToDiff(int64(originalHeader.Metadata.BlockSize))
++	}
+ 	if err != nil {
+ 		return nil, nil, fmt.Errorf("failed to convert rootfs diff file to local diff: %w", err)
+ 	}
