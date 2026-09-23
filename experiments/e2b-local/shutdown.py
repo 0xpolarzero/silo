@@ -9,7 +9,7 @@ from runtime import STATE, configure
 
 
 def verify_registry():
-    """Passive checks retained for use after a durable-upload barrier exists."""
+    """Passive checks: registry exists, no incomplete operations, all saved."""
     registry = STATE / 'desktops.json'
     if not registry.exists():
         raise RuntimeError('No desktop registry; SDK-only guests may exist')
@@ -33,17 +33,46 @@ def verify_registry():
     live = subprocess.run(['pgrep', '-x', 'firecracker'], capture_output=True, text=True)
     if live.returncode != 1:
         raise RuntimeError('Refusing host shutdown: Firecracker is still running or its check failed')
-    print(json.dumps({'verified_paused': verified, 'running_firecracker_processes': 0}), flush=True)
+    return verified
+
+
+def verify_durability(desktops):
+    """Every paused desktop must carry its pause's verified upload marker.
+
+    The runtime's Pause returns before the snapshot upload completes, so a
+    paused record without a marker line hash (including a recorded timeout)
+    does not establish that a restart will find the snapshot complete.
+    """
+    undurable = []
+    for sid, record in desktops.items():
+        if record.get('status') != 'paused':
+            continue
+        marker = record.get('durable_upload') or {}
+        if not marker.get('marker_sha256'):
+            undurable.append({'id': sid, 'sandbox_id': record.get('sandbox_id'),
+                              'durable_upload': marker})
+    if undurable:
+        raise RuntimeError('Refusing host shutdown: paused desktops without a verified '
+                           'durable upload: ' + json.dumps(undurable)[:400])
+    return sorted(desktops)
 
 
 def main():
     if os.geteuid() != 0:
         raise RuntimeError('Run as root: the desktop registry is deliberately private')
-    # Pause returns before the runtime's asynchronous artifact upload finishes.
-    # The Compose orchestrator has a 60s stop grace period, while its upload
-    # retry budget is 2h. SDK state=paused and zero Firecracker PIDs cannot
-    # establish that a restart will find every required snapshot component.
-    raise RuntimeError('Host stop is disabled until a per-snapshot durable-upload barrier is qualified')
+    registry = STATE / 'desktops.json'
+    if not registry.exists():
+        raise RuntimeError('No desktop registry; SDK-only guests may exist')
+    desktops = json.loads(registry.read_text())['desktops']
+    verified = verify_registry()
+    durable = verify_durability(desktops)
+    sync = subprocess.run(['sync', '-f', '/var/lib/e2b/storage'])
+    if sync.returncode != 0:
+        raise RuntimeError('Refusing host shutdown: canonical storage sync failed')
+    receipt = {'barrier': 'passed', 'verified_paused': verified, 'durable': durable,
+               'running_firecracker_processes': 0}
+    print(json.dumps(receipt), flush=True)
+    return receipt
 
 
 if __name__ == '__main__':

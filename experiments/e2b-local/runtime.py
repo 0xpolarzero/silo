@@ -6,6 +6,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import subprocess
 import threading
 import time
 import uuid
@@ -428,6 +429,34 @@ class Desktops:
             self.save()
             return dict(record)
 
+    def wait_durable_upload(self, sandbox_id, since_unix, timeout=300):
+        """Block until the runtime logs its upload-success marker for a pause.
+
+        Embed's Pause RPC returns before the snapshot's asynchronous upload
+        finishes; the marker line is the only completion signal visible from
+        outside the orchestrator. A timeout leaves a truthful undurable
+        record that host shutdown will refuse.
+        """
+        deadline = time.time() + timeout
+        last_error = None
+        while time.time() < deadline:
+            try:
+                result = subprocess.run(
+                    ['docker', 'logs', '--since', str(int(since_unix)), 'e2b-orchestrator-1'],
+                    capture_output=True, text=True, timeout=30)
+            except subprocess.SubprocessError as error:
+                last_error = str(error)
+                time.sleep(2)
+                continue
+            for line in (result.stdout + result.stderr).splitlines():
+                if 'snapshot finished uploading successfully' not in line or sandbox_id not in line:
+                    continue
+                return {'marker_sha256': hashlib.sha256(line.encode()).hexdigest(),
+                        'observed_at': time.time()}
+            time.sleep(2)
+        return {'timeout': True, 'waited_s': round(time.time() - since_unix, 1),
+                'last_error': last_error}
+
     def lifecycle(self, sid, action):
         with self.lock:
             record = self.record(sid)
@@ -437,9 +466,11 @@ class Desktops:
                 self.handles[sid] = Sandbox.connect(record['sandbox_id'], timeout=3600)
                 record['status'] = 'running'
             elif action == 'pause':
+                began = time.time()
                 self.handle(sid).pause(keep_memory=True)
                 self.handles.pop(sid, None)
                 record['status'] = 'paused'
+                record['durable_upload'] = self.wait_durable_upload(record['sandbox_id'], began)
             elif action == 'delete':
                 Sandbox.kill(record['sandbox_id'])
                 self.handles.pop(sid, None)
