@@ -44,3 +44,27 @@ behavior. SSH transport, signing and uploads.github.com untested. The
 broad-scope token was constrained by discipline (only the disposable repo
 was touched); a narrowly scoped grant remains the right production posture.
 GraphQL broker policy is a product decision, not resolved here.
+
+## Addendum (same day): policy-layer revocation with the real provider
+
+[`experiments/e2b-local/real-provider-revocation-qualification.py`](../../experiments/e2b-local/real-provider-revocation-qualification.py)
+adds a labeled qualification harness (not the fixture broker): a
+one-placeholder substitution proxy for one allowed real operation (REST read
+of the qualification repo) forwarding through a hostname-only CONNECT
+recorder. Report run `576e210a…` (6/6 passed):
+
+| Case | Outcome | Egress to provider |
+| --- | --- | --- |
+| Granted + placeholder | real GitHub 200 | exactly 1 CONNECT |
+| Missing / wrong credential | local 401 | 0 |
+| **Revoked grant** | local 403 | **0** |
+| **Restored-guest replay after revocation** | local 403 | **0** |
+| Re-granted | 200 | 1 |
+
+This proves the revocation property at the policy layer with the real
+provider as upstream and an independent egress oracle: a restored workload
+holding only the placeholder cannot reach GitHub after revocation, and a
+fresh grant immediately works again. Token-value rotation (minting a second
+real token and invalidating the first) remains the only uncovered variant —
+GitHub exposes no API to mint a PAT, so that single case still needs a
+user-created second token.
