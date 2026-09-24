@@ -423,3 +423,18 @@ none. Revocation-with-rotated-token remains blocked on a second token.
 
 Everything committed as it landed (docs + PoC code); the disposable repo
 retains its qualification branches as remote evidence.
+
+## 2026-09-24 (continued): Gate V input chain isolated
+
+The scratch VM's viewer forward was restored with a temporary ssh tunnel
+(its Lima config predates the 3801 rule). A disposable WKWebView harness with
+NSEvent monitors, DOM capture and a JS-evaluation hook was run against one
+run-owned desktop with an xev oracle (no xinput package exists for the
+trixie template). Layer results: raw RFB injection reaches the guest;
+JS-dispatched DOM events through the harness deliver a modifier-correct
+Ctrl+S (Control_L, state 0x4 in xev); native synthetic CGEvents never enter
+the page DOM because the automation process is not an accessibility-trusted
+client. The historical native-input failures are therefore macOS trust
+behavior, not viewer defects; one hardware-trust confirmation remains as the
+exact manual case. Desktop deleted by exact ID; tunnel torn down; deployment
+verified clean and pinned.
