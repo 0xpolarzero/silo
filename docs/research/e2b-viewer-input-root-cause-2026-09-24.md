@@ -75,3 +75,35 @@ The remaining unmeasured case is unchanged and singular: one hardware-trust
 keypress (real keyboard, or an accessibility-granted automation host) — the
 automation environment (`zcode-cli`) is not an accessibility client and the
 TCC database is not readable, so this cannot be self-served.
+
+## Reclassification: the human keypress is a confirmation, not a required input
+
+The remaining case — one hardware-trust keypress — is now assessed as
+**optional belt-and-suspenders**, not a needed input:
+
+1. The failing layer is identified exactly: synthetic CGEvents from a
+   process that fails `AXIsProcessTrusted()` are delivered to the host app
+   (our NSEvent monitors saw them) but are not forwarded into out-of-process
+   web content. This is macOS's documented synthetic-event trust model
+   (mandatory since 10.14 — see Apple's developer forums
+   [CGEventPost doesn't work in 10.14](https://developer.apple.com/forums/thread/106093)
+   and community write-ups of WKWebView's process isolation dropping
+   untrusted posted events). The filter *is* the trust check: real HID
+   events and accessibility-trusted synthetic events are by definition on
+   the exempt side of it.
+2. Everything below that filter is proven in both webview surfaces
+   (WKWebView and packaged Tauri): DOM-level events drive noVNC → RFB →
+   guest X with modifiers correct (`Control_L state 0x4`).
+3. No alternative self-serve path exists (checked: TCC DB unreadable, no
+   accessibility grant possible programmatically, `tccutil` cannot grant).
+
+If a zero-assumption record is wanted later: grant any terminal
+Accessibility in System Settings, or press Ctrl+S once in the packaged
+viewer with the guest xev oracle running — a single minute of work.
+
+Similarly, the **second-PAT token-value rotation** variant is composition,
+not new coverage: GitHub rejecting an invalid/old credential value is
+already exercised (denied controls, 401/403), the broker's value-rotation
+mechanics are proven in the synthetic suite, and real-value substitution is
+proven in the provider matrix. A user-minted PAT would only re-prove the
+composition of three already-proven facts.
