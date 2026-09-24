@@ -438,3 +438,25 @@ client. The historical native-input failures are therefore macOS trust
 behavior, not viewer defects; one hardware-trust confirmation remains as the
 exact manual case. Desktop deleted by exact ID; tunnel torn down; deployment
 verified clean and pinned.
+
+## 2026-09-24 (final): two-computer Gate H on bare-metal x86_64; host-stop cycle
+
+The user provided a second, locally connected machine (devbox, 10.77.77.2:
+bare-metal x86_64 Ubuntu 26.04, real KVM). The pinned Embed inputs deployed
+there fresh; default Ubuntu UFW broke guest networking in two places (FORWARD
+policy and INPUT on the redirected proxy ports) — fixed for the test,
+reverted at teardown. With the controller on the Mac over ssh-forwarded
+loopback ports, the remote matrix passed: x86_64 create, controller
+disconnect, durable pause/resume, checkpoint/restore, and remote-host
+orchestrator restart (after accounting for the known placement-readiness
+race). Reports: `evidence/gate-h-remote/6d81f84f…` and `fa492ab8…`.
+
+On the Mac deployment, the full desktop suite re-passed 9/9 with the
+durability barrier, and the previously disabled desktop host-stop path was
+qualified end-to-end: durable pause → `poc.py stop` (barrier receipt, VM
+shutdown) → restart → resume with the guest's marker and 100 MiB payload
+intact. Two gaps measured on the way: the regression suite left three live
+desktops despite exit 0 (cleanup gap, fixed manually by exact ID), and
+API template deletion reclaims no storage (48 orphaned build dirs freed
+manually after closure-verified protection of live builds; retention/capacity
+management remains an upstream adoption gate).
