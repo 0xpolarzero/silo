@@ -460,3 +460,45 @@ desktops despite exit 0 (cleanup gap, fixed manually by exact ID), and
 API template deletion reclaims no storage (48 orphaned build dirs freed
 manually after closure-verified protection of live builds; retention/capacity
 management remains an upstream adoption gate).
+
+## 2026-09-24 (continued): session semantics, revocation harness, probes
+
+Live session-semantics checks on the control plane: a viewer ticket minted
+before an owner (control-service) restart remained valid afterward (200) —
+sessions deliberately persist to their ten-minute TTL because the signing
+key is durable state; a mode/ownership change (epoch bump) rejects held
+tickets immediately (403). Recorded as a product decision to surface: if an
+owner restarts because they suspect compromise, TTL-bounded session survival
+may be unexpected. Desktop survived the owner restart and cleanup by exact
+ID passed.
+
+Real-provider revocation harness (tracked
+`real-provider-revocation-qualification.py`): 6/6 cases passed with an
+independent hostname-only CONNECT recorder — granted requests egress exactly
+once; revoked and restored-guest replays are denied locally with zero
+egress; re-grant works immediately. Token-value rotation remains the single
+uncovered variant (no API exists to mint a second PAT — user dependency).
+
+Accessibility probe: the automation host (`zcode-cli`) is not a trusted
+accessibility client and the TCC database is not readable without Full Disk
+Access, so the hardware-trust keypress cannot be self-served; the exact
+manual step stays documented.
+
+## 2026-09-24 (final): suite self-cleanup fixed and live-verified; Tauri viewer surface
+
+The suite-cleanup gap was root-caused (a passing run never had a cleanup
+path at all — earlier "clean" runs were manual ad-hoc deletions; receipts
+confirm the same leak in afe75b68). `poc.py test` now removes exactly the
+registry-validated run-tagged desktop set after both suites exit 0 via
+`reset-failed-test`, which accepts terminal statuses; failed runs keep
+their desktops for inspection. The qualification client timeout was aligned
+to the 300 s barrier budget. Live-verified end to end: a full suite run
+passed 9/9 and left zero survivors. Local suite 97 passing. Known follow-up
+from the analysis: `lifecycle('pause')` holds the registry lock across the
+barrier wait (bounded stall of other control-plane reads during a pause).
+
+The packaged-Tauri viewer surface was qualified with a zero-capability
+Tauri 2 harness (production-matched crate versions): modifier-correct
+Ctrl+S delivered through the Tauri webview (xev `Control_L state 0x4`), and
+an in-page IPC probe rejected by ACL — guest content cannot invoke Tauri
+commands in the packaged surface.

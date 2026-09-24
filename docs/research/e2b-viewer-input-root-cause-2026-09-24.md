@@ -56,3 +56,22 @@ What remains genuinely unmeasured, with exact dependencies:
   with full NSEvent/DOM JSONL logs; their xev snapshots were void because the
   in-run xev restarts had silently failed (fixed by running xev as the
   desktop user via `su` and dropping this xev's unsupported `-event` flags).
+
+## Addendum: packaged-Tauri surface verified
+
+A minimal Tauri 2 harness (same tauri/wry/tao versions as the production
+app; zero compiled capabilities) loaded the same viewer URL and was driven
+with the JS-dispatch discriminator against the xev oracle:
+
+- **Modifier-correct Ctrl+S delivered through the packaged Tauri webview**:
+  the guest X log shows `Control_L` with `state 0x4` (run artifacts under
+  `deployments/diagnostic-d1/tauri-viewer-harness/run-*/`).
+- **Capability isolation proven live**: an IPC probe executed inside the
+  viewer page returned `Command __silo_harness_probe__ not allowed by ACL`
+  — guest-served content in the packaged webview cannot invoke any Tauri
+  command, matching the production `desktop-viewer.json` capability model.
+
+The remaining unmeasured case is unchanged and singular: one hardware-trust
+keypress (real keyboard, or an accessibility-granted automation host) — the
+automation environment (`zcode-cli`) is not an accessibility client and the
+TCC database is not readable, so this cannot be self-served.
