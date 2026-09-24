@@ -69,3 +69,21 @@ after orchestrator restart before it can place):
   denial were not exercised (PoC control plane runs on the Mac; bringing the
   full PoC to the second machine is future work).
 - Desktop (GUI) flows on x86_64 untested; only the small SDK template.
+
+## Re-deploy recipe (user decision: keep the installation for future runs)
+
+The devbox E2B data is retained (`/var/lib/e2b`, `~/silo-e2b-gateh`). The
+stack is currently **down**. To re-run future tests:
+
+```sh
+ssh devbox '
+  sudo sysctl -w vm.nr_hugepages=2048
+  sudo sed -i.bak-silo "s/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY=\"ACCEPT\"/" /etc/default/ufw
+  sudo ufw allow from 169.254.0.0/24; sudo ufw allow from 10.11.0.0/16; sudo ufw allow from 10.12.0.0/16
+  sudo ufw reload
+  cd ~/silo-e2b-gateh/runtime && sudo docker compose up -d --wait --wait-timeout 900'
+# Controller side (Mac): ssh -N -L 13803:127.0.0.1:3000 -L 13804:127.0.0.1:3002 devbox
+```
+
+Tear down the same way as 2026-09-24 (compose down, revert ufw from the
+backup, hugepages to 0) when finished.

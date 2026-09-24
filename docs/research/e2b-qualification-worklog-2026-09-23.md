@@ -502,3 +502,14 @@ Tauri 2 harness (production-matched crate versions): modifier-correct
 Ctrl+S delivered through the Tauri webview (xev `Control_L state 0x4`), and
 an in-page IPC probe rejected by ACL — guest content cannot invoke Tauri
 commands in the packaged surface.
+
+## 2026-09-24 (final): user decisions recorded
+
+Export scope (files-only, full-VM backup removed at cutover), resource
+changes (restart-to-apply), and viewer-session semantics (TTL survival
+acceptable — quitting Silo stops the local execution host, so the viewing
+path dies with the app; control-service restart survival acts as a
+reconnect) are recorded in the replacement plan. The devbox E2B
+installation is retained per user choice, with a re-deploy recipe in the
+Gate H note. No user-input dependencies remain in the qualification; the
+open blocker is upstream fixes (#3658/#3659).

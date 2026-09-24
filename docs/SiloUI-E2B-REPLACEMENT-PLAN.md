@@ -182,6 +182,10 @@ These are proposed intentional behavior changes, not promises of feature parity.
    ceilings and arbitrary live-resize controls. Start with a small set of tested
    template/resource profiles. Configuration changes that need a replacement
    workspace say so; they do not pretend to edit a saved VM's hardware in place.
+   **Decision (user, 2026-09-24): restart-to-apply is accepted** — changing a
+   desktop's CPU/RAM applies via a restart from its own saved state (files and
+   checkpoints survive; running programs do not). The UI states this plainly
+   and never promises live hardware edits.
 6. **Checkpoints and exports have separate meanings.** Checkpoints preserve the
    sandbox on its owner. Project export is a portable file artifact. Do not label
    an owner-local snapshot as a backup against losing the owner disk.
@@ -440,20 +444,17 @@ Journal a revert before replacing its runtime binding. A failed readiness check
 must leave the previous VM recoverable, and a controller crash must not publish
 an unprepared replacement. Retire the old VM only after the new binding commits.
 
-The following export discussion concerns host-loss recovery, not a replacement
-for the checkpoint model. Export UI and scope require separate approval.
-
-Checkpoints are local runtime artifacts. Initially provide a new project export
-containing `/workspace` files plus a small documented manifest. Preserve filenames,
-modes, symlinks and uncommitted work; validate paths, sizes and checksums on import.
-Use standard archive tooling and safe extraction, not a new sparse-disk format.
-Import creates a new workspace from a current template. This deliberately does
-not restore arbitrary packages, browser sessions or process memory.
-
-Remove the old full-VM backup feature at cutover if there is no qualified E2B
-export path. Do not retain its old archive reader or relabel project export as
-equivalent. Full-machine portability is a separate future feature requiring a
-supported artifact/dependency contract and a fresh-host restore test.
+**Decision (user, 2026-09-24): files-only export is accepted.** Checkpoints
+remain local runtime artifacts; the user-facing export is a project archive —
+`/workspace` files plus a small documented manifest, preserving filenames,
+modes, symlinks and uncommitted work, with checksum-verified import through
+standard archive tooling (no new sparse-disk format). Import creates a new
+workspace from a current template; it deliberately does not restore running
+programs, installed packages or process memory. The old full-VM backup
+feature is removed at cutover along with its archive reader; project export
+must not be relabeled as its equivalent. Full-machine portability remains a
+possible separate future feature requiring a supported artifact contract
+and a fresh-host restore test.
 
 Runtime updates need their own gate: E2B version changes, Firecracker kernels,
 CPU features and memory snapshots must be tested together. Do not assume a
@@ -461,6 +462,15 @@ snapshot is portable between M3/M4, x86-64/ARM64, hosts or runtime versions.
 When memory restore is incompatible, use a **qualified current-format disk-only
 restart/export path**, not the old MicroSandbox engine. If none is safe, block
 the update rather than discard state. Keep schema/runtime pins with artifacts.
+
+**Decision/clarification (user, 2026-09-24): viewer-session TTL survival after
+an owner-app restart is acceptable** — the question is largely moot because
+quitting Silo stops its local execution host (parity with current Silo
+behavior, now safe through the qualified durability barrier), and for remote
+hosts the viewing relay dies with the owner app anyway. Sessions surviving a
+control-service restart while the app keeps running behave as reconnects,
+which is the desired semantics; ownership changes already reject held
+tickets immediately.
 
 ### D. Packaged WebKit and reliable input
 
