@@ -153,6 +153,67 @@ class RunIsolationTests(unittest.TestCase):
             {'id': 'accepted', 'run_id': run_id, 'status': 'creating'},
             {'id': 'other', 'run_id': 'e' * 32, 'status': 'running'}], run_id), ['accepted'])
 
+    def test_cleanup_accepts_a_finished_passing_run(self):
+        run_id = 'd' * 32
+        report = {'run_id': run_id, 'status': 'passed',
+                  'desktops': ['a-side', 'b-side', 'fork']}
+        desktops = [{'id': 'a-side', 'run_id': run_id, 'status': 'running'},
+                    {'id': 'b-side', 'run_id': run_id, 'status': 'running'},
+                    {'id': 'fork', 'run_id': run_id, 'status': 'paused'},
+                    {'id': 'other', 'run_id': 'e' * 32, 'status': 'running'}]
+        self.assertEqual(reset_failed_test.target_ids(report, desktops, run_id),
+                         ['a-side', 'b-side', 'fork'])
+        with self.assertRaises(ValueError):
+            reset_failed_test.target_ids(
+                {'run_id': run_id, 'status': 'running', 'desktops': []}, desktops, run_id)
+
+    def test_poc_test_removes_run_desktops_after_both_suites_pass(self):
+        import os
+        import subprocess
+        spec = importlib.util.spec_from_file_location('poc_cleanup_driver',
+                                                      Path(__file__).with_name('poc.py'))
+        driver = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {'SILO_E2B_DEPLOYMENT': 'diagnostic-d1',
+                                     'SILO_E2B_HOST_PORT': '13801'}):
+            spec.loader.exec_module(driver)
+        commands = []
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(driver, 'EVIDENCE', Path(directory)), \
+                patch.object(driver, 'guest', side_effect=commands.append):
+            with patch('sys.argv', ['poc.py', 'test']):
+                driver.main()
+        self.assertEqual(len(commands), 3)
+        run_id = commands[0].split('--run-id ')[1]
+        self.assertTrue(all(c.endswith('--run-id ' + run_id) for c in commands))
+        self.assertIn('qualification.py', commands[0])
+        self.assertIn('credential-qualification.py', commands[1])
+        self.assertIn('reset-failed-test.py', commands[2])
+
+    def test_poc_test_keeps_desktops_for_inspection_when_a_suite_fails(self):
+        import os
+        import subprocess
+        spec = importlib.util.spec_from_file_location('poc_cleanup_driver',
+                                                      Path(__file__).with_name('poc.py'))
+        driver = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {'SILO_E2B_DEPLOYMENT': 'diagnostic-d1',
+                                     'SILO_E2B_HOST_PORT': '13801'}):
+            spec.loader.exec_module(driver)
+        commands = []
+
+        def guest(command):
+            commands.append(command)
+            if 'credential-qualification.py' in command:
+                raise subprocess.CalledProcessError(1, 'qualification')
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(driver, 'EVIDENCE', Path(directory)), \
+                patch.object(driver, 'guest', side_effect=guest):
+            with patch('sys.argv', ['poc.py', 'test']):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    driver.main()
+        self.assertEqual(len(commands), 2)
+        self.assertNotIn('reset-failed-test.py', ' '.join(commands))
+
 
 if __name__ == '__main__':
     unittest.main()

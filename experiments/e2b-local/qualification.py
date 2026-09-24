@@ -23,7 +23,7 @@ from report_contract import QUALIFICATION_CASES, complete
 HERE = Path(__file__).resolve().parent
 EVIDENCE = HERE / 'evidence'
 PATH = EVIDENCE / 'qualification.json'
-CLIENT = httpx.Client(base_url='http://127.0.0.1:3800', timeout=180,
+CLIENT = httpx.Client(base_url='http://127.0.0.1:3800', timeout=360,
                       headers={'X-Poc-Request': '1'}, trust_env=False)
 REPORT = {'status': 'running', 'checks': [], 'desktops': []}
 

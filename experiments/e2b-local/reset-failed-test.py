@@ -1,4 +1,4 @@
-"""Explicitly remove a failed run's tagged desktops; retain its evidence."""
+"""Explicitly remove a finished run's tagged desktops; retain its evidence."""
 import argparse
 import json
 
@@ -7,8 +7,8 @@ from qualification import run_directory
 
 
 def target_ids(report, desktops, run_id):
-    if report.get('run_id') != run_id or report.get('status') != 'failed':
-        raise ValueError('Cleanup requires the exact failed qualification run')
+    if report.get('run_id') != run_id or report.get('status') not in ('failed', 'passed'):
+        raise ValueError('Cleanup requires the exact finished qualification run')
     recorded = report.get('desktops', [])
     if len(recorded) != len(set(recorded)):
         raise ValueError('Run has duplicate recorded desktops')
@@ -38,7 +38,7 @@ def main(argv=None):
         targets = target_ids(report, state['desktops'], args.run_id)
         for sid in targets:
             client.post(f'/api/desktops/{sid}/lifecycle', json={'action': 'delete'}).raise_for_status()
-            print('Removed failed-run desktop', sid, flush=True)
+            print('Removed run desktop', sid, flush=True)
 
 
 if __name__ == '__main__':

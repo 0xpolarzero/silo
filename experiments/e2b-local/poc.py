@@ -197,6 +197,11 @@ def main():
             print(f'Qualification run ID: {run_id}', flush=True)
             for script in ('qualification.py', 'credential-qualification.py'):
                 guest(f'cd /opt/silo-e2b-poc && sudo .venv/bin/python {script} --run-id {run_id}')
+            # Both suites exited 0: the run's reports are terminal and nothing
+            # inspects its desktops anymore. Remove exactly the registry-validated
+            # run-tagged set; a failed suite keeps its desktops for inspection
+            # until reset-failed-test is run.
+            guest('cd /opt/silo-e2b-poc && sudo .venv/bin/python reset-failed-test.py --run-id ' + run_id)
     elif args.action == 'reset-failed-test':
         guest('cd /opt/silo-e2b-poc && sudo .venv/bin/python reset-failed-test.py ' + shlex.join(args.command))
     elif args.action == 'serve':
