@@ -21,7 +21,7 @@ describe("onboarding preparation interactions", () => {
     expect(view.dependencies[1].items[0].check).toMatchObject({
       id: "runtime-microsandbox",
       status: "pass",
-      detail: "Bundled msb 0.6.17 · libkrunfw 5.6.1",
+      detail: "Bundled msb 0.7.2 · libkrunfw 5.6.1",
     })
   })
 

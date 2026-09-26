@@ -112,6 +112,34 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             ))?;
             Ok(Value::Null)
         }
+        "checkpoint.create" | "checkpoint.fork" | "checkpoint.restore" => {
+            // Resolve the VM through this computer's saved identity before
+            // forwarding checkpoint state changes to the owning runtime.
+            let workspace_id = string(params, "vmId")?.to_owned();
+            let _ = vm_name(app, params)?;
+            let result = match method {
+                "checkpoint.create" => tauri::async_runtime::block_on(
+                    runtime::checkpoints::create_checkpoint(
+                        app.clone(), workspace_id, string(params, "name")?.to_owned(),
+                    ),
+                )?,
+                "checkpoint.fork" => tauri::async_runtime::block_on(
+                    runtime::checkpoints::fork_checkpoint(
+                        app.clone(),
+                        workspace_id,
+                        params.get("checkpointId").and_then(Value::as_str).map(str::to_owned),
+                        string(params, "newName")?.to_owned(),
+                    ),
+                )?,
+                "checkpoint.restore" => tauri::async_runtime::block_on(
+                    runtime::checkpoints::restore_checkpoint(
+                        app.clone(), workspace_id, string(params, "checkpointId")?.to_owned(),
+                    ),
+                )?,
+                _ => unreachable!(),
+            };
+            serde_json::to_value(result).map_err(|_| "Could not encode the remote checkpoint result.".into())
+        }
         _ => Err("This Silo version does not support that remote operation.".into()),
     }
 }

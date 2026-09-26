@@ -59,7 +59,8 @@ class DesktopBuildTests(unittest.TestCase):
 
     def test_debug_unbundled_help_and_other_platforms_pass_through(self):
         cases = [('darwin', ['--debug']), ('darwin', ['-d']), ('darwin', ['--no-bundle', '--ci']),
-                 ('darwin', ['--help']), ('darwin', ['--version']), ('linux', ['--bundles', 'deb', 'appimage']),
+                 ('darwin', ['--help']), ('darwin', ['--version']),
+                 ('linux', ['--no-bundle', '--ci']), ('linux', ['--help']),
                  ('darwin', ['--target', 'aarch64-unknown-linux-gnu', '--bundles', 'deb'])]
         for platform, args in cases:
             self.calls.clear()
@@ -68,6 +69,15 @@ class DesktopBuildTests(unittest.TestCase):
                 self.assertEqual(len(self.calls), 1)
                 self.assertEqual(self.calls[0][0][3:], args)
                 sign.assert_not_called()
+
+    def test_linux_local_bundle_uses_private_tools_layout_without_updater_artifacts(self):
+        args = ['--bundles', 'deb', 'appimage']
+        self.assertIsNone(build(args, root=self.root, platform='linux', run=self.command))
+        self.assertEqual(len(self.calls), 1)
+        command = self.calls[0][0]
+        self.assertEqual(command[3:6], args)
+        self.assertEqual(command[-3], 'src-tauri/tauri.linux.package.conf.json')
+        self.assertEqual(json.loads(command[-1]), {'bundle': {'createUpdaterArtifacts': False}})
 
     def test_distribution_artifacts_cannot_be_made_before_finalization(self):
         for args in (['--bundles', 'dmg'], ['--bundles=all'], ['-b', 'app', 'dmg'],

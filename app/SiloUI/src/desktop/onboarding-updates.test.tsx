@@ -12,6 +12,7 @@ import { ProductionSurface } from "./production-surface"
 const backend = vi.hoisted(() => ({ read: vi.fn(), subscribe: vi.fn(), install: vi.fn(), download: vi.fn(), openRelease: vi.fn() }))
 vi.mock("./updates", () => ({ desktopUpdateBackend: backend }))
 vi.mock("./shutdown-boundary", () => ({ ShutdownBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
+vi.mock("./runtime-migration-boundary", () => ({ RuntimeMigrationBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
 vi.mock("./use-main-route", () => ({ useMainRoute: () => undefined }))
 vi.mock("./production-source", async () => {
   const { applicationSourceForScenario } = await import("@/fixtures/application-scenarios")

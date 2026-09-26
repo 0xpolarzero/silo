@@ -9,19 +9,20 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const MAGIC: &[u8; 16] = b"SILO-BACKUP\0\0\0\0\0";
-const FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 3;
 const SPARSE_MAGIC: &[u8; 16] = b"SILO-SPARSE\0\0\0\0\0";
 const SPARSE_VERSION: u32 = 1;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_COMMAND_OUTPUT: usize = 32 * 1024;
+const MAX_SNAPSHOT_INDEX_OUTPUT: usize = 1024 * 1024;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const DEFAULT_MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
@@ -81,38 +82,39 @@ impl MsbRunner for SystemMsbRunner {
         }
         // Backup stops use their own cancellable process runner. Revoke SSH
         // before the VM stops, just as the normal lifecycle runner does.
-        if arguments.first().is_some_and(|arg| matches!(arg.as_str(), "stop" | "remove" | "restart")) {
-            if let Some(workspace) = arguments.iter().skip(1).find(|argument| !argument.starts_with('-')) {
+        if arguments
+            .first()
+            .is_some_and(|arg| matches!(arg.as_str(), "stop" | "remove" | "restart"))
+        {
+            if let Some(workspace) = arguments
+                .iter()
+                .skip(1)
+                .find(|argument| !argument.starts_with('-'))
+            {
                 crate::ssh_access::close_workspace(workspace);
             }
-        }
-        if arguments.first().is_some_and(|arg| arg == "start") {
-            // Restart with the same current GitHub and secret material as normal
-            // lifecycle actions; the bare CLI command cannot provide that material.
-            let paths = crate::runtime::RuntimePaths {
-                executable: command.executable.clone(), library: command.library.clone(),
-                home: command.home.clone(), storage_home: command.storage_home.clone(),
-                // Saved network and SSH access must resume after each restart,
-                // before backup proceeds to the next sandbox or packages its archive.
-                metadata: command.metadata.clone(), volumes: PathBuf::new(), guest_image: PathBuf::new(),
-            };
-            let result = crate::runtime::run_msb(&paths, arguments, timeout)
-                .map_err(|error| BackupError::CommandFailed { operation: "Restarting sandbox after backup".into(), detail: error.to_string() })?;
-            use std::os::unix::process::ExitStatusExt;
-            return Ok(CommandOutput { status: ExitStatus::from_raw(0), stdout: result.stdout, stderr: result.stderr });
         }
         crate::runtime::prepare_runtime_home(&command.home, command.storage_home.as_deref())
             .map_err(|error| BackupError::InvalidRequest(error.to_string()))?;
         // Only these stopped-VM commands can outlive Silo while writing restore
         // output. Keep the lock in the child until it exits, even if Silo dies.
-        let worker_lock = if arguments.first().is_some_and(|arg| (arg == "snapshot" || arg == "stop") || (arg == "create" && arguments.iter().any(|value| value == "--from-snapshot" || value == "--no-start"))) {
+        let worker_lock = if arguments.first().is_some_and(|arg| {
+            matches!(arg.as_str(), "snapshot" | "restore" | "stop")
+                || (arg == "create"
+                    && arguments
+                        .iter()
+                        .any(|value| value == "--no-start"))
+        }) {
             Some(wait_for_interrupted_command(&command.home, timeout).map_err(BackupError::Io)?)
-        } else { None };
+        } else {
+            None
+        };
         let mut process = Command::new(&command.executable);
         if let Some(lock) = &worker_lock {
             inherit_worker_lock(&mut process, lock);
         }
-        let mut child = process.args(arguments)
+        let mut child = process
+            .args(arguments)
             .env("MSB_HOME", &command.home)
             .env("MSB_PATH", &command.executable)
             .env("MSB_LIBKRUNFW_PATH", &command.library)
@@ -123,8 +125,11 @@ impl MsbRunner for SystemMsbRunner {
             .map_err(BackupError::Io)?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-        let stdout_reader = thread::spawn(move || read_output(stdout));
-        let stderr_reader = thread::spawn(move || read_output(stderr));
+        let snapshot_index = arguments.iter().map(String::as_str).eq(["snapshot", "list", "--format", "json"]);
+        let stdout_reader = thread::spawn(move || {
+            read_output(stdout, if snapshot_index { MAX_SNAPSHOT_INDEX_OUTPUT } else { MAX_COMMAND_OUTPUT }, !snapshot_index)
+        });
+        let stderr_reader = thread::spawn(move || read_output(stderr, MAX_COMMAND_OUTPUT, true));
         let started = Instant::now();
         loop {
             if cancellation.cancelled() {
@@ -142,15 +147,20 @@ impl MsbRunner for SystemMsbRunner {
                 return Err(BackupError::CommandTimeout);
             }
             if let Some(status) = child.try_wait().map_err(BackupError::Io)? {
-                let stdout = stdout_reader
+                let (stdout, stdout_truncated) = stdout_reader
                     .join()
                     .map_err(|_| BackupError::Io(io::Error::other("stdout reader failed")))??;
-                let stderr = stderr_reader
+                let (stderr, _) = stderr_reader
                     .join()
                     .map_err(|_| BackupError::Io(io::Error::other("stderr reader failed")))??;
+                if snapshot_index && stdout_truncated {
+                    return Err(BackupError::InvalidRequest(
+                        "The runtime checkpoint index exceeds Silo's size safety limit.".into(),
+                    ));
+                }
                 return Ok(CommandOutput {
                     status,
-                    stdout: bounded_output(&stdout),
+                    stdout: if snapshot_index { String::from_utf8_lossy(&stdout).trim().to_owned() } else { bounded_output(&stdout) },
                     stderr: bounded_output(&stderr),
                 });
             }
@@ -163,42 +173,68 @@ fn inherit_worker_lock(command: &mut Command, lock: &File) {
     use std::os::unix::process::CommandExt;
     let fd = lock.as_raw_fd();
     // SAFETY: pre_exec only calls async-signal-safe fcntl on this owned FD.
-    unsafe { command.pre_exec(move || {
-        if libc::fcntl(fd, libc::F_SETFD, 0) == -1 { return Err(io::Error::last_os_error()); }
-        Ok(())
-    }); }
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Also held by a surviving snapshot/create child after the app exits. A bounded
 /// wait prevents recovery from racing that child's writes or hanging forever.
 pub(crate) fn wait_for_interrupted_command(home: &Path, timeout: Duration) -> io::Result<File> {
     fs::create_dir_all(home)?;
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(home.join(".silo-backup-worker.lock"))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(home.join(".silo-backup-worker.lock"))?;
     let started = Instant::now();
     loop {
         // SAFETY: file owns this valid descriptor for the duration of the lock.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 { return Ok(file); }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
         let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::WouldBlock { return Err(error); }
-        if started.elapsed() >= timeout { return Err(io::Error::new(io::ErrorKind::TimedOut, "The previous backup command is still finishing. Wait a moment and relaunch Silo to resume.")); }
+        if error.kind() != io::ErrorKind::WouldBlock {
+            return Err(error);
+        }
+        if started.elapsed() >= timeout {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "The previous backup command is still finishing. Wait a moment and relaunch Silo to resume.",
+            ));
+        }
         thread::sleep(COMMAND_POLL_INTERVAL);
     }
 }
 
-fn read_output(mut input: impl Read) -> io::Result<Vec<u8>> {
+fn read_output(mut input: impl Read, limit: usize, keep_tail: bool) -> io::Result<(Vec<u8>, bool)> {
     let mut output = Vec::new();
     let mut chunk = [0_u8; 8 * 1024];
+    let mut truncated = false;
     loop {
         let count = input.read(&mut chunk)?;
         if count == 0 {
             break;
         }
-        output.extend_from_slice(&chunk[..count]);
-        if output.len() > MAX_COMMAND_OUTPUT {
-            output.drain(..output.len() - MAX_COMMAND_OUTPUT);
+        if keep_tail {
+            output.extend_from_slice(&chunk[..count]);
+            if output.len() > limit {
+                output.drain(..output.len() - limit);
+                truncated = true;
+            }
+        } else {
+            let remaining = limit.saturating_sub(output.len());
+            output.extend_from_slice(&chunk[..count.min(remaining)]);
+            truncated |= count > remaining;
         }
     }
-    Ok(output)
+    Ok((output, truncated))
 }
 
 fn bounded_output(bytes: &[u8]) -> String {
@@ -256,18 +292,10 @@ impl From<serde_json::Error> for BackupError {
 #[derive(Clone, Debug)]
 pub(crate) struct BackupSource {
     pub(crate) name: String,
+    pub(crate) snapshot_group: String,
     pub(crate) was_running: bool,
     pub(crate) runtime_config: Value,
     pub(crate) machine_config: Value,
-    pub(crate) volumes: Vec<BackupVolumeSource>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct BackupVolumeSource {
-    pub(crate) role: String,
-    pub(crate) mount_path: String,
-    pub(crate) source_path: PathBuf,
-    pub(crate) capacity_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -313,7 +341,8 @@ pub(crate) struct PreparedRestore {
     pub(crate) new_name: String,
     pub(crate) runtime_config: Value,
     pub(crate) machine_config: Value,
-    pub(crate) snapshot_path: PathBuf,
+    pub(crate) snapshot_group: String,
+    pub(crate) snapshot_member: String,
     pub(crate) volumes: Vec<PreparedVolume>,
     _stage: tempfile::TempDir,
 }
@@ -418,14 +447,6 @@ struct CapturedVolume {
     payload_path: PathBuf,
 }
 
-struct StagedVolume {
-    role: String,
-    mount_path: String,
-    capacity_bytes: u64,
-    logical_size_bytes: u64,
-    captured_path: PathBuf,
-}
-
 struct OperationGuard<'a>(&'a AtomicBool);
 
 impl Drop for OperationGuard<'_> {
@@ -478,7 +499,9 @@ impl<R: MsbRunner> BackupService<R> {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if (name.starts_with("backup-") || name.starts_with("restore-")) && entry.file_type()?.is_dir() {
+            if (name.starts_with("backup-") || name.starts_with("restore-"))
+                && entry.file_type()?.is_dir()
+            {
                 fs::remove_dir_all(entry.path())?;
             }
         }
@@ -495,9 +518,16 @@ impl<R: MsbRunner> BackupService<R> {
     }
 
     pub(crate) fn create_backup_with_token(
-        &self, request: BackupRequest, cancellation: &Cancellation, token: Option<&str>,
+        &self,
+        request: BackupRequest,
+        cancellation: &Cancellation,
+        token: Option<&str>,
     ) -> Result<BackupResult, BackupError> {
-        if let Some(token) = token { uuid::Uuid::parse_str(token).map_err(|_| BackupError::InvalidRequest("Invalid backup operation identity.".into()))?; }
+        if let Some(token) = token {
+            uuid::Uuid::parse_str(token).map_err(|_| {
+                BackupError::InvalidRequest("Invalid backup operation identity.".into())
+            })?;
+        }
         let _guard = self.begin()?;
         validate_backup_request(&request)?;
         fs::create_dir_all(&self.scratch_root)?;
@@ -506,42 +536,21 @@ impl<R: MsbRunner> BackupService<R> {
             .tempdir_in(&self.scratch_root)?;
         let mut payloads = Vec::with_capacity(request.sources.len());
         let mut total_payload_bytes = 0_u64;
-        let mut restart_failures = Vec::new();
+        let restart_failures = Vec::new();
 
         for (index, source) in request.sources.iter().enumerate() {
             check_cancelled(cancellation)?;
             validate_sandbox_name(&source.name)?;
             validate_snapshottable_config(&source.name, &source.runtime_config)?;
             validate_machine_config(&source.name, &source.machine_config)?;
-            validate_volume_sources(
-                &source.name,
-                &source.volumes,
-                &source.runtime_config,
-                &source.machine_config,
-            )?;
-            if source.was_running {
-                if let Err(error) = self.require_success(
-                    "Stopping VM for backup",
-                    &["stop".into(), source.name.clone()],
-                    cancellation,
-                ) {
-                    // A cancelled stop command may already have stopped the guest.
-                    let restart = self.require_success(
-                        "Restoring VM state after interrupted stop",
-                        &["start".into(), source.name.clone()],
-                        &Cancellation::default(),
-                    );
-                    return Err(match restart {
-                        Ok(_) => error,
-                        Err(restart) => BackupError::CommandFailed {
-                            operation: "Stopping VM for backup".into(),
-                            detail: format!("{error} The VM also could not restart: {restart}"),
-                        },
-                    });
-                }
-            }
-
+            validate_volume_sources(&source.name, &source.runtime_config, &source.machine_config)?;
             let snapshot_name = format!("silo-backup-{index}-{}", unique_suffix());
+            let snapshot_group = source.snapshot_group.clone();
+            let flush = if source.was_running {
+                "required"
+            } else {
+                "auto"
+            };
             let capture_result = (|| {
                 self.require_success(
                     "Capturing VM disk",
@@ -549,89 +558,49 @@ impl<R: MsbRunner> BackupService<R> {
                         "snapshot".into(),
                         "create".into(),
                         snapshot_name.clone(),
-                        "--from".into(),
+                        "--from-sandbox".into(),
                         source.name.clone(),
-                        "--dest-dir".into(),
-                        stage.path().to_string_lossy().into_owned(),
+                        "--group".into(),
+                        snapshot_group.clone(),
+                        "--guest-flush".into(),
+                        flush.into(),
                         "--integrity".into(),
                         "--quiet".into(),
                     ],
                     cancellation,
                 )?;
-                source
-                    .volumes
-                    .iter()
-                    .enumerate()
-                    .map(|(volume_index, volume)| {
-                        stage_volume(volume, stage.path(), index, volume_index, cancellation)
-                    })
-                    .collect::<Result<Vec<_>, _>>()
+                // Capture advances MicroSandbox's source lineage. Its ancestor must
+                // remain in the native snapshot store even if archive writing fails.
+                let snapshot = self.captured_snapshot_path(
+                    &snapshot_group,
+                    &snapshot_name,
+                    cancellation,
+                )?;
+                self.require_success(
+                    "Verifying captured VM disk",
+                    &[
+                        "snapshot".into(),
+                        "verify".into(),
+                        snapshot.to_string_lossy().into_owned(),
+                    ],
+                    cancellation,
+                )?;
+                let payload_path = stage.path().join(format!("{index}.msb"));
+                self.require_success(
+                    "Writing self-contained VM snapshot",
+                    &[
+                        "snapshot".into(),
+                        "save".into(),
+                        snapshot.to_string_lossy().into_owned(),
+                        payload_path.to_string_lossy().into_owned(),
+                        "--with-parents".into(),
+                        "--with-image".into(),
+                    ],
+                    cancellation,
+                )?;
+                Ok::<_, BackupError>((payload_path, Vec::<CapturedVolume>::new()))
             })();
-
-            if source.was_running {
-                let restart = self.restart_vm(&source.name);
-                if let Err(error) = restart {
-                    restart_failures.push(RestartFailure {
-                        sandbox: source.name.clone(),
-                        detail: error.to_string(),
-                    });
-                }
-            }
-            let staged_volumes = capture_result.map_err(|error| {
-                if restart_failures.is_empty() {
-                    error
-                } else {
-                    BackupError::CommandFailed {
-                        operation: "Capturing VM disk".into(),
-                        detail: format!(
-                            "{error} Restart also failed: {}",
-                            restart_failures
-                                .iter()
-                                .map(|failure| format!("{}: {}", failure.sandbox, failure.detail))
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        ),
-                    }
-                }
-            })?;
-
-            let snapshot_path = stage.path().join(&snapshot_name);
-            self.require_success(
-                "Verifying captured VM disk",
-                &[
-                    "snapshot".into(),
-                    "verify".into(),
-                    snapshot_path.to_string_lossy().into_owned(),
-                ],
-                cancellation,
-            )?;
-            let payload_path = stage.path().join(format!("{index}.tar.zst"));
-            self.require_success(
-                "Writing self-contained VM snapshot",
-                &[
-                    "snapshot".into(),
-                    "save".into(),
-                    snapshot_path.to_string_lossy().into_owned(),
-                    payload_path.to_string_lossy().into_owned(),
-                    "--with-parents".into(),
-                    "--with-image".into(),
-                ],
-                cancellation,
-            )?;
-            let captured_volumes = staged_volumes
-                .into_iter()
-                .enumerate()
-                .map(|(volume_index, volume)| {
-                    finalize_volume(
-                        volume,
-                        stage.path(),
-                        index,
-                        volume_index,
-                        self.max_archive_bytes,
-                        cancellation,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let (payload_path, captured_volumes) = capture_result?;
             let (payload_size, payload_sha256) =
                 hash_regular_file(&payload_path, self.max_archive_bytes, cancellation)?;
             let volume_payload_bytes = captured_volumes.iter().try_fold(0_u64, |sum, volume| {
@@ -666,8 +635,8 @@ impl<R: MsbRunner> BackupService<R> {
             created_at_ms: now_ms(),
             runtime: RuntimeManifest {
                 name: "microsandbox".into(),
-                version: "0.6.17".into(),
-                snapshot_format: "msb-snapshot-tar-zstd".into(),
+                version: "0.7.2".into(),
+                snapshot_format: "msb-snapshot-tar-zstd-v0.7".into(),
                 guest_architecture: std::env::consts::ARCH.into(),
             },
             sandboxes: payloads
@@ -721,6 +690,51 @@ impl<R: MsbRunner> BackupService<R> {
         })
     }
 
+    fn captured_snapshot_path(
+        &self,
+        group: &str,
+        name: &str,
+        cancellation: &Cancellation,
+    ) -> Result<PathBuf, BackupError> {
+        let output = self.require_success(
+            "Locating captured VM disk",
+            &["snapshot".into(), "list".into(), "--format".into(), "json".into()],
+            cancellation,
+        )?;
+        let entries: Vec<Value> = serde_json::from_str(&output.stdout).map_err(|_| {
+            BackupError::InvalidRequest("The runtime returned an invalid snapshot index.".into())
+        })?;
+        let mut matches = entries.iter().filter(|entry| {
+            entry["group"] == group && entry["name"] == name && entry["availability"] == "ready"
+        });
+        let entry = matches.next().filter(|_| matches.next().is_none()).ok_or_else(|| {
+            BackupError::InvalidRequest(
+                "The runtime did not publish exactly one ready captured snapshot.".into(),
+            )
+        })?;
+        let id = entry["snapshot_id"].as_str().filter(|id| {
+            id.len() == 37
+                && id.starts_with("snap_")
+                && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        }).ok_or_else(|| BackupError::InvalidRequest("The runtime returned an invalid snapshot identity.".into()))?;
+        let path = Path::new(entry["artifact_path"].as_str().ok_or_else(|| {
+            BackupError::InvalidRequest("The runtime omitted the captured snapshot path.".into())
+        })?);
+        let native_store = self.command.storage_home.as_deref().unwrap_or(&self.command.home).join("snapshots");
+        let native_store = fs::canonicalize(native_store)?;
+        let path = fs::canonicalize(path)?;
+        if !path.is_dir()
+            || path.file_name().is_none_or(|part| part != id)
+            || path.parent().and_then(Path::file_name).is_none_or(|part| part != group)
+            || path.parent().and_then(Path::parent) != Some(native_store.as_path())
+        {
+            return Err(BackupError::InvalidRequest(
+                "The captured snapshot is outside the native snapshot store.".into(),
+            ));
+        }
+        Ok(path)
+    }
+
     pub(crate) fn inspect_archive(
         &self,
         archive: &Path,
@@ -768,8 +782,23 @@ impl<R: MsbRunner> BackupService<R> {
             .ok_or_else(|| {
                 BackupError::InvalidArchive("snapshot payload was not extracted".into())
             })?;
-        let snapshots_dir = stage.path().join("snapshots");
-        fs::create_dir(&snapshots_dir)?;
+        let import_group = format!("silo-import-{}", uuid::Uuid::new_v4().simple());
+        let before = self.require_success(
+            "Checking imported checkpoint identity",
+            &[
+                "snapshot".into(),
+                "list".into(),
+                "--format".into(),
+                "json".into(),
+            ],
+            cancellation,
+        )?;
+        let before: Vec<Value> = serde_json::from_str(&before.stdout).map_err(|_| {
+            BackupError::InvalidArchive("the runtime returned an invalid checkpoint index".into())
+        })?;
+        if before.iter().any(|entry| entry["group"] == import_group) {
+            return Err(BackupError::Conflict(import_group));
+        }
         let import_stages_before = cache_import_stages(&self.command.home)?;
         let load_result = self.require_success(
             "Loading VM snapshot",
@@ -777,28 +806,96 @@ impl<R: MsbRunner> BackupService<R> {
                 "snapshot".into(),
                 "load".into(),
                 payload_path.to_string_lossy().into_owned(),
-                snapshots_dir.to_string_lossy().into_owned(),
+                "--group".into(),
+                import_group.clone(),
             ],
             cancellation,
         );
-        let output = match load_result {
+        let _output = match load_result {
             Ok(output) => output,
             Err(error) => {
                 cleanup_new_cache_import_stages(&self.command.home, &import_stages_before);
                 return Err(error);
             }
         };
-        let snapshot_path = snapshot_path_from_load(&output, &snapshots_dir)?;
-        ensure_descendant(&snapshot_path, &snapshots_dir)?;
-        self.require_success(
+        // The CLI's printed reference is useful for diagnostics only. Resolve
+        // the loaded member from the runtime's indexed JSON before using it.
+        let indexed = match self.require_success(
+            "Checking imported checkpoint",
+            &[
+                "snapshot".into(),
+                "list".into(),
+                "--format".into(),
+                "json".into(),
+            ],
+            cancellation,
+        ) {
+            Ok(indexed) => indexed,
+            Err(error) => {
+                eprintln!("Retained imported snapshot group {import_group} for native recovery after index failure.");
+                return Err(error);
+            }
+        };
+        let entries: Vec<Value> = match serde_json::from_str(&indexed.stdout) {
+            Ok(entries) => entries,
+            Err(_) => {
+                eprintln!("Retained imported snapshot group {import_group} for native recovery after invalid index data.");
+                return Err(BackupError::InvalidArchive(
+                    "the runtime returned an invalid checkpoint index".into(),
+                ));
+            }
+        };
+        let imported: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry["group"] == import_group)
+            .collect();
+        if imported.is_empty() || imported.iter().any(|entry| entry["availability"] != "ready") {
+            cleanup_new_cache_import_stages(&self.command.home, &import_stages_before);
+            eprintln!("Retained imported snapshot group {import_group} for native recovery after incomplete import.");
+            return Err(BackupError::InvalidArchive(
+                "the runtime did not publish a complete ready imported checkpoint group".into(),
+            ));
+        }
+        let head = self.require_success(
+            "Checking imported checkpoint head",
+            &["snapshot".into(), "head".into(), import_group.clone(), "--format".into(), "json".into()],
+            cancellation,
+        )?;
+        let head: Value = serde_json::from_str(&head.stdout).map_err(|_| {
+            BackupError::InvalidArchive("the runtime returned an invalid imported checkpoint head".into())
+        })?;
+        if head["group"] != import_group {
+            return Err(BackupError::InvalidArchive("the imported checkpoint head belongs to another group".into()));
+        }
+        let head_id = head["head"].as_str().filter(|id| {
+            id.len() == 37 && id.starts_with("snap_") && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        }).ok_or_else(|| BackupError::InvalidArchive("the imported checkpoint head is missing or invalid".into()))?;
+        let mut matches = imported.iter().filter(|entry| entry["snapshot_id"] == head_id);
+        let head_member = matches.next().filter(|_| matches.next().is_none()).ok_or_else(|| {
+            BackupError::InvalidArchive("the imported checkpoint head is not uniquely indexed".into())
+        })?;
+        let snapshot_member = head_member["name"]
+            .as_str()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                BackupError::InvalidArchive(
+                    "the runtime omitted the imported checkpoint member".into(),
+                )
+            })?
+            .to_owned();
+        if let Err(error) = self.require_success(
             "Verifying restored VM disk",
             &[
                 "snapshot".into(),
                 "verify".into(),
-                snapshot_path.to_string_lossy().into_owned(),
+                format!("{import_group}:{snapshot_member}"),
             ],
             cancellation,
-        )?;
+        ) {
+            eprintln!("Retained imported snapshot group {import_group} for native recovery after verification failure.");
+            cleanup_new_cache_import_stages(&self.command.home, &import_stages_before);
+            return Err(error);
+        }
         let volume_paths = package.volume_disk_paths[selected_index]
             .as_ref()
             .ok_or_else(|| {
@@ -821,37 +918,11 @@ impl<R: MsbRunner> BackupService<R> {
             new_name: request.new_name,
             runtime_config: source.runtime_config.clone(),
             machine_config: source.machine_config.clone(),
-            snapshot_path,
+            snapshot_group: import_group,
+            snapshot_member,
             volumes,
             _stage: stage,
         })
-    }
-
-    fn restart_vm(&self, name: &str) -> Result<(), BackupError> {
-        let cancellation = Cancellation::default();
-        self.require_success(
-            "Restarting VM after disk capture",
-            &["start".into(), name.into()],
-            &cancellation,
-        )?;
-        let inspected = self.require_success(
-            "Verifying restarted VM",
-            &[
-                "inspect".into(),
-                name.into(),
-                "--format".into(),
-                "json".into(),
-            ],
-            &cancellation,
-        )?;
-        let value: Value = serde_json::from_str(&inspected.stdout)?;
-        if value.get("status").and_then(Value::as_str) != Some("Running") {
-            return Err(BackupError::CommandFailed {
-                operation: "Verifying restarted VM".into(),
-                detail: format!("{name} has not reached Running."),
-            });
-        }
-        Ok(())
     }
 
     fn list_sandbox_names(
@@ -1084,8 +1155,8 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
     }
     if manifest.schema_version != FORMAT_VERSION
         || manifest.runtime.name != "microsandbox"
-        || manifest.runtime.version != "0.6.17"
-        || manifest.runtime.snapshot_format != "msb-snapshot-tar-zstd"
+        || manifest.runtime.version != "0.7.2"
+        || manifest.runtime.snapshot_format != "msb-snapshot-tar-zstd-v0.7"
     {
         return Err(BackupError::InvalidArchive(
             "the runtime or package format is not supported".into(),
@@ -1134,34 +1205,9 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
 }
 
 fn validate_package_volumes(volumes: &[PackageVolume]) -> Result<(), BackupError> {
-    if volumes.len() != 1 {
+    if !volumes.is_empty() {
         return Err(BackupError::InvalidArchive(
-            "each VM must contain its workspace disk alongside its managed root snapshot".into(),
-        ));
-    }
-    let mut roles = HashSet::new();
-    let mut mounts = HashSet::new();
-    for volume in volumes {
-        if volume.role != "workspace"
-            || volume.mount_path != "/workspace"
-            || !roles.insert(volume.role.as_str())
-            || !valid_mount_path(&volume.mount_path)
-            || !mounts.insert(volume.mount_path.as_str())
-            || volume.capacity_bytes == 0
-            || volume.capacity_bytes > DEFAULT_MAX_ARCHIVE_BYTES
-            || volume.logical_size_bytes == 0
-            || volume.logical_size_bytes != volume.capacity_bytes
-            || volume.payload_size == 0
-            || !is_sha256(&volume.payload_sha256)
-        {
-            return Err(BackupError::InvalidArchive(
-                "a VM disk manifest is invalid".into(),
-            ));
-        }
-    }
-    if !roles.contains("workspace") {
-        return Err(BackupError::InvalidArchive(
-            "each VM must contain one workspace disk".into(),
+            "workspace disks must be carried by the MicroSandbox snapshot".into(),
         ));
     }
     Ok(())
@@ -1169,56 +1215,10 @@ fn validate_package_volumes(volumes: &[PackageVolume]) -> Result<(), BackupError
 
 fn validate_volume_sources(
     name: &str,
-    volumes: &[BackupVolumeSource],
     runtime_config: &Value,
     machine_config: &Value,
 ) -> Result<(), BackupError> {
-    let configured_mounts = runtime_config
-        .get("mounts")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            BackupError::UnsupportedStorage(format!("{name} does not report its mounted disks."))
-        })?;
-    for volume in volumes {
-        let matches_config = configured_mounts.iter().any(|mount| {
-            mount.get("type").and_then(Value::as_str) == Some("DiskImage")
-                && mount.get("guest").and_then(Value::as_str) == Some(volume.mount_path.as_str())
-                && mount
-                    .get("host")
-                    .and_then(Value::as_str)
-                    .is_some_and(|host| Path::new(host) == volume.source_path)
-        });
-        if !matches_config {
-            return Err(BackupError::UnsupportedStorage(format!(
-                "{name} {} disk does not match its mounted disk image.",
-                volume.role
-            )));
-        }
-    }
-    let manifests = volumes
-        .iter()
-        .map(|volume| {
-            let metadata = fs::symlink_metadata(&volume.source_path)?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(BackupError::UnsupportedStorage(format!(
-                    "{name} has an invalid {} disk.",
-                    volume.role
-                )));
-            }
-            Ok(PackageVolume {
-                role: volume.role.clone(),
-                mount_path: volume.mount_path.clone(),
-                capacity_bytes: volume.capacity_bytes,
-                logical_size_bytes: metadata.len(),
-                payload_size: 1,
-                payload_sha256: format!("sha256:{}", "0".repeat(64)),
-            })
-        })
-        .collect::<Result<Vec<_>, BackupError>>()?;
-    validate_package_volumes(&manifests).map_err(|_| {
-        BackupError::UnsupportedStorage(format!("{name} must have a Silo-owned workspace disk."))
-    })?;
-    validate_volume_contract(&manifests, runtime_config, machine_config).map_err(|_| {
+    validate_volume_contract(&[], runtime_config, machine_config).map_err(|_| {
         BackupError::UnsupportedStorage(format!(
             "{name} disk metadata does not match its Silo VM configuration."
         ))
@@ -1250,18 +1250,30 @@ fn validate_volume_contract(
             ));
         }
     }
-    let gib = 1024_u64 * 1024 * 1024;
-    let expected = |role: &str, field: &str| {
-        let capacity = machine_config
-            .get(field)
-            .and_then(Value::as_u64)
-            .and_then(|value| value.checked_mul(gib));
-        volumes
-            .iter()
-            .find(|volume| volume.role == role)
-            .is_some_and(|volume| Some(volume.capacity_bytes) == capacity)
-    };
-    if !expected("workspace", "workspaceStorageGiB")
+    let workspace_mib = machine_config
+        .get("workspaceStorageGiB")
+        .and_then(Value::as_u64)
+        .and_then(|size| size.checked_mul(1024));
+    let owned_workspace = runtime_config
+        .get("mounts")
+        .and_then(Value::as_array)
+        .is_some_and(|mounts| {
+            mounts
+                .iter()
+                .filter(|mount| mount.get("guest").and_then(Value::as_str) == Some("/workspace"))
+                .collect::<Vec<_>>()
+                .as_slice()
+                .iter()
+                .any(|mount| {
+                    mount["type"] == "Owned"
+                        && mount.pointer("/storage/kind").and_then(Value::as_str) == Some("disk")
+                        && mount
+                            .pointer("/storage/capacity_mib")
+                            .and_then(Value::as_u64)
+                            == workspace_mib
+                })
+        });
+    if !owned_workspace
         || runtime_config
             .pointer("/image/Oci/root_disk/size_mib")
             .and_then(Value::as_u64)
@@ -1274,19 +1286,14 @@ fn validate_volume_contract(
             "VM disk capacities do not match the machine settings".into(),
         ));
     }
-    let mount_paths = runtime_config
+    let workspace_mounts = runtime_config
         .get("mounts")
         .and_then(Value::as_array)
         .ok_or_else(|| BackupError::InvalidArchive("VM mounts are missing".into()))?
         .iter()
-        .filter(|mount| mount.get("type").and_then(Value::as_str) == Some("DiskImage"))
-        .filter_map(|mount| mount.get("guest").and_then(Value::as_str))
-        .collect::<HashSet<_>>();
-    if mount_paths.len() != 1
-        || volumes
-            .iter()
-            .any(|volume| !mount_paths.contains(volume.mount_path.as_str()))
-    {
+        .filter(|mount| mount.get("guest").and_then(Value::as_str) == Some("/workspace"))
+        .collect::<Vec<_>>();
+    if workspace_mounts.len() != 1 || !volumes.is_empty() {
         return Err(BackupError::InvalidArchive(
             "VM disk mounts do not match the machine settings".into(),
         ));
@@ -1388,8 +1395,12 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
         "runtimeStorageGiB",
     ];
     if object.len() != FIELDS.len() + usize::from(object.contains_key("desktop"))
-        || object.keys().any(|key| key != "desktop" && !FIELDS.contains(&key.as_str()))
-        || object.get("desktop").is_some_and(|desktop| serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err())
+        || object
+            .keys()
+            .any(|key| key != "desktop" && !FIELDS.contains(&key.as_str()))
+        || object.get("desktop").is_some_and(|desktop| {
+            serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err()
+        })
         || object.get("kind").and_then(Value::as_str) != Some("vm")
         || object.get("name").and_then(Value::as_str) != Some(name)
         || object
@@ -1442,7 +1453,7 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
     Ok(())
 }
 
-fn validate_snapshottable_config(name: &str, config: &Value) -> Result<(), BackupError> {
+pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Result<(), BackupError> {
     let object = config.as_object().ok_or_else(|| {
         BackupError::UnsupportedStorage(format!(
             "{name} has no verified MicroSandbox configuration, so a complete backup cannot be created."
@@ -1547,7 +1558,7 @@ fn validate_snapshottable_config(name: &str, config: &Value) -> Result<(), Backu
         None | Some(Value::Null) => Ok(()),
         Some(root) if root.get("kind").and_then(Value::as_str) == Some("managed") => Ok(()),
         Some(_) => Err(BackupError::UnsupportedStorage(format!(
-            "{name} does not use the managed OCI root disk required by MicroSandbox 0.6.17 snapshots."
+            "{name} does not use the managed OCI root disk required by MicroSandbox 0.7.2 snapshots."
         ))),
     }
 }
@@ -1557,16 +1568,36 @@ fn validate_snapshottable_config(name: &str, config: &Value) -> Result<(), Backu
 // Only the exact credential-free profile installed during Silo VM creation is
 // restorable here. Custom policies, host secret references and values stay blocked.
 pub(crate) fn default_github_network(network: &Value) -> bool {
-    let expected: Value = serde_json::from_str(include_str!("../guest/github-network-default.json"))
-        .expect("checked-in GitHub network defaults");
+    let expected: Value =
+        serde_json::from_str(include_str!("../guest/github-network-default.json"))
+            .expect("checked-in GitHub network defaults");
+    network == &expected
+}
+
+fn imported_deny_network(network: &Value) -> bool {
+    let mut expected: Value =
+        serde_json::from_str(include_str!("../guest/github-network-default.json"))
+            .expect("checked-in GitHub network defaults");
+    expected["policy"] = serde_json::json!({
+        "default_egress": "deny",
+        "default_ingress": "deny",
+        "rules": []
+    });
     network == &expected
 }
 
 fn supported_runtime_settings(config: &serde_json::Map<String, Value>) -> bool {
     // Preserve old VM backups so users can recover before migrating their account.
     if let Some(labels) = config.get("labels") {
-        let Some(labels) = labels.as_object() else { return false; };
-        if labels.get(crate::working_account::LABEL).is_some_and(|version| version.as_str() != Some("1")) { return false; }
+        let Some(labels) = labels.as_object() else {
+            return false;
+        };
+        if labels
+            .get(crate::working_account::LABEL)
+            .is_some_and(|version| version.as_str() != Some("1"))
+        {
+            return false;
+        }
     }
     let expected = [
         (
@@ -1584,7 +1615,7 @@ fn supported_runtime_settings(config: &serde_json::Map<String, Value>) -> bool {
     ];
     for (field, defaults) in expected {
         if let Some(value) = config.get(field) {
-            if field == "network" && default_github_network(value) {
+            if field == "network" && (default_github_network(value) || imported_deny_network(value)) {
                 continue;
             }
             let Some(fields) = value.as_object() else {
@@ -1643,9 +1674,9 @@ fn silo_disk_mounts_with_optional_tmpfs(
     let expected_size = (memory_mib / 4).clamp(1, 512);
     let disks = mounts
         .iter()
-        .filter(|mount| mount.get("type").and_then(Value::as_str) == Some("DiskImage"))
+        .filter(|mount| mount.get("type").and_then(Value::as_str) == Some("Owned"))
         .collect::<Vec<_>>();
-    if disks.len() != 1 || !disks.iter().all(|mount| valid_disk_image_mount(mount)) {
+    if disks.len() != 1 || !disks.iter().all(|mount| valid_owned_workspace_mount(mount)) {
         return false;
     }
     let tmpfs = mounts
@@ -1732,6 +1763,16 @@ fn valid_disk_image_mount(mount: &Value) -> bool {
         && options.get("readonly").and_then(Value::as_bool) == Some(false)
 }
 
+fn valid_owned_workspace_mount(mount: &Value) -> bool {
+    mount.get("type").and_then(Value::as_str) == Some("Owned")
+        && mount.get("guest").and_then(Value::as_str) == Some("/workspace")
+        && mount.pointer("/storage/kind").and_then(Value::as_str) == Some("disk")
+        && mount
+            .pointer("/storage/capacity_mib")
+            .and_then(Value::as_u64)
+            .is_some_and(|size| size > 0)
+}
+
 fn network_uses_host_files(network: &Value) -> bool {
     let Some(tls) = network.get("tls") else {
         return false;
@@ -1749,68 +1790,6 @@ fn network_uses_host_files(network: &Value) -> bool {
                     .iter()
                     .any(|key| ca.get(*key).is_some_and(|value| !value.is_null()))
             })
-}
-
-fn stage_volume(
-    source: &BackupVolumeSource,
-    stage: &Path,
-    sandbox_index: usize,
-    volume_index: usize,
-    cancellation: &Cancellation,
-) -> Result<StagedVolume, BackupError> {
-    check_cancelled(cancellation)?;
-    let metadata = fs::symlink_metadata(&source.source_path)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() == 0
-        || metadata.len() > source.capacity_bytes
-    {
-        return Err(BackupError::UnsupportedStorage(format!(
-            "The {} disk is not a valid Silo-owned disk image.",
-            source.role
-        )));
-    }
-    let captured = stage.join(format!("volume-{sandbox_index}-{volume_index}.raw.capture"));
-    clone_or_sparse_copy(&source.source_path, &captured, cancellation)?;
-    let captured_metadata = fs::symlink_metadata(&captured)?;
-    if !captured_metadata.is_file() || captured_metadata.len() != metadata.len() {
-        return Err(BackupError::InvalidArchive(format!(
-            "The {} disk capture is incomplete.",
-            source.role
-        )));
-    }
-    Ok(StagedVolume {
-        role: source.role.clone(),
-        mount_path: source.mount_path.clone(),
-        capacity_bytes: source.capacity_bytes,
-        logical_size_bytes: metadata.len(),
-        captured_path: captured,
-    })
-}
-
-fn finalize_volume(
-    staged: StagedVolume,
-    stage: &Path,
-    sandbox_index: usize,
-    volume_index: usize,
-    max_bytes: u64,
-    cancellation: &Cancellation,
-) -> Result<CapturedVolume, BackupError> {
-    let payload_path = stage.join(format!("volume-{sandbox_index}-{volume_index}.sparse"));
-    encode_sparse_file(&staged.captured_path, &payload_path, cancellation)?;
-    fs::remove_file(staged.captured_path)?;
-    let (payload_size, payload_sha256) = hash_regular_file(&payload_path, max_bytes, cancellation)?;
-    Ok(CapturedVolume {
-        manifest: PackageVolume {
-            role: staged.role,
-            mount_path: staged.mount_path,
-            capacity_bytes: staged.capacity_bytes,
-            logical_size_bytes: staged.logical_size_bytes,
-            payload_size,
-            payload_sha256,
-        },
-        payload_path,
-    })
 }
 
 fn clone_or_sparse_copy(
@@ -2284,7 +2263,9 @@ fn write_immutable_package(
             "Backup metadata exceeds the supported size.".into(),
         ));
     }
-    let prefix = token.map(|token| format!(".silo-backup-{token}-")).unwrap_or_else(|| ".silo-backup-".into());
+    let prefix = token
+        .map(|token| format!(".silo-backup-{token}-"))
+        .unwrap_or_else(|| ".silo-backup-".into());
     let mut temporary = tempfile::Builder::new()
         .prefix(&prefix)
         .tempfile_in(parent)?;
@@ -2359,42 +2340,6 @@ fn hash_regular_file(
     Ok((metadata.len(), format!("sha256:{:x}", hasher.finalize())))
 }
 
-fn snapshot_path_from_load(
-    output: &CommandOutput,
-    snapshots_dir: &Path,
-) -> Result<PathBuf, BackupError> {
-    let stdout_path = output.stdout.lines().rev().find_map(|line| {
-        let path = PathBuf::from(line.trim());
-        path.is_absolute().then_some(path)
-    });
-    if let Some(path) = stdout_path {
-        return Ok(path);
-    }
-    let entries = fs::read_dir(snapshots_dir)?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .map(|entry| entry.path())
-        .collect::<Vec<_>>();
-    match entries.as_slice() {
-        [path] => Ok(path.clone()),
-        _ => Err(BackupError::CommandFailed {
-            operation: "Loading VM snapshot".into(),
-            detail: "the bundled runtime did not identify one restored snapshot".into(),
-        }),
-    }
-}
-
-fn ensure_descendant(path: &Path, root: &Path) -> Result<(), BackupError> {
-    let root = fs::canonicalize(root)?;
-    let path = fs::canonicalize(path)?;
-    if !path.starts_with(&root) || path == root {
-        return Err(BackupError::InvalidArchive(
-            "the restored snapshot escaped its private staging directory".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn read_u32(reader: &mut impl Read) -> Result<u32, BackupError> {
     let mut bytes = [0_u8; 4];
     reader
@@ -2451,6 +2396,8 @@ mod tests {
         fail_start: AtomicBool,
         fail_running_verification: AtomicBool,
         fail_load: AtomicBool,
+        fail_save: AtomicBool,
+        invalid_import_head: AtomicBool,
         cancel_after_snapshot: AtomicBool,
     }
 
@@ -2475,30 +2422,34 @@ mod tests {
                 .collect::<Vec<_>>()
                 .as_slice()
             {
-                ["snapshot", "create", name, "--from", _, "--dest-dir", dest, "--integrity", "--quiet"] =>
+                ["snapshot", "create", _, "--from-sandbox", _, "--group", group, "--guest-flush", _, "--integrity", "--quiet"] =>
                 {
-                    let snapshot = Path::new(dest).join(name);
-                    fs::create_dir(&snapshot)?;
+                    let snapshot = command.home.join("snapshots").join(group).join("snap_00000000000000000000000000000000");
+                    fs::create_dir_all(&snapshot)?;
                     fs::write(snapshot.join("snapshot.json"), b"{}")?;
-                    fs::write(snapshot.join("upper.ext4"), b"disk")?;
                     if self.cancel_after_snapshot.load(Ordering::Acquire) {
                         cancellation.cancel();
                     }
                     Ok(success())
                 }
+                ["snapshot", "verify", _] => Ok(success()),
                 ["inspect", _, "--format", "json"] => Ok(CommandOutput {
                     status: ExitStatus::from_raw(0),
                     stdout: serde_json::json!({"status": if self.fail_running_verification.load(Ordering::Acquire) {"Stopped"} else {"Running"}}).to_string(),
                     stderr: String::new(),
                 }),
                 ["snapshot", "save", _, output, "--with-parents", "--with-image"] => {
+                    if self.fail_save.load(Ordering::Acquire) {
+                        return Ok(CommandOutput {
+                            status: ExitStatus::from_raw(1 << 8),
+                            stderr: "simulated archive write failure".into(),
+                            ..success()
+                        });
+                    }
                     fs::write(output, b"\x28\xb5\x2f\xfdself-contained snapshot")?;
                     Ok(success())
                 }
-                ["snapshot", "load", _, dest] => {
-                    let snapshot = Path::new(dest).join("loaded-snapshot");
-                    fs::create_dir(&snapshot)?;
-                    fs::write(snapshot.join("snapshot.json"), b"{}")?;
+                ["snapshot", "load", _, "--group", group] => {
                     if self.fail_load.load(Ordering::Acquire) {
                         fs::create_dir_all(
                             command.home.join("cache/tmp/snapshot-import-interrupted"),
@@ -2510,10 +2461,43 @@ mod tests {
                         });
                     }
                     Ok(CommandOutput {
-                        stdout: format!("sha256:fake\n{}\n", snapshot.display()),
+                        stdout: format!("sha256:fake\n{group}:imported-member\n"),
                         ..success()
                     })
                 }
+                ["snapshot", "list", "--format", "json"] => {
+                    let calls = self.calls.lock().unwrap();
+                    let mut entries = Vec::new();
+                    if let Some(create) = calls.iter().rev().find(|call| call.get(1).is_some_and(|part| part == "create")) {
+                        let group = &create[6];
+                        entries.push(serde_json::json!({
+                            "group": group,
+                            "name": create[2],
+                            "availability": "ready",
+                            "snapshot_id": "snap_00000000000000000000000000000000",
+                            "artifact_path": command.home.join("snapshots").join(group).join("snap_00000000000000000000000000000000")
+                        }));
+                    }
+                    if let Some(load) = calls.iter().rev().find(|call| call.get(1).is_some_and(|part| part == "load")) {
+                        entries.push(serde_json::json!({"group":load.last().unwrap(),"name":"imported-parent","availability":"ready","snapshot_id":"snap_00000000000000000000000000000000"}));
+                        entries.push(serde_json::json!({"group":load.last().unwrap(),"name":"imported-member","availability":"ready","snapshot_id":"snap_11111111111111111111111111111111"}));
+                    }
+                    Ok(CommandOutput {
+                        stdout: serde_json::to_string(&entries)?,
+                        ..success()
+                    })
+                }
+                ["snapshot", "head", group, "--format", "json"] => Ok(CommandOutput {
+                    stdout: serde_json::json!({
+                        "group": group,
+                        "head": if self.invalid_import_head.load(Ordering::Acquire) {
+                            "snap_22222222222222222222222222222222"
+                        } else {
+                            "snap_11111111111111111111111111111111"
+                        }
+                    }).to_string(),
+                    ..success()
+                }),
                 ["list", "--format", "json"] => {
                     let rows = self
                         .existing
@@ -2544,12 +2528,10 @@ mod tests {
             "image": {"Oci": {"reference": "alpine:3.20", "root_disk": {"kind": "managed", "size_mib": 81920}}},
             "mounts": [
                 {
-                    "type": "DiskImage",
-                    "host": "/app-owned/dev-workspace.raw",
+                    "type": "Owned",
                     "guest": "/workspace",
-                    "format": "Raw",
-                    "fstype": "ext4",
-                    "options": {"readonly": false, "noexec": false, "nosuid": false, "nodev": false, "override_uid": null, "override_gid": null}
+                    "storage": {"kind":"disk", "capacity_mib":61440},
+                    "options": {"readonly": false, "noexec": false, "nosuid": false, "nodev": false}
                 }
             ],
             "resources": {"cpus": 4, "max_cpus":6, "memory_mib": 16384, "max_memory_mib":32768}
@@ -2581,8 +2563,14 @@ mod tests {
         assert!(validate_machine_config("dev", &config).is_ok());
         config["desktop"] = serde_json::json!({"startWithSandbox":false});
         validate_machine_config("dev", &config).unwrap();
-        let decoded: crate::runtime::MachineConfiguration = serde_json::from_value(config.clone()).unwrap();
-        assert_eq!(crate::desktop::configuration(&decoded).unwrap().start_with_sandbox, false);
+        let decoded: crate::runtime::MachineConfiguration =
+            serde_json::from_value(config.clone()).unwrap();
+        assert_eq!(
+            crate::desktop::configuration(&decoded)
+                .unwrap()
+                .start_with_sandbox,
+            false
+        );
         assert_eq!(serde_json::to_value(decoded).unwrap(), config);
         config["desktop"]["password"] = serde_json::json!("unexpected");
         assert!(validate_machine_config("dev", &config).is_err());
@@ -2623,88 +2611,29 @@ mod tests {
         destination: PathBuf,
         running: bool,
     ) -> Result<BackupResult, BackupError> {
-        let volumes_root = service.scratch_root.parent().unwrap().join("owned-volumes");
-        fs::create_dir_all(&volumes_root).unwrap();
-        let workspace = volumes_root.join("dev-workspace.raw");
-        if !workspace.exists() {
-            let file = File::create(&workspace).unwrap();
-            file.set_len(60 * 1024 * 1024 * 1024).unwrap();
-            use std::os::unix::fs::FileExt;
-            file.write_all_at(b"workspace-data", 64 * 1024).unwrap();
-        }
-        let mut runtime_config = managed_config("dev");
-        runtime_config["mounts"][0]["host"] =
-            Value::String(workspace.to_string_lossy().into_owned());
+        create_one_in_group(service, destination, running, "dev")
+    }
+
+    fn create_one_in_group(
+        service: &BackupService<FakeRunner>,
+        destination: PathBuf,
+        running: bool,
+        snapshot_group: &str,
+    ) -> Result<BackupResult, BackupError> {
+        let runtime_config = managed_config("dev");
         service.create_backup(
             BackupRequest {
                 destination,
                 sources: vec![BackupSource {
                     name: "dev".into(),
+                    snapshot_group: snapshot_group.into(),
                     was_running: running,
                     runtime_config,
                     machine_config: machine_config("dev"),
-                    volumes: vec![BackupVolumeSource {
-                        role: "workspace".into(),
-                        mount_path: "/workspace".into(),
-                        source_path: workspace,
-                        capacity_bytes: 60 * 1024 * 1024 * 1024,
-                    }],
                 }],
             },
             &Cancellation::default(),
         )
-    }
-
-    #[test]
-    fn backup_restart_restores_ssh_before_returning_to_archive_work() {
-        use std::{net::{TcpListener, TcpStream}, os::unix::fs::PermissionsExt};
-        let _guard = crate::runtime::MUTATION_LOCK.lock().unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        let name = "backup-ssh-restart-test";
-        struct Cleanup;
-        impl Drop for Cleanup {
-            fn drop(&mut self) { crate::ssh_access::close_workspace("backup-ssh-restart-test"); }
-        }
-        let _cleanup = Cleanup;
-        let command = MsbCommand {
-            metadata: directory.path().join("machines.json"),
-            executable: directory.path().join("msb"),
-            home: directory.path().join("home"), storage_home: None,
-            library: directory.path().join("lib"),
-        };
-        fs::write(&command.library, "fixture").unwrap();
-        fs::write(&command.executable, r#"#!/usr/bin/python3
-import json, os, pathlib, socket, sys
-args = sys.argv[1:]
-home = pathlib.Path(os.environ['MSB_HOME'])
-if args[0] == '--silo-working-account-protocol':
-    print('1')
-elif args[0] == 'inspect':
-    config = {'labels': {'silo.managed': 'true', 'silo.working-account': '1', 'silo.machine-id': '2f6b739d-ff7a-4be8-aa5e-f6694e4ab0d8'}}
-    print(json.dumps({'name': args[1], 'status': 'Running' if (home/'started').exists() else 'Stopped', 'config': config, 'activeConfig': config}))
-elif args[0] == 'start':
-    (home/'started').touch()
-elif args[:2] == ['ssh', 'serve']:
-    listener = socket.socket()
-    listener.bind((args[args.index('--host')+1], int(args[args.index('--port')+1])))
-    listener.listen()
-    print('SILO_SSH_READY', flush=True)
-    sys.stdin.buffer.read()
-else:
-    raise Exception('Unexpected command: '+str(args))
-"#).unwrap();
-        fs::set_permissions(&command.executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let client_key = directory.path().join("client");
-        crate::editor::key(&client_key).unwrap();
-        let public = crate::editor::public_key(&client_key).unwrap();
-        let port = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
-        fs::write(&command.metadata, serde_json::json!({"schemaVersion":1,"machines":[machine_config(name)]}).to_string()).unwrap();
-        fs::write(directory.path().join("ssh-access.json"), serde_json::json!([{
-            "workspace":name,"machineId":"2f6b739d-ff7a-4be8-aa5e-f6694e4ab0d8",
-            "enabled":true,"port":port,"bindAddress":"127.0.0.1","keys":[public]
-        }]).to_string()).unwrap();
-        SystemMsbRunner.run(&command, &["start".into(), name.into()], Duration::from_secs(5), &Cancellation::default()).unwrap();
-        assert!(TcpStream::connect(("127.0.0.1", port)).is_ok(), "SSH must be back before backup continues to another VM or archive packaging");
     }
 
     #[test]
@@ -2716,10 +2645,25 @@ else:
         fs::create_dir(&home).unwrap();
         fs::write(&executable, b"#!/bin/sh\nprintf ready > \"$MSB_HOME/ready\"\nwhile [ ! -e \"$MSB_HOME/release\" ]; do sleep 0.02; done\n").unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let command = MsbCommand { metadata: directory.path().join("machines.json"), executable, home: home.clone(), storage_home: None, library: directory.path().join("unused-library") };
-        let worker = thread::spawn(move || SystemMsbRunner.run(&command, &["stop".into(), "example".into()], Duration::from_secs(5), &Cancellation::default()));
+        let command = MsbCommand {
+            metadata: directory.path().join("machines.json"),
+            executable,
+            home: home.clone(),
+            storage_home: None,
+            library: directory.path().join("unused-library"),
+        };
+        let worker = thread::spawn(move || {
+            SystemMsbRunner.run(
+                &command,
+                &["stop".into(), "example".into()],
+                Duration::from_secs(5),
+                &Cancellation::default(),
+            )
+        });
         let deadline = Instant::now() + Duration::from_secs(3);
-        while !home.join("ready").exists() && Instant::now() < deadline { thread::sleep(Duration::from_millis(10)); }
+        while !home.join("ready").exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
         let ready = home.join("ready").exists();
         let lock_result = wait_for_interrupted_command(&home, Duration::ZERO);
         fs::write(home.join("release"), b"release").unwrap();
@@ -2746,30 +2690,31 @@ else:
     }
 
     #[test]
-    fn backup_contract_requires_real_root_capacity_and_one_workspace_disk() {
+    fn backup_contract_requires_owned_workspace_snapshot_and_real_root_capacity() {
         let config = managed_config("dev");
         let machine = machine_config("dev");
-        let volume = PackageVolume {
-            role: "workspace".into(),
-            mount_path: "/workspace".into(),
-            capacity_bytes: 60 * 1024 * 1024 * 1024,
-            logical_size_bytes: 60 * 1024 * 1024 * 1024,
-            payload_size: 1,
-            payload_sha256: format!("sha256:{}", "0".repeat(64)),
-        };
-        assert!(validate_volume_contract(std::slice::from_ref(&volume), &config, &machine).is_ok());
+        assert!(validate_volume_contract(&[], &config, &machine).is_ok());
         let mut wrong_root = config.clone();
         wrong_root["image"]["Oci"]["root_disk"]["size_mib"] = Value::from(8192);
-        assert!(
-            validate_volume_contract(std::slice::from_ref(&volume), &wrong_root, &machine).is_err()
-        );
+        assert!(validate_volume_contract(&[], &wrong_root, &machine).is_err());
         let mut extra_disk = config;
         extra_disk["mounts"]
             .as_array_mut()
             .unwrap()
             .push(serde_json::json!({"type":"DiskImage", "guest":"/extra"}));
         assert!(validate_snapshottable_config("dev", &extra_disk).is_err());
-        assert!(validate_package_volumes(&[]).is_err());
+        assert!(validate_package_volumes(&[]).is_ok());
+        assert!(
+            validate_package_volumes(&[PackageVolume {
+                role: "workspace".into(),
+                mount_path: "/workspace".into(),
+                capacity_bytes: 1,
+                logical_size_bytes: 1,
+                payload_size: 1,
+                payload_sha256: format!("sha256:{}", "0".repeat(64)),
+            }])
+            .is_err()
+        );
     }
 
     #[test]
@@ -2818,53 +2763,104 @@ else:
         ));
         assert_eq!(fs::read(destination).unwrap(), first);
         let calls = service.runner.calls.lock().unwrap();
-        assert!(calls
-            .iter()
-            .any(|args| args.ends_with(&["--with-parents".into(), "--with-image".into()])));
+        assert!(
+            calls
+                .iter()
+                .any(|args| args.ends_with(&["--with-parents".into(), "--with-image".into()]))
+        );
     }
 
     #[test]
-    fn running_vm_restarts_after_capture_and_restart_failure_is_separate() {
+    fn running_vm_is_snapshotted_live_with_required_guest_flush() {
         let temp = tempfile::tempdir().unwrap();
         let runner = FakeRunner::default();
-        runner.fail_start.store(true, Ordering::Release);
         let service = service(&temp, runner);
         let result = create_one(&service, temp.path().join("dev.silo-backup"), true).unwrap();
-        assert_eq!(result.restart_failures.len(), 1);
+        assert!(result.restart_failures.is_empty());
         assert!(result.destination.is_file());
         let calls = service.runner.calls.lock().unwrap();
-        let stop = calls
-            .iter()
-            .position(|args| args.first().is_some_and(|arg| arg == "stop"))
-            .unwrap();
         let capture = calls
             .iter()
             .position(|args| args.get(1).is_some_and(|arg| arg == "create"))
-            .unwrap();
-        let restart = calls
-            .iter()
-            .position(|args| args.first().is_some_and(|arg| arg == "start"))
             .unwrap();
         let archive = calls
             .iter()
             .position(|args| args.get(1).is_some_and(|arg| arg == "save"))
             .unwrap();
-        assert!(stop < capture && capture < restart && restart < archive);
+        assert!(capture < archive);
+        assert!(
+            calls[capture]
+                .windows(2)
+                .any(|pair| pair[0] == "--guest-flush" && pair[1] == "required")
+        );
+        assert!(!calls.iter().any(|args| {
+            args.first()
+                .is_some_and(|arg| arg == "stop" || arg == "start")
+        }));
+    }
+
+    #[test]
+    fn backup_capture_uses_the_saved_lineage_group() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = service(&temp, FakeRunner::default());
+        let group = "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9";
+        create_one_in_group(&service, temp.path().join("dev.silo-backup"), false, group)
+            .unwrap();
+        let calls = service.runner.calls.lock().unwrap();
+        let capture = calls
+            .iter()
+            .find(|args| args.get(1).is_some_and(|arg| arg == "create"))
+            .unwrap();
+        assert!(capture.windows(2).any(|pair| pair == ["--group", group]));
+        assert!(!capture[6].starts_with("silo-export-"));
     }
 
     #[test]
     fn default_github_network_is_restorable_but_credentials_and_policy_changes_are_not() {
         let mut config = managed_config("dev");
-        config["network"] = serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
+        config["network"] =
+            serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
         assert!(validate_snapshottable_config("dev", &config).is_ok());
         let original = config.clone();
-        config["network"]["secrets"]["secrets"][0]["value"] = serde_json::json!("must-not-be-archived");
+        config["network"]["secrets"]["secrets"][0]["value"] =
+            serde_json::json!("must-not-be-archived");
         assert!(validate_snapshottable_config("dev", &config).is_err());
         config = original.clone();
         config["network"]["tls"]["verify_upstream"] = serde_json::json!(false);
         assert!(validate_snapshottable_config("dev", &config).is_err());
         config = original;
-        config["network"]["secrets"]["secrets"][0]["source"] = serde_json::json!({"kind":"file","path":"/private/secret"});
+        config["network"]["secrets"]["secrets"][0]["source"] =
+            serde_json::json!({"kind":"file","path":"/private/secret"});
+        assert!(validate_snapshottable_config("dev", &config).is_err());
+    }
+
+    #[test]
+    fn imported_deny_network_is_restorable_but_custom_rules_are_not() {
+        let mut config = managed_config("dev");
+        config["network"] =
+            serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
+        config["network"]["policy"] = serde_json::json!({
+            "default_egress": "deny",
+            "default_ingress": "deny",
+            "rules": []
+        });
+
+        assert!(validate_snapshottable_config("dev", &config).is_ok());
+
+        config["network"]["policy"]["rules"] = serde_json::json!([{
+            "action": "allow",
+            "destination": {"group": "public"},
+            "direction": "egress",
+            "ports": [],
+            "protocols": []
+        }]);
+        assert!(validate_snapshottable_config("dev", &config).is_err());
+
+        config["network"]["policy"] = serde_json::json!({
+            "default_egress": "allow",
+            "default_ingress": "deny",
+            "rules": []
+        });
         assert!(validate_snapshottable_config("dev", &config).is_err());
     }
 
@@ -2895,26 +2891,6 @@ else:
         let mut config = managed_config("dev");
         config["env"] = serde_json::json!([{"key":"GIT_AUTHOR_NAME", "value":"Silo Test"}]);
         assert!(validate_snapshottable_config("dev", &config).is_ok());
-    }
-
-    #[test]
-    fn successful_start_command_without_running_state_keeps_restart_failure() {
-        let temp = tempfile::tempdir().unwrap();
-        let runner = FakeRunner::default();
-        runner
-            .fail_running_verification
-            .store(true, Ordering::Release);
-        let result = create_one(
-            &service(&temp, runner),
-            temp.path().join("backup.silo-backup"),
-            true,
-        )
-        .unwrap();
-        assert_eq!(result.restart_failures.len(), 1);
-        assert!(result.restart_failures[0]
-            .detail
-            .contains("not reached Running"));
-        assert!(result.destination.is_file());
     }
 
     #[test]
@@ -2949,10 +2925,10 @@ else:
                     destination: destination.clone(),
                     sources: vec![BackupSource {
                         name: "dev".into(),
+                        snapshot_group: "dev".into(),
                         was_running: false,
                         runtime_config: managed_config("dev"),
                         machine_config: machine_config("dev"),
-                        volumes: Vec::new(),
                     }],
                 },
                 &cancellation,
@@ -2970,7 +2946,7 @@ else:
     }
 
     #[test]
-    fn cancellation_during_stopped_capture_restarts_the_vm() {
+    fn cancelled_capture_does_not_publish_an_archive_or_stop_the_source() {
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("dev.silo-backup");
         let runner = FakeRunner::default();
@@ -2981,13 +2957,58 @@ else:
             Err(BackupError::Cancelled)
         ));
         assert!(!destination.exists());
+        let captures = fs::read_dir(service.command.home.join("snapshots")).unwrap();
+        assert_eq!(captures.count(), 1, "captured ancestry must survive cancellation");
         let calls = service.runner.calls.lock().unwrap();
-        assert!(calls
-            .iter()
-            .any(|arguments| arguments.as_slice() == ["stop", "dev"]));
-        assert!(calls
-            .iter()
-            .any(|arguments| arguments.as_slice() == ["start", "dev"]));
+        assert!(!calls.iter().any(|arguments| {
+            arguments
+                .first()
+                .is_some_and(|arg| arg == "stop" || arg == "start")
+        }));
+    }
+
+    #[test]
+    fn failed_archive_keeps_native_capture_for_the_next_export() {
+        let temp = tempfile::tempdir().unwrap();
+        let runner = FakeRunner::default();
+        runner.fail_save.store(true, Ordering::Release);
+        let service = service(&temp, runner);
+        let first = temp.path().join("failed.silo-backup");
+        assert!(matches!(
+            create_one(&service, first.clone(), false),
+            Err(BackupError::CommandFailed { .. })
+        ));
+        assert!(!first.exists());
+        assert!(fs::read_dir(service.command.home.join("snapshots")).unwrap().count() > 0);
+        service.runner.fail_save.store(false, Ordering::Release);
+        create_one(&service, temp.path().join("retry.silo-backup"), false).unwrap();
+        let calls = service.runner.calls.lock().unwrap();
+        assert_eq!(calls.iter().filter(|args| args.get(1).is_some_and(|arg| arg == "create")).count(), 2);
+        assert!(!calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "remove")));
+        assert!(calls.iter().all(|args| !args.iter().any(|arg| arg == "--dest-dir")));
+    }
+
+    #[test]
+    fn growing_native_snapshot_index_is_complete_or_explicitly_rejected() {
+        let rows: Vec<_> = (0..600)
+            .map(|index| serde_json::json!({
+                "group": "linux-legacy-source",
+                "name": format!("checkpoint-{index}"),
+                "availability": "ready",
+                "artifact_path": format!("/runtime/snapshots/linux-legacy-source/snap_{index:032x}"),
+            }))
+            .collect();
+        let index = serde_json::to_vec(&rows).unwrap();
+        assert!(index.len() > MAX_COMMAND_OUTPUT);
+        let (complete, truncated) = read_output(index.as_slice(), MAX_SNAPSHOT_INDEX_OUTPUT, false).unwrap();
+        assert!(!truncated);
+        assert_eq!(serde_json::from_slice::<Vec<Value>>(&complete).unwrap().len(), rows.len());
+        let oversized = vec![b'x'; MAX_SNAPSHOT_INDEX_OUTPUT + 1];
+        let (_, truncated) = read_output(oversized.as_slice(), MAX_SNAPSHOT_INDEX_OUTPUT, false).unwrap();
+        assert!(truncated, "oversized structured output must fail before JSON parsing");
+        let (tail, truncated) = read_output(index.as_slice(), MAX_COMMAND_OUTPUT, true).unwrap();
+        assert!(truncated);
+        assert_eq!(tail.len(), MAX_COMMAND_OUTPUT);
     }
 
     #[test]
@@ -3013,6 +3034,26 @@ else:
         ));
     }
 
+    #[test]
+    fn previous_archive_generation_is_rejected_without_legacy_reader() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let service = service(&temp, FakeRunner::default());
+        create_one(&service, destination.clone(), false).unwrap();
+        let mut bytes = fs::read(&destination).unwrap();
+        bytes[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&2_u32.to_be_bytes());
+        let old = temp.path().join("old.silo-backup");
+        fs::write(&old, bytes).unwrap();
+        let error = service
+            .inspect_archive(&old, &Cancellation::default())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("format version 2 is not supported")
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_archive_is_rejected_without_following_it() {
@@ -3029,7 +3070,7 @@ else:
     }
 
     #[test]
-    fn restore_rejects_conflict_and_returns_verified_private_stage() {
+    fn restore_rejects_conflict_and_imports_a_verified_pending_snapshot() {
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("dev.silo-backup");
         let runner = FakeRunner::default();
@@ -3057,38 +3098,45 @@ else:
                 &Cancellation::default(),
             )
             .unwrap();
-        fs::remove_dir_all(temp.path().join("owned-volumes")).unwrap();
         assert_eq!(restored.source_name, "dev");
         assert_eq!(restored.new_name, "dev-restored");
         assert_eq!(restored.runtime_config["name"], "dev");
         assert_eq!(restored.machine_config["workspaceStorageGiB"], 60);
         assert_eq!(restored.machine_config["runtimeStorageGiB"], 80);
-        assert!(restored.snapshot_path.join("snapshot.json").is_file());
-        assert_eq!(restored.volumes.len(), 1);
-        let workspace = restored
-            .volumes
-            .iter()
-            .find(|volume| volume.role == "workspace")
-            .unwrap();
-        assert_eq!(workspace.mount_path, "/workspace");
-        assert_eq!(workspace.capacity_bytes, 60 * 1024 * 1024 * 1024);
-        assert_eq!(workspace.logical_size_bytes, 60 * 1024 * 1024 * 1024);
-        use std::os::unix::fs::FileExt;
-        let mut bytes = [0_u8; 14];
-        File::open(&workspace.disk_path)
-            .unwrap()
-            .read_exact_at(&mut bytes, 64 * 1024)
-            .unwrap();
-        assert_eq!(&bytes, b"workspace-data");
-        let stage_root = restored
-            .snapshot_path
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
+        assert!(restored.snapshot_group.starts_with("silo-import-"));
+        assert_eq!(restored.snapshot_member, "imported-member");
+        assert!(restored.volumes.is_empty());
+        let calls = service.runner.calls.lock().unwrap();
+        assert!(!calls.iter().any(|arguments| {
+            arguments
+                .first()
+                .is_some_and(|arg| arg == "restore" || arg == "start")
+        }));
+        drop(calls);
+        let stage_root = restored._stage.path().to_path_buf();
         drop(restored);
         assert!(!stage_root.exists());
+    }
+
+    #[test]
+    fn restore_rejects_an_import_head_absent_from_the_parent_chain() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let service = service(&temp, FakeRunner::default());
+        create_one(&service, destination.clone(), false).unwrap();
+        service.runner.invalid_import_head.store(true, Ordering::Release);
+        let result = service.prepare_restore(
+            RestoreRequest {
+                archive: destination,
+                source_name: None,
+                new_name: "dev-restored".into(),
+            },
+            &Cancellation::default(),
+        );
+        assert!(matches!(result, Err(BackupError::InvalidArchive(message)) if message.contains("head is not uniquely indexed")));
+        let calls = service.runner.calls.lock().unwrap();
+        assert!(!calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "verify")
+            && args.iter().any(|arg| arg.starts_with("silo-import-"))));
     }
 
     #[test]
@@ -3115,10 +3163,12 @@ else:
         let scratch = temp.path().join("scratch");
         assert!(fs::read_dir(scratch).unwrap().next().is_none());
         assert!(existing_cache_stage.is_dir());
-        assert!(!temp
-            .path()
-            .join("home/cache/tmp/snapshot-import-interrupted")
-            .exists());
+        assert!(
+            !temp
+                .path()
+                .join("home/cache/tmp/snapshot-import-interrupted")
+                .exists()
+        );
     }
 
     #[test]

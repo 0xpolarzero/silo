@@ -384,7 +384,8 @@ pub(crate) fn authorize_remote(paths: &RuntimePaths, name: &str, public: &str, p
     public_key(&host_key)
 }
 
-pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) -> Result<(String, PathBuf), String> {
+/// Prepare the pinned guest SSH identity without changing the user's SSH configuration.
+pub(crate) fn prepare_remote_private(app: &AppHandle, host: &str, vm: &str, path: &str) -> Result<(String, PathBuf), String> {
     validate_path(path)?;
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     uuid::Uuid::parse_str(vm).map_err(|_| "Invalid VM identity.")?;
@@ -405,6 +406,13 @@ pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) 
     let config = root.join(format!("{host}-{vm}.conf"));
     let contents = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, contents.as_bytes())?;
+    Ok((alias, config))
+}
+
+pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) -> Result<(String, PathBuf), String> {
+    let (alias, config) = prepare_remote_private(app, host, vm, path)?;
+    let root = config.parent().ok_or(FAILED)?;
+    let home = app.path().home_dir().map_err(|_| FAILED)?;
     let ssh_root = home.join(".ssh");
     private_directory(&ssh_root)?;
     let user_config = ssh_root.join("config");

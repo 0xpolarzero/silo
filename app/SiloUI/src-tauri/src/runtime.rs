@@ -1,6 +1,7 @@
 pub(crate) mod remote_ops;
 pub(crate) mod shutdown;
 pub(crate) mod storage;
+pub(crate) mod checkpoints;
 pub(crate) mod update_recovery;
 #[path = "guest_image.rs"]
 pub(crate) mod guest_image;
@@ -27,7 +28,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -42,6 +43,27 @@ const MAX_MACHINE_COUNT: usize = 64;
 const MANAGED_LABEL: &str = "silo.managed=true";
 
 pub(crate) static MUTATION_LOCK: Mutex<()> = Mutex::new(());
+const LIFECYCLE_LOCK_WAIT: Duration = Duration::from_secs(5);
+
+fn acquire_lifecycle_lock<'a>(
+    lock: &'a Mutex<()>,
+    timeout: Duration,
+) -> Result<MutexGuard<'a, ()>, RuntimeError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match lock.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(RuntimeError::Busy),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(RuntimeError::Busy);
+                }
+                thread::sleep(remaining.min(Duration::from_millis(25)));
+            }
+        }
+    }
+}
 const DISABLED_GITHUB_PROFILE: &str = r#"{"version":1,"owners":[]}"#;
 static GITHUB_PROFILES: OnceLock<Mutex<HashMap<(PathBuf, String), String>>> = OnceLock::new();
 type GithubRevisionLocks = HashMap<(PathBuf, String), Arc<Mutex<u64>>>;
@@ -71,11 +93,17 @@ fn github_command_workspace(args: &[String]) -> Option<&str> {
             .get(1)
             .map(String::as_str)
             .filter(|name| validate_name(name).is_ok()),
+        Some("restore") => args.windows(2)
+            .find(|pair| pair[0] == "--name")
+            .map(|pair| pair[1].as_str())
+            .filter(|name| validate_name(name).is_ok()),
         _ => None,
     }
 }
 
 pub(crate) fn github_environment(paths: &RuntimePaths, args: &[String]) -> String {
+    // Restore uses the profile keyed to the new target workspace. Historical
+    // checkpoint state never supplies host-side GitHub authority.
     let Some(workspace) = github_command_workspace(args) else {
         return DISABLED_GITHUB_PROFILE.into();
     };
@@ -249,6 +277,12 @@ struct ApplicationWorkspace {
     logs: Vec<Value>,
     github_repositories: Vec<String>,
     secret_names: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    checkpoints: Vec<checkpoints::Checkpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_checkpoint_restore: Option<checkpoints::PendingRestore>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checkpoint_operation: Option<checkpoints::Operation>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -340,8 +374,12 @@ pub(crate) fn runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
         .path()
         .resource_dir()
         .map_err(|error| format!("Silo could not locate its bundled resources: {error}"))?;
-    let library = bundled_runtime_library(&executable, &resource_dir);
-    let storage = app_data.join("runtime");
+    let library = bundled_runtime_library(
+        &executable,
+        &resource_dir,
+        tauri::utils::platform::bundle_type(),
+    );
+    let storage = crate::runtime_migration::selected_runtime_storage(&app_data)?;
     let storage_home = storage.join("microsandbox");
     let user_home = app.path().home_dir().map_err(|error| error.to_string())?;
     let home = runtime_home_alias(&user_home, &storage_home);
@@ -356,7 +394,11 @@ pub(crate) fn runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
     })
 }
 
-fn bundled_runtime_library(executable: &Path, resource_dir: &Path) -> PathBuf {
+pub(crate) fn bundled_runtime_library(
+    executable: &Path,
+    resource_dir: &Path,
+    _bundle: Option<tauri::utils::config::BundleType>,
+) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         let _ = resource_dir;
@@ -368,7 +410,12 @@ fn bundled_runtime_library(executable: &Path, resource_dir: &Path) -> PathBuf {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = executable;
+        if crate::bundled_tools::is_packaged_linux(_bundle) {
+            return executable
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .join("libkrunfw.so.5.6.1");
+        }
         let target = match std::env::consts::ARCH {
             "aarch64" => "aarch64-unknown-linux-gnu",
             "x86_64" => "x86_64-unknown-linux-gnu",
@@ -381,7 +428,7 @@ fn bundled_runtime_library(executable: &Path, resource_dir: &Path) -> PathBuf {
     }
 }
 
-fn runtime_home_alias(user_home: &Path, storage_home: &Path) -> PathBuf {
+pub(crate) fn runtime_home_alias(user_home: &Path, storage_home: &Path) -> PathBuf {
     let digest = Sha256::digest(storage_home.as_os_str().as_encoded_bytes());
     user_home
         .join(".silo")
@@ -540,6 +587,16 @@ pub(crate) fn run_msb(
     args: &[String],
     timeout: Duration,
 ) -> Result<CommandOutput, RuntimeError> {
+    if matches!(args.first().map(String::as_str), Some("start" | "restart" | "exec")) {
+        if let Some(name) = args.get(1) {
+            if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
+                .find(|machine| machine.is_vm() && machine.name() == name) {
+                if checkpoints::needs_explicit_start(paths, machine.id())? {
+                    return Err(RuntimeError::Invalid("This stopped fork requires an explicit Start before other workspace actions.".into()));
+                }
+            }
+        }
+    }
     run_msb_with_progress(paths, args, timeout, &|_| {})
 }
 
@@ -668,7 +725,7 @@ fn run_msb_process(
     let stderr_file = tempfile::NamedTempFile::new().map_err(|error| {
         RuntimeError::Unavailable(format!("Silo could not capture runtime errors: {error}"))
     })?;
-    let worker_lock = if args.first().is_some_and(|command| matches!(command.as_str(), "create" | "modify" | "remove" | "stop")) {
+    let mut worker_lock = if args.first().is_some_and(|command| matches!(command.as_str(), "create" | "modify" | "remove" | "stop" | "restore" | "adopt-disk")) {
         Some(configuration_recovery::command_lock(paths, timeout)?)
     } else { None };
     let mut command = Command::new(&paths.executable);
@@ -702,6 +759,11 @@ fn run_msb_process(
         .map_err(|error| {
             RuntimeError::Unavailable(format!("Silo could not start its bundled runtime: {error}"))
         })?;
+    // Spawn succeeded with pre_exec clearing close-on-exec for this lock only.
+    // A surviving child must keep the flock if Silo exits before it does.
+    if let Some(lock) = worker_lock.as_mut() {
+        lock.mark_inherited_by_child();
+    }
     let deadline = Instant::now() + timeout;
     let mut progress_offset = 0;
     let mut progress_pending = String::new();
@@ -764,7 +826,9 @@ fn run_msb_process(
                 > MAX_OUTPUT_BYTES
         {
             let _ = child.kill();
-            let _ = child.wait();
+            if child.wait().is_ok() {
+                if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
+            }
             return Err(RuntimeError::Failed {
                 operation: operation_name(args),
                 detail: "the runtime returned too much output".into(),
@@ -781,14 +845,18 @@ fn run_msb_process(
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
             Ok(None) => {
                 let _ = child.kill();
-                let _ = child.wait();
+                if child.wait().is_ok() {
+                    if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
+                }
                 return Err(RuntimeError::TimedOut {
                     operation: operation_name(args),
                 });
             }
             Err(error) => {
                 let _ = child.kill();
-                let _ = child.wait();
+                if child.wait().is_ok() {
+                    if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
+                }
                 return Err(RuntimeError::Failed {
                     operation: operation_name(args),
                     detail: format!("the process could not be observed: {error}"),
@@ -796,6 +864,7 @@ fn run_msb_process(
             }
         }
     };
+    if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
     let stdout = read_capture(stdout_file.into_file())?;
     let stderr = read_capture(stderr_file.into_file())?;
     if !status.success() {
@@ -1373,7 +1442,7 @@ pub(crate) fn apply_github_policy(
             "modify",
             workspace,
             "--secret",
-            "SILO_GITHUB@github.com,api.github.com,uploads.github.com",
+            secrets_runtime::SILO_GITHUB_SECRET_SPEC,
             "--format",
             "json",
         ])
@@ -1442,6 +1511,7 @@ pub async fn read_machine_configuration(
 
 #[tauri::command]
 pub async fn read_application_state(app: AppHandle, refresh_repositories: Option<bool>) -> Result<ApplicationSource, String> {
+    crate::runtime_migration::ensure_ready(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         let mut source = read_application_snapshot(&ProcessRunner, &paths, &MUTATION_LOCK)?;
@@ -1626,6 +1696,7 @@ pub async fn workspace_action(
     name: String,
     path: Option<String>,
 ) -> Result<ApplicationSource, String> {
+    crate::runtime_migration::ensure_ready(&app)?;
     if matches!(action.as_str(), "open-editor" | "open-terminal") {
         shutdown::ensure_accepting_operations()?;
         return tauri::async_runtime::spawn_blocking(move || {
@@ -1641,13 +1712,22 @@ pub async fn workspace_action(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let app = worker_app;
         let paths = runtime_paths(&app)?;
-        let guard = MUTATION_LOCK
-            .try_lock()
-            .map_err(|_| RuntimeError::Busy.to_string())?;
+        let guard = acquire_lifecycle_lock(&MUTATION_LOCK, LIFECYCLE_LOCK_WAIT)
+            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let _ = app.emit("silo://application-state-changed", ());
         let result = host_resources()
             .and_then(|resources| {
+                if action == "start" {
+                    if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
+                        .find(|machine| machine.is_vm() && machine.name() == name) {
+                        if checkpoints::needs_explicit_start(&paths, machine.id())? {
+                            checkpoints::start_pending(&ProcessRunner, &paths, &machine)?;
+                            crate::github::workspace_restored();
+                            return Ok(());
+                        }
+                    }
+                }
                 workspace_action_with(&ProcessRunner, &paths, &resources, &action, &name)
             });
         let _ = app.emit("silo://application-state-changed", ());
@@ -2072,6 +2152,7 @@ pub async fn save_machine_configuration(
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
+    crate::runtime_migration::ensure_ready(&app)?;
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     if request_id.trim().is_empty() || request_id.len() > 256 {
         return Err("Invalid sandbox configuration request ID.".into());
@@ -2179,13 +2260,13 @@ fn read_application_state_with(
     let listed = if metadata.machines.iter().any(MachineConfiguration::is_vm) {
         list_managed(runner, paths)?
     } else { Vec::new() };
-    let configured_names: HashSet<&str> = metadata
-        .machines
-        .iter()
-        .filter(|machine| machine.is_vm())
-        .map(MachineConfiguration::name)
-        .collect();
     let listed_names: HashSet<&str> = listed.iter().map(|entry| entry.name.as_str()).collect();
+    let mut configured_names = HashSet::new();
+    for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
+        if !checkpoints::pending_view(paths, machine.id(), listed_names.contains(machine.name()))? {
+            configured_names.insert(machine.name());
+        }
+    }
     if configured_names != listed_names {
         return Err(RuntimeError::Malformed(
             "Silo's saved sandbox configuration does not match its managed runtime state. No sandbox operation was performed.".into(),
@@ -2196,6 +2277,10 @@ fn read_application_state_with(
     for machine in metadata.machines {
         match &machine {
             MachineConfiguration::Vm { name, .. } => {
+                if checkpoints::pending_view(paths, machine.id(), listed_names.contains(name.as_str()))? {
+                    workspaces.push(checkpoints::pending_workspace(machine)?);
+                    continue;
+                }
                 let inspected = inspect_workspace(runner, paths, name)?;
                 ensure_managed(&inspected)?;
                 workspaces.push(vm_workspace(paths, machine, &inspected));
@@ -2219,6 +2304,9 @@ fn read_application_state_with(
                 logs: Vec::new(),
                 github_repositories: Vec::new(),
                 secret_names: Vec::new(),
+                checkpoints: Vec::new(),
+                pending_checkpoint_restore: None,
+                checkpoint_operation: None,
             }),
         }
     }
@@ -2232,6 +2320,17 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
     for workspace in &mut workspaces {
         if workspace.machine.is_vm() {
             workspace.lifecycle_failure = failures.remove(workspace.machine.id());
+            let checkpoint = checkpoints::load(paths, workspace.machine.id())?;
+            workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
+            workspace.checkpoints = checkpoint.checkpoints;
+            workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|mut operation| {
+                if operation.status == "running" {
+                    operation.status = "failed".into();
+                    operation.stage = "Interrupted operation".into();
+                    operation.error = Some("Silo closed during this operation. Retry to reconcile its saved checkpoint.".into());
+                }
+                operation
+            });
         }
         workspace.secret_names = secrets.iter().filter(|secret| secret["removing"] != true && secret["workspaces"].as_array().is_some_and(|names| names.iter().any(|name| name.as_str() == Some(workspace.machine.name()))))
             .filter_map(|secret| secret["name"].as_str().map(str::to_owned)).collect();
@@ -2390,11 +2489,14 @@ fn vm_workspace(
         logs: Vec::new(),
         github_repositories: Vec::new(),
         secret_names: Vec::new(),
+        checkpoints: Vec::new(),
+        pending_checkpoint_restore: None,
+        checkpoint_operation: None,
     }
 }
 
 fn configuration_attention(
-    paths: &RuntimePaths,
+    _paths: &RuntimePaths,
     machine: &MachineConfiguration,
     inspected: &InspectedSandbox,
 ) -> Option<WorkspaceAttention> {
@@ -2438,25 +2540,21 @@ fn configuration_attention(
             .pointer("/image/Oci/root_disk/size_mib")
             .and_then(Value::as_u64),
     );
-    let expected_mounts = [(
-        disk_path(paths, machine.name(), "workspace"),
-        WORKSPACE_MOUNT,
-    )];
+    let workspace_storage_gib = match machine {
+        MachineConfiguration::Vm { workspace_storage_gib, .. } => *workspace_storage_gib,
+        _ => return None,
+    };
     let mounts_match = inspected
         .config
         .get("mounts")
         .and_then(Value::as_array)
         .is_some_and(|mounts| {
-            expected_mounts
-                .iter()
-                .all(|(expected_path, expected_guest)| {
-                    mounts.iter().any(|mount| {
-                        mount.get("type").and_then(Value::as_str) == Some("DiskImage")
-                            && mount.get("host").and_then(Value::as_str) == expected_path.to_str()
-                            && mount.get("guest").and_then(Value::as_str) == Some(*expected_guest)
-                            && mount.get("format").and_then(Value::as_str) == Some("Raw")
-                            && mount.get("fstype").and_then(Value::as_str) == Some("ext4")
-                    })
+            mounts.iter().filter(|mount| mount["guest"] == WORKSPACE_MOUNT).count() == 1
+                && mounts.iter().any(|mount| {
+                    mount["guest"] == WORKSPACE_MOUNT && mount["type"] == "Owned"
+                        && mount.pointer("/storage/kind").and_then(Value::as_str) == Some("disk")
+                        && mount.pointer("/storage/capacity_mib").and_then(Value::as_u64)
+                            == Some(u64::from(workspace_storage_gib) * 1024)
                 })
         });
     if mounts_match
@@ -2507,6 +2605,9 @@ fn start_at_launch_with(
             "{name} is a remote SSH sandbox. Automatic remote startup is unavailable."
         )));
     }
+    if checkpoints::needs_explicit_start(paths, machine.id())? {
+        return Ok(());
+    }
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
         ensure_managed(&inspected)?;
@@ -2532,6 +2633,14 @@ fn workspace_action_with(
     action: &str,
     name: &str,
 ) -> Result<(), RuntimeError> {
+    if matches!(action, "start" | "stop" | "restart") {
+        if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
+            .find(|machine| machine.is_vm() && machine.name() == name) {
+            if checkpoints::needs_explicit_start(paths, machine.id())? {
+                return Err(RuntimeError::Invalid("This fork needs its first explicit Start from the workspace view.".into()));
+            }
+        }
+    }
     if action == "dismiss-error" {
         return crash_acknowledgement::dismiss(runner, paths, name);
     }
@@ -2647,6 +2756,7 @@ fn save_machine_configuration_with_progress(
             lifecycle_recovery::forget_removed(paths, machine)?;
             crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             remove_machine_volumes(paths, machine)?;
+            checkpoints::forget_removed(paths, machine.id())?;
             progress("workspace-removal", machine.name(), 1);
         }
         write_metadata(&paths.metadata, &request)?;
@@ -2753,10 +2863,8 @@ fn create_machine_with_progress(
     else {
         return Ok(());
     };
-    let workspace_volume = disk_path(paths, name, "workspace");
     configuration_recovery::claim(paths, machine)?;
     progress("workspace-disk-preparation", name, 0);
-    create_disk_volume(&workspace_volume, *workspace_storage_gib)?;
     let preflight = (|| {
         let listed = runner.run(
             paths,
@@ -2787,16 +2895,9 @@ fn create_machine_with_progress(
         }
         Ok(())
     })();
-    if let Err(error) = preflight {
-        return Err(with_cleanup_error(
-            error,
-            remove_disk_path(&workspace_volume),
-        ));
-    }
+    preflight?;
     progress("workspace-image-preparation", name, 0);
-    let image = runner
-        .prepare_guest_image(paths)
-        .map_err(|error| with_cleanup_error(error, remove_disk_path(&workspace_volume)))?;
+    let image = runner.prepare_guest_image(paths)?;
     let args = vec![
         "create".into(),
         image,
@@ -2814,11 +2915,8 @@ fn create_machine_with_progress(
         format!("{max_memory_gib}G"),
         "--root-disk".into(),
         format!("{runtime_storage_gib}G"),
-        "--mount-disk".into(),
-        format!(
-            "{}:{WORKSPACE_MOUNT}:format=raw,fstype=ext4",
-            workspace_volume.display()
-        ),
+        "--mount-owned".into(),
+        format!("{WORKSPACE_MOUNT}:kind=disk,size={workspace_storage_gib}G"),
         "--label".into(),
         MANAGED_LABEL.into(),
         "--label".into(),
@@ -2830,7 +2928,7 @@ fn create_machine_with_progress(
         "--label".into(),
         format!("silo.runtime-storage-gib={runtime_storage_gib}"),
         "--secret".into(),
-        "SILO_GITHUB@github.com,api.github.com,uploads.github.com".into(),
+        secrets_runtime::SILO_GITHUB_SECRET_SPEC.into(),
         "--env".into(),
         "GH_TOKEN=$MSB_SILO_GITHUB".into(),
         "--label".into(),
@@ -3074,7 +3172,7 @@ fn update_machine(
     }
     if previous.name() != machine.name() {
         return Err(RuntimeError::Invalid(format!(
-            "Bundled MicroSandbox 0.6.17 cannot rename persistent sandbox '{}'. Keep its current name or create a new sandbox.",
+            "Bundled MicroSandbox 0.7.2 cannot rename persistent sandbox '{}'. Keep its current name or create a new sandbox.",
             previous.name()
         )));
     }
@@ -3175,6 +3273,7 @@ fn preflight_removal(
     let MachineConfiguration::Vm { name, .. } = machine else {
         return Ok(());
     };
+    if checkpoints::is_pending(paths, machine.id())? { return Ok(()); }
     let inspected = inspect_workspace(runner, paths, name)?;
     ensure_managed(&inspected)?;
     if inspected.name != *name || inspected.config.pointer("/labels/silo.machine-id").and_then(Value::as_str) != Some(machine.id()) {
@@ -3197,6 +3296,7 @@ fn remove_machine_runtime(
         return Ok(());
     };
     preflight_removal(runner, paths, machine)?;
+    if checkpoints::is_pending(paths, machine.id())? { return Ok(()); }
     runner.run(
         paths,
         &["remove".into(), "--quiet".into(), name.clone()],
@@ -3379,6 +3479,29 @@ pub(crate) fn write_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lifecycle_lock_waits_for_brief_contention_but_preserves_busy_for_sustained_work() {
+        let lock = Arc::new(Mutex::new(()));
+        let held = lock.lock().unwrap();
+        let worker_lock = Arc::clone(&lock);
+        let (ready, started) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            ready.send(()).unwrap();
+            acquire_lifecycle_lock(&worker_lock, Duration::from_millis(500)).is_ok()
+        });
+        started.recv().unwrap();
+        thread::sleep(Duration::from_millis(50));
+        drop(held);
+        assert!(worker.join().unwrap());
+
+        let held = lock.lock().unwrap();
+        assert!(matches!(
+            acquire_lifecycle_lock(&lock, Duration::from_millis(30)),
+            Err(RuntimeError::Busy)
+        ));
+        drop(held);
+    }
 
     struct StubRunner {
         outputs: Mutex<VecDeque<Result<CommandOutput, RuntimeError>>>,
@@ -3622,18 +3745,32 @@ esac
         cache
             .lock()
             .unwrap()
-            .insert((paths.home.clone(), "dev".into()), "dev-profile".into());
+            .insert((paths.home.clone(), "dev".into()), "source-write-profile".into());
         cache
             .lock()
             .unwrap()
             .insert((paths.home.clone(), "other".into()), "other-profile".into());
+        cache
+            .lock()
+            .unwrap()
+            .insert((paths.home.clone(), "fork".into()), "fork-read-only-profile".into());
+        // Restore selects the fork's current host-side policy, never the
+        // source VM's cached profile or a token captured in checkpoint RAM.
+        assert_eq!(
+            github_environment(&paths, &["restore".into(), "dev:c000000000000000000000000000000".into(), "--name".into(), "fork".into()]),
+            "fork-read-only-profile"
+        );
+        assert_eq!(
+            github_environment(&paths, &["restore".into(), "dev:c000000000000000000000000000000".into(), "--name".into(), "unassigned-fork".into()]),
+            DISABLED_GITHUB_PROFILE
+        );
         for action in ["start", "restart"] {
             let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null), inspect(&paths, "Running")]);
             workspace_action_with(&runner, &paths, &generous_host(), action, "dev").unwrap();
             let calls = runner.calls.lock().unwrap();
             let command = &calls[1];
             assert_eq!(github_command_workspace(command), Some("dev"));
-            assert_eq!(github_environment(&paths, command), "dev-profile");
+            assert_eq!(github_environment(&paths, command), "source-write-profile");
             assert_eq!(github_environment(&other, command), DISABLED_GITHUB_PROFILE);
         }
         cache
@@ -3929,8 +4066,7 @@ esac
         }
     }
 
-    fn inspect(paths: &RuntimePaths, status: &str) -> Value {
-        let workspace = disk_path(paths, "dev", "workspace");
+    fn inspect(_paths: &RuntimePaths, status: &str) -> Value {
         json!({
             "name": "dev",
             "status": status,
@@ -3939,13 +4075,18 @@ esac
                 "image": {"Oci": {"reference": "ubuntu", "root_disk": {"kind": "managed", "size_mib": 81920}}},
                 "resources": {"cpus": 4, "max_cpus": 6, "memory_mib": 16384, "max_memory_mib": 32768},
                 "labels": {"silo.managed": "true", "silo.working-account": "1", "silo.machine-id": vm().id()},
-                "mounts": [
-                    {"type":"DiskImage","host":workspace,"guest":"/workspace","format":"Raw","fstype":"ext4"}
-                ]
+                "mounts": [{
+                    "type":"Owned", "guest":WORKSPACE_MOUNT,
+                    "storage":{"kind":"disk","capacity_mib":61440}
+                }]
             },
             "active_config": null,
             "pending_changes": []
         })
+    }
+
+    fn inspect_owned_workspace(paths: &RuntimePaths, status: &str) -> Value {
+        inspect(paths, status)
     }
 
     #[test]
@@ -4077,6 +4218,48 @@ esac
             assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
             assert!(runner.0.calls.lock().unwrap().iter().any(|args| args[0] == "exec"));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_lock_is_released_after_failed_spawn_and_completed_child() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut paths = paths(&directory);
+        fs::write(&paths.library, b"test library").unwrap();
+        let command = ["create".to_string()];
+        fs::write(&paths.executable, b"not executable").unwrap();
+        assert!(run_msb_process(&paths, &command, Duration::from_secs(5), &|_| {}).is_err());
+        drop(configuration_recovery::command_lock(&paths, Duration::ZERO).unwrap());
+
+        paths.executable = "/usr/bin/true".into();
+        run_msb_process(&paths, &command, Duration::from_secs(5), &|_| {}).unwrap();
+        drop(configuration_recovery::command_lock(&paths, Duration::ZERO).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_lock_remains_held_while_runtime_child_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::write(&paths.library, b"test library").unwrap();
+        fs::create_dir_all(&paths.home).unwrap();
+        for name in ["ready", "release"] {
+            let fifo = std::ffi::CString::new(paths.home.join(name).to_str().unwrap()).unwrap();
+            // SAFETY: fifo is a valid NUL-terminated path in this test directory.
+            assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        }
+        fs::write(&paths.executable, b"#!/bin/sh\nprintf x > \"$MSB_HOME/ready\"\nread line < \"$MSB_HOME/release\"\n").unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let worker_paths = paths.clone();
+        let worker = thread::spawn(move || {
+            run_msb_process(&worker_paths, &["create".into()], Duration::from_secs(5), &|_| {})
+        });
+        let _ready = File::open(paths.home.join("ready")).unwrap();
+        assert!(configuration_recovery::command_lock(&paths, Duration::ZERO).is_err());
+        fs::write(paths.home.join("release"), b"done\n").unwrap();
+        worker.join().unwrap().unwrap();
+        drop(configuration_recovery::command_lock(&paths, Duration::ZERO).unwrap());
     }
 
     #[test]
@@ -4225,9 +4408,9 @@ esac
             json!(1),
             json!(1),
             json!(null),
-            inspect(&paths, "Created"),
+            inspect_owned_workspace(&paths, "Created"),
             json!(null),
-            inspect(&paths, "Stopped"),
+            inspect_owned_workspace(&paths, "Stopped"),
         ]);
 
         create_machine(&runner, &paths, &vm()).unwrap();
@@ -4240,24 +4423,14 @@ esac
         assert!(calls[3]
             .windows(2)
             .any(|pair| pair == ["--root-disk", "80G"]));
-        let workspace = disk_path(&paths, "dev", "workspace");
-        assert_eq!(
-            fs::metadata(&workspace).unwrap().len(),
-            60 * 1024 * 1024 * 1024
-        );
         assert!(!disk_path(&paths, "dev", "runtime").exists());
-        assert!(calls[3].windows(2).any(|pair| {
-            pair[0] == "--mount-disk"
-                && pair[1]
-                    == format!(
-                        "{}:{WORKSPACE_MOUNT}:format=raw,fstype=ext4",
-                        workspace.display()
-                    )
-        }));
-        assert_eq!(
-            calls[3].iter().filter(|arg| *arg == "--mount-disk").count(),
-            1
-        );
+        assert!(calls[3].windows(2).any(|pair| pair == [
+            "--mount-owned", "/workspace:kind=disk,size=60G"
+        ]));
+        assert!(calls[3].windows(2).any(|pair| pair == [
+            "--secret", secrets_runtime::SILO_GITHUB_SECRET_SPEC
+        ]));
+        assert!(!calls[3].iter().any(|arg| arg == "--mount-disk"));
         assert!(calls[3]
             .windows(2)
             .any(|pair| pair == ["--label", MANAGED_LABEL]));
@@ -4342,22 +4515,6 @@ esac
         assert!(create_machine(&runner, &paths, &vm()).is_err());
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
         assert!(!disk_path(&paths, "dev", "workspace").exists());
-    }
-
-    #[test]
-    fn create_never_replaces_a_preexisting_owned_disk_path() {
-        let directory = tempfile::tempdir().unwrap();
-        let paths = paths(&directory);
-        let workspace = disk_path(&paths, "dev", "workspace");
-        fs::create_dir_all(workspace.parent().unwrap()).unwrap();
-        fs::write(&workspace, b"existing-user-data").unwrap();
-        let runner = StubRunner::new(Vec::new());
-
-        let error = create_machine(&runner, &paths, &vm()).unwrap_err();
-
-        assert!(error.to_string().contains("already exists"));
-        assert_eq!(fs::read(workspace).unwrap(), b"existing-user-data");
-        assert!(runner.calls.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -4938,7 +5095,7 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("Silo.app/Contents/MacOS/msb");
         let resource_dir = directory.path().join("Silo.app/Contents/Resources");
-        let library = bundled_runtime_library(&executable, &resource_dir);
+        let library = bundled_runtime_library(&executable, &resource_dir, Some(tauri::utils::config::BundleType::App));
         assert!(!library.exists());
         #[cfg(target_os = "macos")]
         assert_eq!(
@@ -4946,6 +5103,15 @@ esac
             directory
                 .path()
                 .join("Silo.app/Contents/Frameworks/libkrunfw.5.dylib")
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            bundled_runtime_library(
+                Path::new("/usr/bin/silo-ui"),
+                &resource_dir,
+                Some(tauri::utils::config::BundleType::Deb),
+            ),
+            Path::new("/usr/libexec/silo/tools/libkrunfw.so.5.6.1")
         );
         let paths = RuntimePaths {
             guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -5078,7 +5244,6 @@ esac
             other_inspect["name"] = json!("work");
             other_inspect["config"]["name"] = json!("work");
             other_inspect["config"]["labels"]["silo.machine-id"] = json!(other.id());
-            other_inspect["config"]["mounts"][0]["host"] = json!(disk_path(&paths, "work", "workspace"));
             let previous = if removing { request(vec![vm(), other.clone()]) } else { request(vec![vm()]) };
             let requested = if removing { request(vec![vm()]) } else { request(vec![vm(), other]) };
             write_metadata(&paths.metadata, &previous).unwrap();

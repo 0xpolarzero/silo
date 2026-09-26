@@ -8,6 +8,7 @@ import { stageLfsTransferRuntime } from "./lfs-transfer-runtime.mjs"
 import { stageGitRuntime } from "./git-runtime.mjs"
 import { preflight } from "./preflight.mjs"
 import { stageGuestImage } from "./guest-image.mjs"
+import { stageLinuxPackageTools } from "./linux-package-tools.mjs"
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 preflight(appRoot)
@@ -54,3 +55,8 @@ console.log(`Prepared bundled guest ${guest.imageReference}`)
 // Signed package metadata lets publication verify version and target without running it.
 const { version } = JSON.parse(readFileSync(resolve(appRoot, "package.json"), "utf8"))
 writeFileSync(resolve(appRoot, "src-tauri/runtime/release-info.json"), JSON.stringify({ version, target: targetTriple }) + "\n")
+
+if (targetTriple.endsWith("-unknown-linux-gnu")) {
+  const packageTools = await stageLinuxPackageTools({ appRoot, targetTriple })
+  console.log(`Prepared Linux package tools ${packageTools.targetTriple}`)
+}

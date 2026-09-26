@@ -37,7 +37,7 @@ Start the VM in Silo afterward and check your agent authentication, project file
 
 ## Recover files from a backup
 
-A failed migration leaves the VM without the new host label. Do not set that label by hand. The backup contains `root/` (a MicroSandbox snapshot), `workspace.raw`, the pre-migration `inspect.json`, and `workspace-source.txt`.
+A failed migration leaves the VM without the new host label. Do not set that label by hand. The backup contains a MicroSandbox root snapshot, `root-snapshot-path.txt` with its relative path, `workspace.raw`, the pre-migration `inspect.json`, and `workspace-source.txt`. With MicroSandbox 0.7.2, the snapshot is stored under `<backup>/<sandbox>/snap_<id>/`.
 
 The root snapshot does **not** contain the attached workspace disk. Keep
 `workspace.raw` with it. The snapshot depends on its base OCI image remaining
@@ -51,9 +51,10 @@ export MSB_HOME="$HOME/.silo/RUNTIME_ALIAS"
 export MSB_BACKEND=local
 export MSB_PATH=/Applications/Silo.app/Contents/MacOS/msb
 export MSB_LIBKRUNFW_PATH=/Applications/Silo.app/Contents/Frameworks/libkrunfw.5.dylib
-"$MSB_PATH" snapshot verify /absolute/path/to/backup/root
+ROOT_SNAPSHOT=$(cat /absolute/path/to/backup/root-snapshot-path.txt)
+"$MSB_PATH" snapshot verify "/absolute/path/to/backup/$ROOT_SNAPSHOT"
 cp /absolute/path/to/backup/workspace.raw /absolute/path/to/recovery-workspace.raw
-"$MSB_PATH" create --from-snapshot /absolute/path/to/backup/root \
+"$MSB_PATH" create --from-snapshot "/absolute/path/to/backup/$ROOT_SNAPSHOT" \
   --name account-recovery --no-start \
   --mount-disk /absolute/path/to/recovery-workspace.raw:/workspace:format=raw,fstype=ext4
 "$MSB_PATH" modify account-recovery --label-rm silo.managed --label-rm silo.machine-id
@@ -72,7 +73,19 @@ Choose a recovery name that does not already exist. The mount override isolates 
 
 Run `python3 -m unittest discover -s app/SiloUI/scripts -p test_migrate_working_account.py` for disposable file and orchestration tests. These verify dry-run behavior, failure ordering, credential preservation, and home-path relocation. They do not prove Linux account changes or a live desktop session.
 
-Runtime commands were checked against Silo's bundled MicroSandbox 0.6.17 CLI (`modify --help`, `snapshot create --help`, `create --help`). The pinned runtime's `sdk/rust/lib/snapshot/create.rs` confirms snapshots cover the managed root upper layer; the migration therefore copies the workspace disk separately.
+Runtime commands were checked against Silo's bundled MicroSandbox 0.7.2 CLI (`modify --help`, `snapshot create --help`, `snapshot verify --help`, `create --help`). Snapshot creation selects its source with `--from-sandbox`; snapshots cover the managed root upper layer, so the migration copies the workspace disk separately. The standalone utility uses the same pinned command syntax.
+
+On 2026-09-25, the current host utility also completed a live account migration
+on a separate disposable Ubuntu 24.04 v3 x86-64 VM using the packaged 0.7.2
+CLI and libkrunfw. It verified UID 1001, the SFTP server, the pre-migration
+workspace marker and its ownership, and the final stopped VM label. The backup
+used MicroSandbox's actual `<backup>/<sandbox>/snap_<id>/` layout; the utility's
+recorded descriptor path resolved and `snapshot verify` passed. The live run
+completed without interruption, so `--resume` was covered by the 11 focused
+utility tests rather than a second live interrupted run. This validates the
+utility's 0.7.2 CLI/layout path, not Silo's packaged conversion of a predecessor
+VM. Compact command, digest, and result evidence is in
+`app/SiloUI/src-tauri/target/verification/linux-account-migration-072-20260925.txt`.
 
 A disposable Ubuntu 24.04 ARM64 VM verified the actual account rename, UID/GID 1001, private credentials, desktop-home files, relocated executable symlink, writable workspace, passwordless sudo, and persisted host label. A separate VM booted the root snapshot with the backed-up workspace and verified the original credentials and root-owned project contents. This proof used synthetic data and did not exercise a running KasmVNC session or package installation over the network. Evidence: `app/SiloUI/src-tauri/target/verification/migration/live-migration.log` and `recovery.log`.
 
@@ -88,7 +101,7 @@ it into a path exceeding the Unix socket limit. Private command diagnostics are
 saved in the backup directory on failure. Original agent shell initialization
 wins over desktop defaults, with the migrated `.local/bin` added to PATH.
 
-Ten migration tests pass. A disposable interrupted-migration reproduction also
+Eleven migration tests pass. A disposable interrupted-migration reproduction also
 passed with partial symlinks and stale sockets. The existing VM subsequently
 completed migration; Codex 0.155.1 launched as `silo`, its authentication bytes
 matched the original, sudo/workspace access passed, and the actual desktop

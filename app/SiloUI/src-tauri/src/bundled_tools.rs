@@ -8,17 +8,36 @@ pub(crate) fn directory(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|_| "Silo could not locate its bundled tools.".to_string())?;
     let resources = app.path().resource_dir()
         .map_err(|_| "Silo could not locate its bundled resources.".to_string())?;
-    resolve(&executable, &resources, tauri::utils::platform::bundle_type())
+    let appimage_root = std::env::var_os("APPDIR").map(PathBuf::from);
+    resolve(
+        &executable,
+        &resources,
+        tauri::utils::platform::bundle_type(),
+        appimage_root.as_deref(),
+    )
 }
 
-fn resolve(executable: &Path, resources: &Path, bundle: Option<BundleType>) -> Result<PathBuf, String> {
-    if matches!(bundle, Some(BundleType::Deb)) {
-        // This marker is patched into the executable by Tauri when making the
-        // package. Never infer Debian from PATH, a filename or missing sidecars.
-        Ok(resources.join("bin"))
-    } else {
-        executable.parent().map(Path::to_path_buf)
-            .ok_or_else(|| "Silo could not locate its bundled tools directory.".into())
+pub(crate) fn is_packaged_linux(bundle: Option<BundleType>) -> bool {
+    matches!(bundle, Some(BundleType::AppImage | BundleType::Deb | BundleType::Rpm))
+}
+
+fn resolve(
+    executable: &Path,
+    _resources: &Path,
+    bundle: Option<BundleType>,
+    appimage_root: Option<&Path>,
+) -> Result<PathBuf, String> {
+    match bundle {
+        Some(BundleType::AppImage) => appimage_root
+            .map(|root| root.join("usr/libexec/silo/tools"))
+            .ok_or_else(|| "Silo could not locate its AppImage tools directory.".into()),
+        Some(BundleType::Deb | BundleType::Rpm) => {
+            Ok(PathBuf::from("/usr/libexec/silo/tools"))
+        }
+        _ => executable
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "Silo could not locate its bundled tools directory.".into()),
     }
 }
 
@@ -26,21 +45,50 @@ fn resolve(executable: &Path, resources: &Path, bundle: Option<BundleType>) -> R
 mod tests {
     use super::*;
     #[test]
-    fn debian_never_falls_back_to_host_tools_when_private_tools_are_missing() {
+    fn packaged_linux_resolves_managed_tools_outside_linuxdeploy_scan_roots() {
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("usr/bin/silo-ui");
         let resources = root.path().join("usr/lib/Silo");
         std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
         std::fs::write(executable.with_file_name("git"), "unrelated system Git").unwrap();
-        let directory = resolve(&executable, &resources, Some(BundleType::Deb)).unwrap();
-        assert_eq!(directory, resources.join("bin"));
-        assert!(!directory.join("git").exists());
+        for bundle in [BundleType::AppImage, BundleType::Deb, BundleType::Rpm] {
+            let appimage_root = Path::new("/tmp/Silo.AppDir");
+            let directory = resolve(&executable, &resources, Some(bundle.clone()), Some(appimage_root)).unwrap();
+            let expected = if bundle == BundleType::AppImage {
+                appimage_root.join("usr/libexec/silo/tools")
+            } else {
+                PathBuf::from("/usr/libexec/silo/tools")
+            };
+            assert_eq!(directory, expected);
+            assert!(!directory.join("git").exists());
+        }
         assert_eq!(std::fs::read(executable.with_file_name("git")).unwrap(), b"unrelated system Git");
     }
     #[test]
     fn appimage_macos_and_development_keep_their_existing_sibling_tools() {
-        for bundle in [Some(BundleType::AppImage), Some(BundleType::App), None] {
-            assert_eq!(resolve(Path::new("/bundle/bin/silo-ui"), Path::new("/bundle/resources"), bundle).unwrap(), Path::new("/bundle/bin"));
+        for bundle in [Some(BundleType::App), None] {
+            assert_eq!(
+                resolve(
+                    Path::new("/bundle/bin/silo-ui"),
+                    Path::new("/bundle/resources"),
+                    bundle,
+                    None,
+                )
+                .unwrap(),
+                Path::new("/bundle/bin")
+            );
         }
+    }
+
+    #[test]
+    fn appimage_requires_its_runtime_root_instead_of_host_lookup() {
+        let error = resolve(
+            Path::new("/tmp/AppDir/usr/bin/silo-ui"),
+            Path::new("/tmp/AppDir/usr/lib/Silo"),
+            Some(BundleType::AppImage),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("AppImage tools directory"));
     }
 }

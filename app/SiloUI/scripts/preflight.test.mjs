@@ -15,26 +15,27 @@ function fixture(t) {
   copyFileSync(join(source, "runtime-inputs.json"), join(root, "runtime-inputs.json"))
   mkdirSync(join(root, "patches"))
   const inputs = JSON.parse(readFileSync(join(root, "runtime-inputs.json"), "utf8"))
-  copyFileSync(join(source, inputs.patchPath), join(root, inputs.patchPath))
+  for (const patch of inputs.patches) copyFileSync(join(source, patch.path), join(root, patch.path))
   return { root, inputs }
 }
 
 test("clean inputs validate without external commands or generated files", t => {
   const { root, inputs } = fixture(t)
   assert.deepEqual(preflight(root), inputs)
+  assert.equal(inputs.patches.at(-1).path, "patches/microsandbox-live-public-ports-0.7.2.patch")
 })
 
 const mutations = [
-  ["patch bytes", (_, root, original) => writeFileSync(join(root, original.patchPath), "tampered patch")],
-  ["patch pin", inputs => { inputs.patchSha256 = "0".repeat(64) }],
+  ["patch bytes", (_, root, original) => writeFileSync(join(root, original.patches[0].path), "tampered patch")],
+  ["patch pin", inputs => { inputs.patches[0].sha256 = "0".repeat(64) }],
   ["asset pin", inputs => { inputs.targets["aarch64-apple-darwin"].executableSha256 = "not-a-digest" }],
   ["missing target", inputs => { delete inputs.targets["x86_64-unknown-linux-gnu"] }],
   ["unsupported target", inputs => { inputs.targets["x86_64-apple-darwin"] = inputs.targets["aarch64-apple-darwin"] }],
   ["source revision", inputs => { inputs.sourceCommit = "0".repeat(40) }],
   ["feature set", inputs => { inputs.features = "net" }],
-  ["schema", inputs => { inputs.schemaVersion = 2 }],
-  ["unknown field", inputs => { inputs.patchSHA256 = inputs.patchSha256 }],
-  ["unsafe patch path", inputs => { inputs.patchPath = "../outside.patch" }],
+  ["schema", inputs => { inputs.schemaVersion = 1 }],
+  ["unknown field", inputs => { inputs.patchSHA256 = inputs.patches[0].sha256 }],
+  ["unsafe patch path", inputs => { inputs.patches[0].path = "../outside.patch" }],
   ["mismatched asset", inputs => { inputs.targets["aarch64-apple-darwin"].agentdAsset = "agentd-x86_64" }],
   ["inconsistent shared pin", inputs => { inputs.targets["aarch64-apple-darwin"].agentdSha256 = "0".repeat(64) }],
 ]
@@ -72,18 +73,18 @@ test("symlinked patch cannot escape the checkout", t => {
   const { root, inputs } = fixture(t)
   const external = mkdtempSync(join(tmpdir(), "silo-outside-patch-"))
   t.after(() => rmSync(external, { recursive: true, force: true }))
-  copyFileSync(join(root, inputs.patchPath), join(external, "patch"))
-  rmSync(join(root, inputs.patchPath))
-  symlinkSync(join(external, "patch"), join(root, inputs.patchPath))
+  copyFileSync(join(root, inputs.patches[0].path), join(external, "patch"))
+  rmSync(join(root, inputs.patches[0].path))
+  symlinkSync(join(external, "patch"), join(root, inputs.patches[0].path))
   assert.throws(() => preflight(root), /containment/)
 })
 
 test("runtime preparation rejects a bad patch before invoking rustc or downloading", t => {
   const { root, inputs } = fixture(t)
   cpSync(join(source, "scripts"), join(root, "scripts"), { recursive: true })
-  writeFileSync(join(root, inputs.patchPath), "bad patch")
+  writeFileSync(join(root, inputs.patches[0].path), "bad patch")
   const result = spawnSync(process.execPath, [join(root, "scripts/prepare-microsandbox-runtime.mjs")], { encoding: "utf8", env: { PATH: "", HOME: root } })
   assert.notEqual(result.status, 0)
-  assert.match(result.stderr, /Runtime preflight: invalid patchSha256/)
+  assert.match(result.stderr, /Runtime preflight: invalid patches\[0\]\.sha256 mismatch/)
   assert.doesNotMatch(result.stderr, /rustc|Download failed/)
 })

@@ -21,6 +21,9 @@ SELF = '/usr/local/bin/silo-desktop'
 LOG = Path('/var/log/silo-desktop.log')
 WORKING_ACCOUNT = Path('/var/lib/silo/working-account.json')
 LUDA_PYTHON = Path('/opt/luda/current/.venv/bin/python')
+TMP = Path('/tmp')
+DISPLAY_LOCK = TMP / '.X1-lock'
+DISPLAY_SOCKET_DIR = TMP / '.X11-unix'
 
 
 def validate_policy_file(path):
@@ -97,10 +100,150 @@ def supervisor():
 
 
 def listening():
+    return port_listening(6901)
+
+
+def port_listening(port):
     try:
-        with socket.create_connection(('127.0.0.1', 6901), timeout=0.3):
+        with socket.create_connection(('127.0.0.1', port), timeout=0.3):
             return True
     except OSError:
+        return False
+
+
+def process_exists(pid):
+    try:
+        os.stat(f'/proc/{pid}')
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def verified_stale_display_pair(account):
+    """Return identities for an inactive Kasm :1 lock/socket pair, or None."""
+    lock = DISPLAY_LOCK
+    display_socket = DISPLAY_SOCKET_DIR / 'X1'
+    try:
+        lock_info = lock.lstat()
+        socket_info = display_socket.lstat()
+        if (not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != account.pw_uid or
+                not stat.S_ISSOCK(socket_info.st_mode) or socket_info.st_uid != account.pw_uid):
+            return None
+        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+        fd = os.open(lock, flags)
+        try:
+            opened = os.fstat(fd)
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != account.pw_uid or
+                    (opened.st_dev, opened.st_ino) != (lock_info.st_dev, lock_info.st_ino)):
+                return None
+            contents = os.read(fd, 64).decode('ascii').strip()
+        finally:
+            os.close(fd)
+        if not re.fullmatch(r'[0-9]+', contents):
+            return None
+        pid = int(contents)
+        if pid <= 1 or process_exists(pid) or port_listening(5901) or listening():
+            return None
+        return lock_info, socket_info, pid
+    except (FileNotFoundError, PermissionError, OSError, ValueError, UnicodeError):
+        return None
+
+
+def prepare_display_socket_directory():
+    """Establish root-owned sticky X11 socket storage before starting Kasm."""
+    root_uid = os.geteuid()
+    if root_uid != 0:
+        return False
+    try:
+        account = pwd.getpwnam(USER)
+        tmp_info = TMP.lstat()
+        if (not stat.S_ISDIR(tmp_info.st_mode) or stat.S_ISLNK(tmp_info.st_mode) or
+                tmp_info.st_uid != root_uid or not tmp_info.st_mode & stat.S_ISVTX or
+                port_listening(5901) or listening()):
+            return False
+        try:
+            DISPLAY_SOCKET_DIR.mkdir(mode=0o1777)
+        except FileExistsError:
+            pass
+
+        flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        fd = os.open(DISPLAY_SOCKET_DIR, flags)
+        try:
+            opened = os.fstat(fd)
+            current = DISPLAY_SOCKET_DIR.lstat()
+            if (not stat.S_ISDIR(opened.st_mode) or stat.S_ISLNK(current.st_mode) or
+                    (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)):
+                return False
+            entries = set(os.listdir(fd))
+            owner = opened.st_uid
+            mode = stat.S_IMODE(opened.st_mode)
+            if owner == root_uid and mode == 0o1777:
+                return True
+            if owner not in (root_uid, account.pw_uid):
+                return False
+
+            if entries:
+                stale_pair = verified_stale_display_pair(account)
+                if entries != {'X1'} or stale_pair is None:
+                    return False
+            else:
+                try:
+                    DISPLAY_LOCK.lstat()
+                    # A lock without its socket is ambiguous; never adopt it.
+                    return False
+                except FileNotFoundError:
+                    pass
+
+            # Do not change ownership or permissions while a display can be live.
+            if port_listening(5901) or listening():
+                return False
+            os.fchown(fd, root_uid, 0)
+            os.fchmod(fd, 0o1777)
+            normalized = os.fstat(fd)
+            current = DISPLAY_SOCKET_DIR.lstat()
+            return (stat.S_ISDIR(normalized.st_mode) and normalized.st_uid == root_uid and
+                    stat.S_IMODE(normalized.st_mode) == 0o1777 and
+                    (normalized.st_dev, normalized.st_ino) == (current.st_dev, current.st_ino))
+        finally:
+            os.close(fd)
+    except (FileNotFoundError, PermissionError, OSError, ValueError):
+        return False
+
+
+def remove_stale_display_artifacts():
+    """Remove only Kasm's dead :1 lock/socket pair before one startup retry."""
+    lock = DISPLAY_LOCK
+    socket_dir = DISPLAY_SOCKET_DIR
+    display_socket = socket_dir / 'X1'
+    try:
+        account = pwd.getpwnam(USER)
+        root_uid = os.geteuid()
+        tmp_info = TMP.lstat()
+        dir_info = socket_dir.lstat()
+        if (not stat.S_ISDIR(tmp_info.st_mode) or tmp_info.st_uid != root_uid or
+                not tmp_info.st_mode & stat.S_ISVTX or
+                not stat.S_ISDIR(dir_info.st_mode) or dir_info.st_uid != root_uid or
+                stat.S_ISLNK(dir_info.st_mode)):
+            return False
+        stale_pair = verified_stale_display_pair(account)
+        if stale_pair is None:
+            return False
+        lock_info, socket_info, pid = stale_pair
+
+        # Recheck identities immediately before unlinking; never follow paths
+        # supplied by the VM or remove anything beyond this display's pair.
+        current_lock = lock.lstat()
+        current_socket = display_socket.lstat()
+        if ((current_lock.st_dev, current_lock.st_ino) != (lock_info.st_dev, lock_info.st_ino) or
+                (current_socket.st_dev, current_socket.st_ino) != (socket_info.st_dev, socket_info.st_ino) or
+                not stat.S_ISREG(current_lock.st_mode) or current_lock.st_uid != account.pw_uid or
+                not stat.S_ISSOCK(current_socket.st_mode) or current_socket.st_uid != account.pw_uid or
+                process_exists(pid) or port_listening(5901) or listening()):
+            return False
+        lock.unlink()
+        display_socket.unlink()
+        return True
+    except (FileNotFoundError, PermissionError, OSError, ValueError, UnicodeError):
         return False
 
 
@@ -157,6 +300,8 @@ def status():
 def start():
     if supervisor():
         return
+    if not prepare_display_socket_directory():
+        raise RuntimeError('The X11 socket directory is active or unsafe; inspect the desktop service log')
     (RUN / 'failed').unlink(missing_ok=True)
     account = pwd.getpwnam(USER)
     runtime = RUN / 'user'
@@ -230,6 +375,7 @@ def supervise():
         signal.signal(signal.SIGTERM, terminate)
         signal.signal(signal.SIGINT, terminate)
         try:
+            stale_recovery_used = False
             for attempt in range(3):
                 if stopping:
                     break
@@ -257,6 +403,9 @@ def supervise():
                     except ProcessLookupError:
                         pass
                 stop_display()
+                if not stopping and not stale_recovery_used and remove_stale_display_artifacts():
+                    stale_recovery_used = True
+                    continue
                 if not stopping:
                     time.sleep(attempt + 1)
             if not stopping:

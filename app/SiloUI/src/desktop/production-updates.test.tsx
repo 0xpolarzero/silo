@@ -2,6 +2,9 @@ import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
 import { ProductionSurface } from "./production-surface"
+import type { ReactNode } from "react"
+
+vi.mock("./runtime-migration-boundary", () => ({ RuntimeMigrationBoundary: ({ children }: { children: ReactNode }) => children }))
 import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
 import type { ProductionSource } from "./production-source"
 import { useUpdates } from "@/features/updates/update-store"

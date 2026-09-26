@@ -1,0 +1,23 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "externalBin": [],
+    "linux": {
+      "appimage": {
+        "files": {
+          "/usr/libexec/silo/tools": "runtime/linux-package/tools"
+        }
+      },
+      "deb": {
+        "files": {
+          "/usr/libexec/silo/tools": "runtime/linux-package/tools"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/libexec/silo/tools": "runtime/linux-package/tools"
+        }
+      }
+    }
+  }
+}

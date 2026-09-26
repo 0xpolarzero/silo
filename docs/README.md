@@ -45,6 +45,10 @@ above for current behavior and build commands.
 - [Frontend test performance](SiloUI-FRONTEND-TEST-PERFORMANCE.md): controlled environment-split measurements.
 - [Guest image size experiment](SiloUI-GUEST-IMAGE-SIZE.md): measured image-size tradeoffs.
 - [E2B fit for Silo](research/e2b-fit-2026-09-22.md): agent desktop capabilities, snapshots, local hosting requirements and the proposed comparison workflow.
+- [E2B adoption assessment](research/e2b-adoption-assessment-2026-09-24.md): feature inventory, established benefits and drawbacks, current-stack coverage limits, and the recommendation to refactor desktop packaging/viewing before replacing the backend.
+- [Checkpoint and desktop direction](research/checkpoints-desktop-direction-2026-09-24.md): newer MicroSandbox snapshot/fork support, the upstream-upgrade alternative, Btrfs limits, desktop candidate fit, LCU boundaries and qualification requirements.
+- [MicroSandbox live public ports](research/microsandbox-live-public-ports-0.7.2.md): pinned control and publisher source, Silo's loopback TCP contract, ingress and multi-tenant boundaries, and regression limits.
+- [Silo checkpoints implementation plan](SiloUI-CHECKPOINTS-PLAN.md): accepted restore/fork/permission decisions, stopped forks with explicit first start, phased upstream upgrade, UI flows and qualification gates.
 - [Executed local E2B desktop PoC](research/e2b-local-poc-2026-09-22.md): working ARM64 nested desktops, human handoff, memory snapshots, host restart recovery and measured resource costs.
 - [E2B + LCU qualification](research/e2b-lcu-qualification-2026-09-22.md): historical LCU, credentials, Git/LFS, SSH and native viewer results, with corrected limits on checkpoint/pause/restore attribution.
 - [E2B PoC investigation and completion handoff](SiloUI-E2B-QUALIFICATION-HANDOFF.md): current orchestrator brief, minimal failure reproductions, evidence corrections, model/delegation policy and full remaining qualification gates.
@@ -66,6 +70,7 @@ above for current behavior and build commands.
 - [E2B D2 error audit](research/e2b-d2-error-audit-2026-09-23.md): exact rootfs sync error, process/catalog timeline, and present artifact inventory.
 - [E2B D2 rootfs sync reproduction](research/e2b-d2-rootfs-sync-repro-2026-09-23.md): controlled source-built pause failure, SDK recovery checks, and limits of the synthetic EIO.
 - [E2B credential contract audit](research/e2b-credential-contract-2026-09-23.md): current Silo grant policy, PoC broker gaps, and synthetic receipt evidence.
+- [E2B credential-tool comparison](research/e2b-credential-tools-2026-09-24.md): existing brokers and proxy engines, iron-proxy and Infisical Agent Vault qualification order, disqualified alternatives, and the reuse-before-building rule.
 - [E2B access and viewer audit](research/e2b-access-viewer-audit-2026-09-23.md): transport, native editor, and viewer qualification gaps.
 - [E2B replacement plan](SiloUI-E2B-REPLACEMENT-PLAN.md): proposed breaking replacement, before/after flows, explicit deletion map, security and access gates, and implementation acceptance criteria.
 - [Codex, E2B and Luda computer use](research/codex-e2b-luda-computer-use-2026-09-22.md): observed native Codex interface, public API distinction, simplicity hypothesis and controlled comparison.

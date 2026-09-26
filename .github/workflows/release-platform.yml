@@ -266,7 +266,13 @@ jobs:
       - name: Compile release application
         run: python3 scripts/measure-command.py release-build -- python3 scripts/release-dependency-cache.py build --target '${{ inputs.target }}' --state "$RUNNER_TEMP/release-dependencies"
       - name: Build release bundles
-        run: python3 scripts/measure-command.py release-bundle -- python3 scripts/retry-bundle.py --log "$RUNNER_TEMP/silo-bundle.log" -- npx tauri bundle --target '${{ inputs.target }}' --bundles '${{ inputs.bundles }}' --ci --verbose
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            bundle_config_args=(--config src-tauri/tauri.linux.package.conf.json)
+          else
+            bundle_config_args=()
+          fi
+          python3 scripts/measure-command.py release-bundle -- python3 scripts/retry-bundle.py --log "$RUNNER_TEMP/silo-bundle.log" -- npx tauri bundle --target '${{ inputs.target }}' --bundles '${{ inputs.bundles }}' --ci --verbose "${bundle_config_args[@]}"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -324,5 +330,4 @@ jobs:
           path: ${{ runner.temp }}/build-phases.jsonl
           if-no-files-found: ignore
           retention-days: 7
-
 

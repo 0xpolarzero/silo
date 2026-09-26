@@ -169,6 +169,21 @@ pub(crate) fn runtime_material(
         })
         .collect()
 }
+
+/// Copy assignment references only. Values remain in the host credential store.
+pub(crate) fn fork_assignments(source: &str, target: &str) -> Result<(), String> {
+    let _operation = OPERATION.try_lock().map_err(|_| "Secret settings are busy. Retry the fork.".to_string())?;
+    update(|document| { copy_assignment_refs(document, source, target); Ok(()) })
+}
+
+fn copy_assignment_refs(document: &mut Document, source: &str, target: &str) {
+    for secret in &mut document.secrets {
+        if !secret.removing && secret.workspaces.iter().any(|name| name == source)
+            && !secret.workspaces.iter().any(|name| name == target) {
+            secret.workspaces.push(target.into());
+        }
+    }
+}
 fn event(document: &mut Document, title: &str, failed: bool) {
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
@@ -591,6 +606,15 @@ mod tests {
             errors: BTreeMap::new(),
             removing: false,
         }
+    }
+    #[test]
+    fn fork_copies_current_assignment_reference_without_copying_value() {
+        let mut document = Document { secrets: vec![secret()], activities: Vec::new() };
+        copy_assignment_refs(&mut document, "dev", "fork");
+        assert_eq!(document.secrets[0].workspaces, ["dev", "fork"]);
+        assert_eq!(document.secrets[0].value_id, "private-reference");
+        document.secrets[0].workspaces.retain(|name| name != "dev");
+        assert_eq!(document.secrets[0].workspaces, ["fork"]);
     }
     #[test]
     fn applied_revision_changes_for_rotation_domains_and_removal_not_status() {

@@ -558,7 +558,9 @@ pub(super) fn recover_at_paths(
                     .iter()
                     .any(|m| m.name() == name && m.id() == id)
                 {
-                    return Err(format!("Sandbox {name} changed since backup started. Its current state was preserved."));
+                    return Err(format!(
+                        "Sandbox {name} changed since backup started. Its current state was preserved."
+                    ));
                 }
             }
             for (name, id) in running {
@@ -567,7 +569,9 @@ pub(super) fn recover_at_paths(
                     .iter()
                     .any(|m| m.name() == name && m.id() == id)
                 {
-                    return Err(format!("Sandbox {name} changed since backup started. Its current state was preserved."));
+                    return Err(format!(
+                        "Sandbox {name} changed since backup started. Its current state was preserved."
+                    ));
                 }
                 let vm = inspect(&paths, name)?;
                 if vm
@@ -621,7 +625,7 @@ pub(super) fn recover_at_paths(
                             "A different sandbox owns {name}. It was preserved."
                         ));
                     }
-                    let vm = inspect(&paths, name)?;
+                    let mut vm = inspect(&paths, name)?;
                     runtime::ensure_managed(&vm).map_err(|e| e.to_string())?;
                     if vm
                         .config
@@ -639,7 +643,7 @@ pub(super) fn recover_at_paths(
                             vm.status
                         ));
                     }
-                    backup_volumes(&paths, machine, &vm)?;
+                    backup_volumes(machine, &mut vm)?;
                     remove_disk_marker(&paths.volumes.join(name))?;
                     update(controller, |j| j.cancelled = false)?;
                     return Ok(true);
@@ -651,7 +655,9 @@ pub(super) fn recover_at_paths(
                         cleanup_restored(&paths, name, id)?;
                         clear_restore_identity(controller)?;
                     } else if fs::remove_dir(&disk).is_err() {
-                        return Err(format!("Could not verify ownership of incomplete storage for {name}. No files were removed."));
+                        return Err(format!(
+                            "Could not verify ownership of incomplete storage for {name}. No files were removed."
+                        ));
                     }
                 }
             }
@@ -694,20 +700,24 @@ mod tests {
         .unwrap();
         complete(&controller, result());
         set_operation(&controller, result()).unwrap();
-        assert!(!super::super::dismiss_finished_operation(
-            &controller,
-            Some(&serde_json::to_value(result()).unwrap()),
-            Some(&old_id)
-        )
-        .unwrap());
+        assert!(
+            !super::super::dismiss_finished_operation(
+                &controller,
+                Some(&serde_json::to_value(result()).unwrap()),
+                Some(&old_id)
+            )
+            .unwrap()
+        );
         assert!(controller.view.lock().unwrap().operation.is_some());
         let current_id = token(&controller).unwrap().unwrap();
-        assert!(super::super::dismiss_finished_operation(
-            &controller,
-            Some(&serde_json::to_value(result()).unwrap()),
-            Some(&current_id)
-        )
-        .unwrap());
+        assert!(
+            super::super::dismiss_finished_operation(
+                &controller,
+                Some(&serde_json::to_value(result()).unwrap()),
+                Some(&current_id)
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -738,11 +748,13 @@ mod tests {
         assert!(load(&path).unwrap().unwrap().terminal.is_none());
         dismiss(&controller).unwrap();
         assert!(load(&path).unwrap().is_some());
-        assert!(begin(
-            &controller,
-            Journal::backup(completed_archive(), vec!["dev".into()])
-        )
-        .is_err());
+        assert!(
+            begin(
+                &controller,
+                Journal::backup(completed_archive(), vec!["dev".into()])
+            )
+            .is_err()
+        );
         clear_restore_identity(&controller).unwrap();
         complete(&controller, failure());
         assert!(load(&path).unwrap().unwrap().terminal.is_some());
@@ -825,11 +837,13 @@ mod tests {
             matches!(reloaded.request, Request::Restore { id: Some(ref saved), ref name, .. } if saved == &id && name == "restored")
         );
         assert!(matches!(reloaded.operation(), Operation::Running { .. }));
-        assert!(begin(
-            &controller,
-            Journal::backup(completed_archive(), vec!["dev".into()])
-        )
-        .is_err());
+        assert!(
+            begin(
+                &controller,
+                Journal::backup(completed_archive(), vec!["dev".into()])
+            )
+            .is_err()
+        );
     }
 
     #[test]

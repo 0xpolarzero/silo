@@ -40,6 +40,30 @@ def copy_disk(source, destination):
     destination.chmod(0o600)
 
 
+def root_snapshot(backup, name):
+    """Return the verified root snapshot path for a fresh or resumed backup."""
+    path_record = backup / 'root-snapshot-path.txt'
+    if path_record.is_file():
+        relative = Path(path_record.read_text().strip())
+        if relative.is_absolute() or '..' in relative.parts:
+            raise ValueError('The backup root snapshot path is invalid.')
+        candidate = backup / relative
+    else:
+        # MicroSandbox 0.7.2 stores snapshots under <destination>/<sandbox>/.
+        candidates = sorted((backup / name).glob('snap_*'))
+        candidates = [path for path in candidates if (path / 'snapshot.json').is_file()]
+        if len(candidates) != 1:
+            raise ValueError('The backup must contain exactly one root snapshot.')
+        candidate = candidates[0]
+    if not candidate.exists():
+        raise ValueError('The backup root snapshot is missing.')
+    try:
+        candidate.resolve().relative_to(backup.resolve())
+    except ValueError as error:
+        raise ValueError('The backup root snapshot path is outside the backup directory.') from error
+    return candidate
+
+
 def migrate(msb, name, backup, apply=False, run=subprocess.run, resume=False):
     def command(*args):
         result = run([str(msb), *args], check=True, capture_output=True, text=True)
@@ -63,7 +87,7 @@ def migrate(msb, name, backup, apply=False, run=subprocess.run, resume=False):
                 or original_workspace != workspace
                 or (backup / 'workspace.raw').stat().st_size != workspace.stat().st_size):
             raise ValueError('The backup does not match this VM and workspace.')
-        command('snapshot', 'verify', str(backup / 'root'))
+        command('snapshot', 'verify', str(root_snapshot(backup, name)))
     else:
         backup.mkdir(parents=True, exist_ok=False)
         backup.chmod(0o700)
@@ -71,7 +95,11 @@ def migrate(msb, name, backup, apply=False, run=subprocess.run, resume=False):
         command('stop', name)
     if not resume:
         # msb snapshots capture the root upper layer, not attached workspace disks.
-        command('snapshot', 'create', '--from', name, '--dest-dir', str(backup), 'root', '--integrity')
+        # MicroSandbox 0.7.2 renamed the source selector from `--from` to
+        # `--from-sandbox`; keep the account migration on the bundled CLI API.
+        command('snapshot', 'create', '--from-sandbox', name, '--dest-dir', str(backup), 'root', '--integrity')
+        saved_root = root_snapshot(backup, name)
+        (backup / 'root-snapshot-path.txt').write_text(saved_root.relative_to(backup).as_posix() + '\n')
         copy_disk(workspace, backup / 'workspace.raw')
         (backup / 'inspect.json').write_text(json.dumps(state, indent=2) + '\n')
         (backup / 'workspace-source.txt').write_text(str(workspace) + '\n')

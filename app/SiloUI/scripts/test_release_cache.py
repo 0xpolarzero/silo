@@ -52,17 +52,19 @@ class ReleaseCacheTests(unittest.TestCase):
         self.assertEqual(paths[0], paths[2], 'Runtime restore/save paths must match')
         self.assertEqual(paths[1], paths[3], 'Cargo restore/save paths must match')
         runtime = 'app/SiloUI/src-tauri/target/runtime-cache/'
-        allowed = [runtime + 'v0.6.17/patched-builds/key/msb',
-                   runtime + 'v0.6.17/patched-builds/key/msb.sha256',
-                   runtime + 'v0.6.17/msb-linux.tar.gz',
-                   runtime + 'v0.6.17/licenses/LICENSE',
+        allowed = [runtime + 'v0.7.2/patched-builds/key/msb',
+                   runtime + 'v0.7.2/patched-builds/key/msb.sha256',
+                   runtime + 'v0.7.2/microsandbox-60d4dc8a436fb9365491567ec21d073e924e3c6d.tar.gz',
+                   runtime + 'v0.7.2/agentd-aarch64',
+                   runtime + 'v0.7.2/libkrunfw-darwin-aarch64.dylib',
+                   runtime + 'v0.7.2/licenses/microsandbox-Apache-2.0.txt',
                    runtime + 'dugite/version/archive.tar.gz',
                    runtime + 'git-lfs-transfer/pin/source.tar.gz',
                    runtime + 'git-lfs-transfer/pin/builds/linux-arm64/git-lfs-transfer',
                    'app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz',
                    '.cargo/registry/cache/index/crate.tar.gz']
-        forbidden = [runtime + 'v0.6.17/patched-builds/key/cargo-target/release/msb',
-                     runtime + 'v0.6.17/patched-builds/key/work/source.rs',
+        forbidden = [runtime + 'v0.7.2/patched-builds/key/cargo-target/release/msb',
+                     runtime + 'v0.7.2/patched-builds/key/work/source.rs',
                      runtime + 'git-lfs-transfer/pin/source-123/main.go',
                      'app/SiloUI/src-tauri/target/release/silo-ui',
                      'app/SiloUI/src-tauri/target/debug/build/silo/output',

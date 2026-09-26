@@ -2,6 +2,19 @@
 
 The application lives in `app/SiloUI/` and uses React/TypeScript with a Rust/Tauri backend. Run the commands below from the repository root unless a command says otherwise.
 
+## Reuse established tools
+
+Prefer maintained, well-recognized tools and supported upstream features over
+custom infrastructure. Before adding a proxy, protocol, credential broker,
+scheduler, storage mechanism, or similar subsystem, research existing solutions
+and record the choice and concrete gaps in `docs/`. Evaluate the specific
+component's threat model, maintenance, license, deployment fit, and supported
+release; a familiar vendor name alone is not sufficient evidence. Keep Silo code
+focused on product policy and integration. Fix reusable gaps upstream where
+practical. A PoC implementation is not the default production implementation;
+custom infrastructure needs evidence that suitable existing tools cannot meet
+the requirement.
+
 ## Source and layout
 
 - `app/SiloUI/src/`: UI, production data sources, deterministic fixtures, and frontend tests.

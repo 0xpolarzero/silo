@@ -47,6 +47,11 @@ fn settings_for_launch(
     metadata: &Path,
     stopped: &HashSet<String>,
 ) -> Result<Map<String, Value>, String> {
+    if settings.get("onboardingComplete").and_then(Value::as_bool) != Some(true)
+        || settings.get("startWorkspacesAtLaunch").and_then(Value::as_bool) != Some(true)
+    {
+        return Ok(settings);
+    }
     // Older switches saved only the opt-in, leaving the displayed default
     // selection absent on disk. Match that default without overriding an
     // explicit selection (including []) or inferring a remote launch target.
@@ -60,6 +65,17 @@ fn settings_for_launch(
         settings.insert("startupWorkspaceIds".into(), serde_json::json!(initial.map(|machine| machine.id()).into_iter().collect::<Vec<_>>()));
     }
     preserve_recovered_stops(&mut settings, stopped);
+    // A one-time migration may retain old workspace IDs only in preserved
+    // settings while selecting a clean runtime generation.
+    if let Some(ids) = settings.get_mut("startupWorkspaceIds").and_then(Value::as_array_mut) {
+        if !ids.is_empty() {
+            let available: HashSet<_> = crate::runtime::read_metadata(metadata)
+                .map_err(|error| error.to_string())?
+                .machines.into_iter().filter(|machine| machine.is_vm())
+                .map(|machine| machine.id().to_owned()).collect();
+            ids.retain(|id| id.as_str().is_some_and(|id| available.contains(id)));
+        }
+    }
     Ok(settings)
 }
 
@@ -89,6 +105,7 @@ pub(crate) fn install(app: &AppHandle) {
         let Ok(_active) = state.active.lock() else {
             return;
         };
+        if crate::runtime_migration::blocks_operations(&app) { return; }
         if let Err(message) = crate::backup_controller::wait_for_recovery(&app) {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = crate::system_integrations::show_integration_error(app.clone(), window, message);
@@ -217,10 +234,26 @@ mod tests {
     fn explicit_selections_and_disabled_startup_do_not_read_default_configuration() {
         let directory = tempfile::tempdir().unwrap();
         let metadata = directory.path().join("machines.json");
-        std::fs::write(&metadata, "invalid configuration").unwrap();
+        std::fs::write(
+            &metadata,
+            json!({"schemaVersion":1,"machines":[
+                vm("00000000-0000-4000-8000-000000000001", "selected"),
+                vm("00000000-0000-4000-8000-000000000002", "dev")
+            ]})
+            .to_string(),
+        )
+        .unwrap();
         for settings in [
             json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true,"startupWorkspaceIds":[]}),
-            json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true,"startupWorkspaceIds":["selected"]}),
+            json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true,"startupWorkspaceIds":["00000000-0000-4000-8000-000000000001"]}),
+        ] {
+            let settings = settings.as_object().unwrap().clone();
+            let resolved = settings_for_launch(settings.clone(), &metadata, &HashSet::new()).unwrap();
+            assert_eq!(resolved, settings);
+        }
+
+        std::fs::write(&metadata, "invalid configuration").unwrap();
+        for settings in [
             json!({"onboardingComplete":true,"startWorkspacesAtLaunch":false}),
             json!({"onboardingComplete":false,"startWorkspacesAtLaunch":true}),
             json!({}),

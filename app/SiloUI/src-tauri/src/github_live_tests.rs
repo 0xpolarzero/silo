@@ -651,6 +651,7 @@ fn github_authenticated_native_workflow() {
             .unwrap_or_else(|| "Authenticated regression failed.".into())
     );
 }
+
 #[test]
 fn live_configuration_rejects_missing_confirmation_and_unsafe_fixtures() {
     let mut env: HashMap<String, String> = [

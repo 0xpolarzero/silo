@@ -23,18 +23,24 @@ function matches(value, pattern, field) {
 // and are verified against downloaded bytes by staging, not guessed by this offline check.
 export function preflight(root = appRoot) {
   const inputs = JSON.parse(readFileSync(resolve(root, "runtime-inputs.json"), "utf8"))
-  keys(inputs, ["schemaVersion", "microsandboxVersion", "libkrunfwVersion", "sourceCommit", "sourceArchiveSha256", "patchPath", "patchSha256", "toolchain", "features", "libkrunfwCommit", "targets", "licenses"], "manifest fields")
-  requireValue(inputs.schemaVersion === 1, "schemaVersion")
+  keys(inputs, ["schemaVersion", "microsandboxVersion", "libkrunfwVersion", "sourceCommit", "sourceArchiveSha256", "patches", "toolchain", "features", "libkrunfwCommit", "targets", "licenses"], "manifest fields")
+  requireValue(inputs.schemaVersion === 2, "schemaVersion")
   for (const key of ["microsandboxVersion", "libkrunfwVersion", "toolchain"]) matches(inputs[key], version, key)
   for (const key of ["sourceCommit", "libkrunfwCommit"]) matches(inputs[key], revision, key)
-  for (const key of ["sourceArchiveSha256", "patchSha256"]) matches(inputs[key], digest, key)
-  requireValue(inputs.features === "net,ssh", "features (required net,ssh capability set)")
-  requireValue(inputs.patchPath === `patches/microsandbox-create-stopped-${inputs.microsandboxVersion}.patch`, "patchPath")
-  const patch = realpathSync(resolve(root, inputs.patchPath))
-  const path = relative(realpathSync(root), patch)
-  requireValue(path !== ".." && !path.startsWith(`..${sep}`) && !path.startsWith(sep), "patchPath containment")
-  const actual = createHash("sha256").update(readFileSync(patch)).digest("hex")
-  requireValue(actual === inputs.patchSha256, `patchSha256: expected ${inputs.patchSha256}, received ${actual}`)
+  for (const key of ["sourceArchiveSha256"]) matches(inputs[key], digest, key)
+  requireValue(inputs.features === "net,ssh,embed-binaries", "features (required net,ssh,embed-binaries capability set)")
+  const patchNames = ["microsandbox-silo-network", "microsandbox-restore-policy", "microsandbox-create-stopped", "microsandbox-adopt-owned-disk", "microsandbox-log-retention-desktop-start", "microsandbox-restore-root-capacity", "microsandbox-portable-image-cache", "microsandbox-live-public-ports"]
+  requireValue(Array.isArray(inputs.patches) && inputs.patches.length === patchNames.length, "patches")
+  for (const [index, patchInput] of inputs.patches.entries()) {
+    keys(patchInput, ["path", "sha256"], `patches[${index}]`)
+    requireValue(patchInput.path === `patches/${patchNames[index]}-${inputs.microsandboxVersion}.patch`, `patches[${index}].path`)
+    matches(patchInput.sha256, digest, `patches[${index}].sha256`)
+    const patch = realpathSync(resolve(root, patchInput.path))
+    const path = relative(realpathSync(root), patch)
+    requireValue(path !== ".." && !path.startsWith(`..${sep}`) && !path.startsWith(sep), `patches[${index}] containment`)
+    const actual = createHash("sha256").update(readFileSync(patch)).digest("hex")
+    requireValue(actual === patchInput.sha256, `patches[${index}].sha256 mismatch`)
+  }
   const platforms = {
     "aarch64-apple-darwin": ["darwin", "aarch64"],
     "aarch64-unknown-linux-gnu": ["linux", "aarch64"],

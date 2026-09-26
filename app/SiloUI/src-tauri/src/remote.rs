@@ -229,6 +229,24 @@ fn write_frame(mut writer: impl Write, value: &Value) -> Result<(), String> {
         .and_then(|_| writer.write_all(&bytes))
         .map_err(|e| e.to_string())
 }
+fn write_stream_response(mut writer: impl Write, value: &Value) -> Result<(), String> {
+    write_frame(&mut writer, value)?;
+    writer.flush().map_err(|error| error.to_string())
+}
+fn copy_raw_stream(mut reader: impl Read, mut writer: impl Write) -> std::io::Result<()> {
+    let mut buffer = [0; 16 * 1024];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(count) => {
+                writer.write_all(&buffer[..count])?;
+                writer.flush()?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
 fn read_frame(mut reader: impl Read) -> Result<Value, String> {
     let mut len = [0; 4];
     reader.read_exact(&mut len).map_err(|_|"The remote Silo connection ended. Check that Silo is running and remote management is enabled.".to_string())?;
@@ -423,6 +441,48 @@ pub(crate) fn call_remote(
         json!({"version":VERSION,"hostId":host.id,"requestId":uuid::Uuid::new_v4().to_string(),"method":method,"params":params}),
     )
 }
+
+fn checkpoint_remote_request(
+    vm_id: &str,
+    action: &str,
+    name: Option<&str>,
+    checkpoint_id: Option<&str>,
+    new_name: Option<&str>,
+) -> Result<(&'static str, Value), String> {
+    uuid::Uuid::parse_str(vm_id).map_err(|_| "Invalid sandbox identity.")?;
+    let params = match action {
+        "create" => ("checkpoint.create", json!({"vmId":vm_id,"name":name.ok_or("Missing checkpoint name.")?})),
+        "fork" => ("checkpoint.fork", json!({"vmId":vm_id,"checkpointId":checkpoint_id,"newName":new_name.ok_or("Missing fork name.")?})),
+        "restore" => ("checkpoint.restore", json!({"vmId":vm_id,"checkpointId":checkpoint_id.ok_or("Missing checkpoint identity.")?})),
+        _ => return Err("Unsupported checkpoint operation.".into()),
+    };
+    Ok(params)
+}
+
+#[tauri::command]
+pub async fn remote_checkpoint_action(
+    app: AppHandle,
+    host_id: String,
+    vm_id: String,
+    action: String,
+    name: Option<String>,
+    checkpoint_id: Option<String>,
+    new_name: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (method, params) = checkpoint_remote_request(
+            &vm_id,
+            &action,
+            name.as_deref(),
+            checkpoint_id.as_deref(),
+            new_name.as_deref(),
+        )?;
+        call_remote(&app, &host_id, method, params).map(|_| ())
+    })
+    .await
+    .map_err(|_| "Remote checkpoint worker failed.".to_string())?
+}
+
 #[tauri::command]
 pub async fn connect_remote_host(address: String) -> Result<RemoteHost, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -548,7 +608,7 @@ pub(crate) fn run_bridge() -> Result<(), String> {
     let streaming = request["method"] == "guest.ssh";
     write_frame(&mut socket, &request)?;
     let response = read_frame(&mut socket)?;
-    write_frame(std::io::stdout().lock(), &response)?;
+    write_stream_response(std::io::stdout().lock(), &response)?;
     if streaming && response.get("error").is_none() {
         socket.set_read_timeout(None).map_err(|e| e.to_string())?;
         let mut input = socket.try_clone().map_err(|e| e.to_string())?;
@@ -556,7 +616,7 @@ pub(crate) fn run_bridge() -> Result<(), String> {
             let _ = std::io::copy(&mut std::io::stdin().lock(), &mut input);
             let _ = input.shutdown(std::net::Shutdown::Write);
         });
-        std::io::copy(&mut socket, &mut std::io::stdout().lock()).map_err(|e| e.to_string())?;
+        copy_raw_stream(&mut socket, &mut std::io::stdout().lock()).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -592,7 +652,7 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
         thread::spawn(move || {
             let _ = std::io::copy(&mut std::io::stdin().lock(), &mut input);
         });
-        std::io::copy(&mut output, &mut std::io::stdout().lock()).map_err(|e| e.to_string())?;
+        copy_raw_stream(&mut output, &mut std::io::stdout().lock()).map_err(|e| e.to_string())?;
         Ok(())
     })();
     let _ = child.kill();
@@ -741,6 +801,7 @@ fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
     if !matches!(
         method,
         "runtime.action" | "runtime.upsert" | "runtime.delete" | "ssh.access.save" | "desktop.action"
+            | "checkpoint.create" | "checkpoint.fork" | "checkpoint.restore"
     ) {
         return execute();
     }
@@ -757,6 +818,18 @@ fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn checkpoint_actions_build_owner_routed_requests_with_vm_identity() {
+        let vm = "11111111-1111-4111-8111-111111111111";
+        assert_eq!(checkpoint_remote_request(vm, "create", Some("Point"), None, None).unwrap(),
+            ("checkpoint.create", json!({"vmId":vm,"name":"Point"})));
+        assert_eq!(checkpoint_remote_request(vm, "fork", None, Some("checkpoint-id"), Some("Branch")).unwrap(),
+            ("checkpoint.fork", json!({"vmId":vm,"checkpointId":"checkpoint-id","newName":"Branch"})));
+        assert_eq!(checkpoint_remote_request(vm, "restore", None, Some("checkpoint-id"), None).unwrap(),
+            ("checkpoint.restore", json!({"vmId":vm,"checkpointId":"checkpoint-id"})));
+        assert!(checkpoint_remote_request("not-an-id", "create", Some("Point"), None, None).is_err());
+    }
+
     #[test]
     fn desktop_tools_setup_has_time_to_install_over_remote_connection() {
         assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-tools"}})), Duration::from_secs(2100));
@@ -951,6 +1024,45 @@ fn relay_child(
 #[cfg(test)]
 mod stream_tests {
     use super::*;
+    #[test]
+    fn raw_binary_stream_reaches_output_without_newline_or_input_eof() {
+        let (mut source_writer, source_reader) = UnixStream::pair().unwrap();
+        let (output_writer, mut output_reader) = UnixStream::pair().unwrap();
+        output_reader
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let worker = thread::spawn(move || {
+            copy_raw_stream(source_reader, std::io::LineWriter::new(output_writer)).unwrap();
+        });
+        let payload = b"\0SSH binary\x01";
+        source_writer.write_all(payload).unwrap();
+        let mut observed = [0; 12];
+        let result = output_reader.read_exact(&mut observed);
+        drop(source_writer);
+        worker.join().unwrap();
+        assert!(result.is_ok(), "raw bytes remained buffered while input was open: {result:?}");
+        assert_eq!(&observed, payload);
+    }
+    #[test]
+    fn stream_reply_arrives_before_client_sends_ssh_bytes() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let worker = thread::spawn(move || {
+            let mut output = std::io::BufWriter::new(server);
+            write_stream_response(&mut output, &json!({"result":{}})).unwrap();
+            output.get_mut().set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut banner = [0; 4];
+            output.get_mut().read_exact(&mut banner).map(|_| banner)
+        });
+        let response = read_frame(&mut client);
+        if response.is_ok() {
+            client.write_all(b"SSH-").unwrap();
+        }
+        drop(client);
+        let banner = worker.join().unwrap();
+        assert_eq!(response.unwrap()["result"], json!({}));
+        assert_eq!(banner.unwrap(), *b"SSH-");
+    }
     fn child(program: &str, args: &[&str]) -> std::process::Child {
         Command::new(program)
             .args(args)

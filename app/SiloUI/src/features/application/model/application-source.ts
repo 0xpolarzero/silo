@@ -1,4 +1,5 @@
 import type { WorkspaceStorageState } from "./workspace-storage"
+import type { PendingCheckpointRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
 import type { LogLoader, LogQuery } from "./logs"
 import type { RemoteComputer, RemoteManagement, WorkspaceComputer } from "./remote-computers"
 import type { DirectoryLoader } from "./directory-store"
@@ -149,6 +150,9 @@ export interface ApplicationWorkspace {
   logs: ApplicationLog[]
   githubRepositories: string[]
   secretNames: string[]
+  checkpoints?: WorkspaceCheckpoint[]
+  checkpointOperation?: WorkspaceCheckpointOperation | null
+  pendingCheckpointRestore?: PendingCheckpointRestore | null
 }
 
 export interface ApplicationSecret {
@@ -258,6 +262,9 @@ export interface ApplicationSource {
 }
 
 export interface ApplicationActions {
+  createCheckpoint?: (workspace: string, name: string) => Promise<void>
+  forkCheckpoint?: (workspace: string, checkpointId: string | null, newName: string) => Promise<void>
+  restoreCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
   readWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   reclaimWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   refreshRepositories?: () => Promise<void>

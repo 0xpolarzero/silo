@@ -1,64 +1,96 @@
 {
-  "schemaVersion": 1,
-  "microsandboxVersion": "0.6.17",
+  "schemaVersion": 2,
+  "microsandboxVersion": "0.7.2",
   "libkrunfwVersion": "5.6.1",
-  "sourceCommit": "5eca4de8bf233e57f114140f8c076ea8c96f21ab",
-  "sourceArchiveSha256": "2b31ce2d344c585c859b060874353f0c9a36bcf832f050215776b3ea79695e06",
-  "patchPath": "patches/microsandbox-create-stopped-0.6.17.patch",
-  "patchSha256": "4c0eb66547fa8c6481ce36bf2d1f27dfce9da35c2fbd6e3ea85947567328d907",
+  "sourceCommit": "60d4dc8a436fb9365491567ec21d073e924e3c6d",
+  "sourceArchiveSha256": "fecd277ccfddbb4a131e4c9dfe056a87a014926c78dd705776d738158c483828",
   "toolchain": "1.94.0",
-  "features": "net,ssh",
-  "libkrunfwCommit": "21cb6dce19a615f63e41ecb913334d18560c1364",
+  "features": "net,ssh,embed-binaries",
+  "libkrunfwCommit": "cf4c22b9f05c680928e6d96a9d198f5845573a87",
   "targets": {
     "aarch64-apple-darwin": {
       "platform": "darwin",
       "arch": "aarch64",
       "executableAsset": "msb-darwin-aarch64",
-      "executableSha256": "2d3b8883da496ca7ec54f4ea122984022160295f9e4df2af198348fd1f24cdde",
+      "executableSha256": "b7292a901ffc93f84860264c6e0d4636cc9aeeddfb76c952f7c2204ea417ae4b",
       "agentdAsset": "agentd-aarch64",
-      "agentdSha256": "04bd19fcc184edc8323f588eb0fbfb9ffec00ae457bd9f6d1c62377223db5f4c",
+      "agentdSha256": "ca6dde7a3000d8e93d5dca87fcebf77ebb36ce83377385bae2be70dbead9a5e1",
       "libraryAsset": "libkrunfw-darwin-aarch64.dylib",
       "libraryName": "libkrunfw.5.dylib",
-      "librarySha256": "20b588c2031519cee3ad93fee4b2a0ca4805f2a3c721198911a6248fd34f65e0"
+      "librarySha256": "43e36ee2b1f2a7488c25f34193f657568a7733281d856ad267506ccc02993d59"
     },
     "aarch64-unknown-linux-gnu": {
       "platform": "linux",
       "arch": "aarch64",
       "executableAsset": "msb-linux-aarch64",
-      "executableSha256": "bab283cb12902838cff629f10b28683d322ae8ce09cc2d720e90d1b169857878",
+      "executableSha256": "33e4f5274b9eefa3a088d0f0c8b80a5e440fd60940c0469f71a389c6998cb714",
       "agentdAsset": "agentd-aarch64",
-      "agentdSha256": "04bd19fcc184edc8323f588eb0fbfb9ffec00ae457bd9f6d1c62377223db5f4c",
+      "agentdSha256": "ca6dde7a3000d8e93d5dca87fcebf77ebb36ce83377385bae2be70dbead9a5e1",
       "libraryAsset": "libkrunfw-linux-aarch64.so",
       "libraryName": "libkrunfw.so.5.6.1",
-      "librarySha256": "b5d205d504c3e1876c47dbb674534436b7aabc09b0fdb32d98b5fff438d9a5b6"
+      "librarySha256": "98d01137190de7022a3132c6f55c245ef43d02d67d5d7e697ee19c303fce8769"
     },
     "x86_64-unknown-linux-gnu": {
       "platform": "linux",
       "arch": "x86_64",
       "executableAsset": "msb-linux-x86_64",
-      "executableSha256": "7f79c9d0996fac42b4879f4798c6f985f7981b005af0a9b4b8b1ab5e590daee4",
+      "executableSha256": "bdaa6c6fc58fa3d8e85d52fc299106a013d979edd0a781b4bc6ddd21da0f8b16",
       "agentdAsset": "agentd-x86_64",
-      "agentdSha256": "c6c5e7f719cbde966b4a2a366bff8f6bdec8a45a0fd8afe3fcab27243d01d1f8",
+      "agentdSha256": "4d2b2aac7c4f2c54362f81b083c19715032d4f15468332bc1fa86bea29afe249",
       "libraryAsset": "libkrunfw-linux-x86_64.so",
       "libraryName": "libkrunfw.so.5.6.1",
-      "librarySha256": "d395efaa21984cc6934c900519909a12c8148d9688cfc88f9da3b42132ae32c2"
+      "librarySha256": "ce9a749e8471e89aa5e2ad88de0c1581c3384c100bcb107a75bb12739a12d590"
     }
   },
   "licenses": [
     {
       "name": "microsandbox-Apache-2.0.txt",
-      "url": "https://raw.githubusercontent.com/superradcompany/microsandbox/5eca4de8bf233e57f114140f8c076ea8c96f21ab/LICENSE",
+      "url": "https://raw.githubusercontent.com/superradcompany/microsandbox/60d4dc8a436fb9365491567ec21d073e924e3c6d/LICENSE",
       "sha256": "a276ca3381fefb9cde42fccae847856085c76027557d62eee83f057eb6c53433"
     },
     {
       "name": "libkrunfw-LGPL-2.1-only.txt",
-      "url": "https://raw.githubusercontent.com/superradcompany/libkrunfw/21cb6dce19a615f63e41ecb913334d18560c1364/LICENSE-LGPL-2.1-only",
+      "url": "https://raw.githubusercontent.com/superradcompany/libkrunfw/cf4c22b9f05c680928e6d96a9d198f5845573a87/LICENSE-LGPL-2.1-only",
       "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
     },
     {
       "name": "linux-GPL-2.0-only.txt",
-      "url": "https://raw.githubusercontent.com/superradcompany/libkrunfw/21cb6dce19a615f63e41ecb913334d18560c1364/LICENSE-GPL-2.0-only",
+      "url": "https://raw.githubusercontent.com/superradcompany/libkrunfw/cf4c22b9f05c680928e6d96a9d198f5845573a87/LICENSE-GPL-2.0-only",
       "sha256": "f6b78c087c3ebdf0f3c13415070dd480a3f35d8fc76f3d02180a407c1c812f79"
+    }
+  ],
+  "patches": [
+    {
+      "path": "patches/microsandbox-silo-network-0.7.2.patch",
+      "sha256": "36a7d2e5beaf8db3513df7255915ba146580cc5d46281a5371cdeea6eff6fd0c"
+    },
+    {
+      "path": "patches/microsandbox-restore-policy-0.7.2.patch",
+      "sha256": "8b8d9334d7358a7a985b32df1028d36f502d471d7221dea3e53d0efb85b2d5d9"
+    },
+    {
+      "path": "patches/microsandbox-create-stopped-0.7.2.patch",
+      "sha256": "c4c49e9d5eba20aec2882184adf3be4e75196071717f17051567f5ef7c70eafc"
+    },
+    {
+      "path": "patches/microsandbox-adopt-owned-disk-0.7.2.patch",
+      "sha256": "fd0024b0acc4a99e6168fd2d441671980503ab859928407815068d70e246edd3"
+    },
+    {
+      "path": "patches/microsandbox-log-retention-desktop-start-0.7.2.patch",
+      "sha256": "22fa041105496be712eb58659bdcc29e950b2cd38c6bc5fd6182c1cb478f293b"
+    },
+    {
+      "path": "patches/microsandbox-restore-root-capacity-0.7.2.patch",
+      "sha256": "3cb4f401df48cb4d2382716d6a51bc51af22a4087abdd106680d3338e82ffebe"
+    },
+    {
+      "path": "patches/microsandbox-portable-image-cache-0.7.2.patch",
+      "sha256": "23b3b8e3cbc9ec20160306fd2aab5b196418efe132ed830e2e18738a89cfff57"
+    },
+    {
+      "path": "patches/microsandbox-live-public-ports-0.7.2.patch",
+      "sha256": "ad1abf1973c7e542ec7015575ab4ad35b321ac434e2bb9049aef096fa6b2b012"
     }
   ]
 }

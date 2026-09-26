@@ -21,8 +21,7 @@ export const LIBKRUNFW_VERSION: string
 export const RELEASE_BASE_URL: string
 export const MICROSANDBOX_SOURCE_URL: string
 export const MICROSANDBOX_SOURCE_SHA256: string
-export const MICROSANDBOX_PATCH_PATH: string
-export const MICROSANDBOX_PATCH_SHA256: string
+export const MICROSANDBOX_PATCHES: readonly { path: string; sha256: string }[]
 export const MICROSANDBOX_BUILD_TOOLCHAIN: string
 export const MICROSANDBOX_BUILD_FEATURES: string
 export const runtimeTargets: Readonly<Record<string, Readonly<RuntimeTarget>>>
@@ -48,7 +47,7 @@ export function stageRuntime(options: {
     targetTriple: string
     hostTriple: string
     sourceArchive: ArrayBufferView
-    patch: ArrayBufferView
+    patches: ArrayBufferView[]
     agentd: ArrayBufferView
     cacheRoot: string
   }) => Promise<ArrayBufferView>

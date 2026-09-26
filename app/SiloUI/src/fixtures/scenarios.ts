@@ -56,7 +56,7 @@ const bootstrapConfiguration = {
 const passingPreflightChecks = [
   { id: "system-os", title: "Supported OS", status: "pass", detail: "macOS 15.6 · Apple silicon", remediation: null },
   { id: "system-virtualization", title: "Virtualization", status: "pass", detail: "Apple Hypervisor available", remediation: null },
-  { id: "runtime-microsandbox", title: "MicroSandbox runtime", status: "pass", detail: "Bundled msb 0.6.17 · libkrunfw 5.6.1", remediation: null },
+  { id: "runtime-microsandbox", title: "MicroSandbox runtime", status: "pass", detail: "Bundled msb 0.7.2 · libkrunfw 5.6.1", remediation: null },
   { id: "tool-git", title: "Git", status: "pass", detail: "Bundled Git 2.53.0", remediation: null },
   { id: "tool-git-lfs", title: "Git LFS", status: "pass", detail: "Bundled Git LFS 3.7.1", remediation: null },
 ] satisfies SiloPreflightCheck[]

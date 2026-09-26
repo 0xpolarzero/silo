@@ -41,7 +41,7 @@
   },
   "ports": [],
   "secrets": {
-    "on_violation": "block-and-log",
+    "violation_action": "block-and-log",
     "secrets": [
       {
         "allowed_hosts": [
@@ -56,12 +56,12 @@
           }
         ],
         "env_var": "SILO_GITHUB",
-        "injection": {
-          "basic_auth": true,
+        "substitution": {
           "body": false,
           "headers": true,
-          "query_params": false
+          "query": false
         },
+        "passthrough_hosts": ["any"],
         "placeholder": "$MSB_SILO_GITHUB",
         "require_tls_identity": true,
         "source": {
@@ -72,6 +72,7 @@
       }
     ]
   },
+  "strict": false,
   "tls": {
     "block_quic_on_intercept": true,
     "bypass": [],

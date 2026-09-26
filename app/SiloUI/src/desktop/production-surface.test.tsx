@@ -6,6 +6,7 @@ import type { DependencyStore } from "./dependencies"
 import { ProductionSurface } from "./production-surface"
 
 vi.mock("./shutdown-boundary", () => ({ ShutdownBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
+vi.mock("./runtime-migration-boundary", () => ({ RuntimeMigrationBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
 const state = vi.hoisted(() => ({ source: {} as object | null, loading: false, error: null as string | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn() }))
 vi.mock("./production-source", () => ({ useProductionSource: () => ({ source: state.source, backup: {}, loading: state.loading, error: state.error, savedMachines: [{ id: "saved", name: "saved-machine", kind: "ssh", host: "host", user: "user", port: 22 }] }) }))
 vi.mock("./dependencies", () => ({ useDependencyStore: () => ({ checks: state.checks, retry: state.retry }) }))

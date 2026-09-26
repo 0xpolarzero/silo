@@ -18,6 +18,8 @@ mod github_http;
 #[cfg(test)]
 mod github_build_tests;
 #[cfg(test)]
+mod command_permissions_tests;
+#[cfg(test)]
 mod github_permissions_tests;
 #[cfg(test)]
 mod github_live_tests;
@@ -30,6 +32,7 @@ mod host_push_operations;
 mod network;
 mod notifications;
 mod runtime;
+mod runtime_migration;
 mod log_export;
 mod log_retention;
 mod remote;
@@ -157,6 +160,7 @@ fn main() {
             remote::remove_remote_host,
             remote::remote_host_snapshot,
             remote::remote_workspace_action,
+            remote::remote_checkpoint_action,
             remote::remote_upsert_machine,
             remote::remote_delete_machine,
             system_integrations::read_system_integrations,
@@ -168,6 +172,9 @@ fn main() {
             applications::choose_application,
             dependencies::read_dependencies,
             backup_controller::read_backup_state,
+            runtime_migration::read_runtime_migration_state,
+            runtime_migration::retry_runtime_migration,
+            runtime_migration::continue_after_migration_failure,
             backup_controller::choose_backup_destination,
             backup_controller::choose_backup_archive,
             backup_controller::inspect_backup_archive,
@@ -186,12 +193,16 @@ fn main() {
             runtime::configure_workspace_identities,
             runtime::verify_workspace_identities,
             runtime::workspace_action,
+            runtime::checkpoints::create_checkpoint,
+            runtime::checkpoints::fork_checkpoint,
+            runtime::checkpoints::restore_checkpoint,
             backup_controller::retry_workspace_start,
             runtime::read_setup_activity,
             runtime::save_machine_configuration
         ])
         .setup(|app| {
             settings::install(app.handle());
+            runtime_migration::install(app.handle())?;
             remote::start(app.handle().clone())?;
             secrets::install(app.handle())?;
             github::install(app.handle());

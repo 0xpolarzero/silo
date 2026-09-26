@@ -4,7 +4,25 @@ Date: 2026-09-23. This is the execution brief for the next agent. It takes
 precedence over the investigation order and unqualified causal claims in the
 2026-09-22 reports. Read it completely before changing or starting the PoC.
 
-**Latest handoff, 2026-09-23:** The fresh, final PoC run
+**Tool selection update, 2026-09-24:** the user requires reuse of maintained,
+well-recognized tools before custom infrastructure. Keep the Python credential
+broker as a fixture only. Read the
+[credential-tool comparison](research/e2b-credential-tools-2026-09-24.md)
+before credential implementation work: qualify iron-proxy first and Infisical
+Agent Vault second, preserve the existing credential acceptance contract, and do not
+infer production readiness from vendor reputation or the fixture passes.
+
+**Current status, reconciled 2026-09-24:** use the
+[updated gate matrix](research/e2b-qualification-gates-2026-09-23.md) and the
+last 2026-09-24 work-log entries for remaining work. Durable host shutdown,
+suite self-cleanup, packaged Tauri input/IPC isolation, real-provider subsets
+and basic two-computer lifecycle now have passing evidence. Qualification
+still requires upstream preservation fixes, the selected credential tool,
+and the matrix's unexecuted access, operations, export/resource and platform
+cases. No new user input is currently needed to continue independent work.
+This does not authorize a production cutover or broader UI redesign.
+
+**Historical handoff, 2026-09-23:** The fresh PoC run
 `afe75b686e9a47c19e2b83e5c47d30fd` passed all six desktop and three
 synthetic Git cases on the separate owned diagnostic VM after the viewer-owner
 fix and LCU fixture timing fix. The qualification report SHA-256 is

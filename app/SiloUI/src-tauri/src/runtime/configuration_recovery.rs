@@ -95,14 +95,53 @@ pub(super) fn finish(paths: &RuntimePaths) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-pub(crate) fn command_lock(paths: &RuntimePaths, timeout: Duration) -> Result<File, RuntimeError> {
+/// A parent-held command lock releases the shared flock even when a concurrent
+/// fork temporarily inherited its descriptor before exec closed it.
+pub(crate) struct CommandLock {
+    file: File,
+    inherited_by_child: bool,
+}
+
+impl CommandLock {
+    /// Keep the flock until the deliberately inheriting runtime child exits.
+    /// Call only after a child with the lock's close-on-exec flag cleared spawned.
+    pub(crate) fn mark_inherited_by_child(&mut self) {
+        self.inherited_by_child = true;
+    }
+
+    /// Once the child is reaped, the parent can release any copies temporarily
+    /// inherited by unrelated forks while that child was running.
+    pub(crate) fn mark_child_exited(&mut self) {
+        self.inherited_by_child = false;
+    }
+}
+
+impl AsRawFd for CommandLock {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        self.file.as_raw_fd()
+    }
+}
+
+impl Drop for CommandLock {
+    fn drop(&mut self) {
+        if !self.inherited_by_child {
+            // SAFETY: this descriptor remains owned by self until after Drop.
+            // LOCK_UN also releases copies inherited by unrelated forks.
+            unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN); }
+        }
+    }
+}
+
+pub(crate) fn command_lock(paths: &RuntimePaths, timeout: Duration) -> Result<CommandLock, RuntimeError> {
     prepare_runtime_home(&paths.home, paths.storage_home.as_deref())?;
     let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
         .open(paths.home.join(".silo-configuration-worker.lock")).map_err(failure)?;
     let started = Instant::now();
     loop {
         // SAFETY: the open file owns this descriptor until the lock is dropped.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 { return Ok(file); }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(CommandLock { file, inherited_by_child: false });
+        }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::WouldBlock { return Err(failure(error)); }
         if started.elapsed() >= timeout { return Err(failure("The previous sandbox command is still finishing. Retry after it exits.")); }
@@ -270,6 +309,89 @@ fn recover_inner(app: &AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_command_lock_release_survives_an_unrelated_fork() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        for completed_child in [false, true] {
+            let mut lock = command_lock(&paths, Duration::ZERO).unwrap();
+            if completed_child {
+                lock.mark_inherited_by_child();
+                lock.mark_child_exited();
+            }
+            let mut ready = [0; 2];
+            let mut release = [0; 2];
+            // SAFETY: only async-signal-safe libc calls run in the child. The pipes
+            // keep it alive until the parent has tested the inherited descriptor.
+            unsafe {
+                assert_eq!(libc::pipe(ready.as_mut_ptr()), 0);
+                assert_eq!(libc::pipe(release.as_mut_ptr()), 0);
+                let child = libc::fork();
+                assert!(child >= 0);
+                if child == 0 {
+                    libc::close(ready[0]);
+                    libc::close(release[1]);
+                    let marker = [1u8];
+                    libc::write(ready[1], marker.as_ptr().cast(), 1);
+                    let mut finish = [0u8];
+                    libc::read(release[0], finish.as_mut_ptr().cast(), 1);
+                    libc::_exit(0);
+                }
+                libc::close(ready[1]);
+                libc::close(release[0]);
+                let mut marker = [0u8];
+                assert_eq!(libc::read(ready[0], marker.as_mut_ptr().cast(), 1), 1);
+                drop(lock);
+                let reacquired = command_lock(&paths, Duration::ZERO).is_ok();
+                libc::write(release[1], marker.as_ptr().cast(), 1);
+                assert_eq!(libc::waitpid(child, std::ptr::null_mut(), 0), child);
+                libc::close(ready[0]);
+                libc::close(release[1]);
+                assert!(reacquired, "an unrelated fork kept the released command lock");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deliberately_inherited_command_lock_survives_parent_release() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        let mut lock = command_lock(&paths, Duration::ZERO).unwrap();
+        let mut ready = [0; 2];
+        let mut release = [0; 2];
+        // SAFETY: only async-signal-safe libc calls run in the child.
+        unsafe {
+            assert_eq!(libc::pipe(ready.as_mut_ptr()), 0);
+            assert_eq!(libc::pipe(release.as_mut_ptr()), 0);
+            let child = libc::fork();
+            assert!(child >= 0);
+            if child == 0 {
+                libc::close(ready[0]);
+                libc::close(release[1]);
+                let marker = [1u8];
+                libc::write(ready[1], marker.as_ptr().cast(), 1);
+                let mut finish = [0u8];
+                libc::read(release[0], finish.as_mut_ptr().cast(), 1);
+                libc::_exit(0);
+            }
+            libc::close(ready[1]);
+            libc::close(release[0]);
+            let mut marker = [0u8];
+            assert_eq!(libc::read(ready[0], marker.as_mut_ptr().cast(), 1), 1);
+            lock.mark_inherited_by_child();
+            drop(lock);
+            let held = command_lock(&paths, Duration::ZERO).is_err();
+            libc::write(release[1], marker.as_ptr().cast(), 1);
+            assert_eq!(libc::waitpid(child, std::ptr::null_mut(), 0), child);
+            libc::close(ready[0]);
+            libc::close(release[1]);
+            assert!(held, "the surviving child lost the command lock");
+            drop(command_lock(&paths, Duration::ZERO).unwrap());
+        }
+    }
+
     #[test]
     fn working_account_recovery_provisions_only_labelled_interrupted_creations() {
         struct InterruptedRuntime {
@@ -300,7 +422,7 @@ mod tests {
                 "image":{"Oci":{"root_disk":{"kind":"managed","size_mib":10240}}},
                 "resources":{"cpus":1,"max_cpus":2,"memory_mib":4096,"max_memory_mib":8192},
                 "labels":{"silo.managed":"true","silo.machine-id":machine.id()},
-                "mounts":[{"type":"DiskImage","host":disk_path(&paths,"dev","workspace"),"guest":"/workspace","format":"Raw","fstype":"ext4"}]
+                "mounts":[{"type":"Owned","guest":"/workspace","storage":{"kind":"disk","capacity_mib":10240}}]
             }});
             if unified { inspected["config"]["labels"]["silo.working-account"] = json!("1"); }
             let runner = InterruptedRuntime { inspected, calls: Mutex::new(Vec::new()) };

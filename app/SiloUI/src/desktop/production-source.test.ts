@@ -31,6 +31,54 @@ function native(overrides: Partial<ProductionBridge> = {}) {
 }
 
 describe("production application bridge", () => {
+  it("normalizes native checkpoint epoch milliseconds at the application boundary", () => {
+    const createdAt = Date.UTC(2026, 8, 25, 12, 34, 56)
+    const response = structuredClone(source) as unknown as Record<string, unknown>
+    const workspaces = response.workspaces as Array<Record<string, unknown>>
+    workspaces[0].checkpoints = [{
+      id: "point-1", name: "Native timestamp", createdAt, scope: "full", reason: "manual",
+    }]
+
+    const parsed = parseApplicationSource(response)
+    expect(parsed.workspaces[0].checkpoints?.[0].createdAt).toBe(new Date(createdAt).toISOString())
+  })
+
+  it("sends checkpoint commands with the VM ID and publishes the returned checkpoint history", async () => {
+    const mock = native()
+    const updated = structuredClone(source)
+    updated.workspaces[0].checkpoints = [{ id: "point-1", name: "Before refactor", createdAt: "2026-09-25T10:00:00Z", scope: "full", reason: "manual" }]
+    let changed = false
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (["create_checkpoint", "fork_checkpoint", "restore_checkpoint"].includes(command)) { changed = true; return updated }
+      if (command === "read_application_state" && changed) return updated
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await store.applicationActions.createCheckpoint!("dev", "Before refactor")
+      expect(invoke).toHaveBeenCalledWith("create_checkpoint", { workspaceId: source.workspaces[0].machine.id, name: "Before refactor" })
+      expect(store.getSnapshot().source?.workspaces[0].checkpoints?.[0].id).toBe("point-1")
+      await store.applicationActions.forkCheckpoint!("dev", "point-1", "experiment")
+      expect(invoke).toHaveBeenCalledWith("fork_checkpoint", { workspaceId: source.workspaces[0].machine.id, checkpointId: "point-1", newName: "experiment" })
+      await store.applicationActions.restoreCheckpoint!("dev", "point-1")
+      expect(invoke).toHaveBeenCalledWith("restore_checkpoint", { workspaceId: source.workspaces[0].machine.id, checkpointId: "point-1" })
+    } finally { store.dispose() }
+  })
+
+  it("routes checkpoint actions through the owning remote computer", async () => {
+    const mock = native()
+    const store = createProductionSource(mock.bridge)
+    await store.applicationActions.createCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point")
+    await store.applicationActions.forkCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-id", "branch")
+    await store.applicationActions.restoreCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-id")
+    expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "create", name: "point" })
+    expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "fork", checkpointId: "point-id", newName: "branch" })
+    expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "restore", checkpointId: "point-id" })
+    expect(mock.invoke.mock.calls.some(([command]) => ["create_checkpoint", "fork_checkpoint", "restore_checkpoint"].includes(command as string))).toBe(false)
+    store.dispose()
+  })
+
   it("refreshes repository rows while visible without overlapping slow reads and stops on disposal", async () => {
     vi.useFakeTimers()
     const mock = native()

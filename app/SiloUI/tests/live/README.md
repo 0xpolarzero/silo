@@ -42,7 +42,7 @@ Also provide `SILO_TEST_MSB` and `SILO_TEST_LIBKRUNFW` pointing to Silo's patche
 
 After native checks, the harness starts the existing ignored `github_authenticated_guest_workflow` test. Its process receives only scoped child tokens, fixture names and the required host toolchain environment. It does not receive the App client secret or parent user token. Child output is suppressed to avoid credential disclosure.
 
-The guest test uses a temporary managed VM to check real Git clone/fetch/push, `gh`, Git LFS roundtrip, absence of real tokens in guest environment/configuration, live write removal, full access removal, restoration and unchanged VM boot ID. It creates a unique test branch and deletes it during cleanup. Uploaded LFS objects can remain in GitHub storage after branch deletion; these repositories must be disposable.
+The guest test uses a temporary managed VM to check real Git clone/fetch/push, `gh`, Git LFS roundtrip, absence of real tokens in guest environment/configuration, live write removal, full access removal, restoration and unchanged VM boot ID. It also snapshots the source while write access is assigned, restores a fork after assigning that target a read-only profile, and verifies read access works while issue mutation and Git push fail immediately. The restore does not repair policy after guest start. It creates a unique test branch and deletes it during cleanup. Uploaded LFS objects can remain in GitHub storage after branch deletion; these repositories must be disposable.
 
 This harness does not automate browser consent, sign-in cancellation, token refresh expiry or Linux hardware. Those require their own explicit verification. A passing ordinary suite or a compiled ignored test is **not** an authenticated integration pass.
 

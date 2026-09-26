@@ -46,6 +46,11 @@ class MigrationTests(unittest.TestCase):
                     output = '1'
                 elif args[1] == 'inspect':
                     output = json.dumps(self.state(workspace))
+                elif args[1:3] == ['snapshot', 'create']:
+                    snapshot = root / 'backup/fixture/snap_created'
+                    (snapshot / 'layers').mkdir(parents=True)
+                    (snapshot / 'snapshot.json').write_text('{}')
+                    output = ''
                 elif args[1] == 'exec':
                     raise subprocess.CalledProcessError(1, args)
                 else:
@@ -53,9 +58,55 @@ class MigrationTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 0, output, '')
             with self.assertRaises(subprocess.CalledProcessError):
                 host.migrate('/msb', 'fixture', root / 'backup', apply=True, run=run)
+            self.assertIn([
+                '/msb', 'snapshot', 'create', '--from-sandbox', 'fixture',
+                '--dest-dir', str((root / 'backup').resolve()), 'root', '--integrity',
+            ], commands)
             self.assertEqual((root / 'backup/workspace.raw').read_bytes(), b'private workspace')
             self.assertNotIn('modify', [command[1] for command in commands])
             self.assertEqual(commands[-1], ['/msb', 'stop', 'fixture'])
+
+    def test_resume_verifies_the_snapshot_descriptor_created_by_072(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / 'disk.raw'
+            workspace.write_bytes(b'private workspace')
+            backup = root / 'backup'
+            snapshot = backup / 'fixture/snap_created'
+            state = self.state(workspace)
+            commands = []
+            fail_first_start = True
+
+            def run(args, **kwargs):
+                nonlocal fail_first_start
+                commands.append(args)
+                if args[1] == '--silo-working-account-protocol':
+                    output = '1'
+                elif args[1] == 'inspect':
+                    output = json.dumps(state)
+                elif args[1:3] == ['snapshot', 'create']:
+                    (snapshot / 'layers').mkdir(parents=True)
+                    (snapshot / 'snapshot.json').write_text('{}')
+                    output = ''
+                elif args[1:3] == ['snapshot', 'verify']:
+                    self.assertEqual(args[3], str(snapshot.resolve()))
+                    output = ''
+                elif args[1] == 'start' and fail_first_start:
+                    fail_first_start = False
+                    state['status'] = 'Stopped'
+                    raise subprocess.CalledProcessError(1, args)
+                elif args[1] == 'modify':
+                    state['config']['labels']['silo.working-account'] = '1'
+                    output = ''
+                else:
+                    output = ''
+                return subprocess.CompletedProcess(args, 0, output, '')
+
+            with self.assertRaises(subprocess.CalledProcessError):
+                host.migrate('/msb', 'fixture', backup, apply=True, run=run)
+            self.assertEqual((backup / 'root-snapshot-path.txt').read_text(), 'fixture/snap_created\n')
+            host.migrate('/msb', 'fixture', backup, apply=True, run=run, resume=True)
+            self.assertIn(['/msb', 'snapshot', 'verify', str(snapshot.resolve())], commands)
 
     def test_credentials_binary_and_launcher_relocation(self):
         with tempfile.TemporaryDirectory() as root:

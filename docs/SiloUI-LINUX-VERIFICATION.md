@@ -221,6 +221,117 @@ all sixteen passes, `gnome-services.json` records the five service assertions,
 `gnome-notification.png` shows the real banner, and the D-Bus/GNOME logs record
 delivery. All test-owned Silo, GNOME and WebDriver processes were removed.
 
+## September 2026 x86-64 checkpoint migration qualification
+
+An isolated Ubuntu 24.04 KVM container on the devbox host used a genuine
+MicroSandbox 0.6.17 Silo guest, migrated it through the production 0.7.2
+application, and exercised the packaged AppDir binary with SHA-256
+`42b4a7bf4d3c7c3a66a47fe2702f2eb4da370d9f209a85e356d605dce65333c1`.
+The core production WebKit run passed eleven lifecycle checks, including
+explicit Start, full checkpoint, stopped fork, RAM/process survival, restore,
+recovery fork, disk rollback and host-side isolation. Evidence is in the
+task-owned container at `/work/evidence/lifecycle-full-final5/lifecycle.json`.
+
+The production archive command wrote the v3 file
+`/work/archives/Silo-Backup-1790360984.silo-backup` (922,837,009 bytes).
+Production import created a stopped VM. Its explicit Start cold-booted the
+captured disk, and a guest probe verified the original workspace marker and
+absence of post-checkpoint source/fork files. Evidence is
+`/work/evidence/resume-imported-v3-final/lifecycle.json`. The overall archive
+continuation **did not pass**: a second export of the source failed while
+writing its self-contained snapshot with
+`snapshot identity snap_a6253d64fbdc953f3dfd3eb4d730a211 has 5 local copies; use group:member or an explicit artifact path`.
+The source and imported VM were left stopped. Native GTK folder-picker
+automation was not verified; archive export/import used real production Tauri
+commands in the main WebView, with no archive mocks.
+
+The tested Silo flow's repeat export failed with the ambiguous-ID error above.
+Inspection of pinned MicroSandbox 0.7.2 source explains a possible integration
+failure but does not establish an upstream contract violation. The [runtime
+manifest](../app/SiloUI/src-tauri/runtime/microsandbox/manifest.json) pins
+source commit `60d4dc8a436fb9365491567ec21d073e924e3c6d`. In that source,
+`sdk/rust/lib/backend/local/snapshot/lineage.rs` persists a snapshot ID for the
+source cursor; `snapshot/archive.rs::resolve_parent_artifact` prefers a
+same-group sibling parent before global lookup; and
+`snapshot/store.rs::lookup_by_digest` rejects multiple local copies of one
+snapshot ID. Silo creates each export capture in a fresh group, while the
+inspected resolver has explicit same-group handling. The supported contract
+between these behaviors is not established. The qualification did not run an
+independent MicroSandbox-CLI-only reproduction or inventory the five copies;
+earlier failed imports may have contributed duplicates. Thus a single clean
+import followed by repeat export has not been proven to fail. The release gate
+remains open for this Silo/MicroSandbox integration behavior. No snapshot index
+or lineage record was hand-edited.
+
+### September 26 follow-up
+
+The native GTK folder chooser was subsequently exercised successfully. It
+selected `/home/siloqa/silo-linux-ui-qualification-luna/ui-run-20260926-short-home/home/backups`
+and exported a source-only v3 archive of SHA-256
+`73791219b0b3fe2ecfed8a323480b96a4fa9c548d0692c214b680abdb432b2e1`; the
+accepted-folder screenshot is retained as
+`native-folder-picker-accepted.png` under the isolated guest's `evidence/`
+directory. This proves chooser acceptance and one source-only export, not an
+import or repeated export.
+
+The portable-image-cache fix was exercised in a fresh XDG/MSB_HOME: import
+registered a stopped VM, its regenerated VMDK extents referenced the new
+destination cache, and explicit Start plus `qemu-img` verified the 40 GiB root.
+
+The authentic x86 predecessor then passed production migration and lifecycle
+qualification with the runtime-7 package SHA-256
+`f741e941c7d215835282ab7159b7ae32cef50bfba51311aceb5593ed9a4b1189`. Migration
+completed 1/1 and the converted VM appeared stopped in the real overview.
+Explicit Start/Stop preserved `/workspace/sentinel` with bytes
+`legacy-source-before-checkpoint\n` and UID:GID `1001:1001`. Full checkpoint,
+fork, restore, disk independence, RAM/process survival, and recovery assertions
+passed before the helper stalled at its GTK chooser step. The GTK chooser had
+already passed separately: it selected the backup folder and wrote a valid
+source-only archive, SHA-256
+`73791219b0b3fe2ecfed8a323480b96a4fa9c548d0692c214b680abdb432b2e1`.
+
+The same-home export matrix passed with exactly one seed export, one import,
+one stopped fork, and two exports each from source/import/fork. All seven
+archives including the seed verified; the source group and imported group
+remained stable after app relaunch. Each VM retained 2 CPU, 2048 MiB RAM, and
+an 8 GiB root; `qemu-img` reported 8,589,934,592 bytes for each raw root image.
+Evidence is
+[`snapshot-groups-result.json`](../app/SiloUI/src-tauri/target/verification/x86-legacy-final7-matrix-20260926/evidence/snapshot-groups-result.json).
+
+The guest desktop service's exact stale `:1` lock/socket recovery passed 35
+focused tests. A later X11-directory normalization fix passed 40 focused
+tests, including preservation of a healthy live supervisor, and its x86 guest
+package passed live recovery from the verified dead-display state. The
+September 27 production desktop run preserved an unsaved Mousepad buffer
+through full checkpoint, stopped-fork Start, and source restore; its package
+and evidence are recorded in the Linux acceptance research note. The positive
+live remote-viewer gate passed on the later x86 AppImage described below. The final
+eight-patch runtime passed ARM64 packaging and live port-control tests. The
+AppImage rebuilt after the guest script fix has SHA-256
+`f32c1049cb53fb28d8767ae12e6db8512a3f316f60746a227fc81bb8ed369a61`; tested
+`msb` SHA-256:
+`f552ad75296c8964b7ed974e1fafac2533374e4caefe2c09dc34321c250ba06b`;
+runtime-input manifest SHA-256:
+`be2b4f29fb21faf08df79ddae12c5b070b762f7ad79588fe07b0d4dd8efc35fd`. Live
+proof covers positive/denied/absent probes, 128-port enforcement, occupied
+host-port conflict preservation, established relay closure, and immediate
+port reuse. Evidence is in
+[`native8-live-ports/`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/).
+The initial patch8 transfer to the x86 build host was rejected by automatic
+review. The user later authorized the exact transfer, and the x86 native8
+runtime was built and exercised in the task-owned Ubuntu 24.04 guest. Its live
+port proof passed positive, absent, and ingress-denied probes; denied-listener
+behavior; host-port-zero allocation; idempotence and conflict preservation;
+the 128-port cap; established relay closure after removal; and exact-port
+republish with new traffic. The guest was stopped and mappings removed.
+Evidence is [`x86-live-ports.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/x86-live-ports.json)
+(SHA-256 `b6991e628ae18875057dac7c043caace1f6c357bad145f052137c2312d29935d`);
+the tested `msb` SHA-256 is
+`285d0bb9a67dcef45e78fe4e4f2bc1608fa4ae6e3532053461c54a8878be2fe2`.
+The final AppImage package-content and dependency smoke is still in progress;
+this live runtime proof alone does not establish package verification or
+release readiness.
+
 ## Primary sources
 
 - [Tauri WebDriver](https://v2.tauri.app/develop/tests/webdriver/): external
@@ -241,3 +352,107 @@ delivery. All test-owned Silo, GNOME and WebDriver processes were removed.
   the real GNOME extension supplies StatusNotifierItem support.
 - [GNOME notifications](https://help.gnome.org/gnome-help/shell-notifications.html):
   desktop banners and the notification list are owned by GNOME Shell.
+
+## Patch8 ARM64 package and live network proof, 26 September 2026
+
+A task-owned Ubuntu 24.04 ARM64 Lima VM built the final 0.7.2 MicroSandbox patch series with `net,ssh,embed-binaries` and staged it through `stageRuntime`. The app checkout was compared against a hash-only manifest of 557 current source and input files before the supported `npm run desktop:build -- --bundles appimage` command; all 557 matched. The manifest excluded private GitHub configuration, credentials, generated targets, `node_modules`, and runtime output. No x86 build or app package is implied by this ARM result.
+
+The initial `Silo_0.9.0_aarch64.AppImage` SHA-256 was `4c6aee7c1352611ee931ca2a747186e88c7ebe58d09c31aaa4a15b93ec3c8ae3`. Extraction showed the packaged MicroSandbox executable SHA-256 `f552ad75296c8964b7ed974e1fafac2533374e4caefe2c09dc34321c250ba06b`, matching the binary exercised against the live task guest. The packaged runtime manifest SHA-256 was `8d4c9b61cffb3d3bee8096d2c4684ff901f89f59f35a995e6394e41ef3ddd41d`; it records all eight patches and patch8 SHA-256 `ad1abf1973c7e542ec7015575ab4ad35b321ac434e2bb9049aef096fa6b2b012`. Packaged MicroSandbox, Git, Git LFS, Git remotes, and libkrunfw matched their manifests. MicroSandbox, Git, and Git LFS version commands ran; `ldd` found no unresolved dependencies for the app, MicroSandbox, or Git, and Git LFS is static. Evidence: `app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-smoke.json` (SHA-256 `5c17ceb46e35a43481ad46bf7ceafccd7eeca9de5fdecfc67555311d413b3041`).
+
+The isolated live guest used the same final8 MicroSandbox binary and confirmed positive, absent, and ingress-denied direct TCP probes; a denied published listener; exact mapping preservation after an occupied-port error; the 128-publication limit; an established echo relay closed after `port_remove`; and immediate exact-port republishing with new echo traffic. The client checked EOF/reset after receiving the remove response. The native implementation waits for its owned relay task to stop before sending that response. All test mappings were removed and the guest stopped gracefully. Evidence: `app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-live-ports.json` (SHA-256 `f675e4dbf1e98c4a77c697a02709a9b822ab2891b479e59795513a8d330faefb`). This proves native port behavior and package contents; it does not exercise the Network panel in an installed AppImage.
+
+The first patch8 transfer to the x86 build host was rejected by automatic review. The user later authorized that exact transfer; the resulting x86 runtime8 live proof and final AppImage verification are recorded below. The earlier rejection is historical, not a remaining gate.
+
+## Patch8 x86-64 package and live network proof, 27 September 2026
+
+The final x86 AppImage SHA-256 is
+`58a0516b396632390b9637966219ff732b577810fcf18483dcc9cbb1409d804a`.
+Its extracted application executable SHA-256 is
+`e2d23bb113a5d10f7ddf93d89b95a5cc3e6bf4839a31e2316dd8385628a6cad0`; the
+embedded MicroSandbox SHA-256 is
+`285d0bb9a67dcef45e78fe4e4f2bc1608fa4ae6e3532053461c54a8878be2fe2`.
+The staged runtime manifest SHA-256 is
+`d0c5dbf0c10d0d04eddf4f08f2d1957b7c6b9407170d58e327820a9b355875ad` and
+records all eight patches. The package smoke verified the embedded payload
+hashes, MicroSandbox 0.7.2 and all five Silo protocol probes, Git/Git LFS
+versions and hashes, and dynamic dependencies for the app, MicroSandbox, and
+Git. The preserved package report is
+[`package-smoke.json`](../app/SiloUI/src-tauri/target/verification/native8-final-package/package-smoke.json)
+(SHA-256 `d7b44744a6b363237293a6182d4b39784fccfc0390c08f4f785ba265baf68d04`);
+the verified AppImage is stored beside it. The final x86 live port result is
+[`x86-live-ports.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/x86-live-ports.json)
+(SHA-256 `b6991e628ae18875057dac7c043caace1f6c357bad145f052137c2312d29935d`);
+it covers allowed, absent, and ingress-denied probes, bind conflicts and
+mapping preservation, the 128-port cap, relay closure on removal, and
+successful exact-port reuse. The guest was stopped and mappings removed.
+These checks ran on an Ubuntu 24.04 x86-64 guest with nested KVM under an
+Ubuntu 26 host; they are not bare-metal coverage. Release signing and
+distribution remain outside this qualification.
+
+After the root-owned X11-directory normalization fix, the same task-owned ARM64
+checkout rebuilt the AppImage using the supported command and existing native8
+cache. The new AppImage SHA-256 is
+`ae027cf42f654d63afcba238bf8e8172c6ee5633e759adc828e9be04802a44f6`.
+The extracted app executable contains the exact full
+`desktop-service.py` source bytes with SHA-256
+`735bd1ee3acda327c46fe031953f2e399d8f3c9a9a1008a234f08e6d7de035dc`.
+Its packaged MicroSandbox SHA-256 remains
+`f552ad75296c8964b7ed974e1fafac2533374e4caefe2c09dc34321c250ba06b`,
+the earlier live-tested binary. The eight-patch runtime manifest SHA-256 remains
+`8d4c9b61cffb3d3bee8096d2c4684ff901f89f59f35a995e6394e41ef3ddd41d`.
+Packaged Git support hashes, version commands, and unresolved-dependency checks
+passed. Evidence is
+[`arm64-package-x11-fix.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-x11-fix.json)
+(SHA-256 `be7686f86d6333cf6cd11ba091983afe077248834ca85cb3993bc02aaf7c68af`).
+This is a package-content and dependency check; it did not rerun installed-app
+UI or live VM behavior.
+
+The remote desktop bridge then fixed a deterministic framed-response deadlock by
+flushing its buffered writer. The new regression failed before the fix and
+passed after it; the focused stream suite passed 4/4. The ARM64 app was rebuilt
+from `remote.rs` SHA-256
+`21249ff78fecbd23aef9293c44bb2cabe4534a3578a5aa2e1f062a285b00b5a9`
+and the unchanged guest service source above. That AppImage SHA-256 is
+`9be614fb8dcb33148bd791da698ada6ab46ae8d31e8e26c94f8abc26db99e515`.
+Its app executable differs from the preceding package and embeds the exact
+guest service script. Its packaged MicroSandbox, eight-patch manifest, and
+libkrunfw hashes remain unchanged. Packaged Git support hashes, tool version
+commands, and unresolved-dependency checks passed. Evidence is
+[`arm64-package-remote-flush.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-remote-flush.json)
+(SHA-256 `b7f82ece5a891035f5c62e99a1123c7f5b2b72a888d065103dfe2828c8112a12`).
+This ARM rebuild does not itself prove the remote desktop UI flow; the x86
+production result is recorded below.
+
+The final binary-stream flush then made short SSH data visible before newline
+or stream closure. Its regression failed before the fix with a 500 ms
+`WouldBlock` while input stayed open; the focused stream suite passed 5/5 after
+the fix. The ARM app-only rebuild used `remote.rs` SHA-256
+`9502f606d7de1c0e66b8fcbecf2bc3328a99f35719a82821193bbcf06b37d88d`
+and the unchanged native8 runtime. The final ARM64 AppImage SHA-256 is
+`f32c1049cb53fb28d8767ae12e6db8512a3f316f60746a227fc81bb8ed369a61`;
+its executable differs from the preceding package and still embeds the exact
+guest service source. The packaged MicroSandbox SHA-256 remains
+`f552ad75296c8964b7ed974e1fafac2533374e4caefe2c09dc34321c250ba06b`,
+and its eight-patch manifest SHA-256 remains
+`8d4c9b61cffb3d3bee8096d2c4684ff901f89f59f35a995e6394e41ef3ddd41d`.
+Packaged Git support hashes, tool version commands, and unresolved-dependency
+checks passed. Evidence is
+[`arm64-package-binary-flush.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-binary-flush.json)
+(SHA-256 `7b7ee39f14e632ec9daf7f841673fee4ca26bfe32b216ae1a7af9753fdeb3947`).
+This package check did not rerun installed-app UI or live VM behavior.
+
+The x86 production remote-viewer attempt made before the final raw-stream
+flush fix returned no SSH bytes after 25 seconds. The subsequent raw-stream
+flush regression and focused stream suite passed 5/5. The final x86 AppImage
+SHA-256 `8079943262a6a70e007403aa3900d1fd857080d63a04ea8dc4fb700dc5c7d8b2`
+passed the live remote gate: pinned-key SSH authenticated and exited 0, the
+running source viewer connected, and opening stopped fork
+`54e8b201-7e30-44e1-b866-855b23fb7d4a` left it stopped. The controller
+executable SHA-256 is
+`96ffb0bad56f0e655d2072a7d9ad7bf987c83961292b5c62d84f5d437d671465`. Evidence
+is in [`remote-final/`](../app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/remote-final/)
+(`final-binary-remote-viewer-result.json`, running/stopped viewer screenshots,
+and `final-binary-flush-real-ssh.log`). The earlier patch-transfer rejection
+was superseded by explicit user authorization. The final x86 runtime-8 live
+port proof is recorded above; final AppImage package verification remains
+pending.

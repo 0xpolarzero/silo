@@ -113,15 +113,23 @@ fn verify(machine: &MachineConfiguration, observed: &InspectedSandbox) -> Result
     }
     Ok(())
 }
+fn workspace_disk_path(paths: &RuntimePaths, machine: &MachineConfiguration) -> PathBuf {
+    let mut mount_id = String::from("workspace_");
+    for byte in Sha256::digest(WORKSPACE_MOUNT.as_bytes()).iter().take(4) {
+        use std::fmt::Write as _;
+        let _ = write!(mount_id, "{byte:02x}");
+    }
+    paths.home.join("sandboxes").join(machine.name()).join("owned-volumes").join(mount_id).join("disk.raw")
+}
 fn workspace_mount(paths: &RuntimePaths, machine: &MachineConfiguration, observed: &InspectedSandbox) -> bool {
-    let expected = disk_path(paths, machine.name(), "workspace");
+    let expected = workspace_disk_path(paths, machine);
+    let backing_is_file = fs::symlink_metadata(expected).is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink());
     let matches = |config: &Value| config.get("mounts").and_then(Value::as_array).is_some_and(|mounts| {
         mounts.iter().filter(|m| m["guest"] == WORKSPACE_MOUNT).count() == 1
-            && mounts.iter().any(|m| m["guest"] == WORKSPACE_MOUNT && m["type"] == "DiskImage"
-                && m["format"] == "Raw" && m["fstype"] == "ext4"
-                && m["host"].as_str().is_some_and(|p| Path::new(p) == expected))
+            && mounts.iter().any(|m| m["guest"] == WORKSPACE_MOUNT && m["type"] == "Owned"
+                && m.pointer("/storage/kind").and_then(Value::as_str) == Some("disk"))
     });
-    matches(&observed.config) && observed.active_config.as_ref().is_none_or(matches)
+    backing_is_file && matches(&observed.config) && observed.active_config.as_ref().is_none_or(matches)
 }
 fn allocated(path: &Path) -> Result<u64, RuntimeError> {
     match fs::symlink_metadata(path) {
@@ -129,6 +137,22 @@ fn allocated(path: &Path) -> Result<u64, RuntimeError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         _ => Err(failure("The VM disk is not a readable regular file.")),
     }
+}
+fn runtime_allocated(paths: &RuntimePaths, name: &str) -> Result<u64, RuntimeError> {
+    let dir = paths.home.join("sandboxes").join(name);
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(_) => return Err(failure("The runtime disk usage could not be read.")),
+    };
+    let mut total = 0u64;
+    for entry in entries {
+        let entry = entry.map_err(|_| failure("The runtime disk usage could not be read."))?;
+        if entry.path().extension().is_some_and(|extension| extension == "ext4" || extension == "qcow2") {
+            total = total.saturating_add(allocated(&entry.path())?);
+        }
+    }
+    Ok(total)
 }
 fn guest_args(name: &str, seconds: u64, script: &str) -> Vec<String> {
     vec!["exec".into(), name.into(), "--no-start".into(), "--no-tty".into(),
@@ -149,8 +173,8 @@ fn state(runner: &dyn RuntimeRunner, paths: &RuntimePaths, machine: &MachineConf
     let record = load(paths, machine.id())?;
     let mut state = StorageState {
         history: record.history,
-        workspace_host_bytes: allocated(&disk_path(paths, machine.name(), "workspace"))?,
-        runtime_host_bytes: allocated(&paths.home.join("sandboxes").join(machine.name()).join("upper.ext4"))?,
+        workspace_host_bytes: allocated(&workspace_disk_path(paths, machine))?,
+        runtime_host_bytes: runtime_allocated(paths, machine.name())?,
         workspace_used_bytes: None, workspace_capacity_bytes: None,
         last_reclaimed_bytes: record.last_reclaimed_bytes, last_trim_at: record.last_trim_at,
         last_error: record.last_error,
@@ -187,13 +211,11 @@ fn trim_triggered(runner: &dyn RuntimeRunner, paths: &RuntimePaths, machine: &Ma
     let seconds = budget.as_secs();
     if seconds < 4 { return Err(failure("No time remains for workspace reclamation.")); }
     let _command_guard = configuration_recovery::command_lock(paths, Duration::ZERO)?;
-    let disk = fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW)
-        .open(disk_path(paths, machine.name(), "workspace"))
-        .map_err(|_| failure("The workspace disk could not be opened for reclamation."))?;
-    let metadata = disk.metadata().map_err(|_| failure("The workspace disk could not be inspected."))?;
-    if !metadata.is_file() { return Err(failure("The workspace disk is not a regular file.")); }
-    let before = metadata.blocks().saturating_mul(512);
-    let original_length = metadata.len();
+    let disk_path = workspace_disk_path(paths, machine);
+    let disk = fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(&disk_path)
+        .map_err(|_| failure("The owned workspace disk could not be opened safely."))?;
+    let original_length = disk.metadata().map_err(|_| failure("The owned workspace disk length could not be verified."))?.len();
+    let before = disk.metadata().map_err(|_| failure("The owned workspace disk could not be measured."))?.blocks().saturating_mul(512);
     let mut record = load(paths, machine.id())?;
     record.last_attempt_at = Some(at);
     record.last_error = Some("The previous workspace reclamation did not complete.".into());
@@ -203,9 +225,6 @@ fn trim_triggered(runner: &dyn RuntimeRunner, paths: &RuntimePaths, machine: &Ma
     let mut args = guest_args(machine.name(), seconds - 1, TRIM);
     args.push(format!("{}s", seconds - 3));
     let result = runner.run(paths, &args, budget).map(|_| ());
-    // Older msb-imago versions truncated a discarded tail. The bundled runtime
-    // fixes that upstream; this guard also protects mixed/older installations.
-    // Restore only a shortened logical tail, never truncate a growing image.
     let length_result = preserve_length(&disk, original_length);
     let length_error = length_result.as_ref().err().map(ToString::to_string);
     let result = length_result.and(result);

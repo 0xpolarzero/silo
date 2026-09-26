@@ -1,9 +1,10 @@
 //! A privileged local shell and an unprivileged guest child webview.
-use crate::{desktop_proxy::Proxy, remote, remote_access, runtime};
+use crate::{desktop_proxy::Proxy, editor, remote, remote_access, runtime};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     net::{TcpListener, TcpStream},
+    path::Path,
     process::{Child, Stdio},
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
@@ -49,70 +50,72 @@ pub(crate) fn local_connection(app: &AppHandle, workspace: &str) -> Result<Value
         .try_lock()
         .map_err(|_| "A sandbox operation is in progress. Retry shortly.")?;
     runtime::shutdown::ensure_accepting_operations()?;
-    let mut connection = crate::desktop::connection_local(app, workspace)?;
-    let paths = runtime::runtime_paths(app)?;
-    let guest = connection["port"]
-        .as_u64()
-        .and_then(|p| u16::try_from(p).ok())
-        .ok_or("Invalid desktop port.")?;
-    connection["port"] = json!(crate::network::desktop_endpoint(&paths, workspace, guest)?);
-    Ok(connection)
+    crate::desktop::connection_local(app, workspace)
 }
+
+fn forward_command(config: &Path, alias: &str, local_port: u16, guest_port: u16) -> std::process::Command {
+    let mut command = std::process::Command::new("/usr/bin/ssh");
+    command
+        .arg("-F")
+        .arg(config)
+        .args(["-N", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=15", "-L"])
+        .arg(format!("127.0.0.1:{local_port}:127.0.0.1:{guest_port}"))
+        .arg(alias);
+    command
+}
+
 fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), String> {
     let remote_target = remote_access::target(workspace)?;
-    let mut connection = if let Some((host, vm)) = &remote_target {
+    let connection = if let Some((host, vm)) = &remote_target {
         remote::call_remote(app, host, "desktop.connect", json!({"vmId":vm}))?
     } else {
         local_connection(app, workspace)?
     };
-    let mut upstream = connection["port"]
+    let guest = connection["port"]
         .as_u64()
         .and_then(|p| u16::try_from(p).ok())
         .filter(|p| *p != 0)
         .ok_or("Invalid desktop endpoint.")?;
-    let mut tunnel = None;
-    if let Some((host, _)) = remote_target {
-        let reservation = TcpListener::bind(("127.0.0.1", 0))
-            .map_err(|_| "Could not reserve desktop connection.")?;
-        let local = reservation
-            .local_addr()
-            .map_err(|_| "Could not read desktop connection.")?
-            .port();
-        let mut command = remote::ssh_tunnel_command(&host, local, upstream)?;
-        drop(reservation);
-        let mut child = Tunnel(
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|_| "Could not connect to the remote desktop.")?,
-        );
-        let deadline = Instant::now() + Duration::from_secs(8);
-        loop {
-            if child
-                .0
-                .try_wait()
-                .map_err(|_| "Desktop tunnel failed.")?
-                .is_some()
-            {
-                return Err("Desktop tunnel closed. Check the computer connection.".into());
-            }
-            if TcpStream::connect_timeout(
-                &format!("127.0.0.1:{local}").parse().unwrap(),
-                Duration::from_millis(150),
-            )
-            .is_ok()
-            {
-                break;
-            }
-            if Instant::now() >= deadline {
-                return Err("Desktop connection timed out. Reconnect the computer.".into());
-            }
-            std::thread::sleep(Duration::from_millis(80));
+    let (alias, config) = if let Some((host, vm)) = remote_target {
+        editor::prepare_remote_private(app, &host, &vm, "/workspace")?
+    } else {
+        let paths = runtime::runtime_paths(app)?;
+        let directory = paths.home.join("ssh/desktop-viewer").join(workspace);
+        editor::prepare_private_transport(&paths, workspace, &directory)?
+    };
+    let reservation = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|_| "Could not reserve desktop connection.")?;
+    let local = reservation
+        .local_addr()
+        .map_err(|_| "Could not read desktop connection.")?
+        .port();
+    let mut command = forward_command(&config, &alias, local, guest);
+    drop(reservation);
+    let mut tunnel = Tunnel(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| "Could not connect to the desktop.")?,
+    );
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if tunnel.0.try_wait().map_err(|_| "Desktop tunnel failed.")?.is_some() {
+            return Err("Desktop tunnel closed. Check the VM connection.".into());
         }
-        tunnel = Some(child);
-        upstream = local;
+        if TcpStream::connect_timeout(
+            &format!("127.0.0.1:{local}").parse().unwrap(),
+            Duration::from_millis(150),
+        )
+        .is_ok()
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("Desktop connection timed out. Reconnect the VM.".into());
+        }
+        std::thread::sleep(Duration::from_millis(80));
     }
     let username = connection["username"]
         .as_str()
@@ -120,9 +123,8 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let password = connection["password"]
         .as_str()
         .ok_or("Missing desktop credentials.")?;
-    let proxy = Proxy::start(upstream, username, password)?;
-    connection.take();
-    Ok((proxy, tunnel))
+    let proxy = Proxy::start(local, username, password)?;
+    Ok((proxy, Some(tunnel)))
 }
 #[tauri::command]
 pub(crate) async fn open_desktop(
@@ -300,7 +302,12 @@ pub(crate) async fn desktop_viewer_attach(
             .ok_or("Desktop viewer closed.")?;
         let label = format!("guest-{}", window.label());
         if let Some(view) = app.get_webview(&label) {
-            if entry.proxy.is_some() {
+            if entry.proxy.is_some()
+                && entry
+                    .tunnel
+                    .as_mut()
+                    .is_some_and(|tunnel| matches!(tunnel.0.try_wait(), Ok(None)))
+            {
                 return view
                     .set_bounds(tauri::Rect {
                         position: position.into(),
@@ -308,6 +315,8 @@ pub(crate) async fn desktop_viewer_attach(
                     })
                     .map_err(|_| "Could not resize desktop.".into());
             }
+            entry.proxy = None;
+            entry.tunnel = None;
             view.close().map_err(|_| "Could not reconnect desktop.")?;
         }
         let (proxy, tunnel) = connect(&app, &workspace)?;
@@ -365,6 +374,14 @@ pub(crate) async fn desktop_viewer_detach(app: AppHandle, window: Window) -> Res
 pub(crate) fn close_all() {
     if let Ok(mut entries) = viewers().lock() {
         for entry in entries.values_mut() {
+            entry.proxy = None;
+            entry.tunnel = None;
+        }
+    }
+}
+pub(crate) fn close_workspace(workspace: &str) {
+    if let Ok(mut entries) = viewers().lock() {
+        for entry in entries.values_mut().filter(|entry| entry.workspace == workspace) {
             entry.proxy = None;
             entry.tunnel = None;
         }
@@ -454,5 +471,43 @@ mod input_tests {
             assert!(!settings.contains_key("clipboard_up"));
             assert!(!settings.contains_key("clipboard_down"));
         }
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    #[test]
+    fn desktop_forward_uses_pinned_ssh_config_and_loopback_only() {
+        let command = forward_command(
+            Path::new("/tmp/silo-private-ssh.conf"),
+            "silo-remote-host-vm",
+            42123,
+            6901,
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "/usr/bin/ssh");
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, [
+            "-F",
+            "/tmp/silo-private-ssh.conf",
+            "-N",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ConnectTimeout=15",
+            "-L",
+            "127.0.0.1:42123:127.0.0.1:6901",
+            "silo-remote-host-vm",
+        ]);
+    }
+
+    #[test]
+    fn closing_viewer_tunnel_reaps_its_ssh_child() {
+        let child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        drop(Tunnel(child));
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     }
 }

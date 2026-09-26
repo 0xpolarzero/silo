@@ -9,14 +9,17 @@ fn fixture() -> (tempfile::TempDir, RuntimePaths, MachineConfiguration, Inspecte
         workspace_storage_gib: 1, runtime_storage_gib: 1, desktop: None,
     };
     write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![machine.clone()] }).unwrap();
-    fs::create_dir_all(paths.volumes.join("dev")).unwrap();
-    fs::write(disk_path(&paths, "dev", "workspace"), vec![7u8; 8192]).unwrap();
+    fs::create_dir_all(owned_disk(&paths, "dev").parent().unwrap()).unwrap();
+    fs::write(owned_disk(&paths, "dev"), vec![7u8; 8192]).unwrap();
     let observed = serde_json::from_value(json!({"name":"dev", "status":"Running", "runtime_instance_id":"run-1", "config": {
         "labels":{"silo.managed":"true","silo.machine-id":machine.id()},
-        "mounts":[{"type":"DiskImage","host":disk_path(&paths,"dev","workspace"),"guest":"/workspace","format":"Raw","fstype":"ext4"}]
+        "mounts":[{"type":"Owned","guest":"/workspace","storage":{"kind":"disk","capacity_mib":1024}}]
     }})).unwrap();
     verified_starts().lock().unwrap().insert((paths.home.clone(), machine.id().into()), "run-1".into());
     (directory, paths, machine, observed)
+}
+fn owned_disk(paths: &RuntimePaths, name: &str) -> PathBuf {
+    paths.home.join("sandboxes").join(name).join("owned-volumes/workspace_c52ddf65/disk.raw")
 }
 struct Runner { calls: Mutex<Vec<Vec<String>>>, fail: bool, truncate: bool }
 impl Runner { fn new() -> Self { Self { calls: Mutex::new(vec![]), fail: false, truncate: false } } }
@@ -29,7 +32,7 @@ impl RuntimeRunner for Runner {
         assert_eq!(args[0], "exec");
         assert!(args.iter().any(|arg| arg == "--no-start"));
         assert!(timeout <= TRIM_BUDGET);
-        if self.truncate { fs::OpenOptions::new().write(true).open(disk_path(paths,"dev","workspace")).unwrap().set_len(4096).unwrap(); }
+        if self.truncate { fs::OpenOptions::new().write(true).open(owned_disk(paths,"dev")).unwrap().set_len(4096).unwrap(); }
         if self.fail { return Err(RuntimeError::TimedOut { operation: "trim".into() }); }
         Ok(CommandOutput { stdout: "4096 8192\n".into(), stderr: String::new() })
     }
@@ -86,7 +89,7 @@ fn rejects_stopped_replaced_and_wrong_mount_without_guest_execution() {
     observed.active_config = Some(json!({"mounts":[]}));
     assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
     observed.active_config = None;
-    observed.config["mounts"][0]["host"] = json!("/other/disk.raw");
+    observed.config["mounts"][0]["storage"]["kind"] = json!("directory");
     assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
     assert!(runner.calls.lock().unwrap().is_empty());
 }
@@ -96,7 +99,7 @@ fn stopped_usage_reports_allocated_blocks_without_starting_guest() {
     observed.status = "Stopped".into();
     let runner = Runner::new();
     let value = state(&runner, &paths, &machine, &observed).unwrap();
-    assert_eq!(value.workspace_host_bytes, allocated(&disk_path(&paths,"dev","workspace")).unwrap());
+    assert_eq!(value.workspace_host_bytes, allocated(&owned_disk(&paths,"dev")).unwrap());
     assert_eq!(value.workspace_used_bytes, None);
     assert!(runner.calls.lock().unwrap().is_empty());
 }
@@ -106,7 +109,7 @@ fn runtime_tail_truncation_is_repaired_and_reported_even_on_timeout() {
         let (_dir, paths, machine, observed) = fixture();
         let runner = Runner { fail, truncate: true, ..Runner::new() };
         assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).unwrap_err().to_string().contains("original length was restored"));
-        let content = fs::read(disk_path(&paths,"dev","workspace")).unwrap();
+        let content = fs::read(owned_disk(&paths,"dev")).unwrap();
         assert_eq!(content.len(), 8192);
         assert_eq!(&content[..4096], &[7;4096]);
         let record = load(&paths, machine.id()).unwrap();
@@ -252,7 +255,7 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
     let runner = ProcessRunner;
     let initial = inspect_workspace(&runner, &paths, machine.name()).unwrap();
     assert!(initial.status.eq_ignore_ascii_case("stopped"), "Do not interrupt an existing running VM");
-    let disk = disk_path(&paths, machine.name(), "workspace");
+    let disk = owned_disk(&paths, machine.name());
     let length = fs::metadata(&disk).unwrap().len();
     let host = host_resources().unwrap();
     let checksum = "set -eu; find /workspace -xdev -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum";

@@ -3,6 +3,92 @@
 //! SILO_TEST_MSB and SILO_TEST_LIBKRUNFW.
 use super::*;
 
+fn restore_live_checkpoint_with_current_profile(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    source: &MachineConfiguration,
+    fork_name: &str,
+    profile: &Value,
+) -> Result<MachineConfiguration, String> {
+    let checkpoint_id = format!("c{}", &uuid::Uuid::new_v4().simple().to_string()[..31]);
+    runner
+        .run(
+            paths,
+            &[
+                "snapshot".into(),
+                "create".into(),
+                checkpoint_id.clone(),
+                "--from-sandbox".into(),
+                source.name().into(),
+                "--full".into(),
+                "--guest-flush".into(),
+                "required".into(),
+                "--integrity".into(),
+            ],
+            Duration::from_secs(900),
+        )
+        .map_err(|_| "Could not capture the authenticated checkpoint fixture.".to_string())?;
+    let mut fork = source.clone();
+    let fork_id = uuid::Uuid::new_v4().to_string();
+    if let MachineConfiguration::Vm { id, name, .. } = &mut fork {
+        *id = fork_id.clone();
+        *name = fork_name.into();
+    } else {
+        return Err("Checkpoint fixture source is not a VM.".into());
+    }
+    let mut metadata = read_metadata(&paths.metadata).map_err(|_| "Could not prepare the checkpoint fixture.")?;
+    metadata.machines.push(fork.clone());
+    write_metadata(&paths.metadata, &metadata).map_err(|_| "Could not prepare the checkpoint fixture.")?;
+    let observed = inspect_workspace(runner, paths, source.name())
+        .map_err(|_| "Could not inspect the checkpoint source.")?;
+    let policy = observed
+        .config
+        .pointer("/network/policy")
+        .cloned()
+        .ok_or("Checkpoint source has no network policy.")?;
+    let mut record = checkpoints::Record::default();
+    record.pending_checkpoint_restore = Some(checkpoints::PendingRestore {
+        checkpoint_id,
+        source_workspace: source.name().into(),
+        state: "full".into(),
+    });
+    record.desired_network_policy = Some(policy);
+    checkpoints::save(paths, &fork_id, &record)
+        .map_err(|_| "Could not prepare the checkpoint restore record.")?;
+
+    // The fork's current host assignment is installed before the production
+    // restore command runs. The source's write profile is not used for this VM.
+    GITHUB_PROFILES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "GitHub runtime state is unavailable.")?
+        .insert((paths.home.clone(), fork_name.into()), profile.to_string());
+    checkpoints::start_pending(runner, paths, &fork)
+        .map_err(|_| "Production checkpoint restore failed.".to_string())?;
+    Ok(fork)
+}
+
+fn cleanup_live_checkpoint_fork(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    fork: &MachineConfiguration,
+) {
+    let _ = runner.run(paths, &["stop".into(), fork.name().into()], MUTATION_TIMEOUT);
+    let _ = runner.run(
+        paths,
+        &["remove".into(), "--force".into(), fork.name().into()],
+        MUTATION_TIMEOUT,
+    );
+    if let Ok(mut metadata) = read_metadata(&paths.metadata) {
+        metadata.machines.retain(|machine| machine.id() != fork.id());
+        let _ = write_metadata(&paths.metadata, &metadata);
+    }
+    let _ = checkpoints::forget_removed(paths, fork.id());
+    if let Ok(mut profiles) = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        profiles.remove(&(paths.home.clone(), fork.name().into()));
+    }
+}
+
 #[test]
 #[ignore = "requires a signed MicroSandbox binary, hypervisor access, bundled image and GitHub network access"]
 fn github_guest_bootstrap_and_live_identity() {
@@ -32,6 +118,7 @@ fn github_guest_bootstrap_and_live_identity() {
             timeout,
         )
     };
+    let mut restored_fork: Option<MachineConfiguration> = None;
     let result = (|| -> Result<(), String> {
         create_disposable_test_machine(&paths, name).map_err(|e| e.to_string())?;
         let initial = inspect_workspace(&runner, &paths, name).map_err(|e| e.to_string())?;
@@ -45,6 +132,8 @@ fn github_guest_bootstrap_and_live_identity() {
             &[
                 "exec",
                 name,
+                "--user",
+                "silo",
                 "--no-tty",
                 "--quiet",
                 "--timeout",
@@ -76,6 +165,8 @@ fn github_guest_bootstrap_and_live_identity() {
             &[
                 "exec",
                 name,
+                "--user",
+                "silo",
                 "--no-tty",
                 "--quiet",
                 "--timeout",
@@ -111,6 +202,8 @@ fn github_guest_bootstrap_and_live_identity() {
                 &[
                     "exec",
                     name,
+                    "--user",
+                    "silo",
                     "--no-tty",
                     "--quiet",
                     "--timeout",
@@ -134,6 +227,8 @@ fn github_guest_bootstrap_and_live_identity() {
             &[
                 "exec",
                 name,
+                "--user",
+                "silo",
                 "--no-tty",
                 "--quiet",
                 "--",
@@ -158,7 +253,7 @@ fn github_guest_bootstrap_and_live_identity() {
                     "modify",
                     name,
                     "--secret",
-                    "SILO_GITHUB@github.com,api.github.com,uploads.github.com",
+                    secrets_runtime::SILO_GITHUB_SECRET_SPEC,
                     "--format",
                     "json",
                 ],
@@ -169,6 +264,8 @@ fn github_guest_bootstrap_and_live_identity() {
                 &[
                     "exec",
                     name,
+                    "--user",
+                    "silo",
                     "--no-tty",
                     "--quiet",
                     "--timeout",
@@ -191,6 +288,8 @@ fn github_guest_bootstrap_and_live_identity() {
             &[
                 "exec",
                 name,
+                "--user",
+                "silo",
                 "--no-tty",
                 "--quiet",
                 "--",
@@ -211,9 +310,68 @@ fn github_guest_bootstrap_and_live_identity() {
         {
             return Err("Live identity check did not preserve the running VM".into());
         }
+        GITHUB_PROFILES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert((paths.home.clone(), name.into()), profile.to_string());
+        run(
+            &[
+                "modify",
+                name,
+                "--secret",
+                secrets_runtime::SILO_GITHUB_SECRET_SPEC,
+                "--format",
+                "json",
+            ],
+            MUTATION_TIMEOUT,
+        )
+        .map_err(|_| "Could not prepare synthetic checkpoint credentials.")?;
+        let source_machine = read_metadata(&paths.metadata)
+            .map_err(|_| "Could not inspect synthetic checkpoint source metadata.")?
+            .machines
+            .into_iter()
+            .find(|machine| machine.name() == name)
+            .ok_or("Synthetic checkpoint source metadata is missing.")?;
+        let fork_name = format!("github-restore-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let fork = restore_live_checkpoint_with_current_profile(
+            &runner,
+            &paths,
+            &source_machine,
+            &fork_name,
+            &profile,
+        )?;
+        restored_fork = Some(fork.clone());
+        let restored_response = runner
+            .run(
+                &paths,
+                &[
+                    "exec".into(),
+                    fork_name,
+                    "--user".into(),
+                    "silo".into(),
+                    "--no-tty".into(),
+                    "--quiet".into(),
+                    "--timeout".into(),
+                    "30s".into(),
+                    "--".into(),
+                    "sh".into(),
+                    "-c".into(),
+                    "gh api meta --include 2>&1 || true".into(),
+                ],
+                MUTATION_TIMEOUT,
+            )
+            .map_err(|_| "Could not verify synthetic checkpoint credentials.")?
+            .stdout;
+        if !restored_response.contains("HTTP/") || !restored_response.contains("401") {
+            return Err("Synthetic checkpoint restore did not use its current profile.".into());
+        }
         Ok(())
     })();
     // Cleanup is attempted on every result, including failed creation/provisioning.
+    if let Some(fork) = restored_fork.as_ref() {
+        cleanup_live_checkpoint_fork(&runner, &paths, fork);
+    }
     let stopped = run(&["stop", name], MUTATION_TIMEOUT);
     let removed = run(&["remove", "--force", name], MUTATION_TIMEOUT);
     GITHUB_PROFILES
@@ -280,6 +438,8 @@ fn github_authenticated_guest_workflow() {
         run(&[
             "exec".into(),
             name.into(),
+            "--user".into(),
+            "silo".into(),
             "--no-tty".into(),
             "--quiet".into(),
             "--timeout".into(),
@@ -306,7 +466,7 @@ fn github_authenticated_guest_workflow() {
             "modify".into(),
             name.into(),
             "--secret".into(),
-            "SILO_GITHUB@github.com,api.github.com,uploads.github.com".into(),
+            secrets_runtime::SILO_GITHUB_SECRET_SPEC.into(),
             "--format".into(),
             "json".into(),
         ])
@@ -314,6 +474,7 @@ fn github_authenticated_guest_workflow() {
         .map_err(|_| "Live test credential update failed.".into())
     };
     let mut created = false;
+    let mut restored_fork: Option<MachineConfiguration> = None;
     let result = (|| -> Result<(), String> {
         create_disposable_test_machine(&paths, name)
             .map_err(|_| "Live test VM bootstrap failed.")?;
@@ -427,6 +588,73 @@ if git push origin "HEAD:refs/heads/$4" >/dev/null 2>&1; then exit 1; fi
 "#,
         )
         .map_err(|_| "Live write removal was not enforced.")?;
+        // Capture a full checkpoint while the source still has its write
+        // assignment, then restore a fork whose current host assignment is
+        // read-only. Production restore must select the fork profile before
+        // starting the checkpoint, without reviving the source's write grant.
+        install(&profile)?;
+        let source_machine = read_metadata(&paths.metadata)
+            .map_err(|_| "Could not inspect the checkpoint source metadata.")?
+            .machines
+            .into_iter()
+            .find(|machine| machine.name() == name)
+            .ok_or("Checkpoint source metadata is missing.")?;
+        let fork_name = format!("github-restore-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let fork = restore_live_checkpoint_with_current_profile(
+            &runner,
+            &paths,
+            &source_machine,
+            &fork_name,
+            &readonly,
+        )?;
+        restored_fork = Some(fork.clone());
+        let restored_guest = |script: &str| {
+            run(&[
+                "exec".into(),
+                fork_name.clone(),
+                "--user".into(),
+                "silo".into(),
+                "--no-tty".into(),
+                "--quiet".into(),
+                "--timeout".into(),
+                "120s".into(),
+                "--".into(),
+                "sh".into(),
+                "-c".into(),
+                script.into(),
+                "silo-test".into(),
+                read_repo.clone(),
+                write_repo.clone(),
+                denied_repo.clone(),
+                branch.clone(),
+                issue_id.clone(),
+            ])
+        };
+        let restored_env = restored_guest(
+            "set -eu; env; git config --list --show-origin; printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill",
+        )
+        .map_err(|_| "Could not verify the restored guest credential boundary.")?
+        .stdout;
+        if secret_values.iter().any(|secret| restored_env.contains(secret)) {
+            return Err("A historical credential was exposed in the restored guest.".into());
+        }
+        restored_guest(
+            r#"set -eu
+git -C /workspace/silo-live/read ls-remote origin >/dev/null
+gh api "repos/$1" >/dev/null
+gh api "repos/$2" >/dev/null
+cd /workspace/silo-live/write
+git fetch origin >/dev/null 2>&1
+git checkout -b "$4-restore" >/dev/null 2>&1
+git commit --allow-empty -m 'Silo restored read-only policy check' >/dev/null
+if git push origin "HEAD:refs/heads/$4-restore" >/dev/null 2>&1; then
+ git push origin --delete "$4-restore" >/dev/null 2>&1 || true
+ exit 1
+fi
+if gh api graphql -f query='mutation($id:ID!){updateIssue(input:{id:$id,title:"unexpected restored write"}){issue{id}}}' -f id="$5" >/dev/null 2>&1; then exit 1; fi
+"#,
+        )
+        .map_err(|_| "Restored checkpoint did not use its current read-only assignment.")?;
         // Host Push uses its separately authorized scoped write token while the
         // VM remains read-only. Exercise the production binary/LFS transfer.
         guest(r#"set -eu
@@ -493,11 +721,13 @@ cleanup_failed=0
 for directory in /workspace/silo-live/read /workspace/silo-live/write; do
  [ -d "$directory/.git" ] || continue
  rm -f "$directory/.git/hooks/pre-push"
- if ! remote_branch=$(git -C "$directory" ls-remote origin "refs/heads/$4" 2>/dev/null); then
-  cleanup_failed=1
- elif [ -n "$remote_branch" ]; then
-  git -C "$directory" push origin --delete "$4" >/dev/null 2>&1 || cleanup_failed=1
- fi
+ for test_branch in "$4" "$4-restore"; do
+  if ! remote_branch=$(git -C "$directory" ls-remote origin "refs/heads/$test_branch" 2>/dev/null); then
+   cleanup_failed=1
+  elif [ -n "$remote_branch" ]; then
+   git -C "$directory" push origin --delete "$test_branch" >/dev/null 2>&1 || cleanup_failed=1
+  fi
+ done
 done
 exit "$cleanup_failed"
 "#,
@@ -508,6 +738,9 @@ exit "$cleanup_failed"
     } else {
         Ok(())
     };
+    if let Some(fork) = restored_fork.as_ref() {
+        cleanup_live_checkpoint_fork(&runner, &paths, fork);
+    }
     let _ = run(&["stop".into(), name.into()]);
     let _ = run(&["remove".into(), "--force".into(), name.into()]);
     let absent = run(&["list".into(), "--format".into(), "json".into()])

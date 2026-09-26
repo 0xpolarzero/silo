@@ -4,9 +4,11 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 from types import SimpleNamespace
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / 'src-tauri/guest/desktop-service.py'
@@ -20,6 +22,7 @@ class DesktopLifecycle(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.display_pair_index = 0
         for name in ('STATE', 'RUN'):
             directory = self.root / name
             directory.mkdir()
@@ -135,6 +138,208 @@ class DesktopLifecycle(unittest.TestCase):
         arguments = run.call_args.args[0]
         self.assertEqual(arguments[:6], ['runuser', '-u', 'silo', '--', 'env', 'HOME=/home/silo'])
         self.assertEqual(arguments[-3:], ['vncserver', '-kill', ':1'])
+
+    def stale_display_pair(self, real_socket=True):
+        self.display_pair_index += 1
+        tmp = self.root / f'tmp-{self.display_pair_index}'
+        tmp.mkdir()
+        tmp.chmod(0o1777)
+        socket_dir = tmp / '.X11-unix'
+        socket_dir.mkdir()
+        lock = tmp / '.X1-lock'
+        lock.write_text('99999999\n')
+        display_socket = socket_dir / 'X1'
+        display_socket.write_text('socket placeholder' if real_socket else 'not a socket')
+        return tmp, socket_dir, lock, display_socket
+
+    @contextmanager
+    def root_owned_tmp_simulation(self, pair, directory_owner=1001):
+        tmp, socket_dir, lock, display_socket = pair
+        account = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir='/home/silo')
+        state = {'socket_dir_root_owned': False}
+        chown_calls = []
+        real_lstat = Path.lstat
+        real_fstat = os.fstat
+        real_fchmod = os.fchmod
+
+        def info(result, uid=None, mode=None):
+            return SimpleNamespace(st_mode=result.st_mode if mode is None else mode,
+                                   st_uid=result.st_uid if uid is None else uid,
+                                   st_gid=result.st_gid, st_dev=result.st_dev,
+                                   st_ino=result.st_ino)
+
+        def fake_lstat(path):
+            path = Path(path)
+            result = real_lstat(path)
+            if path == tmp:
+                return info(result, uid=0)
+            if path == socket_dir:
+                owner = 0 if state['socket_dir_root_owned'] else directory_owner
+                return info(result, uid=owner)
+            if path == lock:
+                return info(result, uid=account.pw_uid)
+            if (path == display_socket and stat.S_ISREG(result.st_mode) and
+                    path.read_text() == 'socket placeholder'):
+                return info(result, uid=account.pw_uid, mode=stat.S_IFSOCK | 0o600)
+            return result
+
+        def fake_fstat(fd):
+            result = real_fstat(fd)
+            for path in (socket_dir, lock):
+                path_info = real_lstat(path)
+                if (result.st_dev, result.st_ino) == (path_info.st_dev, path_info.st_ino):
+                    if path == socket_dir:
+                        owner = 0 if state['socket_dir_root_owned'] else directory_owner
+                    else:
+                        owner = account.pw_uid
+                    mode = stat.S_IFSOCK | 0o600 if path == display_socket else None
+                    return info(result, uid=owner, mode=mode)
+            return result
+
+        def fake_fchown(fd, uid, gid):
+            result = real_fstat(fd)
+            path_info = real_lstat(socket_dir)
+            self.assertEqual((result.st_dev, result.st_ino), (path_info.st_dev, path_info.st_ino))
+            chown_calls.append((uid, gid))
+            state['socket_dir_root_owned'] = uid == 0
+
+        def fake_fchmod(fd, mode):
+            result = real_fstat(fd)
+            path_info = real_lstat(socket_dir)
+            self.assertEqual((result.st_dev, result.st_ino), (path_info.st_dev, path_info.st_ino))
+            real_fchmod(fd, mode)
+
+        with patch.multiple(service, TMP=tmp, DISPLAY_LOCK=lock,
+                            DISPLAY_SOCKET_DIR=socket_dir, USER='silo'), \
+             patch.object(service.os, 'geteuid', return_value=0), \
+             patch.object(service.pwd, 'getpwnam', return_value=account), \
+             patch.object(service.Path, 'lstat', fake_lstat), \
+             patch.object(service.os, 'fstat', fake_fstat), \
+             patch.object(service.os, 'fchown', side_effect=fake_fchown), \
+             patch.object(service.os, 'fchmod', side_effect=fake_fchmod), \
+             patch.object(service, 'process_exists', return_value=False), \
+             patch.object(service, 'port_listening', return_value=False), \
+             patch.object(service, 'listening', return_value=False):
+            yield state, chown_calls
+
+    def test_user_owned_empty_x11_directory_is_normalized_to_root_sticky(self):
+        pair = self.stale_display_pair()
+        tmp, socket_dir, lock, display_socket = pair
+        lock.unlink()
+        display_socket.unlink()
+        with self.root_owned_tmp_simulation(pair) as (state, chown_calls):
+            self.assertTrue(service.prepare_display_socket_directory())
+            self.assertTrue(state['socket_dir_root_owned'])
+            self.assertEqual(chown_calls, [(0, 0)])
+            self.assertEqual(stat.S_IMODE(socket_dir.stat().st_mode), 0o1777)
+
+    def test_user_owned_x11_directory_with_only_dead_display_pair_is_normalized(self):
+        pair = self.stale_display_pair()
+        _, socket_dir, _, _ = pair
+        with self.root_owned_tmp_simulation(pair) as (state, chown_calls):
+            self.assertTrue(service.prepare_display_socket_directory())
+            self.assertTrue(state['socket_dir_root_owned'])
+            self.assertEqual(chown_calls, [(0, 0)])
+            self.assertTrue((socket_dir / 'X1').exists())
+            # Existing stale cleanup retains its stricter root-owned directory check.
+            self.assertTrue(service.remove_stale_display_artifacts())
+            self.assertFalse((socket_dir / 'X1').exists())
+
+    def test_display_directory_normalization_refuses_live_or_unexpected_state(self):
+        for live_listener, extra_file in ((True, False), (False, True)):
+            with self.subTest(live_listener=live_listener, extra_file=extra_file):
+                pair = self.stale_display_pair()
+                tmp, socket_dir, lock, display_socket = pair
+                lock.unlink()
+                display_socket.unlink()
+                if extra_file:
+                    (socket_dir / 'unrelated').write_text('keep')
+                with self.root_owned_tmp_simulation(pair) as (state, chown_calls), \
+                     patch.object(service, 'port_listening', return_value=live_listener):
+                    self.assertFalse(service.prepare_display_socket_directory())
+                    self.assertFalse(state['socket_dir_root_owned'])
+                    self.assertEqual(chown_calls, [])
+                    if extra_file:
+                        self.assertEqual((socket_dir / 'unrelated').read_text(), 'keep')
+
+    def test_display_directory_normalization_refuses_untrusted_owner_and_symlink(self):
+        pair = self.stale_display_pair()
+        tmp, socket_dir, lock, display_socket = pair
+        lock.unlink()
+        display_socket.unlink()
+        with self.root_owned_tmp_simulation(pair, directory_owner=2000) as (state, chown_calls):
+            self.assertFalse(service.prepare_display_socket_directory())
+            self.assertFalse(state['socket_dir_root_owned'])
+            self.assertEqual(chown_calls, [])
+
+    def test_start_keeps_an_existing_healthy_display_untouched(self):
+        with patch.object(service, 'supervisor', return_value=True), \
+             patch.object(service, 'prepare_display_socket_directory',
+                           side_effect=AssertionError('must not normalize a running display')):
+            self.assertIsNone(service.start())
+
+        pair = self.stale_display_pair()
+        tmp, socket_dir, lock, display_socket = pair
+        lock.unlink()
+        display_socket.unlink()
+        socket_dir.rmdir()
+        target = self.root / 'x11-target'
+        target.mkdir()
+        socket_dir.symlink_to(target, target_is_directory=True)
+        with self.root_owned_tmp_simulation(pair) as (state, chown_calls):
+            self.assertFalse(service.prepare_display_socket_directory())
+            self.assertFalse(state['socket_dir_root_owned'])
+            self.assertEqual(chown_calls, [])
+
+    def remove_stale_pair(self, pair, pid_live=False, listening_port=None, account_uid=None):
+        tmp, socket_dir, lock, display_socket = pair
+        account = SimpleNamespace(pw_uid=os.getuid() if account_uid is None else account_uid)
+        original_lstat = Path.lstat
+
+        def lstat(path):
+            result = original_lstat(path)
+            if Path(path) == display_socket and display_socket.read_text() == 'socket placeholder':
+                return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o600, st_uid=account.pw_uid,
+                                       st_dev=result.st_dev, st_ino=result.st_ino)
+            return result
+
+        with patch.multiple(service, TMP=tmp, DISPLAY_LOCK=lock, DISPLAY_SOCKET_DIR=socket_dir), \
+             patch.object(Path, 'lstat', lstat), \
+             patch.object(service.os, 'geteuid', return_value=os.getuid()), \
+             patch.object(service.pwd, 'getpwnam', return_value=account), \
+             patch.object(service, 'process_exists', return_value=pid_live), \
+             patch.object(service, 'port_listening', side_effect=lambda port: port == listening_port):
+            return service.remove_stale_display_artifacts(), lock, display_socket
+
+    def test_dead_kasm_display_pair_is_removed_for_single_retry(self):
+        result, lock, display_socket = self.remove_stale_pair(self.stale_display_pair())
+        self.assertTrue(result)
+        self.assertFalse(lock.exists())
+        self.assertFalse(display_socket.exists())
+
+    def test_live_display_pid_or_listener_preserves_stale_looking_files(self):
+        for live_pid, listening in ((True, False), (False, True)):
+            with self.subTest(live_pid=live_pid, listening=listening):
+                pair = self.stale_display_pair()
+                result, lock, display_socket = self.remove_stale_pair(
+                    pair, pid_live=live_pid, listening_port=5901 if listening else None)
+                self.assertFalse(result)
+                self.assertTrue(lock.exists())
+                self.assertTrue(display_socket.exists())
+
+    def test_unexpected_owner_or_socket_type_is_preserved(self):
+        pair = self.stale_display_pair()
+        tmp, socket_dir, lock, display_socket = pair
+        result, lock, display_socket = self.remove_stale_pair(pair, account_uid=os.getuid() + 1)
+        self.assertFalse(result)
+        self.assertTrue(lock.exists())
+        self.assertTrue(display_socket.exists())
+
+        pair = self.stale_display_pair(real_socket=False)
+        result, lock, display_socket = self.remove_stale_pair(pair)
+        self.assertFalse(result)
+        self.assertTrue(lock.exists())
+        self.assertTrue(display_socket.exists())
 
     def test_install_preflight_allows_retry_but_not_a_different_home(self):
         home = self.root / 'home'

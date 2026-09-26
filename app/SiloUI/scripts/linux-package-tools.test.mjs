@@ -1,0 +1,71 @@
+import assert from "node:assert/strict"
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
+import test from "node:test"
+
+import { stageLinuxPackageTools } from "./linux-package-tools.mjs"
+
+const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
+
+test("Linux package tools preserve exact staged bytes and executable modes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "silo-linux-package-"))
+  try {
+    const triple = "x86_64-unknown-linux-gnu"
+    const binaries = join(root, "src-tauri", "binaries")
+    const microsandbox = join(root, "src-tauri", "runtime", "microsandbox", triple, "lib")
+    await mkdir(binaries, { recursive: true })
+    await mkdir(microsandbox, { recursive: true })
+    const sources = [
+      join(binaries, `msb-${triple}`),
+      join(binaries, `git-${triple}`),
+      join(binaries, `git-lfs-${triple}`),
+      join(binaries, `git-remote-http-${triple}`),
+      join(binaries, `git-remote-https-${triple}`),
+      join(microsandbox, "libkrunfw.so.5.6.1"),
+    ]
+    for (const [index, source] of sources.entries()) {
+      await writeFile(source, `fixture-${index}`)
+      await chmod(source, index < 5 ? 0o755 : 0o644)
+    }
+
+    const staged = await stageLinuxPackageTools({ appRoot: root, targetTriple: triple })
+    assert.deepEqual(await Promise.all(staged.files.map(path => readFile(path, "utf8"))),
+      sources.map((_, index) => `fixture-${index}`))
+    assert.deepEqual(await Promise.all(staged.files.map(async path => (await stat(path)).mode & 0o111)),
+      [0o111, 0o111, 0o111, 0o111, 0o111, 0])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("Linux package overlay preserves non-tool resources and places tools outside scanned roots", async () => {
+  const configRoot = join(appRoot, "src-tauri")
+  const base = JSON.parse(await readFile(join(configRoot, "tauri.conf.json"), "utf8"))
+  const linux = JSON.parse(await readFile(join(configRoot, "tauri.linux.conf.json"), "utf8"))
+  const packaged = JSON.parse(await readFile(join(configRoot, "tauri.linux.package.conf.json"), "utf8"))
+  assert.deepEqual(Object.keys(base.bundle.resources), [
+    "runtime/guest-image/",
+    "runtime/microsandbox/manifest.json",
+    "runtime/microsandbox/licenses/",
+    "runtime/lfs-transfer/",
+    "runtime/git/manifest.json",
+    "runtime/git/licenses/",
+    "runtime/git/share/",
+    "../THIRD-PARTY-NOTICES.md",
+    "runtime/release-info.json",
+    "../docs/silo-help.html",
+  ])
+  assert.deepEqual(base.bundle.externalBin, [
+    "binaries/msb", "binaries/git", "binaries/git-lfs",
+    "binaries/git-remote-http", "binaries/git-remote-https",
+  ])
+  assert.deepEqual(linux.bundle.resources, { "runtime/git/ssl/": "git-support/ssl/" })
+  assert.deepEqual(packaged.bundle.externalBin, [])
+  for (const format of ["appimage", "deb", "rpm"]) {
+    assert.deepEqual(packaged.bundle.linux[format].files, {
+      "/usr/libexec/silo/tools": "runtime/linux-package/tools",
+    })
+  }
+})

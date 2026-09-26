@@ -21,6 +21,14 @@ def build(arguments, *, root=APP, platform=sys.platform, run=subprocess.run):
     parser.add_argument('--target', '-t')
     parser.add_argument('--bundles', '-b', nargs='+')
     options, _ = parser.parse_known_args(arguments)
+    if (platform == 'linux' and not options.no_bundle
+            and not options.help and not options.version
+            and (not options.target or options.target.endswith('unknown-linux-gnu'))):
+        run(tauri + arguments + [
+            '--config', 'src-tauri/tauri.linux.package.conf.json',
+            '--config', json.dumps({'bundle': {'createUpdaterArtifacts': False}}),
+        ], cwd=root, check=True)
+        return None
     if (platform != 'darwin' or options.debug or options.no_bundle or options.help or options.version
             or (options.target and not options.target.endswith('apple-darwin'))):
         run(tauri + arguments, cwd=root, check=True)

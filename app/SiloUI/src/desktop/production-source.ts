@@ -67,6 +67,26 @@ const secretShape = z.object({
   error: z.string().nullish().transform((value) => value ?? undefined), removing: z.boolean().optional(),
 })
 
+const checkpointShape = z.object({
+  id: z.string().min(1), name: z.string().min(1),
+  // The Rust checkpoint journal stores Unix milliseconds (the same u64
+  // contract as activity timestamps); normalize at the native boundary for
+  // the UI's ISO timestamp model. String values remain accepted for remotes.
+  createdAt: z.union([
+    z.string().datetime(),
+    z.number().int().nonnegative().max(8.64e15).transform(value => new Date(value).toISOString()),
+  ]),
+  scope: z.enum(["full", "disk"]), reason: z.enum(["manual", "before-restore"]),
+  sizeBytes: z.number().int().nonnegative().optional(),
+})
+const checkpointOperationShape = z.object({
+  kind: z.enum(["capture", "fork", "restore"]), status: z.enum(["running", "failed"]),
+  stage: z.string(), error: z.string().optional(),
+})
+const pendingCheckpointRestoreShape = z.object({
+  checkpointId: z.string().min(1), sourceWorkspace: z.string().min(1), state: z.enum(["full", "disk"]),
+})
+
 const applicationSourceShape = z.object({
   runtimeRepair: z.unknown().nullable(),
   workspaces: z.array(z.object({
@@ -80,6 +100,9 @@ const applicationSourceShape = z.object({
     host: z.string(),
     repositories: z.array(z.unknown()), files: z.array(z.unknown()), ports: z.array(z.unknown()), logs: z.array(z.unknown()),
     githubRepositories: z.array(z.string()), secretNames: z.array(z.string()),
+    checkpoints: z.array(checkpointShape).optional(),
+    checkpointOperation: checkpointOperationShape.nullable().optional(),
+    pendingCheckpointRestore: pendingCheckpointRestoreShape.nullable().optional(),
   }).passthrough()),
   activities: z.array(z.unknown()),
   sandboxConfigurationOperation: z.unknown().nullable(),
@@ -804,7 +827,31 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
+  async function checkpointAction(command: string, target: string, arguments_: Record<string, unknown>) {
+    const remote = parseRemoteWorkspaceTarget(target)
+    if (remote) {
+      const action = command === "create_checkpoint" ? "create" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : null
+      if (!action) throw new Error("Unsupported checkpoint operation.")
+      await native.invoke("remote_checkpoint_action", { hostId: remote.hostId, vmId: remote.vmId, action, ...arguments_ })
+      await refreshComputers(true)
+      return
+    }
+    const workspace = snapshot.source?.workspaces.find(item => !item.computer && item.machine.kind === "vm" && (item.machine.name === target || item.machine.id === target))
+    if (!workspace) throw new Error("This sandbox is unavailable. Refresh and try again.")
+    try {
+      const result = await native.invoke<unknown>(command, { workspaceId: workspace.machine.id, ...arguments_ })
+      publish({ ...snapshot, source: parseMutationSource(result), error: null })
+      void refresh()
+    } catch (cause) {
+      void refresh()
+      throw cause
+    }
+  }
+
   const applicationActions: ApplicationActions = {
+    createCheckpoint: (workspace, name) => checkpointAction("create_checkpoint", workspace, { name }),
+    forkCheckpoint: (workspace, checkpointId, newName) => checkpointAction("fork_checkpoint", workspace, { checkpointId, newName }),
+    restoreCheckpoint: (workspace, checkpointId) => checkpointAction("restore_checkpoint", workspace, { checkpointId }),
     refreshRepositories: async () => {
       await refresh(true)
       await refreshComputers(true)

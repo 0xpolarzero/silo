@@ -3,6 +3,12 @@ use super::*;
 
 pub(crate) type Material = Vec<(String, String, Vec<String>)>;
 
+// Silo-generated Env-source secret references are safe to forward as opaque
+// placeholders. MicroSandbox still substitutes the real value only on the
+// explicit allow-host list.
+pub(super) const SILO_GITHUB_SECRET_SPEC: &str =
+    "SILO_GITHUB:passthrough=*@github.com,api.github.com,uploads.github.com";
+
 fn names(config: &Value) -> HashSet<String> {
     config
         .pointer("/network/secrets/secrets")
@@ -106,7 +112,10 @@ fn plan(
         } else {
             &mut live
         };
-        target.extend(["--secret".into(), format!("{name}@{}", domains.join(","))]);
+        target.extend([
+            "--secret".into(),
+            format!("{name}:passthrough=*@{}", domains.join(",")),
+        ]);
     }
     let pending = running && !deferred.is_empty() && !boot;
     (live, deferred, pending)
@@ -162,7 +171,7 @@ fn modify(
     }
 }
 
-fn verify_config(config: &Value, material: &Material) -> bool {
+pub(crate) fn verify_config(config: &Value, material: &Material) -> bool {
     if !material.is_empty()
         && config
             .pointer("/network/tls/enabled")
@@ -319,9 +328,17 @@ mod tests {
         assert!(pending);
         assert_eq!(
             live,
-            vec!["--secret-rm", "OLD", "--secret", "KEEP@api.example.com"]
+            vec![
+                "--secret-rm",
+                "OLD",
+                "--secret",
+                "KEEP:passthrough=*@api.example.com"
+            ]
         );
-        assert_eq!(deferred, vec!["--secret", "NEW@api.example.com"]);
+        assert_eq!(
+            deferred,
+            vec!["--secret", "NEW:passthrough=*@api.example.com"]
+        );
         assert!(!live.join(" ").contains("sensitive"));
         assert!(!live.join(" ").contains("SILO_GITHUB"));
     }
@@ -342,7 +359,7 @@ mod tests {
         );
         assert!(!pending);
         assert!(deferred.is_empty());
-        assert_eq!(live, vec!["--secret", "TOKEN@*"]);
+        assert_eq!(live, vec!["--secret", "TOKEN:passthrough=*@*"]);
     }
     #[test]
     fn verification_requires_host_reference_tls_and_exact_domains() {
@@ -597,7 +614,7 @@ finally: c.close()
                 "--label",
                 MANAGED_LABEL,
                 "--secret",
-                "SILO_GITHUB@github.com,api.github.com,uploads.github.com",
+                SILO_GITHUB_SECRET_SPEC,
                 "--no-start",
                 "--quiet",
             ],

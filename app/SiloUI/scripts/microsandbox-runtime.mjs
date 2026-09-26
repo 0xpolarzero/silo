@@ -1,4 +1,3 @@
-import { stagePatchedImago } from "./imago-storage-patch.mjs"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
@@ -14,8 +13,7 @@ export const RELEASE_BASE_URL = `https://github.com/superradcompany/microsandbox
 const MICROSANDBOX_COMMIT = inputs.sourceCommit
 export const MICROSANDBOX_SOURCE_URL = `https://codeload.github.com/superradcompany/microsandbox/tar.gz/${MICROSANDBOX_COMMIT}`
 export const MICROSANDBOX_SOURCE_SHA256 = inputs.sourceArchiveSha256
-export const MICROSANDBOX_PATCH_PATH = inputs.patchPath
-export const MICROSANDBOX_PATCH_SHA256 = inputs.patchSha256
+export const MICROSANDBOX_PATCHES = Object.freeze(inputs.patches.map(Object.freeze))
 export const MICROSANDBOX_BUILD_TOOLCHAIN = inputs.toolchain
 export const MICROSANDBOX_BUILD_FEATURES = inputs.features
 export const runtimeTargets = Object.freeze(Object.fromEntries(Object.entries(inputs.targets).map(([target, value]) => [target, Object.freeze(value)])))
@@ -80,6 +78,18 @@ function runBuildTool(executable, args, options = {}) {
   })
 }
 
+const SILO_PROTOCOL_PROBES = [
+  "--silo-storage-protocol",
+  "--silo-desktop-protocol",
+  "--silo-github-token-protocol",
+  "--silo-github-protocol",
+  "--silo-working-account-protocol",
+]
+
+function hasSiloProtocolProbes(executable) {
+  return SILO_PROTOCOL_PROBES.every(probe => runBuildTool(executable, [probe]).trim() === "1")
+}
+
 export function applyRuntimePatch(sourceRoot, patchPath) {
   // Extracted sources live below Silo's checkout. Give Git a local root;
   // otherwise `git apply` can silently skip every path as outside the cwd.
@@ -92,7 +102,7 @@ async function buildPatchedExecutable({
   targetTriple,
   hostTriple,
   sourceArchive,
-  patch,
+  patches,
   agentd,
   cacheRoot,
 }) {
@@ -102,7 +112,7 @@ async function buildPatchedExecutable({
   const rustcVersion = runBuildTool("rustc", [`+${MICROSANDBOX_BUILD_TOOLCHAIN}`, "--version"]).trim()
   const cacheKey = sha256(Buffer.from([
     MICROSANDBOX_SOURCE_SHA256,
-    MICROSANDBOX_PATCH_SHA256,
+    ...MICROSANDBOX_PATCHES.map(({ sha256: digest }) => digest),
     sha256(agentd),
     rustcVersion,
     targetTriple,
@@ -116,29 +126,27 @@ async function buildPatchedExecutable({
     const createHelp = runBuildTool(cachedExecutable, ["create", "--help"])
     const execHelp = runBuildTool(cachedExecutable, ["exec", "--help"])
     const sshHelp = runBuildTool(cachedExecutable, ["ssh", "serve", "--help"])
-    const storageProtocol = runBuildTool(cachedExecutable, ["--silo-storage-protocol"]).trim()
-    const githubProtocol = runBuildTool(cachedExecutable, ["--silo-github-protocol"]).trim()
-    const workingAccountProtocol = runBuildTool(cachedExecutable, ["--silo-working-account-protocol"]).trim()
-    if (sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && githubProtocol === "1" && storageProtocol === "1" && workingAccountProtocol === "1" && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--from-snapshot") && createHelp.includes("--no-start") && createHelp.includes("--progress-json")) {
+    if (sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && hasSiloProtocolProbes(cachedExecutable) && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--mount-owned") && createHelp.includes("--no-start") && createHelp.includes("--progress-json") && ["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => runBuildTool(cachedExecutable, ["snapshot", "create", "--help"]).includes(flag)) && ["--forked", "--name"].every(flag => runBuildTool(cachedExecutable, ["restore", "--help"]).includes(flag))) {
       return readFile(cachedExecutable)
     }
   }
 
   const workRoot = join(buildRoot, "work")
   const archivePath = join(buildRoot, "source.tar.gz")
-  const patchPath = join(buildRoot, "create-stopped.patch")
   const cargoTarget = join(buildRoot, "cargo-target")
   await rm(workRoot, { recursive: true, force: true })
   await mkdir(workRoot, { recursive: true })
   await writeFile(archivePath, sourceArchive)
-  await writeFile(patchPath, patch)
   runBuildTool("/usr/bin/tar", ["-xzf", archivePath, "-C", workRoot])
   const entries = await import("node:fs/promises").then(({ readdir }) => readdir(workRoot, { withFileTypes: true }))
   const source = entries.filter((entry) => entry.isDirectory()).map((entry) => join(workRoot, entry.name))
   if (source.length !== 1) throw new Error("Pinned MicroSandbox source archive has an unexpected layout")
-  applyRuntimePatch(source[0], patchPath)
+  for (let index = 0; index < patches.length; index += 1) {
+    const patchPath = join(buildRoot, `patch-${index}.patch`)
+    await writeFile(patchPath, patches[index])
+    applyRuntimePatch(source[0], patchPath)
+  }
   runBuildTool("cargo", [`+${MICROSANDBOX_BUILD_TOOLCHAIN}`, "fetch", "--locked", "--target", targetTriple], { cwd: source[0] })
-  await stagePatchedImago(source[0])
   const agentdPath = join(source[0], "build", "agentd")
   await mkdir(dirname(agentdPath), { recursive: true })
   await writeFile(agentdPath, agentd, { mode: 0o755 })
@@ -161,14 +169,8 @@ async function buildPatchedExecutable({
   if (!managedSshHelp.includes("--authorized-keys") || !managedSshHelp.includes("--exit-on-stdin-close") || !managedSshHelp.includes("--expected-machine-id")) {
     throw new Error("The built MicroSandbox is missing managed SSH access support")
   }
-  if (runBuildTool(built, ["--silo-github-protocol"]).trim() !== "1") {
-    throw new Error("The built MicroSandbox is missing the restricted GitHub credential boundary")
-  }
-  if (runBuildTool(built, ["--silo-storage-protocol"]).trim() !== "1") {
-    throw new Error("The built MicroSandbox is missing capacity-preserving storage reclamation")
-  }
-  if (runBuildTool(built, ["--silo-working-account-protocol"]).trim() !== "1") {
-    throw new Error("The built MicroSandbox is missing normal-user SSH and SFTP support")
+  if (!hasSiloProtocolProbes(built)) {
+    throw new Error("The built MicroSandbox is missing one or more required Silo protocol boundaries")
   }
   const bytes = await readFile(built)
   await mkdir(buildRoot, { recursive: true })
@@ -226,16 +228,20 @@ export async function stageRuntime({
     selected.agentdAsset,
     join(cacheRoot, selected.agentdAsset),
   )
-  const patchPath = resolve(appRoot, MICROSANDBOX_PATCH_PATH)
-  assertInside(appRoot, patchPath)
-  const patch = await readFile(patchPath)
-  verifySha256(patch, MICROSANDBOX_PATCH_SHA256, "Silo stopped-create patch")
+  const patches = []
+  for (const [index, patchInput] of MICROSANDBOX_PATCHES.entries()) {
+    const patchPath = resolve(appRoot, patchInput.path)
+    assertInside(appRoot, patchPath)
+    const patch = await readFile(patchPath)
+    verifySha256(patch, patchInput.sha256, `Silo runtime patch ${index + 1}`)
+    patches.push(patch)
+  }
   const executable = Buffer.from(await buildExecutable({
     appRoot,
     targetTriple,
     hostTriple,
     sourceArchive,
-    patch,
+    patches,
     agentd,
     cacheRoot,
   }))
@@ -265,7 +271,9 @@ export async function stageRuntime({
     const createHelp = runBuildTool(executableTemporary, ["create", "--help"], { env: environment })
     const execHelp = runBuildTool(executableTemporary, ["exec", "--help"], { env: environment })
     const sshHelp = runBuildTool(executableTemporary, ["ssh", "serve", "--help"], { env: environment })
-    if (!sshHelp.includes("--no-start") || !sshHelp.includes("--authorized-keys") || !sshHelp.includes("--exit-on-stdin-close") || !sshHelp.includes("--expected-machine-id") || !execHelp.includes("--no-start") || version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--from-snapshot") || !createHelp.includes("--no-start") || !createHelp.includes("--progress-json")) {
+    const snapshotHelp = runBuildTool(executableTemporary, ["snapshot", "create", "--help"])
+    const restoreHelp = runBuildTool(executableTemporary, ["restore", "--help"])
+    if (!["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => snapshotHelp.includes(flag)) || !restoreHelp.includes("--forked") || !restoreHelp.includes("--name") || !sshHelp.includes("--no-start") || !sshHelp.includes("--authorized-keys") || !sshHelp.includes("--exit-on-stdin-close") || !sshHelp.includes("--expected-machine-id") || !execHelp.includes("--no-start") || version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--mount-owned") || !createHelp.includes("--no-start") || !createHelp.includes("--progress-json")) {
       throw new Error("Patched MicroSandbox executable failed its version, stopped-create, or managed SSH capability check")
     }
     await rm(isolatedHome, { recursive: true, force: true })
@@ -296,7 +304,7 @@ export async function stageRuntime({
       sha256: sha256(executable),
       sourceCommit: MICROSANDBOX_COMMIT,
       sourceArchiveSha256: MICROSANDBOX_SOURCE_SHA256,
-      patchSha256: MICROSANDBOX_PATCH_SHA256,
+      patchSha256s: MICROSANDBOX_PATCHES.map(({ sha256: digest }) => digest),
       toolchain: MICROSANDBOX_BUILD_TOOLCHAIN,
       features: MICROSANDBOX_BUILD_FEATURES,
       officialReleaseAsset: selected.executableAsset,

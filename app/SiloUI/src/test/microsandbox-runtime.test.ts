@@ -5,15 +5,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
-const { stagePatchedImago } = vi.hoisted(() => ({ stagePatchedImago: vi.fn().mockResolvedValue(undefined) }))
-
-// The crate extraction and lockfile override have their own filesystem integration tests.
-vi.mock("../../scripts/imago-storage-patch.mjs", () => ({ stagePatchedImago }))
-
 import {
   applyRuntimePatch,
   runtimeTargets,
-  MICROSANDBOX_PATCH_PATH,
+  MICROSANDBOX_PATCHES,
   MICRO_SANDBOX_VERSION,
   resolveRuntimeTarget,
   selectRuntime,
@@ -29,10 +24,15 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 describe("bundled MicroSandbox release staging", () => {
   it("pins the runtime patch and shares retention rules with stopped sandboxes", () => {
-    const patch = readFileSync(MICROSANDBOX_PATCH_PATH, "utf8")
     const inputs = JSON.parse(readFileSync("runtime-inputs.json", "utf8"))
-    expect(sha256(Buffer.from(patch))).toBe(inputs.patchSha256)
-    const marker = "+++ b/crates/runtime/lib/logging_retention.rs\n"
+    expect(MICROSANDBOX_PATCHES).toHaveLength(8)
+    for (const patch of inputs.patches) {
+      expect(sha256(readFileSync(patch.path))).toBe(patch.sha256)
+    }
+    const retentionPatch = MICROSANDBOX_PATCHES.find(patch => patch.path.includes("microsandbox-log-retention-desktop-start"))
+    expect(retentionPatch).toBeDefined()
+    const patch = readFileSync(retentionPatch!.path, "utf8")
+    const marker = "+++ b/crates/runtime/lib/runner/logging_retention.rs\n"
     const section = patch.split(marker)[1]?.split("diff --git ")[0]
     expect(section).toBeDefined()
     const source = section!.split("\n").filter((line) => line.startsWith("+")).map((line) => line.slice(1)).join("\n") + "\n"
@@ -116,11 +116,14 @@ describe("bundled MicroSandbox release staging", () => {
       librarySha256: sha256(library),
     }
     const licenses = [{ name: "LICENSE.txt", url: "https://example.test/LICENSE", sha256: sha256(apache) }]
-    const patch = await readFile(join(process.cwd(), MICROSANDBOX_PATCH_PATH))
+    const patches = await Promise.all(MICROSANDBOX_PATCHES.map(async patch => Buffer.from(await readFile(join(process.cwd(), patch.path)))))
     const source = Buffer.from("fake pinned source")
     const sourceArtifact = { url: "https://example.test/source.tar.gz", sha256: sha256(source) }
     await mkdir(join(appRoot, "patches"), { recursive: true })
-    await writeFile(join(appRoot, MICROSANDBOX_PATCH_PATH), patch)
+    for (const [index, patchInput] of MICROSANDBOX_PATCHES.entries()) {
+      await mkdir(join(appRoot, "patches"), { recursive: true })
+      await writeFile(join(appRoot, patchInput.path), patches[index])
+    }
 
     const fetchBytes = vi.fn(async (url: string) => {
       if (url.endsWith(`/${selected.executableAsset}`)) return executable
@@ -148,13 +151,13 @@ describe("bundled MicroSandbox release staging", () => {
     expect((await stat(staged.executablePath)).mode & 0o777).toBe(0o755)
     const manifest = JSON.parse(await readFile(staged.manifestPath, "utf8"))
     expect(manifest).toMatchObject({
-      microsandboxVersion: "0.6.17",
+      microsandboxVersion: "0.7.2",
       targetTriple,
       executable: {
         bundledName: "msb",
         sha256: sha256(executable),
-        sourceCommit: "5eca4de8bf233e57f114140f8c076ea8c96f21ab",
-        patchSha256: sha256(patch),
+        sourceCommit: "60d4dc8a436fb9365491567ec21d073e924e3c6d",
+        patchSha256s: MICROSANDBOX_PATCHES.map((_, index) => sha256(patches[index])),
         officialReleaseAsset: "msb-darwin-aarch64",
       },
       library: { bundledName: "libkrunfw.5.dylib", sha256: sha256(library) },
@@ -181,8 +184,10 @@ describe("bundled MicroSandbox release staging", () => {
       agentdSha256: sha256(agentd),
       librarySha256: sha256(library),
     }
-    await mkdir(join(appRoot, "patches"), { recursive: true })
-    await writeFile(join(appRoot, MICROSANDBOX_PATCH_PATH), await readFile(join(process.cwd(), MICROSANDBOX_PATCH_PATH)))
+    for (const patch of MICROSANDBOX_PATCHES) {
+      await mkdir(join(appRoot, "patches"), { recursive: true })
+      await writeFile(join(appRoot, patch.path), await readFile(join(process.cwd(), patch.path)))
+    }
     const fetchBytes = async (url: string) => {
       if (url === sourceArtifact.url) return source
       if (url.endsWith(`/${selected.executableAsset}`)) return releaseExecutable
@@ -210,10 +215,12 @@ describe("bundled MicroSandbox release staging", () => {
       }
       if (command.startsWith(appRoot) && command.endsWith("/msb")) {
         if (outdatedCachedAccount && !command.includes("cargo-target") && args[0] === "--silo-working-account-protocol") return "0"
-        if (["--silo-github-protocol", "--silo-storage-protocol", "--silo-working-account-protocol"].includes(args[0])) return "1"
+        if (["--silo-storage-protocol", "--silo-desktop-protocol", "--silo-github-token-protocol", "--silo-github-protocol", "--silo-working-account-protocol"].includes(args[0])) return "1"
         if (args[0] === "--version") return `msb ${MICRO_SANDBOX_VERSION}`
         if (args.includes("--help")) {
-          const oldFlags = "--no-start --from-snapshot --progress-json"
+          const oldFlags = "--mount-owned --no-start --progress-json"
+          if (args[0] === "snapshot") return "--from-sandbox --group --dest-dir --full --guest-flush --integrity"
+          if (args[0] === "restore") return "--forked --name"
           return outdatedCachedSsh && !command.includes("cargo-target") && args[0] === "ssh"
             ? oldFlags
             : `${oldFlags} --authorized-keys --exit-on-stdin-close --expected-machine-id`
@@ -248,7 +255,6 @@ describe("bundled MicroSandbox release staging", () => {
         const changed = await stage()
         expect(await readFile(changed.executablePath, "utf8")).toBe("compiled runtime:agent revision two")
         expect(compilations).toBe(4)
-        expect(stagePatchedImago).toHaveBeenCalledTimes(4)
         const manifest = JSON.parse(await readFile(changed.manifestPath, "utf8"))
         expect(manifest.executable.embeddedAgentdReleaseSha256).toBe(sha256(agentd))
         expect(manifest.executable.sha256).toBe(sha256(await readFile(changed.executablePath)))

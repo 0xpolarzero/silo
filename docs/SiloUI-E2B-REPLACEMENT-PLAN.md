@@ -1,5 +1,19 @@
 # Silo E2B replacement plan
 
+**Superseded direction, 2026-09-25:** the user chose to bring upstream MicroSandbox
+checkpoints and forks into retained Silo. Follow the
+[checkpoint implementation plan](SiloUI-CHECKPOINTS-PLAN.md). This E2B plan is
+retained as historical design and qualification context, not the active cutover plan.
+
+**Decision reassessment, 2026-09-24:** the user proposes keeping Silo, adding
+efficient checkpoints/live forks, improving the desktop and using full LCU.
+The [follow-up research](research/checkpoints-desktop-direction-2026-09-24.md)
+finds that released MicroSandbox 0.7.2 already provides an upstream snapshot/fork
+implementation to qualify. The [comparative assessment](research/e2b-adoption-assessment-2026-09-24.md)
+therefore recommends evaluating that upgrade before an E2B replacement. No
+runtime upgrade or desktop selection is qualified or implemented. The E2B plan
+below remains conditional on subsequently choosing E2B.
+
 Status: proposed implementation plan, 2026-09-22. This document authorizes no
 deployment or deletion of existing user data. The requested direction is a
 breaking pre-1.0 replacement: one E2B backend, no MicroSandbox fallback, old
@@ -12,61 +26,57 @@ binary/source provenance and independent reproductions, and specifies the
 remaining qualification gates. Computer use is under rewrite; preserve its
 integration seam and defer deeper LCU work.
 
-Current qualification status, 2026-09-23: **cutover blocked**. The separate
-scratch deployment passed SDK-only checkpoint, snapshot restore, and pause
-controls, including process-memory and fsynced-file oracles. A separate
-source-built [D1 post-capture fault](research/e2b-d1-post-capture-repro-2026-09-23.md)
-stopped and unaddressed its source while leaving local-only checkpoint files;
-its failed snapshot ID was rejected by the SDK. A separate
-[D2 rootfs sync fault](research/e2b-d2-rootfs-sync-repro-2026-09-23.md)
-reproduced source loss and SDK recovery rejection on a disposable source-built
-candidate. The captured source does not match the deployed release's dependency
-set, and these tests do not establish either historical trigger or fix D1–D3.
-An exact passing SDK control had a [read-only canonical file
-inventory](research/e2b-canonical-readback-2026-09-23.md) across 7 builds and
-42 objects; it establishes current files, not a completed-upload boundary or
-host restart recovery.
-The later [controlled SDK restarts](research/e2b-d3-controlled-restarts-2026-09-23.md)
-passed orchestrator-only and clean Linux host restart for one tiny run-owned
-guest after exact upload-marker and readback checks. They did not use a fresh
-cache or reproduce the historical D3 panic. The normal PoC desktop stop path
-is disabled because
-the inspected pause call returns before upload durability, and no per-snapshot
-shutdown barrier has been verified. See the
-[fresh desktop and synthetic Git run](research/e2b-fresh-desktop-qualification-2026-09-23.md),
-[work log](research/e2b-qualification-worklog-2026-09-23.md),
-[source audit](research/e2b-lifecycle-source-audit-2026-09-23.md), and
-[provenance audit](research/e2b-provenance-audit-2026-09-23.md). The product
-lifecycle and resource proposals below remain unapproved.
+Current qualification status, reconciled 2026-09-24: **cutover blocked**.
+The [current gate matrix](research/e2b-qualification-gates-2026-09-23.md)
+separates executed subsets from the remaining adoption work. Later evidence in
+the [work log](research/e2b-qualification-worklog-2026-09-23.md) supersedes the
+earlier summaries: durable full-desktop host shutdown/restart passed; suite
+self-cleanup passed with zero survivors; the last recorded deterministic suite
+passed 97 tests. Real GitHub operations and policy-layer revocation passed in
+separate harnesses. A packaged Tauri harness delivered modifier-correct input
+and denied viewer IPC. Two-computer lifecycle tests passed on native Linux
+x86-64. These are bounded passes, not complete workflow qualification.
 
-Two fresh runs passed six desktop workflow and three synthetic Git cases each
-on one identified scratch candidate. The second run proved a new current grant
-works after restoring an older checkpoint. Its browser and disposable WKWebView
-rendered the desktop, and native typing reached a guest editor, but native
-mouse clicks and save modifiers failed in automation. A browser viewer saved
-the native-entered text, confirmed by exact guest-file readback; that is not a
-native save pass. A second viewer also sent input during the original shared
-human mode. The PoC now routes a fresh second viewer to its observer stream,
-with a passing local WebSocket test and live A→B ownership handoff. A copied
-bearer ticket and full packaged viewer behavior remain unqualified. See the
-[fresh-run report](research/e2b-fresh-desktop-qualification-2026-09-23.md).
-Real GitHub grants, packaged Tauri input, two-computer use and lifecycle
-failure repairs remain open.
+The pause/checkpoint preservation defect and corrupted successful snapshot
+remain unresolved in upstream [#3658](https://github.com/e2b-dev/runtime/issues/3658)
+and [#3659](https://github.com/e2b-dev/runtime/issues/3659), both checked open on
+2026-09-24. Beyond those fixes and the replacement credential broker, remaining
+coverage includes native editor/network interruption and revocation, viewer
+interaction/security cases, storage retention, runtime updates, resource
+changes, files-only export/import, the remaining platform/remote workflows,
+and a fresh final run against one pinned candidate. Detailed evidence remains
+in the dated reports; historical test failures are not current defects by default.
+
+Files-only export, restart-to-apply CPU/RAM changes, and viewer-session TTL
+survival were accepted on 2026-09-24. Acceptance does not establish runtime
+coverage. Concrete lifecycle/checkpoint UI changes still need a before/after
+proposal and approval; a host-only start/stop interface is not approved.
 
 ## Agreed scope after review
 
 Complete and qualify the standalone PoC before replacing Silo's runtime. Reuse
-its proven adapter, host setup, desktop recipe, credential broker, SSH transport
-and acceptance tests in the application. Do not build a second implementation.
+its proven adapter, host setup, desktop recipe, SSH transport and acceptance
+tests in the application. The custom credential broker remains a test fixture;
+it is not selected for production.
+
+**User direction, 2026-09-24:** prefer maintained, well-recognized tools and
+supported upstream features throughout the refactor. Research existing solutions
+before creating infrastructure, retain only necessary Silo policy/integration,
+and fix reusable gaps upstream. Successful PoC code does not override this rule.
+The [credential-tool comparison](research/e2b-credential-tools-2026-09-24.md)
+selects iron.sh's iron-proxy first and Infisical's standalone Agent Vault second,
+not an approved production dependency. It also records the E2B deployment gap,
+CyberArk's CONNECT limitation, and Envoy's incompatible filter threat model.
 
 Every workspace has a desktop microVM. Bake LCU into the shared desktop template;
 run one LCU session inside each microVM beside X11 and D-Bus. E2B owns sandbox
 execution and viewer transport, not the computer-use API. LCU replaces both E2B's
 computer-use helpers and the PoC's temporary xdotool input implementation.
 
-Keep Silo's existing interface wherever its meaning remains correct. Lifecycle,
-checkpoint and resource-control changes below are proposals requiring the user's
-approval before UI implementation. This includes any decision to show only host
+Keep Silo's existing interface wherever its meaning remains correct. Except for
+the explicit decisions recorded below, lifecycle, checkpoint and resource-control
+changes remain proposals requiring the user's approval before UI implementation.
+This includes any decision to show only host
 start/stop controls. E2B still has individual sandbox pause/resume operations;
 sharing an outer host does not remove their lifecycle.
 
@@ -359,12 +369,18 @@ Source inspection finds a concrete self-hosting gap:
 - The current Compose deployment does not configure the customer secret-store
   backend. The PoC has not exercised equivalent secret injection.
 
-Recommended implementation: preserve Silo's native credential authority and
-extract the necessary injection/policy logic into one explicitly scoped broker
-outside all sandbox VMs. Prefer a supported upstream integration; if unavailable,
-the broker requires a qualified host-network integration. Do not carry the old
-hypervisor along to keep its proxy, and do not silently substitute a cloud-only
-service or weaker guest-token scheme.
+Implementation direction, revised 2026-09-24: preserve Silo's native credential
+authority and qualify an existing credential broker outside all sandbox VMs.
+Start with iron-proxy, then Infisical Agent Vault; a supported E2B injection backend
+remains an alternative if its local deployment and redistribution are established.
+See the [tool comparison](research/e2b-credential-tools-2026-09-24.md) for exact
+remaining requirements. Do not promote `credential-broker.py`, implement a new
+HTTP/TLS proxy, or copy its fixture GitHub path recognizer into production.
+Keep provider-issued GitHub scope enforcement and Silo's current grant selection.
+Broker storage, revocation and runtime identity must meet the existing contract;
+an extra credential database or cached authority is not an implicit exception.
+Do not carry the old hypervisor along to keep its proxy, and do not silently
+substitute a cloud-only service or weaker guest-token scheme.
 
 The controlled-origin disposable-credential test now passes, including actual
 Git push/clone and LFS blob upload/download. It does not qualify production
@@ -417,8 +433,9 @@ control (runs `280a431d…`/`a0fdce09…` and
 returns a kernel `EIO` loses the guest identically: reproduced **on the pinned,
 unpatched release binary** by ptrace-injecting `EIO` into the actual `fsync` of
 the actual diff file (runs `bf19ecc9…`, `4dcd6f60…`, 2/2, with the byte-for-byte
-historical error chain). The historical triggers (allocator errno; physical
-writeback cause) and the incident-time source mapping remain unestablished; see
+historical error chain). A later release-binary run reproduced the checkpoint
+failure with real hugepage exhaustion and kernel ENOMEM. The exact physical
+writeback cause and incident-time source mapping remain unestablished; see
 [causal bounds](research/e2b-causal-bounds-2026-09-23-late.md). Require a
 regression that preserves either the live source or a discoverable, complete,
 resumable paused state for both failures. Silo must never report success for a
@@ -474,13 +491,16 @@ tickets immediately.
 
 ### D. Packaged WebKit and reliable input
 
-A disposable native WKWebView harness rendered noVNC, saved a file, and
-observed takeover disconnect; a fresh observer route could not change that file.
-The automated direct Control chord did not forward correctly; the on-screen
-noVNC Control key worked. This does not qualify physical keyboard mapping or
-the packaged Tauri surface. Qualify noVNC in
-the packaged app: keyboard layouts, Cmd/Ctrl mapping, Unicode, clipboard,
-scroll/drag, resize/DPI, focus, reconnect, pause and expired credentials.
+A disposable native WKWebView harness rendered noVNC and observed takeover.
+The later [input investigation](research/e2b-viewer-input-root-cause-2026-09-24.md)
+isolated the synthetic-event failure and proved modifier-correct input through
+both WKWebView and a packaged, production-version-matched Tauri harness. The
+Tauri harness also rejected a viewer IPC probe. A human keypress is now optional
+confirmation; no user input is needed to continue qualification. Remaining
+coverage includes keyboard layouts, Cmd/Ctrl mapping, Unicode, clipboard,
+scroll/drag, resize/DPI, focus and session/lifecycle reconnect behavior across
+the promised platforms. The previously rejected observer-input experiment stays
+unmeasured; server role routing alone does not establish hostile-client denial.
 Keep viewer windows outside privileged application IPC capabilities. Give each
 viewer a short-lived workspace-scoped session, not the E2B team API key.
 

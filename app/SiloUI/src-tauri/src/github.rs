@@ -59,6 +59,9 @@ fn schedule(delay: Duration) {
         *pending = Some(Instant::now() + delay);
     }
 }
+pub(crate) fn workspace_restored() {
+    schedule(Duration::ZERO);
+}
 fn active() -> &'static Mutex<std::collections::HashMap<String, Vec<RuntimeGrant>>> {
     ACTIVE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
@@ -250,6 +253,39 @@ struct Document {
     disconnect_pending: bool,
     #[serde(default)]
     rate_retry_at: u64,
+}
+
+/// Copy the source's current GitHub assignment for a stopped checkpoint fork.
+/// The child obtains its own runtime identity and resolves credentials at Start.
+pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str) -> Result<(), String> {
+    let _state = STATE.try_lock().map_err(|_| "GitHub settings are busy. Retry the fork.".to_string())?;
+    let mut document = load(app)?;
+    if let Some(mut assignment) = document.workspaces.iter()
+        .find(|value| value["workspace"].as_str() == Some(source)).cloned() {
+        assignment["workspace"] = json!(target);
+        document.workspaces.retain(|value| value["workspace"].as_str() != Some(target));
+        document.workspaces.push(assignment);
+        document.revision = document.revision.saturating_add(1);
+        if !document.access_pending.iter().any(|name| name == target) {
+            document.access_pending.push(target.into());
+        }
+        if !document.identity_pending.iter().any(|name| name == target) {
+            document.identity_pending.push(target.into());
+        }
+        save(app, &document)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Result<(), String> {
+    let _state = STATE.try_lock().map_err(|_| "GitHub settings are busy.".to_string())?;
+    let mut document = load(app)?;
+    document.workspaces.retain(|value| value["workspace"].as_str() != Some(target));
+    document.access_pending.retain(|name| name != target);
+    document.identity_pending.retain(|name| name != target);
+    document.operations.retain(|value| value["workspace"].as_str() != Some(target));
+    document.revision = document.revision.saturating_add(1);
+    save(app, &document)
 }
 fn now() -> u64 {
     SystemTime::now()

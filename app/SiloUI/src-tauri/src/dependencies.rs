@@ -28,10 +28,17 @@ struct RuntimeInputs {
     libkrunfw_version: String,
     source_commit: String,
     source_archive_sha256: String,
-    patch_sha256: String,
+    patches: Vec<RuntimePatchInput>,
     toolchain: String,
     features: String,
     targets: std::collections::HashMap<String, RuntimeTarget>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePatchInput {
+    path: String,
+    sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -49,7 +56,7 @@ struct RuntimeTarget {
 static RUNTIME_INPUTS: std::sync::LazyLock<RuntimeInputs> = std::sync::LazyLock::new(|| {
     let inputs: RuntimeInputs = serde_json::from_str(include_str!("../../runtime-inputs.json"))
         .expect("checked-in runtime inputs must be valid");
-    assert_eq!(inputs.schema_version, 1, "unsupported runtime input schema");
+    assert_eq!(inputs.schema_version, 2, "unsupported runtime input schema");
     inputs
 });
 const EXPECTED_GIT: &str = "2.53.0";
@@ -147,7 +154,7 @@ struct PatchedRuntimeFile {
     sha256: String,
     source_commit: String,
     source_archive_sha256: String,
-    patch_sha256: String,
+    patch_sha256s: Vec<String>,
     toolchain: String,
     features: String,
     official_release_asset: String,
@@ -759,12 +766,11 @@ fn microsandbox_check(paths: &ProbePaths) -> DependencyCheck {
         .expect("macOS frameworks path")
         .join(&manifest.library.bundled_name);
     #[cfg(target_os = "linux")]
-    let library = paths
-        .resource_dir
-        .join("microsandbox")
-        .join(&manifest.target_triple)
-        .join("lib")
-        .join(&manifest.library.bundled_name);
+    let library = crate::runtime::bundled_runtime_library(
+        &executable,
+        &paths.resource_dir,
+        tauri::utils::platform::bundle_type(),
+    );
     for candidate in [&executable, &library] {
         if let Err(error) = readable_file(candidate) {
             return error.to_check(id, title, true);
@@ -824,7 +830,7 @@ fn runtime_manifest_matches(manifest: &MicrosandboxManifest) -> bool {
                     && manifest.executable.source_commit == RUNTIME_INPUTS.source_commit
                     && manifest.executable.source_archive_sha256
                         == RUNTIME_INPUTS.source_archive_sha256
-                    && manifest.executable.patch_sha256 == RUNTIME_INPUTS.patch_sha256
+                    && manifest.executable.patch_sha256s == RUNTIME_INPUTS.patches.iter().map(|patch| patch.sha256.clone()).collect::<Vec<_>>()
                     && manifest.executable.toolchain == RUNTIME_INPUTS.toolchain
                     && manifest.executable.features == RUNTIME_INPUTS.features
                     && manifest.executable.official_release_asset == executable_asset
@@ -1127,16 +1133,20 @@ mod tests {
     }
 
     #[test]
-    fn checked_in_runtime_patch_matches_packaged_build_pin() {
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(include_bytes!(
-                    "../../patches/microsandbox-create-stopped-0.6.17.patch"
-                ))
-            ),
-            RUNTIME_INPUTS.patch_sha256
-        );
+    fn checked_in_runtime_patches_match_packaged_build_pins() {
+        let files = [
+            ("../../patches/microsandbox-silo-network-0.7.2.patch", include_bytes!("../../patches/microsandbox-silo-network-0.7.2.patch").as_slice()),
+            ("../../patches/microsandbox-restore-policy-0.7.2.patch", include_bytes!("../../patches/microsandbox-restore-policy-0.7.2.patch").as_slice()),
+            ("../../patches/microsandbox-create-stopped-0.7.2.patch", include_bytes!("../../patches/microsandbox-create-stopped-0.7.2.patch").as_slice()),
+            ("../../patches/microsandbox-adopt-owned-disk-0.7.2.patch", include_bytes!("../../patches/microsandbox-adopt-owned-disk-0.7.2.patch").as_slice()),
+            ("../../patches/microsandbox-log-retention-desktop-start-0.7.2.patch", include_bytes!("../../patches/microsandbox-log-retention-desktop-start-0.7.2.patch").as_slice()),
+            ("../../patches/microsandbox-restore-root-capacity-0.7.2.patch", include_bytes!("../../patches/microsandbox-restore-root-capacity-0.7.2.patch").as_slice()),
+        ];
+        assert_eq!(RUNTIME_INPUTS.patches.len(), files.len());
+        for (input, (path, bytes)) in RUNTIME_INPUTS.patches.iter().zip(files) {
+            assert_eq!(input.path, path.trim_start_matches("../../"));
+            assert_eq!(format!("{:x}", Sha256::digest(bytes)), input.sha256);
+        }
     }
 
     #[test]
@@ -1242,11 +1252,11 @@ mod tests {
     #[test]
     fn maps_actual_version_results_to_specific_states_and_captions() {
         assert_eq!(
-            microsandbox_version_result(Ok("msb 0.6.17".into())),
+            microsandbox_version_result(Ok("msb 0.7.2".into())),
             DependencyCheck::pass(
                 "runtime-microsandbox",
                 "MicroSandbox runtime",
-                "Bundled msb 0.6.17 · libkrunfw 5.6.1"
+                "Bundled msb 0.7.2 · libkrunfw 5.6.1"
             )
         );
         assert_eq!(
@@ -1288,7 +1298,7 @@ mod tests {
                 "sha256": "1".repeat(64),
                 "sourceCommit": RUNTIME_INPUTS.source_commit,
                 "sourceArchiveSha256": RUNTIME_INPUTS.source_archive_sha256,
-                "patchSha256": RUNTIME_INPUTS.patch_sha256,
+                "patchSha256s": RUNTIME_INPUTS.patches.iter().map(|patch| patch.sha256.clone()).collect::<Vec<_>>(),
                 "toolchain": RUNTIME_INPUTS.toolchain,
                 "features": RUNTIME_INPUTS.features,
                 "officialReleaseAsset": executable_asset,
@@ -1303,14 +1313,18 @@ mod tests {
         for field in [
             "sourceCommit",
             "sourceArchiveSha256",
-            "patchSha256",
+            "patchSha256s",
             "toolchain",
             "features",
             "officialReleaseSha256",
             "embeddedAgentdReleaseSha256",
         ] {
             let mut tampered = approved.clone();
-            tampered["executable"][field] = serde_json::json!("0".repeat(64));
+            tampered["executable"][field] = if field == "patchSha256s" {
+                serde_json::json!(["0".repeat(64)])
+            } else {
+                serde_json::json!("0".repeat(64))
+            };
             let manifest: MicrosandboxManifest = serde_json::from_value(tampered).unwrap();
             assert!(
                 !runtime_manifest_matches(&manifest),

@@ -52,6 +52,11 @@ of redacting arbitrary data echoed by external services.
 
 Silo backup archives do not include the host credential store. A restored VM must
 use the host's current secret assignments, not recover secret values from its disk.
+Checkpoint restores follow the same rule for GitHub access: the restore command
+uses the profile assigned to the target workspace before the guest resumes. The
+source workspace's cached grants and credentials held by historical checkpoint
+memory are not used. If the target has no current GitHub profile, restore starts
+without GitHub access.
 
 ## Sources
 
@@ -109,3 +114,19 @@ cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml \
 
 It uses a temporary VM, disposable values, Ubuntu packages, and public HTTPS echo
 endpoints. It never reads Silo's user credentials or modifies the user's VM.
+
+## Verification on 2026-09-25
+
+- Focused production selector regression: passed with separate source write and
+  fork read-only profiles; the old unconditional-disabled restore path failed
+  this same assertion. An unassigned restore target still selects no profile.
+- Signed-runtime synthetic VM check: a full checkpoint restored through
+  `checkpoints::start_pending` and the disposable fork was removed.
+- Isolated live GitHub acceptance: the private fixture source was snapshotted
+  while write access was assigned; the target fork received its current
+  read-only host profile before production restore. The restored guest could
+  read the private repository but could not mutate the test issue or push a
+  branch. Guest environment/config checks found no real token. The test issue
+  was closed, child tokens and the isolated OAuth session were revoked, test
+  branches removed, and both test VMs deleted. Two 1 MiB Git LFS test objects
+  remain unreferenced in the disposable fixture after branch cleanup.
