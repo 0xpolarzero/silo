@@ -73,7 +73,7 @@ The Silo views in the demo use production components with inert sample data.
 Editor, agent client, terminal, hardware, and notification views are
 illustrations. Playback never touches native APIs, credentials, or live VMs.
 
-Download filenames were verified against public release v0.6.3 on 2026-09-18.
+Download filenames were verified against public release v0.9.0 on 2026-09-27.
 Links use GitHub's `releases/latest/download/` endpoint, so future releases must
 retain these stable filenames. Both Linux .deb and AppImage links follow the
 explicit architecture selector. A no-JavaScript fallback exposes ARM64 links.
@@ -95,7 +95,9 @@ See [design research](../docs/SiloUI-LANDING-REFERENCES.md) for the approved dir
 
 ## Vercel publication
 
-Production: https://silo-theta.vercel.app (also set as the GitHub repository website).
+Production: [silo.polarzero.xyz](https://silo.polarzero.xyz), also set as the GitHub
+repository website. The Vercel deployment is available at
+[silo-theta.vercel.app](https://silo-theta.vercel.app).
 
 The Vercel `silo` project is connected to `0xpolarzero/silo`. Pushes and merges
 to `main` trigger production deployments; other branches receive preview deployments.

@@ -120,6 +120,11 @@ actual Changesets versioning in disposable repositories and the desktop adapter.
 ## Local setup
 
 Native development requires a GitHub App client ID, slug, and client secret.
+Contributors can follow the [source-build guide](SiloUI-BUILD-FROM-SOURCE.md)
+to create their own App and install all build prerequisites, including Go for
+the bundled Git LFS server. Installed-app users do not need this configuration.
+
+Maintainers using the existing Silo GitHub App can configure it as follows.
 The local configuration file is ignored by Git. From the repository root:
 
 ```sh
@@ -128,8 +133,8 @@ chmod 600 app/SiloUI/github-build.local.json
 ```
 
 Fill in `SILO_GITHUB_CLIENT_SECRET` using the existing GitHub App's client secret.
-You need access to that credential for native development; installed-app users
-do not. The example contains Silo's two public identifiers:
+You need access to that credential only when building with Silo's App; for your
+own App, replace all three values. The example contains Silo's two public identifiers:
 
 | Key | Value / source |
 | --- | --- |

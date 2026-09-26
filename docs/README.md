@@ -2,7 +2,9 @@
 
 The application lives in [`app/SiloUI`](../app/SiloUI): React in `src/`, Rust and
 native integration in `src-tauri/`, and build tooling in `scripts/`. Start with
-the [repository README](../README.md) for development commands.
+the [repository README](../README.md) to install and use Silo, or the
+[source-build guide](SiloUI-BUILD-FROM-SOURCE.md) to develop it with your own
+GitHub App.
 
 ## Implementation and operations
 
@@ -12,11 +14,11 @@ has been exercised.
 
 | Area | Documents |
 | --- | --- |
-| Build and release | [Release workflow](SiloUI-RELEASES.md), [Linux system updates](SiloUI-LINUX-UPDATES.md), [distribution acceptance](SiloUI-DISTRIBUTION-PLAN.md), [release history](releases/) |
+| Build and release | [Build from source](SiloUI-BUILD-FROM-SOURCE.md), [release workflow](SiloUI-RELEASES.md), [Linux system updates](SiloUI-LINUX-UPDATES.md), [distribution acceptance](SiloUI-DISTRIBUTION-PLAN.md), [release history](releases/) |
 | Runtime | [Packaging](SiloUI-RUNTIME-PACKAGING.md), [runtime and backup decisions](SiloUI-RUNTIME-BACKUP-FINDINGS.md), [bundled guest images](SiloUI-GUEST-IMAGES.md), [SSH agent TLS regression](SiloUI-ZCODE-TLS-INVESTIGATION.md) |
 | Platform verification | [Linux](SiloUI-LINUX-VERIFICATION.md), [macOS VM library loading](SiloUI-LIBRARY-CONSTRAINTS.md), [dependencies and backup testing](SiloUI-DEPENDENCIES-BACKUP-TESTING.md) |
-| Remote management | [Remote computers and Quit behavior](SiloUI-REMOTE-COMPUTERS.md) |
-| GitHub and secrets | [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md), [secrets](SiloUI-SECRETS.md) |
+| Remote management | [Remote computers and Quit behavior](SiloUI-REMOTE-COMPUTERS.md), [managed SSH access](SiloUI-MANAGED-SSH.md) |
+| GitHub and secrets | [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md), [personal GitHub tokens](SiloUI-GITHUB-PERSONAL-TOKENS.md), [secrets](SiloUI-SECRETS.md) |
 | VM tools | [Working account](SiloUI-WORKING-ACCOUNT.md), [VM migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md), [Linux desktop](SiloUI-DESKTOP.md), [agent desktop tools](SiloUI-LUDA.md), [Files](SiloUI-FILES.md), [network](SiloUI-NETWORK-PLAN.md), [terminal handoff](SiloUI-TERMINAL-HANDOFF.md), [editor and browser handoff](SiloUI-EDITOR-HANDOFF.md) |
 | Logs | [Retained history, search and export](SiloUI-LOGS.md), [sandbox failure reporting](SiloUI-FAILURE-REPORTING.md) |
 | Storage | [Workspace reclamation policy and verification](SiloUI-STORAGE-RECLAMATION.md), [disk discard regression](SiloUI-STORAGE-DISCARD-RESEARCH.md) |
@@ -80,5 +82,3 @@ above for current behavior and build commands.
 Shared branding files live in [`assets/`](../assets/). Generated native bundles,
 logs, and Rust outputs belong in the ignored `app/SiloUI/src-tauri/target/` tree;
 frontend build output belongs in the ignored `app/SiloUI/dist/` tree.
-
-- [Managed SSH access](SiloUI-MANAGED-SSH.md): client keys, local/network listeners, ownership, lifecycle and verification.
