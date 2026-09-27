@@ -1,34 +1,42 @@
 # Silo / Computers for your agents
 
 33.75-second release film. 1920 × 1080, 60 fps, H.264, stereo AAC, and optional
-English captions. Play `output/silo-computers-flow.mp4` or `preview.html`.
+English captions. Play `output/silo-computers-directed.mp4` or `preview.html`.
 
-This revision follows one VM, `your-app`, hosted on an office computer. A laptop
-running Silo starts it, connects an editor and terminal over SSH, forwards its
-development server, and opens the app locally. The same VM then appears with
-an agent using its Linux desktop, followed by its repository and credential
-permissions. The agent-name strips and separate tools/local/remote montage
-have been removed.
+This version follows one project through a continuous workspace. Configure its
+repository and credential access on the hosting computer, start its VM from a
+laptop, connect an editor and terminal, forward its development server, then let
+an agent test the same application inside the VM's Linux desktop. The office
+computer remains the visible execution host throughout the workflow.
 
 ## Edit
 
 | Time | Story |
 | --- | --- |
 | 0–3.75 | Computers for your agents. Linux VMs locally or remotely. |
-| 3.75–7.5 | Start `your-app` on Office computer from your laptop. |
-| 7.5–11.25 | Open an editor and terminal over SSH; run the development server. |
-| 11.25–16.875 | Connect VM port 3000, then open the app at a laptop address. |
-| 16.875–22.5 | An agent uses the same VM's Linux desktop to test the checkout. |
-| 22.5–28.125 | Select repositories and scope credentials for that VM. |
-| 28.125–30 | Less setup. More building. Brand resolution. |
+| 3.75–7.5 | Repository and credential scopes attach to `your-app` on its host. |
+| 7.5–11.25 | Start the remote VM from your laptop; show stop and restart controls. |
+| 11.25–15 | Move into the workspace; open the editor and terminal over SSH. |
+| 15–17.875 | Connect the development server on VM port 3000. |
+| 17.875–20.625 | Open the app at the laptop address, localhost:51432. |
+| 20.625–28.125 | Keep the app visible inside the VM desktop while an agent tests checkout. |
+| 28.125–30 | Less setup. More building. |
 | 30–33.75 | Computers for your agents. Download Silo. |
 
-The computer, desktop, terminal, browser, and permission views are illustrated
+The permission cards become attributes of the host VM before the laptop enters.
+The laptop screen then grows into the working view. Editor, network, and agent
+panes share one coordinate system; the browser remains visible through the
+handoff to the agent. Cursor gestures lead the main operations, with short click responses. The terminal's
+server address, the laptop's forwarded address, and the desktop's guest address
+are distinct and explicitly labeled.
+
+The computer, workspace, terminal, browser, and permission views are illustrated
 motion graphics, not live recordings or exact replicas of the production UI.
-The checkout, VM name, and port addresses are fictional examples. No live
-credentials or VM data appear. The music and effects are synthesized from
-scratch and synchronized to the edit at 128 BPM. No `demo/` files or existing
-website tour implementation were read.
+The checkout, VM name, and port addresses are fictional examples. The computers
+are assumed to be connected already, and a Linux desktop and agent are installed
+inside the VM. No live credentials or VM data appear. The music and effects are
+synthesized from scratch and synchronized to the edit at 128 BPM. No `demo/`
+files or existing website tour implementation were read.
 
 ## Evidence
 
@@ -51,14 +59,14 @@ website tour implementation were read.
   “Start it here. Run it there,” “From server to browser,” and
   “Less setup. More building.” Only product copy was consulted.
 
-The approved two-computer workflow is archived in commit `2866cbc`, including
-its exact MP4. This follow-up carries the port connection into the local address,
-expands the remote VM into the desktop, and returns the desktop to the VM for
-permissions. See [reference observations](REFERENCE-NOTES.md).
+## Archives
 
-The approved 15-second study is archived in commit `72eb0b1` under
-`../silo-motion-study/`. The preceding 30-second render is preserved locally
-at `output/archive/silo-computers-v1.mp4`.
+- `da53bf5`: the preceding flow revision, including its exact MP4 and source.
+- `2866cbc`: the approved two-computer workflow film and its exact MP4.
+- `72eb0b1`: the approved 15-second study under `../silo-motion-study/`.
+
+See [reference observations](REFERENCE-NOTES.md) for the visual research and
+[the motion review script](verify-motion.py) for the transition sampling method.
 
 ## Rebuild
 
@@ -73,10 +81,14 @@ Set `SILO_VIDEO_PYTHON` to a Python interpreter with NumPy and
 `SILO_VIDEO_NODE_MODULES` to the Node dependency directory if needed. The latter
 defaults to this host's bundled Codex dependency runtime.
 
-Use `node render.mjs --stills` for a storyboard, `node render.mjs --frame 14.6`
-for a frame, or `node build.mjs --mux-only` after rendering picture and audio.
-The renderer uses three shutter samples per frame. Audio uses measured two-pass
-normalization. The build verifies duration, dimensions, all 2025 frames, full
-audio/video decode, and the final audio peak. The approved workflow MP4,
-storyboard, and verification reports are archived in Git; intermediates stay
-ignored.
+`node render.mjs --draft` creates a silent 540p24 edit for early review. Use
+`--stills` for a storyboard, `--transitions` for sampled joins, or `--frame 23.9`
+for a full-size frame. `node build.mjs --mux-only` assembles already-rendered
+picture and audio. Final output uses three shutter samples per frame and measured
+two-pass audio normalization. The build checks duration, dimensions, all 2025
+frames, full audio/video decode, and the final audio peak. Run
+`python3 verify-motion.py` after the build to flag isolated changes for visual
+inspection; that heuristic does not assess artistic quality.
+
+Archived films and their reports stay unchanged. New intermediates remain in
+ignored `output/` paths until a subsequent archive commit.

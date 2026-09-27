@@ -79,21 +79,23 @@ for i in range(60):
     if when>=29.8 or 22.5<=when<23.4375:continue
     add(pluck(melody[i%8]),when+B*.25,.12 if i%2 else .19,(-1)**i*.44,True)
 
-# Motion accents: splitting blocks, network packets, cursor, permission gate.
-for time in [1.875,3.75,7.5,11.25,16.875,22.5,24.375,28.125]:
+# Motion accents follow permissions, remote start, SSH, port forwarding and the agent click.
+for time in [1.875,3.75,7.5,11.25,15,20.625,28.125]:
     whoosh(time-.23,.26,False,.28)
     add(pluck(86 if time==22.5 else 81),time,.15,.2,True)
 for time in [2.65,2.77,2.88,3.,3.12]:
     t=clock(.045);add(rng.normal(0,1,len(t))*np.exp(-t*150),time,.042,((time*10)%1)*1.2-.6)
-for time in [12.7,12.95,13.2,13.45,13.7]:add(pluck(86),time,.027,-.5,True)
-for time in [5.04,8.16,12.31,13.10,13.75,15.75,20.135,23.15,23.57,24.7]:
+for time in [4.37,5.57,8.65,13.8,16.2,25.53]:add(pluck(86),time,.065,-.2,True)
+for time in [8.47,11.2,16.03,17.77,20.51,24.56]:
     t=clock(.045);s=np.sin(2*np.pi*1900*t)*np.exp(-t*150)
     add(s,time,.14,.1)
 for i in range(7):
     t=clock(.055);s=(rng.normal(0,1,len(t))*.07+np.sin(2*np.pi*(450+i*73)*t)*.1)*np.exp(-t*80)
     add(s,28.9+i*.066,.5,(-1)**i*.4)
-whoosh(15.82,.7,False,.2)
-whoosh(21.56,.75,True,.18)
+whoosh(6.52,.84,False,.16)
+whoosh(10.51,.7,False,.14)
+whoosh(17.61,.36,False,.13)
+whoosh(20.30,.44,True,.12)
 whoosh(29.57,.43,False,.4)
 
 # Resolve to a D-minor add-nine chord and leave room for the end card.
