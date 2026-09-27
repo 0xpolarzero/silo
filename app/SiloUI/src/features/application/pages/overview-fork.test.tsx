@@ -35,6 +35,27 @@ it("keeps current-state fork progress visible when launched from a sandbox menu"
   finishFork()
 })
 
+it("allows current-state Fork for a pending restored sandbox without starting it", async () => {
+  const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
+  const startWorkspace = vi.fn()
+  const actions = { forkCheckpoint, startWorkspace } as unknown as ApplicationActions
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  workspace.state = "stopped"
+  workspace.stateDetail = "Ready to start from checkpoint"
+  workspace.pendingCheckpointRestore = { checkpointId: "saved-point", sourceWorkspace: "dev", state: "full" }
+  const user = userEvent.setup()
+  render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+
+  await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
+  await user.click(screen.getByRole("menuitem", { name: `Fork ${workspace.machine.name}` }))
+  await user.type(screen.getByRole("textbox", { name: "New sandbox name" }), "pending-fork")
+  await user.click(screen.getByRole("button", { name: "Fork" }))
+
+  expect(forkCheckpoint).toHaveBeenCalledWith(workspace.machine.name, null, "pending-fork")
+  expect(startWorkspace).not.toHaveBeenCalled()
+})
+
 it("shows persisted checkpoint progress and locks the workspace row after remount", () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
@@ -62,7 +83,7 @@ it("opens checkpoints from the Overview menu and exposes create, fork, and resto
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Checkpoints for ${workspace.machine.name}` }))
   const panel = within(screen.getByRole("region", { name: `Checkpoints for ${workspace.machine.name}` }))
-  expect(panel.getByRole("button", { name: "Fork current state" })).toBeVisible()
+  expect(panel.queryByRole("button", { name: "Fork current state" })).not.toBeInTheDocument()
   expect(panel.getByRole("button", { name: "Fork" })).toBeVisible()
   expect(panel.getByRole("button", { name: "Restore" })).toBeVisible()
 

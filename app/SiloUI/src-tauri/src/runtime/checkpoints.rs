@@ -1,15 +1,25 @@
 //! Silo's durable names and lifecycle intent for upstream MicroSandbox snapshots.
 //! Snapshot data and its reference graph remain owned by MicroSandbox.
 use super::*;
+use std::collections::HashSet;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Checkpoint {
     pub(super) id: String,
+    /// Native immutable member. Older records used `id` for both identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_id: Option<String>,
     pub(super) name: String,
     pub(super) created_at: u64,
     pub(super) scope: String,
     pub(super) reason: String,
+}
+
+impl Checkpoint {
+    fn native_id(&self) -> &str {
+        self.native_id.as_deref().unwrap_or(&self.id)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -93,13 +103,23 @@ pub(super) fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeErro
             .is_some_and(|group| !valid_snapshot_group(group))
         || record.checkpoints.iter().any(|checkpoint| {
             validate_name(&checkpoint.id).is_err()
+                || checkpoint.native_id.as_deref().is_some_and(|native_id| !valid_native_id(native_id))
                 || !matches!(checkpoint.scope.as_str(), "full" | "disk")
                 || !matches!(checkpoint.reason.as_str(), "manual" | "before-restore")
         })
+        || !unique_checkpoint_ids(&record.checkpoints)
         || record
             .inflight_checkpoint
             .as_ref()
-            .is_some_and(|checkpoint| validate_name(&checkpoint.id).is_err())
+            .is_some_and(|checkpoint| {
+                validate_name(&checkpoint.id).is_err()
+                    || checkpoint.native_id.as_deref().is_some_and(|native_id| !valid_native_id(native_id))
+            })
+        || record.pending_checkpoint_restore.as_ref().is_some_and(|pending| {
+            !valid_native_id(&pending.checkpoint_id)
+                || !valid_snapshot_group(&pending.source_workspace)
+                || !matches!(pending.state.as_str(), "full" | "disk")
+        })
         || record
             .restore_attempt_id
             .as_ref()
@@ -108,6 +128,48 @@ pub(super) fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeErro
         return Err(error("Checkpoint history is invalid; it was preserved."));
     }
     Ok(record)
+}
+
+fn valid_native_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn unique_checkpoint_ids(checkpoints: &[Checkpoint]) -> bool {
+    let mut ids = HashSet::with_capacity(checkpoints.len());
+    checkpoints.iter().all(|checkpoint| ids.insert(&checkpoint.id))
+}
+
+fn new_checkpoint_id(record: &Record) -> String {
+    loop {
+        let id = format!("c{}", &uuid::Uuid::new_v4().simple().to_string()[..31]);
+        if !record.checkpoints.iter().any(|checkpoint| checkpoint.id == id)
+            && record.inflight_checkpoint.as_ref().is_none_or(|checkpoint| checkpoint.id != id)
+        {
+            return id;
+        }
+    }
+}
+
+fn ensure_pending_runtime_absent(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    machine_name: &str,
+) -> Result<(), RuntimeError> {
+    let listed = runner.run(
+        paths,
+        &["list".into(), "--format".into(), "json".into()],
+        READ_TIMEOUT,
+    )?;
+    let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
+        .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
+    if listed.iter().any(|entry| entry.name == machine_name) {
+        return Err(error(
+            "A runtime VM exists for this pending restore. Start or recover it before changing checkpoint state.",
+        ));
+    }
+    Ok(())
 }
 
 fn valid_snapshot_group(group: &str) -> bool {
@@ -231,13 +293,13 @@ fn verify_snapshot(
     source: &str,
     checkpoint: &Checkpoint,
 ) -> Result<(), RuntimeError> {
-    snapshot_ready(runner, paths, source, &checkpoint.id, &checkpoint.scope)?;
+    snapshot_ready(runner, paths, source, checkpoint.native_id(), &checkpoint.scope)?;
     runner.run(
         paths,
         &[
             "snapshot".into(),
             "verify".into(),
-            format!("{source}:{}", checkpoint.id),
+            format!("{source}:{}", checkpoint.native_id()),
         ],
         Duration::from_secs(900),
     )?;
@@ -386,6 +448,44 @@ fn capture_with(
         ));
     }
     let machine = machine(paths, id)?;
+    let mut record = load(paths, id)?;
+    if let Some(pending) = record.pending_checkpoint_restore.clone() {
+        if record.restore_journal.is_some() {
+            return Err(error(
+                "A Restore recovery is unfinished. Resolve it before creating a checkpoint.",
+            ));
+        }
+        let snapshot_group = ensure_snapshot_group(paths, id, machine.name())?;
+        record = load(paths, id)?;
+        if pending.source_workspace != snapshot_group
+            || !valid_native_id(&pending.checkpoint_id)
+            || !matches!(pending.state.as_str(), "full" | "disk")
+        {
+            return Err(error(
+                "The pending checkpoint reference is invalid. It was preserved.",
+            ));
+        }
+        ensure_pending_runtime_absent(runner, paths, machine.name())?;
+        snapshot_ready(
+            runner,
+            paths,
+            &snapshot_group,
+            &pending.checkpoint_id,
+            &pending.state,
+        )?;
+        let checkpoint = Checkpoint {
+            id: new_checkpoint_id(&record),
+            native_id: Some(pending.checkpoint_id),
+            name: label.into(),
+            created_at: activity_timestamp(),
+            scope: pending.state,
+            reason: reason.into(),
+        };
+        record.checkpoints.insert(0, checkpoint);
+        record.checkpoint_operation = None;
+        return save(paths, id, &record);
+    }
+    ensure_no_unfinished_restore(&record, "creating another checkpoint")?;
     let inspected = inspect_workspace(runner, paths, machine.name())?;
     ensure_managed(&inspected)?;
     if inspected
@@ -431,7 +531,6 @@ fn capture_with(
             "This VM still uses the old workspace disk. Finish runtime migration before creating a checkpoint.",
         ));
     }
-    let mut record = load(paths, id)?;
     let snapshot_group = ensure_snapshot_group(paths, id, machine.name())?;
     record.snapshot_group = Some(snapshot_group.clone());
     if let Some(interrupted) = record.inflight_checkpoint.clone() {
@@ -450,14 +549,10 @@ fn capture_with(
         record.checkpoint_operation = None;
         save(paths, id, &record)?;
     }
-    if record.pending_checkpoint_restore.is_some() {
-        return Err(RuntimeError::Invalid(
-            "Start the pending restored workspace before capturing another checkpoint.".into(),
-        ));
-    }
-    let checkpoint_id = format!("c{}", &uuid::Uuid::new_v4().simple().to_string()[..31]);
+    let checkpoint_id = new_checkpoint_id(&record);
     let new_checkpoint = Checkpoint {
         id: checkpoint_id.clone(),
+        native_id: None,
         name: label.into(),
         created_at: activity_timestamp(),
         scope: scope.into(),
@@ -517,6 +612,15 @@ fn capture_with(
     }
 }
 
+fn ensure_no_unfinished_restore(record: &Record, action: &str) -> Result<(), RuntimeError> {
+    if record.restore_journal.is_some() {
+        return Err(error(&format!(
+            "Finish the pending Restore before {action}."
+        )));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn create_checkpoint(
     app: AppHandle,
@@ -573,7 +677,7 @@ pub(super) fn view_pending(record: &Record, name: &str) -> Option<PendingRestore
             .iter()
             .find(|checkpoint| checkpoint.id == journal.target_checkpoint_id)?;
         Some(PendingRestore {
-            checkpoint_id: target.id.clone(),
+            checkpoint_id: target.native_id().to_owned(),
             source_workspace: record.snapshot_group.as_deref().unwrap_or(name).into(),
             state: target.scope.clone(),
         })
@@ -737,7 +841,7 @@ pub(super) fn start_pending(
             .find(|checkpoint| checkpoint.id == journal.target_checkpoint_id)
             .ok_or_else(|| error("The selected checkpoint was lost from recovery history."))?;
         record.pending_checkpoint_restore = Some(PendingRestore {
-            checkpoint_id: target.id.clone(),
+            checkpoint_id: target.native_id().to_owned(),
             source_workspace: lineage_group.clone(),
             state: target.scope.clone(),
         });
@@ -952,6 +1056,36 @@ fn fork_source_policy(
         .ok_or_else(|| error("The source network policy is missing."))
 }
 
+fn pending_current_fork_point(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    machine_name: &str,
+    record: &Record,
+    snapshot_group: &str,
+) -> Result<Option<PendingRestore>, RuntimeError> {
+    let Some(pending) = record.pending_checkpoint_restore.clone() else {
+        return Ok(None);
+    };
+    if record.restore_journal.is_some()
+        || pending.source_workspace != snapshot_group
+        || !valid_native_id(&pending.checkpoint_id)
+        || !matches!(pending.state.as_str(), "full" | "disk")
+    {
+        return Err(error(
+            "The pending checkpoint reference is invalid or has unfinished recovery. It was preserved.",
+        ));
+    }
+    ensure_pending_runtime_absent(runner, paths, machine_name)?;
+    snapshot_ready(
+        runner,
+        paths,
+        snapshot_group,
+        &pending.checkpoint_id,
+        &pending.state,
+    )?;
+    Ok(Some(pending))
+}
+
 fn fork_with(
     app: &AppHandle,
     runner: &dyn RuntimeRunner,
@@ -970,6 +1104,20 @@ fn fork_with(
         .clone();
     let source_record = load(paths, workspace_id)?;
     let snapshot_group = ensure_snapshot_group(paths, workspace_id, source.name())?;
+    let pending_current = if checkpoint_id.is_none() {
+        pending_current_fork_point(
+            runner,
+            paths,
+            source.name(),
+            &source_record,
+            &snapshot_group,
+        )?
+    } else {
+        None
+    };
+    if checkpoint_id.is_none() && pending_current.is_none() {
+        ensure_no_unfinished_restore(&source_record, "forking its current state")?;
+    }
     let desired_policy = fork_source_policy(runner, paths, &source, &source_record)?;
     if metadata.machines.len() >= MAX_MACHINE_COUNT
         || metadata.machines.iter().any(|m| m.name() == new_name)
@@ -978,31 +1126,36 @@ fn fork_with(
             "The fork name is already in use or the workspace limit was reached.".into(),
         ));
     }
-    let selected_id = match checkpoint_id {
-        Some(id) => id.to_owned(),
-        None => {
-            capture_with(runner, paths, workspace_id, "Fork point", "manual")?;
-            load(paths, workspace_id)?
-                .checkpoints
-                .first()
-                .ok_or_else(|| error("The fork checkpoint was not recorded."))?
-                .id
-                .clone()
-        }
+    let (selected_id, selected_scope) = if let Some(pending) = pending_current {
+        (pending.checkpoint_id, pending.state)
+    } else {
+        let selected_id = match checkpoint_id {
+            Some(id) => id.to_owned(),
+            None => {
+                capture_with(runner, paths, workspace_id, "Fork point", "manual")?;
+                load(paths, workspace_id)?
+                    .checkpoints
+                    .first()
+                    .ok_or_else(|| error("The fork checkpoint was not recorded."))?
+                    .id
+                    .clone()
+            }
+        };
+        let source_record = load(paths, workspace_id)?;
+        let checkpoint = source_record
+            .checkpoints
+            .iter()
+            .find(|c| c.id == selected_id)
+            .ok_or_else(|| RuntimeError::Invalid("The selected checkpoint no longer exists.".into()))?;
+        snapshot_ready(
+            runner,
+            paths,
+            &snapshot_group,
+            checkpoint.native_id(),
+            &checkpoint.scope,
+        )?;
+        (checkpoint.native_id().to_owned(), checkpoint.scope.clone())
     };
-    let source_record = load(paths, workspace_id)?;
-    let checkpoint = source_record
-        .checkpoints
-        .iter()
-        .find(|c| c.id == selected_id)
-        .ok_or_else(|| RuntimeError::Invalid("The selected checkpoint no longer exists.".into()))?;
-    snapshot_ready(
-        runner,
-        paths,
-        &snapshot_group,
-        &checkpoint.id,
-        &checkpoint.scope,
-    )?;
     let child_id = uuid::Uuid::new_v4().to_string();
     let mut child = source.clone();
     if let MachineConfiguration::Vm { id, name, .. } = &mut child {
@@ -1014,7 +1167,7 @@ fn fork_with(
     child_record.pending_checkpoint_restore = Some(PendingRestore {
         checkpoint_id: selected_id,
         source_workspace: snapshot_group,
-        state: checkpoint.scope.clone(),
+        state: selected_scope,
     });
     child_record.desired_network_policy = Some(desired_policy);
     save(paths, &child_id, &child_record)?;
@@ -1073,11 +1226,6 @@ fn restore_with(
     let mut record = load(paths, workspace_id)?;
     let lineage_group = ensure_snapshot_group(paths, workspace_id, machine.name())?;
     record.snapshot_group = Some(lineage_group.clone());
-    if record.pending_checkpoint_restore.is_some() {
-        return Err(RuntimeError::Invalid(
-            "Start the pending restored workspace before another Restore.".into(),
-        ));
-    }
     let target = record
         .checkpoints
         .iter()
@@ -1085,6 +1233,51 @@ fn restore_with(
         .ok_or_else(|| RuntimeError::Invalid("The selected checkpoint no longer exists.".into()))?
         .clone();
     verify_snapshot(runner, paths, &lineage_group, &target)?;
+    if let Some(pending) = record.pending_checkpoint_restore.clone() {
+        if record.restore_journal.is_some() {
+            return Err(error(
+                "A previous Restore recovery is unfinished. The pending checkpoint was preserved.",
+            ));
+        }
+        if pending.source_workspace != lineage_group
+            || !valid_native_id(&pending.checkpoint_id)
+            || !matches!(pending.state.as_str(), "full" | "disk")
+        {
+            return Err(error(
+                "The pending checkpoint reference is invalid. It was preserved.",
+            ));
+        }
+        ensure_pending_runtime_absent(runner, paths, machine.name())?;
+        snapshot_ready(
+            runner,
+            paths,
+            &lineage_group,
+            &pending.checkpoint_id,
+            &pending.state,
+        )?;
+        let current = Checkpoint {
+            id: new_checkpoint_id(&record),
+            native_id: Some(pending.checkpoint_id.clone()),
+            name: "Before restore".into(),
+            created_at: activity_timestamp(),
+            scope: pending.state,
+            reason: "before-restore".into(),
+        };
+        record.checkpoints.insert(0, current);
+        let policy = record.desired_network_policy.as_ref().ok_or_else(|| {
+            error("The current network policy is missing. The pending checkpoint was preserved.")
+        })?;
+        current_network_args(&serde_json::json!({"network":{"policy":policy}}))?;
+        record.pending_checkpoint_restore = Some(PendingRestore {
+            checkpoint_id: target.native_id().to_owned(),
+            source_workspace: lineage_group,
+            state: target.scope,
+        });
+        record.restore_attempted = false;
+        record.restore_attempt_id = None;
+        record.checkpoint_operation = None;
+        return save(paths, workspace_id, &record);
+    }
     if record
         .restore_journal
         .as_ref()
@@ -1099,7 +1292,7 @@ fn restore_with(
             .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
         if !listed.iter().any(|entry| entry.name == machine.name()) {
             record.pending_checkpoint_restore = Some(PendingRestore {
-                checkpoint_id: target.id,
+                checkpoint_id: target.native_id().to_owned(),
                 source_workspace: lineage_group.clone(),
                 state: target.scope,
             });
@@ -1144,6 +1337,7 @@ fn restore_with(
     } else {
         let recovery = Checkpoint {
             id: format!("c{}", &uuid::Uuid::new_v4().simple().to_string()[..31]),
+            native_id: None,
             name: "Before restore".into(),
             created_at: activity_timestamp(),
             scope: if prior_running { "full" } else { "disk" }.into(),
@@ -1273,7 +1467,7 @@ fn restore_with(
         STOP_TIMEOUT,
     )?;
     record.pending_checkpoint_restore = Some(PendingRestore {
-        checkpoint_id: target.id,
+        checkpoint_id: target.native_id().to_owned(),
         source_workspace: lineage_group,
         state: target.scope,
     });
@@ -1430,6 +1624,7 @@ mod tests {
         let mut original = Record::default();
         original.checkpoints.push(Checkpoint {
             id: "c000000000000000000000000000000".into(),
+            native_id: None,
             name: "Before update".into(),
             created_at: 1,
             scope: "disk".into(),
@@ -1620,6 +1815,230 @@ mod tests {
         assert!(calls[1].iter().any(|arg| arg == "--full"));
         assert!(calls[1].windows(2).any(|pair| pair == ["--group", "dev"]));
         assert_eq!(load(&paths, ID).unwrap().checkpoints[0].scope, "full");
+    }
+
+    #[test]
+    fn pending_restore_checkpoint_creation_aliases_immutable_full_snapshot() {
+        struct SnapshotInventory {
+            present: bool,
+            calls: Mutex<Vec<Vec<String>>>,
+        }
+        impl RuntimeRunner for SnapshotInventory {
+            fn run(
+                &self,
+                _paths: &RuntimePaths,
+                args: &[String],
+                _timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                self.calls.lock().unwrap().push(args.to_vec());
+                let stdout = match args[0].as_str() {
+                    "list" if self.present => serde_json::json!([{"name":"dev"}]).to_string(),
+                    "list" => "[]".into(),
+                    "snapshot" if args.get(1).is_some_and(|value| value == "list") => serde_json::json!([
+                        {"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}
+                    ]).to_string(),
+                    _ => panic!("unexpected runtime command: {args:?}"),
+                };
+                Ok(CommandOutput { stdout, stderr: String::new() })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(
+            &paths.metadata,
+            &MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine()],
+            },
+        ).unwrap();
+        let mut pending = Record::default();
+        pending.snapshot_group = Some("dev".into());
+        pending.pending_checkpoint_restore = Some(PendingRestore {
+            checkpoint_id: "c000000000000000000000000000000".into(),
+            source_workspace: "dev".into(),
+            state: "full".into(),
+        });
+        pending.desired_network_policy = Some(serde_json::json!({
+            "default_egress":"deny", "default_ingress":"deny", "rules":[]
+        }));
+        save(&paths, ID, &pending).unwrap();
+        let runner = SnapshotInventory { present: false, calls: Mutex::new(Vec::new()) };
+        capture_with(&runner, &paths, ID, "After restore", "manual").unwrap();
+        let stored = load(&paths, ID).unwrap();
+        let alias = &stored.checkpoints[0];
+        assert_ne!(alias.id, "c000000000000000000000000000000");
+        assert_eq!(alias.native_id.as_deref(), Some("c000000000000000000000000000000"));
+        assert_eq!(alias.scope, "full");
+        assert_eq!(stored.pending_checkpoint_restore.unwrap().checkpoint_id, "c000000000000000000000000000000");
+        assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] != "inspect" && args.get(1).map(String::as_str) != Some("create")));
+
+        let mut legacy = Record::default();
+        legacy.pending_checkpoint_restore = Some(PendingRestore {
+            checkpoint_id: "c000000000000000000000000000000".into(),
+            source_workspace: "dev".into(),
+            state: "full".into(),
+        });
+        legacy.desired_network_policy = stored.desired_network_policy;
+        save(&paths, ID, &legacy).unwrap();
+        capture_with(&runner, &paths, ID, "Legacy alias", "manual").unwrap();
+        assert_eq!(load(&paths, ID).unwrap().snapshot_group.as_deref(), Some("dev"));
+
+        let before_collision = load(&paths, ID).unwrap();
+        let collision = SnapshotInventory { present: true, calls: Mutex::new(Vec::new()) };
+        assert!(capture_with(&collision, &paths, ID, "Unsafe alias", "manual").is_err());
+        assert_eq!(load(&paths, ID).unwrap().checkpoints.len(), before_collision.checkpoints.len());
+        assert!(!collision.calls.lock().unwrap().iter().any(|args| args[0] == "inspect"));
+    }
+
+    #[test]
+    fn pending_full_checkpoint_can_be_aliased_switched_recovered_and_started_explicitly() {
+        struct Inventory {
+            calls: Mutex<Vec<Vec<String>>>,
+        }
+        impl RuntimeRunner for Inventory {
+            fn run(
+                &self,
+                _paths: &RuntimePaths,
+                args: &[String],
+                _timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                self.calls.lock().unwrap().push(args.to_vec());
+                let stdout = match args[0].as_str() {
+                    "list" => "[]".into(),
+                    "snapshot" if args.get(1).is_some_and(|value| value == "list") => serde_json::json!([
+                        {"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"},
+                        {"group":"dev","name":"c111111111111111111111111111111","scope":"full","availability":"ready"}
+                    ]).to_string(),
+                    "snapshot" if args.get(1).is_some_and(|value| value == "verify") => "{}".into(),
+                    "restore" => return Err(error("synthetic restore failure after request capture")),
+                    _ => panic!("unexpected runtime command: {args:?}"),
+                };
+                Ok(CommandOutput { stdout, stderr: String::new() })
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(
+            &paths.metadata,
+            &MachineConfigurationRequest { schema_version: 1, machines: vec![machine()] },
+        ).unwrap();
+        let first = Checkpoint {
+            id: "c000000000000000000000000000000".into(),
+            native_id: None,
+            name: "First full state".into(),
+            created_at: 1,
+            scope: "full".into(),
+            reason: "manual".into(),
+        };
+        let second = Checkpoint {
+            id: "c111111111111111111111111111111".into(),
+            native_id: None,
+            name: "Second full state".into(),
+            created_at: 2,
+            scope: "full".into(),
+            reason: "manual".into(),
+        };
+        let mut record = Record::default();
+        record.snapshot_group = Some("dev".into());
+        record.checkpoints = vec![first.clone(), second.clone()];
+        record.pending_checkpoint_restore = Some(PendingRestore {
+            checkpoint_id: first.id.clone(),
+            source_workspace: "dev".into(),
+            state: "full".into(),
+        });
+        record.desired_network_policy = Some(serde_json::json!({
+            "default_egress":"deny", "default_ingress":"allow", "rules":[]
+        }));
+        save(&paths, ID, &record).unwrap();
+        let runner = Inventory { calls: Mutex::new(Vec::new()) };
+
+        capture_with(&runner, &paths, ID, "Saved first state", "manual").unwrap();
+        let alias = load(&paths, ID).unwrap().checkpoints[0].clone();
+        assert_eq!(alias.native_id(), first.id);
+        assert_eq!(alias.scope, "full");
+
+        restore_with(&runner, &paths, ID, &second.id).unwrap();
+        let after_switch = load(&paths, ID).unwrap();
+        let recovery_of_first = after_switch.checkpoints[0].clone();
+        assert_ne!(recovery_of_first.id, first.id);
+        assert_eq!(recovery_of_first.name, "Before restore");
+        assert_eq!(recovery_of_first.reason, "before-restore");
+        assert_eq!(recovery_of_first.native_id(), first.id);
+        assert_eq!(recovery_of_first.scope, "full");
+        assert_eq!(after_switch.pending_checkpoint_restore.unwrap().checkpoint_id, second.id);
+
+        restore_with(&runner, &paths, ID, &recovery_of_first.id).unwrap();
+        let restored = load(&paths, ID).unwrap();
+        assert_eq!(restored.pending_checkpoint_restore.as_ref().unwrap().checkpoint_id, first.id);
+        assert!(restored.checkpoints.iter().any(|checkpoint| {
+            checkpoint.native_id() == second.id && checkpoint.reason == "before-restore"
+        }));
+
+        let host = super::super::HostResources {
+            logical_cpus: 8,
+            physical_memory_bytes: Some(16 * 1024 * 1024 * 1024),
+        };
+        let failure = super::super::explicit_workspace_action_with(
+            &runner, &paths, &host, "start", "dev",
+        ).unwrap_err();
+        assert!(failure.to_string().contains("synthetic restore failure"));
+        let calls = runner.calls.lock().unwrap();
+        let start = calls.iter().find(|args| args[0] == "restore").unwrap();
+        assert_eq!(start[1], format!("dev:{}", first.id));
+        assert!(start.iter().any(|arg| arg == "--forked"));
+        assert!(!start.iter().any(|arg| arg == "--disk-only"));
+        assert!(load(&paths, ID).unwrap().pending_checkpoint_restore.is_some());
+    }
+
+    #[test]
+    fn current_state_fork_from_pending_full_snapshot_reuses_reference_without_starting() {
+        struct ForkInventory {
+            present: bool,
+            calls: Mutex<Vec<Vec<String>>>,
+        }
+        impl RuntimeRunner for ForkInventory {
+            fn run(
+                &self,
+                _paths: &RuntimePaths,
+                args: &[String],
+                _timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                self.calls.lock().unwrap().push(args.to_vec());
+                let stdout = match args[0].as_str() {
+                    "list" if self.present => serde_json::json!([{"name":"dev"}]).to_string(),
+                    "list" => "[]".into(),
+                    "snapshot" if args.get(1).is_some_and(|value| value == "list") => serde_json::json!([
+                        {"group":"dev","name":"silo-backup-0-330418-1790360984903","scope":"full","availability":"ready"}
+                    ]).to_string(),
+                    _ => panic!("unexpected runtime command: {args:?}"),
+                };
+                Ok(CommandOutput { stdout, stderr: String::new() })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut record = Record::default();
+        record.snapshot_group = Some("dev".into());
+        record.pending_checkpoint_restore = Some(PendingRestore {
+            checkpoint_id: "silo-backup-0-330418-1790360984903".into(),
+            source_workspace: "dev".into(),
+            state: "full".into(),
+        });
+        record.desired_network_policy = Some(serde_json::json!({
+            "default_egress":"deny", "default_ingress":"allow", "rules":[]
+        }));
+        let runner = ForkInventory { present: false, calls: Mutex::new(Vec::new()) };
+        let point = pending_current_fork_point(&runner, &paths, "dev", &record, "dev")
+            .unwrap()
+            .unwrap();
+        assert_eq!(point.checkpoint_id, "silo-backup-0-330418-1790360984903");
+        assert_eq!(point.state, "full");
+        assert_eq!(runner.calls.lock().unwrap().iter().map(|args| args[0].as_str()).collect::<Vec<_>>(), ["list", "snapshot"]);
+
+        let collision = ForkInventory { present: true, calls: Mutex::new(Vec::new()) };
+        assert!(pending_current_fork_point(&collision, &paths, "dev", &record, "dev").is_err());
+        assert_eq!(collision.calls.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -1815,6 +2234,7 @@ mod tests {
         .unwrap();
         let target = Checkpoint {
             id: "c000000000000000000000000000000".into(),
+            native_id: None,
             name: "target".into(),
             created_at: 1,
             scope: "full".into(),
@@ -1822,6 +2242,7 @@ mod tests {
         };
         let recovery = Checkpoint {
             id: "c111111111111111111111111111111".into(),
+            native_id: None,
             name: "Before restore".into(),
             created_at: 2,
             scope: "full".into(),
@@ -1994,6 +2415,7 @@ mod tests {
                     "pause" => { *self.state.lock().unwrap()="Paused"; String::new() },
                     "stop" => { assert!(args.iter().any(|arg| arg=="--force")); *self.state.lock().unwrap()="Stopped"; String::new() },
                     "remove" => { *self.state.lock().unwrap()="Removed"; String::new() },
+                    "list" => "[]".into(),
                     _ => panic!("unexpected runtime command: {args:?}"),
                 };
                 Ok(CommandOutput {
@@ -2015,6 +2437,7 @@ mod tests {
         let mut record = Record::default();
         record.checkpoints.push(Checkpoint {
             id: "c000000000000000000000000000000".into(),
+            native_id: None,
             name: "Selected".into(),
             created_at: 1,
             scope: "full".into(),
@@ -2048,5 +2471,12 @@ mod tests {
             read_metadata(&paths.metadata).unwrap().machines[0].name(),
             "dev"
         );
+        drop(calls);
+        let source = read_application_state_with(&runner, &paths).unwrap();
+        assert!(matches!(source.workspaces[0].state, WorkspaceState::Stopped));
+        assert!(source.workspaces[0].pending_checkpoint_restore.is_some());
+        let calls = runner.calls.lock().unwrap();
+        let remove = calls.iter().position(|args| args[0] == "remove").unwrap();
+        assert!(calls[remove + 1..].iter().all(|args| args[0] == "list"));
     }
 }

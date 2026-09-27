@@ -1716,20 +1716,9 @@ pub async fn workspace_action(
             .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let _ = app.emit("silo://application-state-changed", ());
-        let result = host_resources()
-            .and_then(|resources| {
-                if action == "start" {
-                    if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
-                        .find(|machine| machine.is_vm() && machine.name() == name) {
-                        if checkpoints::needs_explicit_start(&paths, machine.id())? {
-                            checkpoints::start_pending(&ProcessRunner, &paths, &machine)?;
-                            crate::github::workspace_restored();
-                            return Ok(());
-                        }
-                    }
-                }
-                workspace_action_with(&ProcessRunner, &paths, &resources, &action, &name)
-            });
+        let result = host_resources().and_then(|resources| {
+            explicit_workspace_action_with(&ProcessRunner, &paths, &resources, &action, &name)
+        });
         let _ = app.emit("silo://application-state-changed", ());
         let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
         drop(guard);
@@ -2624,6 +2613,29 @@ fn start_at_launch_with(
     })();
     result
         .map_err(|error| RuntimeError::Invalid(format!("{name}: {}", safe_activity_error(&error))))
+}
+
+// Both local and remote user actions must activate the same selected checkpoint.
+// Background startup and other implicit callers retain the explicit-Start guard.
+fn explicit_workspace_action_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    host: &HostResources,
+    action: &str,
+    name: &str,
+) -> Result<(), RuntimeError> {
+    if action == "start" {
+        if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
+            .find(|machine| machine.is_vm() && machine.name() == name)
+        {
+            if checkpoints::needs_explicit_start(paths, machine.id())? {
+                checkpoints::start_pending(runner, paths, &machine)?;
+                crate::github::workspace_restored();
+                return Ok(());
+            }
+        }
+    }
+    workspace_action_with(runner, paths, host, action, name)
 }
 
 fn workspace_action_with(

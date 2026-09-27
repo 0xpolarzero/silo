@@ -43,32 +43,57 @@ out in release notes.
 
 ## Stopped forks and first start
 
-User-facing state: **Stopped**, with **Start** as the action. Secondary text can
-explain that Start restores the captured session. No additional Pause/Resume
-concept is required merely to create a fork.
+User-facing state: **Stopped**, with **Start** as the action. The sandbox row
+does not add a captured-session subtitle. No additional Pause/Resume concept is
+required merely to create a fork.
 
 The implementation must distinguish an ordinary stopped VM from a stopped
 workspace whose next start restores a checkpoint. Shutting down a running child
 after creation would lose its live execution state and allow unwanted work.
 Holding a paused child in RAM would allocate a VM before the requested Start.
 
-Proposed implementation: retain an immutable full checkpoint, create the new Silo
-workspace identity and persist a pending restore reference. Materialize/activate
-the child through upstream restore only when Start is explicitly requested.
+The implementation retains an immutable full checkpoint, creates the new Silo
+workspace identity and persists a pending restore reference. Start activates
+the child through upstream restore only when explicitly requested.
 For a stopped source, use disk state and identify that the first start boots
 normally. Forking a running source captures its state while preserving the source.
 
-This is Silo lifecycle integration around upstream artifacts, not a new snapshot
-format or memory implementation. Qualification must verify the supported storage
-and restore APIs before committing to the exact representation. Prefer an upstream
-non-activating preparation operation if the selected release supplies one with
-the required guarantees. Do not invent an undocumented `branch --stopped` flag.
+This is Silo lifecycle integration around upstream immutable snapshots, not a
+new snapshot format or memory implementation. The pinned 0.7.2 source has no
+public full-state restore mode that leaves a stopped sandbox. `msb restore`
+calls `RestoreBuilder::restore_with_progress`, awaits the sandbox, and detaches
+it; its options are RAM-preserving `--forked` and disk-only cold boot. The
+`RestoreBuilder` API likewise exposes `forked()` and `disk_only()` but no
+deferred-activation or paused-result option. Internally the VM restore starts
+paused during construction, then the relay activates the restored guest before
+it publishes readiness. That construction barrier is not a user-selectable
+stopped state. See the pinned upstream [`restore` command options and flow](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/crates/cli/lib/commands/restore.rs#L19-L43),
+[`RestoreBuilder` API](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/restore_builder.rs#L56-L79),
+[builder restore methods](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/restore_builder.rs#L166-L195),
+and [restore activation](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/crates/runtime/lib/runner/relay.rs#L1460-L1518).
 
-The [tagged restore contract](https://github.com/superradcompany/microsandbox/blob/v0.7.2/docs/sdk/rust/snapshots.mdx#restorebuilder)
-resumes full execution when restore is invoked and exposes CoW restoration. It
-does not document a stopped-child option there. Therefore invocation must be
-deferred, or an explicitly supported preparation path must be established. This
-source reading is not an executed Silo qualification pass.
+Represent the stopped workspace state with a durable Silo reference to an
+immutable native checkpoint member. Silo checkpoint IDs remain the public
+identity; persist their mapping to a backend-resolvable native snapshot
+reference, and resolve existing records through their saved group/member data.
+Restore changes that selected reference, not guest memory: when a workspace is
+already pending, retain its previous selected reference as the recovery point
+and atomically select the requested member. A current-state Fork from a pending
+workspace points its new stopped child at the same immutable member. Neither
+operation starts a VM or allocates guest RAM. For a live source, capture a
+checkpoint first; for a pending source, reuse its saved reference. Only explicit
+Start calls upstream full restore (`--forked`) or disk restore. Apply current
+host network and credential policy before that Start activates the guest.
+
+Upstream accepts snapshot group/member selectors and stable backend snapshot
+IDs. Its snapshot archive copy API is for disk snapshot archives; its own source
+documentation says full-state snapshots use `save_to`, so `copy_to` is not a
+local full-memory clone or alias mechanism. Keep aliases in Silo metadata and
+retain the referenced native member while current state, checkpoint history,
+recovery, or a pending fork depends on it. See [snapshot references and copy
+scope](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/snapshot/api.rs#L37-L46),
+[`Snapshot::copy_to`](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/snapshot/api.rs#L249-L257),
+and the [`SnapshotCopyBuilder`](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/snapshot/copy.rs#L13-L56).
 
 Required lifecycle rules:
 
@@ -100,10 +125,10 @@ these require explicit pending-restore guards.
 | Action | Proposed behaviour |
 | --- | --- |
 | Create checkpoint | Name an immutable point in this workspace's history. Running VMs capture memory and both owned disks; stopped VMs capture disks. Show the scope clearly. Preserve the source's lifecycle state. |
-| Fork current state | Capture the source or reuse an exact selected checkpoint, choose a new name, and create a stopped sibling workspace. No guest execution until Start. |
+| Fork current state | Capture a live source or reuse a pending immutable reference, choose a new name, and create a stopped sibling workspace. No child guest execution until Start. |
 | Fork checkpoint | Same stopped-sibling flow using the selected point. Copy current source assignments, never historical grants. |
 | Start pending fork | Resolve current policy, validate compatibility, restore the selected state and open the normal workspace. Reconnect desktop/terminal/LCU sessions as available. |
-| Restore checkpoint | Preflight the target; capture the current workspace as a recovery checkpoint; stage the chosen state and commit the workspace change recoverably. Proposed default: leave it stopped until Start, matching fork activation. |
+| Restore checkpoint | Secure the current state as recovery, then atomically select the target immutable reference. Keep the workspace stopped; explicit Start performs full-memory restore or disk boot under current host policy. |
 | Export/import | Keep a portable recovery path and existing archive import. Clearly distinguish disk recovery from memory continuation. Use upstream archive mechanisms wherever compatible. |
 | Delete checkpoint/fork | Explain retained dependencies and actual reclaimable space when known. Preserve artifacts still required by other workspaces. |
 
@@ -139,21 +164,42 @@ Runtime snapshots intentionally reject observations during a mutation, and the
 snapshot runner does not expose byte progress for checkpoint capture. The UI
 therefore reports the pending action without inventing a completion percentage.
 
-Verification used deterministic frontend data and the existing Rust lock
-contention regression. Browser fixture checks covered creation progress, inline
-restore confirmation with Escape dismissal, and fork submission with Enter.
-The final focused run passed all 97 tests across production source, checkpoint
-panel, current-state fork dialog, and Overview behavior; typecheck and lint also
-passed. No packaged bundle or live VM was inspected. The complete frontend run passed
-948 tests and failed the pre-existing runtime patch-count assertion: the test
-expects eight patches while the committed runtime inputs contain nine. An
-Overview integration regression also verifies that the Checkpoints menu opens
-the panel and exposes create, fork, and restore. The restored integration and
-absence of a redundant outer border were checked in the browser fixture.
+After Restore, the old runtime instance is absent and the selected snapshot
+reference becomes the workspace's authoritative stopped state. Restore can be
+repeated without Start: preserve the current reference as recovery, then commit
+the new reference in one journaled metadata transition. Current-state Fork from
+this state uses that same selected reference. A pending workspace cannot create
+a new captured memory point without activating a VM; it may create another
+logical checkpoint alias to the selected immutable member. Do not report an
+alias as newly captured data or delete its native member while another Silo
+reference still uses it. A live workspace may capture before retargeting; a
+pending workspace uses the saved immutable reference for recovery.
 
-The Restore default above is a proposed detail of this plan, not an already
-implemented behaviour. A before/after fixture preview will make the complete
-flow reviewable early. Existing archive import keeps its new-workspace meaning.
+Create, Restore, and Fork remain available while the selected snapshot is
+stopped. Capture code avoids inspecting an absent runtime and verifies the
+selected member before naming it. Each Restore adds a distinct logical recovery
+checkpoint and commits it with the new selection in one atomic record save.
+Older checkpoint IDs remain valid native selectors when no explicit `nativeId`
+is stored. Local and remote user Start actions now use the same
+`explicit_workspace_action_with` path; background startup retains its guard.
+Current credentials, network policy, and secret assignments apply before guest
+execution. Archive import keeps its new-workspace meaning.
+
+Verification for this change used deterministic data, not live VM operations:
+
+- `npm --prefix app/SiloUI test -- src/features/application/components/checkpoint-panel.test.tsx src/features/application/components/fork-state-dialog.test.tsx src/features/application/pages/overview-fork.test.tsx src/desktop/production-source.test.ts`: 85 passed.
+- `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml runtime::checkpoints::tests`: 15 passed, using explicit synthetic GitHub configuration. This covers full-state aliases, repeated Restore and recovery selection, native-ID resolution at explicit Start, failed Start preservation, current-state Fork without activation, runtime collisions, and legacy group migration.
+- `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml runtime::tests::`: 88 passed and one Unix-socket test was denied by the command sandbox. That exact test passed when rerun with socket permission. This run also used synthetic GitHub configuration.
+- Frontend `build` (including TypeScript), `lint`, and `git diff --check` passed.
+
+A read-only review found no blocker in identity resolution, recovery, policy
+application, or the explicit Start boundary. The optimized macOS app was built
+with `desktop:build` under the separate absolute `CARGO_TARGET_DIR`
+`app/SiloUI/src-tauri/target/checkpoint-state-build-fu327l8s` in this checkout.
+The resulting `release/bundle/macos/Silo.app` passed the build wrapper's signing
+and bundle verification. It was not launched; the existing running release
+bundle and user VMs were left untouched. Tests establish deterministic behavior
+and packaging, not live session continuity or remote-host deployment.
 
 For v1, retain checkpoints until explicit deletion; show measured usage and fail
 cleanly when storage is insufficient. Do not add an unrequested automatic

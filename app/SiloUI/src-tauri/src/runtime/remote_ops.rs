@@ -39,7 +39,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
                 if !matches!(action, "start" | "stop" | "restart" | "dismiss-error") {
                     return Err("Unsupported remote lifecycle action.".into());
                 }
-                workspace_action_with(&ProcessRunner, &paths, &resources, action, machine.name())
+                explicit_workspace_action_with(&ProcessRunner, &paths, &resources, action, machine.name())
                     .map_err(|e| safe_activity_error(&e))?;
             }
             "runtime.upsert" | "runtime.delete" => {

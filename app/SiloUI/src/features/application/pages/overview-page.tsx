@@ -357,7 +357,6 @@ export function OverviewPage({ active = true, readOnly = false,
                 <span className="inline-flex max-w-full items-center gap-1 align-middle">
                   <span className="truncate" title={workspace?.attention?.message}>
                     {workspace?.computer?.busy ? <span role="status">Applying VM changes…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : <WorkspaceStateLabel state={state} />}
-                    {workspace?.pendingCheckpointRestore && state === "stopped" && <> · Start restores captured {workspace.pendingCheckpointRestore.state === "full" ? "session" : "disks"}</>}
                     {workspace?.attention && <> · {workspace.attention.message}</>}
                   </span>
                   {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || workspaceOperationBusy || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}

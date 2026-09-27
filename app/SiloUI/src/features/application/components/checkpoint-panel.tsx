@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import type { ApplicationActions, ApplicationWorkspace } from "@/features/application/model/application-source"
 
-type Choice = { action: "fork"; checkpointId: string | null } | { action: "restore"; checkpointId: string }
+type Choice = { action: "fork" | "restore"; checkpointId: string }
 type PendingAction = { action: "create" | "fork" | "restore"; stage: string }
 
 export function CheckpointPanel({ workspace, target, actions, disabled }: {
@@ -47,22 +47,9 @@ export function CheckpointPanel({ workspace, target, actions, disabled }: {
     : pending?.stage
 
   return <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="mx-3 mb-2 p-3 text-xs">
-    <div className="flex flex-wrap items-start justify-between gap-2">
-      <div>
-        <h3 className="font-medium">Checkpoints</h3>
-        <p className="mt-0.5 text-muted-foreground">Save this sandbox’s current session and disks. Forks start stopped.</p>
-      </div>
-      <Popover open={choice?.action === "fork" && choice.checkpointId === null} onOpenChange={open => { if (!open && choice?.action === "fork" && choice.checkpointId === null) setChoice(null) }}>
-        <PopoverTrigger asChild>
-          <Button size="xs" variant="outline" disabled={locked || !actions.forkCheckpoint} onClick={() => { setChoice({ action: "fork", checkpointId: null }); setError(null) }}>Fork current state</Button>
-        </PopoverTrigger>
-        {choice?.action === "fork" && choice.checkpointId === null && <ForkPopover name={forkName} setName={setForkName} busy={locked} onCancel={() => { setChoice(null); setForkName("") }} onCreate={() => {
-          const title = forkName.trim()
-          if (locked || !title || !actions.forkCheckpoint) return
-          setChoice(null)
-          void perform(() => actions.forkCheckpoint!(target, null, title), { action: "fork", stage: "Creating stopped fork…" })
-        }} />}
-      </Popover>
+    <div>
+      <h3 className="font-medium">Checkpoints</h3>
+      <p className="mt-0.5 text-muted-foreground">Save this sandbox’s current session and disks. Forks start stopped.</p>
     </div>
     <form className="mt-3 flex gap-2" onSubmit={event => { event.preventDefault(); const title = name.trim(); if (!locked && title && actions.createCheckpoint) void perform(() => actions.createCheckpoint!(target, title), { action: "create", stage: "Creating checkpoint…" }) }}>
       <Input aria-label="Checkpoint name" className="h-7 flex-1 text-xs" maxLength={80} value={choice ? "" : name} disabled={locked || Boolean(choice) || !actions.createCheckpoint} placeholder="Checkpoint name" onChange={event => setName(event.target.value)} />
@@ -91,8 +78,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled }: {
               }} />}
             </Popover>
             <TooltipProvider delayDuration={250}>
-              <Tooltip>
-                <TooltipTrigger asChild><Button size="xs" variant="ghost" disabled={locked || !actions.restoreCheckpoint} onClick={() => { setChoice({ action: "restore", checkpointId: item.id }); setError(null) }}>Restore</Button></TooltipTrigger>
+              <Tooltip><TooltipTrigger asChild><Button size="xs" variant="ghost" disabled={locked || !actions.restoreCheckpoint} onClick={() => { setChoice({ action: "restore", checkpointId: item.id }); setError(null) }}>Restore</Button></TooltipTrigger>
                 <TooltipContent>Save a recovery checkpoint, then restore this state. The sandbox stays stopped.</TooltipContent>
               </Tooltip>
             </TooltipProvider>
