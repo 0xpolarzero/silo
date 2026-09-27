@@ -527,9 +527,8 @@ pub async fn create_checkpoint(
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        let _guard = MUTATION_LOCK
-            .try_lock()
-            .map_err(|_| RuntimeError::Busy.to_string())?;
+        let _guard = acquire_lifecycle_lock(&MUTATION_LOCK, LIFECYCLE_LOCK_WAIT)
+            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let _ = worker_app.emit("silo://application-state-changed", ());
         let result = capture_with(&ProcessRunner, &paths, &workspace_id, &name, "manual")
@@ -1045,9 +1044,8 @@ pub async fn fork_checkpoint(
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        let _guard = MUTATION_LOCK
-            .try_lock()
-            .map_err(|_| RuntimeError::Busy.to_string())?;
+        let _guard = acquire_lifecycle_lock(&MUTATION_LOCK, LIFECYCLE_LOCK_WAIT)
+            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let result = fork_with(
             &worker_app,
@@ -1296,9 +1294,8 @@ pub async fn restore_checkpoint(
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        let _guard = MUTATION_LOCK
-            .try_lock()
-            .map_err(|_| RuntimeError::Busy.to_string())?;
+        let _guard = acquire_lifecycle_lock(&MUTATION_LOCK, LIFECYCLE_LOCK_WAIT)
+            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let result = restore_with(&ProcessRunner, &paths, &workspace_id, &checkpoint_id)
             .and_then(|_| read_application_state_with(&ProcessRunner, &paths));

@@ -66,6 +66,72 @@ describe("production application bridge", () => {
     } finally { store.dispose() }
   })
 
+  it("keeps a local checkpoint pending across refreshes, blocks duplicates, and clears failed operation fields before retry", async () => {
+    const mock = native()
+    let complete: ((value: unknown) => void) | undefined
+    let failNext = true
+    const failedSource = structuredClone(source)
+    failedSource.workspaces[0].checkpointOperation = { kind: "capture", status: "failed", stage: "Checkpoint failed", error: "Another sandbox operation is still running." }
+    const runningSource = structuredClone(source)
+    runningSource.workspaces[0].checkpointOperation = { kind: "capture", status: "running", stage: "Capturing VM state" }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "create_checkpoint") {
+        if (failNext) { failNext = false; throw new Error("Another sandbox operation is still running.") }
+        return new Promise(resolve => { complete = resolve })
+      }
+      if (command === "read_application_state" && !failNext) return complete ? runningSource : failedSource
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await expect(store.applicationActions.createCheckpoint!("dev", "Before refactor")).rejects.toThrow("Another sandbox operation is still running.")
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toMatchObject({ status: "failed" }))
+      const retry = store.applicationActions.createCheckpoint!("dev", "Before refactor")
+      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toMatchObject({ kind: "capture", status: "running", stage: "Creating checkpoint…" })
+      await store.refresh()
+      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toMatchObject({ kind: "capture", status: "running", stage: "Capturing VM state" })
+      await expect(store.applicationActions.createCheckpoint!("dev", "Duplicate")).rejects.toThrow("A checkpoint operation is already running")
+      expect(invoke.mock.calls.filter(([command]) => command === "create_checkpoint")).toHaveLength(2)
+      const updated = structuredClone(source)
+      updated.workspaces[0].checkpoints = [{ id: "point-1", name: "Before refactor", createdAt: "2026-09-25T10:00:00Z", scope: "full", reason: "manual" }]
+      complete!(updated)
+      await retry
+      expect(store.getSnapshot().source?.workspaces[0].checkpoints?.[0].id).toBe("point-1")
+      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toBeNull()
+      await store.refresh()
+      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toMatchObject({ status: "running", stage: "Capturing VM state" })
+      runningSource.workspaces[0].checkpointOperation = { kind: "capture", status: "failed", stage: "Verification failed", error: "Checkpoint could not be verified." }
+      await store.refresh()
+      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toMatchObject({ status: "failed", error: "Checkpoint could not be verified." })
+    } finally { store.dispose() }
+  })
+
+  it("keeps remote checkpoint operations visible and guards duplicate requests", async () => {
+    const mock = native()
+    let complete: ((value: unknown) => void) | undefined
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+      if (command === "remote_host_snapshot") return structuredClone(source)
+      if (command === "remote_checkpoint_action") return new Promise(resolve => { complete = resolve })
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    const target = "silo-remote:office:" + source.workspaces[0].machine.id
+    try {
+      await store.initialize()
+      const action = store.applicationActions.createCheckpoint!(target, "Remote point")
+      expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.checkpointOperation).toMatchObject({ kind: "capture", status: "running" })
+      await store.refresh()
+      expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.checkpointOperation).toMatchObject({ kind: "capture", status: "running" })
+      await expect(store.applicationActions.createCheckpoint!(target, "Duplicate")).rejects.toThrow("A checkpoint operation is already running")
+      expect(invoke.mock.calls.filter(([command]) => command === "remote_checkpoint_action")).toHaveLength(1)
+      complete!(undefined)
+      await action
+      expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.checkpointOperation).toBeUndefined()
+    } finally { store.dispose() }
+  })
+
   it("routes checkpoint actions through the owning remote computer", async () => {
     const mock = native()
     const store = createProductionSource(mock.bridge)

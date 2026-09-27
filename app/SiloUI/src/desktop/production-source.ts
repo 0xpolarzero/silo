@@ -9,6 +9,7 @@ import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMac
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
 import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
+import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 
 import { remoteComputerSchema, remoteManagementSchema, remoteWorkspaceTarget, parseRemoteWorkspaceTarget, workspaceTarget, type RemoteComputer, type RemoteManagement } from "@/features/application/model/remote-computers"
@@ -222,6 +223,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const unlisten: Array<() => void> = []
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
+  const pendingCheckpointOperations = new Map<string, WorkspaceCheckpointOperation>()
+  const checkpointOperationBases = new Map<string, WorkspaceCheckpointOperation | null | undefined>()
   const pushPollTimers = new Set<ReturnType<typeof setTimeout>>()
   const pendingRepositoryPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
   const remotePushRevisions = new Map<string, number>()
@@ -332,18 +335,30 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (operation?.kind === "result") requestedOperation = null
     next = { ...next, backup: { ...next.backup, operation } }
     if (next.source) next = { ...next, source: { ...next.source, remoteComputers, remoteManagement, remoteManagementError, network, networkError, sshAccess, sshAccessError,
-      workspaces: next.source.workspaces.filter(workspace => !workspace.computer).map(workspace => ({ ...workspace, ports: (network?.workspaces.find(item => item.workspace === workspace.machine.name)?.ports ?? []).map(port => ({ port: port.port, listening: !networkError && !network?.workspaces.find(item => item.workspace === workspace.machine.name)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })) }))
+      workspaces: next.source.workspaces.filter(workspace => !workspace.computer).map(workspace => {
+        const target = workspaceTarget(workspace)
+        const pending = pendingCheckpointOperations.get(target)
+        return { ...workspace,
+          ...(pending && { checkpointOperation: workspace.checkpointOperation?.status === "running" ? workspace.checkpointOperation : pending }),
+          ports: (network?.workspaces.find(item => item.workspace === workspace.machine.name)?.ports ?? []).map(port => ({ port: port.port, listening: !networkError && !network?.workspaces.find(item => item.workspace === workspace.machine.name)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })),
+        }
+      })
     } }
     if (next.source) next = { ...next, source: { ...next.source, workspaces: [
       ...next.source.workspaces,
-      ...remoteComputers.flatMap(computer => (remoteSnapshots.get(computer.id)?.workspaces ?? []).filter(workspace => workspace.machine.kind === "vm").map(workspace => ({
-        ...workspace,
-        machine: { ...workspace.machine, id: remoteWorkspaceTarget(computer.id, workspace.machine.id) },
-        computer: { ...computer, vmId: workspace.machine.id },
-        ports: (network?.workspaces.find(item => item.workspace === remoteWorkspaceTarget(computer.id, workspace.machine.id))?.ports ?? []).map(port => ({ port: port.port, listening: computer.connected && !networkError && !network?.workspaces.find(item => item.workspace === remoteWorkspaceTarget(computer.id, workspace.machine.id))?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })),
-        freshness: computer.connected && !computer.busy ? workspace.freshness : "stale" as const,
-        stateDetail: computer.busy ? "Applying VM changes" : computer.connected ? workspace.stateDetail : "Computer unavailable",
-      }))),
+      ...remoteComputers.flatMap(computer => (remoteSnapshots.get(computer.id)?.workspaces ?? []).filter(workspace => workspace.machine.kind === "vm").map(workspace => {
+        const target = remoteWorkspaceTarget(computer.id, workspace.machine.id)
+        const pending = pendingCheckpointOperations.get(target)
+        return {
+          ...workspace,
+          ...(pending && { checkpointOperation: workspace.checkpointOperation?.status === "running" ? workspace.checkpointOperation : pending }),
+          machine: { ...workspace.machine, id: target },
+          computer: { ...computer, vmId: workspace.machine.id },
+          ports: (network?.workspaces.find(item => item.workspace === target)?.ports ?? []).map(port => ({ port: port.port, listening: computer.connected && !networkError && !network?.workspaces.find(item => item.workspace === target)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })),
+          freshness: computer.connected && !computer.busy ? workspace.freshness : "stale" as const,
+          stateDetail: computer.busy ? "Applying VM changes" : computer.connected ? workspace.stateDetail : "Computer unavailable",
+        }
+      })),
     ],
       repositoryPushOperations: [
         ...next.source.repositoryPushOperations.filter(operation => !parseRemoteWorkspaceTarget(operation.workspace)),
@@ -829,23 +844,61 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   async function checkpointAction(command: string, target: string, arguments_: Record<string, unknown>) {
     const remote = parseRemoteWorkspaceTarget(target)
+    const localWorkspace = remote ? undefined : snapshot.source?.workspaces.find(item => !item.computer && item.machine.kind === "vm" && (item.machine.name === target || item.machine.id === target))
+    if (!remote && !localWorkspace) throw new Error("This sandbox is unavailable. Refresh and try again.")
+    const checkpointTarget = remote ? remoteWorkspaceTarget(remote.hostId, remote.vmId) : workspaceTarget(localWorkspace!)
+    const ownerWorkspace = remote
+      ? remoteSnapshots.get(remote.hostId)?.workspaces.find(item => item.machine.kind === "vm" && item.machine.id === remote.vmId)
+      : localWorkspace
+    if (pendingCheckpointOperations.has(checkpointTarget) || ownerWorkspace?.checkpointOperation?.status === "running") {
+      throw new Error("A checkpoint operation is already running for this sandbox.")
+    }
+    const kind: WorkspaceCheckpointOperation["kind"] = command === "create_checkpoint" ? "capture" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : (() => { throw new Error("Unsupported checkpoint operation.") })()
+    const operation: WorkspaceCheckpointOperation = {
+      kind,
+      status: "running",
+      stage: kind === "capture" ? "Creating checkpoint…" : kind === "fork" ? "Creating stopped fork…" : "Saving recovery checkpoint and restoring…",
+    }
+    pendingCheckpointOperations.set(checkpointTarget, operation)
+    checkpointOperationBases.set(checkpointTarget, ownerWorkspace?.checkpointOperation)
+    publish({ ...snapshot })
     if (remote) {
-      const action = command === "create_checkpoint" ? "create" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : null
-      if (!action) throw new Error("Unsupported checkpoint operation.")
-      await native.invoke("remote_checkpoint_action", { hostId: remote.hostId, vmId: remote.vmId, action, ...arguments_ })
-      await refreshComputers(true)
+      const action = kind === "capture" ? "create" : kind
+      try {
+        await native.invoke("remote_checkpoint_action", { hostId: remote.hostId, vmId: remote.vmId, action, ...arguments_ })
+        checkpointOperationBases.set(checkpointTarget, undefined)
+        await refreshComputers(true)
+      } catch (cause) {
+        void refreshComputers()
+        throw cause
+      } finally {
+        pendingCheckpointOperations.delete(checkpointTarget)
+        clearCheckpointOperation(checkpointTarget, operation)
+      }
       return
     }
-    const workspace = snapshot.source?.workspaces.find(item => !item.computer && item.machine.kind === "vm" && (item.machine.name === target || item.machine.id === target))
-    if (!workspace) throw new Error("This sandbox is unavailable. Refresh and try again.")
     try {
-      const result = await native.invoke<unknown>(command, { workspaceId: workspace.machine.id, ...arguments_ })
+      const result = await native.invoke<unknown>(command, { workspaceId: localWorkspace!.machine.id, ...arguments_ })
+      checkpointOperationBases.set(checkpointTarget, undefined)
       publish({ ...snapshot, source: parseMutationSource(result), error: null })
       void refresh()
     } catch (cause) {
       void refresh()
       throw cause
+    } finally {
+      pendingCheckpointOperations.delete(checkpointTarget)
+      clearCheckpointOperation(checkpointTarget, operation)
     }
+  }
+
+  function clearCheckpointOperation(target: string, synthetic: WorkspaceCheckpointOperation) {
+    const base = checkpointOperationBases.get(target) ?? null
+    checkpointOperationBases.delete(target)
+    if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, workspaces: snapshot.source.workspaces.map(workspace =>
+      workspaceTarget(workspace) === target && workspace.checkpointOperation === synthetic
+        ? { ...workspace, checkpointOperation: base }
+        : workspace,
+    ) } })
   }
 
   const applicationActions: ApplicationActions = {

@@ -1,4 +1,5 @@
 import { WorkspaceStoragePanel } from "./workspace-storage-panel"
+import { ForkStateDialog } from "../components/fork-state-dialog"
 import { CheckpointPanel } from "../components/checkpoint-panel"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
 import { SshAccessRow, SshAccessBadges } from "./ssh-access-panel"
@@ -7,7 +8,7 @@ import { workspaceAvailability } from "../model/workspace-availability"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
-import { ChevronDown, CircleAlert, Code, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronDown, CircleAlert, Code, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useState } from "react"
 
 import { ListRowIcon } from "@/components/list-row"
@@ -220,6 +221,7 @@ export function OverviewPage({ active = true, readOnly = false,
   const [expandedCheckpoints, setExpandedCheckpoints] = useState<Set<string>>(() => new Set())
   const [expandedSsh, setExpandedSsh] = useState<Set<string>>(() => new Set())
   const [folderWorkspaceId, setFolderWorkspaceId] = useState<string | null>(null)
+  const [forkStateWorkspaceId, setForkStateWorkspaceId] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [pendingStart, setPendingStart] = useState<string | null>(null)
   const [operationUnavailable, setOperationUnavailable] = useState(false)
@@ -227,6 +229,7 @@ export function OverviewPage({ active = true, readOnly = false,
   const workspaces = new Map(visibleWorkspaces.map((workspace) => [workspace.machine.id, workspace]))
   const committedWorkspaces = new Map(source.workspaces.map((workspace) => [workspace.machine.id, workspace]))
   const machines = visibleWorkspaces.map(({ machine }) => machine)
+  const forkStateWorkspace = forkStateWorkspaceId ? workspaces.get(forkStateWorkspaceId) : undefined
   const configurationOperation = source.sandboxConfigurationOperation
   const configurationLocked = readOnly || configurationOperation !== null
   const localMachines = machines.filter(machine => !workspaces.get(machine.id)?.computer)
@@ -329,30 +332,35 @@ export function OverviewPage({ active = true, readOnly = false,
             const storageExpanded = machine.kind === "vm" && workspace && !workspace.computer && expandedStorage.has(machine.id) && actions.readWorkspaceStorage
             const checkpointsExpanded = machine.kind === "vm" && workspace && expandedCheckpoints.has(machine.id)
             const lifecycle = workspace?.lifecycleAction
+            const checkpointOperation = workspace?.checkpointOperation?.status === "running" ? workspace.checkpointOperation : undefined
             const lifecycleLabel = lifecycle === "dismiss-error" ? "Dismissing…" : lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
+            const workspaceOperationBusy = Boolean(lifecycle) || Boolean(checkpointOperation)
             return {
               kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
               badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
-              menuActions: [...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale"), onSelect: () => { void actions.openDesktop!(workspace ? workspaceTarget(workspace) : machine.name) } }] : []), { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale") || (state !== "running" && state !== "failed"), onSelect: () => {
+              menuActions: [...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && workspace.freshness === "stale"), onSelect: () => { void actions.openDesktop!(workspace ? workspaceTarget(workspace) : machine.name) } }] : []), { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && workspace.freshness === "stale") || (state !== "running" && state !== "failed"), onSelect: () => {
                 if (!workspace?.computer && source.vmOperationsUnavailable) setOperationUnavailable(true)
                 else actions.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name)
-              } }, ...(machine.kind === "vm" && workspace ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, disabled: configurationOperation !== null || Boolean(lifecycle), onSelect: () => setExpandedCheckpoints(previous => { const next = new Set(previous); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next }) }] : []), ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationOperation !== null || Boolean(lifecycle), onSelect: () => setExpandedStorage(previous => { const next = new Set(previous); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next }) }] : [])],
+              } }, ...(machine.kind === "vm" && workspace ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || workspace.freshness === "stale", onSelect: () => setExpandedCheckpoints(previous => { const next = new Set(previous); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next }) }] : []), ...(machine.kind === "vm" && workspace && actions.forkCheckpoint ? [{ label: "Fork", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || workspace.freshness === "stale", onSelect: () => setForkStateWorkspaceId(machine.id) }] : []), ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationOperation !== null || workspaceOperationBusy, onSelect: () => setExpandedStorage(previous => { const next = new Set(previous); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next }) }] : [])],
               expandedContent: workspace?.lifecycleFailure || (sshAvailable && expanded) || storageExpanded || checkpointsExpanded ? <>
                 {workspace?.lifecycleFailure && <div role="alert" className="mx-3 mb-2 max-h-48 overflow-auto rounded-md border border-destructive/20 bg-destructive/[.06] px-3 py-2 text-xs whitespace-pre-wrap break-words text-destructive">{workspace.lifecycleFailure}</div>}
-                {sshAvailable && expanded && <div id={`ssh-${machine.id}`}><SshAccessRow readOnly={readOnly} embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div>}{machine.kind === "vm" && workspace && !workspace.computer && expandedStorage.has(machine.id) && actions.readWorkspaceStorage && <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={configurationLocked || Boolean(lifecycle)} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />}{checkpointsExpanded && workspace && <CheckpointPanel workspace={workspace} target={workspaceTarget(workspace)} actions={actions} disabled={configurationLocked || Boolean(lifecycle) || workspace.freshness === "stale"} />}</> : undefined,
-              busy: Boolean(lifecycle) || Boolean(workspace?.computer?.busy),
-              suppressInteractions: Boolean(lifecycle) || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
-              icon: lifecycle ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
+                {sshAvailable && expanded && <div id={`ssh-${machine.id}`}><SshAccessRow readOnly={readOnly || workspaceOperationBusy} embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div>}{machine.kind === "vm" && workspace && !workspace.computer && expandedStorage.has(machine.id) && actions.readWorkspaceStorage && <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={configurationLocked || workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />}{checkpointsExpanded && workspace && <CheckpointPanel workspace={workspace} target={workspaceTarget(workspace)} actions={actions} disabled={configurationLocked || Boolean(lifecycle) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} />}</> : undefined,
+              busy: workspaceOperationBusy || Boolean(workspace?.computer?.busy),
+              suppressInteractions: workspaceOperationBusy || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
+              icon: workspaceOperationBusy ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
               iconState: workspace?.lifecycleFailure ? "error" as const : visualState,
-              tone: lifecycle ? "starting" as const : workspace?.lifecycleFailure ? "error" as const : workspaceRowTone(workspace),
-              detail: (
+              tone: workspaceOperationBusy ? "starting" as const : workspace?.lifecycleFailure ? "error" as const : workspaceRowTone(workspace),
+              detail: checkpointOperation ? <div role="status" aria-live="polite" aria-atomic="true" className="grid gap-1.5 py-0.5">
+                <p className="truncate text-xs" title={checkpointOperation.stage}>{checkpointOperation.stage}</p>
+                <Progress value={null} aria-label="Checkpoint operation progress" />
+              </div> : (
                 <span className="inline-flex max-w-full items-center gap-1 align-middle">
                   <span className="truncate" title={workspace?.attention?.message}>
                     {workspace?.computer?.busy ? <span role="status">Applying VM changes…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : <WorkspaceStateLabel state={state} />}
                     {workspace?.pendingCheckpointRestore && state === "stopped" && <> · Start restores captured {workspace.pendingCheckpointRestore.state === "full" ? "session" : "disks"}</>}
                     {workspace?.attention && <> · {workspace.attention.message}</>}
                   </span>
-                  {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || Boolean(lifecycle) || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}
+                  {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || workspaceOperationBusy || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}
                 </span>
               ),
               actions: <>
@@ -368,11 +376,19 @@ export function OverviewPage({ active = true, readOnly = false,
                 },
                 stopWorkspace: (name) => !workspace?.computer && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
                 restartWorkspace: (name) => !workspace?.computer && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
-              }} disabled={configurationLocked || Boolean(lifecycle) || Boolean(workspace?.computer && workspace.freshness === "stale")} />
+              }} disabled={configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && workspace.freshness === "stale")} />
               </>,
             }
           }}
         />
+        {forkStateWorkspace && actions.forkCheckpoint && <ForkStateDialog
+          key={forkStateWorkspace.machine.id}
+          sandboxName={forkStateWorkspace.machine.name}
+          disabled={configurationLocked || Boolean(forkStateWorkspace.lifecycleAction) || Boolean(forkStateWorkspace.computer?.busy) || forkStateWorkspace.freshness === "stale" || forkStateWorkspace.checkpointOperation?.status === "running"}
+          progressStage={forkStateWorkspace.checkpointOperation?.status === "running" ? forkStateWorkspace.checkpointOperation.stage : undefined}
+          fork={name => actions.forkCheckpoint!(workspaceTarget(forkStateWorkspace), null, name)}
+          onClose={() => setForkStateWorkspaceId(null)}
+        />}
         {pendingStart && source.resourceNotice?.kind === "start-memory" && <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[.07] p-3" role="status">
           <div className="flex gap-2"><TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600" aria-hidden="true" /><div><p className="text-xs font-medium">Starting {pendingStart} may slow this computer</p><p className="mt-1 text-[11px] text-muted-foreground">Silo found high memory pressure now. This VM can use up to {source.resourceNotice.memoryGiB} GB. Close memory-heavy apps, or start anyway.</p></div></div>
           <div className="mt-2 flex justify-end gap-1"><Button type="button" variant="ghost" size="xs" onClick={() => setPendingStart(null)}>Cancel</Button><Button type="button" variant="outline" size="xs" onClick={() => { actions.startWorkspace(pendingStart); setPendingStart(null) }}>Start anyway</Button></div>

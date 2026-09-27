@@ -112,6 +112,45 @@ Fork actions. Keep Export/Import discoverable separately from local checkpoint
 history. Show actual operation stages, errors and recovery actions; do not imply
 that a progress percentage establishes a usable checkpoint.
 
+### Checkpoint action feedback (2026-09-27)
+
+The checkpoint panel shows an indeterminate progress bar as soon as Create,
+Restore, or Fork is submitted and keeps it visible until the request settles.
+The sandbox's Checkpoints menu expands the panel inside its existing card;
+the panel itself has no redundant outer rounded border.
+Restore uses the shared inline Cancel/Confirm pattern; its tooltip explains the
+recovery checkpoint and stopped result. Fork names are entered in a small
+popover with Enter-to-submit. The Overview current-state fork dialog and sandbox
+row also show progress while a request is pending. The production source keeps
+pending operations visible across refreshes and page changes and rejects duplicate
+requests for the same sandbox, including remote targets.
+
+Checkpoint commands use the existing five-second lifecycle lock wait. This
+avoids failing immediately when brief background work owns the mutation lock;
+sustained contention still returns Busy. The causal sources are
+[`read_application_state`](../app/SiloUI/src-tauri/src/runtime.rs), which may
+inspect stopped-VM log retention under that lock, and
+[`ssh_access::start_monitor`](../app/SiloUI/src-tauri/src/ssh_access.rs), which
+holds it during reconciliation. The
+[`checkpoint commands`](../app/SiloUI/src-tauri/src/runtime/checkpoints.rs)
+previously used an immediate `try_lock`.
+
+Runtime snapshots intentionally reject observations during a mutation, and the
+snapshot runner does not expose byte progress for checkpoint capture. The UI
+therefore reports the pending action without inventing a completion percentage.
+
+Verification used deterministic frontend data and the existing Rust lock
+contention regression. Browser fixture checks covered creation progress, inline
+restore confirmation with Escape dismissal, and fork submission with Enter.
+The final focused run passed all 97 tests across production source, checkpoint
+panel, current-state fork dialog, and Overview behavior; typecheck and lint also
+passed. No packaged bundle or live VM was inspected. The complete frontend run passed
+948 tests and failed the pre-existing runtime patch-count assertion: the test
+expects eight patches while the committed runtime inputs contain nine. An
+Overview integration regression also verifies that the Checkpoints menu opens
+the panel and exposes create, fork, and restore. The restored integration and
+absence of a redundant outer border were checked in the browser fixture.
+
 The Restore default above is a proposed detail of this plan, not an already
 implemented behaviour. A before/after fixture preview will make the complete
 flow reviewable early. Existing archive import keeps its new-workspace meaning.
