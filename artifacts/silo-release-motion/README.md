@@ -1,7 +1,7 @@
 # Silo / Computers for your agents
 
 33.75-second release film. 1920 × 1080, 60 fps, H.264, stereo AAC, and optional
-English captions. Play `output/silo-computers-workflow.mp4` or `preview.html`.
+English captions. Play `output/silo-computers-flow.mp4` or `preview.html`.
 
 This revision follows one VM, `your-app`, hosted on an office computer. A laptop
 running Silo starts it, connects an editor and terminal over SSH, forwards its
@@ -50,6 +50,11 @@ website tour implementation were read.
 - [Website product copy](../../website/index.html): the main headline,
   “Start it here. Run it there,” “From server to browser,” and
   “Less setup. More building.” Only product copy was consulted.
+
+The approved two-computer workflow is archived in commit `2866cbc`, including
+its exact MP4. This follow-up carries the port connection into the local address,
+expands the remote VM into the desktop, and returns the desktop to the VM for
+permissions. See [reference observations](REFERENCE-NOTES.md).
 
 The approved 15-second study is archived in commit `72eb0b1` under
 `../silo-motion-study/`. The preceding 30-second render is preserved locally

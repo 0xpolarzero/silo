@@ -52,6 +52,7 @@ function shadowEllipse(x,y,rx,ry,a=.12){const grad=c.createRadialGradient(x,y,0,
 
 function texText(target,fn){const prev=c;c=target;fn();c=prev}
 const desktopTexture=createCanvas(1080,640),dc=desktopTexture.getContext('2d');
+const laptopTexture=createCanvas(1080,640),lc=laptopTexture.getContext('2d');
 function texturedTri(im,a,b,d,sa,sb,sd){c.save();const mid=[(a[0]+b[0]+d[0])/3,(a[1]+b[1]+d[1])/3];const expand=q=>{const dx=q[0]-mid[0],dy=q[1]-mid[1],len=Math.hypot(dx,dy);return[q[0]+dx/len*2.1,q[1]+dy/len*2.1]};const A0=expand(a),B0=expand(b),D0=expand(d);c.beginPath();c.moveTo(...A0);c.lineTo(...B0);c.lineTo(...D0);c.closePath();c.clip();
  const det=sa[0]*(sb[1]-sd[1])+sb[0]*(sd[1]-sa[1])+sd[0]*(sa[1]-sb[1]);
  const A=(a[0]*(sb[1]-sd[1])+b[0]*(sd[1]-sa[1])+d[0]*(sa[1]-sb[1]))/det;
@@ -117,7 +118,7 @@ function desktopMap(t){texText(dc,()=>{
  text('$ claude',46,187,31,p.orange,{font:'Mono',weight:500});
  typeLine('Open the app and',46,244,24,(t-.4)/.65);typeLine('test the checkout.',46,279,24,(t-.8)/.7);
  const tasks=['Read the screen','Click Checkout','Inspect the result'];
- tasks.forEach((s,i)=>{const q=ease((t-1.65-i*.67)/.2);g(()=>{circle(56,344+i*56,5,p.orange);text(s,76,354+i*56,23,p.paper,{font:'Mono'});if(t>2.3+i*.67)check(422,346+i*56,11,p.orange)},{a:q,y:12*(1-q)});});
+ tasks.forEach((s,i)=>{const q=ease((t-1.65-i*.67)/.2);g(()=>{circle(56,344+i*56,5,p.orange);text(s,76,354+i*56,23,p.paper,{font:'Mono'});if(t>[2.3,3.3,4.12][i])check(422,346+i*56,11,p.orange)},{a:q,y:12*(1-q)});});
  text('/workspace/your-app',47,581,19,col(p.paper,.55),{font:'Mono'});
  rect(486,83,570,532,p.white,0,p.ink,2);rect(486,83,570,55,p.paper,0,p.ink,2);
  text('localhost:3000',512,119,22,p.ink,{font:'Mono'});
@@ -135,7 +136,7 @@ function desktopMap(t){texText(dc,()=>{
 
 function desktop(t){
  bg(p.ink);header('02','YOUR-APP / A DESKTOP + COMPUTER USE',p.paper);
- const e=ease(t/.63);
+ const e=1;
  clipBox(0,115,W,218,()=>g(()=>display('GIVE AGENTS A DESKTOP.',78,278,163,p.paper,1764),{y:-240*(1-e)}));
  desktopMap(t);
  const rx=lerp(.67,-.035,e)+Math.sin(t*.9)*.022,ry=lerp(-.72,.065,e),rz=lerp(-.25,.025,e);
@@ -146,7 +147,15 @@ function desktop(t){
  if(t>1.4)pointer(px,py,lerp(1.65,.77,m)*(1-.12*Math.sin(Math.PI*clamp((t-3.18)/.18))),-.05,p.orange);
  if(t>3.26&&t<3.86){const q=(t-3.26)/.6;for(let i=0;i<3;i++)circle(target[0],target[1],28+q*250-i*17,null,col(p.orange,1-q),3)}
  text('Install your agent inside the VM.',1836,1023,24,col(p.paper,.65),{align:'right'});
- if(t>5.30){const q=io((t-5.30)/.325);rect(W*(1-q),0,W,H,p.paper)}
+ if(t>4.6875){
+  // The desktop folds into the same VM; the access view grows from its frame.
+  const q=io((t-4.6875)/.9375);
+  g(()=>clipBox(lerp(400,0,q),lerp(310,0,q),lerp(1120,W,q),lerp(710,H,q),()=>access(0,ease((q-.8)/.2))),{a:smooth((t-4.6875)/.14)});
+  if(q<.999){
+   const cam2={cx:960,cy:lerp(641,597,q),cam:1850,scale:1.01*(1-q)};
+   plane(desktopTexture,lerp(rx,-.5,q),lerp(ry,.65,q),lerp(rz,.06,q),cam2);
+  }
+ }
 }
 
 function clickRipple(x,y,t,color=p.orange){
@@ -174,7 +183,7 @@ function laptopScreen(t){
    rect(286,289,748,182,p.white);text('Development server',315,338,29,p.ink,{weight:650});
    text('VM port 3000',315,401,30,p.ink,{font:'Mono'});
    rect(754,366,249,70,connected?p.ink:p.orange);text(connected?'Connected':'Connect',878,412,26,connected?p.paper:p.ink,{align:'center',weight:650});
-   if(connected){text('localhost:51432',313,519,30,p.ink,{font:'Mono'});rect(804,485,199,63,p.orange);text('Open ↗',903,527,27,p.ink,{weight:650,align:'center'});}
+   if(t>=9.35){rect(286,480,478,66,p.orange);text('localhost:51432',313,519,30,p.ink,{font:'Mono'});rect(804,485,199,63,p.orange);text('Open ↗',903,527,27,p.ink,{weight:650,align:'center'});}
    text('The server stays inside your VM.',288,592,25,p.muted);
   }
  }else if(phase===1){
@@ -188,7 +197,7 @@ function laptopScreen(t){
    const e=ease((t-4.5)/.4);g(()=>{
     rect(22,99,531,515,p.white);rect(22,99,531,67,p.orange);text('Editor',48,143,31,p.ink,{weight:650});
     text('SSH: your-app',48,212,26,p.ink,{font:'Mono'});text('src / App.tsx',48,266,24,p.muted,{font:'Mono'});
-    const code=['export default App','  return <main>','    <Checkout />','  </main>'];
+    const code=['function App() {',' return <Checkout />','}','export default App;'];
     code.forEach((s,i)=>text(s,48,349+i*53,26,i===0?p.orange:p.ink,{font:'Mono'}));
     rect(576,99,482,515,p.ink);text('Terminal',603,143,31,p.paper,{weight:650});line(597,167,1035,167,col(p.paper,.2));
     text('silo@your-app',603,215,26,p.orange,{font:'Mono'});
@@ -228,6 +237,31 @@ function remoteComputer(t){
  }else{
   rect(1386,623,317,157,p.ink);text('$ npm run dev',1402,667,25,p.paper,{font:'Mono'});text('LISTENING',1402,716,21,p.orange,{font:'Mono',tracking:1});text(':3000',1402,758,32,p.paper,{font:'Mono'});
  }
+ if(t>11.05){const q=ease((t-11.05)/.3);g(()=>{rect(1365,844,360,48,p.paper);text('Open desktop',1545,877,27,p.ink,{align:'center',weight:650});},{y:20*(1-q),a:q});}
+}
+
+function portCarrier(t){
+ if(t<8.72||t>=9.35)return;
+ const q=io((t-8.72)/.63),x=lerp(1386,89+286*852/1080,q),y=lerp(714,388+480*493/640,q)-Math.sin(q*Math.PI)*130;
+ const w=lerp(317,478*852/1080,q),h=lerp(66,66*493/640,q);
+ rect(x,y,w,h,p.orange,0);
+ clipBox(x,y,w,h,()=>{
+  const swap=smooth((q-.35)/.4),size=lerp(30,30*852/1080,q),baseline=lerp(43,39*493/640,q);
+  text(':3000',x+21,y+baseline-swap*h,size,p.ink,{font:'Mono'});
+  text('localhost:51432',x+21,y+baseline+(1-swap)*h,size,p.ink,{font:'Mono'});
+ });
+}
+
+function enterDesktop(t){
+ const q=io((t-12.1875)/.9375);
+ rect(lerp(1365,0,q),lerp(497,0,q),lerp(360,W,q),lerp(330,H,q),p.ink,lerp(6,0,q));
+ desktopMap(0);
+ const cam={cx:lerp(1545,960,q),cy:lerp(662,641,q),cam:1850,scale:lerp(.3,1.01,q)};
+ const rx=-.035*q,ry=.065*q,rz=.025*q;
+ for(let i=3;i>=1;i--)g(()=>plane(desktopTexture,rx,ry,rz,{...cam,cy:cam.cy+i*15*q},i*46*q),{a:(.065+(3-i)*.036)*q});
+ plane(desktopTexture,rx,ry,rz,cam);
+ const title=ease((q-.6)/.4);
+ g(()=>{header('02','YOUR-APP / A DESKTOP + COMPUTER USE',p.paper);clipBox(0,115,W,218,()=>g(()=>display('GIVE AGENTS A DESKTOP.',78,278,163,p.paper,1764),{y:-220*(1-title)}));text('Install your agent inside the VM.',1836,1023,24,col(p.paper,.65),{align:'right'});},{a:title});
 }
 function connection(t){
  const port=t>8.72,active=t>1.1,y=638;
@@ -248,9 +282,9 @@ function workflow(t){
  const e=ease(u/.32);clipBox(0,126,W,175,()=>g(()=>display(titles[phase],78,283,171,p.ink,1764),{y:190*(1-e)}));
  text('YOUR LAPTOP',79,342,28,p.ink,{font:'Mono',tracking:1});text('OFFICE COMPUTER',1797,330,28,p.ink,{font:'Mono',align:'right',tracking:1});
  connection(t);remoteComputer(t);
- texText(dc,()=>laptopScreen(t));
+ texText(lc,()=>laptopScreen(t));
  const enter=ease(t/.55);g(()=>{
-  rect(69,365,892,541,p.ink,13);c.drawImage(desktopTexture,89,388,852,493);
+  rect(69,365,892,541,p.ink,13);c.drawImage(laptopTexture,89,388,852,493);
   c.beginPath();c.moveTo(69,906);c.lineTo(29,950);c.lineTo(1001,950);c.lineTo(961,906);c.closePath();c.fillStyle='#34352e';c.fill();
   rect(358,907,309,13,p.muted,0);line(36,954,994,954,p.ink,5);
  },{x:-450*(1-enter),r:-.06*(1-enter),a:enter});
@@ -262,12 +296,14 @@ function workflow(t){
  if(t>3.83&&t<4.85){const q=ease((t-3.83)/.58),target=screenPoint(786,328);cursor=[lerp(1021,target[0],q),lerp(910,target[1],q)];clickAt=4.41;}
  if(t>7.73&&t<9.26){const q=io((t-7.73)/.83),target=screenPoint(871,401);cursor=[lerp(1119,target[0],q),lerp(956,target[1],q)];clickAt=8.56;}
  if(t>9.48&&t<10.8){const q=ease((t-9.48)/.52),target=screenPoint(903,520);cursor=[lerp(1026,target[0],q),lerp(949,target[1],q)];clickAt=10;}
+ if(t>11.35&&t<12.23){const q=io((t-11.35)/.65);cursor=[lerp(923,1545,q),lerp(930,868,q)];clickAt=12;}
  if(cursor){pointer(...cursor,.58,0,p.orange);clickRipple(...cursor,t-clickAt);}
- if(t>12.7){const q=io((t-12.7)/.425);circle(1545,651,2150*q,p.ink);}
+ portCarrier(t);
+ if(t>12.1875)g(()=>enterDesktop(t),{a:smooth((t-12.1875)/.16)});
 }
 
-function access(t){
- bg(p.paper);header('03','YOUR-APP / LINUX VM');
+function access(t,chrome=1){
+ bg(p.paper);g(()=>header('03','YOUR-APP / LINUX VM'),{a:chrome});
  const e=ease(t/.4);clipBox(0,124,W,177,()=>g(()=>display('CHOOSE WHAT IT CAN ACCESS.',78,280,171,p.ink,1764),{x:120*(1-e),a:e}));
  const left=ease(t/.55),right=ease((t-1.875)/.55);
  line(621,611,825,611,col(p.ink,.25),3);line(1091,611,1299,611,col(p.ink,.25),3);
@@ -291,7 +327,7 @@ function access(t){
   text('Allowed HTTPS domain',1330,647,23,col(p.paper,.65));rect(1328,677,483,64,p.paper);text('api.example.com',1347,719,27,p.ink,{font:'Mono'});check(1779,709,19);
   text('Stored on the hosting computer',1329,852,22,col(p.paper,.7));
  },{x:200*(1-right),a:right});
- rule(945);text('Selected repositories. Scoped credentials. For this VM.',80,1022,43,p.ink,{weight:500,tracking:-.7});
+ g(()=>{rule(945);text('Selected repositories. Scoped credentials. For this VM.',80,1022,43,p.ink,{weight:500,tracking:-.7});},{a:chrome});
 }
 
 function resolve(t){
@@ -318,11 +354,12 @@ function draw(t,target=ctx){c=target;c.resetTransform();c.globalAlpha=1;const i=
 const sampleCanvas=createCanvas(W,H),sampleCtx=sampleCanvas.getContext('2d');
 function frame(t,blur=false){if(!blur){draw(t);return}for(let i=0;i<3;i++){draw(Math.max(0,t+(i-1)/240),sampleCtx);ctx.globalAlpha=1/(i+1);ctx.drawImage(sampleCanvas,0,0);ctx.getImageData(0,0,1,1)}ctx.globalAlpha=1;c=ctx;}
 
-if(process.argv.includes('--stills')){
- const times=[.45,1.65,2.95,4.65,5.6,6.8,7.8,9.1,10.5,11.8,12.9,14.6,16.1,17.7,19.4,20.9,23.8,25.7,28.6,31.6];
+if(process.argv.includes('--stills')||process.argv.includes('--transitions')){
+ const transitions=process.argv.includes('--transitions');
+ const times=transitions?[12.48,12.65,12.85,13.08,13.2,15.5,15.94,16.15,16.4,16.7,16.87,17.0,21.56,21.75,21.95,22.15,22.35,22.49,22.6,23.0]:[.45,1.65,2.95,4.65,5.6,6.8,7.8,9.1,10.5,11.8,12.9,14.6,16.1,17.7,19.4,20.9,23.8,25.7,28.6,31.6];
  const board=createCanvas(2400,1350),b=board.getContext('2d');
- for(let i=0;i<times.length;i++){frame(times[i]);const frozen=cv.toBuffer('image/png');await writeFile(join(out,`shot-${String(i+1).padStart(2,'0')}.png`),frozen);b.drawImage(await loadImage(frozen),i%5*480,Math.floor(i/5)*337.5+25,480,270);b.fillStyle=p.paper;b.font='18px sans-serif';b.fillText(times[i].toFixed(2)+'s',i%5*480+10,Math.floor(i/5)*337.5+322)}
- await writeFile(join(out,'storyboard.jpg'),board.toBuffer('image/jpeg',95));console.log('20 storyboard frames rendered.');
+ for(let i=0;i<times.length;i++){frame(times[i]);const frozen=cv.toBuffer('image/png');await writeFile(join(out,`${transitions?'transition':'flow-shot'}-${String(i+1).padStart(2,'0')}.png`),frozen);b.drawImage(await loadImage(frozen),i%5*480,Math.floor(i/5)*337.5+25,480,270);b.fillStyle=p.paper;b.font='18px sans-serif';b.fillText(times[i].toFixed(2)+'s',i%5*480+10,Math.floor(i/5)*337.5+322)}
+ await writeFile(join(out,transitions?'transitions.jpg':'flow-storyboard.jpg'),board.toBuffer('image/jpeg',95));console.log('20 storyboard frames rendered.');
 }else if(process.argv.includes('--frame')){frame(Number(process.argv[process.argv.indexOf('--frame')+1]),true);await writeFile(join(out,'frame.png'),cv.toBuffer('image/png'));}
 else if(process.argv.includes('--render')){
  const ff=spawn('ffmpeg',['-hide_banner','-loglevel','error','-y','-f','rawvideo','-pixel_format','rgba','-video_size',`${W}x${H}`,'-framerate',String(FPS),'-i','pipe:0','-an','-c:v','libx264','-preset','fast','-crf','16','-pix_fmt','yuv420p','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-movflags','+faststart',join(out,'picture.mp4')],{stdio:['pipe','inherit','inherit']});
