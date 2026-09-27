@@ -12,13 +12,14 @@ const output=path.join(root,'output');fs.mkdirSync(output,{recursive:true});
 const args=process.argv.slice(2);
 const studies=args.includes('--studies'),stills=args.includes('--stills'),draft=args.includes('--draft');
 const frameArg=args.indexOf('--frame');
-const serveUrl=await bundle({entryPoint:path.join(root,'Film.tsx'),outDir:path.join(root,'build'),webpackOverride:(c)=>enableTailwind({...c,resolve:{...c.resolve,alias:{...c.resolve?.alias,'@':path.join(app,'src'),'react':path.join(root,'node_modules/react'),'react-dom':path.join(root,'node_modules/react-dom')},modules:[path.join(root,'node_modules'),path.join(app,'node_modules'),'node_modules']}})});
+const serveUrl=await bundle({entryPoint:path.join(root,'Film.tsx'),publicDir:path.join(root,'assets'),outDir:path.join(root,'build'),webpackOverride:(c)=>enableTailwind({...c,resolve:{...c.resolve,alias:{...c.resolve?.alias,'@':path.join(app,'src'),'react':path.join(root,'node_modules/react'),'react-dom':path.join(root,'node_modules/react-dom')},modules:[path.join(root,'node_modules'),path.join(app,'node_modules'),'node_modules']}})});
 console.log('Composition bundled');
 const browser=await openBrowser('chrome');
 try{
  const composition=await selectComposition({serveUrl,id:studies?'Study':'Silo',puppeteerInstance:browser});
  if(stills||frameArg>=0){
-  const times=frameArg>=0?[Number(args[frameArg+1])]:[1.8,4.6,6.8,9.1,10.0,11.5,13.4,14.8,15.15,15.6,16.2,18.7,19.9,20.45,21.8,23.75,24.8,27.7,30.8,33.8];
+  const times=frameArg>=0?args[frameArg+1].split(',').map(Number):[0,1.8,4.6,6.8,9.1,10.0,11.5,13.4,14.8,15.15,15.6,16.2,18.7,19.9,20.45,21.8,23.75,24.8,27.7,30.8,33.8];
+  if(times.some(t=>!Number.isFinite(t)||t<0||t>=36))throw new Error('Review frames must be times between 0 and 36 seconds.');
   for(const t of times){await renderStill({composition,serveUrl,frame:Math.round(t*60),output:path.join(output,`frame-${t.toFixed(2)}.png`),puppeteerInstance:browser});console.log(`Frame ${t}s`);}
  }else{
   const variants=studies?[0,1,2]:[0];
