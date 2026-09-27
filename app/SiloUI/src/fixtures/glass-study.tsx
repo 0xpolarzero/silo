@@ -1,7 +1,12 @@
 import { useState } from "react"
 import { createRoot } from "react-dom/client"
 import { Moon, Sun, MoveHorizontal } from "lucide-react"
+import { invoke, isTauri } from "@tauri-apps/api/core"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 import { FixtureApp } from "./fixture-app"
+import { applicationSourceForScenario } from "./application-scenarios"
+import { createFixtureSettingsStore } from "./settings"
+import { initializeTheme } from "@/features/preferences/theme"
 import "../index.css"
 import "./glass-study.css"
 
@@ -42,4 +47,20 @@ export function GlassStudy() {
     <p className="study-caption">{mode === "original" ? "Silo’s existing surfaces and spacing." : mode === "frosted" ? "Translucency, blur and a fine lit edge. No displacement." : "Soft refraction in the shell. Quiet, readable surfaces for your work."} <label><input type="checkbox" checked={refraction} disabled={!chromium} onChange={event => setRefraction(event.target.checked)}/> SVG displacement {chromium ? "(Chromium preview)" : "unavailable here; frosted fallback"}</label></p>
   </div>
 }
-createRoot(document.getElementById("root")!).render(url.searchParams.get("production") === "1" ? <FixtureApp /> : <GlassStudy />)
+const production = url.searchParams.get("production") === "1"
+const settings = createFixtureSettingsStore(applicationSourceForScenario("complete"))
+if (production) {
+  const appearance = url.searchParams.get("appearance")
+  void settings.updateSettings({ theme: appearance === "dark" || appearance === "light" ? appearance : "system" })
+  const stopTheme = initializeTheme(settings)
+  // The isolated native harness shares production components, never Silo services.
+  const nativePreview = isTauri() && getCurrentWindow().label === "material-preview"
+  const syncNativeTheme = () => {
+    if (nativePreview) void invoke("set_preview_theme", { theme: settings.getSnapshot().settings.theme })
+      .catch((error: unknown) => console.error("Silo material preview theme:", error))
+  }
+  syncNativeTheme()
+  const stopNativeTheme = settings.subscribe(syncNativeTheme)
+  if (import.meta.hot) import.meta.hot.dispose(() => { stopTheme(); stopNativeTheme(); settings.dispose() })
+}
+createRoot(document.getElementById("root")!).render(production ? <FixtureApp settingsStore={settings} /> : <GlassStudy />)

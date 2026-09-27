@@ -99,7 +99,7 @@ Release note: `.changeset/glass-application-shell.md` (minor). No version bump o
 
 ## Native material correction, 2026-09-22
 
-The application no longer paints the prototype wallpaper. On macOS 26+, `window_material.rs` wraps the existing webview content in AppKit `NSGlassEffectView` using its Clear style. The native compositor owns the glass material; CSS does not capture or displace desktop pixels. The Tauri window and main webview background are transparent, with the approved tinted sidebar/title bar and more opaque content surfaces above the material. Status and Linux desktop viewer webviews do not receive the main-window transparent CSS marker.
+The application no longer paints the prototype wallpaper. On macOS 26+, `window_material.rs` wraps the existing webview content in AppKit `NSGlassEffectView` using its Clear style. The native compositor owns the glass material; CSS does not capture or displace desktop pixels. The Tauri window and main webview background are transparent, with the sidebar/title bar and more opaque content surfaces above the material. The prototype tint was not an approved theme change and is removed by the neutral theme correction below. Status and Linux desktop viewer webviews do not receive the main-window transparent CSS marker.
 
 macOS 14/15 use native Sidebar vibrancy instead, which is not the same refractive effect. Linux retains an opaque application background: no equivalent desktop refraction is implemented there. The website demonstration’s independent wallpaper remains a presentation prop. No screen capture permission or wallpaper capture is involved.
 
@@ -147,3 +147,23 @@ For the requested Dock-like appearance, native sidebar and toolbar fills now exp
 The Dock-like refinement built successfully at `src-tauri/target/debug/bundle/macos/Silo.app` and passed deep strict signature verification. The running release app was not restarted; final visual review of this material refinement remains pending.
 
 Final refinement: main content is now 100% opaque in both themes, removing the remaining 1% transparency. Native Regular glass remains visible only through the sidebar and toolbar. The existing built bundles predate this final CSS change.
+
+### Neutral theme and native appearance correction, 2026-09-27
+
+The material experiment had introduced an independent teal palette into production. Main content now uses the existing neutral `--background` token, and navigation uses neutral foreground and selection colors. The browser/Linux fallback uses the existing opaque `--sidebar` surface. Native macOS sidebar and title-bar surfaces still expose Regular glass, with the existing opaque accessibility fallbacks.
+
+The theme setting previously changed only the webview's CSS class. Native AppKit glass continued to follow the OS appearance, so choosing Light while macOS was dark produced light content and dark native chrome. Publishing a settings snapshot now also calls Tauri's supported app-wide `set_theme`: Light and Dark set explicit appearances; System clears the override. Initialization, edits, legacy theme import, and both main/status windows share this path. No native appearance API is exposed to production webviews.
+
+Primary-source evidence: the locked Tauri 2.11.5 source, `src/app.rs` (`AppHandle::set_theme`), and Tao 0.35.3, `src/platform_impl/macos/window.rs` (`set_theme`), map Light to Aqua, Dark to DarkAqua, and System to a cleared NSApplication appearance. API reference: [Tauri AppHandle::set_theme](https://docs.rs/tauri/2.11.5/tauri/struct.AppHandle.html#method.set_theme).
+
+The isolated material preview now connects the actual Theme dropdown to the production frontend theme initializer and a fixture-only native appearance command. That command logs the requested preference, app override, window appearance, and material appearance. Its permission is granted only by the example's runtime capability, for its own window and localhost fixture origin; production capabilities do not grant it. The preview uses memory settings and no Silo services or VM operations.
+
+Verification:
+
+- Typecheck and lint passed under Node.js 24.19.0.
+- Six focused frontend test files passed, 118 tests, covering theme preferences, shared settings, application/sidebar behavior, fixture settings, and the production/fixture boundary.
+- All 26 native settings tests passed, including persistence, legacy import, and Dark → Light → System native-theme mapping. The two command-permission tests passed.
+- The browser fixture's actual Theme dropdown was exercised in both directions. Computed backgrounds were neutral `oklch(1 0 0)` / `oklch(0.985 0 0)` in Light and `oklch(0.145 0 0)` / `oklch(0.205 0 0)` in Dark for content / chrome.
+- Rebuilt and inspected `src-tauri/target/verification/theme-neutral/Silo Theme Preview.app` using deterministic fixture data. Light produced Aqua for both the native window and glass; Dark produced DarkAqua. Returning from Light to System cleared the app override (`null`) and restored the OS DarkAqua appearance. The web content followed each selection, and the collapsed sidebar/title bar remained consistent. No system accessibility preferences were changed.
+- `npm --prefix app/SiloUI run desktop:build:debug` succeeded. Exact output: `src-tauri/target/debug/bundle/macos/Silo.app`; `codesign --verify --deep --strict` passed. The full Silo bundle was built but not launched. The user's running release bundle and VM services were left running.
+- Browser/native screenshots and private build evidence are in ignored `src-tauri/target/verification/theme-neutral/`. The isolated fixture was quit after inspection. These checks establish theme behavior and packaging, not live VM health, older macOS material behavior, or Linux native rendering.

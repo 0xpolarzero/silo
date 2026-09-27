@@ -1,6 +1,25 @@
 use serde_json::Value;
 
 #[test]
+fn material_preview_theme_command_is_not_granted_to_production_windows() {
+    let manifests: Value =
+        serde_json::from_str(include_str!("../gen/schemas/acl-manifests.json")).unwrap();
+    let capabilities: Value =
+        serde_json::from_str(include_str!("../gen/schemas/capabilities.json")).unwrap();
+    assert_eq!(
+        manifests["__app-acl__"]["permissions"]["allow-set-preview-theme"]["commands"]["allow"],
+        serde_json::json!(["set_preview_theme"]),
+    );
+    for capability in capabilities.as_object().unwrap().values() {
+        assert!(
+            !capability["permissions"].as_array().unwrap()
+                .contains(&Value::String("allow-set-preview-theme".into())),
+            "Only the example harness can grant its theme command at runtime",
+        );
+    }
+}
+
+#[test]
 fn migration_and_checkpoint_commands_are_allowlisted_for_the_main_window() {
     let manifests: Value =
         serde_json::from_str(include_str!("../gen/schemas/acl-manifests.json")).unwrap();

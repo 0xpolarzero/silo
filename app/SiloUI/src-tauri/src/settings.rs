@@ -24,6 +24,16 @@ pub struct Snapshot {
     save_error: Option<String>,
 }
 
+impl Snapshot {
+    fn native_theme(&self) -> Option<tauri::Theme> {
+        match self.settings.get("theme").and_then(Value::as_str) {
+            Some("light") => Some(tauri::Theme::Light),
+            Some("dark") => Some(tauri::Theme::Dark),
+            _ => None,
+        }
+    }
+}
+
 struct SettingsStore {
     path: Option<PathBuf>,
     document: Map<String, Value>,
@@ -601,6 +611,9 @@ fn publish(app: &AppHandle, snapshot: &Snapshot) {
     if let Some(error) = &snapshot.save_error {
         eprintln!("Silo settings: {error}");
     }
+    // Native glass, titlebars, dialogs, and both webviews inherit app appearance.
+    // None clears an explicit appearance so System follows the OS again.
+    app.set_theme(snapshot.native_theme());
     crate::status_panel::report(app.emit_to("main", "settings:changed", snapshot));
     let mut public = snapshot.clone();
     public.onboarding_draft = Value::Null;
@@ -783,6 +796,45 @@ pub async fn complete_settings_flush(app: AppHandle, window: WebviewWindow) -> R
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native_theme_follows_saved_preferences_and_releases_system_override() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(path.clone()));
+        assert_eq!(store.snapshot().native_theme(), None);
+
+        for (preference, native) in [
+            ("dark", Some(tauri::Theme::Dark)),
+            ("light", Some(tauri::Theme::Light)),
+            ("system", None),
+        ] {
+            let snapshot = store.update(
+                json!({"theme": preference}).as_object().unwrap().clone(),
+            ).unwrap();
+            assert_eq!(snapshot.native_theme(), native);
+
+            // Reopening the app must use the saved appearance. Updating an
+            // unrelated preference must not reset that appearance.
+            store = SettingsStore::load(Some(path.clone()));
+            assert_eq!(store.snapshot().native_theme(), native);
+            let snapshot = store.update(
+                json!({"reduceMotion": true}).as_object().unwrap().clone(),
+            ).unwrap();
+            assert_eq!(snapshot.native_theme(), native);
+        }
+    }
+
+    #[test]
+    fn native_theme_uses_legacy_import_without_overwriting_explicit_preference() {
+        let mut store = SettingsStore::load(None);
+        assert_eq!(
+            store.import_theme("light".into()).unwrap().native_theme(),
+            Some(tauri::Theme::Light),
+        );
+        store.update(json!({"theme": "system"}).as_object().unwrap().clone()).unwrap();
+        assert_eq!(store.import_theme("dark".into()).unwrap().native_theme(), None);
+    }
 
     #[test]
     fn system_default_modes_preserve_explicit_applications_across_restarts() {

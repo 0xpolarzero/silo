@@ -22,14 +22,14 @@ import { StatusBarPreview } from "@/fixtures/status-bar-preview"
 import { statusBarFixtureModeFromSearch } from "@/fixtures/status-bar-scenarios"
 import type { StatusBarRoute } from "@/features/status-bar/status-bar-types"
 import { useDesktopFixtures } from "./use-desktop-fixtures"
-import { SettingsProvider } from "@/features/preferences/settings-store"
+import { SettingsProvider, type SettingsStore } from "@/features/preferences/settings-store"
 import { settingsForFixture } from "./settings"
 import type { DependencyRuntime } from "@/desktop/dependencies"
 import { resourceFixtureModeFromSearch, withResourceFixture } from "./application-resources"
 
-export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean }) {
+export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false, settingsStore }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean; settingsStore?: SettingsStore }) {
   const source = applicationSourceForScenario(scenarioFromSearch(window.location.search))
-  return <SettingsProvider initialSettings={settingsForFixture(source)}><FixtureAppContent nativeOnboardingComplete={nativeOnboardingComplete} nativeDependencies={nativeDependencies} nativeOperations={nativeOperations} /></SettingsProvider>
+  return <SettingsProvider store={settingsStore} initialSettings={settingsForFixture(source)}><FixtureAppContent nativeOnboardingComplete={nativeOnboardingComplete} nativeDependencies={nativeDependencies} nativeOperations={nativeOperations} /></SettingsProvider>
 }
 
 function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativeOperations }: { nativeOnboardingComplete: boolean; nativeDependencies: DependencyRuntime | null; nativeOperations: boolean }) {
