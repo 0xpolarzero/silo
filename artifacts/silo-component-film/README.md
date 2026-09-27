@@ -49,15 +49,22 @@ integrated loudness and true peak. These checks verify the artifact, not live
 Silo behavior or artistic quality.
 
 Encoded verification: 36.00 seconds, 2,160 decoded frames, 1920×1080 at 60 fps,
-stereo audio, −15.26 LUFS integrated and −1.26 dBTP encoded true peak. The
+stereo audio, −15.17 LUFS integrated and −1.32 dBTP encoded true peak. The
 no-emit TypeScript check passed. The final file played through in the local
-reviewer; sampled encoded frames are in `output/final-contact-sheet.jpg`.
+reviewer; sampled encoded frames are in `output/current-review/final-contact-sheet.jpg`.
 
-The polish pass expands the headline masks, removes the overlapping camera
-handoff, carries one port numeral from the terminal to the table, and matches
-the browser's opening rectangle and URL to the port row. The agent scene uses
-the original Codex browser computer-use cursor artwork and glow; see
-[cursor provenance](assets/README.md). Its motion is authored for this film.
+This revision removes the opening subtitle, invented repository and secret
+cards, floating project badge, action tooltip, and network diagram. It cuts
+half a second from the opening, uses actual sandbox rows, centers cursor
+presses on the controls, and makes the arriving connection pulse light the
+remote computer. The existing continuous camera, port numeral and browser
+address transitions remain.
+
+The agent now increases the cart quantity, enters an email, places the order
+and receives confirmation. Product, form and receipt text transition in
+sequence without overlap. It uses the original Codex browser computer-use
+cursor artwork and glow; see [cursor provenance](assets/README.md). Its motion
+is authored for this film.
 
 ## Direction and source evidence
 
@@ -66,7 +73,8 @@ See [direction and references](DIRECTION.md), the product's
 [desktop agent documentation](../../docs/SiloUI-LUDA.md), and
 [bundled help](../../app/SiloUI/docs/silo-help.html).
 
-The approved component film before this polish is archived in `fdfbc48`.
+The preceding continuity-polished film is archived in `d94ee70`.
+The first approved component film is archived in `fdfbc48`.
 The preceding directed version, including its exact MP4, is archived in
 `28f52eb`. No `demo/`, existing website film, or parallel launch-cut
 implementation was read. No reference footage, artwork, music, or code was

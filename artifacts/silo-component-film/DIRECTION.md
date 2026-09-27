@@ -23,19 +23,31 @@ not three competing completed films.
 
 | Seconds | Proof | Transition |
 | --- | --- | --- |
-| 0–4 | Computers for your agents | Type masks reveal the headline, then move aside for the two computers. |
-| 4–9 | Start it here. Run it there. | Two physical computers; click starts the remote VM; push into laptop. |
-| 9–15 | Your terminal and editor access that VM | Real sandbox actions expand into a connected workspace. |
-| 15–23 | Guest server becomes a laptop URL | Terminal port leads into real Network row; local URL becomes browser bar. |
-| 23–30 | Agent uses the same app in its Linux desktop | Browser pulls back inside desktop, then a test produces a visible result. |
-| 30–32 | Everything belongs to the same sandbox | Pull back from the desktop to its office owner before the brand close. |
-| 32–36 | Silo. Computers for your agents. | Stable brand lockup and download URL with breathing room. |
+| 0–3 | Computers for your agents | The headline stands alone, then clears the frame. |
+| 3–8.7 | Start it here. Run it there. | The real sandbox row starts the remote VM; the signal lights the computer; push into the laptop. |
+| 8.7–14.1 | Your terminal and editor access that VM | Real sandbox actions expand into an SSH workspace. |
+| 14.1–20.6 | Guest server becomes a laptop URL | The terminal port lands in the Network table; its connected address expands into the browser bar. |
+| 20.6–29.1 | Agent tests the same app in its Linux desktop | Increase quantity, enter an email, submit the order, and check the receipt. |
+| 29.1–31.7 | Less setup. More building. | Pull back from the desktop to its office owner, then resolve into the brand. |
+| 31.7–36 | Silo. Computers for your agents. | Stable brand lockup and download URL with breathing room. |
 
 Large type owns the opening and closing, not a permanent strip above the UI.
 The primary object retains its position, scale or motion direction across a
 transition. Easing accelerates briefly and settles cleanly. No UI bouncing.
 Fast camera moves can blur; settled UI and copy remain sharp. Music uses a
 120 BPM grid with sparse action accents and space under the product proof.
+
+The opening drops its explanatory subtitle and half a second of static hold.
+The Silo view uses sandbox rows instead of invented repository and secret
+cards. A button press changes the button itself. The connection pulse reaches
+the computer's port, then triggers an amber surface sweep, floor glow and
+status light. There is no logo or project badge on the physical computer.
+
+The port row carries the network explanation without a second diagram or
+tooltip. The computer-use sequence uses the original Codex cursor artwork
+and glow. Four deliberate actions produce three visible checks. The shop's
+product, checkout and receipt states transition in sequence without layering
+their text or sliding letters through a mask; the lamp stays in place.
 
 ## Source and constraints
 
@@ -60,5 +72,6 @@ are already installed and configured in the guest.
   style frame and animatic separation; simplify elements without losing energy.
 - [Remotion](https://www.remotion.dev/docs/the-fundamentals): frame-driven React.
 
-The preceding directed film is archived in commit `28f52eb`. No `demo/`,
+The preceding continuity-polished film is archived in commit `d94ee70`;
+the earlier directed film is archived in `28f52eb`. No `demo/`,
 existing website film, or parallel launch-cut implementation was inspected.

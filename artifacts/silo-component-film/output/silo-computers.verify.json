@@ -10,8 +10,8 @@
     "full_decode": true
   },
   "loudness": {
-    "integrated_lufs": -15.26,
-    "true_peak_dbtp": -1.26
+    "integrated_lufs": -15.17,
+    "true_peak_dbtp": -1.32
   },
   "errors": [],
   "media": {

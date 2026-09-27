@@ -13,6 +13,7 @@ mix=np.zeros((int(SR*DURATION),2),dtype=np.float32)
 N=len(mix)
 
 def clock(d): return np.arange(int(d*SR))/SR
+def scene_time(t): return t if t < 2.7 else t-.5
 def freq(note): return 440*2**((note-69)/12)
 def add(s,when,gain=1.,pan=0.,echo=False):
     start=round(when*SR)
@@ -76,25 +77,32 @@ for beat in range(4,64):
 melody=[74,69,77,76,74,65,69,72]
 for i in range(60):
     when=2+i*B
-    if when>=31.8 or 23.5<=when<24.5:continue
+    if when>=scene_time(31.8) or 23.5<=when<24.5:continue
     add(pluck(melody[i%8]),when+B*.25,.12 if i%2 else .19,(-1)**i*.44,True)
 
-# Editorial accents follow the shared visual timeline. No sound on every object.
-for time in [3.55,7.9,14.55,19.85,23.1,31.1]:
+# Editorial accents follow the scene clock, with the removed half-second hold
+# folded out of the soundtrack timeline. Keep the musical bed continuous.
+for scene in [3.3,9.2,14.55,19.15,21.1,31.3]:
+    time=scene_time(scene)
     whoosh(time-.18,.3,False,.22)
-for time in [6.55,12.1,18.35,27.45]:
+for scene in [6.55,12.1,17.35,27.45]:
+    time=scene_time(scene)
     add(pluck(81),time,.095,-.2,True)
-for time in [6.10,9.55,10.55,18.16,19.73,27.26]:
+for scene in [6.1,9.55,10.5,17.1,17.73,23.8,27.15]:
+    time=scene_time(scene)
     t=clock(.04);s=np.sin(2*np.pi*1900*t)*np.exp(-t*155)
-    add(s,time,.115,.1)
-# Brief key chatter resolves exactly as the server command finishes.
-for i in range(12):
+    add(s,time,.09 if scene in [23.8,27.15] else .115,.1)
+# Key chatter follows the terminal command and checkout email entry.
+for i in range(10):
     t=clock(.03);s=rng.normal(0,1,len(t))*np.exp(-t*175)
-    add(s,11+i/12,.018,(-1)**i*.22)
-whoosh(29.7,.65,True,.12)
+    add(s,scene_time(11)+i/12,.018,(-1)**i*.22)
+for i in range(7):
+    t=clock(.035);s=rng.normal(0,1,len(t))*np.exp(-t*145)
+    add(s,scene_time(25.45)+i*.14,.012,(-1)**i*.2)
+whoosh(scene_time(29.6),.65,True,.12)
 
 # Resolve to a D-minor add-nine chord and leave room for the end card.
-end=32
+end=scene_time(31.8)
 add(kick(),end,.87)
 t=clock(4)
 s=sum((np.sin(2*np.pi*freq(m)*t)+.12*np.sin(2*np.pi*freq(m)*2.001*t))/6 for m in [38,50,57,62,65,76])
