@@ -6,8 +6,18 @@ import { Film } from "./film";
 import { DURATION, FPS, WIDTH, HEIGHT } from "./timeline";
 import "./app.generated.css";
 import "./style.css";
+import { ReleaseFilm } from "./release-film";
+import { RELEASE_DURATION, RELEASE_FPS } from "./release-timeline";
 export const Root = () => (
   <>
+    <Composition
+      id="SiloRelease"
+      component={ReleaseFilm}
+      durationInFrames={RELEASE_DURATION}
+      fps={RELEASE_FPS}
+      width={WIDTH}
+      height={HEIGHT}
+    />
     <Composition
       id="SiloDemo"
       component={Film}

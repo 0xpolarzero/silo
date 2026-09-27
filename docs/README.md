@@ -26,6 +26,7 @@ has been exercised.
 
 ## Research and design evidence
 
+- [Release film](SiloUI-RELEASE-FILM.md): 54-second storyboard, product-claim sources, fixture boundaries, and rendering commands.
 - [Landing page reference](SiloUI-LANDING-REFERENCES.md): approved Zed direction, product evidence, and website implementation.
 
 Research records the inputs to a decision. Follow the implementation documents

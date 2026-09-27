@@ -4,6 +4,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "render:release": "npm run prepare:css && node scripts/release-render.mjs",
+    "stills:release": "npm run prepare:css && node scripts/release-render.mjs --stills",
     "prepare:css": "tailwindcss -i src/app.css -o src/app.generated.css --minify",
     "start": "npm run prepare && remotion studio src/index.ts --port 3400",
     "render": "npm run prepare && remotion render src/index.ts SiloDemo out/silo-demo-v11.mp4 --codec=h264 --muted --crf=18 --concurrency=4",

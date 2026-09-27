@@ -1,5 +1,24 @@
 # Silo demo
 
+## Release film
+
+**SiloRelease** is the new 54-second, silent 1920×1080 release film, with
+animated brand typography, an illustrated agent desktop task, production Silo
+interfaces, and a browser-preview payoff. The source remains editable in the
+existing Remotion studio. Use Node.js 24:
+
+```sh
+npm --prefix demo run render:release
+npm --prefix demo run stills:release
+```
+
+Output: `demo/out/release/silo-release.mp4`. Generated review frames and
+composition metadata are in the same ignored directory. See the
+[release-film notes](../docs/SiloUI-RELEASE-FILM.md) for timing, sources, and
+fixture boundaries. Existing demo compositions and exports remain available.
+
+## Earlier product demo
+
 A 47.5-second, 1920×1080, 30 fps Remotion product launch film. All app data is
 simulated and all backend actions are inert.
 
