@@ -2,9 +2,9 @@
 
 ## Release film
 
-**SiloRelease** is the new 54-second, silent 1920×1080 release film, with
+**SiloRelease** is the 59-second, silent 1920×1080 release film, with
 animated brand typography, an illustrated agent desktop task, production Silo
-interfaces, and a browser-preview payoff. The source remains editable in the
+interfaces, SSH agent handoff, local backup, and a browser-preview payoff. The source remains editable in the
 existing Remotion studio. Use Node.js 24:
 
 ```sh

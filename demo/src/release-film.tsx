@@ -1,11 +1,13 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { AbsoluteFill, Sequence, continueRender, delayRender, Easing, interpolate, useCurrentFrame } from 'remotion';
-import { ArrowRight, Check, Code2, GitBranch, Globe, KeyRound, Laptop, Monitor, MousePointer2, ShieldCheck, Terminal } from 'lucide-react';
+import { Archive, ArrowRight, Check, Code2, GitBranch, Globe, KeyRound, Laptop, Monitor, MousePointer2, ShieldCheck, Terminal } from 'lucide-react';
 import { ApplicationPreview } from '@/fixtures/application-preview';
 import { LinuxDesktopViewer } from '@/desktop/linux-desktop-viewer';
 import { SiloMark } from '@/components/silo-mark';
 import { showcaseSource, showcaseDirectoryLoader } from './showcase-fixtures';
 import { agentTaskAt, releaseScenes } from './release-timeline';
+import { ReleaseBackup } from './release-backup';
+import { ReleaseSsh } from './release-ssh';
 import './release-style.css';
 
 const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' } as const;
@@ -125,7 +127,7 @@ function AgentDesktop({ frame }: { frame: number }) {
 function DesktopScene() {
   const f = useCurrentFrame();
   const focus = move(f, 188, 45);
-  return <Frame index="01 / 05" label="COMPUTER USE" note="ILLUSTRATED AGENT SESSION · PRODUCTION SILO VIEWER">
+  return <Frame index="01 / 08" label="COMPUTER USE" note="ILLUSTRATED AGENT SESSION · PRODUCTION SILO VIEWER">
     <Heading frame={f}>A desktop they can <em>use.</em></Heading>
     <div className="r-desktop-stage" style={{ opacity: move(f, 0, 18), transform: `translateY(${move(f, 0, 35, 80, 0)}px) scale(${1 + focus * .035})` }}><AgentDesktop frame={f} /></div>
     <div className="r-desktop-caption" style={copyStyle(f, 215)}><span>Observe.</span><span>Act.</span><span className="r-amber">Check the result.</span></div>
@@ -134,7 +136,7 @@ function DesktopScene() {
 
 function ComputersScene() {
   const f = useCurrentFrame();
-  return <Frame index="02 / 05" label="LOCAL + REMOTE">
+  return <Frame index="02 / 08" label="LOCAL + REMOTE">
     <Heading frame={f}>Your computers. <em>One place.</em></Heading>
     <div className="r-computer-map">
       <div className="r-host" style={copyStyle(f, 12)}><Laptop size={38} strokeWidth={1.3} /><div><strong>This computer</strong><span>web · services</span></div><i /></div>
@@ -160,8 +162,8 @@ function Editor({ frame }: { frame: number }) {
 }
 
 function ToolsScene() {
-  const f = useCurrentFrame();
-  return <Frame index="03 / 05" label="FAMILIAR TOOLS">
+  const f = useCurrentFrame() * 1.3;
+  return <Frame index="03 / 08" label="FAMILIAR TOOLS">
     <Heading frame={f}>Your tools. <em>Your flow.</em></Heading>
     <div className="r-tools-product" style={{ opacity: move(f, 0, 18), transform: `translateX(${move(f, 0, 38, -100, 0)}px)` }}><ProductWindow page="files" width={1030} height={545} /></div>
     <div className="r-tools-editor" style={{ opacity: move(f, 38, 22), transform: `translateY(${move(f, 38, 36, 90, 0)}px)` }}><Editor frame={f} /></div>
@@ -172,7 +174,7 @@ function ToolsScene() {
 
 function AccessScene({ secrets = false }: { secrets?: boolean }) {
   const f = useCurrentFrame();
-  return <Frame index="04 / 05" label="ACCESS YOU CONTROL">
+  return <Frame index={secrets ? '06 / 08' : '05 / 08'} label="ACCESS YOU CONTROL">
     <div className="r-access-copy"><div className="r-icon-box" style={copyStyle(f)}>{secrets ? <KeyRound size={34} strokeWidth={1.4} /> : <GitBranch size={34} strokeWidth={1.4} />}</div>
       <h1 style={copyStyle(f, 5)}>{secrets ? <>The right<br/>credentials.<br/><em>In scope.</em></> : <>The right<br/>repositories.<br/><em>You decide.</em></>}</h1>
       <p style={copyStyle(f, 22)}>{secrets ? <>Choose the sandboxes and<br/>HTTPS domains each secret can use.</> : <>Choose repositories per sandbox.<br/>Read-only by default with OAuth.</>}</p>
@@ -182,13 +184,33 @@ function AccessScene({ secrets = false }: { secrets?: boolean }) {
   </Frame>;
 }
 
+function SshScene() {
+  const f = useCurrentFrame();
+  return <Frame index="04 / 08" label="SSH TO YOUR SANDBOX" note="ILLUSTRATED CLIENT · EXISTING NETWORK ROUTE REQUIRED">
+    <Heading frame={f}>Your agents. <em>Connected.</em></Heading>
+    <ReleaseSsh frame={f} />
+  </Frame>;
+}
+
+function BackupScene() {
+  const f = useCurrentFrame();
+  return <Frame index="07 / 08" label="BACKUP + RESTORE" note="TIME-COMPRESSED EXAMPLE · LOCAL SANDBOX BACKUP">
+    <div className="r-access-copy"><div className="r-icon-box" style={copyStyle(f)}><Archive size={34} strokeWidth={1.4} /></div>
+      <h1 style={copyStyle(f, 5)}>Keep a copy.<br/><em>Keep going.</em></h1>
+      <p style={copyStyle(f, 22)}>Back up local sandboxes.<br/>Restore as a new sandbox.</p>
+    </div>
+    <div className="r-access-stage" style={{ opacity: move(f, 0, 20), transform: `translateX(${move(f, 0, 36, 90, 0)}px)` }}><ReleaseBackup frame={f} /></div>
+    <div className="r-access-detail" style={copyStyle(f, 105)}><Archive size={22} /><span>web · managed disks + settings</span><Check size={21} /></div>
+  </Frame>;
+}
+
 function PreviewBrowser({ frame }: { frame: number }) {
   return <div className="r-preview-browser"><div className="r-native-title">Safari<span>−　□　×</span></div><div className="r-url"><span>‹　›　↻</span><div><Globe size={15} />127.0.0.1:53124</div></div><div className="r-preview-site"><div className="r-preview-nav"><span><SiloMark />hello-silo</span><span>DEVELOPMENT</span></div><span className="r-mono-label">BUILT IN A SANDBOX</span><h2>Made here.<br/><em>Running there.</em></h2><p>Your app, running on Studio Mac.<br/>Open in the browser on your laptop.</p><div className="r-preview-button">Hello, Silo. <ArrowRight size={23} /></div><span className="r-preview-live" style={copyStyle(frame, 32)}><i /> Connected through a local address</span></div></div>;
 }
 
 function PreviewScene() {
   const f = useCurrentFrame();
-  return <Frame index="05 / 05" label="BUILD → OPEN → SEE">
+  return <Frame index="08 / 08" label="BUILD → OPEN → SEE">
     <Heading frame={f}>Build there. <em>Open here.</em></Heading>
     <div className="r-network-stage" style={{ opacity: move(f, 0, 18), transform: `translateX(${move(f, 0, 32, -60, 0)}px)` }}><ProductWindow page="network" frame={f} width={1215} height={562.5} style={{ transform: 'scale(1.15)', border: 0 }} /></div>
     <div className="r-preview-stage" style={{ opacity: move(f, 100, 20), transform: `translateY(${move(f, 100, 38, 90, 0)}px)` }}><PreviewBrowser frame={f - 100} /></div>
@@ -214,6 +236,6 @@ export function ReleaseFilm() {
     Promise.all([document.fonts.load('500 20px "Release Sans"'), document.fonts.load('italic 20px "Release Serif"'), document.fonts.load('400 20px "Release Mono"')]).then(() => continueRender(handle));
     return () => { if (!wasDark) document.documentElement.classList.remove('dark'); };
   }, [handle]);
-  const components = { opening: <Opening />, desktop: <DesktopScene />, computers: <ComputersScene />, tools: <ToolsScene />, github: <AccessScene />, secrets: <AccessScene secrets />, preview: <PreviewScene />, closing: <Closing /> };
+  const components = { opening: <Opening />, desktop: <DesktopScene />, computers: <ComputersScene />, tools: <ToolsScene />, ssh: <SshScene />, github: <AccessScene />, secrets: <AccessScene secrets />, backup: <BackupScene />, preview: <PreviewScene />, closing: <Closing /> };
   return <AbsoluteFill className="r-film">{releaseScenes.map(scene => <Sequence key={scene.id} from={scene.from} durationInFrames={scene.duration}>{components[scene.id]}</Sequence>)}</AbsoluteFill>;
 }
