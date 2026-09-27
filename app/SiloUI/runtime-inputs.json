@@ -91,6 +91,10 @@
     {
       "path": "patches/microsandbox-live-public-ports-0.7.2.patch",
       "sha256": "ad1abf1973c7e542ec7015575ab4ad35b321ac434e2bb9049aef096fa6b2b012"
+    },
+    {
+      "path": "patches/microsandbox-preserve-basic-auth-0.7.2.patch",
+      "sha256": "e1957e2bc8adb2552140a9309d1d26d2721a38113f375328b9def408f5b1b5aa"
     }
   ]
 }

@@ -325,6 +325,101 @@ fn inspection_failure(stage: &str, name: &str, error: &runtime::RuntimeError) ->
     format!("{stage} {sandbox} inspection failed: {reason}{code}.")
 }
 
+fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
+    let sandbox = if name.len() <= 64
+        && !name.is_empty()
+        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        format!("sandbox {name}")
+    } else {
+        "sandbox".into()
+    };
+    let (reason, exit_code) = match error {
+        runtime::RuntimeError::Failed { detail, .. } => {
+            let lower = detail.to_ascii_lowercase();
+            let reason = if lower.contains("unsupported persisted sandbox configuration")
+                && lower.contains("config.network.secrets.secrets[0].substitution.basic_auth")
+            {
+                "saved field config.network.secrets.secrets[0].substitution.basic_auth cannot be preserved by the upgraded runtime"
+            } else if lower.contains("permission denied") {
+                "the staged runtime files could not be accessed"
+            } else if lower.contains("no space left") {
+                "the host is out of storage space"
+            } else if lower.contains("no such file") || lower.contains("not found") {
+                "a staged runtime file is missing"
+            } else if lower.contains("process could not be observed") {
+                "the runtime process ended without a result"
+            } else if lower.contains("returned too much output") {
+                "the runtime returned too much diagnostic output"
+            } else if lower.contains("unknown option") || lower.contains("unexpected argument") {
+                "the runtime rejected the disk conversion command"
+            } else if lower.contains("integrity")
+                || lower.contains("differs from")
+                || lower.contains("invalid size")
+                || lower.contains("raw ext4")
+            {
+                "the workspace disk failed validation or integrity verification"
+            } else if lower.contains("database") || lower.contains("sqlite") {
+                "the staged runtime database could not be read"
+            } else {
+                "the runtime conversion command failed"
+            };
+            let exit_code = detail.strip_prefix("exit code ")
+                .and_then(|value| value.split_once(':'))
+                .and_then(|(code, _)| code.parse::<u8>().ok());
+            (reason, exit_code)
+        }
+        runtime::RuntimeError::Unavailable(message) => {
+            let reason = if message.contains("bundled MicroSandbox executable") {
+                "the bundled runtime executable is missing"
+            } else if message.contains("bundled MicroSandbox library") {
+                "the bundled runtime library is missing"
+            } else if message.contains("managed runtime path") {
+                "the staged runtime home could not be prepared"
+            } else {
+                "the runtime conversion was unavailable"
+            };
+            (reason, None)
+        }
+        runtime::RuntimeError::TimedOut { .. } => (
+            "the disk conversion exceeded its 30-minute limit before the runtime reported a cause",
+            None,
+        ),
+        runtime::RuntimeError::Busy => ("another sandbox operation is still running", None),
+        runtime::RuntimeError::Malformed(_) => ("the runtime returned invalid output", None),
+        runtime::RuntimeError::Invalid(_) => ("the runtime rejected the workspace disk", None),
+    };
+    let code = exit_code.map_or_else(String::new, |code| format!(" (exit code {code})"));
+    format!(
+        "Owned workspace disk conversion failed for {sandbox}. Original data was preserved. Cause: {reason}{code}."
+    )
+}
+
+fn record_migration_failure(state: &mut MigrationState, error: String) {
+    state.status = "failed".into();
+    state.stage = "Migration stopped".into();
+    state.failed_count = state.total_count.saturating_sub(state.migrated_count);
+    state.can_continue = true;
+    state.error = Some(error.clone());
+    state.logs.push(error);
+}
+
+fn convert_workspace_disk(
+    paths: &runtime::RuntimePaths,
+    name: &str,
+    source: &Path,
+) -> Result<(), String> {
+    let args = vec![
+        "adopt-disk".into(),
+        name.into(),
+        "--source".into(),
+        source.to_string_lossy().into_owned(),
+    ];
+    runtime::run_msb(paths, &args, Duration::from_secs(60 * 30))
+        .map(|_| ())
+        .map_err(|error| conversion_failure(name, &error))
+}
+
 fn verify_staged_vm(paths: &runtime::RuntimePaths, name: &str, id: &str, old_runtime: &Path) -> Result<PathBuf, String> {
     let args = vec!["inspect".into(), name.into(), "--format".into(), "json".into()];
     let output = runtime::run_msb(paths, &args, Duration::from_secs(30))
@@ -402,9 +497,7 @@ fn convert(app: &AppHandle) -> Result<(), String> {
             Ok(())
         })?;
         let source = verify_staged_vm(&paths, machine.name(), machine.id(), &old_runtime)?;
-        let args = vec!["adopt-disk".into(), machine.name().into(), "--source".into(), source.to_string_lossy().into_owned()];
-        runtime::run_msb(&paths, &args, Duration::from_secs(60 * 30))
-            .map_err(|_| "Owned workspace disk conversion failed. Original data was preserved.")?;
+        convert_workspace_disk(&paths, machine.name(), &source)?;
         let inspect_args = vec!["inspect".into(), machine.name().into(), "--format".into(), "json".into()];
         let output = runtime::run_msb(&paths, &inspect_args, Duration::from_secs(30))
             .map_err(|error| inspection_failure("Converted", machine.name(), &error))?;
@@ -507,12 +600,7 @@ pub(crate) fn retry_runtime_migration(app: AppHandle) -> Result<MigrationState, 
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = convert(&worker) {
             let _ = update(&worker, |state| {
-                state.status = "failed".into();
-                state.stage = "Migration stopped".into();
-                state.failed_count = state.total_count.saturating_sub(state.migrated_count);
-                state.can_continue = true;
-                state.error = Some(error.clone());
-                state.logs.push(error);
+                record_migration_failure(state, error);
                 Ok(())
             });
         }
@@ -594,6 +682,102 @@ mod tests {
         assert!(!message.contains("/Users"));
         assert!(message.len() < 200);
         assert!(!inspection_failure("Staged", "token=private", &error).contains("private"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejected_disk_conversion_reports_safe_cause_in_migration_state() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("msb");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' 'Permission denied token=TOPSECRET /private/tmp/workspace.raw' >&2\nexit 23\n",
+        ).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let library = dir.path().join("libkrunfw");
+        fs::write(&library, b"fixture").unwrap();
+        let paths = runtime::RuntimePaths {
+            guest_image: dir.path().join("guest-image"),
+            storage_home: None,
+            executable,
+            home: dir.path().join("home"),
+            library,
+            metadata: dir.path().join("machines.json"),
+            volumes: dir.path().join("volumes"),
+        };
+
+        let error = convert_workspace_disk(
+            &paths,
+            "dev",
+            &dir.path().join("workspace.raw"),
+        )
+        .unwrap_err();
+        let mut state = fresh("running", 2);
+        record_migration_failure(&mut state, error);
+
+        let visible = state.error.as_deref().unwrap();
+        assert!(visible.contains("sandbox dev"));
+        assert!(visible.contains("permission denied") || visible.contains("could not be accessed"));
+        assert!(visible.contains("exit code 23"));
+        assert!(!visible.contains("TOPSECRET"));
+        assert!(!visible.contains("/private/tmp"));
+        assert_eq!(state.logs.first().map(String::as_str), Some(visible));
+        assert_eq!(state.failed_count, 2);
+        assert!(state.can_continue);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsupported_saved_basic_auth_configuration_is_reported_from_runtime_stderr() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("msb");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' 'error: invalid config: unsupported persisted sandbox configuration: field config.network.secrets.secrets[0].substitution.basic_auth cannot be preserved' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let library = dir.path().join("libkrunfw");
+        fs::write(&library, b"fixture").unwrap();
+        let paths = runtime::RuntimePaths {
+            guest_image: dir.path().join("guest-image"),
+            storage_home: None,
+            executable,
+            home: dir.path().join("home"),
+            library,
+            metadata: dir.path().join("machines.json"),
+            volumes: dir.path().join("volumes"),
+        };
+
+        let error = convert_workspace_disk(&paths, "dev", &dir.path().join("workspace.raw"))
+            .unwrap_err();
+        let mut state = fresh("running", 2);
+        record_migration_failure(&mut state, error);
+
+        let visible = state.error.as_deref().unwrap();
+        assert!(visible.contains("sandbox dev"));
+        assert!(visible.contains("exit code 1"));
+        assert!(visible.contains("config.network.secrets.secrets[0].substitution.basic_auth"));
+        assert!(visible.contains("cannot be preserved by the upgraded runtime"));
+        assert_eq!(state.logs.first().map(String::as_str), Some(visible));
+    }
+
+    #[test]
+    fn conversion_diagnostics_distinguish_timeout_busy_and_missing_exit_status() {
+        let timeout = runtime::RuntimeError::TimedOut {
+            operation: "adopt-disk".into(),
+        };
+        let busy = runtime::RuntimeError::Busy;
+        let no_exit = runtime::RuntimeError::Failed {
+            operation: "adopt-disk".into(),
+            detail: "the process could not be observed: interrupted".into(),
+        };
+
+        assert!(conversion_failure("dev", &timeout).contains("30-minute limit"));
+        assert!(conversion_failure("dev", &busy).contains("another sandbox operation"));
+        assert!(conversion_failure("dev", &no_exit).contains("ended without a result"));
     }
 
     #[test]

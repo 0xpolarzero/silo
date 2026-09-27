@@ -1,0 +1,335 @@
+--- a/crates/cli/lib/commands/modify.rs
++++ b/crates/cli/lib/commands/modify.rs
+@@ -290,6 +290,7 @@
+                 .source(SecretSource::Env { var: name.clone() })
+                 .substitution(microsandbox_types::SecretSubstitution {
+                     headers: spec.substitute_headers,
++                    basic_auth: None,
+                     query: spec.substitute_query,
+                     body: spec.substitute_body,
+                 });
+--- a/crates/cli/lib/sandbox_config.rs
++++ b/crates/cli/lib/sandbox_config.rs
+@@ -1779,6 +1779,7 @@
+         let substitution = input.substitution.clone().unwrap_or_default();
+         let substitution = SecretSubstitution {
+             headers: substitution.headers.unwrap_or(true),
++            basic_auth: None,
+             query: substitution.query.unwrap_or(false),
+             body: substitution.body.unwrap_or(false),
+         };
+--- a/crates/network/lib/engine/secrets/handler.rs
++++ b/crates/network/lib/engine/secrets/handler.rs
+@@ -263,6 +263,7 @@
+     /// linger in freed memory.
+     value: zeroize::Zeroizing<String>,
+     substitute_headers: bool,
++    substitute_basic_auth: bool,
+     substitute_query: bool,
+     substitute_body: bool,
+     require_tls_identity: bool,
+@@ -341,9 +342,10 @@
+ 
+ impl EligibleSecret {
+     /// Returns true if any of the header-side substitution scopes is enabled
+-    /// (`headers` or `query`).
++    /// (`headers`, `basic_auth`, or `query`).
+     fn wants_header_injection(&self) -> bool {
+-        !self.silo_github && (self.substitute_headers || self.substitute_query)
++        !self.silo_github
++            && (self.substitute_headers || self.substitute_basic_auth || self.substitute_query)
+     }
+ 
+     /// Returns true when the current header bytes contain this secret's
+@@ -359,7 +361,7 @@
+         }
+ 
+         // Search decoded Basic auth credentials, not the raw header value.
+-        if self.substitute_headers {
++        if self.substitute_basic_auth {
+             return basic_auth_decoded_contains(
+                 String::from_utf8_lossy(headers).as_ref(),
+                 &self.placeholder,
+@@ -396,7 +398,7 @@
+                 .flatten();
+         }
+ 
+-        if self.substitute_headers
++        if self.substitute_basic_auth
+             && is_authorization_header(line)
+             && let Some(replaced) = self.substitute_basic_auth_header(line)
+         {
+@@ -432,7 +434,8 @@
+     /// therefore must not be treated as an unchanged-placeholder violation.
+     fn substitution_allows(&self, location: RequestLocation) -> bool {
+         match location {
+-            RequestLocation::Header | RequestLocation::BasicAuth => self.substitution.headers,
++            RequestLocation::Header => self.substitution.headers,
++            RequestLocation::BasicAuth => self.substitution.basic_auth_enabled(),
+             RequestLocation::Query => self.substitution.query,
+             RequestLocation::Body => self.substitution.body,
+             // Chunk framing metadata and trailers are not substitution targets.
+@@ -681,6 +684,8 @@
+                     value: secret.value.clone(),
+                     substitute_headers: secret.env_var != "SILO_GITHUB"
+                         && secret.substitution.headers,
++                    substitute_basic_auth: secret.env_var != "SILO_GITHUB"
++                        && secret.substitution.basic_auth_enabled(),
+                     substitute_query: secret.env_var != "SILO_GITHUB" && secret.substitution.query,
+                     substitute_body: secret.env_var != "SILO_GITHUB" && secret.substitution.body,
+                     require_tls_identity: secret.require_tls_identity,
+@@ -700,6 +705,7 @@
+                 if secret.env_var == "SILO_GITHUB" {
+                     SecretSubstitution {
+                         headers: true,
++                        basic_auth: None,
+                         query: true,
+                         body: true,
+                     }
+@@ -709,6 +715,7 @@
+             } else {
+                 SecretSubstitution {
+                     headers: false,
++                    basic_auth: None,
+                     query: false,
+                     body: false,
+                 }
+@@ -734,7 +741,10 @@
+                 if ineligible.placeholder == eligible.placeholder
+                     && (!eligible.require_tls_identity || tls_intercepted)
+                 {
++                    let basic_auth = ineligible.substitution.basic_auth_enabled()
++                        || eligible.substitute_basic_auth;
+                     ineligible.substitution.headers |= eligible.substitute_headers;
++                    ineligible.substitution.basic_auth = Some(basic_auth);
+                     ineligible.substitution.query |= eligible.substitute_query;
+                     ineligible.substitution.body |= eligible.substitute_body;
+                 }
+@@ -1488,7 +1498,7 @@
+ 
+                 if !is_pseudo
+                     && name.eq_ignore_ascii_case(b"authorization")
+-                    && secret.substitute_headers
++                    && secret.substitute_basic_auth
+                     && let Ok(header_value) = std::str::from_utf8(value)
+                     && let Some(replaced) = substitute_basic_auth_value(
+                         header_value,
+@@ -3162,7 +3172,7 @@
+     basic_auth_credentials: &[String],
+ ) -> Option<(RequestLocation, PlaceholderMatchForm)> {
+     let needle = secret.placeholder.as_bytes();
+-    if !secret.substitution.headers
++    if !secret.substitution.basic_auth_enabled()
+         && basic_auth_credentials
+             .iter()
+             .any(|decoded| decoded.contains(&secret.placeholder))
+@@ -3622,6 +3632,7 @@
+     fn basic_auth_only() -> SecretSubstitution {
+         SecretSubstitution {
+             headers: true,
++            basic_auth: None,
+             query: false,
+             body: false,
+         }
+@@ -3874,6 +3885,7 @@
+             placeholder: "$KEY".into(),
+             substitution: SecretSubstitution {
+                 headers: false,
++                basic_auth: None,
+                 query: false,
+                 body: false,
+             },
+@@ -3915,6 +3927,7 @@
+             placeholder: "abc/key".into(),
+             substitution: SecretSubstitution {
+                 headers: false,
++                basic_auth: None,
+                 query: false,
+                 body: false,
+             },
+@@ -4792,6 +4805,37 @@
+     }
+ 
+     #[test]
++    fn independent_basic_auth_scope_and_absent_fallback() {
++        for (headers, basic_auth, expected) in [
++            (false, Some(true), true),
++            (true, Some(false), false),
++            (false, None, false),
++            (true, None, true),
++        ] {
++            let mut secret = make_secret("$MSB_PASSWORD", "s3cr3t", "api.openai.com");
++            secret.substitution.headers = headers;
++            secret.substitution.basic_auth = basic_auth;
++            let config = make_config(vec![secret]);
++            let mut handler = SecretsHandler::new(&config, "api.openai.com", true);
++            let encoded = BASE64.encode(b"user:$MSB_PASSWORD");
++            let input = format!("GET / HTTP/1.1\r\nAuthorization: Basic {encoded}\r\n\r\n");
++            let result = handler.substitute(input.as_bytes());
++            assert_eq!(
++                result.is_ok(),
++                expected,
++                "headers={headers} basic_auth={basic_auth:?}"
++            );
++            if expected {
++                let output = String::from_utf8(result.unwrap().into_owned()).unwrap();
++                assert!(output.contains(&format!(
++                    "Authorization: Basic {}",
++                    BASE64.encode(b"user:s3cr3t")
++                )));
++            }
++        }
++    }
++
++    #[test]
+     fn basic_auth_decodes_substitutes_and_reencodes_credentials() {
+         let mut user = make_secret("$MSB_USER", "alice", "api.openai.com");
+         user.env_var = "USER".into();
+@@ -4836,6 +4880,7 @@
+         let mut secret = make_secret("$MSB_PASSWORD", "s3cr3t", "api.openai.com");
+         secret.substitution = SecretSubstitution {
+             headers: false,
++            basic_auth: None,
+             query: false,
+             body: false,
+         };
+@@ -4855,6 +4900,7 @@
+         let mut secret = make_secret("$KEY", "real-secret", "api.openai.com");
+         secret.substitution = SecretSubstitution {
+             headers: false,
++            basic_auth: None,
+             query: true,
+             body: false,
+         };
+@@ -4874,6 +4920,7 @@
+         let mut secret = make_secret("$KEY", "real-secret", "api.openai.com");
+         secret.substitution = SecretSubstitution {
+             headers: false,
++            basic_auth: None,
+             query: true,
+             body: false,
+         };
+@@ -5719,6 +5766,7 @@
+         let mut secret = make_secret("$KEY", "real-secret", "api.openai.com");
+         secret.substitution = SecretSubstitution {
+             headers: true,
++            basic_auth: None,
+             query: true,
+             body: false,
+         };
+--- a/crates/network/lib/engine/tcp/proxy.rs
++++ b/crates/network/lib/engine/tcp/proxy.rs
+@@ -1802,6 +1802,7 @@
+                 allowed_hosts: vec![HostPattern::Any],
+                 substitution: SecretSubstitution {
+                     headers: true,
++                    basic_auth: None,
+                     query: false,
+                     body: false,
+                 },
+@@ -2269,6 +2270,7 @@
+                 allowed_hosts: vec![HostPattern::Exact("example.com".into())],
+                 substitution: SecretSubstitution {
+                     headers: true,
++                    basic_auth: None,
+                     query: false,
+                     body: false,
+                 },
+--- a/packages/microsandbox-types/rust/lib/domain.rs
++++ b/packages/microsandbox-types/rust/lib/domain.rs
+@@ -2367,6 +2367,11 @@
+     #[serde(default = "default_true")]
+     pub headers: bool,
+ 
++    /// Decode and substitute HTTP Basic Auth credentials. None follows `headers`
++    /// for configurations created before this independent setting was restored.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub basic_auth: Option<bool>,
++
+     /// Substitute in URL query parameters (default: false).
+     #[serde(default)]
+     pub query: bool,
+@@ -2553,10 +2558,18 @@
+     }
+ }
+ 
++impl SecretSubstitution {
++    /// Whether decoded Basic Auth credentials can be substituted.
++    pub fn basic_auth_enabled(&self) -> bool {
++        self.basic_auth.unwrap_or(self.headers)
++    }
++}
++
+ impl Default for SecretSubstitution {
+     fn default() -> Self {
+         Self {
+             headers: true,
++            basic_auth: None,
+             query: false,
+             body: false,
+         }
+--- a/sdk/rust/lib/db/config.rs
++++ b/sdk/rust/lib/db/config.rs
+@@ -123,6 +123,11 @@
+             for entry in entries {
+                 if let Some(entry) = entry.as_object_mut() {
+                     rename(entry, "injection", "substitution")?;
++                    if let Some(substitution) =
++                        entry.get_mut("substitution").and_then(Value::as_object_mut)
++                    {
++                        rename(substitution, "query_params", "query")?;
++                    }
+                     rename(entry, "on_violation", "violation_action")?;
+                 }
+             }
+@@ -182,6 +187,50 @@
+             assert_eq!(value["image"]["Oci"]["root_disk"]["size_mib"], 4096);
+         }
+         assert_eq!(decode(SNAKE).unwrap().spec.resources.max_cpus, 2);
++    }
++
++    #[test]
++    fn legacy_secret_scopes_keep_independent_basic_auth_policy() {
++        for (headers, basic_auth, query_params) in [(false, true, true), (true, false, false)] {
++            let mut raw: Value = serde_json::from_str(LATEST).unwrap();
++            raw["network"]["secrets"]["secrets"] = json!([{
++                "env_var": "TEST_KEY",
++                "value": "synthetic-only",
++                "source": null,
++                "placeholder": "$TEST_KEY",
++                "allowed_hosts": [],
++                "injection": {
++                    "headers": headers,
++                    "basic_auth": basic_auth,
++                    "query_params": query_params,
++                    "body": false
++                },
++                "require_tls_identity": true
++            }]);
++            let decoded = decode(&raw.to_string()).unwrap();
++            let serialized = serde_json::to_value(decoded).unwrap();
++            let scopes = &serialized["network"]["secrets"]["secrets"][0]["substitution"];
++            assert_eq!(scopes["headers"], headers);
++            assert_eq!(scopes["basic_auth"], basic_auth);
++            assert_eq!(scopes["query"], query_params);
++            assert_eq!(scopes["body"], false);
++        }
++    }
++
++    #[test]
++    fn conflicting_secret_scope_aliases_are_rejected() {
++        let mut raw: Value = serde_json::from_str(LATEST).unwrap();
++        raw["network"]["secrets"]["secrets"] = json!([{
++            "env_var": "TEST_KEY", "value": "synthetic-only", "placeholder": "$TEST_KEY",
++            "injection": {"headers": true, "basic_auth": true,
++                          "query_params": true, "query": false, "body": false}
++        }]);
++        assert!(
++            decode(&raw.to_string())
++                .unwrap_err()
++                .to_string()
++                .contains("conflicting")
++        );
+     }
+ 
+     #[test]
