@@ -90,7 +90,7 @@ frame selection and image output. The implementation is
 
 - Node.js 24.11.1: `npm --prefix demo run typecheck` passed; `npm --prefix demo test` passed all 11 tests.
 - `npm --prefix demo run stills:release` and `npm --prefix demo run render:release` completed. Inspected the scene stills, intermediate desktop states, secret editor, and port connection before browser reveal. Chromium required execution outside the macOS filesystem sandbox.
-- `ffprobe` confirmed H.264, 1920×1080, 30 fps, 1,620 frames, exactly 54 seconds, 4,254,180 bytes, and no audio stream. The encoded video reports full-range 4:2:0 (`yuvj420p`). Its report is saved as `demo/out/release/ffprobe.json`.
+- `ffprobe` confirmed H.264, 1920×1080, 30 fps, 1,620 frames, exactly 54 seconds, 4,254,180 bytes, and no audio stream. The encoded video reports full-range 4:2:0 (`yuvj420p`). Its report is saved as `demo/out/release/ffprobe-54s.json`.
 - `ffmpeg -hide_banner -v warning -i demo/out/release/silo-release.mp4 -f null -` decoded the complete file without warnings or errors. Inspected an encoded contact sheet in the output directory.
 - No packaged Silo bundle or live VM was used. These checks establish the film's rendering and fixture presentation only.
 
@@ -100,3 +100,7 @@ frame selection and image output. The implementation is
 - Rendered and inspected 21 stills, including SSH off, local/network SSH enabled, Save key file menu, client connection, remote file read, backup capture, and completed archive. Exported the 59-second film and matching poster.
 - `ffprobe` confirmed 1,770 frames at 30 fps, H.264 1920×1080, exactly 59 seconds, 4,865,357 bytes, and no audio stream. Full `ffmpeg` decode completed without warnings or errors.
 - Backup matches the current native single indeterminate Capture and verify phase. The archive and client are synthetic, and all operations are inert.
+- Website typecheck, all 17 website tests (12 Node tests and 5 Vitest tests), and the production build passed. The build retains its existing warning about the interactive demo bundle exceeding 500 kB.
+- Browser verification loaded the replacement media at its actual 59-second duration, played it, and loaded all 10 caption cues. All eight chapter buttons and all six visible feature-category links sought to their matching scenes without media errors. Escape paused playback, dismissed the dialog, and restored focus to its opener.
+- The final chapter remained active at 58.8 seconds and cleared at the 59-second endpoint. At 320 px and 390 px viewport widths, the dialog and all chapter buttons stayed within the viewport without horizontal page overflow. These were browser interaction and layout-bound checks against the local website preview.
+- The rendered, public, and built-site MP4 files share SHA-256 `0a8a90d549d5fbec71bffb1a4172416ed50602447d6d33d8cc6fc7605c35c898`. The website poster, duration label, category links, player chapters, captions, and transcript were updated together. No public deployment was performed.

@@ -33,8 +33,9 @@ variables, account, cookies, or analytics are required by the site.
   first-paint rules constrain the logo and hide the skip link until focused,
   even before external CSS arrives; keep these sizes aligned with `src/style.css`.
 - `src/style.css`: responsive layout and Zed-inspired typography/grid.
-- `src/main.js`: accessible workflow tabs, Linux architecture selection, video
-  chapter playback, and dialog cleanup.
+- `src/main.js`: accessible workflow tabs and Linux architecture selection.
+- `src/tour.js`: video chapter playback, media-duration-aware chapter selection,
+  and dialog cleanup with focus restoration.
 - `src/downloads.js`: explicit Linux architecture-to-package mapping.
 - `demo.html` and `src/demo/`: an isolated, lazy-loaded React iframe using the
   actual Silo sidebar, navigation history, and production pages. Sample files,
@@ -56,8 +57,11 @@ variables, account, cookies, or analytics are required by the site.
   the production glass UI with the read-only demo fixtures. Unsuffixed PNGs are
   light; `-dark.png` variants are dark. Workflow captures are 1280 × 720;
   GitHub, secrets, and backup captures are 1280 × 800. `overview.png` supplies
-  the computers screenshot. `silo-tour.mp4` and its `silo-tour.png` poster remain
-  the original v11 tour, deliberately unchanged.
+  the computers screenshot. `silo-tour.mp4` is the 59-second, 1920 × 1080 release
+  film, rendered at 30 fps from `demo/src/release-film.tsx`; `silo-tour.png` is its
+  matching poster. The film includes agent desktop use, local and remote
+  computers, familiar tools, SSH and an agent connection, repository access,
+  scoped secrets, a local backup, and port forwarding.
 - `public/theme.js`: first-paint theme selection shared by the page and demo.
   The icon-only navbar selector defaults to System and follows live OS changes.
   Explicit choices persist in local storage; blocked storage still allows
@@ -69,9 +73,31 @@ variables, account, cookies, or analytics are required by the site.
   the included SIL Open Font License. Fallbacks cover other character ranges.
 - `public/favicon.svg`: the existing Silo app icon from `assets/silo-logo.svg`.
 
-The Silo views in the demo use production components with inert sample data.
-Editor, agent client, terminal, hardware, and notification views are
-illustrations. Playback never touches native APIs, credentials, or live VMs.
+The Silo views in the demo and film use production components with inert sample
+data. The film's agent sessions, guest desktop, editor, terminal, browser content,
+and computer diagrams are illustrations. The backup sequence compresses waiting
+time. Playback never touches native APIs, credentials, or live VMs.
+
+### Film chapters
+
+The category links and player buttons use these starts:
+
+| Start | Chapter | Category link |
+| --- | --- | --- |
+| 0:03 | Agent desktop | Player only |
+| 0:11 | Computers | Remote computer workflow |
+| 0:16 | Editor & terminal | Player only |
+| 0:21 | SSH & agents | Editor and agent workflow |
+| 0:32 | GitHub | GitHub access |
+| 0:37 | Secrets | Secrets |
+| 0:42 | Backups | Backups |
+| 0:47 | Networking | Development server workflow |
+
+`demo/src/release-timeline.ts` is the timing authority. `scripts/tour.test.mjs`
+compares every category and chapter destination, caption cue, transcript entry,
+and duration label against it using Node.js 24's built-in TypeScript support.
+Update the film, poster, HTML starts and duration, captions, and transcript
+together. The player's last chapter ends at the media's actual duration.
 
 Download filenames were verified against public release v0.9.0 on 2026-09-27.
 Links use GitHub's `releases/latest/download/` endpoint, so future releases must
@@ -80,8 +106,8 @@ explicit architecture selector. A no-JavaScript fallback exposes ARM64 links.
 
 ## Verification
 
-Verification includes TypeScript, the production build, two download mapping
-tests, and interactive demo tests covering sidebar history, disabled actions,
+Verification includes TypeScript, the production build, download mapping tests,
+film timing and player interaction tests, and interactive demo tests covering sidebar history, disabled actions,
 fixture pages, and absence of live data requests. Browser checks covered the desktop layout and 320px, 390px, and 768px
 widths, loaded media, anchor targets, keyboard tab navigation, chapter seeking,
 video playback, Escape dismissal, focus restoration, architecture selection,
