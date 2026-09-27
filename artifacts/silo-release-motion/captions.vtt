@@ -1,0 +1,44 @@
+WEBVTT
+
+00:00.000 --> 00:03.750
+Silo. Computers for your agents.
+Run Linux VMs locally or remotely.
+
+00:03.750 --> 00:07.500
+Start it here. Run it there.
+Start, stop and monitor VMs across your computers.
+
+00:07.500 --> 00:11.250
+Connect over SSH.
+Your editor and terminal. The VM’s files and processes.
+
+00:11.250 --> 00:14.000
+From server to browser.
+Connect the VM's port 3000.
+
+00:14.000 --> 00:16.875
+A server in the VM. An address on your laptop.
+Open your app at localhost:51432.
+
+00:16.875 --> 00:19.125
+Give agents a desktop.
+The same your-app VM, with a Linux desktop.
+
+00:19.125 --> 00:22.500
+Read the screen. Click. Inspect the result.
+Install your agent inside the VM.
+
+00:22.500 --> 00:25.000
+Choose what it can access.
+Selected GitHub repositories. Read-only by default with OAuth.
+
+00:25.000 --> 00:28.125
+API credentials scoped to this VM and allowed HTTPS domains.
+Stored on the hosting computer.
+
+00:28.125 --> 00:30.000
+Less setup. More building.
+
+00:30.000 --> 00:33.750
+Silo. Computers for your agents.
+Download for macOS and Linux at silo.polarzero.xyz.
