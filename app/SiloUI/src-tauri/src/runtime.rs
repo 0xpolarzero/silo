@@ -1579,9 +1579,41 @@ fn read_application_snapshot(
     paths: &RuntimePaths,
     mutation_lock: &Mutex<()>,
 ) -> Result<ApplicationSource, String> {
+    const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
+    const MAX_ATTEMPTS: usize = 2;
+    const RETRY_DELAY: Duration = Duration::from_millis(100);
+    for attempt in 0..MAX_ATTEMPTS {
+        // Configuration recovery is durable work in progress. Keep its immediate
+        // sentinel distinct from transient lock contention below.
+        if configuration_recovery::pending(paths)? {
+            return Err(UPDATING.into());
+        }
+        match read_application_snapshot_once(runner, paths, mutation_lock) {
+            Ok(source) => return Ok(source),
+            Err(error) if error == UPDATING => {
+                if configuration_recovery::pending(paths)? {
+                    return Err(UPDATING.into());
+                }
+                if attempt + 1 < MAX_ATTEMPTS {
+                    thread::sleep(RETRY_DELAY);
+                } else {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("at least one application snapshot attempt is required")
+}
+
+fn read_application_snapshot_once(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    mutation_lock: &Mutex<()>,
+) -> Result<ApplicationSource, String> {
+    const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
     // Runtime creation and metadata publication are separate steps. Discard
     // observations overlapping a mutation, without blocking progress updates.
-    const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
     if configuration_recovery::pending(paths)? { return Err(UPDATING.into()); }
     let check_idle = || -> Result<(), String> {
         match mutation_lock.try_lock() {
@@ -4361,6 +4393,95 @@ esac
         assert_eq!(read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err(), "SILO_SANDBOX_UPDATE_IN_PROGRESS");
         drop(guard);
         assert!(read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err().contains("does not match"));
+    }
+
+    #[test]
+    fn application_snapshot_discards_read_when_metadata_changes_and_retries_fresh() {
+        struct ChangeMetadataOnce {
+            calls: Mutex<Vec<Vec<String>>>,
+            changed: Mutex<bool>,
+        }
+        impl RuntimeRunner for ChangeMetadataOnce {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                _timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                self.calls.lock().unwrap().push(args.to_vec());
+                let stdout = match args[0].as_str() {
+                    "list" => json!([{"name":"dev","status":"Running","image":"ubuntu"}]).to_string(),
+                    "inspect" => {
+                        let mut changed = self.changed.lock().unwrap();
+                        if !*changed {
+                            *changed = true;
+                            let remote = MachineConfiguration::Ssh {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                name: "remote".into(),
+                                host: "host".into(),
+                                user: "user".into(),
+                                port: 22,
+                            };
+                            write_metadata(&paths.metadata, &request(vec![remote])).unwrap();
+                        }
+                        inspect(paths, "Running").to_string()
+                    }
+                    _ => panic!("unexpected runtime command: {args:?}"),
+                };
+                Ok(CommandOutput { stdout, stderr: String::new() })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let runner = ChangeMetadataOnce { calls: Mutex::new(Vec::new()), changed: Mutex::new(false) };
+        let mutation_lock = Mutex::new(());
+        let source = read_application_snapshot(&runner, &paths, &mutation_lock).unwrap();
+        assert_eq!(source.workspaces.len(), 1);
+        assert_eq!(source.workspaces[0].machine.name(), "remote");
+        assert_eq!(runner.calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn application_snapshot_does_not_retry_real_runtime_read_errors() {
+        struct FailedRead { calls: Mutex<Vec<Vec<String>>> }
+        impl RuntimeRunner for FailedRead {
+            fn run(
+                &self,
+                _paths: &RuntimePaths,
+                args: &[String],
+                _timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                self.calls.lock().unwrap().push(args.to_vec());
+                Err(RuntimeError::Unavailable("synthetic runtime read failure".into()))
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let runner = FailedRead { calls: Mutex::new(Vec::new()) };
+        let mutation_lock = Mutex::new(());
+        assert_eq!(
+            read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err(),
+            "synthetic runtime read failure",
+        );
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn application_snapshot_defers_immediately_for_durable_configuration_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let configuration = request(vec![vm()]);
+        write_metadata(&paths.metadata, &configuration).unwrap();
+        configuration_recovery::begin(&paths, &configuration).unwrap();
+        let runner = StubRunner::successful_json(Vec::new());
+        let mutation_lock = Mutex::new(());
+        assert_eq!(
+            read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err(),
+            "SILO_SANDBOX_UPDATE_IN_PROGRESS",
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
     }
 
     #[test]

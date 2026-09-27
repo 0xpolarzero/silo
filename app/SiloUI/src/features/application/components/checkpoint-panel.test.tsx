@@ -56,43 +56,47 @@ it("preserves the checkpoint name draft when a fork is created", async () => {
   expect(screen.getByRole("textbox", { name: "Checkpoint name" })).toHaveValue("keep this draft")
 })
 
-it("shows immediate indeterminate feedback while fork creation is pending", async () => {
+it("keeps the panel busy without duplicating fork progress while creation is pending", async () => {
   const task = deferred()
   const forkCheckpoint = vi.fn(() => task.promise)
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} />)
   fireEvent.click(screen.getByRole("button", { name: "Fork" }))
   fireEvent.change(await screen.findByRole("textbox", { name: "Fork name" }), { target: { value: "experiment" } })
   fireEvent.click(screen.getByRole("button", { name: "Create fork" }))
-  expect(await screen.findByRole("status")).toHaveTextContent("Creating stopped fork…")
-  expect(screen.getByRole("progressbar", { name: "fork progress" })).toBeVisible()
+  expect(screen.getByRole("region", { name: "Checkpoints for dev" })).toHaveAttribute("aria-busy", "true")
+  expect(screen.queryByRole("status")).toBeNull()
+  expect(screen.queryByRole("progressbar")).toBeNull()
   task.resolve()
   await waitFor(() => expect(screen.queryByRole("status")).toBeNull())
 })
 
-it("shows immediate indeterminate feedback while checkpoint creation is pending", async () => {
+it("keeps the panel busy without duplicating checkpoint progress while creation is pending", async () => {
   const task = deferred()
   const createCheckpoint = vi.fn(() => task.promise)
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint } as unknown as ApplicationActions} disabled={false} />)
   fireEvent.change(screen.getByRole("textbox", { name: "Checkpoint name" }), { target: { value: "before deploy" } })
   fireEvent.click(screen.getByRole("button", { name: "Create" }))
-  expect(await screen.findByRole("status")).toHaveTextContent("Creating checkpoint…")
-  expect(screen.getByRole("progressbar", { name: "create progress" })).toBeVisible()
   expect(screen.getByRole("region", { name: "Checkpoints for dev" })).toHaveAttribute("aria-busy", "true")
+  expect(screen.queryByRole("status")).toBeNull()
+  expect(screen.queryByRole("progressbar")).toBeNull()
+  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled()
   task.resolve()
-  await waitFor(() => expect(screen.queryByRole("status")).toBeNull())
+  await waitFor(() => expect(screen.getByRole("region", { name: "Checkpoints for dev" })).not.toHaveAttribute("aria-busy"))
   expect(screen.getByRole("textbox", { name: "Checkpoint name" })).toHaveValue("")
 })
 
-it("keeps restore feedback visible until the restore promise settles", async () => {
+it("keeps the panel busy without duplicating restore progress while restore is pending", async () => {
   const task = deferred()
   const restoreCheckpoint = vi.fn(() => task.promise)
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ restoreCheckpoint } as unknown as ApplicationActions} disabled={false} />)
   fireEvent.click(screen.getByRole("button", { name: "Restore" }))
   fireEvent.click(screen.getByRole("button", { name: "Confirm restore" }))
-  expect(await screen.findByRole("status")).toHaveTextContent("Saving recovery point and restoring…")
-  expect(screen.getByRole("progressbar", { name: "restore progress" })).toBeVisible()
+  expect(screen.getByRole("region", { name: "Checkpoints for dev" })).toHaveAttribute("aria-busy", "true")
+  expect(screen.queryByRole("status")).toBeNull()
+  expect(screen.queryByRole("progressbar")).toBeNull()
+  expect(screen.getByRole("button", { name: "Confirm restore" })).toBeDisabled()
   task.resolve()
-  await waitFor(() => expect(screen.queryByRole("status")).toBeNull())
+  await waitFor(() => expect(screen.getByRole("region", { name: "Checkpoints for dev" })).not.toHaveAttribute("aria-busy"))
 })
 
 it("shows action errors after an operation fails", async () => {

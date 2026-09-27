@@ -356,7 +356,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           computer: { ...computer, vmId: workspace.machine.id },
           ports: (network?.workspaces.find(item => item.workspace === target)?.ports ?? []).map(port => ({ port: port.port, listening: computer.connected && !networkError && !network?.workspaces.find(item => item.workspace === target)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })),
           freshness: computer.connected && !computer.busy ? workspace.freshness : "stale" as const,
-          stateDetail: computer.busy ? "Applying VM changes" : computer.connected ? workspace.stateDetail : "Computer unavailable",
+          stateDetail: computer.busy ? "Refreshing status" : computer.connected ? workspace.stateDetail : "Computer unavailable",
         }
       })),
     ],

@@ -139,10 +139,10 @@ that a progress percentage establishes a usable checkpoint.
 
 ### Checkpoint action feedback (2026-09-27)
 
-The checkpoint panel shows an indeterminate progress bar as soon as Create,
+The sandbox row shows an indeterminate progress bar as soon as Create,
 Restore, or Fork is submitted and keeps it visible until the request settles.
 The sandbox's Checkpoints menu expands the panel inside its existing card;
-the panel itself has no redundant outer rounded border.
+the panel itself has no redundant outer rounded border or duplicate progress.
 Restore uses the shared inline Cancel/Confirm pattern; its tooltip explains the
 recovery checkpoint and stopped result. Fork names are entered in a small
 popover with Enter-to-submit. The Overview current-state fork dialog and sandbox
@@ -163,6 +163,39 @@ previously used an immediate `try_lock`.
 Runtime snapshots intentionally reject observations during a mutation, and the
 snapshot runner does not expose byte progress for checkpoint capture. The UI
 therefore reports the pending action without inventing a completion percentage.
+The row's ellipsis and reorder handle stay mounted but disabled during an
+operation, preserving the positions of the other controls.
+
+Remote status reads use the same snapshot guard. Its
+`SILO_SANDBOX_UPDATE_IN_PROGRESS` sentinel means that a consistent read was
+unavailable: a mutation lock was held before or after the read, metadata changed
+during it, or a durable configuration recovery was pending. The background SSH
+monitor also uses that lock, so the sentinel does not establish that VM settings
+are changing. The controller preserves the previous snapshot and marks that
+computer's rows stale until a successful refresh; its ten-second polling interval
+can turn a brief collision into a much longer visible busy state. See
+[`refreshComputers`](../app/SiloUI/src/desktop/production-source.ts) and
+[`read_application_snapshot`](../app/SiloUI/src-tauri/src/runtime.rs).
+
+The owner now retries one complete read after 100 ms for transient lock or
+metadata collisions. It discards the first observation, preserves the immediate
+defer for durable recovery, and returns real errors without retrying them. The
+controller labels deferred reads “Refreshing status” and keeps known Start,
+Stop, Restart, and checkpoint progress visible ahead of that fallback. The retry
+requires an updated owner build; the corrected label also works with older
+owners. This diagnosis follows the code paths and deterministic regressions;
+it does not measure collision frequency on a user's remote computer.
+
+The progress/layout follow-up passed 185 frontend tests across the checkpoint
+panel, current-state fork dialog, Overview fork/failure behavior, production
+source, application shell, and machine list. Typecheck and lint passed. Four
+focused native snapshot tests cover discarded observations, bounded contention,
+durable recovery, and unretried runtime errors. The broader runtime suite passed
+91 tests; its Unix-socket test passed separately with socket permission.
+The final `desktop:build` passed signing and bundle verification at
+`app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. This bundle was not
+launched; the running app in the separate `checkpoint-state-build-fu327l8s`
+directory and its VMs were left untouched.
 
 After Restore, the old runtime instance is absent and the selected snapshot
 reference becomes the workspace's authoritative stopped state. Restore can be

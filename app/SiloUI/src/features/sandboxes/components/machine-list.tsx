@@ -420,9 +420,9 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     reorder(machine.id, index + (event.key === "ArrowUp" ? -1 : 1))
   }
 
-  function drop(event: DragEvent, targetIndex: number) {
+  function drop(event: DragEvent, targetIndex: number, rowDisabled = false) {
     event.preventDefault()
-    if (interactionDisabled) return
+    if (interactionDisabled || rowDisabled) return
     const id = draggedID || event.dataTransfer.getData("text/plain")
     if (id) reorder(id, targetIndex)
     setDraggedID(null)
@@ -457,6 +457,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               const runningVM = machine.kind === "vm" && Boolean(isMachineRunning?.(machine))
               const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : undefined
               const presentation = getRowPresentation?.(machine)
+              const rowInteractionsDisabled = interactionDisabled || Boolean(presentation?.suppressInteractions)
               const deleteArmed = pendingDelete === machine.id
               const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
               const deletionName = computerName ? `${machine.name} on ${computerName}` : machine.name
@@ -468,7 +469,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                   aria-busy={presentation?.busy || undefined}
                   className="min-w-0 bg-background"
                   onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => drop(event, index)}
+                  onDrop={(event) => drop(event, index, Boolean(presentation?.suppressInteractions))}
                 >
                   {isEditing && editor ? (
                     <MachineEditor saving={committing} editorHeader={computers && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={computerId} disabled={Boolean(editor.originalID) || committing} onChange={event => setComputerId(event.target.value)}><option value="">This computer</option>{computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} machines={getComputerId ? machines.filter(machine => (getComputerId(machine) ?? "") === computerId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} />
@@ -484,15 +485,16 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       tone={presentation?.tone}
                       detail={presentation?.detail ?? machineSummary(machine)}
                       detailClassName={presentation?.detailClassName}
-                      leading={presentation?.suppressInteractions ? <span data-slot="sandbox-reorder-placeholder" className="size-7 shrink-0" aria-hidden="true" /> : <span
+                      leading={<span
                         role="button"
-                        tabIndex={interactionDisabled ? -1 : 0}
-                        draggable={!editor && !interactionDisabled}
+                        tabIndex={rowInteractionsDisabled ? -1 : 0}
+                        draggable={!editor && !rowInteractionsDisabled}
                         aria-label={`Reorder ${machine.name}`}
-                        aria-disabled={interactionDisabled || undefined}
+                        aria-disabled={rowInteractionsDisabled || undefined}
                         className="grid size-7 shrink-0 cursor-grab place-items-center rounded-md text-muted-foreground outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:cursor-grabbing aria-disabled:cursor-default aria-disabled:opacity-40"
-                        onKeyDown={(event) => handleReorderKey(event, machine, index)}
+                        onKeyDown={(event) => { if (!rowInteractionsDisabled) handleReorderKey(event, machine, index) }}
                         onDragStart={(event) => {
+                          if (rowInteractionsDisabled) { event.preventDefault(); return }
                           beginOperation()
                           setDraggedID(machine.id)
                           event.dataTransfer.effectAllowed = "move"
@@ -502,7 +504,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       >
                         <GripVertical className="size-4" aria-hidden="true" />
                       </span>}
-                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && !presentation.suppressInteractions && <ActionsMenu label={`More actions for ${machine.name}`} onClose={() => setPendingDelete(null)} items={[
+                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu label={`More actions for ${machine.name}`} disabled={rowInteractionsDisabled} onClose={() => setPendingDelete(null)} items={[
                         ...presentation.menuActions,
                         { label: "Edit", separatorBefore: presentation.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled, onSelect: () => startEdit(machine) },
                         { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: interactionDisabled, onSelect: () => startDuplicate(machine) },

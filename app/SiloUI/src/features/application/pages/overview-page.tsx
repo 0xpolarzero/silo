@@ -281,7 +281,7 @@ export function OverviewPage({ active = true, readOnly = false,
           interactionDisabled={configurationLocked}
           validateOperation={(machine, isNew, computerId) => {
             const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
-            if (computer) return computer.busy ? "This computer is applying VM changes. Wait for the operation to finish." : computer.connected ? undefined : "This computer is unavailable. Reconnect before changing its VMs."
+            if (computer) return computer.busy ? "This computer is refreshing its VM status. Try again shortly." : computer.connected ? undefined : "This computer is unavailable. Reconnect before changing its VMs."
             if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
             const notice = source.resourceNotice
             if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
@@ -356,7 +356,7 @@ export function OverviewPage({ active = true, readOnly = false,
               </div> : (
                 <span className="inline-flex max-w-full items-center gap-1 align-middle">
                   <span className="truncate" title={workspace?.attention?.message}>
-                    {workspace?.computer?.busy ? <span role="status">Applying VM changes…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : <WorkspaceStateLabel state={state} />}
+                    {lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : workspace?.computer?.busy ? <span role="status">Refreshing status…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : <WorkspaceStateLabel state={state} />}
                     {workspace?.attention && <> · {workspace.attention.message}</>}
                   </span>
                   {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || workspaceOperationBusy || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}

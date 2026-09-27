@@ -26,3 +26,20 @@ it("shows a stopped sandbox's failure immediately and keeps Start available for 
   view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
   expect(row.queryByRole("alert")).not.toBeInTheDocument()
 })
+
+it("keeps a known lifecycle action visible while its remote computer refreshes status", () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(item => item.machine.name === "dev")!
+  workspace.computer = { id: "office", name: "Office", address: "office.example", connected: true, busy: true, vmId: workspace.machine.id }
+  workspace.freshness = "stale"
+  workspace.lifecycleAction = "start"
+  const actions = {} as ApplicationActions
+  const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const row = within(screen.getByText("dev").closest("li")!)
+  expect(row.getByRole("status")).toHaveTextContent("Starting…")
+
+  delete workspace.lifecycleAction
+  view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(row.getByRole("status")).toHaveTextContent("Refreshing status…")
+  expect(row.queryByText(/Applying VM changes/)).not.toBeInTheDocument()
+})

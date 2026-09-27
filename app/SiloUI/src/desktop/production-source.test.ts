@@ -132,6 +132,62 @@ describe("production application bridge", () => {
     } finally { store.dispose() }
   })
 
+  it("retains the last remote VM snapshot as stale while its owner refreshes and preserves lifecycle state", async () => {
+    const mock = native()
+    let snapshotReads = 0
+    let finishAction!: () => void
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+      if (command === "remote_host_snapshot") {
+        snapshotReads++
+        if (snapshotReads === 2) throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+        return structuredClone(source)
+      }
+      if (command === "remote_workspace_action") return new Promise(resolve => { finishAction = () => resolve(structuredClone(source)) })
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    const target = `silo-remote:office:${source.workspaces[0].machine.id}`
+    try {
+      await store.initialize()
+      expect(snapshotReads).toBe(1)
+      expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)).toMatchObject({
+        state: source.workspaces[0].state,
+        freshness: "fresh",
+        computer: { connected: true },
+      })
+
+      store.applicationActions.startWorkspace!(target)
+      expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.lifecycleAction).toBe("start")
+      await store.refresh()
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.computer?.busy).toBe(true))
+      const refreshing = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
+      expect(refreshing).toMatchObject({
+        state: source.workspaces[0].state,
+        stateDetail: "Refreshing status",
+        freshness: "stale",
+        computer: { connected: true, busy: true },
+        lifecycleAction: "start",
+      })
+
+      await store.refresh()
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.freshness).toBe("fresh"))
+      expect(snapshotReads).toBe(3)
+      const refreshed = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
+      expect(refreshed).toMatchObject({
+        state: source.workspaces[0].state,
+        stateDetail: source.workspaces[0].stateDetail,
+        freshness: "fresh",
+        computer: { connected: true },
+        lifecycleAction: "start",
+      })
+      expect(refreshed?.computer).not.toHaveProperty("busy")
+
+      finishAction()
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.lifecycleAction).toBeUndefined())
+    } finally { store.dispose() }
+  })
+
   it("routes checkpoint actions through the owning remote computer", async () => {
     const mock = native()
     const store = createProductionSource(mock.bridge)
