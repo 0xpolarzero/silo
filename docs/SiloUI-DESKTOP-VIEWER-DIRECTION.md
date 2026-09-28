@@ -2,19 +2,8 @@
 
 Selected direction, 2026-09-27. This supersedes the split local-native/remote-
 streamed recommendation in the [research synthesis](SiloUI-DESKTOP-EXPERIENCE-RESEARCH.md).
-The worktree has implementation slices for detached session/stream lifecycle,
-Tauri recovery, and explicit LCU setup. Focused fixture and UI checks pass. A
-separate test Tauri bundle decoded a 1440×900 Selkies video frame from the live
-scratch guest through the authenticated local proxy; this does not qualify the
-current Silo executable or production attach/detach. The clean frame run sent no
-input. Linux authenticated streaming, OS-native input, performance, the official
-Linux app prerequisite for LCU, live LCU doctor and
-semantic/save validation, and cross-platform compatibility remain unqualified.
-The guest service at SHA-256
-`970eb717fc693e955f7dac2960360ec4d08f71890db1020ad45e97ecdd2f4271` passed a
-live start, session-preserving streamer restart, and explicit stop; 50 service
-tests pass, including the healthy-stream stop regression. The scratch VM remains
-running with its desktop stopped.
+Silo implements this direction as of 2026-09-28; final scratch-VM
+verification passed.
 See the
 [implementation plan](SiloUI-DETACHED-DESKTOP-IMPLEMENTATION-PLAN.md) and
 [probe evidence](research/desktop-viewer-probe-2026-09-27.md).

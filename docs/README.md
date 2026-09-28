@@ -82,6 +82,7 @@ above for current behavior and build commands.
 - [Linux desktops for agents](SiloUI-LINUX-DESKTOP-RESEARCH.md): proposed guest desktop, agent compatibility, estimated costs and prototype acceptance.
 - [Desktop and streaming assessment](SiloUI-DESKTOP-STACK-ASSESSMENT.md): September 2026 comparison of desktop environments, viewer stacks, Luda compatibility, maintenance evidence and selection criteria.
 - [Independent desktop and viewer selection](SiloUI-DESKTOP-SELECTION.md): current selection recommendation without agent-library constraints, evidence notation, weighted measurement rubric, candidate leaderboards, primary-source annexes and qualification protocol.
+- [MicroSandbox native display](research/msb-native-display-2026-09-27.md): Omarchy demonstration, Silo stack mapping, distribution independence, native-viewer opportunity and checkpoint/upstream adoption constraints.
 - [Historical optional Kasm desktop plan](SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md): records the existing Kasm rollout; use the detached desktop plan above for the current Selkies work.
 - [Historical ext4 discard investigation](../artifacts/ext4-raw-image-root-cause.html): upstream MicroSandbox v0.6.8 reproduction and regression requirements; not current app validation.
 - Branding studies: [logo system](../artifacts/silo-logo-system.html), [proportions](../artifacts/silo-proportion-study.html), [structure](../artifacts/silo-structure-study.html), and [top-down study](../artifacts/silo-top-down-study.html).

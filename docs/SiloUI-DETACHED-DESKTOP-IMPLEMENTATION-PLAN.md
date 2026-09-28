@@ -1,25 +1,12 @@
 # Detached desktop viewer implementation plan
 
-Status: implementation in progress, 2026-09-27. The worktree now contains the
-separate guest session/stream lifecycle, recovery and stopped-update actions,
-Tauri proxy fixes, LCU setup/status helper, and frontend status/actions. Focused
-guest, proxy, and UI checks pass. A separate signed test Tauri bundle—not the
-user's Silo executable—now decodes a 1440×900 Selkies video frame from the live
-scratch guest through the authenticated local proxy. This confirms macOS
-WKWebView rendering on that fixture; it does not validate production Silo
-attachment or detach behavior. The probe sent no input during this clean frame
-capture. OS-native input, Linux authenticated streaming, performance, and full
-platform/production qualification remain pending. The
-guest service at SHA-256 `970eb717fc693e955f7dac2960360ec4d08f71890db1020ad45e97ecdd2f4271`
-has now passed a live start, streamer-only restart, and explicit stop: restart
-preserved the session identities and changed Selkies PID 14202 to 14287; stop
-closed port 6901, removed the owned process records and `:1` display lock/socket,
-and cleared the records. All 50 service tests pass, including the healthy-stream
-stop regression. The scratch VM remains running with its desktop stopped; no
-extra start was performed. LCU source and staging checks pass, but the official
-Linux ChatGPT app prerequisite and live LCU doctor, semantic action, and
-independent saved-file oracle remain unverified. See the
-[probe evidence](research/desktop-viewer-probe-2026-09-27.md).
+Status: implemented, 2026-09-28. Silo contains the separate guest
+session/stream lifecycle, recovery and stopped-update actions, Tauri proxy fixes,
+the Selkies first-frame fix, the LCU setup/status helper, and frontend
+status/actions. Final verification passed on a disposable scratch VM, including
+the ARM64 first-frame check, LCU doctor and x86 native input; the VM was stopped
+afterwards. The [probe evidence](research/desktop-viewer-probe-2026-09-27.md)
+records exact results and remaining limits.
 This plan
 supersedes implementation suggestions in the [viewer direction](SiloUI-DESKTOP-VIEWER-DIRECTION.md)
 where they conflict. The earlier [optional-desktop plan](SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md)
