@@ -26,6 +26,7 @@ import { SettingsProvider, type SettingsStore } from "@/features/preferences/set
 import { settingsForFixture } from "./settings"
 import type { DependencyRuntime } from "@/desktop/dependencies"
 import { resourceFixtureModeFromSearch, withResourceFixture } from "./application-resources"
+import { operationQueueFromSearch } from "./operation-queue"
 
 export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false, settingsStore }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean; settingsStore?: SettingsStore }) {
   const source = applicationSourceForScenario(scenarioFromSearch(window.location.search))
@@ -49,7 +50,9 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const statusBarMode = statusBarFixtureModeFromSearch(window.location.search)
   const [activityStep, setActivityStep] = useState(0)
   const [dependencyFixtureRecovered, setDependencyFixtureRecovered] = useState(false)
-  const fixtureSource = withResourceFixture(completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode), resourceMode)
+  const operationQueue = operationQueueFromSearch(window.location.search)
+  const baseSource = withResourceFixture(completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode), resourceMode)
+  const fixtureSource = operationQueue ? { ...baseSource, operationQueue } : baseSource
   useDesktopFixtures({ source: fixtureSource, mode: statusBarMode },
     (source) => setStatusBarHandoff((current) => ({ source, route: current?.route })),
     (route) => {

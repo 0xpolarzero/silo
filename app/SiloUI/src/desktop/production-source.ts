@@ -8,6 +8,7 @@ import { z } from "zod"
 import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
 import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
+import { operationQueueSchema, type OperationQueue } from "@/features/application/model/operation-queue"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
 import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
@@ -214,6 +215,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let networkError: string | null = null
   let networkRequest: Promise<void> | undefined
   let networkRevision = 0
+  let operationQueue: OperationQueue | undefined
+  let operationQueueRequest: Promise<void> | undefined
   let disposed = false
   let activeRefreshes = 0
   let refreshSequence = 0
@@ -304,6 +307,21 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     })().finally(() => { networkRequest = undefined })
     return networkRequest
   }
+  function refreshOperationQueue(): Promise<void> {
+    if (operationQueueRequest) return operationQueueRequest
+    operationQueueRequest = (async () => {
+      try {
+        const next = operationQueueSchema.parse(await native.invoke("read_operation_queue"))
+        if (disposed) return
+        operationQueue = next
+        publish({ ...snapshot })
+      } catch {
+        // A read failure leaves the last queue in place; a later event refetches.
+      }
+    })().finally(() => { operationQueueRequest = undefined })
+    return operationQueueRequest
+  }
+
   async function changeNetwork(command: string, arguments_: Record<string, unknown>) {
     const revision = ++networkRevision
     const remote = typeof arguments_.workspace === "string" ? parseRemoteWorkspaceTarget(arguments_.workspace) : undefined
@@ -334,7 +352,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
     if (operation?.kind === "result") requestedOperation = null
     next = { ...next, backup: { ...next.backup, operation } }
-    if (next.source) next = { ...next, source: { ...next.source, remoteComputers, remoteManagement, remoteManagementError, network, networkError, sshAccess, sshAccessError,
+    if (next.source) next = { ...next, source: { ...next.source, remoteComputers, remoteManagement, remoteManagementError, network, networkError, sshAccess, sshAccessError, operationQueue,
       workspaces: next.source.workspaces.filter(workspace => !workspace.computer).map(workspace => {
         const target = workspaceTarget(workspace)
         const pending = pendingCheckpointOperations.get(target)
@@ -535,6 +553,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   async function initialize() {
     try {
       unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
+      unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
       unlisten.push(await native.listen("silo://application-state-changed", () => { void refresh() }))
       unlisten.push(await native.listen("desktop:status-opened", () => { void refresh() }))
       unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
@@ -552,7 +571,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       throw new Error(error)
     }
     window.addEventListener("focus", onWindowFocus)
-    await Promise.all([refresh(), readSetupActivity(), refreshComputers()])
+    await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
     if (disposed) return
     remoteTimer = setInterval(() => {
       void refreshComputers()

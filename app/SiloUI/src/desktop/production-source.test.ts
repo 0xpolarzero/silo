@@ -1282,3 +1282,55 @@ describe("retained log bridge", () => {
     store.dispose()
   })
 })
+
+describe("operation queue bridge", () => {
+  function queueBridge() {
+    const handlers = new Map<string, () => void>()
+    let queue: unknown = { running: [], waiting: [] }
+    const invoke = vi.fn(async (command: string): Promise<unknown> => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return structuredClone(backup)
+      if (command === "read_operation_queue") return structuredClone(queue)
+      return undefined
+    })
+    const listen = vi.fn(async (name: string, handler: () => void) => { handlers.set(name, handler); return () => handlers.delete(name) })
+    return {
+      bridge: { invoke, listen } as ProductionBridge,
+      setQueue: (next: unknown) => { queue = next },
+      emit: () => handlers.get("silo://operation-queue-changed")?.(),
+    }
+  }
+
+  it("reads the queue on start and refetches when the change event fires", async () => {
+    const mock = queueBridge()
+    const store = createProductionSource(mock.bridge)
+    try {
+      await store.initialize()
+      expect(mock.bridge.invoke).toHaveBeenCalledWith("read_operation_queue")
+      expect(store.getSnapshot().source?.operationQueue).toEqual({ running: [], waiting: [] })
+
+      mock.setQueue({
+        running: [{ id: 1, label: "Backing up sandboxes", vm: null, sinceMs: 1000 }],
+        waiting: [{ id: 2, label: "Restarting dev", vm: "dev", sinceMs: 2000 }],
+      })
+      mock.emit()
+      await vi.waitFor(() => expect(store.getSnapshot().source?.operationQueue?.waiting[0].label).toBe("Restarting dev"))
+      expect(store.getSnapshot().source?.operationQueue?.running[0].vm).toBeNull()
+    } finally { store.dispose() }
+  })
+
+  it("keeps the last queue when a read fails", async () => {
+    const mock = queueBridge()
+    const store = createProductionSource(mock.bridge)
+    try {
+      await store.initialize()
+      mock.setQueue({ running: [{ id: 1, label: "Backing up", vm: null, sinceMs: 1 }], waiting: [] })
+      mock.emit()
+      await vi.waitFor(() => expect(store.getSnapshot().source?.operationQueue?.running).toHaveLength(1))
+      mock.setQueue("not a queue")
+      mock.emit()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(store.getSnapshot().source?.operationQueue?.running).toHaveLength(1)
+    } finally { store.dispose() }
+  })
+})

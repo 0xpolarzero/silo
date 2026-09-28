@@ -1,3 +1,4 @@
+import type { OperationQueue } from "./operation-queue"
 import type { WorkspaceStorageState } from "./workspace-storage"
 import type { PendingCheckpointRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
 import type { LogLoader, LogQuery } from "./logs"
@@ -224,6 +225,8 @@ export interface ApplicationSource {
   network?: NetworkState
   networkError?: string | null
   runtimeRepair: RuntimeRepairPresentation | null
+  /** Ordered admission queue for VM-changing operations on this computer. */
+  operationQueue?: OperationQueue
   workspaces: ApplicationWorkspace[]
   activities: ApplicationActivity[]
   sandboxConfigurationOperation: SandboxConfigurationOperation | null

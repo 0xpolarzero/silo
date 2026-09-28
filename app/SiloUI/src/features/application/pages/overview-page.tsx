@@ -16,6 +16,8 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
+import { OperationQueueIndicator, WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
+import { emptyOperationQueue, waitingOperationForVm } from "@/features/application/model/operation-queue"
 import type {
   ApplicationActions,
   ApplicationSource,
@@ -248,6 +250,7 @@ export function OverviewPage({ active = true, readOnly = false,
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="min-h-0 flex-1">
         {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
+        <OperationQueueIndicator queue={source.operationQueue} reduceMotion={source.preferences.reduceMotion} />
         {configurationOperation?.status === "failed" && <div className="mb-3 rounded-md border border-destructive/30 p-3">
           <p role="alert" className="text-sm text-destructive">{configurationOperation.error.message}</p>
           <Button variant="outline" size="sm" className="mt-2" disabled={readOnly} onClick={() => actions.dismissMachineConfigurationError()}>Dismiss configuration error</Button>
@@ -358,6 +361,7 @@ export function OverviewPage({ active = true, readOnly = false,
                   <span className="truncate" title={workspace?.attention?.message}>
                     {lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : workspace?.computer?.busy ? <span role="status">Refreshing status…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : <WorkspaceStateLabel state={state} />}
                     {workspace?.attention && <> · {workspace.attention.message}</>}
+                    {!lifecycle && !workspaceOperationBusy && waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, workspace ? [workspaceTarget(workspace), machine.name, machine.id] : [machine.name, machine.id]) && <> · <WorkspaceWaitingStatus queue={source.operationQueue} identifiers={workspace ? [workspaceTarget(workspace), machine.name, machine.id] : [machine.name, machine.id]} /></>}
                   </span>
                   {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || workspaceOperationBusy || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}
                 </span>
