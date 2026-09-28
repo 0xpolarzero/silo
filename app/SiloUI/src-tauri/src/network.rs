@@ -269,7 +269,17 @@ fn pending(mapping: &Mapping, message: Option<String>, state: &'static str) -> P
         message,
     }
 }
-fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Workspace {
+/// Read-only observation of one VM's forwards. It never publishes, removes, or
+/// rewrites a forward and never takes the operation gate, so a status read stays
+/// available while other operations run. `failures` carries per-port messages from
+/// a just-completed repair on a write path; it is empty for a plain read. Repair
+/// itself lives in `reconcile_forwarding`.
+fn observe(
+    paths: &RuntimePaths,
+    workspace: &str,
+    config: &Configuration,
+    failures: &BTreeMap<u16, String>,
+) -> Workspace {
     let desired: Vec<_> = config
         .mappings
         .iter()
@@ -299,15 +309,18 @@ fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Wor
             .collect();
         return result;
     }
-    let _guard = match NETWORK_LOCK.lock() {
+    // Hold the short data lock only to read a consistent snapshot of the desired
+    // settings and the live forwards. It is dropped before the slow guest probes,
+    // and this read never mutates the forwarding table or the settings file.
+    let guard = match NETWORK_LOCK.lock() {
         Ok(guard) => guard,
         Err(_) => {
             result.error = Some(FAILED.into());
             return result;
         }
     };
-    // Read the current desired revision only after obtaining the mutation lock.
-    // An older refresh must never restore access removed by another window.
+    // Read the current desired revision only after obtaining the data lock.
+    // An older refresh must never observe against access removed by another window.
     let config = match read_config(paths) {
         Ok(config) => config,
         Err(e) => {
@@ -321,10 +334,10 @@ fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Wor
         .filter(|m| m.workspace == workspace)
         .collect();
     let socket = socket_path(paths, workspace);
-    let mut published = match control(&socket, json!({"op":"ports_list"})) {
+    let published = match control(&socket, json!({"op":"ports_list"})) {
         Ok(ports) => ports,
         Err(e) => {
-            drop(_guard);
+            drop(guard);
             result.ports = listeners(paths, workspace)
                 .unwrap_or_default()
                 .keys()
@@ -349,45 +362,8 @@ fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Wor
             return result;
         }
     };
-    let mut failures = BTreeMap::new();
-    for mapping in &desired {
-        let exists = published.iter().find(|p| p.guest_port == mapping.port);
-        let request = if !mapping.enabled {
-            exists.map(|_| json!({"op":"port_remove","guest_port":mapping.port}))
-        } else if exists.is_some_and(|p| mapping.host_port.is_none_or(|host| host == p.host_port)) {
-            None
-        } else {
-            Some(
-                json!({"op":"port_add","guest_port":mapping.port,"host_port":mapping.host_port.unwrap_or(0)}),
-            )
-        };
-        if let Some(request) = request {
-            match control(&socket, request) {
-                Ok(ports) => published = ports,
-                Err(e) => {
-                    failures.insert(mapping.port, e.clone());
-                    if e.contains("timed out") || e.to_lowercase().contains("restart") {
-                        for remaining in &desired {
-                            failures.entry(remaining.port).or_insert_with(|| e.clone());
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    // Remove confirmed tombstones, so repeated add/remove never grows settings forever.
-    let mut cleaned = Configuration {
-        mappings: config.mappings.clone(),
-    };
-    cleaned.mappings.retain(|m| {
-        m.workspace != workspace || m.enabled || published.iter().any(|p| p.guest_port == m.port)
-    });
-    if cleaned.mappings.len() != config.mappings.len() {
-        let _ = write_config(paths, &cleaned);
-    }
-    drop(_guard);
-    // Discovery and reachability can be slow; they must never block revocation.
+    drop(guard);
+    // Discovery and reachability can be slow; they run without the data lock.
     let listeners = match listeners(paths, workspace) {
         Ok(ports) => ports,
         Err(e) => {
@@ -527,10 +503,110 @@ fn observe(paths: &RuntimePaths, workspace: &str, config: &Configuration) -> Wor
     }
     result
 }
+/// Apply one VM's saved desired forwards to its live runtime: add and remove
+/// published ports and prune confirmed tombstones. This changes shared host
+/// networking, so every caller must already hold the operation gate for this VM.
+/// It never takes the gate itself (that would be `GateError::Nested`): the write
+/// commands hold `OPERATIONS.vm`, the background scheduler holds `OPERATIONS.try_vm`,
+/// and `reconcile_started` runs while the VM lifecycle caller holds the VM guard.
+/// Returns per-port failure messages so a write path can surface them. Nothing is
+/// published when the VM is not running; the missing forwards reconcile on retry
+/// or on the next start.
+fn reconcile_forwarding(paths: &RuntimePaths, workspace: &str) -> BTreeMap<u16, String> {
+    let mut failures = BTreeMap::new();
+    let Ok(guard) = NETWORK_LOCK.lock() else {
+        return failures;
+    };
+    let Ok(config) = read_config(paths) else {
+        return failures;
+    };
+    let desired: Vec<_> = config
+        .mappings
+        .iter()
+        .filter(|m| m.workspace == workspace)
+        .collect();
+    if desired.is_empty() {
+        return failures;
+    }
+    let socket = socket_path(paths, workspace);
+    let mut published = match control(&socket, json!({"op":"ports_list"})) {
+        Ok(ports) => ports,
+        Err(_) => return failures,
+    };
+    for mapping in &desired {
+        let exists = published.iter().find(|p| p.guest_port == mapping.port);
+        let request = if !mapping.enabled {
+            exists.map(|_| json!({"op":"port_remove","guest_port":mapping.port}))
+        } else if exists.is_some_and(|p| mapping.host_port.is_none_or(|host| host == p.host_port)) {
+            None
+        } else {
+            Some(
+                json!({"op":"port_add","guest_port":mapping.port,"host_port":mapping.host_port.unwrap_or(0)}),
+            )
+        };
+        if let Some(request) = request {
+            match control(&socket, request) {
+                Ok(ports) => published = ports,
+                Err(e) => {
+                    failures.insert(mapping.port, e.clone());
+                    if e.contains("timed out") || e.to_lowercase().contains("restart") {
+                        for remaining in &desired {
+                            failures.entry(remaining.port).or_insert_with(|| e.clone());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // Remove confirmed tombstones, so repeated add/remove never grows settings forever.
+    let mut cleaned = Configuration {
+        mappings: config.mappings.clone(),
+    };
+    cleaned.mappings.retain(|m| {
+        m.workspace != workspace || m.enabled || published.iter().any(|p| p.guest_port == m.port)
+    });
+    if cleaned.mappings.len() != config.mappings.len() {
+        let _ = write_config(paths, &cleaned);
+    }
+    drop(guard);
+    failures
+}
+/// Reconcile the affected VM's forwards on a background thread, skipping it when
+/// that VM is busy, so a read can return immediately while repair converges. Each
+/// VM is repaired under its own gate guard.
+fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
+    let workspaces: BTreeSet<String> = config
+        .mappings
+        .iter()
+        .filter(|m| m.enabled)
+        .map(|m| m.workspace.clone())
+        .collect();
+    if workspaces.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let Ok(paths) = runtime::runtime_paths(&app) else {
+            return;
+        };
+        if runtime::shutdown::ensure_accepting_operations().is_err() {
+            return;
+        }
+        for workspace in workspaces {
+            if let Ok(_gate) = runtime::OPERATIONS
+                .try_vm(&workspace, &format!("Reconciling ports on {workspace}"))
+            {
+                let _ = reconcile_forwarding(&paths, &workspace);
+            }
+        }
+    });
+}
 fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, String> {
     let metadata = runtime::read_metadata(&paths.metadata)
         .map_err(|_| "Could not read sandbox configuration.")?;
     let mut workspaces = vec![];
+    let empty = BTreeMap::new();
     let names: Vec<_> = metadata
         .machines
         .iter()
@@ -541,7 +617,10 @@ fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, Str
         std::thread::scope(|scope| {
             let handles: Vec<_> = batch
                 .iter()
-                .map(|name| scope.spawn(move || observe(paths, name, config)))
+                .map(|name| {
+                    let empty = &empty;
+                    scope.spawn(move || observe(paths, name, config, empty))
+                })
                 .collect();
             for (name, handle) in batch.iter().zip(handles) {
                 workspaces.push(handle.join().unwrap_or_else(|_| Workspace {
@@ -558,8 +637,14 @@ fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, Str
 #[tauri::command]
 pub(crate) async fn read_network_state(app: AppHandle) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // Observation only: never take the operation gate and never publish or
+        // remove a forward, so a read cannot wait behind a long operation. Any
+        // forward that drifted from its saved intent is repaired in the background.
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
-        state_with(&paths, &read_config(&paths)?)
+        let config = read_config(&paths)?;
+        let state = state_with(&paths, &config);
+        schedule_network_reconcile(&app, &config);
+        state
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -574,8 +659,13 @@ pub(crate) async fn save_network_port(
 ) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
+        // Publishing a port changes this VM's shared host forwarding; wait its turn
+        // for that VM. NETWORK_LOCK stays the short data lock around the saved table.
+        let _gate = runtime::OPERATIONS
+            .vm(&workspace, &format!("Publishing a port on {workspace}"))
+            .map_err(|e| e.to_string())?;
+        runtime::shutdown::ensure_accepting_operations()?;
         configured_vm(&paths, &workspace)?;
         let mapping = Mapping {
             workspace: workspace.clone(),
@@ -585,27 +675,38 @@ pub(crate) async fn save_network_port(
             enabled: true,
         };
         validate(&mapping)?;
-        let mut config = read_config(&paths)?;
-        if config
-            .mappings
-            .iter()
-            .filter(|m| m.workspace == workspace && m.enabled && m.port != port)
-            .count()
-            >= LIMIT
         {
-            return Err("This VM already has 128 published ports.".into());
+            let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+            let mut config = read_config(&paths)?;
+            if config
+                .mappings
+                .iter()
+                .filter(|m| m.workspace == workspace && m.enabled && m.port != port)
+                .count()
+                >= LIMIT
+            {
+                return Err("This VM already has 128 published ports.".into());
+            }
+            config
+                .mappings
+                .retain(|m| m.workspace != workspace || m.port != port);
+            config.mappings.push(mapping);
+            if config.mappings.len() > 4096 {
+                return Err("Too many saved ports. Remove an unused port first.".into());
+            }
+            write_config(&paths, &config)?;
         }
-        config
-            .mappings
-            .retain(|m| m.workspace != workspace || m.port != port);
-        config.mappings.push(mapping);
-        if config.mappings.len() > 4096 {
-            return Err("Too many saved ports. Remove an unused port first.".into());
-        }
-        write_config(&paths, &config)?;
-        drop(_guard);
-        let _ = observe(&paths, &workspace, &config);
-        let result = state_with(&paths, &config);
+        let failures = reconcile_forwarding(&paths, &workspace);
+        let config = read_config(&paths)?;
+        let result = state_with(&paths, &config).map(|mut state| {
+            if !failures.is_empty() {
+                let repaired = observe(&paths, &workspace, &config, &failures);
+                if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
+                    *slot = repaired;
+                }
+            }
+            state
+        });
         let _ = app.emit("silo://network-state-changed", ());
         result
     })
@@ -620,23 +721,39 @@ pub(crate) async fn remove_network_port(
 ) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
+        // Removing a port changes this VM's shared host forwarding; wait its turn
+        // for that VM. NETWORK_LOCK stays the short data lock around the saved table.
+        let _gate = runtime::OPERATIONS
+            .vm(&workspace, &format!("Removing a port on {workspace}"))
+            .map_err(|e| e.to_string())?;
+        runtime::shutdown::ensure_accepting_operations()?;
         configured_vm(&paths, &workspace)?;
-        let mut config = read_config(&paths)?;
-        // Persist removal intent before touching the live listener. Failed removals
-        // remain visible and reconcile on retry/relaunch, never silently reopen.
-        if let Some(mapping) = config
-            .mappings
-            .iter_mut()
-            .find(|m| m.workspace == workspace && m.port == port)
         {
-            mapping.enabled = false;
+            let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+            let mut config = read_config(&paths)?;
+            // Persist removal intent before touching the live listener. Failed removals
+            // remain visible and reconcile on retry/relaunch, never silently reopen.
+            if let Some(mapping) = config
+                .mappings
+                .iter_mut()
+                .find(|m| m.workspace == workspace && m.port == port)
+            {
+                mapping.enabled = false;
+            }
+            write_config(&paths, &config)?;
         }
-        write_config(&paths, &config)?;
-        drop(_guard);
-        let _ = observe(&paths, &workspace, &config);
-        let result = state_with(&paths, &config);
+        let failures = reconcile_forwarding(&paths, &workspace);
+        let config = read_config(&paths)?;
+        let result = state_with(&paths, &config).map(|mut state| {
+            if !failures.is_empty() {
+                let repaired = observe(&paths, &workspace, &config, &failures);
+                if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
+                    *slot = repaired;
+                }
+            }
+            state
+        });
         let _ = app.emit("silo://network-state-changed", ());
         result
     })
@@ -651,7 +768,8 @@ pub(crate) async fn open_network_port(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
-        let state = observe(&paths, &workspace, &read_config(&paths)?);
+        // Opening an already-reachable endpoint only observes; it takes no gate.
+        let state = observe(&paths, &workspace, &read_config(&paths)?, &BTreeMap::new());
         let endpoint = state
             .ports
             .iter()
@@ -675,10 +793,13 @@ pub(crate) async fn open_network_port(
 
 // Called after successful starts, including launch-at-login and temporary starts.
 // Port failures must not turn a successful VM start into a VM lifecycle failure.
+// The lifecycle caller already holds this VM's operation guard, so this repair must
+// NOT take the gate (that would be `GateError::Nested`); it calls the gate-free
+// `reconcile_forwarding` directly.
 pub(crate) fn reconcile_started(paths: &RuntimePaths, workspace: &str) {
     if let Ok(config) = read_config(paths) {
         if config.mappings.iter().any(|m| m.workspace == workspace) {
-            let _ = observe(paths, workspace, &config);
+            let _ = reconcile_forwarding(paths, workspace);
         }
     }
 }
@@ -805,6 +926,56 @@ mod tests {
         fs::write(config_path(&paths), "broken").unwrap();
         assert!(read_config(&paths).is_err());
     }
+    #[test]
+    fn read_state_returns_without_waiting_for_the_operation_gate() {
+        use std::time::Instant;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
+            // A nonexistent executable makes VM inspection fail fast, so the read
+            // never blocks on a live runtime and never mutates anything.
+            executable: temp.path().join("msb"),
+            home: temp.path().into(),
+            storage_home: None,
+            library: temp.path().join("lib"),
+            metadata: temp.path().join("machines.json"),
+            volumes: temp.path().join("volumes"),
+        };
+        fs::write(
+            &paths.metadata,
+            serde_json::json!({"schemaVersion":1,"machines":[{
+                "kind":"vm","id":"00000000-0000-4000-8000-000000000001","name":"dev",
+                "cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,
+                "workspaceStorageGiB":10,"runtimeStorageGiB":10
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let config = Configuration::default();
+        // Hold a per-VM guard for "dev" on another thread for the whole read. The
+        // read path takes no gate, so it must return promptly regardless.
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _guard = runtime::OPERATIONS.vm("dev", "Blocking network read test").unwrap();
+            held_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        held_rx.recv().unwrap();
+        let start = Instant::now();
+        let state = state_with(&paths, &config);
+        let elapsed = start.elapsed();
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        let state = state.expect("read state");
+        assert_eq!(state.workspaces.len(), 1);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "network read waited for the operation gate: {elapsed:?}"
+        );
+    }
+
     #[test]
     fn loopback_ipv6_is_not_reported_as_ipv4_reachable() {
         let input="sl local_address rem_address st\n0: 00000000000000000000000001000000:0BB8 00000000:0000 0A\n";

@@ -374,17 +374,32 @@ pub(crate) fn close_all() {
         owned.errors.clear();
     }
 }
+/// Repair the shared SSH listeners under the operation gate, skipping busy periods.
+/// Listener reconciliation changes shared computer state, so it takes the gate;
+/// observation paths (`state`, `read_ssh_access_state`) must never call this
+/// inline. Callers already holding a gate guard (the VM lifecycle in `run_msb`,
+/// backups, checkpoints, and the write commands) call `reconcile` directly.
+fn reconcile_if_idle(app: &AppHandle) {
+    // Background listener reconcile touches shared SSH state; skip when busy.
+    if let Ok(_guard) = runtime::OPERATIONS.try_computer("Reconciling SSH access") {
+        if runtime::shutdown::ensure_accepting_operations().is_ok() {
+            if let Ok(paths) = runtime::runtime_paths(app) {
+                reconcile(&paths);
+            }
+        }
+    }
+}
+/// Schedule a one-off listener reconcile off the calling thread. The read path
+/// uses this so it can return observed state immediately while any needed repair
+/// converges in the background.
+fn schedule_reconcile(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || reconcile_if_idle(&app));
+}
 pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || loop {
-        // Background listener reconcile touches shared SSH state; skip when busy.
-        if let Ok(_guard) = runtime::OPERATIONS.try_computer("Reconciling SSH access") {
-            if runtime::shutdown::ensure_accepting_operations().is_ok() {
-                if let Ok(paths) = runtime::runtime_paths(&app) {
-                    reconcile(&paths);
-                }
-            }
-        }
+        reconcile_if_idle(&app);
         std::thread::sleep(Duration::from_secs(2));
     });
 }
@@ -440,13 +455,13 @@ fn state(paths: &RuntimePaths) -> Result<State, String> {
 #[tauri::command]
 pub(crate) async fn read_ssh_access_state(app: AppHandle) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        // This read repairs the shared SSH listeners as it runs; computer scope.
-        let _guard = runtime::OPERATIONS
-            .computer("Checking SSH access")
-            .map_err(|_| FAILED)?;
+        // Observation only: report the currently owned listeners without taking the
+        // gate or mutating anything, so a status read never waits behind a long
+        // operation. Any needed listener repair is scheduled in the background.
         let paths = runtime::runtime_paths(&app)?;
-        reconcile(&paths);
-        state(&paths)
+        let state = state(&paths);
+        schedule_reconcile(&app);
+        state
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -1090,6 +1105,35 @@ sys.stdin.buffer.read()
         assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, c.port)).is_err());
         assert_eq!(read(&p).unwrap()[0].keys, c.keys);
     }
+    #[test]
+    fn state_read_returns_without_waiting_for_the_operation_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        remote_fixture(&p);
+        // An empty settings file makes `read` (and therefore `state`) succeed.
+        editor::write_private(&path(&p), b"[]").unwrap();
+        // Hold a computer guard on another thread for the whole read. `state` must
+        // observe without taking the gate, so it returns promptly regardless.
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _guard = runtime::OPERATIONS.computer("Blocking SSH read test").unwrap();
+            held_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        held_rx.recv().unwrap();
+        let start = Instant::now();
+        let result = state(&p);
+        let elapsed = start.elapsed();
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(result.is_ok(), "{:?}", result.err());
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "SSH state read waited for the operation gate: {elapsed:?}"
+        );
+    }
+
     #[test]
     fn remote_save_rejects_replaced_ids_and_invalid_settings_without_writing() {
         let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();

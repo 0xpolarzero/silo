@@ -37,11 +37,9 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
         "desktop.action" => crate::desktop::dispatch(app, method, params),
         "ssh.access.state" | "ssh.access.save" | "ssh.access.connection" => crate::ssh_access::remote_dispatch(app, method, params),
         "files.list" => {
-            // Remote file listing reads one VM's guest; wait its turn for that VM.
+            // A file listing observes one VM's guest without starting or changing it
+            // (`--no-start`), so it takes no gate and stays available during operations.
             let name = vm_name(app, params)?;
-            let _guard = runtime::OPERATIONS
-                .vm(&name, &format!("Listing files on {name}"))
-                .map_err(|e| e.to_string())?;
             let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
             let offset = usize::try_from(offset).map_err(|_| "Invalid folder offset.")?;
             let page = tauri::async_runtime::block_on(crate::files::list_workspace_directory(
@@ -75,11 +73,8 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
         }
         "network.state" => crate::remote_network::host_state(app),
         "network.publish" => {
-            // Port forwarding is shared host networking; wait in order (computer).
-            let _guard = runtime::OPERATIONS
-                .computer("Updating port forwarding")
-                .map_err(|e| e.to_string())?;
-            runtime::shutdown::ensure_accepting_operations()?;
+            // `save_network_port` takes this VM's operation gate and shutdown check;
+            // taking a computer gate here too would deadlock against that VM guard.
             let name = vm_name(app, params)?;
             let port = params["port"]
                 .as_u64()
@@ -151,11 +146,10 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
     if method != "guest.ssh" {
         return Err("Unsupported guest connection.".into());
     }
-    // Serving guest SSH inspects and connects to one VM; wait its turn for that VM.
+    // Interactive sessions stay outside the operation queue: this only inspects that
+    // the VM is Running and spawns an `msb ssh serve` session, so it takes no gate
+    // and a long operation never blocks opening a connection.
     let name = vm_name(app, params)?;
-    let _guard = runtime::OPERATIONS
-        .vm(&name, &format!("Connecting to {name}"))
-        .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
     let paths = runtime::runtime_paths(app)?;
     let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, &name)

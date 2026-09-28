@@ -252,6 +252,12 @@ impl OperationGate {
         self.try_acquire(Scope::Computer, label)
     }
 
+    /// Run work for one VM only when nothing conflicting for that VM is running or
+    /// waiting. For background repair that should skip busy VMs rather than queue.
+    pub(crate) fn try_vm(&self, vm: &str, label: &str) -> Result<OperationGuard<'_>, GateError> {
+        self.try_acquire(Scope::Vm(vm.to_owned()), label)
+    }
+
     /// True when no operation is running or waiting. Observers use this to discard
     /// readings that overlapped a change.
     pub(crate) fn is_idle(&self) -> bool {
@@ -432,7 +438,8 @@ mod tests {
         let gate = leak();
         let a = gate.vm("a", "Start a").unwrap();
         assert_eq!(elsewhere(move || gate.try_computer("Reclaim").unwrap_err()), GateError::Busy);
-        assert!(elsewhere(move || gate.try_acquire(Scope::Vm("b".into()), "Sync b").is_ok()));
+        assert!(elsewhere(move || gate.try_vm("b", "Sync b").is_ok()));
+        assert_eq!(elsewhere(move || gate.try_vm("a", "Sync a").unwrap_err()), GateError::Busy);
         assert!(!gate.is_vm_idle("a"));
         assert!(gate.is_vm_idle("b"));
         drop(a);
