@@ -62,12 +62,18 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
                     .map(|m| m.id())
                     .or_else(|| params["vmId"].as_str())
                     .ok_or("Missing VM identity.")?;
-                change_machine(
-                    &mut request.machines,
-                    id,
-                    expected.as_ref(),
-                    replacement.as_ref(),
-                )?;
+                if expected.as_ref().is_some_and(|m| !m.is_vm())
+                    || replacement.as_ref().is_some_and(|m| !m.is_vm())
+                {
+                    return Err("Remote management only accepts virtual machines.".into());
+                }
+                change_machine(&mut request.machines, id, expected.as_ref(), replacement.as_ref())
+                    .map_err(|rejection| match rejection {
+                        ChangeRejection::Missing => "This VM no longer exists.".to_string(),
+                        ChangeRejection::Stale | ChangeRejection::WrongTarget => {
+                            "This VM changed on its computer. Refresh before trying again.".to_string()
+                        }
+                    })?;
                 validate_request(&request).map_err(|e| e.to_string())?;
                 validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
                 configuration_recovery::prepare_retry(&ProcessRunner, &paths, Some(&request))
@@ -94,31 +100,6 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     })();
     let _ = app.emit("silo://application-state-changed", ());
     result
-}
-
-fn change_machine(
-    machines: &mut Vec<MachineConfiguration>,
-    id: &str,
-    expected: Option<&MachineConfiguration>,
-    replacement: Option<&MachineConfiguration>,
-) -> Result<(), String> {
-    let current = machines.iter().find(|m| m.id() == id);
-    if current != expected {
-        return Err("This VM changed on its computer. Refresh before trying again.".into());
-    }
-    if expected.is_some_and(|m| !m.is_vm())
-        || replacement.is_some_and(|m| !m.is_vm() || m.id() != id)
-    {
-        return Err("Remote management only accepts virtual machines.".into());
-    }
-    if replacement.is_none() && current.is_none() {
-        return Err("This VM no longer exists.".into());
-    }
-    machines.retain(|m| m.id() != id);
-    if let Some(machine) = replacement {
-        machines.push(machine.clone());
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -634,14 +634,23 @@ pub(crate) fn remote_dispatch(
     method: &str,
     params: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    crate::remote::ensure_management_enabled()?;
+    let paths = runtime::runtime_paths(app)?;
+    if method == "ssh.access.state" {
+        // Observation only: report the currently owned listeners without taking the
+        // gate or mutating anything, so a remote status read never waits behind a long
+        // operation. Any needed listener repair is scheduled in the background, matching
+        // the local `read_ssh_access_state` path.
+        let result = serde_json::to_value(state(&paths)?).map_err(|_| FAILED.to_string());
+        schedule_reconcile(app);
+        return result;
+    }
     let _operation = crate::updates::operation_guard()?;
     // Remote SSH changes reconcile the shared listeners; wait in order (computer).
     let _guard = runtime::OPERATIONS
         .computer("Applying remote SSH change")
         .map_err(|e| e.to_string())?;
-    crate::remote::ensure_management_enabled()?;
     runtime::shutdown::ensure_accepting_operations()?;
-    let paths = runtime::runtime_paths(app)?;
     let result = remote_with(&paths, method, params);
     if method == "ssh.access.save" {
         let _ = app.emit("silo://network-state-changed", ());

@@ -922,6 +922,27 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("routes an edit to a targeted change carrying the committed configuration as expected", async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return structuredClone(backup)
+      if (command === "read_setup_activity") return []
+      if (command === "change_machine_configuration") return structuredClone(source)
+    })
+    const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
+    await store.initialize()
+    const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.computer).map(({ machine }) => machine)
+    const original = committed[0]
+    const edited = { ...original, cpus: original.cpus === 1 ? 2 : 1 }
+    store.applicationActions.saveMachineConfiguration({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("change_machine_configuration", {
+      change: { kind: "upsert", machine: edited, expected: original },
+      requestId: expect.any(String),
+    }))
+    expect(invoke).not.toHaveBeenCalledWith("save_machine_configuration", expect.anything())
+    store.dispose()
+  })
+
   it("reports unreadable activity without replacing it with success or raw diagnostics", async () => {
     const mock = native({ invoke: vi.fn(async (command) => {
       if (command === "read_setup_activity") throw new Error("private path and token")

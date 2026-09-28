@@ -9,6 +9,7 @@ import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMac
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
 import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import { operationQueueSchema, type OperationQueue } from "@/features/application/model/operation-queue"
+import { deriveMachineChange, type MachineConfigurationChange } from "@/features/application/model/machine-change"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
 import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
@@ -684,9 +685,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return promise
   }
 
-  function configureMachines(request: SetupMachineConfigurationRequest, retryWorkspace?: string): Promise<ApplicationSource> {
+  function configureMachines(request: SetupMachineConfigurationRequest, retryWorkspace?: string, change?: MachineConfigurationChange): Promise<ApplicationSource> {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
-    const key = JSON.stringify([request, retryWorkspace])
+    const key = JSON.stringify([request, retryWorkspace, change])
     if (lastMachineJob?.key === key) return lastMachineJob.promise
     ++identityVerificationSequence
     lastVerificationKey = undefined
@@ -703,7 +704,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       publish({ ...snapshot, setupCandidate: request, setupEvents: [], setupActivity: [], setupStartedAt: Math.floor(Date.now() / 1000), setupFinishedAt: undefined, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
       let failed = false
       try {
-        const result = parseMutationSource(await native.invoke("save_machine_configuration", { request, requestId, ...(retryWorkspace ? { retryWorkspace } : {}) }))
+        const result = parseMutationSource(await (change
+          ? native.invoke("change_machine_configuration", { change, requestId, ...(retryWorkspace ? { retryWorkspace } : {}) })
+          : native.invoke("save_machine_configuration", { request, requestId, ...(retryWorkspace ? { retryWorkspace } : {}) })))
         activeConfiguration = null
         publish({ ...snapshot, source: result, error: null })
         return result
@@ -811,7 +814,16 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function saveMachineConfiguration(request: SetupMachineConfigurationRequest) {
-    void configureMachines(request).catch(() => {})
+    // Send the specific create/edit/delete/reorder against the committed local
+    // configuration the user started editing from, so a queued edit applies to the
+    // latest settings instead of overwriting concurrent work with a stale list.
+    // Fall back to a whole-list save only when the change is not a single targeted
+    // operation (e.g. a no-change retry, which resumes any failed verification).
+    const previous = (snapshot.source?.workspaces ?? [])
+      .filter((workspace) => !workspace.computer)
+      .map((workspace) => setupMachineConfigurationSchema.parse(workspace.machine))
+    const change = deriveMachineChange(previous, request.machines)
+    void configureMachines(request, undefined, change ?? undefined).catch(() => {})
   }
 
   async function waitForGitHubAccess(initial: z.infer<typeof githubStateShape>, workspaces: string[]) {

@@ -44,22 +44,27 @@ export function blockingOperations(queue: OperationQueue, entry: OperationEntry)
   return queue.running.filter((running) => operationsConflict(running, entry))
 }
 
-/** True when `entry`'s scope matches any of the supplied VM identifiers. */
-export function operationMatchesVm(entry: OperationEntry, identifiers: readonly string[]): boolean {
-  return entry.vm !== null && identifiers.includes(entry.vm)
+/**
+ * True when `entry`'s scope is the VM named `name`. The runtime gate keys per-VM
+ * entries by the local workspace name, so matching is by name alone. Callers must
+ * not pass a remote computer's VM here: those operations run on that computer's own
+ * gate and never appear in this local queue.
+ */
+export function operationMatchesVm(entry: OperationEntry, name: string): boolean {
+  return entry.vm === name
 }
 
 /**
  * The waiting operation that a VM row should surface: the earliest waiter whose
  * scope is this VM. Computer-wide waiters are reported by the global indicator.
  */
-export function waitingOperationForVm(queue: OperationQueue, identifiers: readonly string[]): OperationEntry | undefined {
-  return queue.waiting.find((entry) => operationMatchesVm(entry, identifiers))
+export function waitingOperationForVm(queue: OperationQueue, name: string): OperationEntry | undefined {
+  return queue.waiting.find((entry) => operationMatchesVm(entry, name))
 }
 
 /** True when a matching operation for this VM is already running or waiting (a duplicate request). */
-export function hasPendingOperationForVm(queue: OperationQueue, identifiers: readonly string[]): boolean {
-  return [...queue.running, ...queue.waiting].some((entry) => operationMatchesVm(entry, identifiers))
+export function hasPendingOperationForVm(queue: OperationQueue, name: string): boolean {
+  return [...queue.running, ...queue.waiting].some((entry) => operationMatchesVm(entry, name))
 }
 
 function joinLabels(labels: string[]): string {

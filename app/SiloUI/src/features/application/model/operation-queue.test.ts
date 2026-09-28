@@ -70,17 +70,18 @@ describe("VM matching", () => {
     running: [entry({ id: 1, vm: "dev" })],
     waiting: [entry({ id: 2, label: "Restarting dev", vm: "dev" }), entry({ id: 3, vm: "other" })],
   }
-  it("matches an entry by any supplied identifier", () => {
-    expect(operationMatchesVm(queue.waiting[0], ["silo-remote:host:dev", "dev"])).toBe(true)
-    expect(operationMatchesVm(entry({ id: 9, vm: null }), ["dev"])).toBe(false)
+  it("matches an entry by workspace name only", () => {
+    expect(operationMatchesVm(queue.waiting[0], "dev")).toBe(true)
+    expect(operationMatchesVm(queue.waiting[0], "silo-remote:host:dev")).toBe(false)
+    expect(operationMatchesVm(entry({ id: 9, vm: null }), "dev")).toBe(false)
   })
   it("finds the waiting operation for a VM", () => {
-    expect(waitingOperationForVm(queue, ["dev"])?.label).toBe("Restarting dev")
-    expect(waitingOperationForVm(queue, ["missing"])).toBeUndefined()
+    expect(waitingOperationForVm(queue, "dev")?.label).toBe("Restarting dev")
+    expect(waitingOperationForVm(queue, "missing")).toBeUndefined()
   })
   it("detects a pending (running or waiting) operation for a VM", () => {
-    expect(hasPendingOperationForVm(queue, ["dev"])).toBe(true)
-    expect(hasPendingOperationForVm(queue, ["missing"])).toBe(false)
+    expect(hasPendingOperationForVm(queue, "dev")).toBe(true)
+    expect(hasPendingOperationForVm(queue, "missing")).toBe(false)
   })
 })
 

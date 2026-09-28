@@ -238,6 +238,135 @@ impl MachineConfiguration {
     }
 }
 
+/// Why a targeted configuration change could not be applied to the current inventory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChangeRejection {
+    /// The targeted VM's current configuration differs from the one the caller expected.
+    Stale,
+    /// The VM the caller wanted to remove is no longer present.
+    Missing,
+    /// A replacement's identity does not match the targeted VM.
+    WrongTarget,
+}
+
+/// Apply one targeted change to `machines` using optimistic concurrency: the machine
+/// identified by `id` must currently equal `expected` (both absent for a create), then
+/// it is replaced in place by `replacement`, or removed when `replacement` is `None`.
+/// Every other machine and the overall order are preserved. Shared by the local and
+/// remote change paths so both apply against fresh state instead of a stale snapshot.
+pub(crate) fn change_machine(
+    machines: &mut Vec<MachineConfiguration>,
+    id: &str,
+    expected: Option<&MachineConfiguration>,
+    replacement: Option<&MachineConfiguration>,
+) -> Result<(), ChangeRejection> {
+    let position = machines.iter().position(|m| m.id() == id);
+    let current = position.map(|index| &machines[index]);
+    if current != expected {
+        return Err(ChangeRejection::Stale);
+    }
+    if replacement.is_some_and(|m| m.id() != id) {
+        return Err(ChangeRejection::WrongTarget);
+    }
+    if replacement.is_none() && current.is_none() {
+        return Err(ChangeRejection::Missing);
+    }
+    match (position, replacement) {
+        (Some(index), Some(machine)) => machines[index] = machine.clone(),
+        (Some(index), None) => {
+            machines.remove(index);
+        }
+        (None, Some(machine)) => machines.push(machine.clone()),
+        (None, None) => {}
+    }
+    Ok(())
+}
+
+/// Reorder `machines` to match `order` (a permutation of the current identities), but
+/// only when the current order still equals `expected_order`. Optimistic concurrency
+/// for the local reorder flow.
+pub(crate) fn reorder_machines(
+    machines: &mut [MachineConfiguration],
+    order: &[String],
+    expected_order: &[String],
+) -> Result<(), ChangeRejection> {
+    let current: Vec<&str> = machines.iter().map(MachineConfiguration::id).collect();
+    if current != expected_order.iter().map(String::as_str).collect::<Vec<_>>() {
+        return Err(ChangeRejection::Stale);
+    }
+    let mut sorted_new: Vec<&str> = order.iter().map(String::as_str).collect();
+    sorted_new.sort_unstable();
+    let mut sorted_current = current.clone();
+    sorted_current.sort_unstable();
+    if sorted_new != sorted_current {
+        return Err(ChangeRejection::Missing);
+    }
+    let position: HashMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id.as_str(), index))
+        .collect();
+    machines.sort_by_key(|machine| position[machine.id()]);
+    Ok(())
+}
+
+/// One targeted change to the local VM inventory, sent by the UI with the configuration
+/// it started editing from so a queued edit applies to fresh state or is rejected.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum MachineConfigurationChange {
+    /// Create or edit a single machine. `expected` is `None` for a create.
+    Upsert {
+        machine: MachineConfiguration,
+        #[serde(default)]
+        expected: Option<MachineConfiguration>,
+    },
+    /// Remove a single machine that currently equals `expected`.
+    Delete {
+        #[serde(rename = "vmId")]
+        vm_id: String,
+        expected: MachineConfiguration,
+    },
+    /// Reorder the whole inventory. `order`/`expectedOrder` are machine identities.
+    Reorder {
+        order: Vec<String>,
+        #[serde(rename = "expectedOrder")]
+        expected_order: Vec<String>,
+    },
+}
+
+impl MachineConfigurationChange {
+    fn label(&self) -> String {
+        match self {
+            Self::Upsert { .. } => "Saving sandbox settings".into(),
+            Self::Delete { expected, .. } => format!("Deleting {}", expected.name()),
+            Self::Reorder { .. } => "Reordering sandboxes".into(),
+        }
+    }
+
+    fn apply(&self, machines: &mut Vec<MachineConfiguration>) -> Result<(), String> {
+        let outcome = match self {
+            Self::Upsert { machine, expected } => {
+                change_machine(machines, machine.id(), expected.as_ref(), Some(machine))
+            }
+            Self::Delete { vm_id, expected } => change_machine(machines, vm_id, Some(expected), None),
+            Self::Reorder { order, expected_order } => {
+                reorder_machines(machines, order, expected_order)
+            }
+        };
+        outcome.map_err(|rejection| match (self, rejection) {
+            (Self::Reorder { .. }, _) => {
+                "These sandboxes changed while your edit was waiting. Review them and try again."
+                    .to_string()
+            }
+            (_, ChangeRejection::Missing) => "This VM no longer exists.".to_string(),
+            (_, ChangeRejection::Stale | ChangeRejection::WrongTarget) => {
+                "This VM changed while your edit was waiting. Review it and try again.".to_string()
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationSource {
@@ -2179,6 +2308,110 @@ pub fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurationPro
     read_activity(&paths, OPERATIONS.is_idle())
 }
 
+fn normalize_request_id(request_id: Option<String>) -> Result<String, String> {
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if request_id.trim().is_empty() || request_id.len() > 256 {
+        return Err("Invalid sandbox configuration request ID.".into());
+    }
+    Ok(request_id)
+}
+
+/// Validate, save and verify a finalized configuration with the shared journal,
+/// progress events and completion outcome. The caller holds the operation gate and
+/// supplies the exact `request` to persist (a whole-list save or a targeted change
+/// already applied to fresh metadata). Preserves `request_id`, progress events,
+/// `retry_workspace` semantics and pending-verification resumption.
+fn apply_configuration_with_progress(
+    app: &AppHandle,
+    paths: &RuntimePaths,
+    request: MachineConfigurationRequest,
+    request_id: &str,
+    retry_workspace: Option<String>,
+) -> Result<ApplicationSource, String> {
+    let resources = host_resources().map_err(|e| e.to_string())?;
+    validate_request(&request).map_err(|e| e.to_string())?;
+    validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
+    configuration_recovery::prepare_retry(&ProcessRunner, paths, Some(&request)).map_err(|e| e.to_string())?;
+    let retry_workspace = retry_workspace.or_else(|| {
+        // A no-change retry after relaunch resumes the failed verification only.
+        // A fresh add, edit or removal must not replay another sandbox's work.
+        if read_metadata(&paths.metadata).ok().as_ref() != Some(&request) {
+            return None;
+        }
+        pending_verification_workspace(&read_activity(paths, false).unwrap_or_default())
+            .filter(|name| request.machines.iter().any(|machine| machine.name() == name))
+    });
+    let journal = Mutex::new(ActivityJournal::start(paths, request_id)?);
+    let publish = |event: MachineConfigurationProgress| {
+        let mut journal = journal.lock().unwrap_or_else(|error| error.into_inner());
+        let event = journal.append(event);
+        if let Some(warning) = journal.events.last().filter(|entry| entry.step == "activity-storage-warning") {
+            let _ = app.emit_to("main", "silo://machine-configuration-progress", warning);
+        }
+        let _ = app.emit_to("main", "silo://machine-configuration-progress", &event);
+    };
+    publish(machine_progress(request_id, "setup-started", "", 0));
+    let progress = |step: &str, workspace: &str, fraction: u8| {
+        publish(machine_progress(request_id, step, workspace, fraction));
+    };
+    let result = Ok(resources)
+        .and_then(|resources| {
+            if resources.physical_memory_bytes.is_none() {
+                let mut warning = machine_progress(request_id, "host-memory-warning", "", 0);
+                warning.level = "warning".into();
+                warning.message = "Silo could not measure host memory. Setup can continue, but available memory could not be checked.".into();
+                publish(warning);
+            }
+            validate_request(&request)?;
+            validate_requested_resources(&request, &resources)?;
+            save_machine_configuration_with_progress(
+                &SetupRunner {
+                    request_id,
+                    publish: &publish,
+                },
+                paths,
+                &resources,
+                request,
+                retry_workspace.as_deref(),
+                &progress,
+            ).and_then(|_| configuration_recovery::finish(paths))
+        })
+        .and_then(|_| read_application_state_with(&ProcessRunner, paths));
+    let mut outcome = machine_progress(
+        request_id,
+        if result.is_ok() {
+            "setup-completed"
+        } else {
+            "setup-failed"
+        },
+        "",
+        0,
+    );
+    if let Err(error) = &result {
+        outcome.level = "error".into();
+        outcome.failure_code = Some(failure_code(error).into());
+        outcome.exit_code = runtime_exit_code(error);
+        let last = journal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .events
+            .last()
+            .cloned();
+        if let Some(last) = last {
+            outcome.workspace = last.workspace;
+        }
+        outcome.message = format!(
+            "Sandbox setup failed: {} Check the sandbox state before retrying.",
+            safe_activity_error(error)
+        );
+    }
+    publish(outcome);
+    result.map_err(|error| safe_activity_error(&error))
+}
+
+/// Replace the whole VM inventory with `request`. Used for the initial onboarding
+/// setup and for no-change retry/recovery, where the entire list is authoritative.
+/// Targeted create/edit/delete/reorder go through `change_machine_configuration`.
 #[tauri::command]
 pub async fn save_machine_configuration(
     app: AppHandle,
@@ -2187,10 +2420,7 @@ pub async fn save_machine_configuration(
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready(&app)?;
-    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    if request_id.trim().is_empty() || request_id.len() > 256 {
-        return Err("Invalid sandbox configuration request ID.".into());
-    }
+    let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
@@ -2199,85 +2429,42 @@ pub async fn save_machine_configuration(
             .computer("Saving sandbox settings")
             .map_err(|e| e.to_string())?;
         shutdown::ensure_accepting_operations()?;
-        let resources = host_resources().map_err(|e| e.to_string())?;
-        validate_request(&request).map_err(|e| e.to_string())?;
-        validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
-        configuration_recovery::prepare_retry(&ProcessRunner, &paths, Some(&request)).map_err(|e| e.to_string())?;
-        let retry_workspace = retry_workspace.or_else(|| {
-            // A no-change retry after relaunch resumes the failed verification only.
-            // A fresh add, edit or removal must not replay another sandbox's work.
-            if read_metadata(&paths.metadata).ok().as_ref() != Some(&request) {
-                return None;
-            }
-            pending_verification_workspace(&read_activity(&paths, false).unwrap_or_default())
-                .filter(|name| request.machines.iter().any(|machine| machine.name() == name))
-        });
-        let journal = Mutex::new(ActivityJournal::start(&paths, &request_id)?);
-        let publish = |event: MachineConfigurationProgress| {
-            let mut journal = journal.lock().unwrap_or_else(|error| error.into_inner());
-            let event = journal.append(event);
-            if let Some(warning) = journal.events.last().filter(|entry| entry.step == "activity-storage-warning") {
-                let _ = app.emit_to("main", "silo://machine-configuration-progress", warning);
-            }
-            let _ = app.emit_to("main", "silo://machine-configuration-progress", &event);
-        };
-        publish(machine_progress(&request_id, "setup-started", "", 0));
-        let progress = |step: &str, workspace: &str, fraction: u8| {
-            publish(machine_progress(&request_id, step, workspace, fraction));
-        };
-        let result = Ok(resources)
-            .and_then(|resources| {
-                if resources.physical_memory_bytes.is_none() {
-                    let mut warning = machine_progress(&request_id, "host-memory-warning", "", 0);
-                    warning.level = "warning".into();
-                    warning.message = "Silo could not measure host memory. Setup can continue, but available memory could not be checked.".into();
-                    publish(warning);
-                }
-                validate_request(&request)?;
-                validate_requested_resources(&request, &resources)?;
-                save_machine_configuration_with_progress(
-                    &SetupRunner {
-                        request_id: &request_id,
-                        publish: &publish,
-                    },
-                    &paths,
-                    &resources,
-                    request,
-                    retry_workspace.as_deref(),
-                    &progress,
-                ).and_then(|_| configuration_recovery::finish(&paths))
-            })
-            .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
-        let mut outcome = machine_progress(
-            &request_id,
-            if result.is_ok() {
-                "setup-completed"
-            } else {
-                "setup-failed"
-            },
-            "",
-            0,
-        );
-        if let Err(error) = &result {
-            outcome.level = "error".into();
-            outcome.failure_code = Some(failure_code(error).into());
-            outcome.exit_code = runtime_exit_code(error);
-            let last = journal
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .events
-                .last()
-                .cloned();
-            if let Some(last) = last {
-                outcome.workspace = last.workspace;
-            }
-            outcome.message = format!(
-                "Sandbox setup failed: {} Check the sandbox state before retrying.",
-                safe_activity_error(error)
-            );
-        }
-        publish(outcome);
-        result.map_err(|error| safe_activity_error(&error))
+        apply_configuration_with_progress(&app, &paths, request, &request_id, retry_workspace)
+    })
+    .await
+    .map_err(|error| format!("Sandbox configuration worker failed: {error}")).and_then(|result| result);
+    if result.is_err() {
+        crate::notifications::action_failed(&notify_app, "Sandbox setup failed");
+    }
+    result
+}
+
+/// Apply one targeted change (create, edit, delete or reorder) against the current
+/// inventory. Because the request may wait its turn on the operation gate, the change
+/// is applied to fresh metadata read under the gate and rejected if the targeted VM
+/// changed while the edit was waiting, rather than overwriting with a stale list.
+#[tauri::command]
+pub async fn change_machine_configuration(
+    app: AppHandle,
+    change: MachineConfigurationChange,
+    request_id: Option<String>,
+    retry_workspace: Option<String>,
+) -> Result<ApplicationSource, String> {
+    crate::runtime_migration::ensure_ready(&app)?;
+    let request_id = normalize_request_id(request_id)?;
+    let notify_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        // Changes the shared VM inventory/metadata; computer-wide.
+        let _guard = OPERATIONS
+            .computer(&change.label())
+            .map_err(|e| e.to_string())?;
+        shutdown::ensure_accepting_operations()?;
+        // Read fresh, then apply the specific change so a queued edit lands on the
+        // latest inventory instead of overwriting concurrent work.
+        let mut request = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
+        change.apply(&mut request.machines)?;
+        apply_configuration_with_progress(&app, &paths, request, &request_id, retry_workspace)
     })
     .await
     .map_err(|error| format!("Sandbox configuration worker failed: {error}")).and_then(|result| result);
@@ -5642,4 +5829,116 @@ pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String])
 /// Caller holds the operation gate for this VM and has verified the stable VM identity.
 pub(crate) fn start_for_desktop(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeError> {
     workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", workspace)
+}
+
+#[cfg(test)]
+mod change_configuration_tests {
+    use super::*;
+
+    fn vm(id: &str, name: &str, cpus: u8) -> MachineConfiguration {
+        MachineConfiguration::Vm {
+            id: id.into(),
+            name: name.into(),
+            cpus,
+            max_cpus: 4,
+            memory_gib: 2,
+            max_memory_gib: 4,
+            workspace_storage_gib: 10,
+            runtime_storage_gib: 10,
+            desktop: None,
+        }
+    }
+
+    fn upsert(machine: &MachineConfiguration, expected: Option<&MachineConfiguration>) -> MachineConfigurationChange {
+        MachineConfigurationChange::Upsert {
+            machine: machine.clone(),
+            expected: expected.cloned(),
+        }
+    }
+
+    #[test]
+    fn upsert_rejected_when_expected_does_not_match_current() {
+        let current = vm("a", "dev", 2);
+        let mut machines = vec![current.clone(), vm("b", "web", 2)];
+        // The user edited from a two-CPU baseline, but the VM now has four CPUs.
+        let stale_expected = vm("a", "dev", 4);
+        let edited = vm("a", "dev", 3);
+        let error = upsert(&edited, Some(&stale_expected)).apply(&mut machines).unwrap_err();
+        assert!(error.contains("changed while your edit was waiting"), "{error}");
+        // Nothing is mutated on rejection.
+        assert_eq!(machines, vec![current, vm("b", "web", 2)]);
+    }
+
+    #[test]
+    fn delete_rejected_when_vm_no_longer_exists() {
+        let mut machines = vec![vm("b", "web", 2)];
+        let change = MachineConfigurationChange::Delete {
+            vm_id: "a".into(),
+            expected: vm("a", "dev", 2),
+        };
+        // Current config for "a" is absent, so it never equals the expected snapshot.
+        let error = change.apply(&mut machines).unwrap_err();
+        assert!(error.contains("changed while your edit was waiting"), "{error}");
+        assert_eq!(machines, vec![vm("b", "web", 2)]);
+    }
+
+    #[test]
+    fn delete_of_present_vm_removes_only_that_vm() {
+        let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2)];
+        let change = MachineConfigurationChange::Delete {
+            vm_id: "a".into(),
+            expected: vm("a", "dev", 2),
+        };
+        change.apply(&mut machines).unwrap();
+        assert_eq!(machines, vec![vm("b", "web", 2)]);
+        // A second identical delete now fails: the VM is gone.
+        assert!(change.apply(&mut machines).is_err());
+    }
+
+    #[test]
+    fn two_sequential_changes_both_land_second_on_top_of_first() {
+        // Each targeted change reads fresh state and applies on top of the previous
+        // one, so both survive instead of the second overwriting the first.
+        let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2)];
+
+        // First edit: change "a" to three CPUs, expecting the two-CPU baseline.
+        let first = upsert(&vm("a", "dev", 3), Some(&vm("a", "dev", 2)));
+        first.apply(&mut machines).unwrap();
+
+        // Second edit targets "b" and expects the current "b" (unchanged by the first).
+        let second = upsert(&vm("b", "web", 3), Some(&vm("b", "web", 2)));
+        second.apply(&mut machines).unwrap();
+
+        // Both edits are preserved, and order is stable (edit in place, not append).
+        assert_eq!(machines, vec![vm("a", "dev", 3), vm("b", "web", 3)]);
+    }
+
+    #[test]
+    fn edit_preserves_position_instead_of_appending() {
+        let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2), vm("c", "db", 2)];
+        upsert(&vm("a", "dev", 3), Some(&vm("a", "dev", 2))).apply(&mut machines).unwrap();
+        assert_eq!(machines, vec![vm("a", "dev", 3), vm("b", "web", 2), vm("c", "db", 2)]);
+    }
+
+    #[test]
+    fn reorder_requires_matching_expected_order() {
+        let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2), vm("c", "db", 2)];
+        let change = MachineConfigurationChange::Reorder {
+            order: vec!["c".into(), "a".into(), "b".into()],
+            expected_order: vec!["a".into(), "b".into(), "c".into()],
+        };
+        change.apply(&mut machines).unwrap();
+        assert_eq!(
+            machines.iter().map(MachineConfiguration::id).collect::<Vec<_>>(),
+            vec!["c", "a", "b"]
+        );
+
+        // A stale expected order (the inventory changed meanwhile) is rejected.
+        let stale = MachineConfigurationChange::Reorder {
+            order: vec!["a".into(), "b".into(), "c".into()],
+            expected_order: vec!["a".into(), "b".into(), "c".into()],
+        };
+        let error = stale.apply(&mut machines).unwrap_err();
+        assert!(error.contains("changed while your edit was waiting"), "{error}");
+    }
 }

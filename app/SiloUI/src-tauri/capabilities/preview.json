@@ -95,6 +95,7 @@
     "allow-read-setup-activity",
     "allow-read-operation-queue",
     "allow-save-machine-configuration",
+    "allow-change-machine-configuration",
     "allow-remote-host-list",
     "allow-remote-host-snapshot",
     "allow-remote-management-status",

@@ -127,6 +127,7 @@ fn main() {
             "workspace_action",
             "retry_workspace_start",
             "save_machine_configuration",
+            "change_machine_configuration",
             "read_setup_activity",
             "read_operation_queue",
         ]),
