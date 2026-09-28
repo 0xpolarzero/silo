@@ -29,7 +29,10 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -872,8 +875,17 @@ fn run_msb_process(
         let material = crate::secrets::runtime_material(workspace).map_err(RuntimeError::Unavailable)?;
         secrets_runtime::validate_material(&material).map_err(RuntimeError::Invalid)?;
         if matches!(args[0].as_str(), "start" | "restart") {
-            secrets_runtime::apply(paths, workspace, &material, true)
-                .map_err(|attempt| RuntimeError::Unavailable(String::from(attempt)))?;
+            secrets_runtime::apply(paths, workspace, &material, true).map_err(|attempt| {
+                // A cancel during the boot-time secret application must surface as a
+                // cancellation, not an unavailable-runtime failure, so callers and the
+                // retry boundary treat it as the user's stop rather than a fault.
+                match attempt {
+                    secrets_runtime::Attempt::Cancelled(_) => RuntimeError::Cancelled {
+                        operation: operation_name(args),
+                    },
+                    other => RuntimeError::Unavailable(String::from(other)),
+                }
+            })?;
         }
         material
     } else { Vec::new() };
@@ -1954,7 +1966,17 @@ fn gated_auto_retry_with<T>(
     prepare: impl Fn(&operation_gate::OperationGuard<'static>),
     work: impl Fn() -> Result<T, RuntimeError>,
 ) -> Result<T, RuntimeError> {
-    gated_auto_retry_classified(delays, base_label, acquire, prepare, work, transient_runtime_error)
+    gated_auto_retry_classified(
+        delays,
+        base_label,
+        acquire,
+        prepare,
+        work,
+        transient_runtime_error,
+        || RuntimeError::Cancelled {
+            operation: base_label.to_owned(),
+        },
+    )
 }
 
 /// The retry engine behind `gated_auto_retry`, generic over the error type so callers
@@ -1964,6 +1986,19 @@ fn gated_auto_retry_with<T>(
 /// before any backoff sleep, so other queued work runs between attempts. Only genuinely
 /// transient failures (`is_transient` returns true) are retried, up to `delays.len()`
 /// extra attempts; every other outcome, including gate errors from `acquire`, is final.
+///
+/// A single cancel token spans the whole sequence: it is adopted into every attempt's
+/// guard (`adopt_cancel_token`), so a cancel issued against one attempt's queue id carries
+/// over to the remaining attempts and is honored before the next attempt runs. The token
+/// is checked before re-acquiring and during the backoff (which sleeps in short slices);
+/// when set, the sequence stops and returns `cancelled()`.
+///
+/// Limitation: between attempts the guard is dropped, so the retry has no queue entry while
+/// it backs off. The gate can only flip the shared token while a guard adopting it is
+/// running, so a cancel requested purely during the backoff window is observed at the next
+/// attempt's acquisition rather than mid-sleep; a cancel during an attempt's own run carries
+/// over immediately. Surfacing a non-blocking "retrying soon" queue entry would remove this
+/// gap but requires a new gate scope excluded from conflict checks; not done here.
 fn gated_auto_retry_classified<T, E>(
     delays: &[Duration],
     base_label: &str,
@@ -1971,17 +2006,28 @@ fn gated_auto_retry_classified<T, E>(
     prepare: impl Fn(&operation_gate::OperationGuard<'static>),
     work: impl Fn() -> Result<T, E>,
     is_transient: impl Fn(&E) -> bool,
+    cancelled: impl Fn() -> E,
 ) -> Result<T, E> {
     let total = delays.len() + 1;
+    // One shared cancel token for the whole retry sequence, created before the first attempt.
+    let token = Arc::new(AtomicBool::new(false));
     let mut attempt = 0usize;
     loop {
+        // A cancel from a previous attempt (or during its backoff) stops the sequence before
+        // re-acquiring the gate.
+        if token.load(Ordering::SeqCst) {
+            return Err(cancelled());
+        }
         let label = if attempt == 0 {
             base_label.to_owned()
         } else {
             format!("{base_label} (attempt {} of {total})", attempt + 1)
         };
         let outcome = {
-            let guard = acquire(&label)?;
+            let mut guard = acquire(&label)?;
+            // Share the sequence-wide token so a cancel against this attempt is observed by
+            // the work (through the current-operation token) and carries to later attempts.
+            guard.adopt_cancel_token(token.clone());
             prepare(&guard);
             work()
             // guard dropped here, releasing the gate before any backoff sleep.
@@ -1989,8 +2035,24 @@ fn gated_auto_retry_classified<T, E>(
         match outcome {
             Ok(value) => return Ok(value),
             Err(error) => {
+                // A cancel requested during the attempt takes priority over the work's own
+                // error classification: never retry a cancelled operation.
+                if token.load(Ordering::SeqCst) {
+                    return Err(cancelled());
+                }
                 if attempt < delays.len() && is_transient(&error) {
-                    thread::sleep(delays[attempt]);
+                    // Sleep in short slices so a cancel is observed promptly and the sequence
+                    // stops instead of running a further attempt.
+                    let mut remaining = delays[attempt];
+                    let slice = Duration::from_millis(100);
+                    while !remaining.is_zero() {
+                        if token.load(Ordering::SeqCst) {
+                            return Err(cancelled());
+                        }
+                        let step = remaining.min(slice);
+                        thread::sleep(step);
+                        remaining -= step;
+                    }
                     attempt += 1;
                     continue;
                 }
@@ -2020,14 +2082,15 @@ pub async fn workspace_action(
         .map_err(|_| "The application launcher failed.".to_string())?;
     }
     let worker_app = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<ApplicationSource, (bool, String)> {
         let app = worker_app;
-        let paths = runtime_paths(&app)?;
+        // Setup failures before the operation runs are genuine faults worth notifying about.
+        let paths = runtime_paths(&app).map_err(|error| (true, error))?;
         // Start/stop/restart change only this VM's runtime; resource admission is
         // against host totals, not other VMs, so per-VM ordering is sufficient. The
         // key collapses double-clicked lifecycle requests into one queued action.
         // Resolve the stable id before acquiring so ordering survives a rename.
-        let vm_id = resolve_vm_id(&paths, &name).map_err(|error| error.to_string())?;
+        let vm_id = resolve_vm_id(&paths, &name).map_err(|error| (true, error.to_string()))?;
         let base_label = lifecycle_label(&action, &name);
         let key = format!("vm:{vm_id}:{action}");
         // Start/restart may be cancelled while running; stop may not. Expected durations
@@ -2056,9 +2119,17 @@ pub async fn workspace_action(
         };
         let work = || -> Result<(), RuntimeError> {
             shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
+            // Re-read metadata once this attempt's turn arrives and re-derive the display
+            // name by its stable id: a rename or removal may have landed while waiting.
+            let metadata = read_metadata(&paths.metadata)?;
+            let machine = metadata
+                .machines
+                .iter()
+                .find(|machine| machine.id() == vm_id && machine.is_vm())
+                .ok_or_else(|| RuntimeError::Invalid("This VM no longer exists.".into()))?;
             let _ = app.emit("silo://application-state-changed", ());
             let resources = host_resources()?;
-            explicit_workspace_action_with(&ProcessRunner, &paths, &resources, &action, &name)
+            explicit_workspace_action_with(&ProcessRunner, &paths, &resources, &action, machine.name())
         };
         // Start/stop/restart are idempotent, so transient failures retry automatically.
         // Other lifecycle actions run once.
@@ -2077,12 +2148,30 @@ pub async fn workspace_action(
         };
         let _ = app.emit("silo://application-state-changed", ());
         let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
-        result.map_err(|error| runtime_activity::failure_message(&error))
+        // Decide whether to notify before the typed error is flattened to a message: a
+        // user-cancelled action is an expected outcome, not a failure to notify about.
+        result.map_err(|error| {
+            (
+                should_notify_action_failure(&error),
+                runtime_activity::failure_message(&error),
+            )
+        })
     }).await.map_err(|_| "Sandbox action worker failed.".to_string())?;
-    if result.is_err() {
-        crate::notifications::action_failed(&app, "Sandbox action failed");
+    match result {
+        Ok(state) => Ok(state),
+        Err((notify, message)) => {
+            if notify {
+                crate::notifications::action_failed(&app, "Sandbox action failed");
+            }
+            Err(message)
+        }
     }
-    result
+}
+
+/// A failed sandbox lifecycle action warrants a failure notification unless the user
+/// cancelled it: a cancellation is an expected outcome, not something to alert about.
+fn should_notify_action_failure(error: &RuntimeError) -> bool {
+    !matches!(error, RuntimeError::Cancelled { .. })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3961,6 +4050,21 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_actions_are_not_notified_but_other_failures_are() {
+        assert!(!should_notify_action_failure(&RuntimeError::Cancelled {
+            operation: "Starting dev".into(),
+        }));
+        assert!(should_notify_action_failure(&RuntimeError::Failed {
+            operation: "Starting dev".into(),
+            detail: "boot failed".into(),
+        }));
+        assert!(should_notify_action_failure(&RuntimeError::TimedOut {
+            operation: "Starting dev".into(),
+        }));
+        assert!(should_notify_action_failure(&RuntimeError::Busy));
+    }
+
+    #[test]
     fn auto_retry_does_not_retry_non_transient_failures() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let attempts = AtomicUsize::new(0);
@@ -4019,6 +4123,7 @@ mod tests {
                 }
             },
             Attempt::is_transient,
+            || Attempt::Cancelled("Saving secrets was cancelled.".into()),
         );
         assert!(result.is_ok());
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
@@ -4046,10 +4151,63 @@ mod tests {
                 Err(Attempt::Final("The sandbox rejected the secret update.".into()))
             },
             Attempt::is_transient,
+            || Attempt::Cancelled("Saving secrets was cancelled.".into()),
         );
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert!(gate.is_vm_idle("final-secret-id"));
+    }
+
+    #[test]
+    fn retry_sequence_stops_and_carries_cancellation_across_attempts() {
+        use super::secrets_runtime::Attempt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // A shared gate lets a second thread cancel the running attempt by its queue id; the
+        // sequence-wide token must then stop the retries and report the cancellation.
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let delays = [Duration::from_millis(50), Duration::from_millis(50)];
+        let counted = attempts.clone();
+        let handle = std::thread::spawn(move || -> Result<(), Attempt> {
+            gated_auto_retry_classified(
+                &delays,
+                "Saving secrets for cancel-secret",
+                |label| {
+                    gate.vm("cancel-secret-id", "cancel-secret", label)
+                        .map_err(|error| Attempt::Final(error.to_string()))
+                },
+                |guard| guard.allow_cancel(),
+                || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    // Model cancellable in-flight work: stay running until cancelled (or a
+                    // safety deadline) so the canceller reliably observes a running entry.
+                    // Without a cancel every attempt would return this transient error.
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while Instant::now() < deadline && !operation_gate::cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(Attempt::Transient("Updating sandbox secrets timed out.".into()))
+                },
+                Attempt::is_transient,
+                || Attempt::Cancelled("Saving secrets was cancelled.".into()),
+            )
+        });
+        // Cancel the first attempt while it is the running entry.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(entry) = gate.snapshot().running.first() {
+                gate.cancel(entry.id).unwrap();
+                break;
+            }
+            assert!(Instant::now() < deadline, "attempt never started running");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let result = handle.join().unwrap();
+        assert!(matches!(result, Err(Attempt::Cancelled(_))));
+        // The cancel carried over instead of running all three attempts.
+        assert!(attempts.load(Ordering::SeqCst) < 3);
+        assert!(gate.is_vm_idle("cancel-secret-id"));
     }
 
     struct StubRunner {
@@ -6160,6 +6318,7 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(Stri
         prepare,
         work,
         secrets_runtime::Attempt::is_transient,
+        || secrets_runtime::Attempt::Cancelled("Saving secrets was cancelled.".into()),
     )
     .map_err(String::from)
 }

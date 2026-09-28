@@ -13,6 +13,10 @@ pub(crate) type Material = Vec<(String, String, Vec<String>)>;
 pub(crate) enum Attempt {
     Transient(String),
     Final(String),
+    /// The user cancelled the update while it was running. Like `Final`, retrying cannot
+    /// clear it; kept distinct so the caller can surface it as a cancellation rather than
+    /// a runtime failure.
+    Cancelled(String),
 }
 
 impl Attempt {
@@ -40,7 +44,9 @@ impl From<&str> for Attempt {
 impl From<Attempt> for String {
     fn from(attempt: Attempt) -> Self {
         match attempt {
-            Attempt::Transient(message) | Attempt::Final(message) => message,
+            Attempt::Transient(message) | Attempt::Final(message) | Attempt::Cancelled(message) => {
+                message
+            }
         }
     }
 }
@@ -193,8 +199,22 @@ fn modify(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| "Could not update sandbox secrets.".to_string())?;
+    await_modify_child(child)
+}
+
+/// Polls a spawned `modify` child until it exits, the mutation timeout elapses, or the
+/// current operation is cancelled. On cancel or timeout the child is killed and reaped.
+/// A cancel returns a non-transient `Cancelled` so the retry boundary does not re-run it.
+fn await_modify_child(mut child: std::process::Child) -> Result<(), Attempt> {
     let deadline = Instant::now() + MUTATION_TIMEOUT;
     loop {
+        // A cancellable secret update asked to stop: kill the child like the timeout path
+        // and report a non-transient cancellation so auto-retry does not re-run it.
+        if operation_gate::cancel_requested() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Attempt::Cancelled("Saving secrets was cancelled.".into()));
+        }
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(_)) => {
@@ -295,6 +315,11 @@ pub(crate) fn apply(
     }
     let (live, deferred, pending) = plan(&inspected, material, boot);
     modify(paths, workspace, &live, material, false)?;
+    // Stop before the deferred (next-start) update if the user cancelled between the two
+    // runtime commands, so a cancelled save does not push further changes.
+    if operation_gate::cancel_requested() {
+        return Err(Attempt::Cancelled("Saving secrets was cancelled.".into()));
+    }
     modify(paths, workspace, &deferred, material, true)?;
     let observed = inspect_workspace(&ProcessRunner, paths, workspace)
         .map_err(|_| "Could not verify the saved sandbox secrets.".to_string())?;
@@ -358,6 +383,32 @@ mod tests {
         assert!(!Attempt::from("bad input".to_string()).is_transient());
         assert_eq!(String::from(transient), "timed out");
         assert_eq!(String::from(final_error), "rejected");
+        // A cancellation is non-transient and preserves its message like the others.
+        let cancelled = Attempt::Cancelled("stopped".into());
+        assert!(!cancelled.is_transient());
+        assert_eq!(String::from(cancelled), "stopped");
+    }
+
+    #[test]
+    fn modify_child_is_killed_and_reported_cancelled_when_the_operation_is_cancelled() {
+        // A long-running stand-in child models a `modify` runtime command; cancelling the
+        // owning operation must kill it and return a non-transient `Cancelled` so the retry
+        // boundary does not re-run the update.
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let guard = gate.vm("secret-cancel-id", "secret-cancel", "Saving secrets").unwrap();
+        guard.allow_cancel();
+        let id = gate.snapshot().running[0].id;
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        // Request cancel first; the guard was acquired on this thread, so its current-operation
+        // token flips and `await_modify_child` observes it on the next poll.
+        gate.cancel(id).unwrap();
+        let result = await_modify_child(child);
+        assert!(matches!(result, Err(Attempt::Cancelled(_))));
+        // The child was killed and reaped, so its pid no longer names a live process.
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
+        drop(guard);
     }
 
     fn config(names: &[&str]) -> Value {
