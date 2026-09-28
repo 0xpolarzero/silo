@@ -15,6 +15,7 @@ helper=${SILO_DESKTOP_SERVICE_SOURCE:-$(CDPATH= cd -- "$(dirname -- "$0")" && pw
 luda_helper=${SILO_LUDA_SETUP_SOURCE:-$(dirname -- "$helper")/setup-luda.py}
 luda_lock=${SILO_LUDA_LOCK_SOURCE:-$(dirname -- "$helper")/luda-lock.json}
 streamer_lock=${SILO_DESKTOP_STREAMER_LOCK_SOURCE:-$(dirname -- "$helper")/desktop-streamer-lock.json}
+selkies_web_client_patch=${SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE:-$(dirname -- "$helper")/patch-selkies-web-client.py}
 [ -f "$luda_helper" ] && [ -f "$luda_lock" ] || { echo 'Desktop tools recipe is missing' >&2; exit 1; }
 [ -f "$helper" ] || { echo 'Desktop lifecycle helper is missing' >&2; exit 1; }
 mkdir -p /var/lib/silo-desktop
@@ -30,7 +31,7 @@ import json, re, sys
 # SILO_STREAMER_LOCK_V1
 lock = json.load(open(sys.argv[1], encoding='utf-8'))
 if (set(lock) != {'schemaVersion', 'recipeVersion', 'version', 'resolution', 'assets'} or
-        lock['schemaVersion'] != 1 or lock['recipeVersion'] != 1 or
+        lock['schemaVersion'] != 1 or lock['recipeVersion'] != 2 or
         lock['version'] != '2.0.0' or lock['resolution'] != {'width': 1440, 'height': 900} or
         set(lock['assets']) != {'amd64', 'arm64'}):
     raise SystemExit('Invalid bundled desktop streamer lock')
@@ -133,6 +134,8 @@ install_streamer() {
     mv "$package.partial" "$package"
     apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -y --no-install-recommends "$package"
     [ -x /usr/bin/selkies ] || { echo 'Pinned desktop streamer did not install /usr/bin/selkies' >&2; exit 1; }
+    [ -f "$selkies_web_client_patch" ] || { echo 'Selkies web client patch helper is missing' >&2; exit 1; }
+    python3 "$selkies_web_client_patch" "$arch"
     ensure_connection_credentials "$connection_policy"
     write_streamer_receipt
     rm -f "$package"

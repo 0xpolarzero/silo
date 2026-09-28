@@ -448,7 +448,7 @@ class DesktopLifecycle(unittest.TestCase):
         self.assertEqual([call.args[0]['name'] for call in stop_process.call_args_list],
                          ['xfce', 'pulse', 'xvfb'])
 
-    def test_selkies_status_uses_the_versioned_receipt_without_kasm(self):
+    def test_selkies_v1_receipt_preserves_live_state_and_requires_update(self):
         executable = self.root / 'selkies'
         executable.write_text('#!/bin/sh\nexit 0\n')
         executable.chmod(0o755)
@@ -466,17 +466,49 @@ class DesktopLifecycle(unittest.TestCase):
                 return SimpleNamespace(st_mode=result.st_mode, st_uid=0)
             return result
 
-        with patch.object(service, 'SELKIES_EXECUTABLE', executable), \
-             patch.object(service.os, 'uname', return_value=SimpleNamespace(machine='aarch64')), \
-             patch.object(service.Path, 'lstat', autospec=True, side_effect=root_owned_receipt), \
-             patch.object(service, 'supervisor', return_value=None), \
-             patch.object(service.shutil, 'which', side_effect=lambda command: None if command == 'vncserver' else '/usr/bin/' + command):
+        session_processes = [{'pid': 10}, {'pid': 11}, {'pid': 12}]
+        current = {'bootId': service.current_boot_id(), 'sessionState': 'running',
+                   'sessionProcesses': session_processes, 'streamState': 'running',
+                   'streamProcess': {'pid': 13}}
+        common_patches = (
+            patch.object(service, 'SELKIES_EXECUTABLE', executable),
+            patch.object(service.os, 'uname', return_value=SimpleNamespace(machine='aarch64')),
+            patch.object(service.Path, 'lstat', autospec=True, side_effect=root_owned_receipt),
+            patch.object(service, 'supervisor', return_value=42),
+            patch.object(service, 'selkies_state', return_value=current),
+            patch.object(service, 'managed_process_matches', return_value=True),
+            patch.object(service, 'selkies_http_ready', return_value=True),
+            patch.object(service.shutil, 'which', side_effect=lambda command: None if command == 'vncserver' else '/usr/bin/' + command),
+        )
+        with common_patches[0], common_patches[1], common_patches[2], common_patches[3], \
+             common_patches[4], common_patches[5], common_patches[6], common_patches[7]:
             result = service.status()
         self.assertEqual(result['backend'], 'selkies')
         self.assertEqual(result['streamerVersion'], '2.0.0')
         self.assertEqual(result['version'], '1')
-        self.assertEqual(result['sessionState'], 'stopped')
-        self.assertEqual(result['streamState'], 'stopped')
+        self.assertEqual(result['state'], 'running')
+        self.assertEqual(result['sessionState'], 'running')
+        self.assertEqual(result['streamState'], 'running')
+        self.assertTrue(result['updateRequired'])
+
+        receipt_value = json.loads(receipt.read_text())
+        receipt_value['recipeVersion'] = 2
+        service.write(receipt, receipt_value)
+        current_patches = (
+            patch.object(service, 'SELKIES_EXECUTABLE', executable),
+            patch.object(service.os, 'uname', return_value=SimpleNamespace(machine='aarch64')),
+            patch.object(service.Path, 'lstat', autospec=True, side_effect=root_owned_receipt),
+            patch.object(service, 'supervisor', return_value=42),
+            patch.object(service, 'selkies_state', return_value=current),
+            patch.object(service, 'managed_process_matches', return_value=True),
+            patch.object(service, 'selkies_http_ready', return_value=True),
+            patch.object(service.shutil, 'which', side_effect=lambda command: None if command == 'vncserver' else '/usr/bin/' + command),
+        )
+        with current_patches[0], current_patches[1], current_patches[2], current_patches[3], \
+             current_patches[4], current_patches[5], current_patches[6], current_patches[7]:
+            result = service.status()
+        self.assertEqual(result['state'], 'running')
+        self.assertFalse(result['updateRequired'])
 
     def test_selkies_stream_failure_preserves_the_session_records(self):
         session = [

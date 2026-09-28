@@ -188,7 +188,7 @@ def streamer_backend():
                 receipt.get('schemaVersion') != 1 or
                 receipt.get('state') != 'ready' or receipt.get('backend') != 'selkies' or
                 receipt.get('version') != '2.0.0' or type(receipt.get('recipeVersion')) is not int or
-                receipt.get('recipeVersion') != 1 or
+                receipt.get('recipeVersion') not in (1, 2) or
                 receipt.get('architecture') != machine or
                 not isinstance(receipt.get('packageSha256'), str) or
                 not re.fullmatch(r'[0-9a-f]{64}', receipt['packageSha256']) or
@@ -198,6 +198,16 @@ def streamer_backend():
         return 'selkies'
     except (OSError, ValueError, TypeError, AttributeError):
         return None
+
+
+def streamer_recipe_version():
+    """Return the validated Selkies recipe revision, or zero when unavailable."""
+    try:
+        value = json.loads((STATE / 'streamer.json').read_text())
+        revision = value.get('recipeVersion')
+        return revision if type(revision) is int and revision in (1, 2) else 0
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
 
 
 def selkies_state():
@@ -867,7 +877,7 @@ def status():
                  'starting' if 'starting' in (session_state, stream_state) else 'stopped')
         backend = 'selkies'
         streamer_version = '2.0.0'
-        update_required = False
+        update_required = streamer_recipe_version() < 2
     elif recipe == 'kasm':
         state = legacy_state
         # A crashed helper must not make an orphaned Xvnc session appear safe

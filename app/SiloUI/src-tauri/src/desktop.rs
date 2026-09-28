@@ -82,6 +82,7 @@ fn installer_script(action: &str) -> String {
         ("SILO_LUDA_SETUP_SOURCE", "setup-luda.py", include_str!("../guest/setup-luda.py"), "SILO_LUDA_SETUP_EOF"),
         ("SILO_LUDA_LOCK_SOURCE", "luda-lock.json", include_str!("../guest/luda-lock.json"), "SILO_LUDA_LOCK_EOF"),
         ("SILO_DESKTOP_STREAMER_LOCK_SOURCE", "desktop-streamer-lock.json", include_str!("../guest/desktop-streamer-lock.json"), "SILO_DESKTOP_STREAMER_LOCK_EOF"),
+        ("SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE", "patch-selkies-web-client.py", include_str!("../guest/patch-selkies-web-client.py"), "SILO_SELKIES_WEB_CLIENT_PATCH_EOF"),
     ] {
         script.push_str(&format!("export {variable}=\"$desktop_stage/{filename}\"\ncat > \"${variable}\" <<'{delimiter}'\n{source}\n{delimiter}\n"));
     }
@@ -600,6 +601,8 @@ mod tests {
         assert!(script.contains("SILO_LUDA_LOCK_SOURCE"));
         assert!(script.contains("SILO_DESKTOP_STREAMER_LOCK_SOURCE"));
         assert!(script.contains("desktop-streamer-lock.json"));
+        assert!(script.contains("SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE"));
+        assert!(script.contains("patch-selkies-web-client.py"));
         assert!(script.contains("set -- install\n"));
         assert!(script.ends_with("/usr/local/bin/silo-desktop autostart false\n"));
     }
@@ -612,6 +615,7 @@ mod tests {
 
         let update = action_script("update-streamer");
         assert!(update.contains("SILO_DESKTOP_STREAMER_LOCK_SOURCE"));
+        assert!(update.contains("SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE"));
         assert!(update.contains("set -- update-streamer\n"));
         assert_eq!(action_timeout("update-streamer"), Duration::from_secs(1800));
         assert_eq!(action_script("restart"), "/usr/local/bin/silo-desktop restart");

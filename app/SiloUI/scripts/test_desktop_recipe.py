@@ -43,6 +43,9 @@ elif name == 'apt-get':
         binary.write_text('#!/bin/sh\nexit 0\n')
         binary.chmod(0o755)
 elif name == 'python3':
+    if args and args[0].endswith('/patch-selkies-web-client.py'):
+        if os.environ.get('SELKIES_PATCH_FAIL'):
+            sys.exit(32)
     if args and args[0] in ('-', '-c'):
         source = sys.stdin.read() if args[0] == '-' else args[1]
         if args[0] == '-' and not any(marker in source for marker in
@@ -105,6 +108,7 @@ class DesktopRecipe(unittest.TestCase):
         (self.fixture / 'desktop-service.py').write_text(stub)
         (self.fixture / 'setup-luda.py').write_text('# fixture installer\n')
         (self.fixture / 'luda-lock.json').write_text('{"version":"test"}\n')
+        (self.fixture / 'patch-selkies-web-client.py').write_text('# fixture patcher\n')
         streamer_lock = (SOURCE.parent / 'desktop-streamer-lock.json').read_text()
         (self.fixture / 'desktop-streamer-lock.json').write_text(streamer_lock)
         os_release = self.root / 'os-release'
@@ -120,6 +124,7 @@ class DesktopRecipe(unittest.TestCase):
         self.env = dict(os.environ, PATH=str(binaries) + ':/usr/bin:/bin',
                         RECIPE_ROOT=str(self.root),
                         SILO_DESKTOP_SERVICE_SOURCE=str(self.fixture / 'desktop-service.py'),
+                        SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE=str(self.fixture / 'patch-selkies-web-client.py'),
                         SELKIES_BINARY=str(self.root / 'usr/bin/selkies'),
                         EXPECTED_STREAMER_SHA='3900f3ba805898c495829629092553cc1cf4d5a864ffc4056f57d21646ad45e4')
 
@@ -150,7 +155,7 @@ class DesktopRecipe(unittest.TestCase):
         self.assertEqual(receipt_path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(receipt_path.read_text()), {
             'schemaVersion': 1, 'state': 'ready', 'backend': 'selkies',
-            'version': '2.0.0', 'recipeVersion': 1, 'architecture': 'arm64',
+            'version': '2.0.0', 'recipeVersion': 2, 'architecture': 'arm64',
             'packageSha256': self.env['EXPECTED_STREAMER_SHA'],
             'resolution': {'width': 1440, 'height': 900},
         })
@@ -160,6 +165,11 @@ class DesktopRecipe(unittest.TestCase):
         self.assertTrue(any('xvfb' in args and 'pulseaudio' in args for args in apt))
         self.assertFalse(any('kasmvncserver_noble' in arg or 'kasmvnc.deb' in arg
                              for args in apt + [curl] for arg in args))
+        patch_call = ['python3', [str(self.fixture / 'patch-selkies-web-client.py'), 'arm64']]
+        self.assertIn(patch_call, calls)
+        package_install = next(i for i, (name, args) in enumerate(calls)
+                               if name == 'apt-get' and any('selkies.deb' in arg for arg in args))
+        self.assertLess(package_install, calls.index(patch_call))
         connection_path = self.state / 'connection.json'
         self.assertEqual(connection_path.stat().st_mode & 0o777, 0o600)
         connection = json.loads(connection_path.read_text())
@@ -180,7 +190,9 @@ class DesktopRecipe(unittest.TestCase):
         self.assertIn('https://github.com/selkies-project/selkies/releases/download/2.0.0/selkies-2.0.0-ubuntu24.04-amd64.deb', curl)
         receipt = json.loads((self.state / 'streamer.json').read_text())
         self.assertEqual(receipt['architecture'], 'amd64')
+        self.assertEqual(receipt['recipeVersion'], 2)
         self.assertEqual(receipt['packageSha256'], digest)
+        self.assertIn(['python3', [str(self.fixture / 'patch-selkies-web-client.py'), 'amd64']], calls)
 
     def test_luda_failure_fails_installation_and_retry_preserves_desktop(self):
         result = subprocess.run(['/bin/sh', str(self.recipe), 'install'],
@@ -243,10 +255,12 @@ class DesktopRecipe(unittest.TestCase):
         calls = self.run_recipe('update-streamer')
         receipt = json.loads((self.state / 'streamer.json').read_text())
         self.assertEqual(receipt['backend'], 'selkies')
+        self.assertEqual(receipt['recipeVersion'], 2)
         self.assertEqual(receipt['packageSha256'], self.env['EXPECTED_STREAMER_SHA'])
         self.assertEqual((self.state / 'streamer.json').stat().st_mode & 0o777, 0o600)
         self.assertTrue(any(name == 'apt-get' and any('selkies.deb' in arg for arg in args)
                             for name, args in calls))
+        self.assertIn(['python3', [str(self.fixture / 'patch-selkies-web-client.py'), 'arm64']], calls)
         installed_helper = self.root / 'usr/local/bin/silo-desktop'
         self.assertEqual(installed_helper.read_text(), (self.fixture / 'desktop-service.py').read_text())
         self.assertEqual(installed_helper.stat().st_mode & 0o777, 0o755)
@@ -255,11 +269,22 @@ class DesktopRecipe(unittest.TestCase):
         self.assertEqual(json.loads(connection_path.read_text()), connection)
 
     def test_failed_selkies_package_install_does_not_write_receipt(self):
+        (self.state / 'installed.json').write_text('{"version":"1"}')
+        connection = {'username': 'silo', 'password': 'a' * 64, 'port': 6901}
+        connection_path = self.state / 'connection.json'
+        connection_path.write_text(json.dumps(connection))
+        connection_path.chmod(0o600)
+        old_receipt = {'schemaVersion': 1, 'state': 'ready', 'backend': 'selkies',
+                       'version': '2.0.0', 'recipeVersion': 1, 'architecture': 'arm64',
+                       'packageSha256': self.env['EXPECTED_STREAMER_SHA'],
+                       'resolution': {'width': 1440, 'height': 900}}
+        receipt_path = self.state / 'streamer.json'
+        receipt_path.write_text(json.dumps(old_receipt))
         result = subprocess.run(['/bin/sh', str(self.recipe), 'update-streamer'],
-                                env=dict(self.env, SELKIES_INSTALL_FAIL='1'),
+                                env=dict(self.env, SELKIES_PATCH_FAIL='1'),
                                 text=True, capture_output=True, timeout=15)
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((self.state / 'streamer.json').exists())
+        self.assertEqual(json.loads(receipt_path.read_text()), old_receipt)
         self.assertFalse((self.root / 'usr/local/bin/silo-desktop').exists())
 
 
