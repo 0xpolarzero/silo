@@ -93,6 +93,7 @@
     "allow-configure-workspace-identities",
     "allow-verify-workspace-identities",
     "allow-read-setup-activity",
+    "allow-read-operation-queue",
     "allow-save-machine-configuration",
     "allow-remote-host-list",
     "allow-remote-host-snapshot",

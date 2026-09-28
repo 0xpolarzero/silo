@@ -1,4 +1,5 @@
 pub(crate) mod remote_ops;
+pub(crate) mod operation_gate;
 pub(crate) mod shutdown;
 pub(crate) mod storage;
 pub(crate) mod checkpoints;
@@ -43,6 +44,13 @@ const MAX_MACHINE_COUNT: usize = 64;
 const MANAGED_LABEL: &str = "silo.managed=true";
 
 pub(crate) static MUTATION_LOCK: Mutex<()> = Mutex::new(());
+/// Ordered admission for VM-changing operations on this computer. See `operation_gate`.
+pub(crate) static OPERATIONS: operation_gate::OperationGate = operation_gate::OperationGate::new();
+
+#[tauri::command]
+pub fn read_operation_queue() -> operation_gate::OperationQueue {
+    OPERATIONS.snapshot()
+}
 const LIFECYCLE_LOCK_WAIT: Duration = Duration::from_secs(5);
 
 fn acquire_lifecycle_lock<'a>(

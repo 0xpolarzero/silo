@@ -51,7 +51,7 @@ mod terminal;
 mod updates;
 mod working_account;
 
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 
 fn main() {
     #[cfg(target_os = "linux")]
@@ -198,10 +198,15 @@ fn main() {
             runtime::checkpoints::restore_checkpoint,
             backup_controller::retry_workspace_start,
             runtime::read_setup_activity,
+            runtime::read_operation_queue,
             runtime::save_machine_configuration
         ])
         .setup(|app| {
             settings::install(app.handle());
+            let queue_app = app.handle().clone();
+            runtime::OPERATIONS.set_listener(move || {
+                let _ = queue_app.emit("silo://operation-queue-changed", ());
+            });
             runtime_migration::install(app.handle())?;
             remote::start(app.handle().clone())?;
             secrets::install(app.handle())?;
