@@ -4,6 +4,7 @@
     "externalBin": [],
     "linux": {
       "appimage": {
+        "bundleMediaFramework": true,
         "files": {
           "/usr/libexec/silo/tools": "runtime/linux-package/tools"
         }

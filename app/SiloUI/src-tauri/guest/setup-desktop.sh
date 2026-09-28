@@ -2,24 +2,152 @@
 # Guest-only optional desktop recipe 1. Never run on the host.
 set -eu
 action=${1:-install}
-case "$action" in install|setup-tools) ;; *) echo 'Usage: setup-desktop.sh install|setup-tools' >&2; exit 2 ;; esac
+case "$action" in install|setup-tools|update-streamer) ;; *) echo 'Usage: setup-desktop.sh install|setup-tools|update-streamer' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Desktop installation requires guest root' >&2; exit 1; }
 . /etc/os-release
 [ "$ID" = ubuntu ] && [ "$VERSION_ID" = 24.04 ] || { echo 'Desktop requires Ubuntu 24.04' >&2; exit 1; }
 case "$(dpkg --print-architecture)" in
-    arm64) arch=arm64; digest=c9199cf4753208bfb69fd016a9780242bebfc43370cc38c97d61e90a3c783e04 ;;
-    amd64) arch=amd64; digest=f599fe02e2175b9817b6165f74a5d2bebdc73118dde9181ba3410963bed7ae1e ;;
+    arm64) arch=arm64 ;;
+    amd64) arch=amd64 ;;
     *) echo 'Desktop requires ARM64 or AMD64' >&2; exit 1 ;;
 esac
 helper=${SILO_DESKTOP_SERVICE_SOURCE:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/desktop-service.py}
 luda_helper=${SILO_LUDA_SETUP_SOURCE:-$(dirname -- "$helper")/setup-luda.py}
 luda_lock=${SILO_LUDA_LOCK_SOURCE:-$(dirname -- "$helper")/luda-lock.json}
+streamer_lock=${SILO_DESKTOP_STREAMER_LOCK_SOURCE:-$(dirname -- "$helper")/desktop-streamer-lock.json}
 [ -f "$luda_helper" ] && [ -f "$luda_lock" ] || { echo 'Desktop tools recipe is missing' >&2; exit 1; }
 [ -f "$helper" ] || { echo 'Desktop lifecycle helper is missing' >&2; exit 1; }
 mkdir -p /var/lib/silo-desktop
 chmod 0700 /var/lib/silo-desktop
 exec 9>/var/lib/silo-desktop/install.lock
 flock -w 5 9 || { echo 'Desktop installation is already running' >&2; exit 1; }
+
+load_streamer_lock() {
+    [ -f "$streamer_lock" ] || { echo 'Desktop streamer lock is missing' >&2; exit 1; }
+    lock_record=$(python3 - "$streamer_lock" "$arch" <<'PY'
+import json, re, sys
+
+# SILO_STREAMER_LOCK_V1
+lock = json.load(open(sys.argv[1], encoding='utf-8'))
+if (set(lock) != {'schemaVersion', 'recipeVersion', 'version', 'resolution', 'assets'} or
+        lock['schemaVersion'] != 1 or lock['recipeVersion'] != 1 or
+        lock['version'] != '2.0.0' or lock['resolution'] != {'width': 1440, 'height': 900} or
+        set(lock['assets']) != {'amd64', 'arm64'}):
+    raise SystemExit('Invalid bundled desktop streamer lock')
+asset = lock['assets'][sys.argv[2]]
+url = ('https://github.com/selkies-project/selkies/releases/download/2.0.0/'
+       'selkies-2.0.0-ubuntu24.04-' + sys.argv[2] + '.deb')
+if (set(asset) != {'url', 'sha256'} or asset['url'] != url or
+        not re.fullmatch(r'[0-9a-f]{64}', asset['sha256'])):
+    raise SystemExit('Invalid bundled desktop streamer asset')
+print(asset['url'], asset['sha256'], lock['version'], lock['recipeVersion'],
+      lock['resolution']['width'], lock['resolution']['height'])
+PY
+    ) || { echo 'Invalid bundled desktop streamer lock' >&2; exit 1; }
+    set -- $lock_record
+    [ "$#" = 6 ] || { echo 'Invalid bundled desktop streamer lock' >&2; exit 1; }
+    streamer_url=$1
+    streamer_digest=$2
+    streamer_version=$3
+    streamer_recipe=$4
+    streamer_width=$5
+    streamer_height=$6
+}
+
+write_streamer_receipt() {
+    python3 - "$arch" "$streamer_digest" "$streamer_version" "$streamer_recipe" \
+        "$streamer_width" "$streamer_height" /var/lib/silo-desktop/streamer.json <<'PY'
+import json, os, pathlib, sys, tempfile
+
+# SILO_STREAMER_RECEIPT_V1
+arch, digest, version, recipe, width, height, destination = sys.argv[1:]
+destination = pathlib.Path(destination)
+receipt = {
+    'schemaVersion': 1, 'state': 'ready', 'backend': 'selkies',
+    'version': version, 'recipeVersion': int(recipe), 'architecture': arch,
+    'packageSha256': digest,
+    'resolution': {'width': int(width), 'height': int(height)},
+}
+fd, temporary = tempfile.mkstemp(prefix='.streamer-', dir=destination.parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as output:
+        output.write(json.dumps(receipt, separators=(',', ':')) + '\n')
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, destination)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
+}
+
+ensure_connection_credentials() {
+    python3 - "$1" /var/lib/silo-desktop/connection.json <<'PY'
+import json, os, pathlib, re, secrets, stat, sys, tempfile
+
+# SILO_DESKTOP_CONNECTION_V1
+create_if_missing, destination = sys.argv[1], pathlib.Path(sys.argv[2])
+try:
+    info = destination.lstat()
+except FileNotFoundError:
+    if create_if_missing != 'create':
+        raise SystemExit('Existing desktop connection credentials are missing')
+    receipt = {'username': 'silo', 'password': secrets.token_hex(32), 'port': 6901}
+    fd, temporary = tempfile.mkstemp(prefix='.connection-', dir=destination.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as output:
+            output.write(json.dumps(receipt, separators=(',', ':')) + '\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    info = destination.lstat()
+if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+        stat.S_IMODE(info.st_mode) != 0o600):
+    raise SystemExit('Desktop connection credentials are not a root-owned mode-0600 file')
+value = json.loads(destination.read_text(encoding='utf-8'))
+if (not isinstance(value, dict) or value.get('username') != 'silo' or
+        value.get('port') != 6901 or not isinstance(value.get('password'), str) or
+        not re.fullmatch(r'[0-9a-f]{64}', value['password'])):
+    raise SystemExit('Desktop connection credentials have an invalid format')
+PY
+}
+
+install_streamer() {
+    connection_policy=$1
+    load_streamer_lock
+    if [ "$connection_policy" = preserve ]; then
+        ensure_connection_credentials preserve
+    fi
+    package=/var/lib/silo-desktop/selkies.deb
+    curl --silent --show-error --fail --location --retry 2 --connect-timeout 30 --max-time 600 --proto '=https' --tlsv1.2 "$streamer_url" -o "$package.partial"
+    printf '%s  %s\n' "$streamer_digest" "$package.partial" | sha256sum --check --status || { rm -f "$package.partial"; echo 'Desktop streamer download checksum mismatch' >&2; exit 1; }
+    mv "$package.partial" "$package"
+    apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -y --no-install-recommends "$package"
+    [ -x /usr/bin/selkies ] || { echo 'Pinned desktop streamer did not install /usr/bin/selkies' >&2; exit 1; }
+    ensure_connection_credentials "$connection_policy"
+    write_streamer_receipt
+    rm -f "$package"
+}
+
+if [ "$action" = update-streamer ]; then
+    [ -f /var/lib/silo-desktop/installed.json ] || { echo 'Install the Linux desktop first' >&2; exit 1; }
+    desktop_status=$(python3 "$helper" status) || { echo 'Unable to verify desktop session state' >&2; exit 1; }
+    session_state=$(printf '%s\n' "$desktop_status" | python3 -c 'import json,sys; value=json.load(sys.stdin); print(value.get("sessionState", value.get("state", "unknown")))') || { echo 'Unable to verify desktop session state' >&2; exit 1; }
+    [ "$session_state" = stopped ] || { echo 'Stop the desktop before updating its streamer' >&2; exit 1; }
+    install_streamer preserve
+    install -m 0755 "$helper" /usr/local/bin/silo-desktop
+    exit 0
+fi
+
 # Desktop sessions share the VM's required working account.
 account=$(python3 "$helper" prepare-install)
 [ "$account" = 'silo /home/silo' ] || { echo 'Unexpected desktop account' >&2; exit 1; }
@@ -80,54 +208,13 @@ if [ -n "$(dpkg --audit)" ]; then
     dpkg --configure -a || apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -f -y
 fi
 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
-apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ca-certificates ssl-cert curl python3 sudo dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings xfdesktop4 xfwm4 thunar xfce4-terminal mousepad greybird-gtk-theme fonts-dejavu-core xauth x11-utils procps
-package=/var/lib/silo-desktop/kasmvnc.deb
-curl --silent --show-error --fail --location --retry 2 --connect-timeout 30 --max-time 600 --proto '=https' --tlsv1.2 "https://github.com/kasmtech/KasmVNC/releases/download/v1.5.0/kasmvncserver_noble_1.5.0_${arch}.deb" -o "$package.partial"
-printf '%s  %s\n' "$digest" "$package.partial" | sha256sum --check --status || { echo 'Desktop download checksum mismatch' >&2; exit 1; }
-mv "$package.partial" "$package"
+apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ca-certificates curl python3 sudo dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings xfdesktop4 xfwm4 thunar xfce4-terminal mousepad greybird-gtk-theme fonts-dejavu-core xauth x11-utils procps xvfb pulseaudio
 printf '%s\n' installing > /var/lib/silo-desktop/install-stage
-apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -y --no-install-recommends "$package"
-usermod -a -G ssl-cert "$desktop_user"
+install_streamer create
 if [ ! -d "$desktop_home/.vnc" ]; then
     install -d -m 0700 -o "$desktop_user" -g "$(id -gn "$desktop_user")" "$desktop_home/.vnc"
 fi
-cat > "$desktop_home/.vnc/kasmvnc.yaml" <<'YAML'
-desktop:
-  resolution:
-    width: 1440
-    height: 900
-  allow_resize: false
-network:
-  protocol: http
-  interface: 0.0.0.0
-  websocket_port: 6901
-  use_ipv6: false
-  ssl:
-    require_ssl: false
-user_session:
-  session_type: shared
-  idle_timeout: never
-encoding:
-  max_frame_rate: 30
-logging:
-  level: 10
-YAML
 configure_session
-chown "$desktop_user:$(id -gn "$desktop_user")" "$desktop_home/.vnc/kasmvnc.yaml"
-python3 - "$desktop_user" "$desktop_home" <<'PY'
-import json, os, pathlib, secrets, subprocess, sys
-root = pathlib.Path('/var/lib/silo-desktop')
-connection = root / 'connection.json'
-if not connection.exists():
-    connection.write_text(json.dumps(dict(username='silo', password=secrets.token_hex(32), port=6901)))
-    connection.chmod(0o600)
-data = json.loads(connection.read_text())
-subprocess.run(['runuser', '-u', sys.argv[1], '--', 'env', 'HOME=' + sys.argv[2], 'kasmvncpasswd', '-u', data['username'], '-r', '-w', str(pathlib.Path(sys.argv[2]) / '.kasmpasswd')], input=(data['password']+'\n'+data['password']+'\n').encode(), stdout=subprocess.DEVNULL, check=True)
-config = root / 'config.json'
-if not config.exists():
-    config.write_text('{"autoStart":true}\n')
-    config.chmod(0o600)
-PY
 install -m 0755 "$helper" /usr/local/bin/silo-desktop
 mkdir -p /usr/local/libexec
 cat > /usr/local/libexec/silo-desktop-boot <<'BOOT'
@@ -136,7 +223,7 @@ exec /usr/local/bin/silo-desktop boot
 BOOT
 chmod 0755 /usr/local/libexec/silo-desktop-boot
 dpkg-query -W > /var/lib/silo-desktop/packages.txt
-printf '%s\n' '{"version":"1","kasmVncVersion":"1.5.0"}' > /var/lib/silo-desktop/installed.json
+printf '%s\n' '{"version":"1","desktopRecipeVersion":1}' > /var/lib/silo-desktop/installed.json
 printf '%s\n' installed > /var/lib/silo-desktop/install-stage
 rm -f "$package"
 python3 /usr/local/libexec/silo-setup-luda.py

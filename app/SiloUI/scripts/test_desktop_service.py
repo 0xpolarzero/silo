@@ -374,6 +374,14 @@ class DesktopLifecycle(unittest.TestCase):
             self.command('boot')
         start.assert_called_once_with()
 
+    def test_supervise_selkies_action_dispatches_to_managed_worker(self):
+        with patch.object(service.sys, 'argv', ['silo-desktop', 'supervise-selkies']), \
+             patch.object(service.os, 'geteuid', return_value=0), \
+             patch.object(service, 'desktop_account', return_value=('silo', Path('/home/silo'))), \
+             patch.object(service, 'supervise_selkies') as worker:
+            service.main()
+        worker.assert_called_once_with()
+
     def test_reused_pid_is_not_a_live_supervisor(self):
         service.write(service.RUN / 'supervisor.json', {'pid': 123, 'start': 'old'})
         with patch.object(service, 'identity', return_value='new'):
@@ -395,6 +403,200 @@ class DesktopLifecycle(unittest.TestCase):
         with patch.object(service, 'supervisor', return_value=123), \
              patch.object(service, 'listening', return_value=True):
             self.assertEqual(service.status()['state'], 'running')
+
+    def test_kasm_status_does_not_report_stopped_when_display_artifacts_remain(self):
+        lock = self.root / 'X1-lock'
+        lock.write_text('321')
+        socket_dir = self.root / 'X11-unix'
+        socket_dir.mkdir()
+        (socket_dir / 'X1').write_text('live display marker')
+        with patch.multiple(service, DISPLAY_LOCK=lock, DISPLAY_SOCKET_DIR=socket_dir), \
+             patch.object(service, 'supervisor', return_value=None), \
+             patch.object(service, 'listening', return_value=False), \
+             patch.object(service, 'port_listening', return_value=False):
+            result = service.status()
+        self.assertEqual(result['backend'], 'kasm')
+        self.assertEqual(result['state'], 'stopped')
+        self.assertEqual(result['sessionState'], 'running')
+
+    def test_existing_invalid_streamer_receipt_never_falls_back_to_kasm(self):
+        service.write(service.STATE / 'streamer.json', {'backend': 'selkies', 'state': 'installing'})
+        with patch.object(service, 'supervisor', return_value=None), \
+             patch.object(service, 'listening', return_value=False):
+            result = service.status()
+        self.assertIsNone(result['backend'])
+        self.assertTrue(result['updateRequired'])
+        self.assertEqual(result['state'], 'failed')
+        self.assertEqual(result['sessionState'], 'stopped')
+        self.assertEqual(result['streamState'], 'failed')
+
+        processes = [{'name': name, 'pid': pid} for name, pid in
+                     (('xvfb', 10), ('pulse', 11), ('xfce', 12))]
+        service.write(service.RUN / 'selkies.json', {
+            'backend': 'selkies', 'bootId': service.current_boot_id(),
+            'sessionState': 'running', 'sessionProcesses': processes,
+            'streamState': 'failed', 'streamProcess': None,
+        })
+        with patch.object(service, 'managed_process_matches', return_value=True), \
+             patch.object(service, 'supervisor', return_value=None):
+            result = service.status()
+        self.assertTrue(result['updateRequired'])
+        self.assertEqual(result['sessionState'], 'running')
+        self.assertEqual(result['streamState'], 'failed')
+        with patch.object(service, 'stop_managed_process') as stop_process:
+            self.command('stop')
+        self.assertEqual([call.args[0]['name'] for call in stop_process.call_args_list],
+                         ['xfce', 'pulse', 'xvfb'])
+
+    def test_selkies_status_uses_the_versioned_receipt_without_kasm(self):
+        executable = self.root / 'selkies'
+        executable.write_text('#!/bin/sh\nexit 0\n')
+        executable.chmod(0o755)
+        receipt = service.STATE / 'streamer.json'
+        service.write(receipt, {
+            'schemaVersion': 1, 'state': 'ready', 'backend': 'selkies',
+            'version': '2.0.0', 'recipeVersion': 1, 'architecture': 'arm64',
+            'packageSha256': 'a' * 64, 'resolution': {'width': 1440, 'height': 900},
+        })
+        real_lstat = Path.lstat
+
+        def root_owned_receipt(path):
+            result = real_lstat(path)
+            if Path(path) == receipt:
+                return SimpleNamespace(st_mode=result.st_mode, st_uid=0)
+            return result
+
+        with patch.object(service, 'SELKIES_EXECUTABLE', executable), \
+             patch.object(service.os, 'uname', return_value=SimpleNamespace(machine='aarch64')), \
+             patch.object(service.Path, 'lstat', autospec=True, side_effect=root_owned_receipt), \
+             patch.object(service, 'supervisor', return_value=None), \
+             patch.object(service.shutil, 'which', side_effect=lambda command: None if command == 'vncserver' else '/usr/bin/' + command):
+            result = service.status()
+        self.assertEqual(result['backend'], 'selkies')
+        self.assertEqual(result['streamerVersion'], '2.0.0')
+        self.assertEqual(result['version'], '1')
+        self.assertEqual(result['sessionState'], 'stopped')
+        self.assertEqual(result['streamState'], 'stopped')
+
+    def test_selkies_stream_failure_preserves_the_session_records(self):
+        session = [
+            {'name': 'xvfb', 'pid': 10},
+            {'name': 'pulse', 'pid': 11},
+            {'name': 'xfce', 'pid': 12},
+        ]
+        state = {'sessionState': 'running', 'sessionProcesses': session,
+                 'streamState': 'starting', 'streamProcess': None, 'streamAttempts': 0}
+        children = [SimpleNamespace(poll=lambda: 1) for _ in range(3)]
+        with patch.object(service, 'launch_selkies_streamer',
+                           side_effect=[(child, {'name': 'selkies', 'pid': n})
+                                        for child, n in zip(children, (13, 14, 15))]), \
+             patch.object(service, 'sleep_until_service_event'):
+            # The event loop waits in failed state until explicit stop.
+            service.supervise_selkies_stream(
+                state, {}, {}, lambda: state['streamState'] == 'failed', lambda: False)
+        self.assertEqual(state['sessionState'], 'running')
+        self.assertEqual(state['sessionProcesses'], session)
+        self.assertEqual(state['streamState'], 'failed')
+        self.assertEqual(state['streamAttempts'], 3)
+
+    def test_restart_streamer_waits_for_failed_state_to_acknowledge_the_request(self):
+        old = {'streamState': 'failed', 'streamAttempts': 3, 'streamProcess': None}
+        starting = {'streamState': 'starting', 'streamAttempts': 1, 'streamProcess': None}
+        replacement = {'name': 'selkies', 'pid': 42}
+        running = {'streamState': 'running', 'streamAttempts': 1,
+                   'streamProcess': replacement}
+        states = iter((old, old, starting, running))
+
+        with patch.object(service, 'streamer_backend', return_value='selkies'), \
+             patch.object(service, 'selkies_state', side_effect=lambda: next(states)), \
+             patch.object(service, 'selkies_session_state', return_value='running'), \
+             patch.object(service, 'selkies_stream_state', side_effect=lambda state, _running: state['streamState']), \
+             patch.object(service, 'supervisor', return_value=7), \
+             patch.object(service.os, 'kill') as send_signal, \
+             patch.object(service.time, 'sleep'):
+            service.restart_selkies_streamer()
+
+        send_signal.assert_called_once_with(7, service.signal.SIGUSR1)
+
+    def test_restart_streamer_reports_failure_after_request_is_acknowledged(self):
+        old = {'streamState': 'failed', 'streamAttempts': 3, 'streamProcess': None}
+        starting = {'streamState': 'starting', 'streamAttempts': 1, 'streamProcess': None}
+        failed = {'streamState': 'failed', 'streamAttempts': 3, 'streamProcess': None}
+        states = iter((old, starting, failed))
+
+        with patch.object(service, 'streamer_backend', return_value='selkies'), \
+             patch.object(service, 'selkies_state', side_effect=lambda: next(states)), \
+             patch.object(service, 'selkies_session_state', return_value='running'), \
+             patch.object(service, 'selkies_stream_state', side_effect=lambda state, _running: state['streamState']), \
+             patch.object(service, 'supervisor', return_value=7), \
+             patch.object(service.os, 'kill'), \
+             patch.object(service.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'Selkies restart failed; desktop session remains running'):
+                service.restart_selkies_streamer()
+
+    def test_selkies_supervisor_stop_reaps_stream_child_before_clearing_ownership(self):
+        stop_requested = {'value': False}
+        child = SimpleNamespace(poll=lambda: None)
+        record = {'name': 'selkies', 'pid': 13}
+        state = {'sessionState': 'running', 'sessionProcesses': [],
+                 'streamState': 'starting', 'streamProcess': None, 'streamAttempts': 0}
+
+        def launch(*_args):
+            stop_requested['value'] = True
+            return child, record
+
+        with patch.object(service, 'launch_selkies_streamer', side_effect=launch), \
+             patch.object(service, 'stop_managed_child') as stop_child:
+            service.supervise_selkies_stream(
+                state, {}, {}, lambda: stop_requested['value'], lambda: False)
+        stop_child.assert_called_once_with(child)
+        self.assertIsNone(state['streamProcess'])
+        self.assertEqual(state['streamState'], 'stopped')
+
+    def test_stop_after_ready_stream_stops_child_before_dropping_ownership(self):
+        stop_requested = {'value': False}
+        state = {'sessionState': 'running', 'sessionProcesses': [],
+                 'streamState': 'starting', 'streamProcess': None, 'streamAttempts': 0}
+        record = {'name': 'selkies', 'pid': 13}
+
+        class ReadyChild:
+            def poll(self):
+                return None
+
+            def wait(self, timeout):
+                # The running monitor observes a stop while waiting on the live streamer.
+                stop_requested['value'] = True
+
+        child = ReadyChild()
+        stop_observations = []
+
+        def stop_child(candidate):
+            stop_observations.append((candidate is child, state['streamProcess'] is record))
+
+        with patch.object(service, 'launch_selkies_streamer', return_value=(child, record)), \
+             patch.object(service, 'selkies_http_ready', return_value=True), \
+             patch.object(service, 'stop_managed_child', side_effect=stop_child):
+            service.supervise_selkies_stream(
+                state, {}, {}, lambda: stop_requested['value'], lambda: False)
+
+        self.assertEqual(stop_observations, [(True, True)])
+        self.assertIsNone(state['streamProcess'])
+        self.assertEqual(state['streamState'], 'stopped')
+
+    def test_explicit_selkies_stop_terminates_stream_then_session(self):
+        records = [
+            {'name': 'xvfb', 'pid': 10},
+            {'name': 'pulse', 'pid': 11},
+            {'name': 'xfce', 'pid': 12},
+        ]
+        state = {'sessionState': 'running', 'sessionProcesses': records,
+                 'streamState': 'running', 'streamProcess': {'name': 'selkies', 'pid': 13}}
+        with patch.object(service, 'stop_managed_process') as stop_process:
+            service.stop_selkies_processes(state)
+        self.assertEqual([call.args[0]['name'] for call in stop_process.call_args_list],
+                         ['selkies', 'xfce', 'pulse', 'xvfb'])
+        self.assertEqual(state['sessionState'], 'stopped')
+        self.assertEqual(state['streamState'], 'stopped')
 
     def test_status_does_not_expose_connection_credentials(self):
         service.write(service.STATE / 'connection.json', {'username': 'silo', 'password': 'secret', 'port': 6901})
@@ -424,6 +626,56 @@ class DesktopLifecycle(unittest.TestCase):
 
     def test_luda_status_is_separate_from_desktop_readiness(self):
         self.assertEqual(self.command('status')['ludaState'], 'missing')
+
+    def test_lcu_status_requires_the_official_runtime_before_receipt_state(self):
+        service.write(service.STATE / 'lcu.json', {
+            'schemaVersion': 1, 'status': 'ready', 'version': '0.4.0',
+            'appVersion': '1.0.0', 'runtimeVersion': '0.4.0',
+            'agents': ['pi', 'codex'], 'readiness': 'ready',
+        })
+        with patch.object(service, 'LCU_APP', self.root / 'missing-chatgpt'), \
+             patch.object(service, 'LCU_RECEIPT', service.STATE / 'lcu.json'), \
+             patch.object(service.subprocess, 'run', side_effect=AssertionError('must stay passive')):
+            result = service.lcu_status()
+        self.assertEqual(result['lcuState'], 'needs-runtime')
+        self.assertEqual(result['lcuReason'], 'chatgpt-app-required')
+        self.assertEqual(result['lcuReadiness'], 'unverified')
+        self.assertIsNone(result['lcuVersion'])
+
+    def test_lcu_ready_projection_filters_agents_and_private_receipt_fields(self):
+        app = self.root / 'usr/lib/chatgpt'
+        app.mkdir(parents=True)
+        prefix = self.root / 'opt/lcu'
+        release = prefix / 'releases/0.4.0'
+        (release / 'bin').mkdir(parents=True)
+        runtime = release / 'bin/lcu'
+        runtime.write_text('#!/bin/sh\n')
+        runtime.chmod(0o755)
+        (release / 'app').mkdir()
+        prefix.mkdir(parents=True, exist_ok=True)
+        (prefix / 'current').symlink_to(release)
+        receipt_path = self.root / 'lcu.json'
+        receipt_path.write_text(json.dumps({
+            'schemaVersion': 1, 'status': 'ready', 'version': '0.4.0',
+            'appVersion': '26.924.22138',
+            'runtimeVersion': '0.0.24/20260924074400-f52ea85e2a98',
+            'agents': ['pi', 'codex', 'unknown'], 'readiness': 'ready',
+            'appPath': '/private/path/must-not-escape',
+        }))
+        receipt = SimpleNamespace(
+            lstat=lambda: SimpleNamespace(st_uid=0, st_mode=receipt_path.lstat().st_mode),
+            read_text=receipt_path.read_text,
+        )
+        with patch.object(service, 'LCU_APP', app), \
+             patch.object(service, 'LCU_PREFIX', prefix), \
+             patch.object(service, 'LCU_RECEIPT', receipt), \
+             patch.object(service.subprocess, 'run', side_effect=AssertionError('must stay passive')):
+            result = service.lcu_status()
+        self.assertEqual(result['lcuState'], 'ready')
+        self.assertEqual(result['lcuAgents'], ['codex', 'pi'])
+        self.assertEqual(result['lcuAppVersion'], '26.924.22138')
+        self.assertEqual(result['lcuRuntimeVersion'], '0.0.24/20260924074400-f52ea85e2a98')
+        self.assertNotIn('appPath', result)
         self.assertFalse((service.STATE / 'luda.lock').exists())
         self.luda_runtime()
         for state in ('failed', 'ready'):

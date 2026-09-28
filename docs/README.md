@@ -22,6 +22,7 @@ has been exercised.
 | VM tools | [Working account](SiloUI-WORKING-ACCOUNT.md), [VM migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md), [Linux desktop](SiloUI-DESKTOP.md), [agent desktop tools](SiloUI-LUDA.md), [Files](SiloUI-FILES.md), [network](SiloUI-NETWORK-PLAN.md), [terminal handoff](SiloUI-TERMINAL-HANDOFF.md), [editor and browser handoff](SiloUI-EDITOR-HANDOFF.md) |
 | Logs | [Retained history, search and export](SiloUI-LOGS.md), [sandbox failure reporting](SiloUI-FAILURE-REPORTING.md) |
 | Storage | [Workspace reclamation policy and verification](SiloUI-STORAGE-RECLAMATION.md), [disk discard regression](SiloUI-STORAGE-DISCARD-RESEARCH.md) |
+| Desktop | [Detached desktop implementation plan](SiloUI-DETACHED-DESKTOP-IMPLEMENTATION-PLAN.md): current Selkies-backed rollout; it supersedes the older Kasm rollout plan for this work. Existing Kasm guests remain supported until explicit update. [Viewer direction](SiloUI-DESKTOP-VIEWER-DIRECTION.md) and [experience research](SiloUI-DESKTOP-EXPERIENCE-RESEARCH.md) record rationale and limits. |
 | Desktop behavior | [Settings](SiloUI-SETTINGS.md), [native menus](SiloUI-NATIVE-MENUS.md), [status panel](SiloUI-STATUS-PANEL.md) |
 
 ## Research and design evidence
@@ -81,10 +82,12 @@ above for current behavior and build commands.
 - [Linux desktops for agents](SiloUI-LINUX-DESKTOP-RESEARCH.md): proposed guest desktop, agent compatibility, estimated costs and prototype acceptance.
 - [Desktop and streaming assessment](SiloUI-DESKTOP-STACK-ASSESSMENT.md): September 2026 comparison of desktop environments, viewer stacks, Luda compatibility, maintenance evidence and selection criteria.
 - [Independent desktop and viewer selection](SiloUI-DESKTOP-SELECTION.md): current selection recommendation without agent-library constraints, evidence notation, weighted measurement rubric, candidate leaderboards, primary-source annexes and qualification protocol.
-- [Optional desktop implementation plan](SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md): desktop installation, automatic/manual lifecycle, minimal viewer and verification gates.
+- [Historical optional Kasm desktop plan](SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md): records the existing Kasm rollout; use the detached desktop plan above for the current Selkies work.
 - [Historical ext4 discard investigation](../artifacts/ext4-raw-image-root-cause.html): upstream MicroSandbox v0.6.8 reproduction and regression requirements; not current app validation.
 - Branding studies: [logo system](../artifacts/silo-logo-system.html), [proportions](../artifacts/silo-proportion-study.html), [structure](../artifacts/silo-structure-study.html), and [top-down study](../artifacts/silo-top-down-study.html).
 
 Shared branding files live in [`assets/`](../assets/). Generated native bundles,
 logs, and Rust outputs belong in the ignored `app/SiloUI/src-tauri/target/` tree;
 frontend build output belongs in the ignored `app/SiloUI/dist/` tree.
+
+- Detached desktop evidence: [viewer implementation](research/desktop-viewer-implementation-evidence-2026-09-27.md), [guest lifecycle](research/desktop-lifecycle-implementation-evidence-2026-09-27.md), [Selkies/Tauri compatibility](research/selkies-tauri-implementation-evidence-2026-09-27.md), [live viewer and LCU probe](research/desktop-viewer-probe-2026-09-27.md), and [Linux platform, streaming, UX and native-display comparisons](research/linux-desktop-platform-options-2026-09-27.md). The [LCU 0.4.0 native-desktop compatibility patch](research/lcu-linux-native-desktop-0.4.0.patch) records the upstream source change used by Silo's hash-guarded managed install. Evidence is focused and does not qualify packaged Linux builds or the Ubuntu 24.04 baseline.

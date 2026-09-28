@@ -147,8 +147,11 @@ fn forward_body(
             Err(_) => break,
         }
     }
-    // One authenticated HTTP request per connection; never forward pipelined bytes.
-    let _ = to.shutdown(Shutdown::Write);
+    // Content-Length already delimits a complete request. A FIN here can make
+    // some servers close the connection before returning the HTTP response.
+    if remaining > 0 {
+        let _ = to.shutdown(Shutdown::Write);
+    }
 }
 fn relay(mut from: TcpStream, mut to: TcpStream, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>) {
     let _ = from.set_read_timeout(Some(Duration::from_millis(250)));
@@ -184,6 +187,9 @@ fn serve(
     authorization: &str,
     stop: Arc<AtomicBool>,
 ) -> std::io::Result<()> {
+    // On macOS, accepted sockets inherit the listener's O_NONBLOCK setting.
+    // This handler uses timed blocking reads, so clear that flag explicitly.
+    client.set_nonblocking(false)?;
     client.set_read_timeout(Some(Duration::from_secs(3)))?;
     client.set_write_timeout(Some(Duration::from_secs(3)))?;
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -193,10 +199,11 @@ fn serve(
         if bytes.len() >= 16 * 1024 || Instant::now() >= deadline || stop.load(Ordering::Acquire) {
             return Ok(());
         }
-        if client.read(&mut byte)? == 0 {
-            return Ok(());
+        match client.read(&mut byte) {
+            Ok(0) => return Ok(()),
+            Ok(_) => bytes.push(byte[0]),
+            Err(error) => return Err(error),
         }
-        bytes.push(byte[0]);
     }
     let header = std::str::from_utf8(&bytes).ok().and_then(|text| {
         request_header(text, port, cookie_name, token, upstream, authorization).ok()
@@ -374,6 +381,165 @@ mod tests {
         }
         worker.join().unwrap();
     }
+
+    #[test]
+    fn accepted_nonblocking_client_waits_for_fragmented_request_headers() {
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        let upstream_worker = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let (mut stream, _) = loop {
+                match upstream.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "proxy did not connect to stub upstream");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("upstream accept failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            assert!(String::from_utf8(request)
+                .unwrap()
+                .contains("Authorization: Basic c2lsbzpwYXNzd29yZA=="));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let accepted = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "listener did not accept client");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            }
+        };
+        accepted.set_nonblocking(true).unwrap();
+        let proxy_worker = thread::spawn(move || {
+            serve(
+                accepted,
+                port,
+                upstream_port,
+                "session",
+                "secret",
+                "c2lsbzpwYXNzd29yZA==",
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        });
+
+        let mut client = client;
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        thread::sleep(Duration::from_millis(100));
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:")
+            .unwrap();
+        thread::sleep(Duration::from_millis(20));
+        write!(client, "{port}\r\nCookie: session=secret\r\n\r\n").unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.ends_with("ok"));
+        proxy_worker.join().unwrap();
+        upstream_worker.join().unwrap();
+    }
+
+    #[test]
+    fn completed_http_requests_keep_write_side_open_for_response() {
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        let upstream_worker = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            for _ in 0..2 {
+                let (mut stream, _) = loop {
+                    match upstream.accept() {
+                        Ok(connection) => break connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "proxy did not connect to stub upstream");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("upstream accept failed: {error}"),
+                    }
+                };
+                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let header = String::from_utf8(request).unwrap();
+                let body_length = header
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .unwrap_or("0")
+                    .parse::<usize>()
+                    .unwrap();
+                let mut body = vec![0; body_length];
+                stream.read_exact(&mut body).unwrap();
+
+                // Model the observed server behavior: a write-half-close before
+                // the response causes an early close; otherwise it responds.
+                stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+                match stream.read(&mut byte) {
+                    Ok(0) => continue,
+                    Ok(_) => panic!("unexpected bytes after the declared request body"),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(error) => panic!("upstream read failed: {error}"),
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .unwrap();
+            }
+        });
+
+        let proxy = Proxy::start(upstream_port, "silo", "password").unwrap();
+        for (method, body) in [("GET", &b""[..]), ("POST", &b"body"[..])] {
+            let mut client = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
+            client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            write!(
+                client,
+                "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\nContent-Length: {}\r\n\r\n",
+                proxy.port,
+                proxy.cookie_name,
+                proxy.token,
+                body.len()
+            )
+            .unwrap();
+            client.write_all(body).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 200 OK"), "{method} response: {response:?}");
+        }
+        upstream_worker.join().unwrap();
+    }
+
     #[test]
     fn ambiguous_or_unbounded_request_bodies_are_rejected() {
         let base = "POST / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nCookie: session=secret\r\n";
@@ -411,8 +577,22 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let mut request = String::new();
-            stream.read_to_string(&mut request).unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let header = String::from_utf8(request).unwrap();
+            let body_length = header
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            let mut body = vec![0; body_length];
+            stream.read_exact(&mut body).unwrap();
+            let request = format!("{header}{}", String::from_utf8(body).unwrap());
             assert!(request.ends_with("\r\n\r\nhello"));
             assert!(!request.contains("/unauthenticated"));
             stream

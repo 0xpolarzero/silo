@@ -364,7 +364,8 @@ pub fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(), Strin
 }
 fn request_timeout(request: &Value) -> Duration {
     if (request["method"] == "runtime.upsert" && request.pointer("/params/machine/desktop").is_some_and(|v| !v.is_null()))
-        || (request["method"] == "desktop.action" && request["params"]["action"] == "setup-tools")
+        || (request["method"] == "desktop.action"
+            && matches!(request["params"]["action"].as_str(), Some("setup-tools" | "update-streamer" | "setup-lcu")))
     {
         Duration::from_secs(2100)
     } else {
@@ -833,6 +834,9 @@ mod tests {
     #[test]
     fn desktop_tools_setup_has_time_to_install_over_remote_connection() {
         assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-tools"}})), Duration::from_secs(2100));
+        assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"update-streamer"}})), Duration::from_secs(2100));
+        assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-lcu"}})), Duration::from_secs(2100));
+        assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"restart-streamer"}})), Duration::from_secs(600));
         assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"start"}})), Duration::from_secs(600));
     }
 

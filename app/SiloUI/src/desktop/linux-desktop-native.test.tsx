@@ -154,3 +154,115 @@ it("does not turn a guest status error into a Luda failure", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("Computer disconnected")
   expect(screen.queryByRole("button", { name: /agent tools/ })).not.toBeInTheDocument()
 })
+
+it("recovers a failed stream without restarting the live desktop session", async () => {
+  invoke.mockImplementation(async (command, args) => {
+    if (command === "read_desktop_state") return {
+      installed: true, autoStart: true, state: "failed", backend: "selkies",
+      sessionState: "running", streamState: "failed",
+    }
+    if (command === "desktop_action" && args?.action === "restart-streamer") return {
+      installed: true, autoStart: true, state: "running", backend: "selkies",
+      sessionState: "running", streamState: "starting",
+    }
+    return undefined
+  })
+  const user = userEvent.setup()
+  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
+  expect(screen.getByRole("alert")).toHaveTextContent("Display disconnected")
+  await user.click(screen.getByRole("button", { name: "Reconnect display" }))
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "restart-streamer" }))
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Connecting display"))
+  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach").length).toBeGreaterThan(1))
+  expect(invoke.mock.calls.some(([command, args]) => command === "desktop_action" && args?.action === "restart")).toBe(false)
+})
+
+it("offers an explicit stopped-only desktop update without starting or attaching it", async () => {
+  invoke.mockImplementation(async (command, args) => {
+    if (command === "read_desktop_state") return {
+      installed: true, autoStart: true, state: "stopped", backend: "kasm",
+      sessionState: "stopped", streamState: "stopped", updateRequired: true,
+    }
+    if (command === "desktop_action" && args?.action === "update-streamer") return {
+      installed: true, autoStart: true, state: "stopped", backend: "selkies",
+      sessionState: "stopped", streamState: "stopped", updateRequired: false,
+    }
+    return undefined
+  })
+  const user = userEvent.setup()
+  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  expect(await screen.findByRole("button", { name: "Update desktop" })).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Start desktop" })).not.toBeInTheDocument()
+  expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
+  await user.click(screen.getByRole("button", { name: "Update desktop" }))
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "update-streamer" }))
+  expect(await screen.findByRole("button", { name: "Start desktop" })).toBeVisible()
+  expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
+  expect(invoke.mock.calls.some(([command, args]) => command === "desktop_action" && args?.action === "start")).toBe(false)
+})
+
+it("keeps a healthy stopped legacy desktop startable and makes migration optional", async () => {
+  invoke.mockImplementation(async (command, args) => {
+    if (command === "read_desktop_state") return {
+      installed: true, autoStart: true, state: "stopped", backend: "kasm",
+      sessionState: "stopped", streamState: "stopped", updateRequired: false,
+    }
+    if (command === "desktop_action" && args?.action === "start") return {
+      installed: true, autoStart: true, state: "stopped", backend: "kasm",
+      sessionState: "stopped", streamState: "stopped", updateRequired: false,
+    }
+    return undefined
+  })
+  const user = userEvent.setup()
+  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  expect(await screen.findByRole("button", { name: "Start desktop" })).toBeVisible()
+  expect(screen.getByRole("button", { name: "Update desktop" })).toBeVisible()
+  expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
+  await user.click(screen.getByRole("button", { name: "Start desktop" }))
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "start" }))
+  expect(invoke.mock.calls.some(([command, args]) => command === "desktop_action" && args?.action === "update-streamer")).toBe(false)
+})
+
+it("keeps a running desktop healthy when the LCU runtime prerequisite is missing", async () => {
+  invoke.mockImplementation(async command => command === "read_desktop_state" ? {
+    installed: true, autoStart: true, state: "failed", backend: "selkies",
+    sessionState: "running", streamState: "failed", lcuState: "needs-runtime",
+    lcuReason: "chatgpt-app-required",
+  } : undefined)
+  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
+  expect(await screen.findByText(/LCU requires the official ChatGPT app/)).toBeVisible()
+  expect(screen.getByRole("button", { name: "Set up LCU" })).toBeEnabled()
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
+  expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
+})
+
+it("runs explicit LCU setup in a live session even when its display stream failed", async () => {
+  invoke.mockImplementation(async (command, args) => {
+    if (command === "read_desktop_state") return {
+      installed: true, autoStart: true, state: "failed", backend: "selkies",
+      sessionState: "running", streamState: "failed", lcuState: "not-installed",
+    }
+    if (command === "desktop_action" && args?.action === "setup-lcu") return {
+      installed: true, autoStart: true, state: "failed", backend: "selkies",
+      sessionState: "running", streamState: "failed", lcuState: "needs-runtime",
+      lcuReason: "chatgpt-app-required",
+    }
+    return undefined
+  })
+  const user = userEvent.setup()
+  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
+  expect(await screen.findByRole("button", { name: "Set up LCU" })).toBeEnabled()
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
+  const attachmentCount = invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach").length
+  await user.click(screen.getByRole("button", { name: "Set up LCU" }))
+  expect(await screen.findByText(/LCU requires the official ChatGPT app/)).toBeVisible()
+  expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "setup-lcu" })
+  expect(screen.getByLabelText("Linux desktop display")).toBeVisible()
+  expect(invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach")).toHaveLength(attachmentCount)
+  expect(invoke.mock.calls.some(([command, action]) => command === "desktop_action" &&
+    ["restart", "restart-streamer", "start"].includes(action?.action))).toBe(false)
+})
