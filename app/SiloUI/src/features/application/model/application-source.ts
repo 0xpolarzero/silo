@@ -297,7 +297,7 @@ export interface ApplicationActions {
   removeSecret: (id: string) => Promise<void> | void
   retrySecret?: (id: string) => Promise<void> | void
   retryRuntimeChecks: () => void
-  saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void
+  saveMachineConfiguration: (request: SetupMachineConfigurationRequest, baseline?: SetupMachineConfiguration[]) => Promise<void> | void
   dismissMachineConfigurationError: () => void
   retryMachineConfiguration: (workspace: string) => void
   dismissRepositoryPush?: (workspace: string, repositoryPath: string) => void

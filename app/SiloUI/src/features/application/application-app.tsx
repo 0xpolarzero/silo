@@ -169,7 +169,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     void updateSettings(applicationPreferenceChanges(applicationPreferences, next))
   }
 
-  function updateMachines(machines: SetupMachineConfiguration[]) {
+  function updateMachines(machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) {
     const candidate = { schemaVersion: 1 as const, machines }
     setSandboxConfigurationOperation({
       id: "local-sandbox-configuration",
@@ -179,7 +179,13 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       result: null,
       error: null,
     })
-    actions.saveMachineConfiguration(candidate)
+    // A stale-baseline rejection is handled inline by the editor; drop the optimistic
+    // applying state here so it does not linger, and re-raise so the editor can react.
+    const outcome = Promise.resolve(actions.saveMachineConfiguration(candidate, baseline))
+    return outcome.catch((cause) => {
+      setSandboxConfigurationOperation(source.sandboxConfigurationOperation)
+      throw cause
+    })
   }
 
   function pushRepository(workspace: string, repositoryPath: string, commitCount: number) {

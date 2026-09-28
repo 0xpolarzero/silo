@@ -9,7 +9,7 @@ import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMac
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
 import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import { operationQueueSchema, type OperationQueue } from "@/features/application/model/operation-queue"
-import { deriveMachineChanges, type MachineConfigurationChange } from "@/features/application/model/machine-change"
+import { deriveMachineChanges, isStaleConfigurationError, type MachineConfigurationChange } from "@/features/application/model/machine-change"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
 import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
@@ -720,6 +720,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       activeConfiguration = { id: requestId, status: "applying", candidate: request, progressEvents: [], result: null, error: null }
       publish({ ...snapshot, setupCandidate: request, setupEvents: [], setupActivity: [], setupStartedAt: Math.floor(Date.now() / 1000), setupFinishedAt: undefined, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
       let failed = false
+      let stale = false
       try {
         const result = parseMutationSource(await (resolved.kind === "retry"
           ? native.invoke("retry_machine_configuration", { requestId, ...(resolved.workspace ? { retryWorkspace: resolved.workspace } : {}) })
@@ -729,13 +730,23 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         return result
       } catch (cause) {
         failed = true
-        activeConfiguration = { ...activeConfiguration!, status: "failed", error: { code: "native_bridge_failed", message: errorMessage(cause), recovery: "Review the configuration and retry.", workspace: snapshot.setupEvents.at(-1)?.workspace ?? null, retryable: true } }
-        if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } })
+        // A stale-baseline rejection is not a setup failure: the edit never applied
+        // because the VM changed underneath it. Surface it inline in the editor that
+        // raised it (which keeps the user's edits) instead of the configuration-failed
+        // banner, and let the caller reject so that editor can react.
+        stale = isStaleConfigurationError(cause)
+        if (stale) {
+          activeConfiguration = null
+          if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, sandboxConfigurationOperation: null } })
+        } else {
+          activeConfiguration = { ...activeConfiguration!, status: "failed", error: { code: "native_bridge_failed", message: errorMessage(cause), recovery: "Review the configuration and retry.", workspace: snapshot.setupEvents.at(-1)?.workspace ?? null, retryable: true } }
+          if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } })
+        }
         throw cause
       } finally {
         await readSetupActivity(requestId)
         await refresh()
-        if (failed && !snapshot.setupActivity?.some((event) => event.requestId === requestId && (event.step === "setup-failed" || event.step === "setup-interrupted"))) {
+        if (failed && !stale && !snapshot.setupActivity?.some((event) => event.requestId === requestId && (event.step === "setup-failed" || event.step === "setup-interrupted"))) {
           const event: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId, phase: "workspaces", step: "setup-failed", timestamp: Date.now(), level: "error", message: "Silo could not finish sandbox setup. Review the reported error and retry. This failure could not be retained in activity history.", safeForDisplay: true }
           publish({ ...snapshot, setupActivity: [...(snapshot.setupActivity ?? []), event] })
         }
@@ -836,14 +847,16 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     await setupTail
   }
 
-  function saveMachineConfiguration(request: SetupMachineConfigurationRequest) {
-    // Send the specific create/edit/delete/reorder against the committed local
-    // configuration the user started editing from, so a queued edit applies to the
-    // latest settings instead of overwriting concurrent work with a stale list.
+  function saveMachineConfiguration(request: SetupMachineConfigurationRequest, baseline?: SetupMachineConfiguration[]): Promise<void> {
+    // Send the specific create/edit/delete/reorder against the baseline the user started
+    // editing from — the committed configuration as it was when the editor opened — so a
+    // queued edit applies to the latest settings, and is rejected instead of silently
+    // overwriting concurrent work, when the VM changed while the edit waited. When no
+    // baseline is supplied (e.g. onboarding drafts) the current committed list is used.
     // Several simultaneous changes travel as one atomic batch; a no-op does nothing.
-    const changes = deriveMachineChanges(committedMachines(), request.machines)
-    if (changes.length === 0) return
-    void configureMachines(request, { kind: "changes", changes }).catch(() => {})
+    const changes = deriveMachineChanges(baseline ?? committedMachines(), request.machines)
+    if (changes.length === 0) return Promise.resolve()
+    return configureMachines(request, { kind: "changes", changes }).then(() => undefined)
   }
 
   async function waitForGitHubAccess(initial: z.infer<typeof githubStateShape>, workspaces: string[]) {

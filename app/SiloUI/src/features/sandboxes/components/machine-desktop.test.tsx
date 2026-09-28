@@ -25,7 +25,7 @@ describe("optional Linux desktop", () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
     await user.click(screen.getByRole("menuitem", { name: "Add Linux desktop" }))
-    expect(save).toHaveBeenCalledWith([{ ...machine, desktop: { startWithSandbox: true } }])
+    expect(save).toHaveBeenCalledWith([{ ...machine, desktop: { startWithSandbox: true } }], [machine])
   })
   it("routes menu installation to the owning computer and surfaces failures", async () => {
     const save = vi.fn().mockRejectedValue(new Error("Computer disconnected"))
@@ -36,7 +36,7 @@ describe("optional Linux desktop", () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
     await user.click(screen.getByRole("menuitem", { name: "Add Linux desktop" }))
-    expect(save).toHaveBeenCalledWith({ ...machine, desktop: { startWithSandbox: true } }, machine, "remote-computer")
+    expect(save).toHaveBeenCalledWith({ ...machine, desktop: { startWithSandbox: true } }, machine, "remote-computer", [machine])
     expect(await screen.findByRole("alert")).toHaveTextContent("Computer disconnected")
     expect(localSave).not.toHaveBeenCalled()
   })

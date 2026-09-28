@@ -25,6 +25,7 @@ import {
 } from "@/features/onboarding/model/machine-configuration"
 import { SandboxAction, SandboxList, SandboxListItem, SandboxListRow, type SandboxIconState, type SandboxRowTone } from "@/features/sandboxes/components/sandbox-list"
 import { machineSummary } from "@/features/sandboxes/model/machine-summary"
+import { divergentMachineFields, isStaleConfigurationError, sameMachineConfiguration } from "@/features/application/model/machine-change"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
@@ -47,10 +48,10 @@ interface MachineListProps {
   machines: readonly SetupMachineConfiguration[]
   computers?: readonly { id: string; name: string; connected: boolean }[]
   getComputerId?: (machine: SetupMachineConfiguration) => string | undefined
-  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string) => Promise<void>
-  onDeleteMachine?: (machine: SetupMachineConfiguration) => Promise<void>
+  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
+  onDeleteMachine?: (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => Promise<void>
   onConnectComputer?: () => void
-  onMachinesChange: (machines: SetupMachineConfiguration[]) => void
+  onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
   getRowPresentation?: (machine: SetupMachineConfiguration) => MachineRowPresentation
   sortPriority?: (machine: SetupMachineConfiguration) => number
   newSandboxRequest?: number
@@ -128,7 +129,7 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, onCancel, onSave, onDraftChange, created, running }: {
+function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running }: {
   saving?: boolean
   editorHeader?: ReactNode
   editor: MachineEditorDraft
@@ -136,14 +137,26 @@ function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, o
   created: boolean
   running: boolean
   machines: readonly SetupMachineConfiguration[]
+  /** The VM's saved configuration when this editor opened, for divergence detection. */
+  baselineMachine?: SetupMachineConfiguration
+  /** A save was rejected because the VM changed while the edit waited. */
+  conflict?: boolean
   onCancel: () => void
   onSave: (machine: SetupMachineConfiguration) => void
   onDraftChange: (draft: SetupMachineConfiguration) => void
+  onReview?: () => void
+  onDiscard?: () => void
 }) {
   const [draft, setDraft] = useState(editor.draft)
   const [errors, setErrors] = useState<MachineValidationErrors>({})
   const firstField = useRef<HTMLInputElement>(null)
   const original = machines.find(machine => machine.id === editor.originalID)
+  // Detect that the committed VM changed under the open editor. `baselineMachine` is only
+  // supplied for edits backed by a live source (not onboarding drafts), so these notices
+  // stay quiet there. A missing live machine for an edit means it was deleted elsewhere.
+  const deletedElsewhere = Boolean(editor.originalID) && baselineMachine !== undefined && !original
+  const divergent = Boolean(baselineMachine && original && !sameMachineConfiguration(baselineMachine, original))
+  const changedFields = divergent && baselineMachine && original ? divergentMachineFields(baselineMachine, original) : []
   const desktopInstalled = created && original?.kind === "vm" && Boolean(original.desktop)
   const desktopOnlyChange = original?.kind === "vm" && draft.kind === "vm"
     && JSON.stringify(original.desktop) !== JSON.stringify(draft.desktop)
@@ -181,6 +194,21 @@ function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, o
       </div>
 
       {editorHeader}
+      {deletedElsewhere ? (
+        <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/[.06] px-3 py-2 text-xs text-destructive">This VM no longer exists.</p>
+      ) : conflict ? (
+        <div role="alert" className="grid gap-2 rounded-md border border-destructive/30 bg-destructive/[.06] px-3 py-2 text-xs text-destructive">
+          <p>This VM changed since you opened it.</p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" size="xs" variant="outline" disabled={saving} onClick={onDiscard}>Discard my edits</Button>
+            <Button type="button" size="xs" disabled={saving} onClick={onReview}>Review changes</Button>
+          </div>
+        </div>
+      ) : divergent ? (
+        <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          This VM was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.join(", ")}.` : ""}
+        </p>
+      ) : null}
       <TextField
         firstField
         inputRef={firstField}
@@ -241,7 +269,7 @@ function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, o
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>
-        <Button type="button" size="sm" disabled={saving} onClick={save}>{saving ? "Saving…" : requiresStop ? "Stop VM and save" : "Save"}</Button>
+        <Button type="button" size="sm" disabled={saving || deletedElsewhere} onClick={save}>{saving ? "Saving…" : requiresStop ? "Stop VM and save" : "Save"}</Button>
       </div>
       {errors.form && <p className="text-xs text-destructive" role="alert">{errors.form}</p>}
     </div>
@@ -259,16 +287,33 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   const [draggedID, setDraggedID] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState("")
   const [operationError, setOperationError] = useState("")
+  // The saved configuration captured when the current operation began. Every local
+  // save/delete/reorder carries it as the change's `expected` baseline, so a queued edit
+  // applies to fresh state — or is rejected — instead of overwriting concurrent work.
+  const baselineRef = useRef<SetupMachineConfiguration[] | null>(null)
+  // The edited VM's baseline, plus editor conflict state, drive the in-editor notices.
+  const [editorBaseline, setEditorBaseline] = useState<SetupMachineConfiguration | null>(null)
+  const [editorConflict, setEditorConflict] = useState(false)
+  const [editorResetToken, setEditorResetToken] = useState(0)
+
+  function captureBaseline() {
+    baselineRef.current = structuredClone(machines as SetupMachineConfiguration[])
+  }
 
   function setEditor(next: MachineEditorDraft | null) {
     setEditorState(next)
     onEditorDraftChange?.(next)
+    if (!next) { setEditorConflict(false); setEditorBaseline(null) }
   }
 
   const displayMachines = useMemo(() => {
+    // Inject the open editor's draft whenever no live machine carries its id: a new/
+    // duplicated machine, or one deleted elsewhere while its editor stayed open (so the
+    // conflict notice remains visible instead of the row vanishing).
+    const detached = editor ? !machines.some(({ id }) => id === editor.draft.id) : false
     if (!sortPriority) {
       const next = [...machines]
-      if (editor && !editor.originalID) next.splice(editor.insertAt, 0, editor.draft)
+      if (editor && detached) next.splice(editor.insertAt, 0, editor.draft)
       return next
     }
 
@@ -276,7 +321,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
       .map((machine, index) => ({ machine, index }))
       .sort((a, b) => sortPriority(a.machine) - sortPriority(b.machine) || a.index - b.index)
       .map(({ machine }) => machine)
-    if (editor && !editor.originalID) {
+    if (editor && detached) {
       const sourceIndex = editor.displayAfterID ? next.findIndex(({ id }) => id === editor.displayAfterID) : -1
       next.splice(sourceIndex >= 0 ? sourceIndex + 1 : next.length, 0, editor.draft)
     }
@@ -292,6 +337,8 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   function startEdit(machine: SetupMachineConfiguration) {
     if (interactionDisabled) return
     beginOperation()
+    captureBaseline()
+    setEditorBaseline(structuredClone(machine))
     setComputerId(getComputerId?.(machine) ?? "")
     setEditor({
       draft: structuredClone(machine),
@@ -303,6 +350,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   function startAdd(kind: SetupMachineConfiguration["kind"]) {
     if (interactionDisabled) return
     beginOperation()
+    captureBaseline()
     setAddOpen(false)
     setComputerId("")
     setEditor({
@@ -328,25 +376,53 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   function startDuplicate(machine: SetupMachineConfiguration) {
     if (interactionDisabled) return
     beginOperation()
+    captureBaseline()
     const sourceIndex = machines.findIndex(({ id }) => id === machine.id)
     setComputerId(getComputerId?.(machine) ?? "")
     setEditor({ draft: duplicateMachine(machine, machines), insertAt: sourceIndex + 1, displayAfterID: machine.id })
+  }
+
+  // Restrict a captured baseline to the machines this list actually commits (local vs a
+  // single remote computer), matching the list the save is derived against.
+  function scopedBaseline(): SetupMachineConfiguration[] | undefined {
+    const baseline = baselineRef.current
+    if (!baseline) return undefined
+    return getComputerId ? baseline.filter(machine => (getComputerId(machine) ?? "") === computerId) : baseline
+  }
+
+  function dispatchChange(next: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) {
+    // Only pass a baseline when one was captured, keeping the no-baseline call shape
+    // (onboarding drafts) exactly one argument.
+    const outcome = baseline ? onMachinesChange(next, baseline) : onMachinesChange(next)
+    if (outcome && typeof (outcome as Promise<void>).then === "function") {
+      void (outcome as Promise<void>).catch((cause) => {
+        if (editor?.originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
+        else setOperationError(cause instanceof Error ? cause.message : String(cause))
+      })
+    }
   }
 
   async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetComputerId = computerId) {
     if (interactionDisabled) return
     const blocked = validateOperation?.(machine, !originalID, targetComputerId)
     if (blocked) { setOperationError(blocked); return }
+    const baseline = baselineRef.current ?? undefined
     if (onCommitMachine) {
       setCommitting(true)
       try {
-        await onCommitMachine(machine, machines.find(item => item.id === originalID), targetComputerId)
+        await onCommitMachine(machine, machines.find(item => item.id === originalID), targetComputerId, baseline)
         setEditor(null)
-      } catch (cause) { setOperationError(cause instanceof Error ? cause.message : String(cause)) }
+      } catch (cause) {
+        // A stale-baseline rejection keeps the editor open with the user's edits so they
+        // can review the latest values or discard; other failures surface as before.
+        if (originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
+        else setOperationError(cause instanceof Error ? cause.message : String(cause))
+      }
       finally { setCommitting(false) }
       return
     }
-    const updated = [...machines]
+    const base = baseline ?? [...machines]
+    const updated = [...base]
     if (originalID) {
       const index = updated.findIndex(({ id }) => id === originalID)
       if (index < 0) return
@@ -354,30 +430,48 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     } else {
       updated.splice(editor?.insertAt ?? updated.length, 0, machine)
     }
-    onMachinesChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines)
+    dispatchChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines, baseline ? scopedBaseline() : undefined)
     setEditor(null)
+  }
+
+  function reviewConflict() {
+    if (!editor?.originalID) return
+    const latest = machines.find(({ id }) => id === editor.originalID)
+    if (!latest) { setEditor(null); return }
+    captureBaseline()
+    setEditorBaseline(structuredClone(latest))
+    setEditorState({ ...editor, draft: structuredClone(latest) })
+    setEditorConflict(false)
+    setEditorResetToken(token => token + 1)
   }
 
   async function remove(machine: SetupMachineConfiguration) {
     if (interactionDisabled || (machine.kind === "vm" && isMachineRunning?.(machine))) return
     if (pendingDelete !== machine.id) {
       beginOperation()
+      captureBaseline()
       setPendingDelete(machine.id)
       return
     }
+    const baseline = baselineRef.current ?? undefined
     if (onDeleteMachine) {
       setCommitting(true)
-      try { await onDeleteMachine(machine); setPendingDelete(null) }
+      try { await onDeleteMachine(machine, baseline); setPendingDelete(null) }
       catch (cause) { setOperationError(cause instanceof Error ? cause.message : String(cause)) }
       finally { setCommitting(false) }
       return
     }
-    onMachinesChange(configurationRequest(machines.filter(({ id }) => id !== machine.id)).machines)
+    const base = baseline ?? machines
+    dispatchChange(configurationRequest(base.filter(({ id }) => id !== machine.id)).machines, baseline ? scopedBaseline() : undefined)
     setPendingDelete(null)
   }
 
   function reorder(id: string, targetIndex: number) {
     if (interactionDisabled) return
+    // Reorder against the order captured when the drag/keyboard move began, so the change
+    // carries that order as `expectedOrder` and does not fold in concurrent edits.
+    const base = baselineRef.current ?? [...machines]
+    const reorderBaseline = baselineRef.current ? (getComputerId ? base.filter(machine => !getComputerId(machine)) : base) : undefined
     const displayed = displayMachines.filter((machine) => machines.some(({ id: configuredID }) => configuredID === machine.id))
     const from = displayed.findIndex((machine) => machine.id === id)
     const boundedTarget = Math.max(0, Math.min(targetIndex, displayed.length - 1))
@@ -393,23 +487,25 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
         return
       }
 
-      const bucket = machines.filter((machine) => sortPriority(machine) === priority)
+      const bucket = base.filter((machine) => sortPriority(machine) === priority)
       const bucketFrom = bucket.findIndex((machine) => machine.id === moved.id)
       const bucketTarget = bucket.findIndex((machine) => machine.id === target.id)
+      if (bucketFrom < 0 || bucketTarget < 0) return
       const [bucketMoved] = bucket.splice(bucketFrom, 1)
       bucket.splice(bucketTarget, 0, bucketMoved)
       let bucketIndex = 0
-      const updated = machines.map((machine) => sortPriority(machine) === priority ? bucket[bucketIndex++] : machine)
-      onMachinesChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines)
+      const updated = base.map((machine) => sortPriority(machine) === priority ? bucket[bucketIndex++] : machine)
+      dispatchChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines, reorderBaseline)
       setAnnouncement(`${moved.name} moved to position ${boundedTarget + 1} of ${displayed.length}.`)
       return
     }
 
-    const updated = [...machines]
+    const updated = [...base]
     const configuredFrom = updated.findIndex((machine) => machine.id === id)
+    if (configuredFrom < 0) return
     const [configuredMoved] = updated.splice(configuredFrom, 1)
     updated.splice(boundedTarget, 0, configuredMoved)
-    onMachinesChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines)
+    dispatchChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines, reorderBaseline)
     setAnnouncement(`${moved.name} moved to position ${boundedTarget + 1} of ${displayed.length}.`)
   }
 
@@ -417,6 +513,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     if (interactionDisabled) return
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return
     event.preventDefault()
+    captureBaseline()
     reorder(machine.id, index + (event.key === "ArrowUp" ? -1 : 1))
   }
 
@@ -472,7 +569,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                   onDrop={(event) => drop(event, index, Boolean(presentation?.suppressInteractions))}
                 >
                   {isEditing && editor ? (
-                    <MachineEditor saving={committing} editorHeader={computers && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={computerId} disabled={Boolean(editor.originalID) || committing} onChange={event => setComputerId(event.target.value)}><option value="">This computer</option>{computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} machines={getComputerId ? machines.filter(machine => (getComputerId(machine) ?? "") === computerId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} />
+                    <MachineEditor key={`${editor.draft.id}:${editorResetToken}`} saving={committing} editorHeader={computers && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={computerId} disabled={Boolean(editor.originalID) || committing} onChange={event => setComputerId(event.target.value)}><option value="">This computer</option>{computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} baselineMachine={editorBaseline ?? undefined} conflict={editorConflict} machines={getComputerId ? machines.filter(machine => (getComputerId(machine) ?? "") === computerId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} onReview={reviewConflict} onDiscard={() => setEditor(null)} />
                   ) : (
                     <SandboxListRow
                       name={machine.name}
@@ -496,6 +593,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         onDragStart={(event) => {
                           if (rowInteractionsDisabled) { event.preventDefault(); return }
                           beginOperation()
+                          captureBaseline()
                           setDraggedID(machine.id)
                           event.dataTransfer.effectAllowed = "move"
                           event.dataTransfer.setData("text/plain", machine.id)
@@ -510,6 +608,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: interactionDisabled, onSelect: () => startDuplicate(machine) },
                         ...(machine.kind === "vm" && !machine.desktop && isMachineCreated?.(machine) ? [{ label: "Add Linux desktop", icon: Monitor, disabled: interactionDisabled, onSelect: () => {
                           beginOperation()
+                          captureBaseline()
                           void save({ ...machine, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
                         } }] : []),
                         ...(deleteArmed ? [{ label: "Cancel deletion", icon: X, accessibleLabel: `Cancel deletion of ${machine.name}`, onSelect: () => setPendingDelete(null) }] : []),

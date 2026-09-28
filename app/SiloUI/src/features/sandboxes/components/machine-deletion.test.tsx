@@ -20,5 +20,5 @@ it("blocks an armed deletion if the VM starts before confirmation", async () => 
   expect(save).not.toHaveBeenCalled()
   rerender(view(false))
   await user.click(screen.getByRole("menuitem", { name: `Confirm deletion of ${machine.name}` }))
-  expect(save).toHaveBeenCalledWith([])
+  expect(save).toHaveBeenCalledWith([], [machine])
 })

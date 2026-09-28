@@ -216,7 +216,7 @@ export function OverviewPage({ active = true, readOnly = false,
   onNewSandboxRequestHandled?: (id: number) => void
   source: ApplicationSource
   actions: ApplicationActions
-  onMachinesChange: (machines: SetupMachineConfiguration[]) => void
+  onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
 }) {
   useSshAccessRefresh(readOnly ? undefined : actions.refreshSshAccess, active)
   const [expandedStorage, setExpandedStorage] = useState<Set<string>>(() => new Set())
@@ -235,8 +235,14 @@ export function OverviewPage({ active = true, readOnly = false,
   const configurationOperation = source.sandboxConfigurationOperation
   const configurationLocked = readOnly || configurationOperation !== null
   const localMachines = machines.filter(machine => !workspaces.get(machine.id)?.computer)
-  function updateLocal(machine: SetupMachineConfiguration, original?: SetupMachineConfiguration) {
-    onMachinesChange(original ? localMachines.map(item => item.id === original.id ? machine : item) : [...localMachines, machine])
+  const localOnly = (list: readonly SetupMachineConfiguration[]) => list.filter(machine => !workspaces.get(machine.id)?.computer)
+  // Build the save from the baseline the editor started from (falling back to the live
+  // local list) so the change carries the right `expected` state and does not drag other
+  // sandboxes' concurrent edits into this one.
+  function updateLocal(machine: SetupMachineConfiguration, original?: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) {
+    const base = baseline ? localOnly(baseline) : localMachines
+    const next = original ? base.map(item => item.id === original.id ? machine : item) : [...base, machine]
+    return onMachinesChange(next, baseline ? base : undefined)
   }
 
   const folderWorkspace = folderWorkspaceId ? workspaces.get(folderWorkspaceId) : undefined
@@ -262,24 +268,25 @@ export function OverviewPage({ active = true, readOnly = false,
           computers={source.remoteComputers}
           getComputerId={machine => workspaces.get(machine.id)?.computer?.id}
           onConnectComputer={actions.connectComputer ? () => setConnecting(true) : undefined}
-          onCommitMachine={actions.saveRemoteMachine ? async (machine, original, computerId) => {
+          onCommitMachine={actions.saveRemoteMachine ? async (machine, original, computerId, baseline) => {
             if (computerId) await actions.saveRemoteMachine!(computerId, machine, original)
-            else updateLocal(machine, original)
+            else await updateLocal(machine, original, baseline)
           } : undefined}
-          onDeleteMachine={actions.deleteRemoteMachine ? async machine => {
+          onDeleteMachine={actions.deleteRemoteMachine ? async (machine, baseline) => {
             const computer = workspaces.get(machine.id)?.computer
             if (computer) {
               if (!computer.connected) throw new Error("This computer is unavailable. Reconnect before deleting its VM.")
               await actions.deleteRemoteMachine!(computer.id, machine)
             } else {
-              onMachinesChange(localMachines.filter(item => item.id !== machine.id))
+              const base = baseline ? localOnly(baseline) : localMachines
+              await onMachinesChange(base.filter(item => item.id !== machine.id), baseline ? base : undefined)
             }
           } : undefined}
           isMachineCreated={(machine) => committedWorkspaces.has(machine.id)}
           isMachineRunning={(machine) => workspaces.get(machine.id)?.state === "running"}
-          onMachinesChange={(next) => {
-            if (source.vmOperationsUnavailable) setOperationUnavailable(true)
-            else onMachinesChange(next.filter(machine => !workspaces.get(machine.id)?.computer))
+          onMachinesChange={(next, baseline) => {
+            if (source.vmOperationsUnavailable) { setOperationUnavailable(true); return }
+            return onMachinesChange(localOnly(next), baseline ? localOnly(baseline) : undefined)
           }}
           interactionDisabled={configurationLocked}
           validateOperation={(machine, isNew, computerId) => {

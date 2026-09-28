@@ -28,6 +28,41 @@ function sameMachine(a: SetupMachineConfiguration, b: SetupMachineConfiguration 
 }
 
 /**
+ * Field-order-independent equality of two machine configurations. Used by the editor
+ * to notice, while a form is open, that the committed configuration diverged from the
+ * baseline the user started editing from.
+ */
+export function sameMachineConfiguration(
+  a: SetupMachineConfiguration | undefined,
+  b: SetupMachineConfiguration | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b
+  return stableStringify(a) === stableStringify(b)
+}
+
+/** The keys whose values differ between two machine configurations. */
+export function divergentMachineFields(
+  a: SetupMachineConfiguration,
+  b: SetupMachineConfiguration,
+): string[] {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)])
+  return [...keys].filter((key) =>
+    stableStringify((a as Record<string, unknown>)[key]) !== stableStringify((b as Record<string, unknown>)[key]),
+  )
+}
+
+/**
+ * Recognize the backend's optimistic-concurrency rejection, raised when a targeted
+ * change's `expected` no longer matches the VM's saved configuration because it changed
+ * while the user's edit waited. The backend phrases both the per-VM and reorder variants
+ * with this stem, so match on it rather than on the whole sentence.
+ */
+export function isStaleConfigurationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "")
+  return message.includes("changed while your edit was waiting")
+}
+
+/**
  * Reduce an edited local VM list to the targeted changes needed to turn the committed
  * configuration `previous` into `next`, each carrying the state it started from so the
  * backend applies it to fresh state (or rejects it) instead of overwriting concurrent

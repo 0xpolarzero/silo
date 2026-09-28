@@ -955,6 +955,31 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("carries the editing baseline as expected even when the committed snapshot has moved on", async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return structuredClone(backup)
+      if (command === "read_setup_activity") return []
+      if (command === "change_machine_configuration") return structuredClone(source)
+    })
+    const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
+    await store.initialize()
+    const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.computer).map(({ machine }) => machine)
+    const original = committed[0]
+    if (original.kind !== "vm") throw new Error("The fixture's first machine is expected to be a VM.")
+    // The user opened the editor while maxCPUs was 99; the live committed snapshot never
+    // held that value. The save must send the baseline, not the current committed config.
+    const baselineEntry = { ...original, maxCPUs: 99 }
+    const baseline = [baselineEntry, ...committed.slice(1)]
+    const edited = { ...original, maxCPUs: 7 }
+    store.applicationActions.saveMachineConfiguration({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] }, baseline)
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("change_machine_configuration", {
+      change: { kind: "upsert", machine: edited, expected: baselineEntry },
+      requestId: expect.any(String),
+    }))
+    store.dispose()
+  })
+
   it("reports unreadable activity without replacing it with success or raw diagnostics", async () => {
     const mock = native({ invoke: vi.fn(async (command) => {
       if (command === "read_setup_activity") throw new Error("private path and token")

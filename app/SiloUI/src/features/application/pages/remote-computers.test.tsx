@@ -107,6 +107,6 @@ it("permits removing the last local VM without affecting connected computers", a
   await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Confirm deletion of ${machine.name}` }))
-  expect(onMachinesChange).toHaveBeenCalledWith([])
+  expect(onMachinesChange).toHaveBeenCalledWith([], [machine])
   expect(actions.deleteRemoteMachine).not.toHaveBeenCalled()
 })

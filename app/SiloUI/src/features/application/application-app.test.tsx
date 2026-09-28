@@ -1156,7 +1156,7 @@ describe("application", () => {
     expect(within(scratchRow).queryByText("Stopped")).not.toBeInTheDocument()
     expect(actions.saveMachineConfiguration).toHaveBeenCalledWith(expect.objectContaining({
       machines: expect.arrayContaining([expect.objectContaining({ name: "scratch", kind: "vm" })]),
-    }))
+    }), expect.anything())
   })
 
   it("keeps committed detail pages stable while an edit is being applied", async () => {
@@ -1194,7 +1194,7 @@ describe("application", () => {
     expect(settings.getByRole("button", { name: "Remove dev" })).toBeVisible()
     expect(actions.saveMachineConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
       machines: expect.arrayContaining([expect.objectContaining({ name: "dev", cpus: 4 })]),
-    }))
+    }), expect.anything())
   })
 
   it("disables deletion of a running VM with a stop-first explanation but keeps editing available", async () => {
@@ -1237,7 +1237,7 @@ describe("application", () => {
     expect(within(row).getByRole("status")).toHaveTextContent("Persistent volumes will be retained")
     expect(actions.saveMachineConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
       machines: expect.not.arrayContaining([expect.objectContaining({ name: "playgrounds" })]),
-    }))
+    }), expect.anything())
   })
 
   it("shows pending secret changes on the affected VM until the source confirms they are active", async () => {
