@@ -3,6 +3,48 @@ use super::*;
 
 pub(crate) type Material = Vec<(String, String, Vec<String>)>;
 
+/// Outcome of a secret update that keeps the transient/final distinction typed all the
+/// way up to the retry boundary, instead of re-matching on message text. `Transient`
+/// marks a failure worth retrying automatically (a timed-out or momentarily unavailable
+/// runtime command); `Final` marks a deterministic failure (validation, rejection,
+/// verification mismatch) that retrying cannot fix. Both carry the user-facing message,
+/// which is converted to a plain `String` only at the command edge.
+#[derive(Debug)]
+pub(crate) enum Attempt {
+    Transient(String),
+    Final(String),
+}
+
+impl Attempt {
+    /// True only for failures that a retry might clear.
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(self, Attempt::Transient(_))
+    }
+}
+
+/// Deterministic string errors from the update's own checks become `Final`; only the
+/// timeout path constructs `Transient` explicitly.
+impl From<String> for Attempt {
+    fn from(message: String) -> Self {
+        Attempt::Final(message)
+    }
+}
+
+impl From<&str> for Attempt {
+    fn from(message: &str) -> Self {
+        Attempt::Final(message.to_owned())
+    }
+}
+
+/// Converts to the plain message at the command edge, discarding the classification.
+impl From<Attempt> for String {
+    fn from(attempt: Attempt) -> Self {
+        match attempt {
+            Attempt::Transient(message) | Attempt::Final(message) => message,
+        }
+    }
+}
+
 // Silo-generated Env-source secret references are safe to forward as opaque
 // placeholders. MicroSandbox still substitutes the real value only on the
 // explicit allow-host list.
@@ -127,7 +169,7 @@ fn modify(
     options: &[String],
     material: &Material,
     deferred: bool,
-) -> Result<(), String> {
+) -> Result<(), Attempt> {
     if options.is_empty() {
         return Ok(());
     }
@@ -165,7 +207,8 @@ fn modify(
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("Updating sandbox secrets timed out or could not be verified. Retry after checking its state.".into());
+                // A timed-out or unverifiable runtime command is worth retrying.
+                return Err(Attempt::Transient("Updating sandbox secrets timed out or could not be verified. Retry after checking its state.".into()));
             }
         }
     }
@@ -225,7 +268,7 @@ pub(crate) fn apply(
     workspace: &str,
     material: &Material,
     boot: bool,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, Attempt> {
     validate_material(material)?;
     let inspected = inspect_workspace(&ProcessRunner, paths, workspace)
         .map_err(|_| "Could not inspect sandbox secrets.".to_string())?;
@@ -303,6 +346,20 @@ pub(crate) fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attempt_classifies_transient_and_final_and_preserves_the_message() {
+        let transient = Attempt::Transient("timed out".into());
+        let final_error = Attempt::Final("rejected".into());
+        assert!(transient.is_transient());
+        assert!(!final_error.is_transient());
+        // Deterministic string errors default to Final; conversion keeps the message.
+        assert!(!Attempt::from("bad input").is_transient());
+        assert!(!Attempt::from("bad input".to_string()).is_transient());
+        assert_eq!(String::from(transient), "timed out");
+        assert_eq!(String::from(final_error), "rejected");
+    }
+
     fn config(names: &[&str]) -> Value {
         json!({"network":{"secrets":{"secrets": names.iter().map(|name| json!({"env_var": name})).collect::<Vec<_>>()}}})
     }

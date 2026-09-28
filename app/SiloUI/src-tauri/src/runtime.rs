@@ -872,7 +872,8 @@ fn run_msb_process(
         let material = crate::secrets::runtime_material(workspace).map_err(RuntimeError::Unavailable)?;
         secrets_runtime::validate_material(&material).map_err(RuntimeError::Invalid)?;
         if matches!(args[0].as_str(), "start" | "restart") {
-            secrets_runtime::apply(paths, workspace, &material, true).map_err(RuntimeError::Unavailable)?;
+            secrets_runtime::apply(paths, workspace, &material, true)
+                .map_err(|attempt| RuntimeError::Unavailable(String::from(attempt)))?;
         }
         material
     } else { Vec::new() };
@@ -1660,19 +1661,26 @@ pub(crate) fn apply_github_identity(
     // Applies GitHub identity inside one VM's guest only.
     let paths = runtime_paths(app)?;
     let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
-    let guard = OPERATIONS
-        .vm(&vm_id, workspace, &format!("Applying GitHub access to {workspace}"))
-        .map_err(|error| error.to_string())?;
-    // Applying identity to a running guest can be cancelled; its child polling loops
-    // observe the request through the current-operation token.
-    guard.allow_cancel();
-    guard.expect_within(Duration::from_secs(600));
-    shutdown::ensure_accepting_operations()?;
     let parsed: WorkspaceIdentity = serde_json::from_value(serde_json::json!({
         "workspace": workspace, "name": identity["name"], "email": identity["email"], "apply": identity["apply"]
     })).map_err(|_| "Invalid Git author configuration.".to_string())?;
-    configure_workspace_identities_with(&ProcessRunner, &paths, &[parsed])
-        .map_err(|error| error.to_string())
+    let base_label = format!("Applying GitHub access to {workspace}");
+    let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
+        OPERATIONS.vm(&vm_id, workspace, label).map_err(RuntimeError::from)
+    };
+    // Applying identity to a running guest can be cancelled; its child polling loops
+    // observe the request through the current-operation token.
+    let prepare = |guard: &operation_gate::OperationGuard<'static>| {
+        guard.allow_cancel();
+        guard.expect_within(Duration::from_secs(600));
+    };
+    let work = || -> Result<(), RuntimeError> {
+        shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
+        configure_workspace_identities_with(&ProcessRunner, &paths, std::slice::from_ref(&parsed))
+    };
+    // Writing Git identity re-runs the same guest command, so a timed-out or momentarily
+    // unavailable runtime is retried; validation and verification failures are final.
+    gated_auto_retry(&base_label, acquire, prepare, work).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1946,6 +1954,24 @@ fn gated_auto_retry_with<T>(
     prepare: impl Fn(&operation_gate::OperationGuard<'static>),
     work: impl Fn() -> Result<T, RuntimeError>,
 ) -> Result<T, RuntimeError> {
+    gated_auto_retry_classified(delays, base_label, acquire, prepare, work, transient_runtime_error)
+}
+
+/// The retry engine behind `gated_auto_retry`, generic over the error type so callers
+/// whose inner work does not speak `RuntimeError` (for example the secrets path, which
+/// keeps a typed `secrets_runtime::Attempt` up to this boundary) can classify their own
+/// transient failures. The gate is re-acquired per attempt and the guard is dropped
+/// before any backoff sleep, so other queued work runs between attempts. Only genuinely
+/// transient failures (`is_transient` returns true) are retried, up to `delays.len()`
+/// extra attempts; every other outcome, including gate errors from `acquire`, is final.
+fn gated_auto_retry_classified<T, E>(
+    delays: &[Duration],
+    base_label: &str,
+    acquire: impl Fn(&str) -> Result<operation_gate::OperationGuard<'static>, E>,
+    prepare: impl Fn(&operation_gate::OperationGuard<'static>),
+    work: impl Fn() -> Result<T, E>,
+    is_transient: impl Fn(&E) -> bool,
+) -> Result<T, E> {
     let total = delays.len() + 1;
     let mut attempt = 0usize;
     loop {
@@ -1963,7 +1989,7 @@ fn gated_auto_retry_with<T>(
         match outcome {
             Ok(value) => return Ok(value),
             Err(error) => {
-                if attempt < delays.len() && transient_runtime_error(&error) {
+                if attempt < delays.len() && is_transient(&error) {
                     thread::sleep(delays[attempt]);
                     attempt += 1;
                     continue;
@@ -3958,6 +3984,72 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    // Remote lifecycle (`remote_ops::remote_action`) and `apply_github_identity` both drive
+    // `gated_auto_retry`, whose transient classification is exercised by the two tests above.
+    // The secrets path instead keeps a typed `secrets_runtime::Attempt` up to this boundary
+    // and classifies with `Attempt::is_transient`; these tests cover that wiring.
+    #[test]
+    fn secret_updates_retry_transient_attempts_and_release_the_gate_between_attempts() {
+        use super::secrets_runtime::Attempt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // An isolated gate keeps the release-between-attempts assertion deterministic
+        // regardless of other tests sharing the global `OPERATIONS`.
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let attempts = AtomicUsize::new(0);
+        let delays = [Duration::from_millis(5), Duration::from_millis(5)];
+        let result: Result<(), Attempt> = gated_auto_retry_classified(
+            &delays,
+            "Saving secrets for retry-secret",
+            |label| {
+                // The previous guard is released before the backoff, so each attempt finds
+                // the VM lane free.
+                assert!(gate.is_vm_idle("retry-secret-id"));
+                gate.vm("retry-secret-id", "retry-secret", label)
+                    .map_err(|error| Attempt::Final(error.to_string()))
+            },
+            |_guard| {},
+            || {
+                if attempts.fetch_add(1, Ordering::SeqCst) < 2 {
+                    Err(Attempt::Transient("Updating sandbox secrets timed out.".into()))
+                } else {
+                    Ok(())
+                }
+            },
+            Attempt::is_transient,
+        );
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert!(gate.is_vm_idle("retry-secret-id"));
+    }
+
+    #[test]
+    fn secret_updates_do_not_retry_final_attempts() {
+        use super::secrets_runtime::Attempt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let attempts = AtomicUsize::new(0);
+        let delays = [Duration::from_millis(5), Duration::from_millis(5)];
+        let result: Result<(), Attempt> = gated_auto_retry_classified(
+            &delays,
+            "Saving secrets for final-secret",
+            |label| {
+                gate.vm("final-secret-id", "final-secret", label)
+                    .map_err(|error| Attempt::Final(error.to_string()))
+            },
+            |_guard| {},
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(Attempt::Final("The sandbox rejected the secret update.".into()))
+            },
+            Attempt::is_transient,
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(gate.is_vm_idle("final-secret-id"));
     }
 
     struct StubRunner {
@@ -6038,17 +6130,38 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(Stri
     // Applies secret policy inside one VM's guest only.
     let paths = runtime_paths(app)?;
     let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
-    let mutation = OPERATIONS
-        .vm(&vm_id, workspace, &format!("Saving secrets for {workspace}"))
-        .map_err(|error| error.to_string())?;
+    let base_label = format!("Saving secrets for {workspace}");
+    let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, secrets_runtime::Attempt> {
+        OPERATIONS
+            .vm(&vm_id, workspace, label)
+            // Gate rejections (busy, already queued, cancelled) are never transient.
+            .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))
+    };
     // Applying secrets to a running guest is cancellable through the current-operation token.
-    mutation.allow_cancel();
-    mutation.expect_within(Duration::from_secs(600));
-    let _mutation = mutation;
-    shutdown::ensure_accepting_operations()?;
-    let lock = github_revision_lock(&paths.home, workspace)?;
-    let _guard = lock.lock().map_err(|_| "Sandbox access state is unavailable.".to_string())?;
-    secrets_runtime::apply(&paths, workspace, &desired, false)
+    let prepare = |guard: &operation_gate::OperationGuard<'static>| {
+        guard.allow_cancel();
+        guard.expect_within(Duration::from_secs(600));
+    };
+    let work = || -> Result<Vec<String>, secrets_runtime::Attempt> {
+        shutdown::ensure_accepting_operations().map_err(secrets_runtime::Attempt::Final)?;
+        let lock = github_revision_lock(&paths.home, workspace).map_err(secrets_runtime::Attempt::Final)?;
+        let _guard = lock
+            .lock()
+            .map_err(|_| secrets_runtime::Attempt::Final("Sandbox access state is unavailable.".to_string()))?;
+        secrets_runtime::apply(&paths, workspace, &desired, false)
+    };
+    // Re-applying the same desired secrets is idempotent, so a timed-out runtime command
+    // is retried; validation, rejection, and verification failures are final. The typed
+    // `Attempt` is converted to a plain message only here, at the command edge.
+    gated_auto_retry_classified(
+        &AUTO_RETRY_DELAYS,
+        &base_label,
+        acquire,
+        prepare,
+        work,
+        secrets_runtime::Attempt::is_transient,
+    )
+    .map_err(String::from)
 }
 
 pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String]) -> Result<(),String> {
