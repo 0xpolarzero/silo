@@ -11,6 +11,7 @@ export type MachineConfigurationChange =
   | { kind: "upsert"; machine: SetupMachineConfiguration; expected: SetupMachineConfiguration | null }
   | { kind: "delete"; vmId: string; expected: SetupMachineConfiguration }
   | { kind: "reorder"; order: string[]; expectedOrder: string[] }
+  | { kind: "batch"; changes: MachineConfigurationChange[] }
 
 /** Field-order-independent structural comparison of two machine configurations. */
 function stableStringify(value: unknown): string {
@@ -27,47 +28,38 @@ function sameMachine(a: SetupMachineConfiguration, b: SetupMachineConfiguration 
 }
 
 /**
- * Classify a single edit to the local VM list into a targeted change against the
- * committed configuration `previous`. Returns null when the change is a no-op or
- * cannot be expressed as one targeted operation, so the caller can fall back to
- * replacing the whole list. The UI applies one create/edit/delete/reorder at a time,
- * so this single-change classification is exact for normal use.
+ * Reduce an edited local VM list to the targeted changes needed to turn the committed
+ * configuration `previous` into `next`, each carrying the state it started from so the
+ * backend applies it to fresh state (or rejects it) instead of overwriting concurrent
+ * work with a stale whole-list snapshot.
+ *
+ * Returns an ordered list: deletions, then creations (`expected: null` = must not yet
+ * exist), then in-place edits, or a single reorder when only the order changed. An empty
+ * list means the submission is a no-op and the backend need not be called. The caller
+ * sends one change on its own or several as a `batch`. The UI applies one
+ * create/edit/delete/reorder at a time; onboarding submits several creations at once.
  */
-export function deriveMachineChange(
+export function deriveMachineChanges(
   previous: SetupMachineConfiguration[],
   next: SetupMachineConfiguration[],
-): MachineConfigurationChange | null {
+): MachineConfigurationChange[] {
   const prevById = new Map(previous.map((machine) => [machine.id, machine]))
   const nextById = new Map(next.map((machine) => [machine.id, machine]))
   const added = next.filter((machine) => !prevById.has(machine.id))
   const removed = previous.filter((machine) => !nextById.has(machine.id))
+  const changed = next.filter((machine) => prevById.has(machine.id) && !sameMachine(machine, prevById.get(machine.id)))
 
-  if (removed.length === 1 && added.length === 0) {
-    // A deletion is only targeted when every surviving machine is unchanged.
-    if (next.every((machine) => sameMachine(machine, prevById.get(machine.id)))) {
-      return { kind: "delete", vmId: removed[0].id, expected: removed[0] }
+  const changes: MachineConfigurationChange[] = []
+  for (const machine of removed) changes.push({ kind: "delete", vmId: machine.id, expected: machine })
+  for (const machine of added) changes.push({ kind: "upsert", machine, expected: null })
+  for (const machine of changed) changes.push({ kind: "upsert", machine, expected: prevById.get(machine.id) ?? null })
+
+  if (added.length === 0 && removed.length === 0 && changed.length === 0) {
+    const order = next.map((machine) => machine.id)
+    const expectedOrder = previous.map((machine) => machine.id)
+    if (order.length === expectedOrder.length && order.some((id, index) => id !== expectedOrder[index])) {
+      changes.push({ kind: "reorder", order, expectedOrder })
     }
-    return null
   }
-  if (added.length === 1 && removed.length === 0) {
-    if (previous.every((machine) => sameMachine(machine, nextById.get(machine.id)))) {
-      return { kind: "upsert", machine: added[0], expected: null }
-    }
-    return null
-  }
-  if (added.length === 0 && removed.length === 0) {
-    const changed = next.filter((machine) => !sameMachine(machine, prevById.get(machine.id)))
-    if (changed.length === 1) {
-      return { kind: "upsert", machine: changed[0], expected: prevById.get(changed[0].id) ?? null }
-    }
-    if (changed.length === 0) {
-      const order = next.map((machine) => machine.id)
-      const expectedOrder = previous.map((machine) => machine.id)
-      if (order.length === expectedOrder.length && order.some((id, index) => id !== expectedOrder[index])) {
-        return { kind: "reorder", order, expectedOrder }
-      }
-    }
-    return null
-  }
-  return null
+  return changes
 }

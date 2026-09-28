@@ -25,7 +25,7 @@ async function setup(savedActivity: SiloProgressEvent[] = [], currentApplication
     if (command === "read_application_state") return currentApplication
     if (command === "read_backup_state") return { snapshotId: "test", availability: "available", archives: [], operation: null }
     if (command === "read_setup_activity") return savedActivity
-    if (command === "save_machine_configuration") return machines()
+    if (command === "change_machine_configuration" || command === "retry_machine_configuration") return machines()
     if (command === "configure_workspace_identities") return identities()
     if (command === "save_github_configuration" || command === "read_github_state" || command === "retry_github_configuration") return github()
     throw new Error(`Unexpected command ${command}`)
@@ -43,7 +43,7 @@ describe("production setup queue", () => {
     const markComplete = vi.fn().mockResolvedValue(undefined)
     await store.submitSetupStep("workspaces", emptyRequest)
     await store.finishSetup(emptyRequest, markComplete)
-    expect(invoke).toHaveBeenCalledWith("save_machine_configuration", expect.objectContaining({ request: emptyRequest.machineConfiguration }))
+    expect(invoke).toHaveBeenCalledWith("retry_machine_configuration", expect.objectContaining({ requestId: expect.any(String) }))
     expect(invoke).toHaveBeenCalledWith("configure_workspace_identities", { identities: [] })
     expect(markComplete).toHaveBeenCalledOnce()
     expect(store.getSnapshot().source?.workspaces).toEqual([])
@@ -67,7 +67,7 @@ describe("production setup queue", () => {
     machines.mockReturnValueOnce(pending.promise)
     const job = store.submitSetupStep("workspaces", request)
     await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
-    const requestId = invoke.mock.calls.find(([command]) => command === "save_machine_configuration")?.[1]?.requestId as string
+    const requestId = invoke.mock.calls.find(([command]) => command === "change_machine_configuration")?.[1]?.requestId as string
     const event: SiloProgressEvent = { ...saved, requestId, message: "Verifying dev…" }
     emit(event)
     pending.resolve(application)
@@ -83,7 +83,7 @@ describe("production setup queue", () => {
     machines.mockReturnValueOnce(pending.promise)
     const job = expect(store.submitSetupStep("workspaces", request)).rejects.toThrow("download failed")
     await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
-    const requestId = invoke.mock.calls.find(([command]) => command === "save_machine_configuration")?.[1]?.requestId as string
+    const requestId = invoke.mock.calls.find(([command]) => command === "change_machine_configuration")?.[1]?.requestId as string
     saved.push({ schemaVersion: 1, type: "progress", requestId, phase: "workspaces", step: "setup-failed", level: "error", message: "Image download failed. Check your connection and retry.", safeForDisplay: true })
     pending.reject(new Error("download failed"))
     await job
@@ -163,7 +163,7 @@ describe("production setup queue", () => {
     machines.mockReturnValueOnce(pending.promise)
     const job = store.submitSetupStep("workspaces", request)
     await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
-    const requestId = invoke.mock.calls.find(([command]) => command === "save_machine_configuration")?.[1]?.requestId
+    const requestId = invoke.mock.calls.find(([command]) => command === "change_machine_configuration")?.[1]?.requestId
     const event = { schemaVersion: 1, type: "progress", requestId, phase: "verification", step: "workspace-verification", workspace: request.machineConfiguration.machines[0].name, revision: "a".repeat(64), fraction: 0.5, message: "Checking VM", safeForDisplay: true }
     emit({ ...event, requestId: "old-request" })
     expect(store.getSnapshot().setupEvents).toEqual([])

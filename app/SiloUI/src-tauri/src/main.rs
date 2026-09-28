@@ -200,7 +200,7 @@ fn main() {
             runtime::read_setup_activity,
             runtime::read_operation_queue,
             runtime::cancel_operation,
-            runtime::save_machine_configuration,
+            runtime::retry_machine_configuration,
             runtime::change_machine_configuration
         ])
         .setup(|app| {

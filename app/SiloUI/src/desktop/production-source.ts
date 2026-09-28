@@ -9,7 +9,7 @@ import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMac
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
 import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import { operationQueueSchema, type OperationQueue } from "@/features/application/model/operation-queue"
-import { deriveMachineChange, type MachineConfigurationChange } from "@/features/application/model/machine-change"
+import { deriveMachineChanges, type MachineConfigurationChange } from "@/features/application/model/machine-change"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
 import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
@@ -685,9 +685,26 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return promise
   }
 
-  function configureMachines(request: SetupMachineConfigurationRequest, retryWorkspace?: string, change?: MachineConfigurationChange): Promise<ApplicationSource> {
+  // The committed local VM inventory the user is editing from. Targeted changes carry
+  // this as their `expected` baseline so a queued edit applies to fresh state.
+  function committedMachines(): SetupMachineConfiguration[] {
+    return (snapshot.source?.workspaces ?? [])
+      .filter((workspace) => !workspace.computer)
+      .map((workspace) => setupMachineConfigurationSchema.parse(workspace.machine))
+  }
+
+  // What to apply: a set of targeted changes, or a resume of a failed attempt. An empty
+  // change list is a no-op that never reaches the backend.
+  type ConfigureAction =
+    | { kind: "changes"; changes: MachineConfigurationChange[] }
+    | { kind: "retry"; workspace?: string }
+
+  function configureMachines(request: SetupMachineConfigurationRequest, action?: ConfigureAction): Promise<ApplicationSource> {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
-    const key = JSON.stringify([request, retryWorkspace, change])
+    const resolved: ConfigureAction = action ?? { kind: "changes", changes: deriveMachineChanges(committedMachines(), request.machines) }
+    // A no-op submission changes nothing; resolve with the current source untouched.
+    if (resolved.kind === "changes" && resolved.changes.length === 0) return Promise.resolve(snapshot.source as ApplicationSource)
+    const key = JSON.stringify([request, resolved])
     if (lastMachineJob?.key === key) return lastMachineJob.promise
     ++identityVerificationSequence
     lastVerificationKey = undefined
@@ -704,9 +721,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       publish({ ...snapshot, setupCandidate: request, setupEvents: [], setupActivity: [], setupStartedAt: Math.floor(Date.now() / 1000), setupFinishedAt: undefined, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
       let failed = false
       try {
-        const result = parseMutationSource(await (change
-          ? native.invoke("change_machine_configuration", { change, requestId, ...(retryWorkspace ? { retryWorkspace } : {}) })
-          : native.invoke("save_machine_configuration", { request, requestId, ...(retryWorkspace ? { retryWorkspace } : {}) })))
+        const result = parseMutationSource(await (resolved.kind === "retry"
+          ? native.invoke("retry_machine_configuration", { requestId, ...(resolved.workspace ? { retryWorkspace: resolved.workspace } : {}) })
+          : native.invoke("change_machine_configuration", { change: resolved.changes.length === 1 ? resolved.changes[0] : { kind: "batch", changes: resolved.changes }, requestId })))
         activeConfiguration = null
         publish({ ...snapshot, source: result, error: null })
         return result
@@ -767,7 +784,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       && !setupJobs.some((job) => job.items.some(({ status }) => status === "running" || status === "queued"))
       && current.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting")
       && JSON.stringify(current.workspaces.map(({ machine }) => setupMachineConfigurationSchema.parse(machine))) === JSON.stringify(request.machineConfiguration.machines.map((machine) => setupMachineConfigurationSchema.parse(machine)))
-    const machineJob = machinesUnchanged ? Promise.resolve(current) : configureMachines(request.machineConfiguration)
+    // Initial setup and continues send the specific creations/edits as one batch. When
+    // the configuration already matches what was committed but an earlier attempt did
+    // not complete, resume that attempt instead of sending an empty change set.
+    const changes = machinesUnchanged ? [] : deriveMachineChanges(committedMachines(), request.machineConfiguration.machines)
+    const machineJob = machinesUnchanged
+      ? Promise.resolve(current)
+      : configureMachines(request.machineConfiguration, changes.length > 0 ? { kind: "changes", changes } : { kind: "retry" })
     if (step === "workspaces") return machineJob
     const activityId = crypto.randomUUID()
     const identities = request.github.workspaces.map(({ workspace, identity }) => ({ workspace, ...identity }))
@@ -817,13 +840,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     // Send the specific create/edit/delete/reorder against the committed local
     // configuration the user started editing from, so a queued edit applies to the
     // latest settings instead of overwriting concurrent work with a stale list.
-    // Fall back to a whole-list save only when the change is not a single targeted
-    // operation (e.g. a no-change retry, which resumes any failed verification).
-    const previous = (snapshot.source?.workspaces ?? [])
-      .filter((workspace) => !workspace.computer)
-      .map((workspace) => setupMachineConfigurationSchema.parse(workspace.machine))
-    const change = deriveMachineChange(previous, request.machines)
-    void configureMachines(request, undefined, change ?? undefined).catch(() => {})
+    // Several simultaneous changes travel as one atomic batch; a no-op does nothing.
+    const changes = deriveMachineChanges(committedMachines(), request.machines)
+    if (changes.length === 0) return
+    void configureMachines(request, { kind: "changes", changes }).catch(() => {})
   }
 
   async function waitForGitHubAccess(initial: z.infer<typeof githubStateShape>, workspaces: string[]) {
@@ -1023,7 +1043,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     },
     retryMachineConfiguration: (workspace) => {
       const operation = snapshot.source?.sandboxConfigurationOperation
-      if (operation) void configureMachines(operation.candidate, workspace).catch(() => {})
+      if (operation) void configureMachines(operation.candidate, { kind: "retry", workspace }).catch(() => {})
     },
     dismissRepositoryPush: (workspace, repositoryPath) => statusActions.dismissRepositoryPush(workspace, repositoryPath),
     pushRepository: (workspace, repositoryPath) => {

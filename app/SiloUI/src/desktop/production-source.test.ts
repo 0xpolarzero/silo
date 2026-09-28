@@ -839,11 +839,14 @@ describe("production application bridge", () => {
       if (command === "read_application_state") return { ...structuredClone(source), github: { ...source.github, hostIdentity: currentIdentity } }
       if (command === "read_backup_state") return structuredClone(backup)
       if (command === "read_setup_activity") return []
-      if (command === "save_machine_configuration") return machineResult
+      if (command === "change_machine_configuration") return machineResult
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
-    await store.configureMachines({ schemaVersion: 1, machines: source.workspaces.map(({ machine }) => machine) })
+    const committed = source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine)
+    const first = committed[0]
+    const edited = first.kind === "vm" ? { ...first, cpus: first.cpus === 1 ? 2 : 1 } : first
+    await store.configureMachines({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })
     expect(store.getSnapshot().source?.github.hostIdentity).toEqual(hostIdentity)
     currentIdentity = undefined
     await store.refresh()
@@ -867,13 +870,16 @@ describe("production application bridge", () => {
       }
       if (command === "read_backup_state") return structuredClone(backup)
       if (command === "read_setup_activity") return []
-      if (command === "save_machine_configuration") return mutation
+      if (command === "change_machine_configuration") return mutation
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
     const observed: number[] = []
     const unsubscribe = store.subscribe(() => observed.push(store.getSnapshot().source?.workspaces[0].logs.length ?? -1))
-    await store.configureMachines({ schemaVersion: 1, machines: initial.workspaces.map(({ machine }) => machine) })
+    const committed = initial.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine)
+    const first = committed[0]
+    const edited = first.kind === "vm" ? { ...first, cpus: first.cpus === 1 ? 2 : 1 } : first
+    await store.configureMachines({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })
     expect(observed).not.toContain(0)
     expect(store.getSnapshot().source?.workspaces[0].logs).toEqual([oldLog, newLog])
     unsubscribe()
@@ -885,7 +891,7 @@ describe("production application bridge", () => {
       if (command === "read_application_state") return structuredClone(source)
       if (command === "read_backup_state") return structuredClone(backup)
       if (command === "read_setup_activity") return []
-      if (command === "save_machine_configuration") throw new Error("Stop sandbox 'dev' before removing it.")
+      if (command === "change_machine_configuration") throw new Error("Stop sandbox 'dev' before removing it.")
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
@@ -899,24 +905,29 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("retries verification only for the requested sandbox", async () => {
+  it("retries verification only for the requested sandbox without resending the list", async () => {
     let attempts = 0
     const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) => {
       if (command === "read_application_state") return structuredClone(source)
       if (command === "read_backup_state") return structuredClone(backup)
       if (command === "read_setup_activity") return []
-      if (command === "save_machine_configuration") {
+      if (command === "change_machine_configuration") {
         if (++attempts === 1) throw new Error("Verification failed")
         return structuredClone(source)
       }
+      if (command === "retry_machine_configuration") return structuredClone(source)
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
-    const request = { schemaVersion: 1 as const, machines: source.workspaces.map(({ machine }) => machine) }
-    await expect(store.configureMachines(request)).rejects.toThrow("Verification failed")
+    const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.computer).map(({ machine }) => machine)
+    const original = committed[0]
+    if (original.kind !== "vm") throw new Error("The fixture's first machine is expected to be a VM.")
+    const edited = { ...original, cpus: original.cpus === 1 ? 2 : 1 }
+    await expect(store.configureMachines({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })).rejects.toThrow("Verification failed")
     store.applicationActions.retryMachineConfiguration("dev")
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_machine_configuration", {
-      request, requestId: expect.any(String), retryWorkspace: "dev",
+    // The retry resumes the recorded attempt by workspace; it does not resend a list.
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("retry_machine_configuration", {
+      requestId: expect.any(String), retryWorkspace: "dev",
     }))
     await vi.waitFor(() => expect(store.getSnapshot().source?.sandboxConfigurationOperation).toBeNull())
     store.dispose()
@@ -940,7 +951,7 @@ describe("production application bridge", () => {
       change: { kind: "upsert", machine: edited, expected: original },
       requestId: expect.any(String),
     }))
-    expect(invoke).not.toHaveBeenCalledWith("save_machine_configuration", expect.anything())
+    expect(invoke).not.toHaveBeenCalledWith("retry_machine_configuration", expect.anything())
     store.dispose()
   })
 

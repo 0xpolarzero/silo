@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { deriveMachineChange } from "./machine-change"
+import { deriveMachineChanges } from "./machine-change"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 
 function vm(id: string, name: string, overrides: Partial<SetupMachineConfiguration> = {}): SetupMachineConfiguration {
@@ -18,41 +18,56 @@ function vm(id: string, name: string, overrides: Partial<SetupMachineConfigurati
   } as SetupMachineConfiguration
 }
 
-describe("deriveMachineChange", () => {
+describe("deriveMachineChanges", () => {
   const a = vm("01", "dev")
   const b = vm("02", "web")
 
-  it("classifies a create as an upsert with no expected", () => {
+  it("classifies a create as a single upsert with no expected", () => {
     const c = vm("03", "db")
-    expect(deriveMachineChange([a, b], [a, b, c])).toEqual({ kind: "upsert", machine: c, expected: null })
+    expect(deriveMachineChanges([a, b], [a, b, c])).toEqual([{ kind: "upsert", machine: c, expected: null }])
   })
 
-  it("classifies an edit as an upsert carrying the previous configuration", () => {
+  it("classifies an edit as a single upsert carrying the previous configuration", () => {
     const edited = vm("01", "dev", { cpus: 3 })
-    expect(deriveMachineChange([a, b], [edited, b])).toEqual({ kind: "upsert", machine: edited, expected: a })
+    expect(deriveMachineChanges([a, b], [edited, b])).toEqual([{ kind: "upsert", machine: edited, expected: a }])
   })
 
-  it("classifies a removal as a delete carrying the removed configuration", () => {
-    expect(deriveMachineChange([a, b], [a])).toEqual({ kind: "delete", vmId: b.id, expected: b })
+  it("classifies a removal as a single delete carrying the removed configuration", () => {
+    expect(deriveMachineChanges([a, b], [a])).toEqual([{ kind: "delete", vmId: b.id, expected: b }])
   })
 
   it("classifies a pure reorder", () => {
-    expect(deriveMachineChange([a, b], [b, a])).toEqual({ kind: "reorder", order: [b.id, a.id], expectedOrder: [a.id, b.id] })
+    expect(deriveMachineChanges([a, b], [b, a])).toEqual([{ kind: "reorder", order: [b.id, a.id], expectedOrder: [a.id, b.id] }])
   })
 
-  it("ignores field-order differences and returns null for a no-op", () => {
+  it("ignores field-order differences and returns an empty list for a no-op", () => {
     const reordered = { name: "dev", kind: "vm" as const, id: a.id, maxCPUs: 4, cpus: 2, runtimeStorageGiB: 10, memoryGiB: 2, workspaceStorageGiB: 10, maxMemoryGiB: 4 }
-    expect(deriveMachineChange([a, b], [reordered as SetupMachineConfiguration, b])).toBeNull()
+    expect(deriveMachineChanges([a, b], [reordered as SetupMachineConfiguration, b])).toEqual([])
   })
 
-  it("returns null when more than one machine changed (not a single targeted operation)", () => {
+  it("returns a batch of creates for the initial setup of several sandboxes", () => {
+    const c = vm("03", "db")
+    expect(deriveMachineChanges([], [a, b, c])).toEqual([
+      { kind: "upsert", machine: a, expected: null },
+      { kind: "upsert", machine: b, expected: null },
+      { kind: "upsert", machine: c, expected: null },
+    ])
+  })
+
+  it("returns one upsert per machine when several change at once", () => {
     const editedA = vm("01", "dev", { cpus: 3 })
     const editedB = vm("02", "web", { cpus: 3 })
-    expect(deriveMachineChange([a, b], [editedA, editedB])).toBeNull()
+    expect(deriveMachineChanges([a, b], [editedA, editedB])).toEqual([
+      { kind: "upsert", machine: editedA, expected: a },
+      { kind: "upsert", machine: editedB, expected: b },
+    ])
   })
 
-  it("returns null when a removal also changes a surviving machine", () => {
+  it("combines a removal with an edit to a surviving machine (delete before upsert)", () => {
     const editedA = vm("01", "dev", { cpus: 3 })
-    expect(deriveMachineChange([a, b], [editedA])).toBeNull()
+    expect(deriveMachineChanges([a, b], [editedA])).toEqual([
+      { kind: "delete", vmId: b.id, expected: b },
+      { kind: "upsert", machine: editedA, expected: a },
+    ])
   })
 })

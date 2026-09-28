@@ -347,6 +347,11 @@ pub enum MachineConfigurationChange {
         #[serde(rename = "expectedOrder")]
         expected_order: Vec<String>,
     },
+    /// Apply several changes atomically, in order, against fresh state. Each carries its
+    /// own optimistic `expected` check; any rejection rejects the whole batch with no
+    /// partial save. Nesting is rejected. Used for onboarding's initial set of creates
+    /// and any multi-change submission, replacing the old whole-list save.
+    Batch { changes: Vec<MachineConfigurationChange> },
 }
 
 impl MachineConfigurationChange {
@@ -355,10 +360,23 @@ impl MachineConfigurationChange {
             Self::Upsert { .. } => "Saving sandbox settings".into(),
             Self::Delete { expected, .. } => format!("Deleting {}", expected.name()),
             Self::Reorder { .. } => "Reordering sandboxes".into(),
+            Self::Batch { .. } => "Saving sandbox settings".into(),
         }
     }
 
     fn apply(&self, machines: &mut Vec<MachineConfiguration>) -> Result<(), String> {
+        if let Self::Batch { changes } = self {
+            // Apply to a draft so a later rejection leaves the inventory untouched.
+            let mut draft = machines.clone();
+            for change in changes {
+                if matches!(change, Self::Batch { .. }) {
+                    return Err("Nested sandbox configuration batches are not supported.".into());
+                }
+                change.apply(&mut draft)?;
+            }
+            *machines = draft;
+            return Ok(());
+        }
         let outcome = match self {
             Self::Upsert { machine, expected } => {
                 change_machine(machines, machine.id(), expected.as_ref(), Some(machine))
@@ -367,6 +385,7 @@ impl MachineConfigurationChange {
             Self::Reorder { order, expected_order } => {
                 reorder_machines(machines, order, expected_order)
             }
+            Self::Batch { .. } => unreachable!("batch handled above"),
         };
         outcome.map_err(|rejection| match (self, rejection) {
             (Self::Reorder { .. }, _) => {
@@ -2501,7 +2520,7 @@ fn apply_configuration_with_progress(
             }
             validate_request(&request)?;
             validate_requested_resources(&request, &resources)?;
-            save_machine_configuration_with_progress(
+            apply_whole_configuration_with_progress(
                 &SetupRunner {
                     request_id,
                     publish: &publish,
@@ -2546,13 +2565,16 @@ fn apply_configuration_with_progress(
     result.map_err(|error| safe_activity_error(&error))
 }
 
-/// Replace the whole VM inventory with `request`. Used for the initial onboarding
-/// setup and for no-change retry/recovery, where the entire list is authoritative.
-/// Targeted create/edit/delete/reorder go through `change_machine_configuration`.
+/// Resume a failed sandbox setup or verification without the UI resending a whole list.
+/// The interrupted attempt's target configuration is recorded in the configuration
+/// recovery journal; this re-applies it against current state (idempotent for machines
+/// already completed) and resumes the pending verification. When no attempt is pending,
+/// it re-verifies the committed inventory. Concurrent changes made since the attempt are
+/// rejected by the recovery reconciliation ("Sandbox settings changed since the
+/// interruption."), so a resume never overwrites work done meanwhile.
 #[tauri::command]
-pub async fn save_machine_configuration(
+pub async fn retry_machine_configuration(
     app: AppHandle,
-    request: MachineConfigurationRequest,
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
@@ -2563,9 +2585,15 @@ pub async fn save_machine_configuration(
         let paths = runtime_paths(&app)?;
         // Changes the shared VM inventory/metadata; computer-wide.
         let _guard = OPERATIONS
-            .computer("Saving sandbox settings")
+            .computer("Retrying sandbox settings")
             .map_err(|e| e.to_string())?;
         shutdown::ensure_accepting_operations()?;
+        // Resume the configuration the interrupted attempt recorded. With no pending
+        // attempt, re-verify the committed inventory (an idempotent no-op on success).
+        let request = match configuration_recovery::pending_request(&paths).map_err(|e| e.to_string())? {
+            Some(request) => request,
+            None => read_metadata(&paths.metadata).map_err(|e| e.to_string())?,
+        };
         apply_configuration_with_progress(&app, &paths, request, &request_id, retry_workspace)
     })
     .await
@@ -3034,16 +3062,16 @@ fn workspace_action_with(
 }
 
 #[cfg(test)]
-fn save_machine_configuration_with(
+fn apply_whole_configuration(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     host: &HostResources,
     request: MachineConfigurationRequest,
 ) -> Result<(), RuntimeError> {
-    save_machine_configuration_with_progress(runner, paths, host, request, None, &|_, _, _| {})
+    apply_whole_configuration_with_progress(runner, paths, host, request, None, &|_, _, _| {})
 }
 
-fn save_machine_configuration_with_progress(
+fn apply_whole_configuration_with_progress(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     host: &HostResources,
@@ -3391,7 +3419,7 @@ pub(crate) fn create_disposable_test_machine(
     };
     let mut request = read_metadata(&paths.metadata)?;
     request.machines.push(machine.clone());
-    save_machine_configuration_with(&ProcessRunner, paths, &host_resources()?, request)?;
+    apply_whole_configuration(&ProcessRunner, paths, &host_resources()?, request)?;
     Ok(machine)
 }
 
@@ -5324,7 +5352,7 @@ esac
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![]);
         let request = MachineConfigurationRequest { schema_version: 1, machines: vec![] };
-        save_machine_configuration_with_progress(&runner, &paths, &generous_host(), request.clone(), None, &|_, _, _| {}).unwrap();
+        apply_whole_configuration_with_progress(&runner, &paths, &generous_host(), request.clone(), None, &|_, _, _| {}).unwrap();
         configure_workspace_identities_with(&runner, &paths, &[]).unwrap();
         assert!(verify_workspace_identities_with(&runner, &paths, &[]).unwrap());
         read_application_state_with(&runner, &paths).unwrap();
@@ -5678,7 +5706,7 @@ esac
                     fraction,
                 ))
             };
-            let result = save_machine_configuration_with_progress(
+            let result = apply_whole_configuration_with_progress(
                 &runner,
                 &paths,
                 &generous_host(),
@@ -5734,7 +5762,7 @@ esac
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let inspected = inspect(&paths, "Stopped");
         let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
-        save_machine_configuration_with(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
         assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
         let unavailable_runtime = StubRunner::successful_json(vec![]);
         let source = read_application_state_with(&unavailable_runtime, &paths).unwrap();
@@ -5765,7 +5793,7 @@ esac
                 vec![json!([]), json!(1), json!(1), json!(null), other_inspect.clone(), json!(null), other_inspect.clone(), other_inspect]
             });
             let events = Mutex::new(Vec::new());
-            save_machine_configuration_with_progress(&runner, &paths, &generous_host(), requested.clone(), retry_workspace, &|step, name, fraction| {
+            apply_whole_configuration_with_progress(&runner, &paths, &generous_host(), requested.clone(), retry_workspace, &|step, name, fraction| {
                 events.lock().unwrap().push((step.to_string(), name.to_string(), fraction));
             }).unwrap();
             assert_eq!(read_metadata(&paths.metadata).unwrap(), requested);
@@ -5795,7 +5823,7 @@ esac
         let mut mismatch = inspect(&paths, "Stopped");
         mismatch["config"]["resources"]["cpus"] = json!(1);
         let runner = StubRunner::successful_json(vec![mismatch]);
-        let error = save_machine_configuration_with_progress(&runner, &paths, &generous_host(), configured, Some("dev"), &|_, _, _| {})
+        let error = apply_whole_configuration_with_progress(&runner, &paths, &generous_host(), configured, Some("dev"), &|_, _, _| {})
             .unwrap_err();
         assert!(error.to_string().contains("do not match"));
         assert!(runner
@@ -5829,7 +5857,7 @@ esac
             inspect(&paths, "Stopped"),
             inspect(&paths, "Running"),
         ]);
-        assert!(save_machine_configuration_with(
+        assert!(apply_whole_configuration(
             &runner,
             &paths,
             &generous_host(),
@@ -5886,7 +5914,7 @@ esac
             stopped(&second),
             Err(RuntimeError::Unavailable("remove failed".into())),
         ]);
-        let error = save_machine_configuration_with(
+        let error = apply_whole_configuration(
             &runner,
             &paths,
             &generous_host(),
@@ -5969,7 +5997,7 @@ esac
             }),
         ]);
 
-        let error = save_machine_configuration_with(
+        let error = apply_whole_configuration(
             &runner,
             &paths,
             &generous_host(),
@@ -6151,5 +6179,57 @@ mod change_configuration_tests {
         };
         let error = stale.apply(&mut machines).unwrap_err();
         assert!(error.contains("changed while your edit was waiting"), "{error}");
+    }
+
+    #[test]
+    fn create_with_existing_id_is_rejected() {
+        // A create carries `expected: null` meaning "must not already exist". An id that
+        // is already present makes the current value differ from the expected absence.
+        let mut machines = vec![vm("a", "dev", 2)];
+        let error = upsert(&vm("a", "dev", 3), None).apply(&mut machines).unwrap_err();
+        assert!(error.contains("changed while your edit was waiting"), "{error}");
+        assert_eq!(machines, vec![vm("a", "dev", 2)]);
+    }
+
+    #[test]
+    fn batch_applies_every_change_in_order() {
+        let mut machines = vec![vm("a", "dev", 2)];
+        let batch = MachineConfigurationChange::Batch {
+            changes: vec![
+                upsert(&vm("a", "dev", 3), Some(&vm("a", "dev", 2))),
+                upsert(&vm("b", "web", 2), None),
+                upsert(&vm("c", "db", 2), None),
+            ],
+        };
+        batch.apply(&mut machines).unwrap();
+        assert_eq!(machines, vec![vm("a", "dev", 3), vm("b", "web", 2), vm("c", "db", 2)]);
+    }
+
+    #[test]
+    fn batch_rejects_all_or_nothing_when_one_change_is_stale() {
+        let mut machines = vec![vm("a", "dev", 2)];
+        // The second change expects a two-CPU baseline for "a" that the first already
+        // moved to three, so it is stale and the whole batch is rejected untouched.
+        let batch = MachineConfigurationChange::Batch {
+            changes: vec![
+                upsert(&vm("b", "web", 2), None),
+                upsert(&vm("a", "dev", 4), Some(&vm("a", "dev", 3))),
+            ],
+        };
+        let error = batch.apply(&mut machines).unwrap_err();
+        assert!(error.contains("changed while your edit was waiting"), "{error}");
+        // No change survives: neither the new "b" nor the edit to "a".
+        assert_eq!(machines, vec![vm("a", "dev", 2)]);
+    }
+
+    #[test]
+    fn nested_batches_are_rejected() {
+        let mut machines = vec![vm("a", "dev", 2)];
+        let batch = MachineConfigurationChange::Batch {
+            changes: vec![MachineConfigurationChange::Batch { changes: vec![] }],
+        };
+        let error = batch.apply(&mut machines).unwrap_err();
+        assert!(error.contains("Nested"), "{error}");
+        assert_eq!(machines, vec![vm("a", "dev", 2)]);
     }
 }

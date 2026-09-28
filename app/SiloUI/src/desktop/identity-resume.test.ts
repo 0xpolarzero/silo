@@ -13,7 +13,7 @@ function setup() {
   const verify = vi.fn<() => Promise<unknown>>().mockResolvedValue(true)
   const invoke = vi.fn(async (command: string) => {
     if (command === "verify_workspace_identities") return verify()
-    if (command === "save_machine_configuration") return application
+    if (command === "change_machine_configuration" || command === "retry_machine_configuration") return application
     if (command === "read_setup_activity") return []
     throw new Error(`Unexpected ${command}`)
   })
@@ -75,7 +75,7 @@ describe("identity completion after relaunch", () => {
     const verify = vi.fn().mockResolvedValue(false)
     const store = createProductionSource({
       invoke: async (command: string) => {
-        if (command === "save_machine_configuration") return pending
+        if (command === "change_machine_configuration" || command === "retry_machine_configuration") return pending
         if (command === "read_setup_activity") return []
         if (command === "configure_workspace_identities") return undefined
         if (command === "verify_workspace_identities") return verify()

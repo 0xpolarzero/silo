@@ -42,6 +42,13 @@ pub(super) fn shutdown_machines(paths: &RuntimePaths) -> Result<Vec<MachineConfi
     Ok(machines.into_iter().filter(MachineConfiguration::is_vm).collect())
 }
 
+/// The target configuration of an interrupted attempt, if one is pending. Used by the
+/// retry command to resume that attempt against current state without the UI resending
+/// the whole list.
+pub(super) fn pending_request(paths: &RuntimePaths) -> Result<Option<MachineConfigurationRequest>, RuntimeError> {
+    Ok(load(paths)?.map(|journal| journal.request))
+}
+
 pub(super) fn begin(paths: &RuntimePaths, request: &MachineConfigurationRequest) -> Result<(), RuntimeError> {
     if let Some(saved) = load(paths)? {
         if saved.request == *request { return Ok(()); }
@@ -234,7 +241,7 @@ pub(super) fn recover_at_paths(runner: &dyn RuntimeRunner, paths: &RuntimePaths,
     drop(command_lock(paths, MUTATION_TIMEOUT)?);
     reconcile(runner, paths, &journal)?;
     verify_committed_edits(runner, paths, &journal, &journal.request)?;
-    save_machine_configuration_with_progress(runner, paths, resources, journal.request, None, progress)?;
+    apply_whole_configuration_with_progress(runner, paths, resources, journal.request, None, progress)?;
     finish(paths)
 }
 
@@ -479,5 +486,33 @@ mod tests {
         if let MachineConfiguration::Vm { memory_gib, .. } = &mut revised.machines[1] { *memory_gib = 2; }
         prepare_retry(&EmptyRuntime, &paths, Some(&revised)).unwrap();
         assert!(load(&paths).unwrap().is_some_and(|journal| journal.request == revised));
+    }
+
+    #[test]
+    fn retry_resumes_the_recorded_request_and_rejects_settings_changed_since() {
+        struct EmptyRuntime;
+        impl RuntimeRunner for EmptyRuntime {
+            fn run(&self, _paths: &RuntimePaths, args: &[String], _timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+                assert_eq!(args[0], "list");
+                Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let paths = RuntimePaths { executable: root.join("msb"), library: root.join("library"), home: root.join("home"), storage_home: None, guest_image: root.join("image"), metadata: root.join("machines.json"), volumes: root.join("volumes") };
+        let remote = |name: &str| MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: name.into(), host: "host".into(), user: "user".into(), port: 22 };
+        let (a, b, c) = (remote("a"), remote("b"), remote("c"));
+        // The interrupted attempt was adding "b" to an inventory that held "a".
+        let previous = MachineConfigurationRequest { schema_version: 1, machines: vec![a.clone()] };
+        write_metadata(&paths.metadata, &previous).unwrap();
+        let request = MachineConfigurationRequest { schema_version: 1, machines: vec![a.clone(), b] };
+        begin(&paths, &request).unwrap();
+        // The retry command reads exactly this recorded target to resume.
+        assert_eq!(pending_request(&paths).unwrap(), Some(request.clone()));
+        // Someone changed the inventory since the attempt: "c" is foreign to both the
+        // pre-attempt state and the recorded target, so resuming is rejected.
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![a, c] }).unwrap();
+        let error = prepare_retry(&EmptyRuntime, &paths, Some(&request)).unwrap_err().to_string();
+        assert!(error.contains("changed since"), "{error}");
     }
 }

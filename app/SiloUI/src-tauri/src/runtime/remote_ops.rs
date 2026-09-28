@@ -114,7 +114,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
                 validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
                 configuration_recovery::prepare_retry(&ProcessRunner, &paths, Some(&request))
                     .map_err(|e| e.to_string())?;
-                save_machine_configuration_with_progress(
+                apply_whole_configuration_with_progress(
                     &ProcessRunner,
                     &paths,
                     &resources,
