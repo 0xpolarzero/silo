@@ -46,7 +46,11 @@ pub(crate) async fn ssh_connection(app: AppHandle, window: WebviewWindow, worksp
             let value = remote::call_remote(&app, &host, "ssh.access.connection", serde_json::json!({"vmId":vm,"accountProtocol":1}))?;
             (value, format!("{host}-{vm}"))
         } else {
-            let _guard = runtime::MUTATION_LOCK.lock().map_err(|_| "Sandbox operation failed.")?;
+            // Exporting a connection reconciles the shared SSH listeners and port
+            // allocation across VMs; computer scope.
+            let _guard = runtime::OPERATIONS
+                .computer("Preparing SSH access")
+                .map_err(|e| e.to_string())?;
             runtime::shutdown::ensure_accepting_operations()?;
             let name = workspace.ok_or("Missing sandbox name.")?;
             let metadata = runtime::read_metadata(&paths.metadata).map_err(|_| "Could not read sandboxes.")?;

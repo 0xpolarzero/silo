@@ -527,8 +527,8 @@ pub(super) fn recover_at_paths(
     journal: &Journal,
     cancellation: &backup::Cancellation,
 ) -> Result<bool, String> {
-    let _guard = runtime::MUTATION_LOCK
-        .lock()
+    let _guard = runtime::OPERATIONS
+        .computer("Recovering backup")
         .map_err(|_| "Sandbox operations unavailable.")?;
     runtime::prepare_runtime_home(&paths.home, paths.storage_home.as_deref())
         .map_err(|e| e.to_string())?;

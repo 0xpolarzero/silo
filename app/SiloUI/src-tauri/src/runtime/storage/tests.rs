@@ -250,7 +250,7 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
     assert!(library.is_file());
     let paths = RuntimePaths { executable, library, home, storage_home: None,
         metadata: storage.join("machines.json"), volumes: storage.join("volumes"), guest_image: storage.join("unused-image") };
-    let _guard = MUTATION_LOCK.lock().unwrap();
+    let _guard = OPERATIONS.computer("Live reclaim test").unwrap();
     let machine = machine(&paths, &id).unwrap();
     let runner = ProcessRunner;
     let initial = inspect_workspace(&runner, &paths, machine.name()).unwrap();

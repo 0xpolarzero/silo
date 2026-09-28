@@ -46,9 +46,8 @@ pub(crate) fn require_workspace(window: &Window, workspace: &str) -> Result<(), 
     }
 }
 pub(crate) fn local_connection(app: &AppHandle, workspace: &str) -> Result<Value, String> {
-    let _guard = runtime::MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| "A sandbox operation is in progress. Retry shortly.")?;
+    // Reading desktop connection credentials only observes a running VM; it takes
+    // no operation gate so viewing stays available during other operations.
     runtime::shutdown::ensure_accepting_operations()?;
     crate::desktop::connection_local(app, workspace)
 }

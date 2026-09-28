@@ -462,9 +462,10 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
     {
         return Err("Choose a managed Silo VM.".into());
     }
-    let read_guard = runtime::MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| "A sandbox operation is already running. Try again shortly.")?;
+    // Host-push reads and writes one VM's guest; it waits its turn for that VM.
+    let read_guard = runtime::OPERATIONS
+        .vm(workspace, &format!("Reading repository in {workspace}"))
+        .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
     require_running(&paths, workspace)?;
     let origin = guest(
@@ -476,9 +477,9 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
     drop(read_guard);
     let repo = repository(origin.trim())?;
     let token = crate::github::host_push_credential(app, workspace, &repo)?;
-    let _guard = runtime::MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| "A sandbox operation is already running. Try again shortly.")?;
+    let _guard = runtime::OPERATIONS
+        .vm(workspace, &format!("Pushing from {workspace}"))
+        .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
     require_running(&paths, workspace)?;
     let executable = crate::bundled_tools::directory(app)?.join("git");

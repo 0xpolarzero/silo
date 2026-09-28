@@ -734,31 +734,19 @@ fn run_backup(
 
 fn mutation_guard(
     cancellation: &backup::Cancellation,
-) -> Result<std::sync::MutexGuard<'static, ()>, String> {
-    let started = std::time::Instant::now();
-    loop {
-        if cancellation.cancelled() {
-            return Err("The operation was cancelled.".into());
-        }
-        match runtime::MUTATION_LOCK.try_lock() {
-            Ok(guard) => {
-                runtime::shutdown::ensure_accepting_operations()?;
-                return Ok(guard);
-            }
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err("Sandbox operations are unavailable. Relaunch Silo to retry.".into());
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                if started.elapsed() >= RESTORE_TIMEOUT {
-                    return Err(
-                        "The previous sandbox operation did not finish. Relaunch Silo to retry."
-                            .into(),
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
+    label: &str,
+) -> Result<runtime::operation_gate::OperationGuard<'static>, String> {
+    // Backup and restore change shared state and wait their turn (computer scope).
+    // The gate is first-come, first-served, so a queued backup is never starved;
+    // honour an already-requested cancellation before joining the queue.
+    if cancellation.cancelled() {
+        return Err("The operation was cancelled.".into());
     }
+    let guard = runtime::OPERATIONS
+        .computer(label)
+        .map_err(|e| e.to_string())?;
+    runtime::shutdown::ensure_accepting_operations()?;
+    Ok(guard)
 }
 
 fn backup_work(
@@ -768,7 +756,7 @@ fn backup_work(
     names: &[String],
     cancellation: &backup::Cancellation,
 ) -> Result<(Archive, Vec<backup::RestartFailure>), String> {
-    let _guard = mutation_guard(cancellation)?;
+    let _guard = mutation_guard(cancellation, "Backing up sandboxes")?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if names.is_empty() {
@@ -1251,7 +1239,7 @@ fn restore_at_paths(
     progress: &dyn Fn(&str),
 ) -> Result<(), String> {
     progress("Preparing restore");
-    let _guard = mutation_guard(cancellation)?;
+    let _guard = mutation_guard(cancellation, "Restoring sandbox")?;
     let original = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if original
         .machines
@@ -1663,17 +1651,17 @@ mod tests {
 
     #[test]
     fn resumed_work_waits_for_other_sandbox_changes_and_can_cancel_while_waiting() {
-        let guard = runtime::MUTATION_LOCK.lock().unwrap();
+        let guard = runtime::OPERATIONS.computer("Contended work").unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = mutation_guard(&backup::Cancellation::default()).map(|_| ());
+            let result = mutation_guard(&backup::Cancellation::default(), "Backing up sandboxes").map(|_| ());
             sender.send(result).unwrap();
         });
         assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
         let cancellation = backup::Cancellation::default();
         cancellation.cancel();
         assert_eq!(
-            mutation_guard(&cancellation).unwrap_err(),
+            mutation_guard(&cancellation, "Backing up sandboxes").unwrap_err(),
             "The operation was cancelled."
         );
         drop(guard);

@@ -384,9 +384,17 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
 }
 
 fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value, String> {
-    let _guard = runtime::MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| "Another sandbox operation is still running.")?;
+    // A desktop action changes only this VM's guest (and may start the VM); it
+    // waits its turn per VM. Reading desktop status observes only, so it takes
+    // no gate and stays available during other operations.
+    let _guard = match action {
+        Some(_) => Some(
+            runtime::OPERATIONS
+                .vm(workspace, &format!("Updating {workspace} desktop"))
+                .map_err(|e| e.to_string())?,
+        ),
+        None => None,
+    };
     let (paths, machine) = machine(app, workspace)?;
     if let Some(action) = action {
         runtime::shutdown::ensure_accepting_operations()?;

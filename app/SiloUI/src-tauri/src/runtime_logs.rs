@@ -330,15 +330,14 @@ pub(super) fn query_local(
         .join("sandboxes")
         .join(machine.name())
         .join("logs");
-    if request.cursor.is_none() {
-        if let Ok(_guard) = MUTATION_LOCK.try_lock() {
-            if inspect_workspace(&ProcessRunner, paths, machine.name())
-                .is_ok_and(|sandbox| is_stopped(&sandbox.status))
-            {
-                crate::log_retention::enforce(&directory)
-                    .map_err(|_| "Expired logs could not be cleaned up.")?;
-            }
-        }
+    if request.cursor.is_none()
+        // Reading logs observes only; skip opportunistic cleanup when this VM is busy.
+        && OPERATIONS.is_vm_idle(machine.name())
+        && inspect_workspace(&ProcessRunner, paths, machine.name())
+            .is_ok_and(|sandbox| is_stopped(&sandbox.status))
+    {
+        crate::log_retention::enforce(&directory)
+            .map_err(|_| "Expired logs could not be cleaned up.")?;
     }
     read(
         &directory,

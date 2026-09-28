@@ -1,4 +1,4 @@
-//! Targeted changes against the owner's current inventory, under the local mutation lock.
+//! Targeted changes against the owner's current inventory, ordered by the operation gate.
 use super::*;
 
 pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<Value, String> {
@@ -19,9 +19,12 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
         return serde_json::to_value(read_metadata(&paths.metadata).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string());
     }
-    let _guard = MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| RuntimeError::Busy.to_string())?;
+    // Remote-triggered work waits its turn. A single dispatch may change the shared
+    // inventory (upsert/delete) or one VM's lifecycle; computer scope keeps it
+    // correct and ordered against all local operations, matching the former lock.
+    let _guard = OPERATIONS
+        .computer("Applying remote change")
+        .map_err(|e| e.to_string())?;
     shutdown::ensure_accepting_operations()?;
     let mut request = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
     let resources = host_resources().map_err(|e| e.to_string())?;

@@ -37,10 +37,11 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
         "desktop.action" => crate::desktop::dispatch(app, method, params),
         "ssh.access.state" | "ssh.access.save" | "ssh.access.connection" => crate::ssh_access::remote_dispatch(app, method, params),
         "files.list" => {
-            let _guard = runtime::MUTATION_LOCK
-                .try_lock()
-                .map_err(|_| "A VM operation is in progress. Retry shortly.")?;
+            // Remote file listing reads one VM's guest; wait its turn for that VM.
             let name = vm_name(app, params)?;
+            let _guard = runtime::OPERATIONS
+                .vm(&name, &format!("Listing files on {name}"))
+                .map_err(|e| e.to_string())?;
             let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
             let offset = usize::try_from(offset).map_err(|_| "Invalid folder offset.")?;
             let page = tauri::async_runtime::block_on(crate::files::list_workspace_directory(
@@ -56,10 +57,11 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             serde_json::to_value(page).map_err(|_| "Could not encode folder listing.".into())
         }
         "guest.prepare" => {
-            let _guard = runtime::MUTATION_LOCK
-                .try_lock()
-                .map_err(|_| "A VM operation is in progress. Retry shortly.")?;
+            // Authorizes a remote key inside one VM's guest; wait its turn per VM.
             let name = vm_name(app, params)?;
+            let _guard = runtime::OPERATIONS
+                .vm(&name, &format!("Preparing access to {name}"))
+                .map_err(|e| e.to_string())?;
             let paths = runtime::runtime_paths(app)?;
             let user = crate::working_account::inspect_user(&paths, &name)?;
             crate::working_account::require_client_protocol(user, params)?;
@@ -73,9 +75,10 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
         }
         "network.state" => crate::remote_network::host_state(app),
         "network.publish" => {
-            let _guard = runtime::MUTATION_LOCK
-                .try_lock()
-                .map_err(|_| "A VM operation is in progress. Retry shortly.")?;
+            // Port forwarding is shared host networking; wait in order (computer).
+            let _guard = runtime::OPERATIONS
+                .computer("Updating port forwarding")
+                .map_err(|e| e.to_string())?;
             runtime::shutdown::ensure_accepting_operations()?;
             let name = vm_name(app, params)?;
             let port = params["port"]
@@ -148,11 +151,12 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
     if method != "guest.ssh" {
         return Err("Unsupported guest connection.".into());
     }
-    let _guard = runtime::MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| "A VM operation is in progress. Retry shortly.")?;
-    runtime::shutdown::ensure_accepting_operations()?;
+    // Serving guest SSH inspects and connects to one VM; wait its turn for that VM.
     let name = vm_name(app, params)?;
+    let _guard = runtime::OPERATIONS
+        .vm(&name, &format!("Connecting to {name}"))
+        .map_err(|e| e.to_string())?;
+    runtime::shutdown::ensure_accepting_operations()?;
     let paths = runtime::runtime_paths(app)?;
     let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, &name)
         .map_err(|e| e.to_string())?;

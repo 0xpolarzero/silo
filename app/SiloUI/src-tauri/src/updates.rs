@@ -165,9 +165,10 @@ fn ready(app: &AppHandle) -> Result<(), String> {
     crate::backup_controller::update_ready(app)?;
     let _github = crate::github::update_guard()?;
     let _secrets = crate::secrets::update_guard()?;
-    let _runtime = crate::runtime::MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| "Wait for sandbox operations to finish before updating.")?;
+    // Fast readiness check only: refuse if any sandbox operation is active or queued.
+    if !crate::runtime::OPERATIONS.is_idle() {
+        return Err("Wait for sandbox operations to finish before updating.".into());
+    }
     crate::runtime::shutdown::ensure_accepting_operations()?;
     Ok(())
 }
@@ -537,7 +538,8 @@ pub(crate) async fn install_update(
             let backup = crate::backup_controller::update_guard(&worker)?;
             let github = crate::github::update_guard()?;
             let secrets = crate::secrets::update_guard()?;
-            let runtime = crate::runtime::MUTATION_LOCK.try_lock().map_err(|_| "Wait for sandbox operations to finish before updating.")?;
+            // The installer waits its turn for computer-wide work before stopping VMs.
+            let runtime = crate::runtime::OPERATIONS.computer("Installing update").map_err(|e| e.to_string())?;
             crate::runtime::shutdown::ensure_accepting_operations()?;
             Ok::<_, String>((admission, backup, github, secrets, runtime))
         })();

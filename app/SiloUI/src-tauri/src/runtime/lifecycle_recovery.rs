@@ -275,7 +275,7 @@ pub(super) fn perform(
     settle(runner, paths, host, &mut intent, initial)
 }
 // The caller inspected this exact VM and confirmed Crashed while holding the
-// mutation lock. Dismissal must not leave a failed start queued for recovery.
+// operation gate. Dismissal must not leave a failed start queued for recovery.
 pub(super) fn dismiss_crashed_intent(paths: &RuntimePaths, machine: &MachineConfiguration) -> Result<(), RuntimeError> {
     let target = path(paths, machine.id());
     if let Some(intent) = load(&target)? {
@@ -321,8 +321,8 @@ pub(super) fn forget_removed(
 }
 pub(crate) fn recover(app: &AppHandle) -> Result<HashSet<String>, String> {
     let paths = runtime_paths(app)?;
-    let _guard = MUTATION_LOCK
-        .lock()
+    let _guard = OPERATIONS
+        .computer("Resuming sandbox actions")
         .map_err(|_| "Sandbox action recovery is busy.")?;
     let resources = host_resources().map_err(|e| e.to_string())?;
     let result = recover_with(&ProcessRunner, &paths, &resources);

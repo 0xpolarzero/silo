@@ -1,4 +1,4 @@
-//! Quit owns the same local runtime lock as normal VM operations. It never
+//! Quit takes the same operation gate as normal VM operations. It never
 //! follows saved SSH connections or sends commands to another computer.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +23,7 @@ pub(super) fn maintenance_budget() -> Duration {
         .unwrap_or(Duration::ZERO)
 }
 
-/// Call after taking the runtime mutation lock, so admission cannot race Quit.
+/// Call after taking the operation gate, so admission cannot race Quit.
 pub(crate) fn ensure_accepting_operations() -> Result<(), String> {
     if QUITTING.load(Ordering::SeqCst) {
         Err("Silo is quitting and stopping its local VMs. Wait for shutdown to finish.".into())
@@ -33,11 +33,11 @@ pub(crate) fn ensure_accepting_operations() -> Result<(), String> {
 }
 
 pub(crate) fn stop_local_vms(app: &AppHandle) -> Result<(), String> {
-    let _guard = MUTATION_LOCK.lock().map_err(|_| {
+    let _guard = OPERATIONS.computer("Stopping local VMs").map_err(|_| {
         "A sandbox operation failed unexpectedly. Check local VM status before retrying Quit."
             .to_string()
     })?;
-    // Quit has stopped admission and owns the runtime lock: the SSH monitor
+    // Quit has stopped admission and holds the operation gate: the SSH monitor
     // cannot restore listeners while local VM shutdown is in progress.
     crate::ssh_access::close_all();
     crate::desktop_viewer::close_all();

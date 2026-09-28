@@ -29,7 +29,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex, MutexGuard, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -43,34 +43,12 @@ pub(crate) const WORKSPACE_MOUNT: &str = "/workspace";
 const MAX_MACHINE_COUNT: usize = 64;
 const MANAGED_LABEL: &str = "silo.managed=true";
 
-pub(crate) static MUTATION_LOCK: Mutex<()> = Mutex::new(());
 /// Ordered admission for VM-changing operations on this computer. See `operation_gate`.
 pub(crate) static OPERATIONS: operation_gate::OperationGate = operation_gate::OperationGate::new();
 
 #[tauri::command]
 pub fn read_operation_queue() -> operation_gate::OperationQueue {
     OPERATIONS.snapshot()
-}
-const LIFECYCLE_LOCK_WAIT: Duration = Duration::from_secs(5);
-
-fn acquire_lifecycle_lock<'a>(
-    lock: &'a Mutex<()>,
-    timeout: Duration,
-) -> Result<MutexGuard<'a, ()>, RuntimeError> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match lock.try_lock() {
-            Ok(guard) => return Ok(guard),
-            Err(std::sync::TryLockError::Poisoned(_)) => return Err(RuntimeError::Busy),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Err(RuntimeError::Busy);
-                }
-                thread::sleep(remaining.min(Duration::from_millis(25)));
-            }
-        }
-    }
 }
 const DISABLED_GITHUB_PROFILE: &str = r#"{"version":1,"owners":[]}"#;
 static GITHUB_PROFILES: OnceLock<Mutex<HashMap<(PathBuf, String), String>>> = OnceLock::new();
@@ -167,6 +145,15 @@ impl std::fmt::Display for RuntimeError {
                 )
             }
             Self::Failed { operation, detail } => write!(formatter, "{operation} failed: {detail}"),
+        }
+    }
+}
+
+impl From<operation_gate::GateError> for RuntimeError {
+    fn from(error: operation_gate::GateError) -> Self {
+        match error {
+            operation_gate::GateError::Busy => RuntimeError::Busy,
+            other => RuntimeError::Unavailable(other.to_string()),
         }
     }
 }
@@ -1132,9 +1119,10 @@ pub async fn verify_workspace_identities(
 ) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        let _guard = MUTATION_LOCK
-            .try_lock()
-            .map_err(|_| RuntimeError::Busy.to_string())?;
+        // Verifies Git identity across several VMs' metadata and guests; shared read.
+        let _guard = OPERATIONS
+            .computer("Verifying Git identities")
+            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         verify_workspace_identities_with(&ProcessRunner, &paths, &identities)
             .map_err(|error| error.to_string())
@@ -1199,9 +1187,10 @@ pub async fn configure_workspace_identities(
     let notify_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        let _guard = MUTATION_LOCK
-            .try_lock()
-            .map_err(|_| RuntimeError::Busy.to_string())?;
+        // Writes Git identity across several VMs' metadata and guests; shared state.
+        let _guard = OPERATIONS
+            .computer("Saving Git identities")
+            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let result = configure_workspace_identities_with(&ProcessRunner, &paths, &identities);
         result.map_err(|error| error.to_string())
@@ -1491,9 +1480,10 @@ pub(crate) fn apply_github_identity(
     workspace: &str,
     identity: &Value,
 ) -> Result<(), String> {
-    let _guard = MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| RuntimeError::Busy.to_string())?;
+    // Applies GitHub identity inside one VM's guest only.
+    let _guard = OPERATIONS
+        .vm(workspace, &format!("Applying GitHub access to {workspace}"))
+        .map_err(|error| error.to_string())?;
     shutdown::ensure_accepting_operations()?;
     let paths = runtime_paths(app)?;
     let parsed: WorkspaceIdentity = serde_json::from_value(serde_json::json!({
@@ -1522,8 +1512,9 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
     crate::runtime_migration::ensure_ready(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        let mut source = read_application_snapshot(&ProcessRunner, &paths, &MUTATION_LOCK)?;
-        if let Ok(_guard) = MUTATION_LOCK.try_lock() {
+        let mut source = read_application_snapshot(&ProcessRunner, &paths, &|| OPERATIONS.is_idle())?;
+        // Opportunistic log cleanup; skip when any operation is active or waiting.
+        if let Ok(_guard) = OPERATIONS.try_computer("Cleaning up expired logs") {
             for workspace in &mut source.workspaces {
                 if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Stopped)
                     && inspect_workspace(&ProcessRunner, &paths, workspace.machine.name()).is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status))
@@ -1585,7 +1576,7 @@ fn application_shell(paths: &RuntimePaths, error: &str) -> Result<ApplicationSou
 fn read_application_snapshot(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    mutation_lock: &Mutex<()>,
+    is_idle: &dyn Fn() -> bool,
 ) -> Result<ApplicationSource, String> {
     const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
     const MAX_ATTEMPTS: usize = 2;
@@ -1596,7 +1587,7 @@ fn read_application_snapshot(
         if configuration_recovery::pending(paths)? {
             return Err(UPDATING.into());
         }
-        match read_application_snapshot_once(runner, paths, mutation_lock) {
+        match read_application_snapshot_once(runner, paths, is_idle) {
             Ok(source) => return Ok(source),
             Err(error) if error == UPDATING => {
                 if configuration_recovery::pending(paths)? {
@@ -1617,18 +1608,14 @@ fn read_application_snapshot(
 fn read_application_snapshot_once(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    mutation_lock: &Mutex<()>,
+    is_idle: &dyn Fn() -> bool,
 ) -> Result<ApplicationSource, String> {
     const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
     // Runtime creation and metadata publication are separate steps. Discard
     // observations overlapping a mutation, without blocking progress updates.
     if configuration_recovery::pending(paths)? { return Err(UPDATING.into()); }
     let check_idle = || -> Result<(), String> {
-        match mutation_lock.try_lock() {
-            Ok(guard) => { drop(guard); Ok(()) }
-            Err(std::sync::TryLockError::WouldBlock) => Err(UPDATING.into()),
-            Err(std::sync::TryLockError::Poisoned(_)) => Err("Sandbox operation lock is unavailable.".into()),
-        }
+        if is_idle() { Ok(()) } else { Err(UPDATING.into()) }
     };
     check_idle()?;
     let before = fs::read(&paths.metadata).ok();
@@ -1647,7 +1634,7 @@ fn read_application_snapshot_once(
 pub(crate) fn health_observations(
     app: &AppHandle,
 ) -> Option<crate::notifications::HealthObservations> {
-    drop(MUTATION_LOCK.try_lock().ok()?);
+    if !OPERATIONS.is_idle() { return None; }
     struct HealthRunner(Instant);
     impl RuntimeRunner for HealthRunner {
         fn run(
@@ -1684,7 +1671,7 @@ pub(crate) fn health_observations(
         read_application_state_with(&HealthRunner(Instant::now()), paths)
             .map_err(|error| error.to_string())
     });
-    drop(MUTATION_LOCK.try_lock().ok()?);
+    if !OPERATIONS.is_idle() { return None; }
     let after = paths
         .as_ref()
         .ok()
@@ -1729,6 +1716,17 @@ pub(crate) fn health_observations(
     Some(observations)
 }
 
+/// User-facing label for a lifecycle action on one VM.
+fn lifecycle_label(action: &str, name: &str) -> String {
+    match action {
+        "start" => format!("Starting {name}"),
+        "stop" => format!("Stopping {name}"),
+        "restart" => format!("Restarting {name}"),
+        "dismiss-error" => format!("Dismissing error for {name}"),
+        _ => format!("Updating {name}"),
+    }
+}
+
 #[tauri::command]
 pub async fn workspace_action(
     app: AppHandle,
@@ -1752,7 +1750,15 @@ pub async fn workspace_action(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let app = worker_app;
         let paths = runtime_paths(&app)?;
-        let guard = acquire_lifecycle_lock(&MUTATION_LOCK, LIFECYCLE_LOCK_WAIT)
+        // Start/stop/restart change only this VM's runtime; resource admission is
+        // against host totals, not other VMs, so per-VM ordering is sufficient. The
+        // key collapses double-clicked lifecycle requests into one queued action.
+        let guard = OPERATIONS
+            .acquire(
+                operation_gate::Scope::Vm(name.clone()),
+                &lifecycle_label(&action, &name),
+                Some(format!("vm:{name}:{action}")),
+            )
             .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let _ = app.emit("silo://application-state-changed", ());
@@ -2170,8 +2176,7 @@ fn pending_verification_workspace(events: &[MachineConfigurationProgress]) -> Op
 #[tauri::command]
 pub fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurationProgress>, String> {
     let paths = runtime_paths(&app)?;
-    let guard = MUTATION_LOCK.try_lock().ok();
-    read_activity(&paths, guard.is_some())
+    read_activity(&paths, OPERATIONS.is_idle())
 }
 
 #[tauri::command]
@@ -2189,9 +2194,10 @@ pub async fn save_machine_configuration(
     let notify_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        let _guard = MUTATION_LOCK
-            .try_lock()
-            .map_err(|_| RuntimeError::Busy.to_string())?;
+        // Changes the shared VM inventory/metadata; computer-wide.
+        let _guard = OPERATIONS
+            .computer("Saving sandbox settings")
+            .map_err(|e| e.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let resources = host_resources().map_err(|e| e.to_string())?;
         validate_request(&request).map_err(|e| e.to_string())?;
@@ -2607,9 +2613,10 @@ fn configuration_attention(
 
 pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
     let paths = runtime_paths(app)?;
-    let _guard = MUTATION_LOCK
-        .lock()
-        .map_err(|_| RuntimeError::Busy.to_string())?;
+    // Launch-time start reads the shared inventory to resolve the VM; computer-wide.
+    let _guard = OPERATIONS
+        .computer("Starting sandbox")
+        .map_err(|e| e.to_string())?;
     shutdown::ensure_accepting_operations()?;
     if crate::startup::is_cancelled(app) {
         return Ok(());
@@ -3532,29 +3539,6 @@ pub(crate) fn write_metadata(
 mod tests {
     use super::*;
 
-    #[test]
-    fn lifecycle_lock_waits_for_brief_contention_but_preserves_busy_for_sustained_work() {
-        let lock = Arc::new(Mutex::new(()));
-        let held = lock.lock().unwrap();
-        let worker_lock = Arc::clone(&lock);
-        let (ready, started) = std::sync::mpsc::channel();
-        let worker = thread::spawn(move || {
-            ready.send(()).unwrap();
-            acquire_lifecycle_lock(&worker_lock, Duration::from_millis(500)).is_ok()
-        });
-        started.recv().unwrap();
-        thread::sleep(Duration::from_millis(50));
-        drop(held);
-        assert!(worker.join().unwrap());
-
-        let held = lock.lock().unwrap();
-        assert!(matches!(
-            acquire_lifecycle_lock(&lock, Duration::from_millis(30)),
-            Err(RuntimeError::Busy)
-        ));
-        drop(held);
-    }
-
     struct StubRunner {
         outputs: Mutex<VecDeque<Result<CommandOutput, RuntimeError>>>,
         calls: Mutex<Vec<Vec<String>>>,
@@ -3605,7 +3589,7 @@ mod tests {
 
     #[test]
     fn desktop_guest_configuration_preserves_vm_lifecycle_even_when_guest_fails() {
-        let _guard = MUTATION_LOCK.lock().unwrap();
+        let _guard = OPERATIONS.computer("Test serialization").unwrap();
         use std::os::unix::fs::PermissionsExt;
         for installed in [false, true] {
             for running in [false, true] {
@@ -3743,7 +3727,7 @@ esac
         let same = github_revision_lock(home.path(), "a").unwrap();
         let b = github_revision_lock(home.path(), "b").unwrap();
         let _first = a.lock().unwrap();
-        let _lifecycle = MUTATION_LOCK.lock().unwrap();
+        let _lifecycle = OPERATIONS.computer("Lifecycle").unwrap();
         assert!(same.try_lock().is_err());
         assert!(b.try_lock().is_ok());
     }
@@ -4395,12 +4379,9 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let mutation_lock = Mutex::new(());
-        let guard = mutation_lock.lock().unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
-        assert_eq!(read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err(), "SILO_SANDBOX_UPDATE_IN_PROGRESS");
-        drop(guard);
-        assert!(read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err().contains("does not match"));
+        assert_eq!(read_application_snapshot(&runner, &paths, &|| false).unwrap_err(), "SILO_SANDBOX_UPDATE_IN_PROGRESS");
+        assert!(read_application_snapshot(&runner, &paths, &|| true).unwrap_err().contains("does not match"));
     }
 
     #[test]
@@ -4443,8 +4424,7 @@ esac
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let runner = ChangeMetadataOnce { calls: Mutex::new(Vec::new()), changed: Mutex::new(false) };
-        let mutation_lock = Mutex::new(());
-        let source = read_application_snapshot(&runner, &paths, &mutation_lock).unwrap();
+        let source = read_application_snapshot(&runner, &paths, &|| true).unwrap();
         assert_eq!(source.workspaces.len(), 1);
         assert_eq!(source.workspaces[0].machine.name(), "remote");
         assert_eq!(runner.calls.lock().unwrap().len(), 2);
@@ -4468,9 +4448,8 @@ esac
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let runner = FailedRead { calls: Mutex::new(Vec::new()) };
-        let mutation_lock = Mutex::new(());
         assert_eq!(
-            read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err(),
+            read_application_snapshot(&runner, &paths, &|| true).unwrap_err(),
             "synthetic runtime read failure",
         );
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
@@ -4484,9 +4463,8 @@ esac
         write_metadata(&paths.metadata, &configuration).unwrap();
         configuration_recovery::begin(&paths, &configuration).unwrap();
         let runner = StubRunner::successful_json(Vec::new());
-        let mutation_lock = Mutex::new(());
         assert_eq!(
-            read_application_snapshot(&runner, &paths, &mutation_lock).unwrap_err(),
+            read_application_snapshot(&runner, &paths, &|| true).unwrap_err(),
             "SILO_SANDBOX_UPDATE_IN_PROGRESS",
         );
         assert!(runner.calls.lock().unwrap().is_empty());
@@ -5636,7 +5614,10 @@ mod github_integration_tests;
 /// Apply secret policy under the same per-VM lock as GitHub updates and boot.
 pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(String,String,Vec<String>)>) -> Result<Vec<String>,String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
-    let _mutation = MUTATION_LOCK.try_lock().map_err(|_| RuntimeError::Busy.to_string())?;
+    // Applies secret policy inside one VM's guest only.
+    let _mutation = OPERATIONS
+        .vm(workspace, &format!("Saving secrets for {workspace}"))
+        .map_err(|error| error.to_string())?;
     shutdown::ensure_accepting_operations()?;
     let paths = runtime_paths(app)?;
     let lock = github_revision_lock(&paths.home, workspace)?;
@@ -5658,7 +5639,7 @@ pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String])
     Ok(())
 }
 
-/// Caller holds the mutation lock and has verified the stable VM identity.
+/// Caller holds the operation gate for this VM and has verified the stable VM identity.
 pub(crate) fn start_for_desktop(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeError> {
     workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", workspace)
 }

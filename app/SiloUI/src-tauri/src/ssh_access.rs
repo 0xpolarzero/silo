@@ -377,7 +377,8 @@ pub(crate) fn close_all() {
 pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || loop {
-        if let Ok(_guard) = runtime::MUTATION_LOCK.try_lock() {
+        // Background listener reconcile touches shared SSH state; skip when busy.
+        if let Ok(_guard) = runtime::OPERATIONS.try_computer("Reconciling SSH access") {
             if runtime::shutdown::ensure_accepting_operations().is_ok() {
                 if let Ok(paths) = runtime::runtime_paths(&app) {
                     reconcile(&paths);
@@ -439,7 +440,10 @@ fn state(paths: &RuntimePaths) -> Result<State, String> {
 #[tauri::command]
 pub(crate) async fn read_ssh_access_state(app: AppHandle) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = runtime::MUTATION_LOCK.lock().map_err(|_| FAILED)?;
+        // This read repairs the shared SSH listeners as it runs; computer scope.
+        let _guard = runtime::OPERATIONS
+            .computer("Checking SSH access")
+            .map_err(|_| FAILED)?;
         let paths = runtime::runtime_paths(&app)?;
         reconcile(&paths);
         state(&paths)
@@ -458,7 +462,10 @@ pub(crate) async fn save_ssh_access(
 ) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _operation = crate::updates::operation_guard()?;
-        let _guard = runtime::MUTATION_LOCK.lock().map_err(|_| FAILED)?;
+        // Saving SSH access reconciles the shared listeners/port map; computer scope.
+        let _guard = runtime::OPERATIONS
+            .computer("Saving SSH access")
+            .map_err(|_| FAILED)?;
         runtime::shutdown::ensure_accepting_operations()?;
         let paths = runtime::runtime_paths(&app)?;
         let result = save_with(
@@ -613,9 +620,10 @@ pub(crate) fn remote_dispatch(
     params: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let _operation = crate::updates::operation_guard()?;
-    let _guard = runtime::MUTATION_LOCK
-        .try_lock()
-        .map_err(|_| "A sandbox operation is in progress. Retry shortly.")?;
+    // Remote SSH changes reconcile the shared listeners; wait in order (computer).
+    let _guard = runtime::OPERATIONS
+        .computer("Applying remote SSH change")
+        .map_err(|e| e.to_string())?;
     crate::remote::ensure_management_enabled()?;
     runtime::shutdown::ensure_accepting_operations()?;
     let paths = runtime::runtime_paths(app)?;
@@ -983,7 +991,7 @@ sys.stdin.buffer.read()
 
     #[test]
     fn working_account_remote_export_requires_protocol_before_creating_client_key() {
-        let _guard = runtime::MUTATION_LOCK.lock().unwrap();
+        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);
@@ -1005,7 +1013,7 @@ sys.stdin.buffer.read()
 
     #[test]
     fn automatic_client_key_is_stable_isolated_and_exported_only_on_request() {
-        let _guard = runtime::MUTATION_LOCK.lock().unwrap();
+        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);
@@ -1037,7 +1045,7 @@ sys.stdin.buffer.read()
 
     #[test]
     fn remote_enable_waits_for_owner_start_and_retries_preserve_sessions_until_remote_disable() {
-        let _guard = runtime::MUTATION_LOCK.lock().unwrap();
+        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
@@ -1084,7 +1092,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn remote_save_rejects_replaced_ids_and_invalid_settings_without_writing() {
-        let _guard = runtime::MUTATION_LOCK.lock().unwrap();
+        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);

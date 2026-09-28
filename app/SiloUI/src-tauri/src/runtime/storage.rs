@@ -313,7 +313,8 @@ fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, Ru
 pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();
     thread::spawn(move || loop {
-        if let Ok(_guard) = MUTATION_LOCK.try_lock() {
+        // Periodic background trim skips whenever any operation is active or waiting.
+        if let Ok(_guard) = OPERATIONS.try_computer("Trimming sandbox storage") {
             if shutdown::ensure_accepting_operations().is_ok() {
                 if let Ok(paths) = runtime_paths(&app) {
                     let _ = periodic(&ProcessRunner, &paths);
@@ -334,7 +335,17 @@ pub async fn reclaim_workspace_storage(app: AppHandle, workspace_id: String) -> 
 }
 async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageState, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = MUTATION_LOCK.try_lock().map_err(|_| RuntimeError::Busy.to_string())?;
+        // Reclaim rewrites shared disk state and waits its turn; a plain read does
+        // not take the gate so status stays available during other operations.
+        let _guard = if reclaim {
+            Some(
+                OPERATIONS
+                    .computer("Reclaiming sandbox storage")
+                    .map_err(|e| e.to_string())?,
+            )
+        } else {
+            None
+        };
         shutdown::ensure_accepting_operations()?;
         let paths = runtime_paths(&app)?;
         let result = (|| {

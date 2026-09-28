@@ -5,8 +5,8 @@
 //! first-come, first-served among conflicting requests, so a waiting computer-wide
 //! operation is never starved by a stream of per-VM operations.
 //!
-//! This replaces the process-wide `MUTATION_LOCK`. It does not replace the OS file
-//! lock that coordinates cooperating runtime processes, nor short data locks.
+//! This is the sole in-process gate for VM-changing work. It does not replace the
+//! OS file lock that coordinates cooperating runtime processes, nor short data locks.
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};

@@ -228,9 +228,9 @@ fn verify_committed_edits(runner: &dyn RuntimeRunner, paths: &RuntimePaths, jour
 
 pub(super) fn recover_at_paths(runner: &dyn RuntimeRunner, paths: &RuntimePaths, resources: &HostResources, progress: &dyn Fn(&str, &str, u8)) -> Result<(), RuntimeError> {
     let Some(journal) = load(paths)? else { return Ok(()); };
-    // Drain a surviving child before inspecting state; runtime operations in
-    // reconciliation acquire this same lock themselves. MUTATION_LOCK serializes
-    // the application-level recovery transaction.
+    // Drain a surviving child before inspecting state. The caller holds the
+    // operation gate (computer scope), which serializes the application-level
+    // recovery transaction against all other VM-changing work.
     drop(command_lock(paths, MUTATION_TIMEOUT)?);
     reconcile(runner, paths, &journal)?;
     verify_committed_edits(runner, paths, &journal, &journal.request)?;
@@ -291,7 +291,9 @@ pub(crate) fn recover(app: &AppHandle) -> Result<(), String> {
 fn recover_inner(app: &AppHandle) -> Result<(), String> {
     let paths = runtime_paths(app)?;
     if load(&paths).map_err(|e| e.to_string())?.is_none() { return Ok(()); }
-    let _guard = MUTATION_LOCK.lock().map_err(|_| "Sandbox configuration lock is unavailable.")?;
+    let _guard = OPERATIONS
+        .computer("Recovering sandbox configuration")
+        .map_err(|_| "Sandbox configuration lock is unavailable.")?;
     let request_id = uuid::Uuid::new_v4().to_string();
     let activity = Mutex::new(ActivityJournal::start(&paths, &request_id)?);
     let progress = |step: &str, name: &str, fraction: u8| {

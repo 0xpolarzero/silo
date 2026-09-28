@@ -130,7 +130,8 @@ fn running(
 pub(crate) fn running_names(app: &AppHandle) -> Result<Vec<String>, String> {
     running(&ProcessRunner, &runtime_paths(app)?).map(|v| v.into_iter().map(|m| m.name).collect())
 }
-/// Caller owns MUTATION_LOCK for the whole installation, including every stop.
+/// Caller holds the operation gate (computer scope) for the whole installation,
+/// including every stop.
 pub(crate) fn prepare(app: &AppHandle, consent: bool) -> Result<(), String> {
     let paths = runtime_paths(app)?;
     if load(&paths)?.is_some() {
@@ -163,7 +164,7 @@ fn stop_selected(
     Ok(())
 }
 
-/// Caller owns MUTATION_LOCK. Each success is persisted, making replay idempotent.
+/// Caller holds the operation gate. Each success is persisted, making replay idempotent.
 pub(crate) fn restore_locked(app: &AppHandle) -> Result<(), String> {
     let paths = runtime_paths(app)?;
     let host = host_resources().map_err(|e| e.to_string())?;
@@ -203,8 +204,8 @@ fn restore_pending(
 }
 
 pub(crate) fn recover(app: &AppHandle) -> Result<bool, String> {
-    let _guard = MUTATION_LOCK
-        .lock()
+    let _guard = OPERATIONS
+        .computer("Resuming sandboxes after update")
         .map_err(|_| "Sandbox operations are unavailable.")?;
     let existed = load(&runtime_paths(app)?)?.is_some();
     restore_locked(app)?;
