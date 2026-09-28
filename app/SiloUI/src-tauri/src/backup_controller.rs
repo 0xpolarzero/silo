@@ -737,14 +737,24 @@ fn mutation_guard(
     label: &str,
 ) -> Result<runtime::operation_gate::OperationGuard<'static>, String> {
     // Backup and restore change shared state and wait their turn (computer scope).
-    // The gate is first-come, first-served, so a queued backup is never starved;
-    // honour an already-requested cancellation before joining the queue.
+    // A queued backup stays cancellable and gives up if the work ahead never ends.
     if cancellation.cancelled() {
         return Err("The operation was cancelled.".into());
     }
+    let started = std::time::Instant::now();
     let guard = runtime::OPERATIONS
-        .computer(label)
-        .map_err(|e| e.to_string())?;
+        .acquire_while(runtime::operation_gate::Scope::Computer, label, &|| {
+            !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
+        })
+        .map_err(|error| match error {
+            runtime::operation_gate::GateError::Abandoned if cancellation.cancelled() => {
+                "The operation was cancelled.".to_string()
+            }
+            runtime::operation_gate::GateError::Abandoned => {
+                "The previous sandbox operation did not finish. Relaunch Silo to retry.".to_string()
+            }
+            error => error.to_string(),
+        })?;
     runtime::shutdown::ensure_accepting_operations()?;
     Ok(guard)
 }

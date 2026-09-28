@@ -393,8 +393,16 @@ fn reconcile_if_idle(app: &AppHandle) {
 /// uses this so it can return observed state immediately while any needed repair
 /// converges in the background.
 fn schedule_reconcile(app: &AppHandle) {
+    // Reads can arrive in bursts; one repair pass at a time is enough.
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RUNNING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
     let app = app.clone();
-    std::thread::spawn(move || reconcile_if_idle(&app));
+    std::thread::spawn(move || {
+        reconcile_if_idle(&app);
+        RUNNING.store(false, std::sync::atomic::Ordering::Release);
+    });
 }
 pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();

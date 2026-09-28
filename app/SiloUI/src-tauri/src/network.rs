@@ -585,8 +585,20 @@ fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
     if workspaces.is_empty() {
         return;
     }
+    // Reads can arrive in bursts; one repair pass at a time is enough.
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RUNNING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
     let app = app.clone();
     std::thread::spawn(move || {
+        struct Done;
+        impl Drop for Done {
+            fn drop(&mut self) {
+                RUNNING.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _done = Done;
         let Ok(paths) = runtime::runtime_paths(&app) else {
             return;
         };

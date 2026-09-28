@@ -39,6 +39,8 @@ pub(crate) enum GateError {
     Nested,
     /// A `try_` request found conflicting work.
     Busy,
+    /// The caller stopped waiting (for example, the user cancelled) before its turn.
+    Abandoned,
 }
 
 impl std::fmt::Display for GateError {
@@ -47,6 +49,7 @@ impl std::fmt::Display for GateError {
             Self::AlreadyQueued => "This action is already waiting to run.",
             Self::Nested => "Sandbox operation ordering failed.",
             Self::Busy => "Another sandbox operation is still running.",
+            Self::Abandoned => "The operation stopped waiting for its turn.",
         })
     }
 }
@@ -192,6 +195,27 @@ impl OperationGate {
         label: &str,
         key: Option<String>,
     ) -> Result<OperationGuard<'_>, GateError> {
+        self.acquire_inner(scope, label, key, None)
+    }
+
+    /// Wait for a turn while `keep_waiting` returns true; otherwise leave the queue
+    /// with `GateError::Abandoned`. Checked at least every 100 ms.
+    pub(crate) fn acquire_while(
+        &self,
+        scope: Scope,
+        label: &str,
+        keep_waiting: &dyn Fn() -> bool,
+    ) -> Result<OperationGuard<'_>, GateError> {
+        self.acquire_inner(scope, label, None, Some(keep_waiting))
+    }
+
+    fn acquire_inner(
+        &self,
+        scope: Scope,
+        label: &str,
+        key: Option<String>,
+        keep_waiting: Option<&dyn Fn() -> bool>,
+    ) -> Result<OperationGuard<'_>, GateError> {
         if HELD.with(Cell::get) > 0 {
             return Err(GateError::Nested);
         }
@@ -218,10 +242,29 @@ impl OperationGate {
                 state.running.push(entry);
                 break;
             }
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match keep_waiting {
+                None => {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                Some(keep_waiting) => {
+                    state = self
+                        .changed
+                        .wait_timeout(state, std::time::Duration::from_millis(100))
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .0;
+                    // Re-check admission first: a turn that arrived is not given up.
+                    let index = state.waiting.iter().position(|entry| entry.id == id);
+                    if index.is_some_and(|index| !state.admissible(index)) && !keep_waiting() {
+                        state.waiting.retain(|entry| entry.id != id);
+                        drop(state);
+                        self.notify();
+                        return Err(GateError::Abandoned);
+                    }
+                }
+            }
         }
         drop(state);
         HELD.with(|held| held.set(held.get() + 1));
@@ -444,6 +487,26 @@ mod tests {
         assert!(gate.is_vm_idle("b"));
         drop(a);
         assert!(elsewhere(move || gate.try_computer("Reclaim").is_ok()));
+    }
+
+    #[test]
+    fn abandoned_waiter_leaves_the_queue_and_unblocks_later_work() {
+        let gate = leak();
+        let running = gate.computer("Update").unwrap();
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waiter = {
+            let cancelled = cancelled.clone();
+            thread::spawn(move || {
+                gate.acquire_while(Scope::Computer, "Backup", &|| !cancelled.load(Ordering::SeqCst))
+                    .unwrap_err()
+            })
+        };
+        wait_until(gate, |queue| queue.waiting.len() == 1);
+        cancelled.store(true, Ordering::SeqCst);
+        assert_eq!(waiter.join().unwrap(), GateError::Abandoned);
+        assert!(gate.snapshot().waiting.is_empty());
+        drop(running);
+        assert!(gate.is_idle());
     }
 
     #[test]

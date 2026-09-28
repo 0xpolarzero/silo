@@ -933,6 +933,7 @@ describe("production application bridge", () => {
     await store.initialize()
     const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.computer).map(({ machine }) => machine)
     const original = committed[0]
+    if (original.kind !== "vm") throw new Error("The fixture's first machine is expected to be a VM.")
     const edited = { ...original, cpus: original.cpus === 1 ? 2 : 1 }
     store.applicationActions.saveMachineConfiguration({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("change_machine_configuration", {
