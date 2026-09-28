@@ -631,10 +631,14 @@ pub async fn create_checkpoint(
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        // Checkpoint capture is serialized against all VM work (computer scope):
-        // the workspace is addressed by id here, not the name other ops key on.
+        // Capture touches only this VM's own snapshot store and per-VM checkpoint
+        // record, not the shared inventory, so it is ordered per VM by stable id.
+        let vm_name = machine(&paths, &workspace_id)
+            .map_err(|error| error.to_string())?
+            .name()
+            .to_owned();
         let _guard = OPERATIONS
-            .computer("Creating checkpoint")
+            .vm(&workspace_id, &vm_name, "Creating checkpoint")
             .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let _ = worker_app.emit("silo://application-state-changed", ());
@@ -1493,9 +1497,14 @@ pub async fn restore_checkpoint(
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        // Restore can replace a VM's runtime state; computer scope for correctness.
+        // Restore rewrites only this VM's runtime state and per-VM checkpoint record,
+        // not the shared inventory, so it is ordered per VM by stable id.
+        let vm_name = machine(&paths, &workspace_id)
+            .map_err(|error| error.to_string())?
+            .name()
+            .to_owned();
         let _guard = OPERATIONS
-            .computer("Restoring checkpoint")
+            .vm(&workspace_id, &vm_name, "Restoring checkpoint")
             .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
         let result = restore_with(&ProcessRunner, &paths, &workspace_id, &checkpoint_id)

@@ -332,7 +332,7 @@ pub(super) fn query_local(
         .join("logs");
     if request.cursor.is_none()
         // Reading logs observes only; skip opportunistic cleanup when this VM is busy.
-        && OPERATIONS.is_vm_idle(machine.name())
+        && OPERATIONS.is_vm_idle(machine.id())
         && inspect_workspace(&ProcessRunner, paths, machine.name())
             .is_ok_and(|sandbox| is_stopped(&sandbox.status))
     {

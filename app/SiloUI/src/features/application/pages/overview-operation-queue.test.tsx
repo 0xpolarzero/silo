@@ -32,7 +32,7 @@ it("lists running and waiting operations in a global indicator with elapsed time
 it("flags a long-running operation as possibly stuck", () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   source.operationQueue = {
-    running: [{ id: 1, label: "Backing up dev-vm", vm: "dev", sinceMs: Date.now() - 12 * 60_000 }],
+    running: [{ id: 1, label: "Backing up dev-vm", vmId: "00000000-0000-4000-8000-000000000001", vmName: "dev", sinceMs: Date.now() - 12 * 60_000 }],
     waiting: [],
   }
   render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)

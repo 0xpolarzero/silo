@@ -8,11 +8,11 @@ import type { OperationQueue } from "@/features/application/model/operation-queu
 export function fixtureOperationQueue(now = Date.now()): OperationQueue {
   return {
     running: [
-      { id: 1, label: "Backing up sandboxes", vm: null, sinceMs: now - 3 * 60_000 },
+      { id: 1, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: now - 3 * 60_000 },
     ],
     waiting: [
-      { id: 2, label: "Restarting dev", vm: "dev", sinceMs: now - 60_000 },
-      { id: 3, label: "Checkpointing playgrounds", vm: "playgrounds", sinceMs: now - 30_000 },
+      { id: 2, label: "Restarting dev", vmId: "00000000-0000-4000-8000-000000000001", vmName: "dev", sinceMs: now - 60_000 },
+      { id: 3, label: "Checkpointing playgrounds", vmId: "00000000-0000-4000-8000-000000000002", vmName: "playgrounds", sinceMs: now - 30_000 },
     ],
   }
 }
@@ -21,7 +21,7 @@ export function fixtureOperationQueue(now = Date.now()): OperationQueue {
 export function stuckOperationQueue(now = Date.now()): OperationQueue {
   return {
     running: [
-      { id: 4, label: "Backing up dev-vm", vm: "dev", sinceMs: now - 12 * 60_000 },
+      { id: 4, label: "Backing up dev-vm", vmId: "00000000-0000-4000-8000-000000000001", vmName: "dev", sinceMs: now - 12 * 60_000 },
     ],
     waiting: [],
   }

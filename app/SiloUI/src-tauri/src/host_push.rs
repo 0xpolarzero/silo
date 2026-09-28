@@ -455,16 +455,15 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
     runtime::validate_name(workspace).map_err(|e| e.to_string())?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
-    if !metadata
+    let vm_id = metadata
         .machines
         .iter()
-        .any(|m| m.is_vm() && m.name() == workspace)
-    {
-        return Err("Choose a managed Silo VM.".into());
-    }
+        .find(|m| m.is_vm() && m.name() == workspace)
+        .map(|m| m.id().to_owned())
+        .ok_or("Choose a managed Silo VM.")?;
     // Host-push reads and writes one VM's guest; it waits its turn for that VM.
     let read_guard = runtime::OPERATIONS
-        .vm(workspace, &format!("Reading repository in {workspace}"))
+        .vm(&vm_id, workspace, &format!("Reading repository in {workspace}"))
         .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
     require_running(&paths, workspace)?;
@@ -478,7 +477,7 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
     let repo = repository(origin.trim())?;
     let token = crate::github::host_push_credential(app, workspace, &repo)?;
     let _guard = runtime::OPERATIONS
-        .vm(workspace, &format!("Pushing from {workspace}"))
+        .vm(&vm_id, workspace, &format!("Pushing from {workspace}"))
         .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
     require_running(&paths, workspace)?;

@@ -1610,11 +1610,12 @@ pub(crate) fn apply_github_identity(
     identity: &Value,
 ) -> Result<(), String> {
     // Applies GitHub identity inside one VM's guest only.
+    let paths = runtime_paths(app)?;
+    let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
     let _guard = OPERATIONS
-        .vm(workspace, &format!("Applying GitHub access to {workspace}"))
+        .vm(&vm_id, workspace, &format!("Applying GitHub access to {workspace}"))
         .map_err(|error| error.to_string())?;
     shutdown::ensure_accepting_operations()?;
-    let paths = runtime_paths(app)?;
     let parsed: WorkspaceIdentity = serde_json::from_value(serde_json::json!({
         "workspace": workspace, "name": identity["name"], "email": identity["email"], "apply": identity["apply"]
     })).map_err(|_| "Invalid Git author configuration.".to_string())?;
@@ -1882,11 +1883,14 @@ pub async fn workspace_action(
         // Start/stop/restart change only this VM's runtime; resource admission is
         // against host totals, not other VMs, so per-VM ordering is sufficient. The
         // key collapses double-clicked lifecycle requests into one queued action.
+        // Resolve the stable id before acquiring so ordering survives a rename.
+        let vm_id = resolve_vm_id(&paths, &name).map_err(|error| error.to_string())?;
         let guard = OPERATIONS
             .acquire(
-                operation_gate::Scope::Vm(name.clone()),
+                operation_gate::Scope::Vm { id: vm_id.clone() },
+                Some(name.clone()),
                 &lifecycle_label(&action, &name),
-                Some(format!("vm:{name}:{action}")),
+                Some(format!("vm:{vm_id}:{action}")),
             )
             .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
@@ -3678,6 +3682,19 @@ pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, 
     })?;
     validate_request(&request)?;
     Ok(request)
+}
+
+/// Resolve a local VM's stable id from its current display name in fresh metadata.
+/// Per-VM operation ordering keys on the stable id, so callers that only have a name
+/// turn it into an id before acquiring the operation gate. Returns a clear error when
+/// no local VM by that name currently exists.
+pub(crate) fn resolve_vm_id(paths: &RuntimePaths, name: &str) -> Result<String, RuntimeError> {
+    read_metadata(&paths.metadata)?
+        .machines
+        .into_iter()
+        .find(|machine| machine.is_vm() && machine.name() == name)
+        .map(|machine| machine.id().to_owned())
+        .ok_or_else(|| RuntimeError::Invalid("This VM no longer exists.".into()))
 }
 
 pub(crate) fn write_metadata(
@@ -5802,11 +5819,12 @@ mod github_integration_tests;
 pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(String,String,Vec<String>)>) -> Result<Vec<String>,String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
     // Applies secret policy inside one VM's guest only.
+    let paths = runtime_paths(app)?;
+    let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
     let _mutation = OPERATIONS
-        .vm(workspace, &format!("Saving secrets for {workspace}"))
+        .vm(&vm_id, workspace, &format!("Saving secrets for {workspace}"))
         .map_err(|error| error.to_string())?;
     shutdown::ensure_accepting_operations()?;
-    let paths = runtime_paths(app)?;
     let lock = github_revision_lock(&paths.home, workspace)?;
     let _guard = lock.lock().map_err(|_| "Sandbox access state is unavailable.".to_string())?;
     secrets_runtime::apply(&paths, workspace, &desired, false)

@@ -4,8 +4,11 @@ import { z } from "zod"
 export interface OperationEntry {
   id: number
   label: string
-  /** `null` for computer-wide operations that touch every VM. */
-  vm: string | null
+  /** Stable VM id this operation is scoped to; `null` for computer-wide operations. */
+  vmId: string | null
+  /** VM display name captured when the operation was admitted; `null` for
+   * computer-wide operations. For display only — matching keys on `vmId`. */
+  vmName: string | null
   /** Unix epoch milliseconds when the operation started running or began waiting. */
   sinceMs: number
 }
@@ -19,7 +22,8 @@ export interface OperationQueue {
 export const operationEntrySchema = z.object({
   id: z.number().int().nonnegative(),
   label: z.string(),
-  vm: z.string().nullable(),
+  vmId: z.string().nullable(),
+  vmName: z.string().nullable(),
   sinceMs: z.number().int().nonnegative(),
 })
 
@@ -36,7 +40,7 @@ export const emptyOperationQueue: OperationQueue = { running: [], waiting: [] }
  * everything. This mirrors the backend `Scope::conflicts` rule.
  */
 export function operationsConflict(a: OperationEntry, b: OperationEntry): boolean {
-  return a.vm === null || b.vm === null || a.vm === b.vm
+  return a.vmId === null || b.vmId === null || a.vmId === b.vmId
 }
 
 /** Running operations that keep `entry` from being admitted, in start order. */
@@ -45,26 +49,26 @@ export function blockingOperations(queue: OperationQueue, entry: OperationEntry)
 }
 
 /**
- * True when `entry`'s scope is the VM named `name`. The runtime gate keys per-VM
- * entries by the local workspace name, so matching is by name alone. Callers must
- * not pass a remote computer's VM here: those operations run on that computer's own
- * gate and never appear in this local queue.
+ * True when `entry`'s scope is the VM with stable id `vmId`. The runtime gate keys
+ * per-VM entries by the stable id, so matching is by id alone and survives a rename.
+ * Callers must not pass a remote computer's VM here: those operations run on that
+ * computer's own gate and never appear in this local queue.
  */
-export function operationMatchesVm(entry: OperationEntry, name: string): boolean {
-  return entry.vm === name
+export function operationMatchesVm(entry: OperationEntry, vmId: string): boolean {
+  return entry.vmId === vmId
 }
 
 /**
  * The waiting operation that a VM row should surface: the earliest waiter whose
  * scope is this VM. Computer-wide waiters are reported by the global indicator.
  */
-export function waitingOperationForVm(queue: OperationQueue, name: string): OperationEntry | undefined {
-  return queue.waiting.find((entry) => operationMatchesVm(entry, name))
+export function waitingOperationForVm(queue: OperationQueue, vmId: string): OperationEntry | undefined {
+  return queue.waiting.find((entry) => operationMatchesVm(entry, vmId))
 }
 
 /** True when a matching operation for this VM is already running or waiting (a duplicate request). */
-export function hasPendingOperationForVm(queue: OperationQueue, name: string): boolean {
-  return [...queue.running, ...queue.waiting].some((entry) => operationMatchesVm(entry, name))
+export function hasPendingOperationForVm(queue: OperationQueue, vmId: string): boolean {
+  return [...queue.running, ...queue.waiting].some((entry) => operationMatchesVm(entry, vmId))
 }
 
 function joinLabels(labels: string[]): string {

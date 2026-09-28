@@ -73,9 +73,9 @@ export function OperationQueueIndicator({ queue, reduceMotion = false }: { queue
  * Inline per-VM waiting status shown near a sandbox's activity indicator when an
  * operation for that VM is waiting its turn behind other running work.
  */
-export function WorkspaceWaitingStatus({ queue, name }: { queue?: OperationQueue; name: string }) {
+export function WorkspaceWaitingStatus({ queue, vmId }: { queue?: OperationQueue; vmId: string }) {
   if (!queue) return null
-  const waiting = waitingOperationForVm(queue, name)
+  const waiting = waitingOperationForVm(queue, vmId)
   if (!waiting) return null
   return (
     <span role="status" className="text-muted-foreground">

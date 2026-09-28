@@ -743,7 +743,7 @@ fn mutation_guard(
     }
     let started = std::time::Instant::now();
     let guard = runtime::OPERATIONS
-        .acquire_while(runtime::operation_gate::Scope::Computer, label, &|| {
+        .acquire_while(runtime::operation_gate::Scope::Computer, None, label, &|| {
             !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
         })
         .map_err(|error| match error {

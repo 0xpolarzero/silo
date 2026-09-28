@@ -57,10 +57,11 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
         "guest.prepare" => {
             // Authorizes a remote key inside one VM's guest; wait its turn per VM.
             let name = vm_name(app, params)?;
-            let _guard = runtime::OPERATIONS
-                .vm(&name, &format!("Preparing access to {name}"))
-                .map_err(|e| e.to_string())?;
             let paths = runtime::runtime_paths(app)?;
+            let vm_id = runtime::resolve_vm_id(&paths, &name).map_err(|e| e.to_string())?;
+            let _guard = runtime::OPERATIONS
+                .vm(&vm_id, &name, &format!("Preparing access to {name}"))
+                .map_err(|e| e.to_string())?;
             let user = crate::working_account::inspect_user(&paths, &name)?;
             crate::working_account::require_client_protocol(user, params)?;
             let public = crate::editor::authorize_remote(

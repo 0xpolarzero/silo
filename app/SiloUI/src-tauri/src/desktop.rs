@@ -388,11 +388,15 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
     // waits its turn per VM. Reading desktop status observes only, so it takes
     // no gate and stays available during other operations.
     let _guard = match action {
-        Some(_) => Some(
-            runtime::OPERATIONS
-                .vm(workspace, &format!("Updating {workspace} desktop"))
-                .map_err(|e| e.to_string())?,
-        ),
+        Some(_) => {
+            let paths = runtime::runtime_paths(app)?;
+            let vm_id = runtime::resolve_vm_id(&paths, workspace).map_err(|e| e.to_string())?;
+            Some(
+                runtime::OPERATIONS
+                    .vm(&vm_id, workspace, &format!("Updating {workspace} desktop"))
+                    .map_err(|e| e.to_string())?,
+            )
+        }
         None => None,
     };
     let (paths, machine) = machine(app, workspace)?;

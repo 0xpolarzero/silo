@@ -303,8 +303,9 @@ export function OverviewPage({ active = true, readOnly = false,
             const state = workspace?.state ?? "stopped"
             // The operation gate keys per-VM entries by the local workspace name. A
             // remote computer's VMs run on that computer's own gate, so never match a
-            // local queue entry against a remote workspace even when names collide.
-            const queueVmName = workspace?.computer ? null : machine.name
+            // local queue entry against a remote workspace. Local entries are keyed by
+            // the stable VM id, so matching uses the id rather than the display name.
+            const queueVmId = workspace?.computer ? null : machine.id
             const pendingSecrets = machine.kind === "vm" && !workspace?.computer
               ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map((secret) => secret.name)
               : []
@@ -365,7 +366,7 @@ export function OverviewPage({ active = true, readOnly = false,
                   <span className="truncate" title={workspace?.attention?.message}>
                     {lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : workspace?.computer?.busy ? <span role="status">Refreshing status…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : <WorkspaceStateLabel state={state} />}
                     {workspace?.attention && <> · {workspace.attention.message}</>}
-                    {!lifecycle && !workspaceOperationBusy && queueVmName !== null && waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, queueVmName) && <> · <WorkspaceWaitingStatus queue={source.operationQueue} name={queueVmName} /></>}
+                    {!lifecycle && !workspaceOperationBusy && queueVmId !== null && waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, queueVmId) && <> · <WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} /></>}
                   </span>
                   {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || workspaceOperationBusy || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}
                 </span>

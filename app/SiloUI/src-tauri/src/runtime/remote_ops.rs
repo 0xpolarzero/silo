@@ -19,12 +19,38 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
         return serde_json::to_value(read_metadata(&paths.metadata).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string());
     }
-    // Remote-triggered work waits its turn. A single dispatch may change the shared
-    // inventory (upsert/delete) or one VM's lifecycle; computer scope keeps it
-    // correct and ordered against all local operations, matching the former lock.
-    let _guard = OPERATIONS
-        .computer("Applying remote change")
-        .map_err(|e| e.to_string())?;
+    // Remote-triggered work waits its turn. A remote lifecycle action changes only one
+    // VM's runtime, so it shares that VM's lane (keyed by stable id, with the same
+    // dedupe key as the local lifecycle command). Inventory changes (upsert/delete)
+    // stay computer-scoped: they rewrite the shared metadata file.
+    let _guard = if method == "runtime.action" {
+        let vm_id = params["vmId"].as_str().ok_or("Missing VM identity.")?.to_owned();
+        let action = params["action"].as_str().ok_or("Missing VM action.")?.to_owned();
+        if !matches!(action.as_str(), "start" | "stop" | "restart" | "dismiss-error") {
+            return Err("Unsupported remote lifecycle action.".into());
+        }
+        // Resolve the display name from fresh metadata before acquiring; the work
+        // below re-reads and re-checks the VM still exists after the turn arrives.
+        let name = read_metadata(&paths.metadata)
+            .map_err(|e| e.to_string())?
+            .machines
+            .into_iter()
+            .find(|m| m.id() == vm_id && m.is_vm())
+            .map(|m| m.name().to_owned())
+            .ok_or("This VM no longer exists on this computer.")?;
+        OPERATIONS
+            .acquire(
+                operation_gate::Scope::Vm { id: vm_id.clone() },
+                Some(name.clone()),
+                &lifecycle_label(&action, &name),
+                Some(format!("vm:{vm_id}:{action}")),
+            )
+            .map_err(|e| e.to_string())?
+    } else {
+        OPERATIONS
+            .computer("Applying remote change")
+            .map_err(|e| e.to_string())?
+    };
     shutdown::ensure_accepting_operations()?;
     let mut request = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
     let resources = host_resources().map_err(|e| e.to_string())?;

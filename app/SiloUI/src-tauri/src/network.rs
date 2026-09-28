@@ -606,8 +606,11 @@ fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
             return;
         }
         for workspace in workspaces {
+            let Ok(vm_id) = runtime::resolve_vm_id(&paths, &workspace) else {
+                continue;
+            };
             if let Ok(_gate) = runtime::OPERATIONS
-                .try_vm(&workspace, &format!("Reconciling ports on {workspace}"))
+                .try_vm(&vm_id, &workspace, &format!("Reconciling ports on {workspace}"))
             {
                 let _ = reconcile_forwarding(&paths, &workspace);
             }
@@ -674,8 +677,9 @@ pub(crate) async fn save_network_port(
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         // Publishing a port changes this VM's shared host forwarding; wait its turn
         // for that VM. NETWORK_LOCK stays the short data lock around the saved table.
+        let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
         let _gate = runtime::OPERATIONS
-            .vm(&workspace, &format!("Publishing a port on {workspace}"))
+            .vm(&vm_id, &workspace, &format!("Publishing a port on {workspace}"))
             .map_err(|e| e.to_string())?;
         runtime::shutdown::ensure_accepting_operations()?;
         configured_vm(&paths, &workspace)?;
@@ -736,8 +740,9 @@ pub(crate) async fn remove_network_port(
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         // Removing a port changes this VM's shared host forwarding; wait its turn
         // for that VM. NETWORK_LOCK stays the short data lock around the saved table.
+        let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
         let _gate = runtime::OPERATIONS
-            .vm(&workspace, &format!("Removing a port on {workspace}"))
+            .vm(&vm_id, &workspace, &format!("Removing a port on {workspace}"))
             .map_err(|e| e.to_string())?;
         runtime::shutdown::ensure_accepting_operations()?;
         configured_vm(&paths, &workspace)?;
@@ -970,7 +975,9 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
         let holder = std::thread::spawn(move || {
-            let _guard = runtime::OPERATIONS.vm("dev", "Blocking network read test").unwrap();
+            let _guard = runtime::OPERATIONS
+                .vm("00000000-0000-4000-8000-000000000001", "dev", "Blocking network read test")
+                .unwrap();
             held_tx.send(()).unwrap();
             release_rx.recv().unwrap();
         });
