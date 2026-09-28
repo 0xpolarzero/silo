@@ -50,6 +50,13 @@ pub(crate) static OPERATIONS: operation_gate::OperationGate = operation_gate::Op
 pub fn read_operation_queue() -> operation_gate::OperationQueue {
     OPERATIONS.snapshot()
 }
+
+/// Ask to cancel a queued or running operation by its queue id. A waiting operation
+/// leaves the queue; a running operation is stopped only when it opted in as cancellable.
+#[tauri::command]
+pub fn cancel_operation(id: u64) -> Result<(), String> {
+    OPERATIONS.cancel(id).map_err(|error| error.to_string())
+}
 const DISABLED_GITHUB_PROFILE: &str = r#"{"version":1,"owners":[]}"#;
 static GITHUB_PROFILES: OnceLock<Mutex<HashMap<(PathBuf, String), String>>> = OnceLock::new();
 type GithubRevisionLocks = HashMap<(PathBuf, String), Arc<Mutex<u64>>>;
@@ -127,6 +134,7 @@ pub(crate) enum RuntimeError {
     Invalid(String),
     Unavailable(String),
     TimedOut { operation: String },
+    Cancelled { operation: String },
     Failed { operation: String, detail: String },
     Malformed(String),
 }
@@ -144,6 +152,9 @@ impl std::fmt::Display for RuntimeError {
                     "{operation} timed out. Check the sandbox state, then retry."
                 )
             }
+            Self::Cancelled { operation } => {
+                write!(formatter, "{operation} was cancelled.")
+            }
             Self::Failed { operation, detail } => write!(formatter, "{operation} failed: {detail}"),
         }
     }
@@ -153,6 +164,9 @@ impl From<operation_gate::GateError> for RuntimeError {
     fn from(error: operation_gate::GateError) -> Self {
         match error {
             operation_gate::GateError::Busy => RuntimeError::Busy,
+            operation_gate::GateError::Cancelled => RuntimeError::Cancelled {
+                operation: "The operation".into(),
+            },
             other => RuntimeError::Unavailable(other.to_string()),
         }
     }
@@ -961,6 +975,16 @@ fn run_msb_process(
         if let Some(status) = exited.take() {
             break status;
         }
+        // A cancellable operation asked to stop: kill the child like the timeout path.
+        if operation_gate::cancel_requested() {
+            let _ = child.kill();
+            if child.wait().is_ok() {
+                if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
+            }
+            return Err(RuntimeError::Cancelled {
+                operation: operation_name(args),
+            });
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 exited = Some(status);
@@ -1583,6 +1607,11 @@ pub(crate) fn apply_github_policy(
         .map_err(|_| "Could not apply GitHub access to the sandbox.".to_string())?;
     let deadline = Instant::now() + MUTATION_TIMEOUT;
     loop {
+        if operation_gate::cancel_requested() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Applying GitHub access was cancelled.".into());
+        }
         match child.try_wait() {
             Ok(Some(status)) if status.success() => break,
             Ok(Some(_)) => return Err(
@@ -1612,9 +1641,13 @@ pub(crate) fn apply_github_identity(
     // Applies GitHub identity inside one VM's guest only.
     let paths = runtime_paths(app)?;
     let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
-    let _guard = OPERATIONS
+    let guard = OPERATIONS
         .vm(&vm_id, workspace, &format!("Applying GitHub access to {workspace}"))
         .map_err(|error| error.to_string())?;
+    // Applying identity to a running guest can be cancelled; its child polling loops
+    // observe the request through the current-operation token.
+    guard.allow_cancel();
+    guard.expect_within(Duration::from_secs(600));
     shutdown::ensure_accepting_operations()?;
     let parsed: WorkspaceIdentity = serde_json::from_value(serde_json::json!({
         "workspace": workspace, "name": identity["name"], "email": identity["email"], "apply": identity["apply"]
@@ -1857,6 +1890,71 @@ fn lifecycle_label(action: &str, name: &str) -> String {
     }
 }
 
+/// Total attempts (one initial try plus these many retries) and the wait before each retry.
+const AUTO_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(5)];
+
+/// Runtime failures that are worth retrying automatically: a timed-out child, or a
+/// runtime that could not be spawned at that moment. Deliberately excludes `Busy`,
+/// `Cancelled`, and validation/configuration errors, which retrying cannot fix.
+pub(crate) fn transient_runtime_error(error: &RuntimeError) -> bool {
+    match error {
+        RuntimeError::TimedOut { .. } => true,
+        RuntimeError::Unavailable(message) => message.contains("could not start its bundled runtime"),
+        _ => false,
+    }
+}
+
+/// Run a gated operation with automatic retries for transient failures.
+///
+/// The gate is re-acquired for every attempt and released between attempts (the guard is
+/// dropped before sleeping), so other queued work can run while this one backs off. Only
+/// idempotent callers should use this. `label` receives the zero-based attempt index and
+/// returns the queue label; retries append "(attempt N of M)". `on_progress` is called
+/// before each retry so the caller can surface progress.
+pub(crate) fn gated_auto_retry<T>(
+    base_label: &str,
+    acquire: impl Fn(&str) -> Result<operation_gate::OperationGuard<'static>, RuntimeError>,
+    prepare: impl Fn(&operation_gate::OperationGuard<'static>),
+    work: impl Fn() -> Result<T, RuntimeError>,
+) -> Result<T, RuntimeError> {
+    gated_auto_retry_with(&AUTO_RETRY_DELAYS, base_label, acquire, prepare, work)
+}
+
+fn gated_auto_retry_with<T>(
+    delays: &[Duration],
+    base_label: &str,
+    acquire: impl Fn(&str) -> Result<operation_gate::OperationGuard<'static>, RuntimeError>,
+    prepare: impl Fn(&operation_gate::OperationGuard<'static>),
+    work: impl Fn() -> Result<T, RuntimeError>,
+) -> Result<T, RuntimeError> {
+    let total = delays.len() + 1;
+    let mut attempt = 0usize;
+    loop {
+        let label = if attempt == 0 {
+            base_label.to_owned()
+        } else {
+            format!("{base_label} (attempt {} of {total})", attempt + 1)
+        };
+        let outcome = {
+            let guard = acquire(&label)?;
+            prepare(&guard);
+            work()
+            // guard dropped here, releasing the gate before any backoff sleep.
+        };
+        match outcome {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if attempt < delays.len() && transient_runtime_error(&error) {
+                    thread::sleep(delays[attempt]);
+                    attempt += 1;
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn workspace_action(
     app: AppHandle,
@@ -1885,22 +1983,55 @@ pub async fn workspace_action(
         // key collapses double-clicked lifecycle requests into one queued action.
         // Resolve the stable id before acquiring so ordering survives a rename.
         let vm_id = resolve_vm_id(&paths, &name).map_err(|error| error.to_string())?;
-        let guard = OPERATIONS
-            .acquire(
-                operation_gate::Scope::Vm { id: vm_id.clone() },
-                Some(name.clone()),
-                &lifecycle_label(&action, &name),
-                Some(format!("vm:{vm_id}:{action}")),
-            )
-            .map_err(|error| error.to_string())?;
-        shutdown::ensure_accepting_operations()?;
-        let _ = app.emit("silo://application-state-changed", ());
-        let result = host_resources().and_then(|resources| {
+        let base_label = lifecycle_label(&action, &name);
+        let key = format!("vm:{vm_id}:{action}");
+        // Start/restart may be cancelled while running; stop may not. Expected durations
+        // flag slow operations in the UI (no auto-kill).
+        let expected = match action.as_str() {
+            "start" | "restart" => Duration::from_secs(180),
+            "stop" => Duration::from_secs(120),
+            _ => Duration::from_secs(600),
+        };
+        let allow_cancel = matches!(action.as_str(), "start" | "restart");
+        let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
+            OPERATIONS
+                .acquire(
+                    operation_gate::Scope::Vm { id: vm_id.clone() },
+                    Some(name.clone()),
+                    label,
+                    Some(key.clone()),
+                )
+                .map_err(RuntimeError::from)
+        };
+        let prepare = |guard: &operation_gate::OperationGuard<'static>| {
+            if allow_cancel {
+                guard.allow_cancel();
+            }
+            guard.expect_within(expected);
+        };
+        let work = || -> Result<(), RuntimeError> {
+            shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
+            let _ = app.emit("silo://application-state-changed", ());
+            let resources = host_resources()?;
             explicit_workspace_action_with(&ProcessRunner, &paths, &resources, &action, &name)
-        });
+        };
+        // Start/stop/restart are idempotent, so transient failures retry automatically.
+        // Other lifecycle actions run once.
+        let result = if matches!(action.as_str(), "start" | "stop" | "restart") {
+            gated_auto_retry(&base_label, acquire, prepare, work)
+        } else {
+            match acquire(&base_label) {
+                Ok(guard) => {
+                    prepare(&guard);
+                    let outcome = work();
+                    drop(guard);
+                    outcome
+                }
+                Err(error) => Err(error),
+            }
+        };
         let _ = app.emit("silo://application-state-changed", ());
         let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
-        drop(guard);
         result.map_err(|error| runtime_activity::failure_message(&error))
     }).await.map_err(|_| "Sandbox action worker failed.".to_string())?;
     if result.is_err() {
@@ -2119,7 +2250,9 @@ fn safe_activity_error(error: &RuntimeError) -> String {
                 format!("{operation}: {reason}")
             }
         }
-        RuntimeError::Busy | RuntimeError::TimedOut { .. } => error.to_string(),
+        RuntimeError::Busy | RuntimeError::TimedOut { .. } | RuntimeError::Cancelled { .. } => {
+            error.to_string()
+        }
         // These errors are generated by Silo, but may contain OS paths or process details.
         _ => {
             let text = error.to_string();
@@ -3742,6 +3875,62 @@ pub(crate) fn write_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_retry_retries_transient_failures_and_releases_the_gate_between_attempts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let delays = [Duration::from_millis(5), Duration::from_millis(5)];
+        let result: Result<(), RuntimeError> = gated_auto_retry_with(
+            &delays,
+            "Starting retry-transient",
+            |label| {
+                // Each attempt must find the scope free: the previous guard was released
+                // before the backoff, so the gate is not held across retries.
+                assert!(OPERATIONS.is_vm_idle("retry-transient-id"));
+                OPERATIONS
+                    .vm("retry-transient-id", "retry-transient", label)
+                    .map_err(RuntimeError::from)
+            },
+            |_guard| {},
+            || {
+                if attempts.fetch_add(1, Ordering::SeqCst) < 2 {
+                    Err(RuntimeError::TimedOut { operation: "Starting retry-transient".into() })
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert!(OPERATIONS.is_vm_idle("retry-transient-id"));
+    }
+
+    #[test]
+    fn auto_retry_does_not_retry_non_transient_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let delays = [Duration::from_millis(5), Duration::from_millis(5)];
+        let result: Result<(), RuntimeError> = gated_auto_retry_with(
+            &delays,
+            "Starting retry-nontransient",
+            |label| {
+                OPERATIONS
+                    .vm("retry-nontransient-id", "retry-nontransient", label)
+                    .map_err(RuntimeError::from)
+            },
+            |_guard| {},
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(RuntimeError::Failed {
+                    operation: "Starting retry-nontransient".into(),
+                    detail: "the configuration is invalid".into(),
+                })
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
 
     struct StubRunner {
         outputs: Mutex<VecDeque<Result<CommandOutput, RuntimeError>>>,
@@ -5821,9 +6010,13 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(Stri
     // Applies secret policy inside one VM's guest only.
     let paths = runtime_paths(app)?;
     let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
-    let _mutation = OPERATIONS
+    let mutation = OPERATIONS
         .vm(&vm_id, workspace, &format!("Saving secrets for {workspace}"))
         .map_err(|error| error.to_string())?;
+    // Applying secrets to a running guest is cancellable through the current-operation token.
+    mutation.allow_cancel();
+    mutation.expect_within(Duration::from_secs(600));
+    let _mutation = mutation;
     shutdown::ensure_accepting_operations()?;
     let lock = github_revision_lock(&paths.home, workspace)?;
     let _guard = lock.lock().map_err(|_| "Sandbox access state is unavailable.".to_string())?;

@@ -91,6 +91,11 @@ impl Transport {
             .map_err(|_| "Could not install the Git LFS transfer server in the sandbox.")?;
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
+            if crate::runtime::operation_gate::cancel_requested() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Installing the Git LFS transfer server was cancelled.".into());
+            }
             match child.try_wait() {
                 Ok(Some(status)) if status.success() => break,
                 Ok(Some(_)) => {

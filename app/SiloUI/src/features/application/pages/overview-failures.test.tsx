@@ -27,6 +27,18 @@ it("shows a stopped sandbox's failure immediately and keeps Start available for 
   expect(row.queryByRole("alert")).not.toBeInTheDocument()
 })
 
+it("offers a Retry action on a failed restart that re-submits the same intent", async () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(item => item.machine.name === "dev")!
+  workspace.lifecycleFailure = "Restart failed: Starting dev was cancelled."
+  workspace.lifecycleFailureAction = "restart"
+  const actions = { restartWorkspace: vi.fn() } as unknown as ApplicationActions
+  render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const row = within(screen.getByText("dev").closest("li")!)
+  await userEvent.setup().click(row.getByRole("button", { name: "Retry" }))
+  expect(actions.restartWorkspace).toHaveBeenCalledWith("dev")
+})
+
 it("keeps a known lifecycle action visible while its remote computer refreshes status", () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.name === "dev")!

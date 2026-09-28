@@ -637,9 +637,13 @@ pub async fn create_checkpoint(
             .map_err(|error| error.to_string())?
             .name()
             .to_owned();
-        let _guard = OPERATIONS
+        let guard = OPERATIONS
             .vm(&workspace_id, &vm_name, "Creating checkpoint")
             .map_err(|error| error.to_string())?;
+        // Checkpoint capture is cancellable and expected to finish within 15 minutes.
+        guard.allow_cancel();
+        guard.expect_within(std::time::Duration::from_secs(15 * 60));
+        let _guard = guard;
         shutdown::ensure_accepting_operations()?;
         let _ = worker_app.emit("silo://application-state-changed", ());
         let result = capture_with(&ProcessRunner, &paths, &workspace_id, &name, "manual")
@@ -1205,9 +1209,12 @@ pub async fn fork_checkpoint(
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
         // Fork creates a new VM and edits the shared inventory; computer scope.
-        let _guard = OPERATIONS
+        let guard = OPERATIONS
             .computer("Forking checkpoint")
             .map_err(|error| error.to_string())?;
+        // Fork is not cancellable; flag it slow after the default window.
+        guard.expect_within(std::time::Duration::from_secs(10 * 60));
+        let _guard = guard;
         shutdown::ensure_accepting_operations()?;
         let result = fork_with(
             &worker_app,
@@ -1503,9 +1510,12 @@ pub async fn restore_checkpoint(
             .map_err(|error| error.to_string())?
             .name()
             .to_owned();
-        let _guard = OPERATIONS
+        let guard = OPERATIONS
             .vm(&workspace_id, &vm_name, "Restoring checkpoint")
             .map_err(|error| error.to_string())?;
+        // Restore is deliberately not cancellable; flag it slow after the restore window.
+        guard.expect_within(std::time::Duration::from_secs(60 * 60));
+        let _guard = guard;
         shutdown::ensure_accepting_operations()?;
         let result = restore_with(&ProcessRunner, &paths, &workspace_id, &checkpoint_id)
             .and_then(|_| read_application_state_with(&ProcessRunner, &paths));

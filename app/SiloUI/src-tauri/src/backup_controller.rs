@@ -742,7 +742,7 @@ fn mutation_guard(
         return Err("The operation was cancelled.".into());
     }
     let started = std::time::Instant::now();
-    let guard = runtime::OPERATIONS
+    let mut guard = runtime::OPERATIONS
         .acquire_while(runtime::operation_gate::Scope::Computer, None, label, &|| {
             !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
         })
@@ -755,6 +755,13 @@ fn mutation_guard(
             }
             error => error.to_string(),
         })?;
+    // Backup capture can be cancelled while running; restore cannot. Share the one
+    // cancel flag with the gate so the queue's Cancel and the backup UI's Cancel agree.
+    if label == "Backing up sandboxes" {
+        guard.adopt_cancel_token(cancellation.flag());
+        guard.allow_cancel();
+    }
+    guard.expect_within(std::time::Duration::from_secs(60 * 60));
     runtime::shutdown::ensure_accepting_operations()?;
     Ok(guard)
 }

@@ -23,7 +23,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     // VM's runtime, so it shares that VM's lane (keyed by stable id, with the same
     // dedupe key as the local lifecycle command). Inventory changes (upsert/delete)
     // stay computer-scoped: they rewrite the shared metadata file.
-    let _guard = if method == "runtime.action" {
+    let guard = if method == "runtime.action" {
         let vm_id = params["vmId"].as_str().ok_or("Missing VM identity.")?.to_owned();
         let action = params["action"].as_str().ok_or("Missing VM action.")?.to_owned();
         if !matches!(action.as_str(), "start" | "stop" | "restart" | "dismiss-error") {
@@ -51,6 +51,16 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
             .computer("Applying remote change")
             .map_err(|e| e.to_string())?
     };
+    // Remote start/restart runs the runtime child on this thread, so it honours a cancel
+    // through the same polling loop as local lifecycle actions. Other remote work is not
+    // cancellable.
+    if method == "runtime.action"
+        && matches!(params["action"].as_str(), Some("start") | Some("restart"))
+    {
+        guard.allow_cancel();
+        guard.expect_within(Duration::from_secs(180));
+    }
+    let _guard = guard;
     shutdown::ensure_accepting_operations()?;
     let mut request = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
     let resources = host_resources().map_err(|e| e.to_string())?;

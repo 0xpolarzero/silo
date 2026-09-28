@@ -138,6 +138,9 @@ export interface ApplicationWorkspace {
   stateDetail: string
   canDismissError?: boolean
   lifecycleFailure?: string
+  /** The lifecycle action that failed, so the UI can offer a matching Retry that
+   * re-submits the same intent (re-reading fresh state server-side). */
+  lifecycleFailureAction?: "start" | "stop" | "restart" | "dismiss-error"
   lifecycleAction?: "start" | "stop" | "restart" | "dismiss-error"
   attention?: {
     level: "warning" | "error"
@@ -302,6 +305,8 @@ export interface ApplicationActions {
   startWorkspace: (workspace: string) => void
   stopWorkspace: (workspace: string) => void
   restartWorkspace: (workspace: string) => void
+  /** Cancel a queued or cancellable running operation by its operation-queue id. */
+  cancelOperation?: (id: number) => void
   dismissWorkspaceError: (workspace: string) => void
   openTerminal: (workspace: string) => void
   openEditor: (workspace: string, path?: string) => void

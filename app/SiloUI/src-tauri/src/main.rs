@@ -199,6 +199,7 @@ fn main() {
             backup_controller::retry_workspace_start,
             runtime::read_setup_activity,
             runtime::read_operation_queue,
+            runtime::cancel_operation,
             runtime::save_machine_configuration,
             runtime::change_machine_configuration
         ])

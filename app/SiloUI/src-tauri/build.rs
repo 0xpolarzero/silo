@@ -130,6 +130,7 @@ fn main() {
             "change_machine_configuration",
             "read_setup_activity",
             "read_operation_queue",
+            "cancel_operation",
         ]),
     ))
     .expect("failed to build desktop permissions");

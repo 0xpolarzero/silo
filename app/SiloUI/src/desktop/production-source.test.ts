@@ -1332,8 +1332,8 @@ describe("operation queue bridge", () => {
       expect(store.getSnapshot().source?.operationQueue).toEqual({ running: [], waiting: [] })
 
       mock.setQueue({
-        running: [{ id: 1, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 1000 }],
-        waiting: [{ id: 2, label: "Restarting dev", vmId: "id-dev", vmName: "dev", sinceMs: 2000 }],
+        running: [{ id: 1, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 1000, cancellable: true, expectedMs: null }],
+        waiting: [{ id: 2, label: "Restarting dev", vmId: "id-dev", vmName: "dev", sinceMs: 2000, cancellable: true, expectedMs: null }],
       })
       mock.emit()
       await vi.waitFor(() => expect(store.getSnapshot().source?.operationQueue?.waiting[0].label).toBe("Restarting dev"))
@@ -1346,7 +1346,7 @@ describe("operation queue bridge", () => {
     const store = createProductionSource(mock.bridge)
     try {
       await store.initialize()
-      mock.setQueue({ running: [{ id: 1, label: "Backing up", vmId: null, vmName: null, sinceMs: 1 }], waiting: [] })
+      mock.setQueue({ running: [{ id: 1, label: "Backing up", vmId: null, vmName: null, sinceMs: 1, cancellable: true, expectedMs: null }], waiting: [] })
       mock.emit()
       await vi.waitFor(() => expect(store.getSnapshot().source?.operationQueue?.running).toHaveLength(1))
       mock.setQueue("not a queue")

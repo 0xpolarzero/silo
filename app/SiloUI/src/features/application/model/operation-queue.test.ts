@@ -16,7 +16,7 @@ import {
 
 function entry(overrides: Partial<OperationEntry> & Pick<OperationEntry, "id">): OperationEntry {
   const vmId = overrides.vmId ?? null
-  return { label: `op-${overrides.id}`, vmId: null, vmName: vmId, sinceMs: 0, ...overrides }
+  return { label: `op-${overrides.id}`, vmId: null, vmName: vmId, sinceMs: 0, cancellable: true, expectedMs: null, ...overrides }
 }
 
 describe("blockingOperations", () => {
@@ -109,11 +109,14 @@ describe("elapsed formatting", () => {
 describe("operationQueueSchema", () => {
   it("parses the native camelCase payload", () => {
     const parsed = operationQueueSchema.parse({
-      running: [{ id: 1, label: "Backing up", vmId: null, vmName: null, sinceMs: 1000 }],
-      waiting: [{ id: 2, label: "Restarting dev", vmId: "id-dev", vmName: "dev", sinceMs: 2000 }],
+      running: [{ id: 1, label: "Backing up", vmId: null, vmName: null, sinceMs: 1000, cancellable: true, expectedMs: 3_600_000 }],
+      waiting: [{ id: 2, label: "Restarting dev", vmId: "id-dev", vmName: "dev", sinceMs: 2000, cancellable: true, expectedMs: null }],
     })
     expect(parsed.running[0].vmId).toBeNull()
+    expect(parsed.running[0].cancellable).toBe(true)
+    expect(parsed.running[0].expectedMs).toBe(3_600_000)
     expect(parsed.waiting[0].vmId).toBe("id-dev")
     expect(parsed.waiting[0].vmName).toBe("dev")
+    expect(parsed.waiting[0].expectedMs).toBeNull()
   })
 })

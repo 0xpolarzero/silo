@@ -29,17 +29,55 @@ it("lists running and waiting operations in a global indicator with elapsed time
   expect(within(indicator).getAllByText("Waiting for Backing up sandboxes…").length).toBeGreaterThanOrEqual(1)
 })
 
-it("flags a long-running operation as possibly stuck", () => {
+it("flags an operation past its expected duration as taking longer than expected", () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   source.operationQueue = {
-    running: [{ id: 1, label: "Backing up dev-vm", vmId: "00000000-0000-4000-8000-000000000001", vmName: "dev", sinceMs: Date.now() - 12 * 60_000 }],
+    running: [{ id: 1, label: "Backing up dev-vm", vmId: "00000000-0000-4000-8000-000000000001", vmName: "dev", sinceMs: Date.now() - 6 * 60_000, cancellable: false, expectedMs: 5 * 60_000 }],
     waiting: [],
   }
   render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
 
   const indicator = screen.getByRole("status", { name: "Sandbox operations" })
-  const elapsed = within(indicator).getByText("12 min")
-  expect(elapsed).toHaveAttribute("title", expect.stringContaining("stuck"))
+  expect(within(indicator).getByText("Taking longer than expected")).toBeVisible()
+})
+
+it("does not flag an operation that is within its expected duration", () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  source.operationQueue = {
+    running: [{ id: 1, label: "Backing up dev-vm", vmId: "00000000-0000-4000-8000-000000000001", vmName: "dev", sinceMs: Date.now() - 6 * 60_000, cancellable: false, expectedMs: 60 * 60_000 }],
+    waiting: [],
+  }
+  render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+
+  expect(screen.queryByText("Taking longer than expected")).not.toBeInTheDocument()
+})
+
+it("offers Cancel for a cancellable running operation and invokes cancelOperation", async () => {
+  const user = (await import("@testing-library/user-event")).default.setup()
+  const cancelOperation = vi.fn()
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  source.operationQueue = {
+    running: [{ id: 7, label: "Starting dev", vmId: "00000000-0000-4000-8000-000000000001", vmName: "dev", sinceMs: Date.now(), cancellable: true, expectedMs: 3 * 60_000 }],
+    waiting: [],
+  }
+  render(<OverviewPage source={source} actions={{ ...actions, cancelOperation } as ApplicationActions} onMachinesChange={vi.fn()} />)
+
+  const indicator = screen.getByRole("status", { name: "Sandbox operations" })
+  await user.click(within(indicator).getByRole("button", { name: "Cancel Starting dev" }))
+  expect(cancelOperation).toHaveBeenCalledWith(7)
+})
+
+it("does not offer Cancel for a non-cancellable running operation", () => {
+  const cancelOperation = vi.fn()
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  source.operationQueue = {
+    running: [{ id: 8, label: "Stopping dev", vmId: "00000000-0000-4000-8000-000000000001", vmName: "dev", sinceMs: Date.now(), cancellable: false, expectedMs: 2 * 60_000 }],
+    waiting: [],
+  }
+  render(<OverviewPage source={source} actions={{ ...actions, cancelOperation } as ApplicationActions} onMachinesChange={vi.fn()} />)
+
+  const indicator = screen.getByRole("status", { name: "Sandbox operations" })
+  expect(within(indicator).queryByRole("button", { name: "Cancel Stopping dev" })).not.toBeInTheDocument()
 })
 
 it("renders nothing when the queue is empty", () => {

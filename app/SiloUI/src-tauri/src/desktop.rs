@@ -391,11 +391,13 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
         Some(_) => {
             let paths = runtime::runtime_paths(app)?;
             let vm_id = runtime::resolve_vm_id(&paths, workspace).map_err(|e| e.to_string())?;
-            Some(
-                runtime::OPERATIONS
-                    .vm(&vm_id, workspace, &format!("Updating {workspace} desktop"))
-                    .map_err(|e| e.to_string())?,
-            )
+            let guard = runtime::OPERATIONS
+                .vm(&vm_id, workspace, &format!("Updating {workspace} desktop"))
+                .map_err(|e| e.to_string())?;
+            // Desktop/guest setup is cancellable and expected to finish within 10 minutes.
+            guard.allow_cancel();
+            guard.expect_within(std::time::Duration::from_secs(10 * 60));
+            Some(guard)
         }
         None => None,
     };

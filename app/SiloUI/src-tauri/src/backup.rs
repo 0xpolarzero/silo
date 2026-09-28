@@ -38,6 +38,12 @@ impl Cancellation {
     pub(crate) fn cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
+
+    /// The shared cancel flag, so the operation gate and this controller can point at the
+    /// same bit and agree on cancellation regardless of which path the user takes.
+    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
+        self.0.clone()
+    }
 }
 
 #[derive(Clone, Debug)]

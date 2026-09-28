@@ -412,7 +412,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const target = workspaceTarget(workspace)
       const failure = workspaceFailures.get(target)
       return { ...workspace,
-        ...(failure?.machineId === workspace.machine.id && { lifecycleFailure: failure.message }),
+        ...(failure?.machineId === workspace.machine.id && { lifecycleFailure: failure.message, lifecycleFailureAction: failure.action as "start" | "stop" | "restart" | "dismiss-error" }),
         ...(pendingLifecycle.has(target) && { lifecycleAction: pendingLifecycle.get(target) }),
       }
     }) } } : next
@@ -1094,6 +1094,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     startWorkspace: (name) => workspaceAction("start", name),
     stopWorkspace: (name) => workspaceAction("stop", name),
     restartWorkspace: (name) => workspaceAction("restart", name),
+    cancelOperation: (id) => {
+      void native.invoke("cancel_operation", { id })
+        .then(() => refreshOperationQueue())
+        .catch((cause) => reportUnavailable(`Silo could not cancel the operation: ${errorMessage(cause)}`))
+    },
     dismissWorkspaceError: (name) => workspaceAction("dismiss-error", name),
     openDesktop: async (workspace) => {
       try { await native.invoke("open_desktop", { workspace }) }

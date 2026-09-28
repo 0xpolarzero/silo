@@ -143,6 +143,12 @@ fn advance(
         crate::working_account::working_user(&observed.config).map_err(RuntimeError::Invalid)?;
     }
     loop {
+        // Honour a cancel between the discrete stop/start steps of a restart.
+        if crate::runtime::operation_gate::check_cancelled().is_err() {
+            return Err(RuntimeError::Cancelled {
+                operation: format!("{} {}", intent.action, intent.name),
+            });
+        }
         let reached = match intent.phase {
             Phase::StopPending => stopped(&observed),
             Phase::StartPending => observed.status.eq_ignore_ascii_case("running"),

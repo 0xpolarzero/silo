@@ -7,10 +7,11 @@
 //!
 //! This is the sole in-process gate for VM-changing work. It does not replace the
 //! OS file lock that coordinates cooperating runtime processes, nor short data locks.
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -44,6 +45,10 @@ pub(crate) enum GateError {
     Busy,
     /// The caller stopped waiting (for example, the user cancelled) before its turn.
     Abandoned,
+    /// The operation was cancelled by the user (while waiting or, if cancellable, while running).
+    Cancelled,
+    /// A running operation was asked to cancel but is not marked cancellable.
+    NotCancellable,
 }
 
 impl std::fmt::Display for GateError {
@@ -53,6 +58,8 @@ impl std::fmt::Display for GateError {
             Self::Nested => "Sandbox operation ordering failed.",
             Self::Busy => "Another sandbox operation is still running.",
             Self::Abandoned => "The operation stopped waiting for its turn.",
+            Self::Cancelled => "The operation was cancelled.",
+            Self::NotCancellable => "This operation can't be cancelled.",
         })
     }
 }
@@ -71,6 +78,12 @@ pub struct OperationEntry {
     pub vm_name: Option<String>,
     /// Milliseconds since the Unix epoch when the operation started running or began waiting.
     pub since_ms: u64,
+    /// Whether the user may cancel this operation now. Waiting entries are always
+    /// cancellable; a running entry is cancellable only when its work opted in.
+    pub cancellable: bool,
+    /// Expected maximum duration in milliseconds, used to flag slow operations.
+    /// `None` when the operation carried no expectation.
+    pub expected_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
@@ -90,10 +103,19 @@ struct Entry {
     key: Option<String>,
     since: Instant,
     since_ms: u64,
+    /// True while an operation runs longer than its owner opted to allow cancelling.
+    /// Waiting entries report `true` regardless; a running entry reports this flag.
+    cancellable: bool,
+    /// Set true when a cancel is requested: for a waiting entry it makes the waiter
+    /// leave the queue with `Cancelled`; for a cancellable running entry the working
+    /// code observes it and stops. Shared with the guard so other threads can read it.
+    cancel: Arc<AtomicBool>,
+    /// Expected maximum duration, for stuck-operation flagging in the UI.
+    expected: Option<Duration>,
 }
 
 impl Entry {
-    fn public(&self) -> OperationEntry {
+    fn public(&self, running: bool) -> OperationEntry {
         OperationEntry {
             id: self.id,
             label: self.label.clone(),
@@ -103,6 +125,9 @@ impl Entry {
             },
             vm_name: self.vm_name.clone(),
             since_ms: self.since_ms,
+            // Waiting entries can always be cancelled; running entries only when opted in.
+            cancellable: if running { self.cancellable } else { true },
+            expected_ms: self.expected.map(|value| value.as_millis() as u64),
         }
     }
 }
@@ -137,6 +162,9 @@ impl State {
             key,
             since: Instant::now(),
             since_ms: now_ms(),
+            cancellable: false,
+            cancel: Arc::new(AtomicBool::new(false)),
+            expected: None,
         }
     }
 }
@@ -149,6 +177,29 @@ pub(crate) struct OperationGate {
 
 thread_local! {
     static HELD: Cell<usize> = const { Cell::new(0) };
+    /// Cancel token of the operation the current thread is executing, set while its
+    /// guard is held and cleared on drop. Nesting is rejected, so at most one is set.
+    static CURRENT: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// True when the operation running on this thread has been asked to cancel. Only ever
+/// true for operations that opted in with `OperationGuard::allow_cancel`.
+pub(crate) fn cancel_requested() -> bool {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .is_some_and(|token| token.load(Ordering::SeqCst))
+    })
+}
+
+/// `Err(GateError::Cancelled)` when the current thread's operation was asked to cancel.
+pub(crate) fn check_cancelled() -> Result<(), GateError> {
+    if cancel_requested() {
+        Err(GateError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 fn now_ms() -> u64 {
@@ -244,18 +295,26 @@ impl OperationGate {
         drop(state);
         self.notify();
         let mut state = self.lock();
-        loop {
+        let token = loop {
             let index = state
                 .waiting
                 .iter()
                 .position(|entry| entry.id == id)
                 .expect("a waiting operation is removed only when admitted");
+            // A cancel while waiting removes this entry and reports it to the caller.
+            if state.waiting[index].cancel.load(Ordering::SeqCst) {
+                state.waiting.remove(index);
+                drop(state);
+                self.notify();
+                return Err(GateError::Cancelled);
+            }
             if state.admissible(index) {
                 let mut entry = state.waiting.remove(index).expect("index is in range");
                 entry.since = Instant::now();
                 entry.since_ms = now_ms();
+                let token = entry.cancel.clone();
                 state.running.push(entry);
-                break;
+                break token;
             }
             match keep_waiting {
                 None => {
@@ -280,11 +339,12 @@ impl OperationGate {
                     }
                 }
             }
-        }
+        };
         drop(state);
         HELD.with(|held| held.set(held.get() + 1));
+        CURRENT.with(|current| *current.borrow_mut() = Some(token.clone()));
         self.notify();
-        Ok(OperationGuard { gate: self, id, _thread_bound: std::marker::PhantomData })
+        Ok(OperationGuard { gate: self, id, token, _thread_bound: std::marker::PhantomData })
     }
 
     /// Run only when nothing conflicting is running or waiting. For background work
@@ -304,11 +364,13 @@ impl OperationGate {
         }
         let entry = state.entry(scope, vm_name, label, None);
         let id = entry.id;
+        let token = entry.cancel.clone();
         state.running.push(entry);
         drop(state);
         HELD.with(|held| held.set(held.get() + 1));
+        CURRENT.with(|current| *current.borrow_mut() = Some(token.clone()));
         self.notify();
-        Ok(OperationGuard { gate: self, id, _thread_bound: std::marker::PhantomData })
+        Ok(OperationGuard { gate: self, id, token, _thread_bound: std::marker::PhantomData })
     }
 
     pub(crate) fn try_computer(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
@@ -337,9 +399,36 @@ impl OperationGate {
     pub(crate) fn snapshot(&self) -> OperationQueue {
         let state = self.lock();
         OperationQueue {
-            running: state.running.iter().map(Entry::public).collect(),
-            waiting: state.waiting.iter().map(Entry::public).collect(),
+            running: state.running.iter().map(|entry| entry.public(true)).collect(),
+            waiting: state.waiting.iter().map(|entry| entry.public(false)).collect(),
         }
+    }
+
+    /// Ask to cancel the operation with `id`.
+    ///
+    /// A *waiting* entry is signalled to leave the queue; its waiter returns
+    /// `GateError::Cancelled`. A *running* entry is signalled only when it opted in as
+    /// cancellable (`OperationGuard::allow_cancel`); otherwise `GateError::NotCancellable`
+    /// is returned and nothing changes. An unknown id is treated as already finished.
+    pub(crate) fn cancel(&self, id: u64) -> Result<(), GateError> {
+        let mut state = self.lock();
+        if let Some(entry) = state.waiting.iter().find(|entry| entry.id == id) {
+            entry.cancel.store(true, Ordering::SeqCst);
+            drop(state);
+            // Wake the waiter so it observes the flag and leaves the queue.
+            self.notify();
+            return Ok(());
+        }
+        if let Some(entry) = state.running.iter().find(|entry| entry.id == id) {
+            if !entry.cancellable {
+                return Err(GateError::NotCancellable);
+            }
+            entry.cancel.store(true, Ordering::SeqCst);
+            drop(state);
+            self.notify();
+            return Ok(());
+        }
+        Ok(())
     }
 
     /// Longest-running operation and its age, for stuck-operation reporting.
@@ -357,7 +446,43 @@ impl OperationGate {
         state.running.retain(|entry| entry.id != id);
         drop(state);
         HELD.with(|held| held.set(held.get().saturating_sub(1)));
+        CURRENT.with(|current| *current.borrow_mut() = None);
         self.notify();
+    }
+
+    /// Mark a running operation cancellable and record it in the queue. Used by
+    /// `OperationGuard::allow_cancel`.
+    fn mark_cancellable(&self, id: u64) {
+        let mut state = self.lock();
+        if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
+            entry.cancellable = true;
+        }
+        drop(state);
+        self.notify();
+    }
+
+    /// Record the expected maximum duration of a running operation for stuck reporting.
+    fn set_expected(&self, id: u64, expected: Duration) {
+        let mut state = self.lock();
+        if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
+            entry.expected = Some(expected);
+        }
+        drop(state);
+        self.notify();
+    }
+
+    /// Point a running operation's cancel flag at an externally owned one, so a subsystem
+    /// with its own cancellation (for example backups) and the gate agree on one bit.
+    fn replace_token(&self, id: u64, token: Arc<AtomicBool>) {
+        let mut state = self.lock();
+        if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
+            // Preserve an already-requested cancel across the swap.
+            if entry.cancel.load(Ordering::SeqCst) {
+                token.store(true, Ordering::SeqCst);
+            }
+            entry.cancel = token;
+        }
+        drop(state);
     }
 }
 
@@ -366,8 +491,42 @@ impl OperationGate {
 pub(crate) struct OperationGuard<'a> {
     gate: &'a OperationGate,
     id: u64,
+    /// Shared cancel flag for this operation. Cloneable so work on other threads
+    /// (spawn_blocking, std::thread::spawn) can observe cancellation explicitly.
+    token: Arc<AtomicBool>,
     /// Nesting is tracked per thread, so a guard must be released where it was taken.
     _thread_bound: std::marker::PhantomData<*const ()>,
+}
+
+impl OperationGuard<'_> {
+    /// Allow the user to cancel this operation while it runs. The work must observe
+    /// cancellation via `operation_gate::check_cancelled`/`cancel_requested` (same
+    /// thread) or the token from `cancel_token` (other threads); nothing is force-killed
+    /// except child processes in the runtime polling loops.
+    pub(crate) fn allow_cancel(&self) {
+        self.gate.mark_cancellable(self.id);
+    }
+
+    /// Declare the expected maximum duration so the UI can flag the operation as slow.
+    pub(crate) fn expect_within(&self, expected: Duration) {
+        self.gate.set_expected(self.id, expected);
+    }
+
+    /// A cloneable handle to this operation's cancel flag, for passing to work that runs
+    /// on other threads where the thread-local current-operation token is not set.
+    pub(crate) fn cancel_token(&self) -> Arc<AtomicBool> {
+        self.token.clone()
+    }
+
+    /// Share an externally owned cancel flag with this operation, so a cancel through
+    /// either the gate or the owning subsystem flips the same bit. Used by backups.
+    pub(crate) fn adopt_cancel_token(&mut self, token: Arc<AtomicBool>) {
+        self.gate.replace_token(self.id, token.clone());
+        // Keep the thread-local current-operation token in sync so `cancel_requested`
+        // and `check_cancelled` observe the shared flag on this thread.
+        CURRENT.with(|current| *current.borrow_mut() = Some(token.clone()));
+        self.token = token;
+    }
 }
 
 impl Drop for OperationGuard<'_> {
@@ -582,5 +741,72 @@ mod tests {
         drop(gate.computer("Edit").unwrap());
         assert!(calls.load(Ordering::SeqCst) >= 2);
         assert!(gate.oldest_running().is_none());
+    }
+
+    #[test]
+    fn cancelling_a_waiting_entry_makes_its_waiter_return_cancelled() {
+        let gate = leak();
+        let running = gate.computer("Update").unwrap();
+        let waiter = thread::spawn(move || gate.computer("Backup").unwrap_err());
+        wait_until(gate, |queue| queue.waiting.len() == 1);
+        let waiting_id = gate.snapshot().waiting[0].id;
+        // Waiting entries always report themselves as cancellable.
+        assert!(gate.snapshot().waiting[0].cancellable);
+        gate.cancel(waiting_id).unwrap();
+        assert_eq!(waiter.join().unwrap(), GateError::Cancelled);
+        assert!(gate.snapshot().waiting.is_empty());
+        drop(running);
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn cancelling_a_cancellable_running_entry_kills_its_child() {
+        let gate = leak();
+        let (ready, started) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        thread::spawn(move || {
+            let guard = gate.vm("id-a", "a", "Starting a").unwrap();
+            guard.allow_cancel();
+            // Stand in for a runtime child: a long sleep that a polling loop kills when
+            // the current operation is cancel-requested, exactly like run_msb_process.
+            let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+            ready.send(child.id()).unwrap();
+            let killed = loop {
+                if cancel_requested() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break true;
+                }
+                if child.try_wait().unwrap().is_some() {
+                    break false;
+                }
+                thread::sleep(Duration::from_millis(5));
+            };
+            done.send(killed).unwrap();
+        });
+        let _child_pid = started.recv_timeout(Duration::from_secs(5)).unwrap();
+        wait_until(gate, |queue| queue.running.iter().any(|entry| entry.cancellable));
+        let running_id = gate.snapshot().running[0].id;
+        gate.cancel(running_id).unwrap();
+        assert!(finished.recv_timeout(Duration::from_secs(5)).unwrap());
+    }
+
+    #[test]
+    fn cancelling_a_non_cancellable_running_entry_is_rejected() {
+        let gate = leak();
+        let running = gate.computer("Stopping").unwrap();
+        let id = gate.snapshot().running[0].id;
+        assert!(!gate.snapshot().running[0].cancellable);
+        assert_eq!(gate.cancel(id).unwrap_err(), GateError::NotCancellable);
+        drop(running);
+    }
+
+    #[test]
+    fn expected_duration_is_reported_in_the_queue() {
+        let gate = leak();
+        let guard = gate.computer("Working").unwrap();
+        guard.expect_within(Duration::from_secs(120));
+        assert_eq!(gate.snapshot().running[0].expected_ms, Some(120_000));
+        drop(guard);
     }
 }

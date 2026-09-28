@@ -317,6 +317,7 @@ fn inspection_failure(stage: &str, name: &str, error: &runtime::RuntimeError) ->
             (reason, None)
         }
         runtime::RuntimeError::TimedOut { .. } => ("the runtime inspection timed out", None),
+        runtime::RuntimeError::Cancelled { .. } => ("the runtime inspection was cancelled", None),
         runtime::RuntimeError::Busy => ("another sandbox operation is still running", None),
         runtime::RuntimeError::Malformed(_) => ("the runtime returned invalid inspection output", None),
         runtime::RuntimeError::Invalid(_) => ("the runtime rejected the inspection request", None),
@@ -385,6 +386,7 @@ fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
             "the disk conversion exceeded its 30-minute limit before the runtime reported a cause",
             None,
         ),
+        runtime::RuntimeError::Cancelled { .. } => ("the disk conversion was cancelled", None),
         runtime::RuntimeError::Busy => ("another sandbox operation is still running", None),
         runtime::RuntimeError::Malformed(_) => ("the runtime returned invalid output", None),
         runtime::RuntimeError::Invalid(_) => ("the runtime rejected the workspace disk", None),

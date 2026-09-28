@@ -11,6 +11,12 @@ export interface OperationEntry {
   vmName: string | null
   /** Unix epoch milliseconds when the operation started running or began waiting. */
   sinceMs: number
+  /** Whether the user may cancel this operation now. Waiting entries are always
+   * cancellable; a running entry is cancellable only when its work opted in. */
+  cancellable: boolean
+  /** Expected maximum duration in milliseconds, used to flag slow operations.
+   * `null` when the operation carried no expectation. */
+  expectedMs: number | null
 }
 
 export interface OperationQueue {
@@ -25,6 +31,8 @@ export const operationEntrySchema = z.object({
   vmId: z.string().nullable(),
   vmName: z.string().nullable(),
   sinceMs: z.number().int().nonnegative(),
+  cancellable: z.boolean(),
+  expectedMs: z.number().int().nonnegative().nullable(),
 })
 
 export const operationQueueSchema = z.object({
@@ -88,11 +96,16 @@ export function waitingStatusText(queue: OperationQueue, entry: OperationEntry):
   return `Waiting for ${joinLabels(blockers.map((blocker) => blocker.label))}…`
 }
 
-/** A running operation is treated as possibly stuck once it exceeds this age. */
+/** Fallback threshold when an operation carries no expected duration. */
 export const STUCK_OPERATION_MS = 10 * 60 * 1000
 
 export function operationElapsedMs(entry: OperationEntry, now: number): number {
   return Math.max(0, now - entry.sinceMs)
+}
+
+/** The age past which an operation is flagged as taking longer than expected. */
+export function stuckThresholdMs(entry: OperationEntry): number {
+  return entry.expectedMs ?? STUCK_OPERATION_MS
 }
 
 /** Compact elapsed label such as "just now", "3 min", or "1 hr 4 min". */
@@ -106,5 +119,5 @@ export function formatElapsed(ms: number): string {
 }
 
 export function isOperationStuck(entry: OperationEntry, now: number): boolean {
-  return operationElapsedMs(entry, now) >= STUCK_OPERATION_MS
+  return operationElapsedMs(entry, now) >= stuckThresholdMs(entry)
 }

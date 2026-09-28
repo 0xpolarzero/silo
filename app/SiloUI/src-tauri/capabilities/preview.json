@@ -94,6 +94,7 @@
     "allow-verify-workspace-identities",
     "allow-read-setup-activity",
     "allow-read-operation-queue",
+    "allow-cancel-operation",
     "allow-save-machine-configuration",
     "allow-change-machine-configuration",
     "allow-remote-host-list",
