@@ -73,10 +73,23 @@ export function useMachineEditing({
     baselineRef.current = structuredClone(machines as SetupMachineConfiguration[])
   }
 
+  // The editor as of the latest change, for rejections that settle after it closed or moved on.
+  const editorRef = useRef(editor)
   function setEditor(next: MachineEditorDraft | null) {
+    editorRef.current = next
     setEditorState(next)
     onEditorDraftChange?.(next)
     if (!next) { setEditorConflict(false); setEditorBaseline(null) }
+  }
+
+  /**
+   * A stale-baseline rejection is shown in the open editor for that sandbox. With no such
+   * editor (Add Linux desktop from the ⋯ menu, or a local save that closed its editor before
+   * the rejection arrived), report it as a failure instead of dropping it.
+   */
+  function reportSaveFailure(cause: unknown, machine?: Pick<SetupMachineConfiguration, "id" | "name">) {
+    if (machine && isStaleConfigurationError(cause) && editorRef.current?.originalID === machine.id) setEditorConflict(true)
+    else showActionFailure(machine ? `Couldn't save ${machine.name}` : "Couldn't save changes", cause, undefined, { native: false })
   }
 
   function beginOperation() {
@@ -125,15 +138,12 @@ export function useMachineEditing({
     return getComputerId ? baseline.filter(machine => (getComputerId(machine) ?? "") === computerId) : baseline
   }
 
-  function dispatchChange(next: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) {
+  function dispatchChange(next: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[], saved?: Pick<SetupMachineConfiguration, "id" | "name">) {
     // Only pass a baseline when one was captured, keeping the no-baseline call shape
     // (onboarding drafts) exactly one argument.
     const outcome = baseline ? onMachinesChange(next, baseline) : onMachinesChange(next)
     if (outcome && typeof (outcome as Promise<void>).then === "function") {
-      void (outcome as Promise<void>).catch((cause) => {
-        if (editor?.originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
-        else showActionFailure("Couldn't save changes", cause, undefined, { native: false })
-      })
+      void (outcome as Promise<void>).catch((cause) => reportSaveFailure(cause, saved))
     }
   }
 
@@ -154,8 +164,7 @@ export function useMachineEditing({
       } catch (cause) {
         // A stale-baseline rejection keeps the editor open with the user's edits so they
         // can review the latest values or discard; other failures surface as before.
-        if (originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
-        else showActionFailure(`Couldn't save ${machine.name}`, cause, undefined, { native: false })
+        reportSaveFailure(cause, originalID ? { id: originalID, name: machine.name } : machine)
       }
       finally { setCommitting(false) }
       return
@@ -169,7 +178,7 @@ export function useMachineEditing({
     } else {
       updated.splice(editor?.insertAt ?? updated.length, 0, machine)
     }
-    dispatchChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines, baseline ? scopedBaseline() : undefined)
+    dispatchChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines, baseline ? scopedBaseline() : undefined, machine)
     setEditor(null)
   }
 
