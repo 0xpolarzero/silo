@@ -48,8 +48,10 @@ drafts, expanded details, and scroll positions. A descendant that animates inher
 visibility can remain painted after its panel is hidden, as described in
 [MDN’s visibility interpolation](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/visibility#interpolation).
 
-`src/test/transition-styles.test.ts` checks the compiled application CSS for this
-rule, including shared components, variants, and custom styles.
+`src/test/transition-styles.test.ts` builds every stylesheet that application
+modules import through the production Vite and Tailwind pipeline, without
+bundling the application, and checks the compiled CSS for this rule, including
+shared components, variants, and custom styles.
 
 ## Tooltips
 
