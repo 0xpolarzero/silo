@@ -44,13 +44,18 @@ pub(crate) fn ensure_accepting_operations() -> Result<(), String> {
 }
 
 pub(crate) fn stop_local_vms(app: &AppHandle) -> Result<(), String> {
-    let result = while_quitting(&OPERATIONS, |_guard| {
+    let result = while_quitting(&OPERATIONS, |guard| {
         // Quit has stopped admission and holds the operation gate: the SSH monitor
         // cannot restore listeners while local VM shutdown is in progress.
         crate::ssh_access::close_all();
         crate::desktop_viewer::close_all();
         let paths = runtime_paths(app)?;
-        stop_local_vms_with(&ProcessRunner, &paths).map_err(|error| safe_activity_error(&error))
+        // The quit overlay follows the queue and shows which VM is stopping (D-29).
+        let progress = |name: &str, index: usize, total: usize| {
+            guard.relabel(&format!("Stopping {name} ({index} of {total})"));
+        };
+        stop_local_vms_with(&ProcessRunner, &paths, &progress)
+            .map_err(|error| safe_activity_error(&error))
     });
     let _ = app.emit("silo://application-state-changed", ());
     result
@@ -67,7 +72,7 @@ fn while_quitting<T>(
     gate.cancel_all_waiting();
     let guard = gate
         .kind(operation_gate::OperationKind::Shutdown)
-        .computer("Stopping local VMs")
+        .computer("Stopping local sandboxes")
         .map_err(|_| {
             "A sandbox operation failed unexpectedly. Check local VM status before retrying Quit."
                 .to_string()
@@ -81,9 +86,12 @@ fn while_quitting<T>(
     result
 }
 
+/// Stop every present local VM. `progress` receives each VM that needs a stop with
+/// its one-based position among them, before that VM's stop starts.
 fn stop_local_vms_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
+    progress: &dyn Fn(&str, usize, usize),
 ) -> Result<(), RuntimeError> {
     let committed = read_metadata(&paths.metadata)?.machines;
     let mut machines = committed.clone();
@@ -110,12 +118,11 @@ fn stop_local_vms_with(
         .filter(|name| !machines.iter().any(|machine| machine.is_vm() && machine.name() == name.as_str()))
         .map(|name| format!("{name}: Silo found a managed VM without a matching saved identity. Repair its configuration before quitting."))
         .collect();
+    let mut targets = Vec::new();
     for machine in machines
         .iter()
         .filter(|machine| machine.is_vm() && present.contains(machine.name()))
     {
-        // perform verifies both Silo ownership and the immutable machine ID,
-        // settles an in-flight transition, and verifies the resulting stop.
         let committed_vm = committed.iter().any(|entry| entry.id() == machine.id());
         // A VM that is already stopped with no saved action needs no stop and
         // no "Sandbox stopped" activity entry. Anything else goes through
@@ -126,7 +133,13 @@ fn stop_local_vms_with(
         {
             continue;
         }
-        let result = if committed_vm {
+        targets.push((machine, committed_vm));
+    }
+    for (index, (machine, committed_vm)) in targets.iter().enumerate() {
+        progress(machine.name(), index + 1, targets.len());
+        // perform verifies both Silo ownership and the immutable machine ID,
+        // settles an in-flight transition, and verifies the resulting stop.
+        let result = if *committed_vm {
             lifecycle_recovery::perform(runner, paths, &host, "stop", machine.name())
         } else {
             stop_uncommitted_vm(runner, paths, machine)
@@ -322,7 +335,7 @@ mod tests {
         let paths = setup(&dir);
         let runner = runner(None);
         runner.states.lock().unwrap().insert("first".into(), "Crashed".into());
-        stop_local_vms_with(&runner, &paths).unwrap();
+        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert_eq!(runner.states.lock().unwrap()["first"], "Crashed");
         assert_eq!(runner.states.lock().unwrap()["second"], "Stopped");
         let calls = runner.calls.lock().unwrap();
@@ -332,12 +345,28 @@ mod tests {
     }
 
     #[test]
+    fn quit_reports_each_vm_it_stops_with_its_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = setup(&dir);
+        let runner = runner(None);
+        runner.states.lock().unwrap().insert("first".into(), "Stopped".into());
+        let seen = Mutex::new(Vec::new());
+        stop_local_vms_with(&runner, &paths, &|name, index, total| {
+            // Reported before the stop starts.
+            assert_eq!(runner.states.lock().unwrap()[name], "Running");
+            seen.lock().unwrap().push((name.to_owned(), index, total));
+        })
+        .unwrap();
+        assert_eq!(seen.into_inner().unwrap(), vec![("second".to_owned(), 1, 1)]);
+    }
+
+    #[test]
     fn quit_skips_already_stopped_vms_without_recording_a_stop() {
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
         runner.states.lock().unwrap().insert("first".into(), "Stopped".into());
-        stop_local_vms_with(&runner, &paths).unwrap();
+        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert!(!calls.iter().any(|args| args[0] == "stop" && args[1] == "first"));
         assert!(calls.iter().any(|args| args[0] == "stop" && args[1] == "second"));
@@ -351,7 +380,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
-        stop_local_vms_with(&runner, &paths).unwrap();
+        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(runner
             .states
             .lock()
@@ -375,7 +404,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(Some("first"));
-        let error = stop_local_vms_with(&runner, &paths)
+        let error = stop_local_vms_with(&runner, &paths, &|_, _, _| {})
             .unwrap_err()
             .to_string();
         assert!(error.contains("first"));
@@ -396,7 +425,7 @@ mod tests {
             port: 22,
         });
         write_metadata(&paths.metadata, &metadata).unwrap();
-        stop_local_vms_with(&runner, &paths).unwrap();
+        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(!runner
             .calls
             .lock()
@@ -416,7 +445,7 @@ mod tests {
             *id = "00000000-0000-4000-8000-000000000004".into();
         }
         write_metadata(&paths.metadata, &metadata).unwrap();
-        assert!(stop_local_vms_with(&runner, &paths).is_err());
+        assert!(stop_local_vms_with(&runner, &paths, &|_, _, _| {}).is_err());
         assert_eq!(runner.states.lock().unwrap()["first"], "Running");
         assert_eq!(runner.states.lock().unwrap()["second"], "Stopped");
     }
@@ -429,7 +458,7 @@ mod tests {
         fs::remove_file(&paths.metadata).unwrap();
         configuration_recovery::begin(&paths, &candidate).unwrap();
         let runner = runner(None);
-        stop_local_vms_with(&runner, &paths).unwrap();
+        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(runner
             .states
             .lock()
@@ -457,7 +486,7 @@ mod tests {
         metadata.machines.truncate(1);
         write_metadata(&paths.metadata, &metadata).unwrap();
         let runner = runner(None);
-        let error = stop_local_vms_with(&runner, &paths)
+        let error = stop_local_vms_with(&runner, &paths, &|_, _, _| {})
             .unwrap_err()
             .to_string();
         assert!(error.contains("second"));
@@ -471,7 +500,7 @@ mod tests {
         let paths = super::super::tests::paths(&dir);
         fs::create_dir_all(&paths.home).unwrap();
         let runner = runner(None);
-        let error = stop_local_vms_with(&runner, &paths)
+        let error = stop_local_vms_with(&runner, &paths, &|_, _, _| {})
             .unwrap_err()
             .to_string();
         assert!(error.contains("matching saved identity"));
@@ -494,7 +523,7 @@ mod tests {
         fs::create_dir(&paths.home).unwrap();
         fs::write(paths.home.join(".silo-configuration-worker.lock"), b"").unwrap();
         let runner = runner(None);
-        stop_local_vms_with(&runner, &paths).unwrap();
+        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(runner.calls.lock().unwrap().is_empty());
         assert_eq!(configuration_recovery::shutdown_machines(&paths).unwrap(), pending.machines);
     }
@@ -542,7 +571,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let runner = runner(None);
-        stop_local_vms_with(&runner, &paths).unwrap();
+        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(runner.calls.lock().unwrap().is_empty());
     }
 }

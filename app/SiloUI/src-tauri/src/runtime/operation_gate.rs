@@ -772,6 +772,16 @@ impl OperationGate {
         self.notify();
     }
 
+    /// Change a running operation's queue label, for work that reports its progress.
+    fn relabel(&self, id: u64, label: &str) {
+        let mut state = self.lock();
+        if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
+            entry.label = label.to_owned();
+        }
+        drop(state);
+        self.notify();
+    }
+
     /// Record the expected maximum duration of a running operation for stuck reporting.
     fn set_expected(&self, id: u64, expected: Duration) {
         let mut state = self.lock();
@@ -850,6 +860,12 @@ impl OperationGuard<'_> {
     /// Declare the expected maximum duration so the UI can flag the operation as slow.
     pub(crate) fn expect_within(&self, expected: Duration) {
         self.gate.set_expected(self.id, expected);
+    }
+
+    /// Show `label` for this operation in the queue from now on, for example the step
+    /// a long computer-wide operation is on. Observers are notified.
+    pub(crate) fn relabel(&self, label: &str) {
+        self.gate.relabel(self.id, label);
     }
 
     /// When this operation started running.
@@ -1294,6 +1310,23 @@ mod tests {
         assert_eq!(gate.snapshot().running[0].since_ms, reported);
         assert!(gate.oldest_running().unwrap().1 >= Duration::from_millis(5));
         drop(second);
+    }
+
+    #[test]
+    fn a_running_operation_can_report_its_current_step_in_the_queue() {
+        let gate = leak();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        gate.set_listener(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let guard = gate.kind(OperationKind::Shutdown).computer("Stopping local sandboxes").unwrap();
+        let before = calls.load(Ordering::SeqCst);
+        guard.relabel("Stopping dev (1 of 2)");
+        assert_eq!(gate.snapshot().running[0].label, "Stopping dev (1 of 2)");
+        assert_eq!(gate.snapshot().running[0].kind, OperationKind::Shutdown);
+        assert!(calls.load(Ordering::SeqCst) > before, "observers learn about the new step");
+        drop(guard);
     }
 
     #[test]

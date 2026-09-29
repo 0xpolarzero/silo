@@ -51,6 +51,15 @@ it("names the running work Quit waits for and cancels only cancellable entries o
   expect(native.invoke).toHaveBeenCalledWith("cancel_operation", { id: 8 })
   expect(native.invoke).not.toHaveBeenCalledWith("cancel_operation", { id: 7 })
 })
+it("names the local sandbox Quit is stopping", async () => {
+  const queue = { running: [{ id: 7, label: "Stopping dev (1 of 2)", kind: "shutdown", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? queue : name === "read_shutdown_state" ? false : true)
+  render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+  await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
+  act(() => native.receive({ payload: true }))
+  expect(await screen.findByText("Stopping dev (1 of 2)…")).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Cancel and quit" })).not.toBeInTheDocument()
+})
 it("waits for non-cancellable running work and offers no cancel control", async () => {
   const queue = { running: [{ id: 9, label: "Installing update", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false }], waiting: [] }
   native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? queue : name === "read_shutdown_state" ? false : true)
