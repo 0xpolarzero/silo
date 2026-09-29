@@ -53,10 +53,10 @@ for (const [name, mutate] of mutations) {
     copyFileSync(join(root, "runtime-inputs.json"), join(app, "runtime-inputs.json"))
     mkdirSync(join(app, ".changeset"))
     mkdirSync(join(root, "repo/docs/releases"), { recursive: true })
-    writeFileSync(join(root, "repo/docs/releases/9.8.7.md"), "Release notes")
+    writeFileSync(join(root, "repo/docs/releases/0.98.7.md"), "Release notes")
     const run = (command, args) => {
       const key = [command, ...args].join(" ")
-      const outputs = { "git status --porcelain": "", "python3 scripts/validate-release-version.py": "9.8.7", "git rev-parse HEAD": "head", "git tag --list v9.8.7": "" }
+      const outputs = { "git status --porcelain": "", "python3 scripts/validate-release-version.py": "0.98.7", "git rev-parse HEAD": "head", "git tag --list v0.98.7": "" }
       assert.ok(Object.hasOwn(outputs, key), `Unexpected tag/build/download action: ${key}`)
       return outputs[key]
     }
