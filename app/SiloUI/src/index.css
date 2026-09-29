@@ -256,6 +256,16 @@ html.native-status body {
   scroll-behavior: auto !important;
 }
 
+/* Popovers, selects and menus also portal to <body>. They read the surface's preference
+   from context (components/ui/reduce-motion.ts) and mark themselves `.silo-portal`. */
+.silo-portal[data-reduce-motion="true"],
+.silo-portal[data-reduce-motion="true"] * {
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+}
+
 /* Toasts render in a portal on <body>, outside the .silo-window, so mirror the
    reduce-motion rule for the Sonner toaster the app mounts. */
 .silo-toaster[data-reduce-motion="true"] [data-sonner-toast],
@@ -346,7 +356,9 @@ html.native-status body {
   }
 
   .silo-window,
-  .silo-window * {
+  .silo-window *,
+  .silo-portal,
+  .silo-portal * {
     transition-duration: 0s !important;
     transition-delay: 0s !important;
     animation: none !important;

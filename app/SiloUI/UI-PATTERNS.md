@@ -63,7 +63,10 @@ Pass the surface's reduced-motion preference to its outer `TooltipProvider`.
 Nested providers inherit it, and tooltip content receives it through
 [React context across portals](https://react.dev/reference/react-dom/createPortal).
 Tooltips disable entry and exit animations for either the app preference or
-the system's `prefers-reduced-motion` setting.
+the system's `prefers-reduced-motion` setting. Popovers, selects and menus also
+render in portals outside `.silo-window`; they read the same context through
+`components/ui/reduce-motion.ts`, carry the `silo-portal` class and
+`data-reduce-motion`, and `index.css` turns off their animations and transitions.
 
 ## Status bar preview
 
