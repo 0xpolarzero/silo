@@ -12,7 +12,7 @@ const nodeTests = [
   "src/features/onboarding/model/**/*.test.ts",
   "src/features/preferences/model/**/*.test.ts",
   "src/features/preferences/{settings-store,system-integrations-store}.test.ts",
-  "src/test/{git-runtime,guest-image,microsandbox-runtime,transition-styles}.test.ts",
+  "src/test/{git-runtime,guest-image,microsandbox-runtime,native-permissions,transition-styles}.test.ts",
 ]
 
 // Share transforms and aliases only. Inheriting maxWorkers into each project
@@ -24,6 +24,16 @@ const projectConfig = {
   },
 }
 
+// Restore spies, stubbed globals and stubbed env after every test so one
+// test's replacements cannot leak into the next. Timers have no config switch;
+// src/test/setup-common.ts restores real timers after every test instead.
+const testHygiene = {
+  globals: true,
+  restoreMocks: true,
+  unstubGlobals: true,
+  unstubEnvs: true,
+}
+
 export default defineConfig({
   test: {
     // Full-window interaction tests compete for CPU when every jsdom file runs
@@ -33,16 +43,17 @@ export default defineConfig({
       {
         ...projectConfig,
         test: {
-          globals: true,
+          ...testHygiene,
           name: "node",
           include: nodeTests,
           environment: "node",
+          setupFiles: ["./src/test/setup-common.ts"],
         },
       },
       {
         ...projectConfig,
         test: {
-          globals: true,
+          ...testHygiene,
           name: "dom",
           include: ["src/**/*.test.{ts,tsx}"],
           exclude: nodeTests,
@@ -50,7 +61,7 @@ export default defineConfig({
           // Node 25+ exposes its own localStorage global, which is undefined
           // without --localstorage-file and shadows the jsdom storage.
           execArgv: ["--no-experimental-webstorage"],
-          setupFiles: ["./src/test/setup.ts"],
+          setupFiles: ["./src/test/setup-common.ts", "./src/test/setup.ts"],
           css: true,
         },
       },
