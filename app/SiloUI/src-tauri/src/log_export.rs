@@ -113,7 +113,7 @@ fn write_requests(
         output,
         &serde_json::json!({
             "type": "silo-log-export", "version": 1,
-            "note": "Each sandbox is a separate snapshot. Timestamps and identities are retained; sensitive output is filtered as in Silo."
+            "note": "Each sandbox is a separate snapshot. Timestamps and identities are retained. Silo hides known secret values, but logs can still contain sensitive output; review it before sharing."
         }),
     )?;
     for mut request in requests {
@@ -240,6 +240,15 @@ mod tests {
         assert!(!result);
         assert_eq!(calls, 1);
         assert_eq!(String::from_utf8(output).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn export_header_does_not_promise_that_sensitive_output_was_removed() {
+        let mut output = Vec::new();
+        write_requests(&mut output, vec![], |_| Ok(page(0, 0)), || false).unwrap();
+        let header = String::from_utf8(output).unwrap();
+        assert!(!header.contains("sensitive output is filtered"));
+        assert!(header.contains("review it before sharing"));
     }
 
     #[test]
