@@ -53,3 +53,42 @@ fn migration_and_checkpoint_commands_are_allowlisted_for_the_main_window() {
         );
     }
 }
+
+#[test]
+fn reveal_backup_archive_is_allowlisted_for_the_main_window_only() {
+    let manifests: Value =
+        serde_json::from_str(include_str!("../gen/schemas/acl-manifests.json")).unwrap();
+    let capabilities: Value =
+        serde_json::from_str(include_str!("../gen/schemas/capabilities.json")).unwrap();
+    let preview = &capabilities["preview"];
+    assert_eq!(preview["windows"], serde_json::json!(["main"]));
+    assert_eq!(preview["local"], serde_json::json!(true));
+
+    assert_eq!(
+        manifests["__app-acl__"]["permissions"]["allow-reveal-backup-archive"]["commands"]
+            ["allow"],
+        serde_json::json!(["reveal_backup_archive"]),
+        "Tauri must generate a permission for reveal_backup_archive"
+    );
+    assert!(
+        preview["permissions"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::String("allow-reveal-backup-archive".into())),
+        "The local main window must be able to invoke reveal_backup_archive"
+    );
+
+    // No other capability may grant the command to a non-main window.
+    for (name, capability) in capabilities.as_object().unwrap() {
+        if name == "preview" {
+            continue;
+        }
+        assert!(
+            !capability["permissions"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("allow-reveal-backup-archive".into())),
+            "Only the main window may reveal export files, not {name}"
+        );
+    }
+}

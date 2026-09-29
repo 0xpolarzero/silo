@@ -116,6 +116,19 @@ than rewinding a running one. Neither filesystem rollback nor Silo's disk
 restore reverses external effects such as an email sent or a remote API update.
 This documentation comparison did not exercise a live backup or restore.
 
+## Reveal exported archive
+
+Showing a finished export in Finder (macOS) or the file manager (Linux) reuses
+the official [`tauri-plugin-opener`](https://crates.io/crates/tauri-plugin-opener)
+(Apache-2.0 OR MIT) via its standalone `reveal_item_in_dir` Rust API rather than
+a custom shell-out; the plugin needs no `init()` for that function. Its generic
+`opener:*` JS commands are not granted to the webview. Instead a narrow
+main-window `reveal_backup_archive` command reveals only a path that matches, byte
+for byte, the current completed export or a saved history entry and still exists,
+returning "That export file is no longer available." otherwise.
+The dependency is pinned to `~2.5.5` because opener 2.6 requires Tauri 2.12;
+upgrading it should happen together with a deliberate Tauri upgrade.
+
 ## Native picker threading
 
 The native walkthrough reproduced a main-thread deadlock in the synchronous

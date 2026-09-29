@@ -521,6 +521,61 @@ pub(crate) async fn inspect_backup_archive(
     .map_err(|error| error.to_string())?
 }
 
+/// Authorizes a reveal request against the controller's known archives. A path
+/// may be revealed only when it matches, byte for byte, the `archive_path` of a
+/// saved history entry or of the current completed export (a `Result` operation
+/// whose outcome finished successfully), and the file still exists. Exact-string
+/// matching rejects traversal (`..`) or otherwise non-identical paths, and the
+/// existence check rejects an archive the user has since moved or deleted.
+fn authorize_reveal(
+    operation: Option<&Operation>,
+    archives: &[Archive],
+    requested: &str,
+) -> Result<PathBuf, String> {
+    const UNAVAILABLE: &str = "That export file is no longer available.";
+    let known = archives
+        .iter()
+        .any(|archive| archive.archive_path == requested)
+        || matches!(
+            operation,
+            Some(Operation::Result { outcome, archive, .. })
+                if matches!(*outcome, "success" | "restart-required")
+                    && archive.archive_path == requested
+        );
+    if !known {
+        return Err(UNAVAILABLE.into());
+    }
+    let path = PathBuf::from(requested);
+    if !path.is_file() {
+        return Err(UNAVAILABLE.into());
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+pub(crate) async fn reveal_backup_archive(
+    window: WebviewWindow,
+    controller: State<'_, Arc<Controller>>,
+    archive_path: String,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let controller = controller.inner().clone();
+    let path = {
+        let view = controller
+            .view
+            .lock()
+            .map_err(|_| "Backup state is unavailable.".to_string())?;
+        authorize_reveal(view.operation.as_ref(), &view.archives, &archive_path)?
+    };
+    // Revealing shells out to the platform file manager, which can block.
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri_plugin_opener::reveal_item_in_dir(&path)
+            .map_err(|error| format!("Silo could not show the export file: {error}"))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn unique_archive(destination: &Path, sandboxes: &[String], checkpoint: bool) -> PathBuf {
     // A single-sandbox export reads as "<sandbox>-<date>"; a checkpoint export of
     // that sandbox reads as "<sandbox>-checkpoint-<date>"; a multi-sandbox export
@@ -1573,6 +1628,121 @@ mod tests {
             destination: "/backups".into(),
             sandboxes: vec!["dev".into()],
         }
+    }
+
+    fn completed_operation(archive: Archive, outcome: &'static str) -> Operation {
+        Operation::Result {
+            operation: "backup",
+            archive,
+            running_names: Vec::new(),
+            target_name: None,
+            outcome,
+            title: "Export complete".into(),
+            message: "Done".into(),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn reveal_allows_the_current_completed_export_when_the_file_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("saved.silo-backup");
+        std::fs::write(&file, b"archive").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let mut archive = completed_archive();
+        archive.archive_path = path.clone();
+
+        for outcome in ["success", "restart-required"] {
+            let operation = completed_operation(archive.clone(), outcome);
+            let resolved = authorize_reveal(Some(&operation), &[], &path).unwrap();
+            assert_eq!(resolved, file);
+        }
+    }
+
+    #[test]
+    fn reveal_allows_a_saved_history_entry_when_the_file_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("history.silo-backup");
+        std::fs::write(&file, b"archive").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let mut archive = completed_archive();
+        archive.archive_path = path.clone();
+
+        let resolved = authorize_reveal(None, std::slice::from_ref(&archive), &path).unwrap();
+        assert_eq!(resolved, file);
+    }
+
+    #[test]
+    fn reveal_rejects_a_path_not_present_in_history_or_the_current_operation() {
+        let directory = tempfile::tempdir().unwrap();
+        let stranger = directory.path().join("stranger.silo-backup");
+        std::fs::write(&stranger, b"archive").unwrap();
+
+        let mut archive = completed_archive();
+        archive.archive_path = directory
+            .path()
+            .join("known.silo-backup")
+            .to_string_lossy()
+            .into_owned();
+        std::fs::write(directory.path().join("known.silo-backup"), b"archive").unwrap();
+
+        let error = authorize_reveal(
+            None,
+            std::slice::from_ref(&archive),
+            &stranger.to_string_lossy(),
+        )
+        .unwrap_err();
+        assert_eq!(error, "That export file is no longer available.");
+    }
+
+    #[test]
+    fn reveal_rejects_a_traversal_or_non_identical_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("saved.silo-backup");
+        std::fs::write(&file, b"archive").unwrap();
+        let mut archive = completed_archive();
+        archive.archive_path = file.to_string_lossy().into_owned();
+
+        // A path that resolves to the same file but is not byte-identical.
+        let traversal = directory
+            .path()
+            .join("sub")
+            .join("..")
+            .join("saved.silo-backup")
+            .to_string_lossy()
+            .into_owned();
+        assert_ne!(traversal, archive.archive_path);
+
+        let error = authorize_reveal(None, std::slice::from_ref(&archive), &traversal).unwrap_err();
+        assert_eq!(error, "That export file is no longer available.");
+    }
+
+    #[test]
+    fn reveal_rejects_a_known_archive_whose_file_is_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("gone.silo-backup");
+        let path = missing.to_string_lossy().into_owned();
+        let mut archive = completed_archive();
+        archive.archive_path = path.clone();
+        let operation = completed_operation(archive.clone(), "success");
+
+        let error =
+            authorize_reveal(Some(&operation), std::slice::from_ref(&archive), &path).unwrap_err();
+        assert_eq!(error, "That export file is no longer available.");
+    }
+
+    #[test]
+    fn reveal_rejects_a_failed_operation_even_when_the_file_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("saved.silo-backup");
+        std::fs::write(&file, b"archive").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let mut archive = completed_archive();
+        archive.archive_path = path.clone();
+        let operation = completed_operation(archive, "failed");
+
+        let error = authorize_reveal(Some(&operation), &[], &path).unwrap_err();
+        assert_eq!(error, "That export file is no longer available.");
     }
 
     #[test]
