@@ -109,6 +109,9 @@ describe("status bar preview", () => {
       expect(screen.getByText("Pushing 3 commits…")).toBeVisible()
       if (action === "quit") {
         fireEvent.click(screen.getByRole("button", { name: "Quit Silo" }))
+        // Running sandboxes ask for confirmation first (I-06).
+        const confirmQuit = screen.queryByRole("button", { name: "Quit and stop" })
+        if (confirmQuit) fireEvent.click(confirmQuit)
         fireEvent.click(screen.getByRole("button", { name: "Relaunch Silo" }))
         expect(screen.getByText("Pushed 2 commits.")).toBeVisible()
         expect(screen.getByText("Pushed 3 commits.")).toBeVisible()
@@ -164,6 +167,8 @@ describe("status bar preview", () => {
     expect(screen.getByRole("complementary", { name: "Preview feedback" })).toHaveTextContent("Preview: open Terminal in dev.")
     await user.click(screen.getByRole("button", { name: "Silo status bar" }))
     await user.click(screen.getByRole("button", { name: "Quit Silo" }))
+    const confirmQuit = screen.queryByRole("button", { name: "Quit and stop" })
+    if (confirmQuit) await user.click(confirmQuit)
     expect(screen.queryByRole("button", { name: "Silo status bar" })).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Relaunch Silo" }))
     expect(screen.getByRole("button", { name: "Silo status bar" })).toBeVisible()
