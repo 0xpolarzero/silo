@@ -15,7 +15,7 @@ import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOpe
 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
 import type { BackupController } from "../model/backup-source"
-import type { WorkspaceCheckpoint } from "../model/checkpoint-source"
+import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "../model/checkpoint-source"
 
 import { ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
@@ -295,7 +295,7 @@ export function OverviewPage({ active = true, readOnly = false,
   /** The Fork popover body for a sandbox's ⋯ menu (row or detail page); state lives with that menu. */
   function forkPopovers(workspace: ApplicationWorkspace | undefined): MenuPopovers | undefined {
     if (!workspace || !actions.forkCheckpoint) return undefined
-    return { fork: close => <ForkBody sandboxName={workspace.machine.name} disabled={forkDisabled(workspace)} onFork={name => forkCurrentState(workspace, name)} onClose={close} /> }
+    return { fork: close => <ForkBody sandboxName={workspace.machine.name} disabled={forkDisabled(workspace)} takenNames={sandboxNamesOnComputer(visibleWorkspaces, workspace.computer?.id)} onFork={name => forkCurrentState(workspace, name)} onClose={close} /> }
   }
   const configurationOperation = source.sandboxConfigurationOperation
   const configurationLocked = readOnly || configurationOperation !== null
