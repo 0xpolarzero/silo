@@ -15,11 +15,20 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
+/// Serializes SSH key and configuration file writes only. Never hold it across
+/// remote calls, guest commands, probes or editor launches: the desktop viewer
+/// and remote authorization wait on it (G-22).
 static LOCK: Mutex<()> = Mutex::new(());
 const FAILED: &str = "Could not prepare the editor connection.";
 
+/// The guard protects no in-memory state and every file write is atomic, so a
+/// panic while holding it leaves nothing inconsistent; recover instead of
+/// failing every editor connection until restart (G-23).
+fn files_lock() -> std::sync::MutexGuard<'static, ()> {
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<(), String> {
-    let _guard = LOCK.lock().map_err(|_| FAILED)?;
     if let Some((host, vm)) = crate::remote_access::target(name)? {
         let path = path.unwrap_or("/workspace");
         let (alias, _) = prepare_remote(app, &host, &vm, path)?;
@@ -219,6 +228,7 @@ fn prepare(
     let config = root.join(format!("{name}.conf"));
     let known_hosts = root.join(format!("{name}.known_hosts"));
     let alias = prepare_configuration(paths, name, &config, &known_hosts)?;
+    let _guard = files_lock();
     let ssh_root = user_home.join(".ssh");
     private_directory(&ssh_root)?;
     let user_config = ssh_root.join("config");
@@ -242,7 +252,6 @@ pub(crate) fn prepare_private_transport(
     name: &str,
     directory: &Path,
 ) -> Result<(String, PathBuf), String> {
-    let _guard = LOCK.lock().map_err(|_| FAILED)?;
     runtime::validate_name(name).map_err(|error| error.to_string())?;
     private_directory(directory)?;
     let config = directory.join("ssh_config");
@@ -258,6 +267,7 @@ fn prepare_configuration(
     known_hosts: &Path,
 ) -> Result<String, String> {
     let user = crate::working_account::inspect_user(paths, name)?;
+    let _guard = files_lock();
     let root = paths.home.join("ssh");
     private_directory(&root)?;
     let client = root.join("silo_ed25519");
@@ -350,7 +360,6 @@ pub(crate) fn validate_public_key(public: &str) -> Result<(), String> {
 }
 
 pub(crate) fn authorize_remote(paths: &RuntimePaths, name: &str, public: &str, path: &str) -> Result<String, String> {
-    let _guard = LOCK.lock().map_err(|_| FAILED)?;
     crate::runtime::shutdown::ensure_accepting_operations()?;
     validate_public_key(public)?;
     validate_path(path)?;
@@ -361,6 +370,7 @@ pub(crate) fn authorize_remote(paths: &RuntimePaths, name: &str, public: &str, p
         user.into(), "--env".into(), format!("USER={user}"), "--env".into(), format!("LOGNAME={user}"), "--no-tty".into(), "--quiet".into(),
         "--timeout".into(), "5s".into(), "--".into(), "test".into(), "-d".into(), path.into(),
     ], Duration::from_secs(8)).map_err(|_| "This folder is unavailable inside the VM.")?;
+    let _guard = files_lock();
     let root = paths.home.join("ssh");
     private_directory(&root)?;
     let authorized = root.join("authorized_keys");
@@ -385,10 +395,16 @@ pub(crate) fn prepare_remote_private(app: &AppHandle, host: &str, vm: &str, path
     let home = app.path().home_dir().map_err(|_| FAILED)?;
     crate::runtime::prepare_private_directory(&home.join(".silo")).map_err(|e| e.to_string())?;
     let root = home.join(".silo/desktop-remote/ssh");
-    private_directory(&root)?;
     let client = root.join(format!("{host}.key"));
-    key(&client)?;
-    let (host_public, user) = crate::remote_access::prepare(app, host, vm, &public_key(&client)?, path)?;
+    let client_public = {
+        let _guard = files_lock();
+        private_directory(&root)?;
+        key(&client)?;
+        public_key(&client)?
+    };
+    // The remote call can take minutes; keep the file lock free meanwhile.
+    let (host_public, user) = crate::remote_access::prepare(app, host, vm, &client_public, path)?;
+    let _guard = files_lock();
     let alias = format!("silo-remote-{host}-{vm}");
     let known_hosts = root.join(format!("{host}-{vm}.known_hosts"));
     write_private(&known_hosts, format!("{alias} {host_public}\n").as_bytes())?;
@@ -406,6 +422,7 @@ pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) 
     let (alias, config) = prepare_remote_private(app, host, vm, path)?;
     let root = config.parent().ok_or(FAILED)?;
     let home = app.path().home_dir().map_err(|_| FAILED)?;
+    let _guard = files_lock();
     let ssh_root = home.join(".ssh");
     private_directory(&ssh_root)?;
     let user_config = ssh_root.join("config");
@@ -421,6 +438,20 @@ pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_panic_while_writing_ssh_files_does_not_disable_editor_connections() {
+        let _ = std::thread::spawn(|| {
+            let _guard = files_lock();
+            panic!("simulated failure while holding the SSH file lock");
+        })
+        .join();
+        assert!(LOCK.is_poisoned());
+        drop(files_lock());
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = files_lock();
+        private_directory(&dir.path().join("ssh")).unwrap();
+    }
+
     #[test]
     fn remote_authorization_accepts_only_plain_ed25519_public_keys() {
         let directory = tempfile::tempdir().unwrap();
