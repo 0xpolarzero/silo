@@ -194,12 +194,25 @@ pub(crate) fn status(
     Ok(operation(job))
 }
 pub(crate) fn merge(app: &AppHandle, legacy: Vec<Value>) -> Result<Vec<Value>, String> {
-    let _guard = LOCK.lock().map_err(|_| "Push state unavailable.")?;
-    let jobs = read(
-        &runtime::runtime_paths(app)?
-            .home
-            .join("repository-push-operations.json"),
-    )?;
+    let journal = runtime::runtime_paths(app)?
+        .home
+        .join("repository-push-operations.json");
+    Ok(merge_journal(&journal, legacy))
+}
+/// A damaged push journal must not hide the rest of the application state:
+/// fall back to the in-memory pushes and report the journal problem.
+fn merge_journal(journal: &Path, legacy: Vec<Value>) -> Vec<Value> {
+    let Ok(_guard) = LOCK.lock() else {
+        eprintln!("Push history unavailable; showing only current pushes.");
+        return legacy;
+    };
+    let jobs = match read(journal) {
+        Ok(jobs) => jobs,
+        Err(error) => {
+            eprintln!("Push history unavailable; showing only current pushes: {error}");
+            return legacy;
+        }
+    };
     let mut latest = HashMap::<String, &Job>::new();
     for job in jobs.values() {
         let key = format!(
@@ -244,7 +257,7 @@ pub(crate) fn merge(app: &AppHandle, legacy: Vec<Value>) -> Result<Vec<Value>, S
             })
             .map(|job| operation(job)),
     );
-    Ok(values)
+    values
 }
 pub(crate) fn dismiss(app: &AppHandle, workspace: &str, path: &str) -> Result<(), String> {
     let _guard = LOCK.lock().map_err(|_| "Push state unavailable.")?;
@@ -316,6 +329,14 @@ pub async fn repository_push_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn corrupt_journal_degrades_to_current_pushes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("jobs.json");
+        fs::write(&path, b"{not json").unwrap();
+        let legacy = vec![serde_json::json!({"workspace":"dev","repositoryPath":"/workspace/repo","status":"pushing"})];
+        assert_eq!(merge_journal(&path, legacy.clone()), legacy);
+    }
     #[test]
     fn lost_acknowledgement_and_concurrent_clicks_share_one_job() {
         let mut jobs = Journal::new();
