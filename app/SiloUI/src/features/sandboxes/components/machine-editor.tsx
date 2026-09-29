@@ -1,5 +1,5 @@
 import { parseRemoteWorkspaceTarget } from "@/features/application/model/remote-computers"
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { Monitor, Server } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -31,13 +31,17 @@ function SelectField({ label, value, values, suffix, error, readOnly = false, cu
 }) {
   const [customSelected, setCustomSelected] = useState(!values.includes(value))
   const isCustom = custom && (customSelected || !values.includes(value))
+  const errorId = useId()
+  const describedBy = error ? errorId : undefined
   const field = (
     <div className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
       {label}
       <select
         disabled={readOnly}
         aria-label={label}
-        aria-invalid={Boolean(error)}
+        // With a custom value, the number input holds it and takes focus on failed validation.
+        aria-invalid={Boolean(error) && !isCustom}
+        aria-describedby={describedBy}
         className="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground disabled:cursor-default disabled:opacity-60 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive"
         value={isCustom ? "custom" : value}
         onChange={(event) => {
@@ -53,10 +57,11 @@ function SelectField({ label, value, values, suffix, error, readOnly = false, cu
         type="number" disabled={readOnly} min={1} max={label.includes("storage") ? 4_194_303 : 4_294_967_295} step={1}
         aria-label={`${label} custom (${suffix === "CPU" ? "CPUs" : "GiB"})`}
         aria-invalid={Boolean(error)}
+        aria-describedby={describedBy}
         value={value || ""}
         onChange={(event) => onChange(Number(event.target.value))}
       />}
-      {error && <span className="text-destructive">{error}</span>}
+      {error && <span id={errorId} className="text-destructive">{error}</span>}
     </div>
   )
   return readOnly ? (
@@ -73,11 +78,12 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   firstField?: boolean
   inputRef?: React.RefObject<HTMLInputElement | null>
 } & Omit<React.ComponentProps<typeof Input>, "value" | "aria-label">) {
+  const errorId = useId()
   return (
     <label className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
       {label}
-      <Input technical ref={firstField ? inputRef : undefined} aria-label={label} aria-invalid={Boolean(error)} value={value} {...props} />
-      {error && <span className="text-destructive">{error}</span>}
+      <Input technical ref={firstField ? inputRef : undefined} aria-label={label} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} value={value} {...props} />
+      {error && <span id={errorId} className="text-destructive">{error}</span>}
     </label>
   )
 }
@@ -103,6 +109,10 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
   const [draft, setDraft] = useState(editor.draft)
   const [errors, setErrors] = useState<MachineValidationErrors>({})
   const firstField = useRef<HTMLInputElement>(null)
+  const container = useRef<HTMLDivElement>(null)
+  const portErrorId = useId()
+  // Bumped by each failed Save so focus moves to the first invalid field once it renders.
+  const [failedValidation, setFailedValidation] = useState(0)
   const original = machines.find(machine => machine.id === editor.originalID)
   // Detect that the committed VM changed under the open editor. `baselineMachine` is only
   // supplied for edits backed by a live source (not onboarding drafts), so these notices
@@ -121,6 +131,11 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
     firstField.current?.scrollIntoView?.({ block: "nearest" })
   }, [focusRequest])
 
+  useEffect(() => {
+    if (!failedValidation) return
+    container.current?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")?.focus()
+  }, [failedValidation])
+
   function update(changes: Partial<SetupMachineConfiguration>) {
     const next = { ...draft, ...changes } as SetupMachineConfiguration
     setDraft(next)
@@ -136,10 +151,11 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
     }
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length === 0) onSave(draft)
+    else setFailedValidation(count => count + 1)
   }
 
   return (
-    <div className="grid min-w-0 gap-3 p-3" data-testid={`machine-editor-${draft.id}`}>
+    <div ref={container} className="grid min-w-0 gap-3 p-3" data-testid={`machine-editor-${draft.id}`}>
       <div className="flex min-w-0 items-center gap-2">
         {draft.kind === "vm" ? <Monitor className="size-4 shrink-0" aria-hidden="true" /> : <Server className="size-4 shrink-0" aria-hidden="true" />}
         <span className="min-w-0 flex-1 text-xs font-semibold">{draft.kind === "vm" ? "Virtual machine details" : "SSH machine details"}</span>
@@ -197,6 +213,7 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
             <Input technical
               aria-label="SSH port"
               aria-invalid={Boolean(errors.port)}
+              aria-describedby={errors.port ? portErrorId : undefined}
               type="number"
               inputMode="numeric"
               min={1}
@@ -204,7 +221,7 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
               value={draft.port}
               onChange={(event) => update({ port: Number(event.target.value) })}
             />
-            {errors.port && <span className="text-destructive">{errors.port}</span>}
+            {errors.port && <span id={portErrorId} className="text-destructive">{errors.port}</span>}
           </label>
         </div>
       )}
