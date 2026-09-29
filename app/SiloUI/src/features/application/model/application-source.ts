@@ -65,6 +65,8 @@ export interface ApplicationRepository {
 }
 
 export type RepositoryPushOperation = {
+  /** The host-owned push this result belongs to; older hosts may omit it. */
+  operationId?: string
   workspace: string
   repositoryPath: string
   commitCount: number

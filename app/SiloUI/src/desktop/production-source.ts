@@ -184,6 +184,11 @@ type RemoteHost = z.infer<typeof remoteComputerSchema>
 /** How long a caller waits for one computer's snapshot before showing its last known state as stale. */
 const REMOTE_READ_WAIT_MS = 15_000
 
+/** Push status polling: the normal interval, the backoff ceiling, and unanswered checks before giving up. */
+const PUSH_STATUS_INTERVAL_MS = 2_000
+const PUSH_STATUS_MAX_INTERVAL_MS = 30_000
+const PUSH_STATUS_ATTEMPTS = 8
+
 /** The runtime's "configuration is updating" sentinel, bare or wrapped by a remote bridge. */
 export function isUpdateInProgress(cause: unknown) {
   return errorMessage(cause).includes("SILO_SANDBOX_UPDATE_IN_PROGRESS")
@@ -252,6 +257,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const checkpointOperationBases = new Map<string, WorkspaceCheckpointOperation | null | undefined>()
   const pushPollTimers = new Set<ReturnType<typeof setTimeout>>()
   const pendingRepositoryPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
+  /** The push whose status polling currently owns each repository key. */
+  const activePushes = new Map<string, object>()
+  /** Pushes whose status could not be confirmed; shown as "unknown" until dismissed or reported by their host. */
+  const unconfirmedPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
   const pendingLifecycle = new Map<string, "start" | "stop" | "restart" | "dismiss-error">()
   const workspaceFailures = new Map<string, { machineId: string; action: string; message: string; cancelled: boolean }>()
   let pendingBackupOperation = false
@@ -429,14 +438,27 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         }),
       ],
     } }
-    // Remote polling can return a snapshot captured before the push started.
-    // Keep the operation loading until its host supplies a terminal result.
-    if (next.source && pendingRepositoryPushes.size) next = { ...next, source: { ...next.source,
-      repositoryPushOperations: [
-        ...next.source.repositoryPushOperations.filter(operation => !pendingRepositoryPushes.has(JSON.stringify([operation.workspace, operation.repositoryPath]))),
-        ...pendingRepositoryPushes.values(),
-      ],
-    } }
+    if (next.source && (pendingRepositoryPushes.size || unconfirmedPushes.size)) {
+      // A push whose sandbox (or computer) is gone has nothing left to show or poll.
+      const targets = new Set(next.source.workspaces.map(workspaceTarget))
+      for (const [key, operation] of pendingRepositoryPushes) if (!targets.has(operation.workspace)) { pendingRepositoryPushes.delete(key); activePushes.delete(key) }
+      for (const [key, operation] of unconfirmedPushes) if (!targets.has(operation.workspace)) unconfirmedPushes.delete(key)
+      const reported = next.source.repositoryPushOperations
+      // The owning host reporting this very push replaces its unconfirmed result.
+      for (const [key, unconfirmed] of unconfirmedPushes) if (reported.some(operation => operation !== unconfirmed && JSON.stringify([operation.workspace, operation.repositoryPath]) === key && operation.operationId === unconfirmed.operationId)) unconfirmedPushes.delete(key)
+      // Remote polling can return a snapshot captured before the push started.
+      // Keep the operation loading until its host supplies a terminal result.
+      next = { ...next, source: { ...next.source,
+        repositoryPushOperations: [
+          ...reported.filter(operation => {
+            const key = JSON.stringify([operation.workspace, operation.repositoryPath])
+            return !pendingRepositoryPushes.has(key) && !unconfirmedPushes.has(key)
+          }),
+          ...pendingRepositoryPushes.values(),
+          ...unconfirmedPushes.values(),
+        ],
+      } }
+    }
     snapshot = next.source ? { ...next, source: { ...next.source, workspaces: next.source.workspaces.map(({ lifecycleAction: _previous, ...workspace }) => {
       const target = workspaceTarget(workspace)
       const failure = workspaceFailures.get(target)
@@ -1271,23 +1293,31 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const key = JSON.stringify([workspace, repositoryPath])
       if (pendingRepositoryPushes.has(key) || snapshot.source?.repositoryPushOperations.some(operation => operation.workspace === workspace && operation.repositoryPath === repositoryPath && (operation.status === "pushing" || operation.status === "unknown"))) return
       const commitCount = snapshot.source?.workspaces.find(item => workspaceTarget(item) === workspace)?.repositories.find(repository => repository.path === repositoryPath)?.ahead ?? 0
+      // Polling stops once this push is finished or its sandbox (or computer) is gone.
+      const owner = {}
+      const current = () => !disposed && activePushes.get(key) === owner
+      activePushes.set(key, owner)
+      unconfirmedPushes.delete(key)
       pendingRepositoryPushes.set(key, { workspace, repositoryPath, commitCount, status: "pushing" })
       publish({ ...snapshot })
-      const finish = (operation?: ApplicationSource["repositoryPushOperations"][number], error?: string) => {
+      // Push results are shown on the repository row, never through `snapshot.error`,
+      // which is not rendered once the application has loaded.
+      const finish = (operation: ApplicationSource["repositoryPushOperations"][number]) => {
         pendingRepositoryPushes.delete(key)
+        activePushes.delete(key)
         ++refreshSequence
         const remote = parseRemoteWorkspaceTarget(workspace)
         if (remote) bumpRemote(remote.hostId)
-        const owner = remote && remoteSnapshots.get(remote.hostId)
-        if (operation && remote && owner) {
-          const name = owner.workspaces.find(workspace => workspace.machine.id === remote.vmId)?.machine.name
-          if (name) remoteSnapshots.set(remote.hostId, { ...owner, repositoryPushOperations: [
-            ...owner.repositoryPushOperations.filter(operation => operation.workspace !== name || operation.repositoryPath !== repositoryPath),
+        const host = remote && remoteSnapshots.get(remote.hostId)
+        if (remote && host) {
+          const name = host.workspaces.find(workspace => workspace.machine.id === remote.vmId)?.machine.name
+          if (name) remoteSnapshots.set(remote.hostId, { ...host, repositoryPushOperations: [
+            ...host.repositoryPushOperations.filter(operation => operation.workspace !== name || operation.repositoryPath !== repositoryPath),
             { ...operation, workspace: name },
           ] })
         }
-        if (snapshot.source) publish({ ...snapshot, error: error ?? snapshot.error, source: { ...snapshot.source,
-          repositoryPushOperations: [...snapshot.source.repositoryPushOperations.filter(operation => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath), ...(operation ? [{ ...operation, workspace }] : [])],
+        if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source,
+          repositoryPushOperations: [...snapshot.source.repositoryPushOperations.filter(operation => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath), { ...operation, workspace }],
         } })
       }
       let operationId: string = crypto.randomUUID()
@@ -1296,19 +1326,22 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         z.object({ operationId: z.string().optional(), status: z.literal("unknown"), commitCount: z.number(), message: z.string() }),
         z.object({ operationId: z.string().optional(), status: z.literal("failed"), commitCount: z.number(), message: z.string(), diagnosticDetails: z.string().optional() }),
       ])
+      // Unanswered status checks back off exponentially; after PUSH_STATUS_ATTEMPTS in a
+      // row the push ends as a dismissible "unknown" result instead of spinning forever.
+      let failures = 0
       const schedule = () => {
-        if (disposed) return
+        if (!current()) return
         const timer = setTimeout(() => {
           pushPollTimers.delete(timer)
           void observe(false)
-        }, 2_000)
+        }, Math.min(PUSH_STATUS_INTERVAL_MS * 2 ** failures, PUSH_STATUS_MAX_INTERVAL_MS))
         pushPollTimers.add(timer)
       }
       const observe = async (start: boolean): Promise<void> => {
-        if (disposed) return
+        if (!current()) return
         try {
           const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", { workspace, repositoryPath, operationId })
-          if (disposed) return
+          if (!current()) return
           // No saved job means the first request never arrived. Reuse its identifier.
           if (result === null && !start) return observe(true)
           const parsed = terminalShape.safeParse(result)
@@ -1320,11 +1353,20 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           }
           const active = z.object({ operationId: z.string(), status: z.literal("pushing") }).parse(result)
           operationId = active.operationId
+          failures = 0
           pendingRepositoryPushes.set(key, { workspace, repositoryPath, commitCount, status: "pushing" })
           publish({ ...snapshot })
         } catch (cause) {
+          if (!current()) return
           // A lost connection is not a failed push. Keep the button disabled and
           // query the host-owned operation until it supplies an actual result.
+          if (++failures >= PUSH_STATUS_ATTEMPTS) {
+            pendingRepositoryPushes.delete(key)
+            activePushes.delete(key)
+            unconfirmedPushes.set(key, { operationId, workspace, repositoryPath, commitCount, status: "unknown", message: `Silo could not confirm this push (${errorMessage(cause)}). Check the branch on GitHub before pushing again.` })
+            publish({ ...snapshot })
+            return
+          }
           pendingRepositoryPushes.set(key, { workspace, repositoryPath, commitCount, status: "pushing", message: `Waiting for push status: ${errorMessage(cause)}` })
           publish({ ...snapshot })
         }
@@ -1459,6 +1501,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     openEditor: (name, path) => workspaceAction("open-editor", name, { path }),
     openSite: (workspace, port) => { void Promise.resolve().then(() => openNetworkPort(workspace, port)).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
     dismissRepositoryPush: (workspace, repositoryPath) => {
+      // An unconfirmed result exists only here: acknowledging it never waits on its
+      // (possibly unreachable) host, which is told on a best-effort basis.
+      if (unconfirmedPushes.delete(JSON.stringify([workspace, repositoryPath]))) {
+        if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source,
+          repositoryPushOperations: snapshot.source.repositoryPushOperations.filter(operation => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath || operation.status === "pushing"),
+        } })
+        void native.invoke("dismiss_repository_push", { workspace, repositoryPath }).catch(() => {})
+        return
+      }
       void native.invoke("dismiss_repository_push", { workspace, repositoryPath }).then(() => {
         ++refreshSequence
         const remote = parseRemoteWorkspaceTarget(workspace)

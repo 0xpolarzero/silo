@@ -310,6 +310,94 @@ describe("remote computer refresh", () => {
   })
 })
 
+describe("repository push status", () => {
+  const pushOf = (store: ReturnType<typeof createProductionSource>, workspace = "dev") => store.getSnapshot().source?.repositoryPushOperations.find(operation => operation.workspace === workspace && operation.repositoryPath === "/workspace/repo")
+
+  it("backs off unanswered status checks and ends in a dismissible unknown result (H-08)", async () => {
+    vi.useFakeTimers()
+    const mock = bridge(command => {
+      if (command === "start_repository_push" || command === "repository_push_status") throw new Error("connection lost")
+      if (command === "dismiss_repository_push") throw new Error("still unreachable")
+    })
+    const store = createProductionSource(mock.native)
+    const checks = () => count(mock.invoke, "start_repository_push") + count(mock.invoke, "repository_push_status")
+    try {
+      await store.initialize()
+      store.applicationActions.pushRepository("dev", "/workspace/repo")
+      await vi.advanceTimersByTimeAsync(0)
+      expect(pushOf(store)).toMatchObject({ status: "pushing", message: expect.stringContaining("connection lost") })
+      await vi.advanceTimersByTimeAsync(14_000)
+      // 0 s, then 4 s and 8 s later, rather than every 2 s.
+      expect(checks()).toBe(3)
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(checks()).toBe(8)
+      expect(pushOf(store)).toMatchObject({ status: "unknown", message: expect.stringContaining("Check the branch on GitHub") })
+      // The result survives a refresh whose host reports nothing for it.
+      await store.refresh()
+      expect(pushOf(store)?.status).toBe("unknown")
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(checks()).toBe(8)
+      store.applicationActions.dismissRepositoryPush!("dev", "/workspace/repo")
+      expect(pushOf(store)).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(0)
+      await store.refresh()
+      expect(pushOf(store)).toBeUndefined()
+    } finally {
+      store.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it("stops polling and drops the pending push when its sandbox is deleted (H-08)", async () => {
+    vi.useFakeTimers()
+    let deleted = false
+    const mock = bridge(command => {
+      if (command === "read_application_state" && deleted) return { ...structuredClone(source), workspaces: source.workspaces.filter(workspace => workspace.machine.name !== "dev") }
+      if (command === "start_repository_push" || command === "repository_push_status") return { operationId: "push-1", status: "pushing" }
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      store.applicationActions.pushRepository("dev", "/workspace/repo")
+      await vi.advanceTimersByTimeAsync(4_000)
+      expect(pushOf(store)?.status).toBe("pushing")
+      deleted = true
+      await store.refresh()
+      expect(pushOf(store)).toBeUndefined()
+      const polls = count(mock.invoke, "repository_push_status")
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(count(mock.invoke, "repository_push_status")).toBe(polls)
+    } finally {
+      store.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it("stops polling a remote push when its computer is removed (H-08)", async () => {
+    vi.useFakeTimers()
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return remoteSource()
+      if (command === "start_repository_push" || command === "repository_push_status") throw new Error("host unreachable")
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      store.applicationActions.pushRepository(remoteTarget("office"), "/workspace/repo")
+      await vi.advanceTimersByTimeAsync(0)
+      expect(pushOf(store, remoteTarget("office"))?.status).toBe("pushing")
+      await store.applicationActions.removeComputer!("office")
+      expect(pushOf(store, remoteTarget("office"))).toBeUndefined()
+      const polls = count(mock.invoke, "repository_push_status") + count(mock.invoke, "start_repository_push")
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(count(mock.invoke, "repository_push_status") + count(mock.invoke, "start_repository_push")).toBe(polls)
+    } finally {
+      store.dispose()
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe("GitHub state from full reads", () => {
   it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
     let failed = false
