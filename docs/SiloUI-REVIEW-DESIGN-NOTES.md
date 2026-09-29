@@ -630,5 +630,14 @@ loses the log line that a panic happened under a lock.
   people is allowed (no blocking warning). The import safety checks (size and
   entry caps, manifest-versus-snapshot config comparison, "Intact archive"
   wording) still apply.
-- Pending owner confirmation: D-02 busy-row presentation, B-05 `workflows` and
-  `actions` permissions, F-09 debug/release instance sharing.
+- **D-02 busy rows:** a sandbox with an operation running keeps its last known
+  state next to its existing operation label ("Starting…", "Creating
+  checkpoint…"); no extra spinner. Other sandboxes keep updating normally.
+- **B-05 workflow and CI permissions:** no separate opt-in. When "Allow GitHub
+  changes" is on, the sandbox token also includes `workflows: write` and
+  `actions: read`; when it is off, neither is granted. The rest of B-05
+  (dropping admin and secret-bearing scopes) is unchanged.
+- **F-09 single instance:** only one Silo of any kind runs at a time, including
+  development builds next to the installed app. A second launch focuses the
+  running Silo, or, when the running one is a different build, shows "Silo is
+  already running. Quit it first." instead of crashing.
