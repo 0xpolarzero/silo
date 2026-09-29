@@ -1475,9 +1475,10 @@ pub(crate) fn host_push_credential(
         .find(|w| w["workspace"].as_str() == Some(workspace))
         .ok_or("This sandbox has no GitHub repository authorization.")?;
     validate(std::slice::from_ref(policy))?;
-    if personal_token::selected(policy) { return personal_token::value(); }
+    // Disable access and the per-repository push grant apply to every sign-in method.
     if !d.access_enabled { return Err("Enable GitHub access before pushing.".into()); }
     push_authorized(policy, repository)?;
+    if personal_token::selected(policy) { return personal_token::value(); }
     let c = active_credential()?;
     let catalog = catalog(&c)?;
     let repo = catalog
