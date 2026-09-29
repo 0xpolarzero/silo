@@ -4,6 +4,7 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, t
 import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Server, Trash2, X } from "lucide-react"
 
 import { InlineConfirmation } from "@/components/inline-confirmation"
+import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -552,12 +553,10 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   return (
     <>
       <div aria-labelledby="machine-list-heading" className="flex h-full min-h-0 flex-col">
-        <div className="mb-2 flex min-w-0 shrink-0 flex-wrap items-center justify-between gap-2 text-xs">
-          <div className="min-w-0">
-            <h3 id="machine-list-heading" className="font-medium">Sandboxes</h3>
-            <p className="text-[11px] text-muted-foreground">{summary ?? <>{machines.length} {machines.length === 1 ? "sandbox" : "sandboxes"} · {machines.length - remoteCount} on this computer · {remoteCount} remote</>}</p>
-          </div>
-          <Popover open={addOpen} onOpenChange={setAddOpen}>
+        <ListHeader
+          heading={<h3 id="machine-list-heading" className={listHeadingClassName}>Sandboxes</h3>}
+          subtitle={summary ?? <>{machines.length} {machines.length === 1 ? "sandbox" : "sandboxes"} · {machines.length - remoteCount} on this computer · {remoteCount} remote</>}
+          actions={<Popover open={addOpen} onOpenChange={setAddOpen}>
             <PopoverTrigger asChild>
               <Button type="button" variant="outline" size="xs" aria-haspopup="menu" disabled={interactionDisabled} onClick={beginOperation}>
                 <Plus aria-hidden="true" data-icon="inline-start" /> Add
@@ -568,8 +567,8 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { if (onConnectComputer) { setAddOpen(false); onConnectComputer() } else startAdd("ssh") }}>{onConnectComputer ? "Connect computer…" : "Connect a machine via SSH"}</button>
               {onImportSandbox && <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { setAddOpen(false); onImportSandbox() }}>Import sandbox…</button>}
             </PopoverContent>
-          </Popover>
-        </div>
+          </Popover>}
+        />
 
         <SandboxList label="Configured sandboxes" className="max-h-full min-h-0" data-testid="machine-list">
             {displayMachines.map((machine, index) => {

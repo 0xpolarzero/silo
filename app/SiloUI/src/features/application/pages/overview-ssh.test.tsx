@@ -30,10 +30,11 @@ it("surfaces both SSH addresses and the scope badge on the sandbox Access tab", 
   await user.click(screen.getByRole("button", { name: "Copy network SSH address" }))
   expect(await navigator.clipboard.readText()).toBe("root@192.168.1.42:2222")
 
+  // The detail subtitle reflects that SSH is enabled without a separate scope chip;
+  // the network/local scope stays visible in the Access tab controls above.
   source.sshAccess.workspaces[0].bindAddress = "127.0.0.1"
   view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
-  expect(screen.getByLabelText("SSH from Ada Mac only")).toBeVisible()
-  expect(screen.queryByLabelText("SSH from Ada Mac and other computers")).not.toBeInTheDocument()
+  expect(within(screen.getByRole("navigation", { name: "Breadcrumb" }).parentElement!).getByText("SSH on")).toBeVisible()
 })
 
 it("keeps Network limited to service ports", () => {

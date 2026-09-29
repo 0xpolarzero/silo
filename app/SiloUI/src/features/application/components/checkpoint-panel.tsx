@@ -2,6 +2,7 @@ import { useState } from "react"
 import { Dialog } from "radix-ui"
 import { History, Loader2, ShieldCheck } from "lucide-react"
 import { ActionsMenu } from "@/components/actions-menu"
+import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -109,33 +110,37 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       {operationError && !pending && operationError !== error && <p role="alert" className="text-destructive">{operationError}</p>}
 
       {checkpoints.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-muted-foreground">
-          <p className="font-medium text-foreground">No checkpoints yet</p>
-          <p className="mt-1">A checkpoint saves this sandbox’s disks — and its memory when running — so you can restore or fork it later.</p>
-        </div>
+        <ListCard>
+          <ListRow
+            icon={<ListRowIcon aria-hidden="true"><History className="size-3.5" /></ListRowIcon>}
+            title="No checkpoints yet"
+            detail="Save a checkpoint to rewind or fork this sandbox later."
+            detailClassName="whitespace-normal"
+          />
+        </ListCard>
       ) : (
-        <ol className="divide-y divide-border border-t border-border" aria-label="Checkpoint history">
+        <ListCard divided aria-label="Checkpoint history">
           {checkpoints.map(checkpoint => {
             const Icon = checkpoint.reason === "before-restore" ? ShieldCheck : History
-            return <li key={checkpoint.id} className="flex items-center gap-3 py-2.5">
-              <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground"><Icon className="size-3.5" aria-hidden="true" /></span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-medium" title={checkpoint.name}>{checkpoint.name}</p>
-                <p className="text-[11px] text-muted-foreground">
-                  <time dateTime={checkpoint.createdAt} title={formatAbsoluteTime(checkpoint.createdAt)}>{formatRelativeTime(checkpoint.createdAt) || formatAbsoluteTime(checkpoint.createdAt)}</time>
-                  {" · "}{checkpointTag(checkpoint)}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
+            return <ListRow
+              key={checkpoint.id}
+              data-checkpoint-name={checkpoint.name}
+              icon={<ListRowIcon aria-hidden="true"><Icon className="size-3.5" /></ListRowIcon>}
+              title={<span className="truncate" title={checkpoint.name}>{checkpoint.name}</span>}
+              detail={<>
+                <time dateTime={checkpoint.createdAt} title={formatAbsoluteTime(checkpoint.createdAt)}>{formatRelativeTime(checkpoint.createdAt) || formatAbsoluteTime(checkpoint.createdAt)}</time>
+                {" · "}{checkpointTag(checkpoint)}
+              </>}
+              actions={<div className="flex shrink-0 items-center gap-1">
                 <Button size="xs" variant="outline" disabled={locked || !actions.restoreCheckpoint} onClick={() => { setError(null); setRestoreCheckpoint(checkpoint) }}>Restore</Button>
                 <ActionsMenu label={`Checkpoint actions for ${checkpoint.name}`} disabled={locked} items={[
                   ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, onSelect: () => { setError(null); setForkCheckpoint(checkpoint) } }] : []),
                   ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),
                 ]} />
-              </div>
-            </li>
+              </div>}
+            />
           })}
-        </ol>
+        </ListCard>
       )}
 
       {!actions.createCheckpoint && <p className="text-muted-foreground">Checkpoint operations are unavailable in this build.</p>}

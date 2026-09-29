@@ -17,12 +17,18 @@ it("opens a sandbox detail page from the row body and returns to the list from t
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ openTerminal: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
 
+  // The list heading and the detail breadcrumb root share their styling so opening
+  // a sandbox never shifts "Sandboxes".
+  const listHeading = screen.getByRole("heading", { name: "Sandboxes" })
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
-  expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(`Sandboxes${workspace.machine.name}`)
-  expect(screen.getByRole("heading", { level: 2, name: workspace.machine.name })).toBeVisible()
+  const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" })
+  expect(breadcrumb).toHaveTextContent(`Sandboxes${workspace.machine.name}`)
+  const breadcrumbRoot = within(breadcrumb).getByRole("button", { name: "Sandboxes" })
+  expect(breadcrumbRoot.className).toContain("font-medium")
+  expect(listHeading.className).toContain("font-medium")
   expect(screen.queryByRole("list", { name: "Configured sandboxes" })).not.toBeInTheDocument()
 
-  await user.click(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("button", { name: "Sandboxes" }))
+  await user.click(breadcrumbRoot)
   expect(screen.getByRole("list", { name: "Configured sandboxes" })).toBeVisible()
 })
 
@@ -59,10 +65,9 @@ it("summarizes resources, repositories, and secrets on the Overview tab", async 
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
-  expect(screen.getByText("CPU")).toBeVisible()
-  expect(screen.getByText("Memory")).toBeVisible()
-  expect(screen.getByText("Repositories")).toBeVisible()
-  expect(screen.getByText("Secrets")).toBeVisible()
+  expect(screen.getByRole("heading", { name: "Resources" })).toBeVisible()
+  expect(screen.getByRole("heading", { name: "Repositories" })).toBeVisible()
+  expect(screen.getByRole("heading", { name: "Secrets" })).toBeVisible()
 })
 
 it("runs Edit from the detail menu by reopening the sandbox editor in the list", async () => {

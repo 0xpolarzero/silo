@@ -376,6 +376,7 @@ export function OverviewPage({ active = true, readOnly = false,
       menuActions,
       onTerminal: () => actions.openTerminal(target),
       onEditor: () => setFolderWorkspaceId(machine.id),
+      onEdit: () => requestMachineAction(machine.id, "edit"),
       onStart: () => guarded.startWorkspace(target),
       onStop: () => guarded.stopWorkspace(target),
       onRetryLifecycle: workspace.lifecycleFailure && lifecycleAction && lifecycleAction !== "dismiss-error" && !readOnly

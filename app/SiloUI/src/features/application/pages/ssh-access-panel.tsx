@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { CopyButton } from "@/components/copy-button"
+import { cn } from "@/lib/utils"
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
 import { workspaceTarget } from "../model/remote-computers"
 import type { ApplicationActions, ApplicationWorkspace, SshAccessRequest, SshAccessState, SshAccessWorkspace } from "../model/application-source"
@@ -82,7 +83,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
           </form>)
 
   const content = <>
-    <fieldset disabled={readOnly} className="min-w-0 space-y-3 border-0 border-t border-border p-3 text-xs">
+    <fieldset disabled={readOnly} className={cn("min-w-0 space-y-3 p-3 text-xs", !embedded && "border-0 border-t border-border")}>
       {!access ? <p className="text-muted-foreground">{workspace.computer ? `Waiting for SSH configuration from ${workspace.computer.name}.` : "Waiting for SSH configuration."}</p> : <>
         {(stale || access.state === "error") && <p role="status" className="text-muted-foreground">{access.unavailable || (stale ? "SSH status is unavailable. Reconnect and refresh before changing access." : access.message || "SSH could not start.")}</p>}
         {[false, true].map(network => {

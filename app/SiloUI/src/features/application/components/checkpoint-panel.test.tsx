@@ -24,7 +24,7 @@ it("shows a Restore button and a menu with Fork and Export on a local checkpoint
   const onExport = vi.fn()
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={onExport} />)
-  const row = within(screen.getByText("Before refactor").closest("li")!)
+  const row = within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!)
   expect(row.getByRole("button", { name: "Restore" })).toBeVisible()
   await user.click(row.getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   expect(screen.getByRole("menuitem", { name: "Fork Before refactor" })).toBeVisible()
@@ -34,16 +34,16 @@ it("shows a Restore button and a menu with Fork and Export on a local checkpoint
 
 it("labels checkpoint scope and recovery with a short tag", () => {
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{} as ApplicationActions} disabled={false} />)
-  expect(within(screen.getByText("Before refactor").closest("li")!).getByText(/Includes memory/)).toBeVisible()
-  expect(within(screen.getByText("Disk snapshot").closest("li")!).getByText(/Disks only/)).toBeVisible()
-  expect(within(screen.getByText("Before restore").closest("li")!).getByText(/Recovery/)).toBeVisible()
+  expect(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByText(/Includes memory/)).toBeVisible()
+  expect(within(screen.getByText("Disk snapshot").closest("[data-checkpoint-name]")!).getByText(/Disks only/)).toBeVisible()
+  expect(within(screen.getByText("Before restore").closest("[data-checkpoint-name]")!).getByText(/Recovery/)).toBeVisible()
 })
 
 it("hides Export for a remote sandbox checkpoint", async () => {
   const remote = { ...workspace, computer: { id: "mac", name: "Ada’s Mac mini", connected: true } } as ApplicationWorkspace
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={remote} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={vi.fn()} />)
-  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   expect(screen.queryByRole("menuitem", { name: "Export Before refactor" })).toBeNull()
   expect(screen.getByRole("menuitem", { name: "Fork Before refactor" })).toBeVisible()
 })
@@ -51,7 +51,7 @@ it("hides Export for a remote sandbox checkpoint", async () => {
 it("disables Export while a transfer is running", async () => {
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={vi.fn()} exportDisabled />)
-  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   expect(screen.getByRole("menuitem", { name: "Export Before refactor" })).toHaveAttribute("aria-disabled", "true")
 })
 
@@ -59,13 +59,13 @@ it("confirms a restore in a dialog before restoring", async () => {
   const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ restoreCheckpoint } as unknown as ApplicationActions} disabled={false} />)
-  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Restore" }))
+  await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Restore" }))
   const dialog = within(screen.getByRole("dialog", { name: "Restore “Before refactor”" }))
   expect(dialog.getByText(/saves a recovery checkpoint first/i)).toBeVisible()
   expect(restoreCheckpoint).not.toHaveBeenCalled()
   await user.click(dialog.getByRole("button", { name: "Cancel" }))
   expect(screen.queryByRole("dialog")).toBeNull()
-  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Restore" }))
+  await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Restore" }))
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Restore" }))
   await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledWith("dev", "point-1"))
 })
@@ -74,7 +74,7 @@ it("names a stopped fork from the selected checkpoint", async () => {
   const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} />)
-  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   await user.click(screen.getByRole("menuitem", { name: "Fork Before refactor" }))
   const dialog = within(screen.getByRole("dialog", { name: "Fork from “Before refactor”" }))
   await user.type(dialog.getByRole("textbox", { name: "New sandbox name" }), "experiment")

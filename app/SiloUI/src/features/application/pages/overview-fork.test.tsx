@@ -82,7 +82,7 @@ it("opens the Checkpoints tab from the Overview menu and drives fork, restore, a
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Checkpoints for ${workspace.machine.name}` }))
   const panel = within(screen.getByRole("region", { name: `Checkpoints for ${workspace.machine.name}` }))
-  const savedRow = within(panel.getByText("Before deploy").closest("li")!)
+  const savedRow = within(panel.getByText("Before deploy").closest("[data-checkpoint-name]")!)
   expect(savedRow.getByRole("button", { name: "Restore" })).toBeVisible()
 
   await user.click(savedRow.getByRole("button", { name: "Checkpoint actions for Before deploy" }))
