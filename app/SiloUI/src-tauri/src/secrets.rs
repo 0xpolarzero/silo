@@ -405,7 +405,31 @@ fn validate(request: &Request, document: &Document) -> Result<(), String> {
     }
     Ok(())
 }
-fn reconcile(app: &AppHandle, id: &str) -> Result<(), String> {
+type Material = Vec<(String, String, Vec<String>)>;
+type OperationGuard = Option<MutexGuard<'static, ()>>;
+fn reconcile(app: &AppHandle, id: &str, operation: &mut OperationGuard) -> Result<(), String> {
+    reconcile_with(
+        id,
+        operation,
+        &runtime_material,
+        &mut |workspace, desired| crate::runtime::apply_secrets(app, workspace, desired),
+        &|| {
+            let _ = app.emit("silo://application-state-changed", ());
+        },
+    )
+}
+/// Applies one secret's desired state to each affected VM. The global secret
+/// operation lock is released while a VM applies, which can wait on that VM's gate
+/// for minutes, so forks, updates and other secret operations are not blocked. It
+/// is re-taken to record each result and before credential-store changes. When the
+/// VM's desired secrets changed while unlocked, the newer state is applied again.
+fn reconcile_with(
+    id: &str,
+    operation: &mut OperationGuard,
+    material: &dyn Fn(&str) -> Result<Material, String>,
+    apply: &mut dyn FnMut(&str, Material) -> Result<Vec<String>, String>,
+    changed: &dyn Fn(),
+) -> Result<(), String> {
     update(|d| {
         let secret = d
             .secrets
@@ -428,8 +452,18 @@ fn reconcile(app: &AppHandle, id: &str) -> Result<(), String> {
         .cloned()
         .collect();
     for workspace in targets {
-        let result = runtime_material(&workspace)
-            .and_then(|desired| crate::runtime::apply_secrets(app, &workspace, desired));
+        let mut attempts = 0;
+        let result = loop {
+            let desired_revision = workspace_revision(&workspace)?;
+            let desired = material(&workspace);
+            *operation = None;
+            let result = desired.and_then(|desired| apply(&workspace, desired));
+            *operation = Some(lock_unit(&OPERATION));
+            attempts += 1;
+            if attempts >= 3 || workspace_revision(&workspace)? == desired_revision {
+                break result;
+            }
+        };
         update(|document| {
             let secret = document
                 .secrets
@@ -452,7 +486,7 @@ fn reconcile(app: &AppHandle, id: &str) -> Result<(), String> {
             }
             Ok(())
         })?;
-        let _ = app.emit("silo://application-state-changed", ());
+        changed();
     }
     let document = load()?;
     let secret = document
@@ -518,7 +552,7 @@ pub async fn save_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _operation = lock_unit(&OPERATION);
+        let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
         let document = load()?;
         validate(&request, &document)?;
@@ -561,7 +595,7 @@ pub async fn save_secret(
             Ok(())
         })?;
         let _ = app.emit("silo://application-state-changed", ());
-        reconcile(&app, &id)?;
+        reconcile(&app, &id, &mut operation)?;
         let _ = prune_values();
         snapshot()
     })
@@ -577,7 +611,7 @@ pub async fn remove_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _operation = lock_unit(&OPERATION);
+        let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
         update(|d| {
             let secret = d
@@ -589,7 +623,7 @@ pub async fn remove_secret(
             secret.affected.extend(secret.workspaces.clone());
             Ok(())
         })?;
-        reconcile(&app, &id)?;
+        reconcile(&app, &id, &mut operation)?;
         let _ = prune_values();
         snapshot()
     })
@@ -605,9 +639,9 @@ pub async fn retry_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _operation = lock_unit(&OPERATION);
+        let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
-        reconcile(&app, &id)?;
+        reconcile(&app, &id, &mut operation)?;
         let _ = prune_values();
         snapshot()
     })
@@ -624,11 +658,11 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     .ok();
     let app = app.clone();
     std::thread::spawn(move || {
-        let _operation = lock_unit(&OPERATION);
+        let mut operation = Some(lock_unit(&OPERATION));
         if let Ok(document) = load() {
             for secret in document.secrets {
                 if !secret.affected.is_empty() || secret.removing {
-                    let _ = reconcile(&app, &secret.id);
+                    let _ = reconcile(&app, &secret.id, &mut operation);
                 }
             }
         }
@@ -861,6 +895,41 @@ mod tests {
         // A new `dev` selects no secrets, so no credential-store read happens.
         assert!(runtime_material("dev").unwrap().is_empty());
         assert_eq!(workspace_revision("dev").unwrap(), revision(&Document::default(), "dev"));
+        use_test_store(None);
+    }
+    #[test]
+    fn reconcile_releases_the_operation_lock_while_a_vm_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        save(&Document { secrets: vec![secret()], activities: Vec::new() }).unwrap();
+        let mut operation = Some(lock_unit(&OPERATION));
+        let mut applied = Vec::new();
+        reconcile_with(
+            "id",
+            &mut operation,
+            &|_| Ok(Vec::new()),
+            &mut |workspace, _| {
+                // A fork or update check can take the lock while this VM applies.
+                assert!(try_lock_unit(&OPERATION).is_some());
+                applied.push(workspace.to_string());
+                if applied.len() == 1 {
+                    // Another save changes this VM's desired secrets meanwhile.
+                    update(|d| {
+                        d.secrets[0].value_id = "rotated-reference".into();
+                        Ok(())
+                    })?;
+                }
+                Ok(Vec::new())
+            },
+            &|| {},
+        )
+        .unwrap();
+        assert!(operation.is_some(), "the lock is held again when reconcile returns");
+        assert!(try_lock_unit(&OPERATION).is_none());
+        drop(operation);
+        assert_eq!(applied, ["dev", "dev"], "the newer desired state is applied again");
+        let document = load().unwrap();
+        assert_eq!(public(&document.secrets[0])["state"], "active");
         use_test_store(None);
     }
     #[test]
