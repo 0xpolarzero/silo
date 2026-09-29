@@ -10,5 +10,8 @@ smithers.db
 smithers.db-shm
 smithers.db-wal
 
+# Local Claude Code settings, worktrees and agent state
+/.claude/
+
 # Generated browser snapshots and console logs
 /.playwright-mcp/
