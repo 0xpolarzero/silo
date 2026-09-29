@@ -48,6 +48,17 @@ pub(crate) fn prepare(
     })
 }
 
+/// The one repository path check used before any credential is minted or
+/// export runs: an absolute, normalized path strictly below `/workspace`.
+pub(crate) fn valid_repository_path(path: &str) -> bool {
+    path.starts_with("/workspace/")
+        && !path.chars().any(char::is_control)
+        && !path
+            .split('/')
+            .skip(1)
+            .any(|part| part.is_empty() || part == "." || part == "..")
+}
+
 impl Transport {
     /// Install only into a fresh, operation-specific directory. The caller owns
     /// cleanup, including cleanup after a partial transfer.
@@ -127,13 +138,7 @@ impl Transport {
     }
 
     pub(crate) fn repository_url(&self, path: &str) -> Result<String, String> {
-        if !path.starts_with("/workspace/")
-            || path.chars().any(char::is_control)
-            || path
-                .split('/')
-                .skip(1)
-                .any(|part| part.is_empty() || part == "." || part == "..")
-        {
+        if !valid_repository_path(path) {
             return Err("Choose a repository inside /workspace.".into());
         }
         // URI encoding is separate from shell escaping. Git decodes this path

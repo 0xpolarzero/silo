@@ -54,7 +54,6 @@
     "allow-read-workspace-storage",
     "allow-reclaim-workspace-storage",
     "allow-dismiss-repository-push",
-    "allow-push-repository",
     "allow-start-repository-push",
     "allow-repository-push-status",
     "allow-read-machine-configuration",

@@ -108,7 +108,6 @@ fn main() {
             status_panel::resize_status,
             status_panel::quit_app,
             tray::update_tray,
-            host_push::push_repository,
             host_push_operations::start_repository_push,
             host_push_operations::repository_push_status,
             host_push::dismiss_repository_push,

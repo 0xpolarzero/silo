@@ -96,10 +96,26 @@ fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Resul
         .map(|o| o.stdout)
         .map_err(|_| "Could not read committed repository data from the sandbox.".into())
 }
+/// The system store carries administrator-installed and updated roots (for
+/// example TLS-inspecting proxies); the bundled file is only a fallback.
+fn linux_ca_bundle(support: &Path) -> PathBuf {
+    ca_bundle_from(
+        &[
+            Path::new("/etc/ssl/certs/ca-certificates.crt"),
+            Path::new("/etc/pki/tls/certs/ca-bundle.crt"),
+        ],
+        support,
+    )
+}
+fn ca_bundle_from(system: &[&Path], support: &Path) -> PathBuf {
+    system
+        .iter()
+        .find(|path| fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0))
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| support.join("ssl/cacert.pem"))
+}
 fn valid_path(path: &str) -> bool {
-    path.starts_with("/workspace/")
-        && !path.chars().any(char::is_control)
-        && !path.split('/').any(|s| s == "..")
+    crate::host_push_transport::valid_repository_path(path)
 }
 fn repository(url: &str) -> Result<String, String> {
     let name = url
@@ -217,7 +233,13 @@ impl HostGit {
                 "-c",
                 "core.fsmonitor=false",
                 "-c",
-                "protocol.file.allow=always",
+                // Production sources are ssh://; only the local test harness
+                // publishes from file paths.
+                if cfg!(test) {
+                    "protocol.file.allow=always"
+                } else {
+                    "protocol.file.allow=never"
+                },
                 "-c",
                 "protocol.ext.allow=never",
                 "-c",
@@ -262,7 +284,7 @@ impl HostGit {
                 .env("GIT_SSH_VARIANT", "ssh");
         }
         if cfg!(target_os = "linux") {
-            command.env("GIT_SSL_CAINFO", self.support.join("ssl/cacert.pem"));
+            command.env("GIT_SSL_CAINFO", linux_ca_bundle(&self.support));
         }
         if let Some(token) = token {
             command
@@ -501,6 +523,8 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
 
 // The host owns all configuration and credentials. The source remote supplies
 // Git/LFS data through their standard protocols, never hooks or configuration.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn publish_committed(
     git: &HostGit,
     source: &str,
@@ -510,6 +534,33 @@ fn publish_committed(
     branch: &str,
     remote: &str,
     token: Option<&str>,
+) -> Result<u64, String> {
+    let mut imported = false;
+    publish_committed_tracking(
+        git,
+        source,
+        source_lfs,
+        source_ref,
+        expected_commit,
+        branch,
+        remote,
+        token,
+        &mut imported,
+    )
+}
+/// `imported` becomes true once the sandbox commit is fully in the cache;
+/// later failures (remote rejections, network) leave the cache consistent.
+#[allow(clippy::too_many_arguments)]
+fn publish_committed_tracking(
+    git: &HostGit,
+    source: &str,
+    source_lfs: &str,
+    source_ref: &str,
+    expected_commit: &str,
+    branch: &str,
+    remote: &str,
+    token: Option<&str>,
+    imported_into_cache: &mut bool,
 ) -> Result<u64, String> {
     git.run(&["check-ref-format", "--branch", branch], None, "")?;
     git.run(&["init", "--bare", "--quiet"], None, "")?;
@@ -539,6 +590,7 @@ fn publish_committed(
     if imported.trim() != expected_commit {
         return Err("The sandbox repository changed during export. Retry the push.".into());
     }
+    *imported_into_cache = true;
     // fetch.fsckObjects verifies incoming objects without rescanning the
     // complete trusted cache on every incremental push.
     // Only the currently advertised destination ref may exclude LFS uploads.
@@ -691,7 +743,8 @@ printf '%s\n%s\n' "$branch" "$commit"
             .map_err(|_| "Cannot create isolated host Git directory.")?;
         let source = transport.repository_url(path)?;
         let source_lfs = format!("ssh://{}{export}/source.git", transport.alias);
-        let publication = publish_committed(
+        let mut imported = false;
+        let publication = publish_committed_tracking(
             &git,
             &source,
             &source_lfs,
@@ -700,8 +753,11 @@ printf '%s\n%s\n' "$branch" "$commit"
             branch,
             &format!("https://github.com/{repo}.git"),
             Some(token),
+            &mut imported,
         );
-        if publication.is_err() {
+        // Keep a consistent cache across remote rejections and network
+        // failures so large (LFS) repositories do not re-transfer on retry.
+        if publication.is_err() && !imported {
             cache.discard();
         }
         let count = publication?;
@@ -728,8 +784,7 @@ printf '%s\n%s\n' "$branch" "$commit"
     );
     result
 }
-#[tauri::command]
-pub async fn push_repository(
+pub(crate) async fn push_repository(
     app: tauri::AppHandle,
     workspace: String,
     repository_path: String,
@@ -771,11 +826,42 @@ pub async fn push_repository(
         r.insert(key.clone(),(json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":planned_count,"status":"pushing"}),Instant::now()));
     }
     let _ = app.emit("silo://application-state-changed", ());
-    tauri::async_runtime::spawn_blocking(move||{
-        let outcome=perform(&app,&workspace,&repository_path);
-        let value=match outcome {Ok(count)=>json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":count,"status":"succeeded"}),Err(message)=>json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":0,"status":"failed","message":message})};
-        results().lock().map_err(|_|"Push state unavailable.")?.insert(key,(value.clone(),Instant::now()));let _=app.emit("silo://application-state-changed",());Ok(value)
-    }).await.map_err(|_|"Host push task failed.")?
+    let task = {
+        let (app, workspace, repository_path) =
+            (app.clone(), workspace.clone(), repository_path.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            perform(&app, &workspace, &repository_path)
+        })
+    };
+    // A panicked task must still resolve the entry, or it would stay
+    // "pushing" forever and block every retry.
+    let outcome = task
+        .await
+        .unwrap_or_else(|_| Err("Host push task failed.".into()));
+    let value = finished_result(&workspace, &repository_path, outcome);
+    results()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, (value.clone(), Instant::now()));
+    let _ = app.emit("silo://application-state-changed", ());
+    Ok(value)
+}
+fn finished_result(workspace: &str, repository_path: &str, outcome: Result<u64, String>) -> Value {
+    match outcome {
+        Ok(count) => json!({
+            "workspace": workspace,
+            "repositoryPath": repository_path,
+            "commitCount": count,
+            "status": "succeeded",
+        }),
+        Err(message) => json!({
+            "workspace": workspace,
+            "repositoryPath": repository_path,
+            "commitCount": 0,
+            "status": "failed",
+            "message": message,
+        }),
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -947,9 +1033,29 @@ mod tests {
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
     #[test]
+    fn linux_prefers_the_system_certificate_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let system = directory.path().join("system.crt");
+        let support = directory.path().join("support");
+        assert_eq!(
+            super::ca_bundle_from(&[system.as_path()], &support),
+            support.join("ssl/cacert.pem")
+        );
+        std::fs::write(&system, b"roots").unwrap();
+        assert_eq!(super::ca_bundle_from(&[system.as_path()], &support), system);
+    }
+    #[test]
     fn requires_workspace_repository_paths() {
         assert!(valid_path("/workspace/repo"));
-        for path in ["/etc", "/workspace/../etc", "/workspace/repo\nother"] {
+        for path in [
+            "/etc",
+            "/workspace/../etc",
+            "/workspace/repo\nother",
+            "/workspace/",
+            "/workspace//x",
+            "/workspace/./x",
+            "/workspace/x/",
+        ] {
             assert!(!valid_path(path));
         }
     }
