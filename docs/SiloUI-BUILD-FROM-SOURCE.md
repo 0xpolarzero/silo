@@ -30,7 +30,7 @@ sudo apt install -y build-essential pkg-config libwebkit2gtk-4.1-dev \
   libfuse2t64 squashfs-tools file gstreamer1.0-libav
 ```
 
-Linux Debian packages declare `gstreamer1.0-libav` as a runtime dependency. AppImages bundle the GStreamer media framework from the Ubuntu build host, including the installed H.264 decoder plugin.
+Linux Debian packages declare `gstreamer1.0-libav` and `openssh-client` as runtime dependencies (RPM packages declare `openssh-clients`): the desktop viewer and editor handoff run `ssh` and `ssh-keygen`. AppImages bundle the GStreamer media framework from the Ubuntu build host, including the installed H.264 decoder plugin, but use the system OpenSSH client.
 
 Linux needs a working desktop credential store implementing Secret Service, such as GNOME Keyring, for GitHub login. Running local VMs also requires hardware virtualization and access to `/dev/kvm`; compilation alone does not establish that KVM works. See [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/) for OS setup details.
 
