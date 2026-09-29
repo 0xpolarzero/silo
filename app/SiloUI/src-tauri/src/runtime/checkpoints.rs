@@ -682,7 +682,11 @@ pub(super) fn pending_view(
     runtime_exists: bool,
 ) -> Result<bool, RuntimeError> {
     let record = load(paths, id)?;
-    Ok(record.pending_checkpoint_restore.is_some()
+    // Once a restore attempt has created its runtime VM, the workspace is present: it is
+    // read from the runtime (with its pending restore still exposed for attention) so the
+    // configured and listed sandboxes keep matching, and deletion removes that VM.
+    Ok((record.pending_checkpoint_restore.is_some()
+        && !(runtime_exists && record.restore_attempted))
         || (!runtime_exists
             && record
                 .restore_journal
@@ -1077,10 +1081,10 @@ pub(super) fn start_pending(
     let result = runner.run(paths, &args, Duration::from_secs(900))
         .and_then(|_| inspect_workspace(runner, paths, machine.name()))
         .and_then(|observed| if running_child_matches(&observed, machine.id(), &attempt_id, &material, &policy) {
-            Ok(())
+            Ok(observed)
         } else { Err(error("The restored VM did not reach a verified running state. Its checkpoint was preserved.")) });
     match result {
-        Ok(()) => {
+        Ok(observed) => {
             record.pending_checkpoint_restore = None;
             record.restore_attempted = false;
             record.restore_attempt_id = None;
@@ -1092,6 +1096,9 @@ pub(super) fn start_pending(
                 .map_err(RuntimeError::Unavailable)?;
             crate::network::reconcile_started(paths, machine.name());
             crate::ssh_access::reconcile(paths);
+            // Record the verified storage runtime like an ordinary Start, so the Storage
+            // panel and automatic reclamation treat the restored VM as current.
+            super::storage::after_start(runner, paths, &observed);
             Ok(())
         }
         Err(failure) => {
@@ -3056,6 +3063,29 @@ mod tests {
             stored.inflight_checkpoint.map(|checkpoint| checkpoint.id).as_deref(),
             Some("c222222222222222222222222222222")
         );
+    }
+
+    #[test]
+    fn attempted_restore_with_a_listed_runtime_reads_as_a_present_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let mut record = load(&paths, ID).unwrap();
+        record.pending_checkpoint_restore = Some(PendingRestore {
+            checkpoint_id: "c000000000000000000000000000000".into(),
+            source_workspace: "dev".into(),
+            state: "full".into(),
+        });
+        save(&paths, ID, &record).unwrap();
+        assert!(pending_view(&paths, ID, false).unwrap());
+        assert!(pending_view(&paths, ID, true).unwrap());
+        record.restore_attempted = true;
+        record.restore_attempt_id = Some(uuid::Uuid::new_v4().to_string());
+        save(&paths, ID, &record).unwrap();
+        assert!(pending_view(&paths, ID, false).unwrap());
+        assert!(!pending_view(&paths, ID, true).unwrap());
+        let record = load(&paths, ID).unwrap();
+        assert!(view_pending(&record, "dev").is_some());
+        assert!(needs_explicit_start(&paths, ID).unwrap());
     }
 
     #[test]
