@@ -48,6 +48,21 @@ describe("status folder picker live directories", () => {
     expect(screen.getByText("No subfolders here")).toBeVisible()
     expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeEnabled()
   })
+  it("keeps opening the shown folder when only a background refresh fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const loader = vi.fn().mockResolvedValueOnce(page(["project"])).mockRejectedValue(new Error("temporary"))
+      const { onOpen } = setup(loader)
+      await act(async () => {})
+      expect(screen.getByRole("button", { name: "project" })).toBeVisible()
+      await act(async () => vi.advanceTimersByTime(10_000))
+      expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t refresh. Showing previous folders.")
+      const open = screen.getByRole("button", { name: "Open in Cursor" })
+      expect(open).toBeEnabled()
+      act(() => open.click())
+      expect(onOpen).toHaveBeenCalledExactlyOnceWith("/workspace")
+    } finally { vi.useRealTimers() }
+  })
   it.each(["stopped", "stale"])("does not load or open a %s VM", (state) => {
     const loader = vi.fn()
     render(<StatusFolderPicker workspace={{ ...workspace, ...(state === "stopped" ? { state: "stopped" } : { freshness: "stale" }) }} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} />)

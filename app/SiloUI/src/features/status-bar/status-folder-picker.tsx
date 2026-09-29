@@ -99,8 +99,10 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
           </>}
         </ListCard>
       </div>
+      {/* A failed background refresh keeps the previous folders on screen; the path is still
+          valid to open. Only a folder that never loaded blocks opening. */}
       <footer className="flex shrink-0 items-center justify-end border-t px-3 py-2.5">
-        <Button variant="outline" size="sm" disabled={!available || snapshot.entries === null || Boolean(snapshot.error)} onClick={() => onOpen(path)}><Code data-icon="inline-start" /> Open in {editor}</Button>
+        <Button variant="outline" size="sm" disabled={!available || snapshot.entries === null} onClick={() => onOpen(path)}><Code data-icon="inline-start" /> Open in {editor}</Button>
       </footer>
     </>
   )
