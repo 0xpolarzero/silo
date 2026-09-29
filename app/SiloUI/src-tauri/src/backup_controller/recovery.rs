@@ -349,6 +349,21 @@ pub(super) fn remove_disk_marker(directory: &Path) -> Result<(), String> {
 pub(super) fn cancel(controller: &Controller) -> Result<(), String> {
     update(controller, |j| j.cancelled = true)
 }
+/// Stop retrying an interrupted operation whose recovery failed. The journal
+/// becomes a terminal failure so it can be dismissed; no files are removed.
+pub(super) fn abandon(controller: &Controller) -> Result<(), String> {
+    update(controller, |j| {
+        if j.terminal.is_none() {
+            j.terminal = Some(Terminal {
+                outcome: "failed".into(),
+                title: "Interrupted operation abandoned".into(),
+                message: "Silo stopped retrying this interrupted export or import. Files it left were kept.".into(),
+                detail: None,
+                running: vec![],
+            });
+        }
+    })
+}
 pub(super) fn dismiss(controller: &Controller) -> Result<(), String> {
     let mut saved = controller
         .journal
@@ -520,7 +535,8 @@ pub(super) fn resume(
                         title: "Could not resume the interrupted operation".into(),
                         message: error,
                         detail: Some(
-                            "Saved progress was preserved. Relaunch Silo to retry.".into(),
+                            "Saved progress was preserved. Relaunch Silo to retry, or dismiss this to stop retrying. Dismissing keeps any files it left."
+                                .into(),
                         ),
                     },
                 );

@@ -288,7 +288,11 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
             return Ok(());
         }
         if !controller.busy.load(Ordering::Acquire) {
-            return Err("The interrupted export or import could not finish. Open Silo to see the error. Saved progress was preserved.".into());
+            // Recovery failed and published its error in the export/import
+            // view, where the user can retry by relaunching or abandon it.
+            // Exports no longer stop sandboxes and imports stay pending until
+            // an explicit Start, so the rest of startup may proceed (E-43).
+            return Ok(());
         }
         if started.elapsed() >= RESTORE_TIMEOUT {
             return Err(
@@ -1567,7 +1571,19 @@ fn dismiss_finished_operation(
     if matches!(view.operation, Some(Operation::Running { .. })) {
         return Ok(false);
     }
-    if recovery::unresolved(controller)? {
+    // A pending journal with no worker means relaunch recovery failed and is
+    // showing its failure. Dismissing that failure abandons the retry (E-43);
+    // otherwise the operation would block startup and updates on every launch.
+    let abandon = recovery::unresolved(controller)?;
+    if abandon
+        && !matches!(
+            view.operation,
+            Some(Operation::Result {
+                outcome: "failed",
+                ..
+            })
+        )
+    {
         return Ok(false);
     }
     if recovery::token(controller)?.as_deref() != expected_id {
@@ -1577,6 +1593,9 @@ fn dismiss_finished_operation(
         if serde_json::to_value(&view.operation).map_err(|e| e.to_string())? != *expected {
             return Ok(false);
         }
+    }
+    if abandon {
+        recovery::abandon(controller)?;
     }
     recovery::dismiss(controller)?;
     Ok(view.operation.take().is_some())
@@ -1706,6 +1725,63 @@ mod tests {
         fs::write(&storage, b"not a directory").unwrap();
         cancel_operation(&controller).unwrap();
         assert!(cancellation.cancelled());
+    }
+
+    #[test]
+    fn dismissing_a_failed_recovery_abandons_it_and_keeps_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let controller = history_controller(path.clone());
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        let failure = Operation::Result {
+            operation: "backup",
+            archive: completed_archive(),
+            target_name: None,
+            running_names: vec![],
+            outcome: "failed",
+            title: "Could not resume the interrupted operation".into(),
+            message: "Destination unavailable".into(),
+            detail: None,
+        };
+        set_operation(&controller, failure.clone()).unwrap();
+        let leftover = directory.path().join("leftover");
+        fs::write(&leftover, b"kept").unwrap();
+        assert!(recovery::unresolved(&controller).unwrap());
+        let id = recovery::token(&controller).unwrap();
+        assert!(dismiss_finished_operation(
+            &controller,
+            Some(&serde_json::to_value(Some(failure)).unwrap()),
+            id.as_deref(),
+        )
+        .unwrap());
+        assert!(!recovery::pending(&controller).unwrap());
+        assert!(recovery::load(&path).unwrap().is_none());
+        assert!(leftover.exists());
+        assert!(update_guard_for(Arc::new(history_controller(path))).is_ok());
+    }
+
+    #[test]
+    fn a_pending_journal_without_a_failed_result_is_not_abandoned() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let controller = history_controller(path.clone());
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        let id = recovery::token(&controller).unwrap();
+        assert!(!dismiss_finished_operation(
+            &controller,
+            Some(&serde_json::Value::Null),
+            id.as_deref()
+        )
+        .unwrap());
+        assert!(recovery::pending(&controller).unwrap());
     }
 
     fn completed_operation(archive: Archive, outcome: &'static str) -> Operation {
