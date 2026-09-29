@@ -3378,18 +3378,74 @@ fn configuration_attention(
 
 pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
     let paths = runtime_paths(app)?;
-    // Launch-time start reads the shared inventory to resolve the VM; computer-wide.
-    let _guard = OPERATIONS
-        .kind(operation_gate::OperationKind::Lifecycle)
-        .computer("Starting sandbox")
-        .map_err(|e| e.to_string())?;
+    // A launch start changes only its VM, so it takes that VM's lane like a user Start:
+    // other sandboxes' actions and state are not held behind each boot.
+    let guard = match launch_start_guard(&OPERATIONS, &paths, id).map_err(|error| safe_activity_error(&error))? {
+        LaunchAdmission::Admitted(guard) => Some(guard),
+        LaunchAdmission::Unguarded => None,
+        LaunchAdmission::Skipped => return Ok(()),
+    };
     shutdown::ensure_accepting_operations()?;
     if crate::startup::is_cancelled(app) {
         return Ok(());
     }
-    host_resources()
-        .and_then(|host| start_at_launch_with(&ProcessRunner, &paths, &host, id))
-        .map_err(|error| safe_activity_error(&error))
+    let outcome = host_resources().and_then(|host| start_at_launch_with(&ProcessRunner, &paths, &host, id));
+    drop(guard);
+    match outcome {
+        Ok(LaunchStart::Done) => Ok(()),
+        Ok(LaunchStart::NeedsExplicitStart(name)) => Err(format!(
+            "{name} starts from a checkpoint and needs an explicit Start from its sandbox view."
+        )),
+        // The user cancelled this start from the queue; that is not a launch failure.
+        Err(RuntimeError::Cancelled { .. }) => Ok(()),
+        Err(error) => Err(safe_activity_error(&error)),
+    }
+}
+
+enum LaunchAdmission<'a> {
+    /// Run the start holding this VM's lane.
+    Admitted(operation_gate::OperationGuard<'a>),
+    /// Not a configured local VM: run unguarded so `start_at_launch_with` reports why.
+    Unguarded,
+    /// The user already queued the same Start, or cancelled this one while it waited.
+    Skipped,
+}
+
+/// Admit a launch-time start on the selected VM's own lane, with the same label, kind,
+/// dedupe key, cancellability and expected duration as a user Start.
+fn launch_start_guard<'a>(
+    gate: &'a operation_gate::OperationGate,
+    paths: &RuntimePaths,
+    id: &str,
+) -> Result<LaunchAdmission<'a>, RuntimeError> {
+    let metadata = read_metadata(&paths.metadata)?;
+    let Some(machine) = metadata.machines.iter().find(|machine| machine.id() == id && machine.is_vm()) else {
+        return Ok(LaunchAdmission::Unguarded);
+    };
+    let guard = gate.kind(operation_gate::OperationKind::Lifecycle).acquire(
+        operation_gate::Scope::Vm { id: id.to_owned() },
+        Some(machine.name().to_owned()),
+        &lifecycle_label("start", machine.name()),
+        Some(format!("vm:{id}:start")),
+    );
+    match guard {
+        Ok(guard) => {
+            guard.allow_cancel();
+            guard.expect_within(Duration::from_secs(180));
+            Ok(LaunchAdmission::Admitted(guard))
+        }
+        Err(operation_gate::GateError::AlreadyQueued | operation_gate::GateError::Cancelled) => Ok(LaunchAdmission::Skipped),
+        Err(error) => Err(RuntimeError::from(error)),
+    }
+}
+
+/// What a launch-time start did for one selected VM.
+#[derive(Debug, PartialEq, Eq)]
+enum LaunchStart {
+    /// Started, or already running.
+    Done,
+    /// A fork or restore waits for its first explicit Start; it was not started.
+    NeedsExplicitStart(String),
 }
 
 fn start_at_launch_with(
@@ -3397,7 +3453,7 @@ fn start_at_launch_with(
     paths: &RuntimePaths,
     host: &HostResources,
     id: &str,
-) -> Result<(), RuntimeError> {
+) -> Result<LaunchStart, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
     let machine = metadata.machines.iter().find(|machine| machine.id() == id)
         .ok_or_else(|| RuntimeError::Invalid("A sandbox selected for launch no longer exists. Update the startup selection in Settings.".into()))?;
@@ -3408,7 +3464,7 @@ fn start_at_launch_with(
         )));
     }
     if checkpoints::needs_explicit_start(paths, machine.id())? {
-        return Ok(());
+        return Ok(LaunchStart::NeedsExplicitStart(name.to_owned()));
     }
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
@@ -3424,8 +3480,11 @@ fn start_at_launch_with(
             ))),
         }
     })();
-    result
-        .map_err(|error| RuntimeError::Invalid(format!("{name}: {}", safe_activity_error(&error))))
+    match result {
+        Ok(()) => Ok(LaunchStart::Done),
+        Err(error @ RuntimeError::Cancelled { .. }) => Err(error),
+        Err(error) => Err(RuntimeError::Invalid(format!("{name}: {}", safe_activity_error(&error)))),
+    }
 }
 
 // Both local and remote user actions must activate the same selected checkpoint.
@@ -5900,6 +5959,78 @@ esac
         assert!(!runner.calls.lock().unwrap().iter().any(|call| call[0] == "modify"));
     }
 
+    fn wait_for_queue(gate: &operation_gate::OperationGate, ready: impl Fn(&operation_gate::OperationQueue) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready(&gate.snapshot()) {
+            assert!(Instant::now() < deadline, "operation queue did not reach the expected state");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn launch_start_takes_only_its_vms_lane_like_a_user_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let gate: &'static operation_gate::OperationGate = Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let LaunchAdmission::Admitted(guard) = launch_start_guard(gate, &paths, vm().id()).unwrap() else {
+            panic!("the launch start was not admitted");
+        };
+        let queue = gate.snapshot();
+        let entry = &queue.running[0];
+        assert_eq!(
+            (entry.label.as_str(), entry.vm_id.as_deref(), entry.kind, entry.cancellable),
+            ("Starting dev", Some(vm().id()), operation_gate::OperationKind::Lifecycle, true),
+        );
+        assert_eq!(entry.expected_ms, Some(180_000));
+        // Other sandboxes' actions and state reads are not held behind this boot.
+        assert!(gate.is_computer_idle());
+        std::thread::spawn(move || drop(gate.try_vm("other-id", "other", "Starting other").unwrap())).join().unwrap();
+        drop(guard);
+        assert!(matches!(launch_start_guard(gate, &paths, "deleted").unwrap(), LaunchAdmission::Unguarded));
+    }
+
+    #[test]
+    fn launch_start_hands_off_to_a_user_start_already_waiting_for_the_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let gate: &'static operation_gate::OperationGate = Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _checkpoint = gate.vm(vm().id(), "dev", "Creating checkpoint").unwrap();
+            released.recv().unwrap();
+        });
+        wait_for_queue(gate, |queue| queue.running.len() == 1);
+        let user = std::thread::spawn(move || {
+            gate.kind(operation_gate::OperationKind::Lifecycle)
+                .acquire(operation_gate::Scope::Vm { id: vm().id().into() }, Some("dev".into()), "Starting dev", Some(format!("vm:{}:start", vm().id())))
+                .map(drop)
+        });
+        wait_for_queue(gate, |queue| queue.waiting.len() == 1);
+        let launch_paths = paths.clone();
+        let skipped = std::thread::spawn(move || matches!(launch_start_guard(gate, &launch_paths, vm().id()), Ok(LaunchAdmission::Skipped)))
+            .join().unwrap();
+        assert!(skipped);
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(user.join().unwrap().is_ok());
+    }
+
+    #[test]
+    fn launch_start_reports_a_fork_that_needs_its_first_explicit_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        pending_restore_record(&paths, false);
+        let runner = StubRunner::successful_json(vec![]);
+        assert_eq!(
+            start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap(),
+            LaunchStart::NeedsExplicitStart("dev".into()),
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn launch_starts_selected_existing_vm_and_verifies_running() {
         let directory = tempfile::tempdir().unwrap();
@@ -6194,7 +6325,7 @@ esac
             old_vm["config"]["labels"].as_object_mut().unwrap().remove(crate::working_account::LABEL);
             let runner = StubRunner::successful_json(vec![old_vm]);
             let result = if action == "launch" {
-                start_at_launch_with(&runner, &paths, &generous_host(), vm().id())
+                start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).map(drop)
             } else {
                 workspace_action_with(&runner, &paths, &generous_host(), action, "dev")
             };
