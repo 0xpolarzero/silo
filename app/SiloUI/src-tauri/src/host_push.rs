@@ -826,7 +826,7 @@ pub(crate) async fn push_repository(
     let task = {
         let (app, workspace, repository_path) =
             (app.clone(), workspace.clone(), repository_path.clone());
-        tauri::async_runtime::spawn_blocking(move || perform(&app, &workspace, &repository_path))
+        runtime::operation_gate::spawn_blocking(move || perform(&app, &workspace, &repository_path))
     };
     // A panicked task must still resolve the entry, or it would stay
     // "pushing" forever and block every retry.

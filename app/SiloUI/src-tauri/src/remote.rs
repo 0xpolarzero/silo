@@ -10,20 +10,21 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 use tauri::AppHandle;
+mod operations;
 const INSTALL_PUBLIC_KEY: &str = r#"umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && key=$(cat) && { grep -qxF -- "$key" ~/.ssh/authorized_keys || printf '\n%s\n' "$key" >> ~/.ssh/authorized_keys; }"#;
 /// Silo's key may only run the bridge and open `-N` tunnels to loopback ports on the owner.
 const AUTHORIZED_KEY_OPTIONS: &str = r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge""#;
 const SILO_KEY_COMMENT: &str = "Silo remote management";
-/// Bridge protocol version; both computers must match. 2 adds the method table and capabilities.
+/// Bridge protocol version; both computers must match. 2 adds the method table, capabilities,
+/// and changes named by a stable `operationId` that must start within `startWithinMs`.
 const VERSION: u32 = 2;
 const LIMIT: usize = 4 * 1024 * 1024;
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
-static REQUEST_LOCK: Mutex<()> = Mutex::new(());
 static REMOTE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -545,58 +546,99 @@ fn connection_failure(code: Option<i32>, stderr: &str) -> String {
     }
     CONNECTION_HELP.into()
 }
-fn exchange(address: &str, request: Value) -> Result<Value, String> {
-    validate_address(address)?;
-    let stdout = tempfile::tempfile().map_err(|e| e.to_string())?;
-    let stderr = tempfile::tempfile().map_err(|e| e.to_string())?;
-    let mut child = ssh_for_address(address)?
-        .args([
-            "--",
-            address,
-            "exec ~/.local/bin/silo-remote --remote-bridge",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(stdout.try_clone().map_err(|e| e.to_string())?)
-        .stderr(stderr.try_clone().map_err(|e| e.to_string())?)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    if let Err(error) = write_frame(
-        child.stdin.take().ok_or("SSH input unavailable.")?,
-        &request,
-    ) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
+/// The command the bridge runs on the other computer (also forced by Silo's restricted key).
+const BRIDGE_COMMAND: &str = "exec ~/.local/bin/silo-remote --remote-bridge";
+/// Pauses before sending a change again after its connection was lost.
+const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
+/// Why an exchange with another computer failed.
+#[derive(Debug, PartialEq)]
+enum Failure {
+    /// The other computer answered with this error.
+    Reported(String),
+    /// The connection was lost; the request may or may not have arrived.
+    Lost(String),
+    /// Anything else, such as an untrusted host key, failed authentication or a timeout.
+    Failed(String),
+}
+impl Failure {
+    fn message(self) -> String {
+        match self {
+            Self::Reported(message) | Self::Lost(message) | Self::Failed(message) => message,
+        }
     }
-    let deadline = Instant::now() + request_timeout(&request);
+}
+/// An ssh failure that sending the request again may overcome: the connection dropped or
+/// could not be made, not a host key, authentication, name or refused-connection problem.
+fn lost_connection(code: Option<i32>, stderr: &str) -> bool {
+    code == Some(255)
+        && ![
+            "REMOTE HOST IDENTIFICATION HAS CHANGED",
+            "Host key verification failed",
+            "Permission denied",
+            "Too many authentication failures",
+            "Could not resolve hostname",
+            "Connection refused",
+        ]
+        .iter()
+        .any(|permanent| stderr.contains(permanent))
+}
+fn exchange(address: &str, request: &Value, deadline: Instant) -> Result<Value, Failure> {
+    validate_address(address).map_err(Failure::Failed)?;
+    let mut command = ssh_for_address(address).map_err(Failure::Failed)?;
+    command.args(["--", address, BRIDGE_COMMAND]);
+    run_exchange(command, request, deadline)
+}
+/// Sends one framed request through `command` (ssh running the bridge) and reads the reply.
+fn run_exchange(mut command: Command, request: &Value, deadline: Instant) -> Result<Value, Failure> {
+    use std::io::{Seek, SeekFrom};
+    let failed = |error: std::io::Error| Failure::Failed(error.to_string());
+    let stdout = tempfile::tempfile().map_err(failed)?;
+    let stderr = tempfile::tempfile().map_err(failed)?;
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(stdout.try_clone().map_err(failed)?)
+        .stderr(stderr.try_clone().map_err(failed)?)
+        .spawn()
+        .map_err(failed)?;
+    // Input stays open until the reply: the bridge takes its end to mean this computer left.
+    // A write error means ssh already failed; its exit status and output say why.
+    let mut input = child.stdin.take();
+    if input.as_mut().is_some_and(|input| write_frame(input, request).is_err()) {
+        input = None;
+    }
     let exit = loop {
-        if let Some(exit) = child.try_wait().map_err(|e| e.to_string())? {
+        if let Some(exit) = child.try_wait().map_err(failed)? {
             break exit;
         }
         if Instant::now() > deadline
-            || stdout.metadata().map_err(|e| e.to_string())?.len() > LIMIT as u64 + 4
-            || stderr.metadata().map_err(|e| e.to_string())?.len() > 65536
+            || stdout.metadata().map_err(failed)?.len() > LIMIT as u64 + 4
+            || stderr.metadata().map_err(failed)?.len() > 65536
         {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Remote operation timed out. Its outcome is unknown; reconnect and inspect before issuing another change.".into());
+            return Err(Failure::Failed("Remote operation timed out. Its outcome is unknown; reconnect and inspect before issuing another change.".into()));
         }
         thread::sleep(Duration::from_millis(40));
     };
+    drop(input);
     if !exit.success() {
         let mut stderr = stderr;
         let mut text = String::new();
         let _ = stderr
             .seek(SeekFrom::Start(0))
             .and_then(|_| Read::by_ref(&mut stderr).take(65536).read_to_string(&mut text));
-        return Err(connection_failure(exit.code(), &text));
+        let message = connection_failure(exit.code(), &text);
+        return Err(if lost_connection(exit.code(), &text) {
+            Failure::Lost(message)
+        } else {
+            Failure::Failed(message)
+        });
     }
-    use std::io::{Seek, SeekFrom};
     let mut stdout = stdout;
-    stdout.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let response = read_frame(stdout)?;
+    stdout.seek(SeekFrom::Start(0)).map_err(failed)?;
+    let response = read_frame(stdout).map_err(Failure::Failed)?;
     if let Some(error) = response["error"].as_str() {
-        return Err(error.into());
+        return Err(Failure::Reported(error.into()));
     }
     Ok(response["result"].clone())
 }
@@ -615,10 +657,41 @@ pub(crate) fn call_remote(
             .find(|h| h.id == host_id)
             .ok_or("This computer is no longer connected.")?
     };
-    exchange(
-        &host.address,
-        json!({"version":VERSION,"hostId":host.id,"requestId":uuid::Uuid::new_v4().to_string(),"method":method,"params":params}),
-    )
+    let mut request = json!({"version":VERSION,"hostId":host.id,"method":method,"params":params});
+    let deadline = Instant::now() + request_timeout(&request);
+    if access(method) != Some(Access::Change) {
+        return exchange(&host.address, &request, deadline).map_err(Failure::message);
+    }
+    request["operationId"] = json!(uuid::Uuid::new_v4().to_string());
+    send_change(&mut request, deadline, &RETRY_DELAYS, |request| {
+        exchange(&host.address, request, deadline)
+    })
+}
+/// Sends a change, and after a lost connection sends it again with the same
+/// `operationId`, so the other computer attaches the retry to the change it already
+/// accepted instead of running it twice.
+fn send_change(
+    request: &mut Value,
+    deadline: Instant,
+    delays: &[Duration],
+    mut send: impl FnMut(&Value) -> Result<Value, Failure>,
+) -> Result<Value, String> {
+    let mut delays = delays.iter();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // Queued work must start early enough to finish while this computer still waits.
+        request["startWithinMs"] = json!((remaining / 2).as_millis() as u64);
+        match send(request) {
+            Err(Failure::Lost(message)) => match delays.next() {
+                Some(delay) if remaining > *delay => {
+                    thread::sleep(*delay);
+                    crate::runtime::shutdown::ensure_accepting_operations()?;
+                }
+                _ => return Err(message),
+            },
+            result => return result.map_err(Failure::message),
+        }
+    }
 }
 
 fn checkpoint_remote_request(
@@ -666,13 +739,9 @@ pub async fn remote_checkpoint_action(
 pub async fn connect_remote_host(address: String) -> Result<RemoteHost, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let address = address.trim().to_owned();
-        let result = exchange(
-            &address,
-            json!({
-                "version": VERSION, "requestId": uuid::Uuid::new_v4().to_string(),
-                "method": "handshake", "params": {"sshKey": silo_public_key()}
-            }),
-        )?;
+        let handshake = json!({"version": VERSION, "method": "handshake", "params": {"sshKey": silo_public_key()}});
+        let result = exchange(&address, &handshake, Instant::now() + request_timeout(&handshake))
+            .map_err(Failure::message)?;
         if result["version"].as_u64() != Some(VERSION as u64) {
             return Err("Silo versions are incompatible. Update Silo on both computers.".into());
         }
@@ -828,6 +897,9 @@ pub(crate) fn run_bridge() -> Result<(), String> {
     socket.set_read_timeout(Some(request_timeout(&request))).map_err(|e| e.to_string())?;
     let streaming = request["method"] == "guest.ssh";
     write_frame(&mut socket, &request)?;
+    if !streaming {
+        watch_controller(std::io::stdin(), socket.try_clone().map_err(|e| e.to_string())?);
+    }
     let response = read_frame(&mut socket)?;
     write_stream_response(std::io::stdout().lock(), &response)?;
     if streaming && response.get("error").is_none() {
@@ -841,6 +913,23 @@ pub(crate) fn run_bridge() -> Result<(), String> {
     }
     Ok(())
 }
+/// The controller keeps the bridge's input open until it has its reply, so the end of
+/// that input means the controller left. Closing the owner connection's write side then
+/// tells the owner to drop work that has not started; a reply can still arrive.
+fn watch_controller(mut input: impl Read + Send + 'static, owner: UnixStream) {
+    thread::spawn(move || {
+        let mut sink = [0u8; 256];
+        loop {
+            match input.read(&mut sink) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        let _ = owner.shutdown(std::net::Shutdown::Write);
+    });
+}
 pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> Result<(), String> {
     let host = read_config()?
         .hosts
@@ -849,11 +938,7 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
         .ok_or("Saved computer not found.")?;
     validate_address(&host.address)?;
     let mut child = ssh_for_address(&host.address)?
-        .args([
-            "--",
-            &host.address,
-            "exec ~/.local/bin/silo-remote --remote-bridge",
-        ])
+        .args(["--", &host.address, BRIDGE_COMMAND])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -864,7 +949,7 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
         let mut output = child.stdout.take().ok_or("SSH output unavailable.")?;
         write_frame(
             &mut input,
-            &json!({"version":VERSION,"hostId":host.id,"requestId":uuid::Uuid::new_v4().to_string(),"method":method,"params":params}),
+            &json!({"version":VERSION,"hostId":host.id,"method":method,"params":params}),
         )?;
         let reply = read_frame(&mut output)?;
         if let Some(error) = reply["error"].as_str() {
@@ -979,7 +1064,8 @@ pub(crate) fn start(app: AppHandle) -> Result<(), String> {
                         })?;
                         return Ok(None);
                     }
-                    dispatch(&app, request).map(Some)
+                    let peer = stream.try_clone().map_err(|e| e.to_string())?;
+                    dispatch(&app, request, Arc::new(move || connection_open(&peer))).map(Some)
                 });
                 match result {
                     Ok(Some(result)) => {
@@ -1030,8 +1116,10 @@ fn validate_authorization(config: &Config, request: &Value) -> Result<(), String
     Ok(())
 }
 
-fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
-    handle(&directory()?, &request, |method, params| execute(app, method, params))
+fn dispatch(app: &AppHandle, request: Value, connection: operations::Probe) -> Result<Value, String> {
+    handle(&directory()?, &request, connection, Arc::new(changes_allowed), |method, params| {
+        execute(app, method, params)
+    })
 }
 /// Runs one authorized, classified request against this computer.
 fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
@@ -1055,11 +1143,15 @@ fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, Strin
 fn capabilities() -> Vec<&'static str> {
     METHODS.iter().map(|(method, _)| *method).collect()
 }
-/// Owner side of one bridged request: authorize, classify, then run it. Changes are
-/// recorded under `dir/operations` before they run so a repeated identity never replays.
+/// Owner side of one bridged request: authorize, classify, then run it. A change is
+/// accepted once per `operationId` (see `operations`), waits for its turn in the
+/// operation gate, and starts only while `connection` is open, `allowed` holds and its
+/// `startWithinMs` has not passed.
 fn handle(
     dir: &Path,
     request: &Value,
+    connection: operations::Probe,
+    allowed: operations::Probe,
     execute: impl FnOnce(&str, &Value) -> Result<Value, String>,
 ) -> Result<Value, String> {
     let config = authorize_in(dir, request)?;
@@ -1074,20 +1166,61 @@ fn handle(
         }
         Some(Access::Read) => execute(method, params),
         Some(Access::Change) => {
-            let id = request["requestId"]
+            let id = request["operationId"]
                 .as_str()
                 .filter(|id| uuid::Uuid::parse_str(id).is_ok())
                 .ok_or("Invalid remote request identity.")?;
-            // Record acceptance before touching a VM. Lost replies and restarts never replay a change.
-            let _guard = REQUEST_LOCK
-                .lock()
-                .map_err(|_| "Remote operation state unavailable.")?;
-            // A queued request must recheck access after the preceding operation finishes.
-            authorize_in(dir, request)?;
-            let operations = dir.join("operations");
-            fs::create_dir_all(&operations).map_err(|e| e.to_string())?;
-            recorded_operation(&operations, id, request, || execute(method, params))
+            let start_within = request["startWithinMs"]
+                .as_u64()
+                .map(Duration::from_millis)
+                .ok_or("Invalid remote request deadline.")?
+                .min(request_timeout(request));
+            let journal = dir.join("operations");
+            fs::create_dir_all(&journal).map_err(|e| e.to_string())?;
+            CHANGES.submit(
+                operations::Submission {
+                    journal: &journal,
+                    id,
+                    method,
+                    params,
+                    start_within,
+                    connection,
+                    allowed,
+                    wait: request_timeout(request),
+                    reconnect_grace: operations::RECONNECT_GRACE,
+                },
+                || execute(method, params),
+            )
         }
+    }
+}
+/// Changes requested by other computers, by `operationId`.
+static CHANGES: operations::Registry = operations::Registry::new();
+/// True while this computer accepts remote changes.
+fn changes_allowed() -> bool {
+    REMOTE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
+        && crate::runtime::shutdown::ensure_accepting_operations().is_ok()
+}
+/// True until the peer closes its end of `stream` (the bridge closes it when its controller leaves).
+fn connection_open(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = 0u8;
+    // SAFETY: peeks at most one byte into a local buffer without blocking.
+    let read = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            (&mut byte as *mut u8).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    match read {
+        0 => false,
+        count if count > 0 => true,
+        _ => matches!(
+            std::io::Error::last_os_error().kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        ),
     }
 }
 #[cfg(test)]
@@ -1155,91 +1288,6 @@ mod tests {
         assert!(read_frame((LIMIT as u32 + 1).to_be_bytes().as_slice()).is_err());
     }
 }
-
-fn save_operation(
-    directory: &std::path::Path,
-    path: &std::path::Path,
-    record: &Value,
-) -> Result<(), String> {
-    let mut file = tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
-    serde_json::to_writer(&mut file, record).map_err(|e| e.to_string())?;
-    file.as_file().sync_all().map_err(|e| e.to_string())?;
-    file.persist(path).map_err(|e| e.to_string())?;
-    std::fs::File::open(directory)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|e| e.to_string())
-}
-
-fn recorded_operation(
-    operations: &std::path::Path,
-    id: &str,
-    request: &Value,
-    execute: impl FnOnce() -> Result<Value, String>,
-) -> Result<Value, String> {
-    let operation = operations.join(format!("{id}.json"));
-    if operation.exists() {
-        let record: Value =
-            serde_json::from_slice(&fs::read(&operation).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        if record["request"] != *request {
-            return Err("Remote request identity was reused for a different operation.".into());
-        }
-        return match record.get("result") {
-            Some(result) => serde_json::from_value(result.clone()).map_err(|e|e.to_string())?,
-            None => Err("This operation was already accepted. Its result is uncertain; refresh the VM state before making another change.".into()),
-        };
-    }
-    save_operation(operations, &operation, &json!({"request":request}))?;
-    let result = execute();
-    save_operation(
-        &operations,
-        &operation,
-        &json!({"request":request,"result":result}),
-    )?;
-    result
-}
-
-#[cfg(test)]
-mod operation_tests {
-    use super::*;
-    #[test]
-    fn completed_and_interrupted_requests_never_repeat_side_effects() {
-        let dir = tempfile::tempdir().unwrap();
-        let request = json!({"method":"runtime.upsert"});
-        let result = recorded_operation(dir.path(), "completed", &request, || {
-            Ok(json!({"created":true}))
-        })
-        .unwrap();
-        assert_eq!(
-            recorded_operation(dir.path(), "completed", &request, || panic!(
-                "must not replay"
-            ))
-            .unwrap(),
-            result
-        );
-        save_operation(
-            dir.path(),
-            &dir.path().join("interrupted.json"),
-            &json!({"request":request}),
-        )
-        .unwrap();
-        assert!(
-            recorded_operation(dir.path(), "interrupted", &request, || panic!(
-                "must not replay"
-            ))
-            .unwrap_err()
-            .contains("already accepted")
-        );
-        assert!(recorded_operation(
-            dir.path(),
-            "completed",
-            &json!({"method":"runtime.delete"}),
-            || panic!("must not replay")
-        )
-        .is_err());
-    }
-}
-
 /// Drain child output after input EOF; terminate and reap on revocation or a stalled close.
 fn relay_child(
     stream: &UnixStream,
@@ -1652,7 +1700,18 @@ mod dispatch_tests {
         (home, dir, config)
     }
     fn request(config: &Config, method: &str) -> Value {
-        json!({"version":VERSION,"hostId":config.host_id,"requestId":uuid::Uuid::new_v4().to_string(),"method":method,"params":{"vmId":"vm"}})
+        json!({"version":VERSION,"hostId":config.host_id,"operationId":uuid::Uuid::new_v4().to_string(),"startWithinMs":60_000,"method":method,"params":{"vmId":"vm"}})
+    }
+    /// Handles `request` over an open connection; changes are allowed while `dir`'s
+    /// settings keep remote management enabled.
+    fn run(
+        dir: &Path,
+        request: &Value,
+        execute: impl FnOnce(&str, &Value) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        let settings = dir.to_owned();
+        let allowed = Arc::new(move || read_config_in(&settings).is_ok_and(|config| config.enabled));
+        handle(dir, request, Arc::new(|| true), allowed, execute)
     }
     fn methods(access: Access) -> Vec<&'static str> {
         METHODS.iter().filter(|(_, a)| *a == access).map(|(m, _)| *m).collect()
@@ -1706,14 +1765,14 @@ mod dispatch_tests {
         for method in methods(Access::Change) {
             let request = request(&config, method);
             for _ in 0..2 {
-                let result = handle(&dir, &request, |called, _| {
+                let result = run(&dir, &request, |called, _| {
                     assert_eq!(called, method);
                     runs.fetch_add(1, Ordering::SeqCst);
                     Ok(json!({"ran":method}))
                 });
                 assert_eq!(result.unwrap(), json!({"ran":method}));
             }
-            let id = request["requestId"].as_str().unwrap();
+            let id = request["operationId"].as_str().unwrap();
             assert!(dir.join("operations").join(format!("{id}.json")).is_file(), "{method}");
         }
         assert_eq!(runs.swap(0, Ordering::SeqCst), methods(Access::Change).len());
@@ -1721,7 +1780,7 @@ mod dispatch_tests {
         for method in methods(Access::Read).into_iter().filter(|m| *m != "handshake") {
             let request = request(&config, method);
             for _ in 0..2 {
-                handle(&dir, &request, |_, _| {
+                run(&dir, &request, |_, _| {
                     runs.fetch_add(1, Ordering::SeqCst);
                     Ok(Value::Null)
                 })
@@ -1736,7 +1795,7 @@ mod dispatch_tests {
     fn refused_requests_never_run() {
         let (_home, dir, config) = owner();
         let refuse = |request: &Value| {
-            handle(&dir, request, |method, _| panic!("{method} must not run")).unwrap_err()
+            run(&dir, request, |method, _| panic!("{method} must not run")).unwrap_err()
         };
         let mut other = request(&config, "runtime.action");
         other["hostId"] = json!(uuid::Uuid::new_v4().to_string());
@@ -1748,9 +1807,12 @@ mod dispatch_tests {
         assert!(refuse(&stale).contains("incompatible"));
         for id in [json!("not-a-uuid"), Value::Null, json!(7)] {
             let mut change = request(&config, "checkpoint.restore");
-            change["requestId"] = id;
+            change["operationId"] = id;
             assert_eq!(refuse(&change), "Invalid remote request identity.");
         }
+        let mut undated = request(&config, "checkpoint.restore");
+        undated["startWithinMs"] = Value::Null;
+        assert_eq!(refuse(&undated), "Invalid remote request deadline.");
         for method in ["runtime.unknown", "network.unpublish.all", "guest.ssh", ""] {
             assert_eq!(refuse(&request(&config, method)), UNSUPPORTED);
         }
@@ -1764,8 +1826,8 @@ mod dispatch_tests {
     #[test]
     fn handshake_reports_identity_and_capabilities_without_a_pinned_owner() {
         let (_home, dir, config) = owner();
-        let request = json!({"version":VERSION,"requestId":uuid::Uuid::new_v4().to_string(),"method":"handshake","params":{}});
-        let result = handle(&dir, &request, |method, _| {
+        let request = json!({"version":VERSION,"method":"handshake","params":{}});
+        let result = run(&dir, &request, |method, _| {
             assert_eq!(method, "handshake");
             Ok(Value::Null)
         })
@@ -1778,30 +1840,105 @@ mod dispatch_tests {
     #[test]
     fn a_queued_change_rechecks_access_when_its_turn_comes() {
         let (_home, dir, config) = owner();
-        let (started, running) = std::sync::mpsc::channel();
-        let (finish, release) = std::sync::mpsc::channel::<()>();
-        let first = {
-            let (dir, request) = (dir.clone(), request(&config, "runtime.action"));
+        let vm = uuid::Uuid::new_v4().to_string();
+        let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let busy = {
+            let vm = vm.clone();
             thread::spawn(move || {
-                handle(&dir, &request, |_, _| {
-                    started.send(()).unwrap();
-                    release.recv().unwrap();
-                    Ok(Value::Null)
+                let guard = crate::runtime::OPERATIONS.vm(&vm, "vm", "Long local work").unwrap();
+                held.0.send(()).unwrap();
+                release.1.recv().unwrap();
+                drop(guard);
+            })
+        };
+        held.1.recv().unwrap();
+        let queued = {
+            let (dir, request, vm) = (dir.clone(), request(&config, "runtime.upsert"), vm.clone());
+            thread::spawn(move || {
+                run(&dir, &request, |_, _| {
+                    let _turn = crate::runtime::OPERATIONS
+                        .vm(&vm, "vm", "Remote change")
+                        .map_err(|e| e.to_string())?;
+                    panic!("a revoked change must not run")
                 })
             })
         };
-        running.recv().unwrap();
-        let queued = {
-            let (dir, request) = (dir.clone(), request(&config, "runtime.upsert"));
-            thread::spawn(move || handle(&dir, &request, |_, _| panic!("a revoked change must not run")))
+        let waiting = |vm: &str| {
+            crate::runtime::OPERATIONS
+                .snapshot()
+                .waiting
+                .iter()
+                .any(|entry| entry.vm_id.as_deref() == Some(vm))
         };
-        thread::sleep(Duration::from_millis(100));
+        let until = Instant::now() + Duration::from_secs(5);
+        while !waiting(&vm) {
+            assert!(Instant::now() < until, "the change never queued");
+            thread::sleep(Duration::from_millis(5));
+        }
         let mut disabled = config.clone();
         disabled.enabled = false;
         save_config_in(&dir, &disabled).unwrap();
-        finish.send(()).unwrap();
-        first.join().unwrap().unwrap();
-        assert!(queued.join().unwrap().unwrap_err().contains("disabled"));
+        assert_eq!(queued.join().unwrap(), Err(operations::EXPIRED.into()));
+        assert!(!waiting(&vm));
+        release.0.send(()).unwrap();
+        busy.join().unwrap();
+    }
+
+    #[test]
+    fn the_owner_sees_the_connection_close_when_the_controller_leaves() {
+        let (owner_side, bridge_side) = UnixStream::pair().unwrap();
+        let (mut controller, bridge_input) = UnixStream::pair().unwrap();
+        watch_controller(bridge_input, bridge_side);
+        assert!(connection_open(&owner_side));
+        controller.write_all(b"ignored").unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert!(connection_open(&owner_side));
+        drop(controller);
+        let until = Instant::now() + Duration::from_secs(5);
+        while connection_open(&owner_side) {
+            assert!(Instant::now() < until, "the owner never saw the controller leave");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_lost_change_is_sent_again_with_the_same_identity() {
+        let mut request = json!({"method":"runtime.action","operationId":"fixed"});
+        let deadline = || Instant::now() + Duration::from_secs(60);
+        let mut sent = Vec::new();
+        let result = send_change(&mut request, deadline(), &[Duration::ZERO; 2], |request| {
+            sent.push((request["operationId"].clone(), request["startWithinMs"].as_u64().unwrap()));
+            if sent.len() < 3 {
+                Err(Failure::Lost("dropped".into()))
+            } else {
+                Ok(json!("done"))
+            }
+        });
+        assert_eq!(result, Ok(json!("done")));
+        assert_eq!(sent.len(), 3);
+        for (id, within) in sent {
+            assert_eq!(id, json!("fixed"));
+            assert!((25_000..=30_000).contains(&within), "{within}");
+        }
+        // Retries are bounded, and other failures are final at once.
+        let mut attempts = 0;
+        let lost = send_change(&mut request, deadline(), &[Duration::ZERO], |_| {
+            attempts += 1;
+            Err(Failure::Lost("dropped".into()))
+        });
+        assert_eq!((lost, attempts), (Err("dropped".into()), 2));
+        for failure in [Failure::Reported("no".into()), Failure::Failed("no".into())] {
+            let mut failure = Some(failure);
+            let result = send_change(&mut request, deadline(), &[Duration::ZERO], |_| {
+                Err(failure.take().expect("sent once"))
+            });
+            assert_eq!(result, Err("no".into()));
+        }
+        assert!(lost_connection(Some(255), "Connection closed by 10.0.0.2 port 22\n"));
+        assert!(lost_connection(Some(255), "Timeout, server office not responding.\n"));
+        assert!(!lost_connection(Some(255), "Host key verification failed.\n"));
+        assert!(!lost_connection(Some(255), "user@office: Permission denied (publickey).\n"));
+        assert!(!lost_connection(Some(1), "Silo is not running on this computer.\n"));
     }
 
     #[test]
