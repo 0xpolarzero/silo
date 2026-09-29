@@ -132,6 +132,9 @@ struct Entry {
     key: Option<String>,
     since: Instant,
     since_ms: u64,
+    /// When the entry was admitted to run (or queued, while waiting). Unlike `since`,
+    /// never carried over from an earlier attempt: it bounds the cancel grace (D-32).
+    admitted: Instant,
     /// True while an operation runs longer than its owner opted to allow cancelling.
     /// Waiting entries report `true` regardless; a running entry reports this flag.
     cancellable: bool,
@@ -225,6 +228,7 @@ impl State {
             key,
             since: Instant::now(),
             since_ms: now_ms(),
+            admitted: Instant::now(),
             cancellable: false,
             cancel: Arc::new(AtomicBool::new(false)),
             expected: None,
@@ -335,6 +339,10 @@ pub(crate) fn check_cancelled() -> Result<(), GateError> {
     }
 }
 
+/// How long after admission a cancel waits for the work to declare itself
+/// cancellable. Owners do so immediately after acquiring, so this only bounds a race.
+const ADMISSION_GRACE: Duration = Duration::from_millis(250);
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -418,6 +426,16 @@ impl OperationGate {
         }
     }
 
+    /// True when the waiting entry `id` may run now or was asked to cancel; either
+    /// way its waiter must not give up its place as abandoned.
+    fn admissible_or_cancelled(&self, state: &State, id: u64) -> bool {
+        state
+            .waiting
+            .iter()
+            .position(|entry| entry.id == id)
+            .is_some_and(|index| state.admissible(index) || state.waiting[index].cancel.load(Ordering::SeqCst))
+    }
+
     /// Wait for a turn to change shared computer state.
     pub(crate) fn computer(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
         self.kind(OperationKind::Other).computer(label)
@@ -493,6 +511,7 @@ impl OperationGate {
                 let mut entry = state.waiting.remove(index).expect("index is in range");
                 entry.since = Instant::now();
                 entry.since_ms = now_ms();
+                entry.admitted = entry.since;
                 let token = entry.cancel.clone();
                 state.touch(&entry.scope, false);
                 state.running.push(entry);
@@ -512,8 +531,17 @@ impl OperationGate {
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .0;
                     // Re-check admission first: a turn that arrived is not given up.
-                    let index = state.waiting.iter().position(|entry| entry.id == id);
-                    if index.is_some_and(|index| !state.admissible(index)) && !keep_waiting() {
+                    if self.admissible_or_cancelled(&state, id) {
+                        continue;
+                    }
+                    // Ask the caller without the state lock held: the closure may read
+                    // the gate (or anything that does) without deadlocking (D-33).
+                    drop(state);
+                    let keep = keep_waiting();
+                    state = self.lock();
+                    // The turn may have arrived (or a cancel) while the closure ran;
+                    // the next loop pass admits or cancels it instead of giving it up.
+                    if !keep && !self.admissible_or_cancelled(&state, id) {
                         state.waiting.retain(|entry| entry.id != id);
                         drop(state);
                         self.notify();
@@ -652,6 +680,12 @@ impl OperationGate {
     /// `GateError::Cancelled`. A *running* entry is signalled only when it opted in as
     /// cancellable (`OperationGuard::allow_cancel`); otherwise `GateError::NotCancellable`
     /// is returned and nothing changes. An unknown id is treated as already finished.
+    ///
+    /// Work declares itself cancellable right after admission, so a cancel can race
+    /// that declaration: the user cancelled a waiting entry just as its turn came, or
+    /// a start before its owner called `allow_cancel`. Such a cancel waits up to
+    /// `ADMISSION_GRACE` after admission for the work to opt in and is then honoured
+    /// (D-32); only work that stays non-cancellable reports `NotCancellable`.
     pub(crate) fn cancel(&self, id: u64) -> Result<(), GateError> {
         let mut state = self.lock();
         if let Some(entry) = state.waiting.iter().find(|entry| entry.id == id) {
@@ -661,16 +695,26 @@ impl OperationGate {
             self.notify();
             return Ok(());
         }
-        if let Some(entry) = state.running.iter().find(|entry| entry.id == id) {
-            if !entry.cancellable {
+        loop {
+            let Some(entry) = state.running.iter().find(|entry| entry.id == id) else {
+                return Ok(());
+            };
+            if entry.cancellable {
+                entry.cancel.store(true, Ordering::SeqCst);
+                drop(state);
+                self.notify();
+                return Ok(());
+            }
+            let remaining = ADMISSION_GRACE.saturating_sub(entry.admitted.elapsed());
+            if remaining.is_zero() {
                 return Err(GateError::NotCancellable);
             }
-            entry.cancel.store(true, Ordering::SeqCst);
-            drop(state);
-            self.notify();
-            return Ok(());
+            state = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
         }
-        Ok(())
     }
 
     /// Signal every waiting entry to leave the queue with `GateError::Cancelled`.
@@ -996,6 +1040,33 @@ mod tests {
     }
 
     #[test]
+    fn keep_waiting_may_read_the_gate_without_deadlocking() {
+        let gate = leak();
+        let running = gate.computer("Update").unwrap();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let (done, finished) = mpsc::channel();
+        {
+            let asked = asked.clone();
+            thread::spawn(move || {
+                // The closure reads the gate, as a future caller might (D-33).
+                let result = gate.acquire_while(Scope::Computer, None, "Backup", &|| {
+                    asked.fetch_add(1, Ordering::SeqCst);
+                    gate.snapshot().waiting.len() == 1
+                });
+                done.send(result.map(drop)).unwrap();
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while asked.load(Ordering::SeqCst) < 2 {
+            assert!(Instant::now() < deadline, "keep_waiting was not asked while waiting");
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(running);
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(()));
+        assert!(gate.is_idle());
+    }
+
+    #[test]
     fn listener_observes_changes() {
         let gate = leak();
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1085,6 +1156,32 @@ mod tests {
         assert!(!uncancellable(cancel_requested));
         assert!(cancel_requested());
         drop(guard);
+    }
+
+    #[test]
+    fn a_cancel_racing_admission_is_honoured_once_the_work_opts_in() {
+        let gate = leak();
+        let (admitted, admission) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let worker = thread::spawn(move || {
+            let guard = gate.vm("id-a", "a", "Starting a").unwrap();
+            admitted.send(()).unwrap();
+            // The owner declares cancellability only after the cancel arrived.
+            released.recv().unwrap();
+            guard.allow_cancel();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !cancel_requested() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(2));
+            }
+            cancel_requested()
+        });
+        admission.recv_timeout(Duration::from_secs(5)).unwrap();
+        let id = gate.snapshot().running[0].id;
+        let canceller = thread::spawn(move || gate.cancel(id));
+        thread::sleep(Duration::from_millis(20));
+        release.send(()).unwrap();
+        assert_eq!(canceller.join().unwrap(), Ok(()));
+        assert!(worker.join().unwrap(), "the racing cancel reaches the work");
     }
 
     #[test]
