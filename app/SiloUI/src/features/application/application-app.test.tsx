@@ -262,7 +262,7 @@ describe("application", () => {
       expect(icons[1]).toHaveAttribute("data-navigation-loading-indicator")
       expect(icons[1]).toHaveClass("size-2")
     }
-    expect(navigation.getByRole("status", { name: "0 sandbox errors, 3 sandbox warnings" })).toBeInTheDocument()
+    expect(navigation.getByRole("status", { name: "3 sandboxes need attention" })).toBeInTheDocument()
   })
 
   it.each(["past", "future"] as const)("removes a resolved issue from the %s navigation history", async (position) => {
@@ -424,8 +424,8 @@ describe("application", () => {
   })
 
   it.each([
-    ["warning", "3 sandbox warnings", "3"],
-    ["error", "3 sandbox errors", "3"],
+    ["warning", "3 sandboxes have warnings", "3"],
+    ["error", "3 sandboxes have errors", "3"],
   ] as const)("counts %s sandboxes next to Overview", (mode, label, count) => {
     renderApplication("running", applicationSourceForScenario("running", undefined, mode))
 
@@ -990,8 +990,8 @@ describe("application", () => {
     expect(overview.queryByText(/needs attention/i)).not.toBeInTheDocument()
 
     const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
-    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox error" })).toHaveTextContent("1")
-    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox warning" })).toHaveTextContent("1")
+    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
+    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has a warning" })).toHaveTextContent("1")
 
     await user.click(screen.getByRole("button", { name: "More actions for error" }))
     await user.click(screen.getByRole("menuitem", { name: "Duplicate error" }))
@@ -1122,8 +1122,8 @@ describe("application", () => {
     expect(overview.queryByText(/needs attention/i)).not.toBeInTheDocument()
 
     const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
-    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox error" })).toHaveTextContent("1")
-    expect(within(overviewNavigation).getByRole("status", { name: "3 sandbox warnings" })).toHaveTextContent("3")
+    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
+    expect(within(overviewNavigation).getByRole("status", { name: "3 sandboxes have warnings" })).toHaveTextContent("3")
   })
 
   it("starts a new sandbox as an in-card configuration operation", async () => {
