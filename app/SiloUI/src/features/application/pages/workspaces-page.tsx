@@ -207,11 +207,12 @@ const activityCategoryPresentation = {
   system: { label: "System", icon: Wrench },
 } as const
 
-function ActivityLog({ workspaces, sourceActivities, onShowLogs }: { workspaces: ApplicationWorkspace[]; sourceActivities: ApplicationActivity[]; onShowLogs: (activity: ApplicationActivity) => void }) {
+function ActivityLog({ workspaces, sourceActivities, filtered, onShowLogs }: { workspaces: ApplicationWorkspace[]; sourceActivities: ApplicationActivity[]; filtered: boolean; onShowLogs: (activity: ApplicationActivity) => void }) {
   const [selectedCategories, setSelectedCategories] = useState<Set<ApplicationActivityCategory>>(() => new Set())
   const workspacesByTarget = new Map(workspaces.map((workspace) => [workspaceTarget(workspace), workspace]))
+  // Only a sandbox filter hides entries; without one, a deleted sandbox's events stay visible.
   const allActivities = [...sourceActivities]
-    .filter(({ workspace }) => !workspace || workspacesByTarget.has(workspace))
+    .filter(({ workspace }) => !filtered || !workspace || workspacesByTarget.has(workspace))
     .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
   const activities = selectedCategories.size === 0
     ? allActivities
@@ -289,7 +290,9 @@ function ActivityLog({ workspaces, sourceActivities, onShowLogs }: { workspaces:
                   <div className="flex max-w-[40%] shrink-0 flex-col items-end gap-1" data-activity-meta>
                     <time dateTime={item.occurredAt} className="text-[10px] text-muted-foreground">{new Date(item.occurredAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" })}</time>
                     <div className="flex flex-wrap justify-end gap-1">
-                      {item.workspace && workspace && <WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} />}
+                      {item.workspace && (workspace
+                        ? <WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} />
+                        : <StatusBadge indicator={<Box className="size-2.5" />} aria-label={`Sandbox: ${item.workspace}`}>{item.workspace}</StatusBadge>)}
                       <StatusBadge indicator={<CategoryIcon className="size-2.5" />} aria-label={`Category: ${category.label}`}>{category.label}</StatusBadge>
                     </div>
                   </div>
@@ -366,7 +369,7 @@ export function WorkspacesPage({
       {section === "files" && <Files onRefreshRepositories={networkActions.refreshRepositories} editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
       {section === "logs" && <Logs key={JSON.stringify(visibleWorkspaces.map(workspaceTarget))} workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} actions={networkActions} active={active} window={logWindow} onWindowChange={setLogWindow} />}
       {section === "network" && <NetworkPage workspaces={visibleWorkspaces} browser={browser} network={network} error={networkError} actions={networkActions} active={active} />}
-      {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} onShowLogs={activity => {
+      {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} filtered={selectedWorkspaceIds.size > 0} onShowLogs={activity => {
         const workspace = workspaces.find(item => workspaceTarget(item) === activity.workspace)
         if (workspace) onWorkspaceFilterChange(new Set([workspace.machine.id]))
         const time = new Date(activity.occurredAt).getTime()
