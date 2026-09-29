@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -1638,6 +1638,14 @@ fn callback(request: &str, state: &str) -> Result<Option<String>, String> {
 
 // An unauthenticated local connection is not an OAuth result. Read a complete,
 // bounded header before parsing it; ignore incomplete or malformed traffic.
+/// Prepare an accepted callback connection for a bounded blocking read. On macOS an
+/// accepted socket inherits the listener's non-blocking mode, which ignores the read
+/// timeout: an early read fails with WouldBlock and the single-use code is lost.
+fn callback_stream(stream: TcpStream) -> std::io::Result<TcpStream> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    Ok(stream)
+}
 fn read_callback_request(reader: &mut impl Read) -> Option<String> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut bytes = Vec::new();
@@ -1732,8 +1740,8 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             return Err("GitHub connection timed out. Try again.".into());
         };
         match listener.accept() {
-            Ok((mut stream, _)) => {
-                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+            Ok((stream, _)) => {
+                let Ok(mut stream) = callback_stream(stream) else { continue };
                 let result = read_callback_request(&mut stream)
                     .map(|request| callback(&request, &state))
                     .unwrap_or(Ok(None));
@@ -3052,6 +3060,35 @@ mod tests {
         assert_eq!(callback(&complete, "right").unwrap(), Some("x".into()));
         assert!(read_callback_request(&mut Fragmented(&request[..request.len() - 2])).is_none());
         assert!(read_callback_request(&mut Fragmented(&vec![b'a'; 9000])).is_none());
+    }
+    #[test]
+    fn callback_waits_for_a_browser_that_sends_its_request_late() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let browser = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            stream
+                .write_all(b"GET /github/callback?state=right&code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            }
+        };
+        // Accepted sockets can inherit the listener's non-blocking mode (macOS); an
+        // early read must wait for the request instead of losing the single-use code.
+        let mut stream = callback_stream(stream).unwrap();
+        let request = read_callback_request(&mut stream).expect("the early read lost the callback");
+        assert_eq!(callback(&request, "right").unwrap(), Some("x".into()));
+        browser.join().unwrap();
     }
     #[test]
     fn callback_rejects_wrong_state_and_duplicate_code() {
