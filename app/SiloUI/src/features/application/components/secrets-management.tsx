@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react"
 import { Box, Globe, KeyRound, LoaderCircle, Pencil, RotateCw, Trash2 } from "lucide-react"
 
 import { ListRow, ListRowIcon } from "@/components/list-row"
@@ -8,91 +7,8 @@ import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
 import { SecretEditor } from "@/features/application/components/secret-editor"
-import type { ApplicationSecret, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
-import { restoreFocus } from "@/lib/focus"
-
-function operationFailure(error: unknown, fallback: string) {
-  const message = typeof error === "string" ? error : error instanceof Error ? error.message : ""
-  return message === "Cannot access secrets in the system credential store. Unlock it and retry." ? message : fallback
-}
-
-interface EditorState {
-  secret?: ApplicationSecret
-  /** Preselected sandboxes when adding a new secret scoped to one sandbox. */
-  initialWorkspaces?: string[]
-}
-
-/** Shared state and operations for viewing, adding, editing, removing, and retrying secrets.
- * Both the full Secrets page and a sandbox's Secrets section drive identical row states from it. */
-export function useSecretsManager({ source, onSaveSecret, onRemoveSecret, onRetrySecret }: {
-  source: ApplicationSource
-  onSaveSecret: (request: SecretConfigurationRequest) => Promise<void> | void
-  onRemoveSecret: (id: string) => Promise<void> | void
-  onRetrySecret?: (id: string) => Promise<void> | void
-}) {
-  const [editor, setEditor] = useState<EditorState | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<string>()
-  const [busy, setBusy] = useState<string | null>(null)
-  const [operationError, setOperationError] = useState<{ id: string; message: string; action: (id: string) => Promise<void> | void } | null>(null)
-  const shouldRestoreFocus = useRef(false)
-  const editorTrigger = useRef<HTMLElement | null>(null)
-
-  useEffect(() => {
-    if (!editor && !saving && shouldRestoreFocus.current) {
-      shouldRestoreFocus.current = false
-      restoreFocus(editorTrigger.current)
-    }
-  }, [editor, saving])
-
-  function openEditor(trigger: HTMLElement | null, options: EditorState = {}) {
-    editorTrigger.current = trigger
-    setSaveError(undefined)
-    setEditor(options)
-  }
-
-  function closeEditor() {
-    shouldRestoreFocus.current = true
-    setEditor(null)
-  }
-
-  async function saveSecret(request: SecretConfigurationRequest) {
-    setSaving(true)
-    setSaveError(undefined)
-    try {
-      await onSaveSecret(request)
-      closeEditor()
-    } catch (error) {
-      setSaveError(operationFailure(error, "Couldn’t save this secret. Your changes are still here. Retry."))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function runOperation(id: string, action: (id: string) => Promise<void> | void) {
-    setBusy(id)
-    setOperationError(null)
-    try {
-      await action(id)
-    } catch (error) {
-      setOperationError({ id, message: operationFailure(error, "Couldn’t update this secret. Retry."), action })
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  function removeSecret(id: string) {
-    void runOperation(id, onRemoveSecret)
-  }
-
-  return {
-    source, onRetrySecret,
-    editor, saving, saveError, busy, operationError,
-    openEditor, closeEditor, saveSecret, runOperation, removeSecret,
-  }
-}
-
-export type SecretsManager = ReturnType<typeof useSecretsManager>
+import type { ApplicationSecret } from "@/features/application/model/application-source"
+import type { SecretsManager } from "@/features/application/components/secrets-manager"
 
 /** The add-secret editor, rendered when the manager is adding a new secret. */
 export function AddSecretEditor({ manager }: { manager: SecretsManager }) {
