@@ -581,6 +581,15 @@ impl OperationGate {
         state.running.is_empty() && state.waiting.is_empty()
     }
 
+    /// True when no visible computer-wide operation is running or waiting. Hidden
+    /// housekeeping and per-VM work never add or remove sandboxes, so state readers
+    /// use this instead of `is_idle` and keep other sandboxes' rows current.
+    pub(crate) fn is_computer_idle(&self) -> bool {
+        let state = self.lock();
+        !state.running.iter().chain(state.waiting.iter())
+            .any(|entry| !entry.hidden && matches!(entry.scope, Scope::Computer))
+    }
+
     /// True when no operation affecting the VM with stable `id` is running or waiting.
     pub(crate) fn is_vm_idle(&self, id: &str) -> bool {
         self.lock().free(&Scope::Vm { id: id.to_owned() })

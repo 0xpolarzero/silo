@@ -1745,7 +1745,9 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
     crate::runtime_migration::ensure_ready(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        let mut source = read_application_snapshot(&ProcessRunner, &paths, &|| OPERATIONS.is_idle())?;
+        // Only visible computer-wide work (sandbox configuration) can add or remove
+        // sandboxes; hidden housekeeping or work on one VM must not freeze every row.
+        let mut source = read_application_snapshot(&ProcessRunner, &paths, &|| OPERATIONS.is_computer_idle())?;
         // Opportunistic log cleanup; skip when any operation is active or waiting.
         if let Ok(_guard) = OPERATIONS.try_computer_hidden("Cleaning up expired logs") {
             for workspace in &mut source.workspaces {
@@ -5185,6 +5187,22 @@ esac
         fs::write(folder.join("unknown.raw"), b"keep").unwrap();
         assert!(remove_machine_volumes(&paths, &vm()).is_err());
         assert_eq!(fs::read(folder.join("unknown.raw")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn application_snapshot_ignores_hidden_housekeeping_and_single_vm_work() {
+        let gate = operation_gate::OperationGate::new();
+        assert!(gate.is_computer_idle());
+        let housekeeping = gate.try_computer_hidden("Cleaning up expired logs").unwrap();
+        assert!(!gate.is_idle());
+        assert!(gate.is_computer_idle(), "hidden housekeeping must not freeze state reads");
+        drop(housekeeping);
+        let checkpoint = gate.vm("a-id", "a", "Creating checkpoint").unwrap();
+        assert!(gate.is_computer_idle(), "work on one VM must not freeze every sandbox");
+        drop(checkpoint);
+        let change = gate.computer("Applying sandbox changes").unwrap();
+        assert!(!gate.is_computer_idle());
+        drop(change);
     }
 
     #[test]
