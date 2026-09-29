@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { toast } from "sonner"
 import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import { SshAccessPanel } from "./ssh-access-panel"
+import { SshAccessBadges, SshAccessPanel } from "./ssh-access-panel"
 import type { ApplicationActions, ApplicationWorkspace, SshAccessWorkspace } from "../model/application-source"
 const workspace = applicationSourceForScenario("complete").workspaces[0]
 const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOV89nMlTnLLFa2UlVuqssPU56E2EbdIg1XmcraGpVXQ laptop"
@@ -109,19 +109,54 @@ describe("managed SSH access", () => {
     await expand(user)
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
   })
-  it("enables the single available network address directly", async () => {
+  it("warns before exposing SSH to other computers and saves the single address once confirmed", async () => {
     const { user, save } = setup()
     await expand(user)
     await user.click(screen.getByRole("switch", { name: "Allow SSH from other computers" }))
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ bindAddress: "192.168.1.42", keys: [publicKey] }))
+    expect(save).not.toHaveBeenCalled()
+    const dialog = screen.getByRole("dialog")
+    expect(dialog).toHaveTextContent("Allow SSH from other computers?")
+    expect(dialog).toHaveTextContent("192.168.1.42")
+    expect(dialog).toHaveTextContent("port 2222")
+    await user.click(within(dialog).getByRole("button", { name: "Allow" }))
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ bindAddress: "192.168.1.42", keys: [publicKey] })))
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+  })
+  it("keeps SSH local when the network warning is cancelled", async () => {
+    const { user, save } = setup()
+    await expand(user)
+    await user.click(screen.getByRole("switch", { name: "Allow SSH from other computers" }))
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: "Allow SSH from other computers" })).not.toBeChecked()
+    expect(save).not.toHaveBeenCalled()
+  })
+  it("warns before re-enabling SSH that was allowed from other computers", async () => {
+    const { user, save } = setup({ enabled: false, state: "disabled", bindAddress: "192.168.1.42" })
+    await expand(user)
+    await user.click(screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" }))
+    expect(save).not.toHaveBeenCalled()
+    const dialog = screen.getByRole("dialog")
+    expect(dialog).toHaveTextContent("Allow SSH from other computers too?")
+    await user.click(within(dialog).getByRole("button", { name: "Allow" }))
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ enabled: true, bindAddress: "192.168.1.42" })))
+  })
+  it("can limit SSH to this computer while it is off", async () => {
+    const { user, save } = setup({ enabled: false, state: "disabled", bindAddress: "192.168.1.42" })
+    await expand(user)
+    const network = screen.getByRole("switch", { name: "Allow SSH from other computers" })
+    expect(network).toBeEnabled()
+    await user.click(network)
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, bindAddress: "127.0.0.1" }))
   })
   it("asks for an address when there are multiple interfaces and can cancel", async () => {
     const { user, save } = setup({ addresses: [...base.addresses, "10.77.77.2"] })
     await expand(user)
     await user.click(screen.getByRole("switch", { name: "Allow SSH from other computers" }))
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Allow" }))
+    expect(await screen.findByRole("combobox", { name: "LAN or VPN address" })).toHaveValue("192.168.1.42")
     expect(save).not.toHaveBeenCalled()
-    expect(screen.getByRole("combobox", { name: "LAN or VPN address" })).toHaveValue("192.168.1.42")
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
     expect(screen.getByRole("switch", { name: "Allow SSH from other computers" })).not.toBeChecked()
@@ -130,7 +165,8 @@ describe("managed SSH access", () => {
     const { user, save } = setup({ addresses: [...base.addresses, "10.77.77.2"] })
     await expand(user)
     await user.click(screen.getByRole("switch", { name: "Allow SSH from other computers" }))
-    const address = screen.getByRole("combobox", { name: "LAN or VPN address" })
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Allow" }))
+    const address = await screen.findByRole("combobox", { name: "LAN or VPN address" })
     await user.clear(address); await user.type(address, "0.0.0.0")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(save).not.toHaveBeenCalled()
@@ -242,5 +278,33 @@ describe("managed SSH access", () => {
     expect(screen.queryByText("SSH listening")).not.toBeInTheDocument()
     await expand(user)
     expect(screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" })).toBeDisabled()
+  })
+})
+
+describe("SSH badge", () => {
+  const badge = () => screen.getByLabelText(/^SSH from Ada’s Mac mini/)
+  it("keeps a listening badge plain", () => {
+    render(<SshAccessBadges access={base} />)
+    expect(badge()).toHaveAccessibleName("SSH from Ada’s Mac mini only")
+    expect(badge()).toHaveTextContent(/^SSH$/)
+    expect(badge().querySelector(".lucide-triangle-alert")).toBeNull()
+  })
+  it("shows an SSH error on the badge itself, not only in its tooltip", () => {
+    render(<SshAccessBadges access={{ ...base, bindAddress: "192.168.1.42", state: "error", message: "SSH could not listen." }} />)
+    expect(badge()).toHaveTextContent("SSH error")
+    expect(badge()).toHaveAccessibleName("SSH from Ada’s Mac mini and other computers: SSH could not listen.")
+    expect(badge().querySelector(".lucide-triangle-alert")).toBeInTheDocument()
+    expect(badge().className).toContain("text-destructive")
+  })
+  it("marks unavailable status with a visible warning", () => {
+    render(<SshAccessBadges access={base} stale />)
+    expect(badge()).toHaveAccessibleName("SSH from Ada’s Mac mini only: Status unavailable")
+    expect(badge().querySelector(".lucide-triangle-alert")).toBeInTheDocument()
+    expect(badge().className).toContain("text-amber")
+  })
+  it("names a waiting listener without alarming", () => {
+    render(<SshAccessBadges access={{ ...base, state: "waiting" }} />)
+    expect(badge()).toHaveAccessibleName("SSH from Ada’s Mac mini only: Waiting for sandbox")
+    expect(badge().querySelector(".lucide-triangle-alert")).toBeNull()
   })
 })
