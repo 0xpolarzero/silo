@@ -3,12 +3,16 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
 import { ShutdownBoundary } from "./shutdown-boundary"
 
-const native = vi.hoisted(() => ({ receive: vi.fn<(event: { payload: boolean }) => void>(), invoke: vi.fn(), stop: vi.fn() }))
+const native = vi.hoisted(() => ({ receive: vi.fn<(event: { payload: boolean }) => void>(), queueChanged: vi.fn<() => void>(), invoke: vi.fn(), stop: vi.fn() }))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }))
 // Bind `native.receive` to the shutdown-state listener specifically: the boundary also
 // subscribes to the operation queue while quitting, and that second listener must not
 // steal the handle the tests use to toggle shutdown.
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async (event: string, receive: typeof native.receive) => { if (event === "silo://shutdown-state-changed") native.receive = receive; return native.stop }) }))
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async (event: string, receive: typeof native.receive) => {
+  if (event === "silo://shutdown-state-changed") native.receive = receive
+  if (event === "silo://operation-queue-changed") native.queueChanged = receive as unknown as typeof native.queueChanged
+  return native.stop
+}) }))
 beforeEach(() => { vi.clearAllMocks(); native.invoke.mockResolvedValue(false) })
 
 it("shows shutdown progress and disables the existing screen until native failure cancels Quit", async () => {
@@ -68,4 +72,22 @@ it("does not let an older snapshot replace a newer shutdown event", async () => 
   act(() => native.receive({ payload: true }))
   await act(async () => resolve(false))
   expect(screen.getByRole("status")).toBeVisible()
+})
+it("keeps the newest queue read when an earlier one answers last", async () => {
+  const entry = (id: number, label: string) => ({ id, label, vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false })
+  const reads: Array<(value: unknown) => void> = []
+  native.invoke.mockImplementation((name: string) => name === "read_operation_queue"
+    ? new Promise(resolve => { reads.push(resolve) })
+    : Promise.resolve(name === "read_shutdown_state" ? false : true))
+  render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+  await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
+  act(() => native.receive({ payload: true }))
+  await vi.waitFor(() => expect(reads).toHaveLength(1))
+  act(() => native.queueChanged())
+  await vi.waitFor(() => expect(reads).toHaveLength(2))
+  // The newer read (after the queue changed) answers first; the older, outdated read last.
+  await act(async () => reads[1]({ running: [entry(2, "Installing update")], waiting: [] }))
+  await act(async () => reads[0]({ running: [entry(1, "Backing up sandboxes")], waiting: [] }))
+  expect(screen.getByText("Waiting for Installing update…")).toBeVisible()
+  expect(screen.queryByText("Waiting for Backing up sandboxes…")).not.toBeInTheDocument()
 })

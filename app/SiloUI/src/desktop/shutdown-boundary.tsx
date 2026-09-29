@@ -43,9 +43,14 @@ export function ShutdownBoundary({ children, compact = false }: { children: Reac
     if (!quitting) return
     let disposed = false
     let unsubscribe: (() => void) | undefined
-    const read = () => invoke<unknown>("read_operation_queue")
-      .then(value => { if (!disposed) setQueue(operationQueueSchema.parse(value)) })
-      .catch(error => console.error("Silo shutdown queue:", error))
+    // Reads are not ordered: only the latest request's answer may replace the queue.
+    let sequence = 0
+    const read = () => {
+      const request = ++sequence
+      return invoke<unknown>("read_operation_queue")
+        .then(value => { if (!disposed && request === sequence) setQueue(operationQueueSchema.parse(value)) })
+        .catch(error => console.error("Silo shutdown queue:", error))
+    }
     void listen("silo://operation-queue-changed", () => { void read() }).then(stop => {
       if (disposed) { stop(); return }
       unsubscribe = stop
