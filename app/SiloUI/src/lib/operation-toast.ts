@@ -1,5 +1,22 @@
+import { createElement, useEffect, useRef } from "react"
 import { toast } from "sonner"
 
+import { OperationToastBody, type OperationProgressOptions } from "@/components/operation-toast-body"
+
+export type { OperationCancel, OperationProgressOptions, OperationStep } from "@/components/operation-toast-body"
+
+/**
+ * When to use what: ask in a popover (components/confirm-popover.tsx), do in a progress
+ * toast (this file). Popovers close immediately on confirm; the work continues in a toast
+ * with the same stable `id` (progress → success/failure replace each other in place).
+ * Dialogs are reserved for the ⌘K palette and the quit overlay.
+ *
+ *   showOperationProgress(id, { title, step, steps, progress, startedAt, cancel })
+ *   showOperationSuccess(id, title, { action })   // stays until closed
+ *   showOperationFailure(id, title, { retry })    // stays, with Retry
+ *   useOperationProgressToast(id, state)          // for backend-driven operation state
+ *
+ */
 /**
  * One consistent notification lifecycle for background actions:
  * loading → success (stays until the user closes it) or failure (stays, with Retry).
@@ -43,6 +60,48 @@ export function showOperationFailure(id: string, title: string, options: { descr
     closeButton: true,
     action: options.retry ? { label: "Retry", onClick: options.retry } : undefined,
   })
+}
+
+/**
+ * Rich progress toast: progress bar (determinate when `progress` is 0–1, else indeterminate),
+ * current step, optional step list, elapsed time and an optional Cancel (with in-toast confirm).
+ * Call again with the same id to update in place.
+ */
+export function showOperationProgress(id: string, options: OperationProgressOptions) {
+  const { title, ...body } = options
+  toast.loading(title, { id, duration: Infinity, description: createElement(OperationToastBody, body) })
+}
+
+/** Backend-driven operation state understood by `useOperationProgressToast`. */
+export type OperationProgressState =
+  | { status: "idle" }
+  | ({ status: "running" } & OperationProgressOptions)
+  | { status: "success"; title: string; description?: string; action?: { label: string; onClick: () => void } }
+  | { status: "failure"; title: string; description?: string; retry?: () => void }
+
+/**
+ * Maps an operation state to progress/success/failure toasts under `id`. A state that is
+ * already finished when the component mounts is ignored (no stale toast); running states
+ * update in place; going back to idle dismisses a progress toast this hook showed.
+ */
+export function useOperationProgressToast(id: string, state: OperationProgressState) {
+  const previous = useRef<OperationProgressState["status"] | null>(null)
+  useEffect(() => {
+    const before = previous.current
+    previous.current = state.status
+    if (state.status === "running") {
+      const { status: _status, ...options } = state
+      showOperationProgress(id, options)
+    } else if (before === null) {
+      return
+    } else if (state.status === "success" && before !== "success") {
+      showOperationSuccess(id, state.title, { description: state.description, action: state.action })
+    } else if (state.status === "failure" && before !== "failure") {
+      showOperationFailure(id, state.title, { description: state.description, retry: state.retry })
+    } else if (state.status === "idle" && before === "running") {
+      toast.dismiss(id)
+    }
+  }, [id, state])
 }
 
 /** Run a user-initiated action with the standard loading → success/failure notifications. */
