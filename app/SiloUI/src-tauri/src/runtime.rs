@@ -2569,69 +2569,133 @@ fn safe_activity_error(error: &RuntimeError) -> String {
     }
 }
 
+/// Setup activity journals being written in this process. While one is live, the saved
+/// history is current: an unfinished last attempt is running, not interrupted.
+static LIVE_SETUP_JOURNALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Serializes writes of the setup activity file with the interruption check, so a
+/// journal starting meanwhile is never overwritten by a stale "interrupted" marker.
+static SETUP_ACTIVITY_FILE: Mutex<()> = Mutex::new(());
+
+fn setup_activity_file() -> std::sync::MutexGuard<'static, ()> {
+    SETUP_ACTIVITY_FILE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Held by a live journal; see `LIVE_SETUP_JOURNALS`.
+struct LiveSetupJournal(());
+
+impl LiveSetupJournal {
+    fn new() -> Self {
+        let _file = setup_activity_file();
+        LIVE_SETUP_JOURNALS.fetch_add(1, Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for LiveSetupJournal {
+    fn drop(&mut self) {
+        LIVE_SETUP_JOURNALS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Repeated progress within one stage (download bytes, heartbeats) is saved at most this
+/// often; stage boundaries and outcomes are saved immediately.
+const ACTIVITY_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_ACTIVITY_EVENTS: usize = 512;
+
+fn persist_activity(path: &Path, events: &impl Serialize) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or("Silo's activity storage path is invalid.")?;
+    fs::create_dir_all(parent).map_err(|_| "Silo could not prepare setup activity storage.")?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|_| "Silo could not save setup activity.")?;
+    serde_json::to_writer(&mut file, events)
+        .map_err(|_| "Silo could not encode setup activity.")?;
+    file.as_file()
+        .sync_all()
+        .map_err(|_| "Silo could not save setup activity.")?;
+    file.persist(path)
+        .map_err(|_| "Silo could not save setup activity.")?;
+    Ok(())
+}
+
 struct ActivityJournal {
     path: PathBuf,
-    events: Vec<MachineConfigurationProgress>,
+    events: std::collections::VecDeque<MachineConfigurationProgress>,
     started: Instant,
+    /// When the history was last written, and whether events arrived since.
+    persisted_at: Option<Instant>,
+    unsaved: bool,
+    _live: LiveSetupJournal,
 }
 
 impl ActivityJournal {
     fn start(paths: &RuntimePaths, _request_id: &str) -> Result<Self, String> {
         let journal = Self {
             path: activity_path(paths),
-            events: Vec::new(),
+            events: std::collections::VecDeque::new(),
             started: Instant::now(),
+            persisted_at: None,
+            unsaved: false,
+            _live: LiveSetupJournal::new(),
         };
         // Failure to retain diagnostics must not prevent the requested setup.
         // The first append publishes a visible warning if storage is unavailable.
         Ok(journal)
     }
 
-    fn persist(&self) -> Result<(), String> {
-        let parent = self
-            .path
-            .parent()
-            .ok_or("Silo's activity storage path is invalid.")?;
-        fs::create_dir_all(parent).map_err(|_| "Silo could not prepare setup activity storage.")?;
-        let mut file = tempfile::NamedTempFile::new_in(parent)
-            .map_err(|_| "Silo could not save setup activity.")?;
-        serde_json::to_writer(&mut file, &self.events)
-            .map_err(|_| "Silo could not encode setup activity.")?;
-        file.as_file()
-            .sync_all()
-            .map_err(|_| "Silo could not save setup activity.")?;
-        file.persist(&self.path)
-            .map_err(|_| "Silo could not save setup activity.")?;
-        Ok(())
+    fn persist(&mut self) -> Result<(), String> {
+        let _file = setup_activity_file();
+        self.persisted_at = Some(Instant::now());
+        self.unsaved = false;
+        persist_activity(&self.path, &self.events)
+    }
+
+    fn push(&mut self, event: MachineConfigurationProgress) {
+        // Keep the first event (the attempt's start) and drop the oldest progress after it.
+        if self.events.len() >= MAX_ACTIVITY_EVENTS {
+            self.events.remove(1);
+        }
+        self.events.push_back(event);
     }
 
     fn append(&mut self, mut event: MachineConfigurationProgress) -> MachineConfigurationProgress {
         event.elapsed_seconds = self.started.elapsed().as_secs();
         // Progress updates replace the previous update for the same stage, retaining boundaries.
-        if self.events.last().is_some_and(|last| {
+        let repeated = self.events.back().is_some_and(|last| {
             last.step == event.step
                 && last.workspace == event.workspace
                 && last.fraction.is_none()
                 && !event.step.starts_with("setup-")
-        }) {
-            self.events.pop();
+        });
+        if repeated {
+            self.events.pop_back();
         }
-        if self.events.len() >= 512 {
-            self.events.remove(1);
+        self.push(event.clone());
+        self.unsaved = true;
+        // A repeated update within one stage is saved at most every few seconds (and when
+        // the journal ends); a new stage, a boundary or an outcome is saved immediately.
+        if repeated && self.persisted_at.is_some_and(|at| at.elapsed() < ACTIVITY_PERSIST_INTERVAL) {
+            return event;
         }
-        self.events.push(event.clone());
         if self.persist().is_err() {
             let mut warning = event.clone();
             warning.level = "warning".into();
             warning.message = "Setup continues, but Silo could not retain its activity history. Copy the activity before closing Silo.".into();
             warning.step = "activity-storage-warning".into();
             warning.fraction = None;
-            if self.events.len() >= 512 {
-                self.events.remove(1);
-            }
-            self.events.push(warning);
+            self.push(warning);
         }
         event
+    }
+}
+
+impl Drop for ActivityJournal {
+    fn drop(&mut self) {
+        // Save a throttled progress update the attempt ended on.
+        if self.unsaved {
+            let _ = self.persist();
+        }
     }
 }
 
@@ -2711,12 +2775,7 @@ fn read_activity(
             events.remove(1);
         }
         events.push(interrupted);
-        ActivityJournal {
-            path,
-            events: events.clone(),
-            started: Instant::now(),
-        }
-        .persist()?;
+        persist_activity(&path, &events)?;
     }
     Ok(events)
 }
@@ -2731,10 +2790,23 @@ fn pending_verification_workspace(events: &[MachineConfigurationProgress]) -> Op
     }).filter(|event| event.fraction == Some(0)).map(|event| event.workspace.clone())
 }
 
+/// Reading may rewrite (and fsync) the journal, so it runs off the main thread.
 #[tauri::command]
-pub fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurationProgress>, String> {
-    let paths = runtime_paths(&app)?;
-    read_activity(&paths, OPERATIONS.is_idle())
+pub async fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurationProgress>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        read_setup_activity_at(&paths)
+    })
+    .await
+    .map_err(|error| format!("Setup activity worker failed: {error}"))?
+}
+
+/// An unfinished last attempt was interrupted only when no setup journal is being
+/// written in this process. Unrelated work (launch auto-start, hidden housekeeping, other
+/// sandboxes) does not make an interrupted setup look in progress.
+fn read_setup_activity_at(paths: &RuntimePaths) -> Result<Vec<MachineConfigurationProgress>, String> {
+    let _file = setup_activity_file();
+    read_activity(paths, LIVE_SETUP_JOURNALS.load(Ordering::SeqCst) == 0)
 }
 
 fn normalize_request_id(request_id: Option<String>) -> Result<String, String> {
@@ -2774,7 +2846,7 @@ fn apply_configuration_with_progress(
     let publish = |event: MachineConfigurationProgress| {
         let mut journal = journal.lock().unwrap_or_else(|error| error.into_inner());
         let event = journal.append(event);
-        if let Some(warning) = journal.events.last().filter(|entry| entry.step == "activity-storage-warning") {
+        if let Some(warning) = journal.events.back().filter(|entry| entry.step == "activity-storage-warning") {
             let _ = app.emit_to("main", "silo://machine-configuration-progress", warning);
         }
         let _ = app.emit_to("main", "silo://machine-configuration-progress", &event);
@@ -2824,7 +2896,7 @@ fn apply_configuration_with_progress(
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .events
-            .last()
+            .back()
             .cloned();
         if let Some(last) = last {
             outcome.workspace = last.workspace;
@@ -4842,6 +4914,70 @@ esac
     }
 
     #[test]
+    fn setup_activity_is_interrupted_only_when_no_setup_journal_is_live() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+        journal.append(machine_progress("attempt", "setup-started", "", 0));
+        journal.append(machine_progress("attempt", "workspace-configuration", "dev", 0));
+        // While the setup runs, its unfinished history is current, not interrupted.
+        let running = read_setup_activity_at(&paths).unwrap();
+        assert_eq!(running.last().unwrap().step, "workspace-configuration");
+        drop(journal);
+        // Unrelated work, such as a launch auto-start on another sandbox, does not make an
+        // interrupted setup look in progress.
+        let _launch = OPERATIONS.vm("setup-activity-other-id", "other", "Starting other").unwrap();
+        let recovered = read_setup_activity_at(&paths).unwrap();
+        assert_eq!(recovered.last().unwrap().step, "setup-interrupted");
+        assert_eq!(read_activity(&paths, false).unwrap().len(), 3);
+    }
+
+    fn download_progress(bytes: u64) -> MachineConfigurationProgress {
+        let mut event = machine_progress("attempt", "image-download", "dev", 0);
+        event.step = "image-download".into();
+        event.fraction = None;
+        event.downloaded_bytes = Some(bytes);
+        event
+    }
+
+    #[test]
+    fn repeated_progress_is_saved_at_stage_boundaries_and_when_the_journal_ends() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let saved_bytes = || read_activity(&paths, false).unwrap().iter().rev()
+            .find(|event| event.step == "image-download").and_then(|event| event.downloaded_bytes);
+        let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+        journal.append(machine_progress("attempt", "setup-started", "", 0));
+        journal.append(download_progress(1));
+        assert_eq!(saved_bytes(), Some(1), "a new stage is saved immediately");
+        journal.append(download_progress(2));
+        journal.append(download_progress(3));
+        assert_eq!(saved_bytes(), Some(1), "repeated progress within a stage is throttled");
+        assert_eq!(journal.events.len(), 2, "repeated progress replaces the previous update");
+        journal.append(machine_progress("attempt", "workspace-configuration", "dev", 1));
+        assert_eq!(saved_bytes(), Some(3), "a boundary saves the latest progress with it");
+        journal.append(download_progress(4));
+        journal.append(download_progress(5));
+        drop(journal);
+        assert_eq!(saved_bytes(), Some(5), "the last update is saved when the journal ends");
+    }
+
+    #[test]
+    fn a_full_journal_keeps_its_first_event_and_drops_the_oldest_progress() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = ActivityJournal::start(&paths(&directory), "attempt").unwrap();
+        journal.append(machine_progress("attempt", "setup-started", "", 0));
+        for index in 0..MAX_ACTIVITY_EVENTS {
+            let name = format!("vm{index}");
+            journal.append(machine_progress("attempt", "workspace-configuration", &name, 0));
+        }
+        assert_eq!(journal.events.len(), MAX_ACTIVITY_EVENTS);
+        assert_eq!(journal.events[0].step, "setup-started");
+        assert_eq!(journal.events[1].workspace, "vm1");
+        assert_eq!(journal.events.back().unwrap().workspace, format!("vm{}", MAX_ACTIVITY_EVENTS - 1));
+    }
+
+    #[test]
     fn activity_does_not_publish_private_runtime_error_details() {
         let error = RuntimeError::Failed { operation: "Creating the sandbox".into(), detail: "error sending request https://user:SECRET@registry.test/image?token=SECRET /Users/alice/private".into() };
         let safe = safe_activity_error(&error);
@@ -4865,7 +5001,7 @@ esac
         ));
         assert_eq!(event.fraction, Some(1));
         assert_eq!(
-            journal.events.last().unwrap().step,
+            journal.events.back().unwrap().step,
             "activity-storage-warning"
         );
         assert!(journal.events.iter().any(|event| event.fraction == Some(1)));
