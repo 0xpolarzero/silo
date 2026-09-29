@@ -25,6 +25,88 @@ struct Viewer {
     workspace: String,
     proxy: Option<Proxy>,
     tunnel: Option<Tunnel>,
+    /// Bumped whenever the connection is replaced or torn down, so a connect
+    /// that finishes after a close or a newer attach cannot install itself.
+    generation: u64,
+    connecting: bool,
+}
+impl Viewer {
+    fn new(workspace: String) -> Self {
+        Self { workspace, proxy: None, tunnel: None, generation: 0, connecting: false }
+    }
+    /// Takes the connection out so the caller can drop it after unlocking.
+    fn disconnect(&mut self) -> (Option<Proxy>, Option<Tunnel>) {
+        self.generation += 1;
+        self.connecting = false;
+        (self.proxy.take(), self.tunnel.take())
+    }
+    fn healthy(&mut self) -> bool {
+        self.proxy.is_some()
+            && self
+                .tunnel
+                .as_mut()
+                .is_some_and(|tunnel| matches!(tunnel.0.try_wait(), Ok(None)))
+    }
+}
+/// What `desktop_viewer_attach` must do once the registry lock is released.
+enum AttachPlan {
+    /// The display is connected; only its bounds change.
+    Resize,
+    /// Connect a new display and install it only if `generation` still matches.
+    Connect { generation: u64, stale: (Option<Proxy>, Option<Tunnel>) },
+}
+/// Decides under the registry lock; every slow step runs after it is released.
+/// Holding the lock across `connect()` or `add_child()` deadlocks the main
+/// thread's `Destroyed` handler (G-01).
+fn begin_attach(
+    entries: &mut HashMap<String, Viewer>,
+    label: &str,
+    workspace: &str,
+    has_view: bool,
+) -> Result<AttachPlan, String> {
+    let entry = entries
+        .get_mut(label)
+        .filter(|v| v.workspace == workspace)
+        .ok_or("Desktop viewer closed.")?;
+    if entry.connecting {
+        return Err("The desktop is still connecting.".into());
+    }
+    if has_view && entry.healthy() {
+        return Ok(AttachPlan::Resize);
+    }
+    let stale = entry.disconnect();
+    entry.connecting = true;
+    Ok(AttachPlan::Connect { generation: entry.generation, stale })
+}
+/// Installs a finished connection, or hands it back when the viewer closed or
+/// was reset meanwhile so the caller can discard it outside the lock.
+fn finish_attach(
+    entries: &mut HashMap<String, Viewer>,
+    label: &str,
+    generation: u64,
+    proxy: Option<Proxy>,
+    tunnel: Option<Tunnel>,
+) -> Result<(), (Option<Proxy>, Option<Tunnel>)> {
+    match entries
+        .get_mut(label)
+        .filter(|v| v.connecting && v.generation == generation)
+    {
+        Some(entry) => {
+            entry.connecting = false;
+            entry.proxy = proxy;
+            entry.tunnel = tunnel;
+            Ok(())
+        }
+        None => Err((proxy, tunnel)),
+    }
+}
+fn abort_attach(entries: &mut HashMap<String, Viewer>, label: &str, generation: u64) {
+    if let Some(entry) = entries
+        .get_mut(label)
+        .filter(|v| v.connecting && v.generation == generation)
+    {
+        entry.connecting = false;
+    }
 }
 static VIEWERS: OnceLock<Mutex<HashMap<String, Viewer>>> = OnceLock::new();
 fn viewers() -> &'static Mutex<HashMap<String, Viewer>> {
@@ -177,14 +259,7 @@ pub(crate) async fn open_desktop(
             .append_pair("desktop", &workspace)
             .append_pair("name", &name);
         let route = format!("index.html?{}", route.query().unwrap());
-        entries.insert(
-            label.clone(),
-            Viewer {
-                workspace,
-                proxy: None,
-                tunnel: None,
-            },
-        );
+        entries.insert(label.clone(), Viewer::new(workspace));
         drop(entries);
         let result = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(route.into()))
             .title(format!("{name} — Silo"))
@@ -200,9 +275,10 @@ pub(crate) async fn open_desktop(
         };
         viewer.on_window_event(move |event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
-                if let Ok(mut entries) = viewers().lock() {
-                    entries.remove(&label);
-                }
+                // Attach never holds the lock across window work, so this cannot
+                // wait on the main thread; reap the tunnel after unlocking.
+                let removed = viewers().lock().ok().and_then(|mut e| e.remove(&label));
+                drop(removed);
             }
         });
         Ok(())
@@ -294,19 +370,15 @@ pub(crate) async fn desktop_viewer_attach(
         #[cfg(not(target_os = "macos"))]
         let inset_y = 0.;
         let position = desktop_position(shell_origin.x, shell_origin.y, scale, x, y + inset_y)?;
-        let mut entries = viewers().lock().map_err(|_| "Desktop unavailable.")?;
-        let entry = entries
-            .get_mut(window.label())
-            .filter(|v| v.workspace == workspace)
-            .ok_or("Desktop viewer closed.")?;
         let label = format!("guest-{}", window.label());
-        if let Some(view) = app.get_webview(&label) {
-            if entry.proxy.is_some()
-                && entry
-                    .tunnel
-                    .as_mut()
-                    .is_some_and(|tunnel| matches!(tunnel.0.try_wait(), Ok(None)))
-            {
+        let existing = app.get_webview(&label);
+        let plan = {
+            let mut entries = viewers().lock().map_err(|_| "Desktop unavailable.")?;
+            begin_attach(&mut entries, window.label(), &workspace, existing.is_some())?
+        };
+        let generation = match plan {
+            AttachPlan::Resize => {
+                let view = existing.ok_or("Desktop viewer closed.")?;
                 return view
                     .set_bounds(tauri::Rect {
                         position: position.into(),
@@ -314,11 +386,22 @@ pub(crate) async fn desktop_viewer_attach(
                     })
                     .map_err(|_| "Could not resize desktop.".into());
             }
-            entry.proxy = None;
-            entry.tunnel = None;
-            view.close().map_err(|_| "Could not reconnect desktop.")?;
+            AttachPlan::Connect { generation, stale } => {
+                drop(stale);
+                generation
+            }
+        };
+        let abort = |message: &str| -> String {
+            if let Ok(mut entries) = viewers().lock() {
+                abort_attach(&mut entries, window.label(), generation);
+            }
+            message.into()
+        };
+        if let Some(view) = existing {
+            view.close()
+                .map_err(|_| abort("Could not reconnect desktop."))?;
         }
-        let (proxy, tunnel) = connect(&app, &workspace)?;
+        let (proxy, tunnel) = connect(&app, &workspace).map_err(|e| abort(&e))?;
         let origin = format!("http://127.0.0.1:{}", proxy.port);
         let permitted = origin.clone();
         let builder = WebviewBuilder::new(
@@ -333,7 +416,7 @@ pub(crate) async fn desktop_viewer_attach(
         });
         let view = window
             .add_child(builder, position, LogicalSize::new(width, height))
-            .map_err(|_| "Could not create desktop display.")?;
+            .map_err(|_| abort("Could not create desktop display."))?;
         let cookie =
             tauri::webview::Cookie::build((proxy.cookie_name.clone(), proxy.token.clone()))
                 .domain("127.0.0.1")
@@ -342,12 +425,21 @@ pub(crate) async fn desktop_viewer_attach(
                 .build();
         if view.set_cookie(cookie).is_err() || view.navigate(viewer_url(&origin)).is_err() {
             let _ = view.close();
-            return Err("Could not authenticate desktop viewer.".into());
+            return Err(abort("Could not authenticate desktop viewer."));
+        }
+        let rejected = match viewers().lock() {
+            Ok(mut entries) => {
+                finish_attach(&mut entries, window.label(), generation, Some(proxy), tunnel).err()
+            }
+            Err(_) => Some((Some(proxy), tunnel)),
+        };
+        if let Some(stale) = rejected {
+            drop(stale);
+            let _ = view.close();
+            return Err("Desktop viewer closed.".into());
         }
         view.set_focus()
             .map_err(|_| "Could not focus desktop display.")?;
-        entry.proxy = Some(proxy);
-        entry.tunnel = tunnel;
         Ok(())
     })
     .await
@@ -356,46 +448,41 @@ pub(crate) async fn desktop_viewer_attach(
 #[tauri::command]
 pub(crate) async fn desktop_viewer_detach(app: AppHandle, window: Window) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut entries = viewers().lock().map_err(|_| "Desktop unavailable.")?;
-        let entry = entries
+        let stale = viewers()
+            .lock()
+            .map_err(|_| "Desktop unavailable.")?
             .get_mut(window.label())
-            .ok_or("Unknown desktop viewer.")?;
+            .ok_or("Unknown desktop viewer.")?
+            .disconnect();
+        drop(stale);
         if let Some(view) = app.get_webview(&format!("guest-{}", window.label())) {
             let _ = view.close();
         }
-        entry.proxy = None;
-        entry.tunnel = None;
         Ok(())
     })
     .await
     .map_err(|_| "Desktop disconnect failed.")?
 }
+fn disconnect_matching(matches: impl Fn(&Viewer) -> bool) {
+    let stale: Vec<_> = match viewers().lock() {
+        Ok(mut entries) => entries
+            .values_mut()
+            .filter(|entry| matches(entry))
+            .map(Viewer::disconnect)
+            .collect(),
+        Err(_) => return,
+    };
+    drop(stale);
+}
 pub(crate) fn close_all() {
-    if let Ok(mut entries) = viewers().lock() {
-        for entry in entries.values_mut() {
-            entry.proxy = None;
-            entry.tunnel = None;
-        }
-    }
+    disconnect_matching(|_| true);
 }
 pub(crate) fn close_workspace(workspace: &str) {
-    if let Ok(mut entries) = viewers().lock() {
-        for entry in entries.values_mut().filter(|entry| entry.workspace == workspace) {
-            entry.proxy = None;
-            entry.tunnel = None;
-        }
-    }
+    disconnect_matching(|entry| entry.workspace == workspace);
 }
 pub(crate) fn close_host(host: &str) {
-    if let Ok(mut entries) = viewers().lock() {
-        for entry in entries
-            .values_mut()
-            .filter(|v| v.workspace.starts_with(&format!("silo-remote:{host}:")))
-        {
-            entry.proxy = None;
-            entry.tunnel = None;
-        }
-    }
+    let prefix = format!("silo-remote:{host}:");
+    disconnect_matching(|entry| entry.workspace.starts_with(&prefix));
 }
 
 #[cfg(test)]
@@ -508,5 +595,81 @@ mod transport_tests {
         drop(Tunnel(child));
         assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
         assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    fn registry() -> HashMap<String, Viewer> {
+        HashMap::from([("shell".to_string(), Viewer::new("dev".into()))])
+    }
+    fn live_tunnel() -> Tunnel {
+        Tunnel(std::process::Command::new("sleep").arg("30").spawn().unwrap())
+    }
+
+    #[test]
+    fn a_viewer_closed_while_connecting_rejects_the_late_connection() {
+        let mut entries = registry();
+        let AttachPlan::Connect { generation, .. } =
+            begin_attach(&mut entries, "shell", "dev", false).unwrap()
+        else {
+            panic!("expected a connect plan");
+        };
+        // The lock is free while connecting: the Destroyed handler removes it.
+        entries.remove("shell");
+        let (_, tunnel) = finish_attach(&mut entries, "shell", generation, None, Some(live_tunnel()))
+            .expect_err("closed viewer must not accept the connection");
+        assert!(tunnel.is_some(), "the caller reaps the rejected tunnel");
+    }
+
+    #[test]
+    fn a_reset_during_connect_discards_the_stale_connection() {
+        let mut entries = registry();
+        let AttachPlan::Connect { generation, .. } =
+            begin_attach(&mut entries, "shell", "dev", false).unwrap()
+        else {
+            panic!("expected a connect plan");
+        };
+        assert!(begin_attach(&mut entries, "shell", "dev", false).is_err());
+        entries.get_mut("shell").unwrap().disconnect();
+        assert!(finish_attach(&mut entries, "shell", generation, None, None).is_err());
+        assert!(matches!(
+            begin_attach(&mut entries, "shell", "dev", false),
+            Ok(AttachPlan::Connect { .. })
+        ));
+    }
+
+    #[test]
+    fn a_finished_connection_is_installed_and_later_attaches_only_resize() {
+        let mut entries = registry();
+        let AttachPlan::Connect { generation, .. } =
+            begin_attach(&mut entries, "shell", "dev", false).unwrap()
+        else {
+            panic!("expected a connect plan");
+        };
+        assert!(finish_attach(&mut entries, "shell", generation, None, Some(live_tunnel())).is_ok());
+        let entry = entries.get_mut("shell").unwrap();
+        assert!(!entry.connecting);
+        assert!(entry.tunnel.is_some());
+        // Without a proxy the display is not healthy, so attach reconnects.
+        assert!(matches!(
+            begin_attach(&mut entries, "shell", "dev", true),
+            Ok(AttachPlan::Connect { stale: (_, Some(_)), .. })
+        ));
+        assert!(begin_attach(&mut entries, "shell", "other", true).is_err());
+    }
+
+    #[test]
+    fn a_failed_connect_clears_the_connecting_mark() {
+        let mut entries = registry();
+        let AttachPlan::Connect { generation, .. } =
+            begin_attach(&mut entries, "shell", "dev", false).unwrap()
+        else {
+            panic!("expected a connect plan");
+        };
+        abort_attach(&mut entries, "shell", generation);
+        assert!(begin_attach(&mut entries, "shell", "dev", false).is_ok());
     }
 }
