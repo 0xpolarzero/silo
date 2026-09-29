@@ -290,13 +290,8 @@ jobs:
             bundle_config_args=()
           fi
           python3 scripts/measure-command.py release-bundle -- python3 scripts/retry-bundle.py --log "$RUNNER_TEMP/silo-bundle.log" -- npx tauri bundle --target '${{ inputs.target }}' --bundles '${{ inputs.bundles }}' --ci --verbose "${bundle_config_args[@]}"
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: bundle-diagnostics-${{ inputs.asset }}
-          path: ${{ runner.temp }}/silo-bundle.log
-          if-no-files-found: ignore
-          retention-days: 7
+      # The verbose bundle log stays on the runner: it can contain signing and
+      # build configuration details (see scripts/retry-bundle.py).
       - name: Enforce exact macOS runtime libraries and rebuild signed packages
         if: runner.os == 'macOS'
         env:
