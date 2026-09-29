@@ -23,7 +23,7 @@ export type BackupOperation = {
   targetName?: string
 } & (
   | { kind: "running"; progress: number; indeterminate?: boolean; canCancel?: boolean; phases: BackupPhase[] }
-  | { kind: "result"; outcome: "success" | "failed" | "restart-required" | "cancelled"; title: string; message: string; detail?: string }
+  | { kind: "result"; outcome: "success" | "failed" | "cancelled"; title: string; message: string; detail?: string }
 )
 
 export interface BackupState {
@@ -86,7 +86,6 @@ export interface BackupActions {
   exportAndVerify: (destination: string, sandboxes: string[], checkpointId?: string) => Promise<VerifiedExport>
   startRestore: (archive: BackupArchive, newName: string, sourceName?: string) => void
   cancelOperation: () => void
-  retryStart: (sandbox: string) => void
   dismissOperation: () => void
   /** Reveal a completed export in Finder (macOS) or the file manager (Linux). */
   revealArchive: (archive: BackupArchive) => Promise<void>

@@ -129,7 +129,6 @@ fn main() {
             "configure_workspace_identities",
             "verify_workspace_identities",
             "workspace_action",
-            "retry_workspace_start",
             "retry_machine_configuration",
             "change_machine_configuration",
             "read_setup_activity",

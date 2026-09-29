@@ -26,7 +26,7 @@ function native(overrides: Partial<ProductionBridge> = {}) {
   const invoke = vi.fn(async (command: string, _arguments_?: Record<string, unknown>): Promise<unknown> => {
     if (command === "read_application_state") return structuredClone(source)
     if (command === "read_backup_state") return structuredClone(backup)
-    if (command === "workspace_action" || command === "retry_workspace_start") return structuredClone(source)
+    if (command === "workspace_action") return structuredClone(source)
     return undefined
   })
   const listen = vi.fn(async (_name: string, handler: () => void) => { event = handler; return () => { event = null } })

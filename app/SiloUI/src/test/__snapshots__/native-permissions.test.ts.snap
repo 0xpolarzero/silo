@@ -58,7 +58,6 @@ exports[`native command permissions > pins every non-main window grant 1`] = `
       "allow-remote-workspace-action",
       "allow-repository-push-status",
       "allow-resize-status",
-      "allow-retry-workspace-start",
       "allow-start-repository-push",
       "allow-update-tray",
       "allow-workspace-action",

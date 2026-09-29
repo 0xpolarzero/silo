@@ -96,12 +96,13 @@ impl Journal {
             Some(result) => Operation::Result {
                 operation: self.kind(),
                 archive: self.archive.clone(),
-                running_names: result.running.clone(),
+                running_names: Vec::new(),
                 target_name: self.target(),
                 outcome: match result.outcome.as_str() {
-                    "success" => "success",
+                    // Older builds reported a complete export whose sandbox did not
+                    // restart as "restart-required"; exports no longer stop sandboxes.
+                    "success" | "restart-required" => "success",
                     "cancelled" => "cancelled",
-                    "restart-required" => "restart-required",
                     _ => "failed",
                 },
                 title: result.title.clone(),
@@ -408,7 +409,7 @@ pub(super) fn complete(controller: &Controller, mut operation: Operation) -> Ope
             outcome, message, ..
         } = &mut operation
         {
-            if !matches!(*outcome, "success" | "restart-required") {
+            if *outcome != "success" {
                 message
                     .push_str(" Saved progress was preserved. Relaunch Silo to finish recovery.");
                 return operation;
@@ -931,21 +932,43 @@ mod tests {
                 operation: "backup",
                 archive: completed_archive(),
                 target_name: None,
-                running_names: vec!["dev".into()],
-                outcome: "restart-required",
-                title: "Backup complete; restart failed".into(),
-                message: "Restart dev to continue.".into(),
+                running_names: vec![],
+                outcome: "success",
+                title: "Export complete".into(),
+                message: "Sandbox exported.".into(),
                 detail: None,
             },
         );
-        assert!(
-            matches!(load(&path).unwrap().unwrap().operation(), Operation::Result { outcome: "restart-required", running_names, .. } if running_names == ["dev"])
-        );
+        assert!(matches!(
+            load(&path).unwrap().unwrap().operation(),
+            Operation::Result { outcome: "success", .. }
+        ));
         begin(
             &controller,
             Journal::backup(completed_archive(), vec!["dev".into()], None),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn a_saved_restart_required_result_from_an_older_silo_reads_as_a_completed_export() {
+        // Older builds could end an export as "restart-required" (the export was
+        // complete; a sandbox did not restart). That outcome no longer exists.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let mut journal = Journal::backup(completed_archive(), vec!["dev".into()], None);
+        journal.terminal = Some(Terminal {
+            outcome: "restart-required".into(),
+            title: "Export complete; restart failed".into(),
+            message: "The export is complete and verified, but a previously running sandbox did not restart.".into(),
+            detail: Some("dev: start failed".into()),
+            running: vec!["dev".into()],
+        });
+        write(&path, &journal).unwrap();
+        let operation = load(&path).unwrap().unwrap().operation();
+        let serialized = serde_json::to_value(&operation).unwrap();
+        assert_eq!(serialized["outcome"], "success");
+        assert_eq!(serialized["runningNames"], serde_json::json!([]));
     }
 
     #[test]

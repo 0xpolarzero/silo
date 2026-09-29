@@ -191,14 +191,10 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
       return
     }
 
-    // failed or restart-required: persistent, actionable.
+    // Failed: persistent, actionable.
     const description = <div className="grid gap-1"><p>{operation.message}</p>{operation.detail && <p className="text-muted-foreground">{operation.detail}</p>}</div>
-    const retry = operation.outcome === "restart-required"
-      ? { label: "Retry start", onClick: () => backupRef.current.actions.retryStart(operation.runningNames[0]) }
-      : retryRef.current
-      ? { label: "Retry", onClick: () => retryRef.current?.() }
-      : undefined
-    showOperationFailure(TRANSFER_TOAST_ID, operation.title, { description, action: retry, onDismiss: dismiss, tone: operation.outcome === "restart-required" ? "warning" : "error", native: false })
+    const retry = retryRef.current ? { label: "Retry", onClick: () => retryRef.current?.() } : undefined
+    showOperationFailure(TRANSFER_TOAST_ID, operation.title, { description, action: retry, onDismiss: dismiss, tone: "error", native: false })
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [backup.state.operation])
 

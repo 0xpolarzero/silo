@@ -126,7 +126,7 @@ const backupArchiveShape = z.object({
 const backupPhaseShape = z.object({ title: z.string(), detail: z.string(), tone: z.enum(["waiting", "running", "succeeded", "failed"]) }).strict()
 const backupOperationShape = z.discriminatedUnion("kind", [
   z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("running"), progress: z.number().min(0).max(100), indeterminate: z.boolean().optional(), canCancel: z.boolean().optional(), phases: z.array(backupPhaseShape) }).strict(),
-  z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("result"), outcome: z.enum(["success", "failed", "restart-required", "cancelled"]), title: z.string(), message: z.string(), detail: z.string().optional() }).strict(),
+  z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("result"), outcome: z.enum(["success", "failed", "cancelled"]), title: z.string(), message: z.string(), detail: z.string().optional() }).strict(),
 ])
 const backupStateShape = z.object({
   snapshotId: z.string(), operationId: z.string().optional(), availability: z.enum(["available", "unavailable"]), availabilityMessage: z.string().optional(),
@@ -1346,13 +1346,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       }).finally(() => { pendingBackupOperation = false })
     },
     cancelOperation() { void native.invoke("cancel_backup_operation").then(() => refresh()).catch((cause) => reportUnavailable(`Backup cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
-    retryStart(name) {
-      void native.invoke<unknown>("retry_workspace_start", { name }).then((result) => {
-        const source = parseMutationSource(result)
-        publish({ ...snapshot, source, error: null })
-        return refresh()
-      }).catch((cause) => setWorkspaceFailure("start", name, cause))
-    },
     async revealArchive(archive) {
       await native.invoke("reveal_backup_archive", { archivePath: archive.archivePath })
     },

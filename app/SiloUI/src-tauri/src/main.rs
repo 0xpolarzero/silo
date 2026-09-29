@@ -201,7 +201,6 @@ fn main() {
             runtime::checkpoints::create_checkpoint,
             runtime::checkpoints::fork_checkpoint,
             runtime::checkpoints::restore_checkpoint,
-            backup_controller::retry_workspace_start,
             runtime::read_setup_activity,
             runtime::read_operation_queue,
             runtime::cancel_operation,

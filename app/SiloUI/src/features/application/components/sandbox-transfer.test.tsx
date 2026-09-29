@@ -15,7 +15,7 @@ const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backu
 function controller(overrides: Partial<BackupController["state"]> = {}, actions: Partial<BackupController["actions"]> = {}): BackupController {
   return {
     state: { snapshotId: "1", availability: "available", archives: [archive], operation: null, ...overrides },
-    actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn(), inspectArchive: vi.fn(), startBackup: vi.fn(), exportAndVerify: vi.fn().mockReturnValue(new Promise(() => {})), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn(), revealArchive: vi.fn().mockResolvedValue(undefined), ...actions },
+    actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn(), inspectArchive: vi.fn(), startBackup: vi.fn(), exportAndVerify: vi.fn().mockReturnValue(new Promise(() => {})), startRestore: vi.fn(), cancelOperation: vi.fn(), dismissOperation: vi.fn(), revealArchive: vi.fn().mockResolvedValue(undefined), ...actions },
   }
 }
 

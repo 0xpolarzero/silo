@@ -542,9 +542,8 @@ fn authorize_reveal(
         .any(|archive| archive.archive_path == requested)
         || matches!(
             operation,
-            Some(Operation::Result { outcome, archive, .. })
-                if matches!(*outcome, "success" | "restart-required")
-                    && archive.archive_path == requested
+            Some(Operation::Result { outcome: "success", archive, .. })
+                if archive.archive_path == requested
         );
     if !known {
         return Err(UNAVAILABLE.into());
@@ -873,7 +872,7 @@ fn run_backup(
         &cancellation,
     );
     let mut operation = match result {
-        Ok((archive, restart_failures)) if restart_failures.is_empty() => Operation::Result {
+        Ok(archive) => Operation::Result {
             operation: "backup",
             archive,
             running_names: Vec::new(),
@@ -883,13 +882,6 @@ fn run_backup(
             message: "Sandbox exported.".into(),
             detail: None,
         },
-        Ok((archive, restart_failures)) => {
-            let names = restart_failures
-                .iter()
-                .map(|failure| failure.sandbox.clone())
-                .collect::<Vec<_>>();
-            Operation::Result { operation: "backup", archive, running_names: names, target_name: None, outcome: "restart-required", title: "Export complete; restart failed".into(), message: "The export is complete and verified, but a previously running sandbox did not restart.".into(), detail: Some(restart_failures.into_iter().map(|failure| format!("{}: {}", failure.sandbox, failure.detail)).collect::<Vec<_>>().join("\n")) }
-        }
         Err(error) => Operation::Result {
             operation: "backup",
             archive: pending_archive,
@@ -920,7 +912,7 @@ fn run_backup(
         ..
     } = &mut operation
     {
-        if matches!(*outcome, "success" | "restart-required") {
+        if *outcome == "success" {
             if let Err(error) = record_archive(&controller, archive) {
                 *outcome = "failed";
                 *title = "Export saved; history update failed".into();
@@ -990,7 +982,7 @@ fn backup_work(
     names: &[String],
     checkpoint_id: Option<&str>,
     cancellation: &backup::Cancellation,
-) -> Result<(Archive, Vec<backup::RestartFailure>), String> {
+) -> Result<Archive, String> {
     let _guard = mutation_guard(cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true)?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
@@ -1044,19 +1036,15 @@ fn backup_work(
         },
         cancellation,
         recovery::token(controller)?.as_deref(),
-    );
-    // Reconcile failed stop or restart attempts once cleanup has settled too.
-    crate::ssh_access::reconcile(&paths);
-    let result = result.map_err(|error| error.to_string())?;
+    )
+    .map_err(|error| error.to_string())?;
+    // Exports capture running sandboxes in place; they never stop or restart one.
     let inspection = backup::ArchiveInspection {
         created_at_ms: result.created_at_ms,
         size_bytes: result.size_bytes,
         sandboxes: result.sandboxes,
     };
-    Ok((
-        archive_from(&result.destination, &inspection),
-        result.restart_failures,
-    ))
+    Ok(archive_from(&result.destination, &inspection))
 }
 
 fn backup_volumes(
@@ -1698,54 +1686,6 @@ fn dismiss_finished_operation(
     Ok(view.operation.take().is_some())
 }
 
-#[tauri::command]
-pub(crate) async fn retry_workspace_start(
-    app: AppHandle,
-    controller: State<'_, Arc<Controller>>,
-    name: String,
-) -> Result<runtime::ApplicationSource, String> {
-    let source = runtime::workspace_action(app.clone(), "start".into(), name.clone(), None).await?;
-    let paths = runtime::runtime_paths(&app)?;
-    if inspect(&paths, &name)?.status != "Running" {
-        return Err(format!(
-            "{name} has not reached Running. The restart failure remains unresolved."
-        ));
-    }
-    {
-        let mut view = controller
-            .view
-            .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
-        if let Some(Operation::Result {
-            operation,
-            running_names,
-            outcome,
-            title,
-            message,
-            detail,
-            ..
-        }) = view.operation.as_mut()
-        {
-            if *operation == "backup" && *outcome == "restart-required" {
-                running_names.retain(|candidate| candidate != &name);
-                if running_names.is_empty() {
-                    *outcome = "success";
-                    *title = "Export complete".into();
-                    *message = "The export is complete and all previously running sandboxes are running again.".into();
-                    *detail = None;
-                } else {
-                    *message = format!(
-                        "The export is complete. {} still require a manual restart.",
-                        running_names.join(", ")
-                    );
-                }
-            }
-        }
-    }
-    publish(&app, &controller);
-    Ok(source)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1942,10 +1882,12 @@ mod tests {
         let mut archive = completed_archive();
         archive.archive_path = path.clone();
 
-        for outcome in ["success", "restart-required"] {
+        let operation = completed_operation(archive.clone(), "success");
+        let resolved = authorize_reveal(Some(&operation), &[], &path).unwrap();
+        assert_eq!(resolved, file);
+        for outcome in ["restart-required", "cancelled"] {
             let operation = completed_operation(archive.clone(), outcome);
-            let resolved = authorize_reveal(Some(&operation), &[], &path).unwrap();
-            assert_eq!(resolved, file);
+            assert!(authorize_reveal(Some(&operation), &[], &path).is_err());
         }
     }
 
