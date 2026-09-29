@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from "react"
 
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 
 /**
@@ -32,6 +33,8 @@ interface PopoverShellProps {
   children?: ReactNode
   /** External anchor: the popover positions against this instead of a trigger. */
   anchor?: ReactNode
+  /** Tooltip for the trigger. It stays closed while the popover is open and does not reappear when focus returns. */
+  tooltip?: ReactNode
   /** Forwarded to the anchor element, so popovers can be nested around one button. */
   ref?: Ref<HTMLElement>
 }
@@ -48,7 +51,7 @@ function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
   else if (ref) ref.current = value
 }
 
-function Shell({ open, setOpen, children, anchor, anchorRef, align, side, content }: {
+function Shell({ open, setOpen, children, anchor, anchorRef, align, side, content, tooltip }: {
   anchorRef?: Ref<HTMLElement>
   open: boolean
   setOpen: (open: boolean) => void
@@ -57,22 +60,32 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
   align: "start" | "center" | "end"
   side: "top" | "right" | "bottom" | "left"
   content: ReactNode
+  tooltip?: ReactNode
 }) {
   const element = useRef<HTMLElement | null>(null)
   const setElement = (node: HTMLElement | null) => { element.current = node; assignRef(anchorRef, node) }
-  // A hover/focus tooltip on the trigger sits above the popover in Radix's layer stack and would
-  // swallow the first Escape. Close the popover ourselves so one Escape always dismisses it.
-  useEffect(() => {
-    if (!open) return
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape" && document.querySelector('[role="tooltip"]')) setOpen(false)
-    }
-    document.addEventListener("keydown", onKeyDown, true)
-    return () => document.removeEventListener("keydown", onKeyDown, true)
-  })
-  return <Popover open={open} onOpenChange={setOpen}>
-    {anchor ? <PopoverAnchor asChild ref={setElement}>{anchor}</PopoverAnchor> : children ? <PopoverTrigger asChild>{children}</PopoverTrigger> : null}
-    <PopoverContent align={align} side={side} className="w-64 p-3 text-xs" onCloseAutoFocus={(event) => { if (anchor) { event.preventDefault(); element.current?.focus() } }}>
+  const contentElement = useRef<HTMLDivElement | null>(null)
+  const [tooltipOpen, setTooltipOpen] = useState(false)
+  const quietUntil = useRef(0)
+  function changeOpen(next: boolean) {
+    // Dismissal returns focus to the trigger; that must not pop its tooltip back up.
+    if (!next) quietUntil.current = Date.now() + 400
+    if (next) setTooltipOpen(false)
+    setOpen(next)
+  }
+  const trigger = anchor ? <PopoverAnchor asChild ref={setElement}>{anchor}</PopoverAnchor> : children ? <PopoverTrigger asChild>{children}</PopoverTrigger> : null
+  return <Popover open={open} onOpenChange={changeOpen}>
+    {tooltip && trigger
+      ? <Tooltip open={tooltipOpen && !open} onOpenChange={(next) => { if (!next || (!open && Date.now() >= quietUntil.current)) setTooltipOpen(next) }}>
+        <TooltipTrigger asChild><span className="inline-flex">{trigger}</span></TooltipTrigger>
+        <TooltipContent>{tooltip}</TooltipContent>
+      </Tooltip>
+      : trigger}
+    <PopoverContent ref={contentElement} align={align} side={side} collisionPadding={8} className="w-64 p-3 text-xs" onOpenAutoFocus={(event) => {
+      // Move focus into the popover ourselves so Escape and Enter always act on it.
+      event.preventDefault()
+      contentElement.current?.querySelector<HTMLElement>("[data-popover-initial-focus], input, textarea, select")?.focus()
+    }} onCloseAutoFocus={(event) => { if (anchor) { event.preventDefault(); element.current?.focus() } }}>
       {content}
     </PopoverContent>
   </Popover>
@@ -99,7 +112,7 @@ export function ConfirmBody({ title, description, confirmLabel, cancelLabel = "C
     {description && <div className="text-muted-foreground">{description}</div>}
     <div className="flex justify-end gap-2">
       <Button type="button" variant="ghost" size="sm" onClick={onClose}>{cancelLabel}</Button>
-      <Button type="button" size="sm" variant={tone === "destructive" ? "destructive" : "default"} autoFocus onClick={confirm}>{confirmLabel}</Button>
+      <Button type="button" size="sm" variant={tone === "destructive" ? "destructive" : "default"} autoFocus data-popover-initial-focus="" onClick={confirm}>{confirmLabel}</Button>
     </div>
   </div>
 }
@@ -132,23 +145,23 @@ export function FormBody({ title, description, confirmLabel, cancelLabel = "Canc
   </form>
 }
 
-export function ConfirmPopover({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onConfirm, open, onOpenChange, align = "start", side = "bottom", children, anchor, ref }: PopoverShellProps & {
+export function ConfirmPopover({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onConfirm, open, onOpenChange, align = "start", side = "bottom", children, anchor, tooltip, ref }: PopoverShellProps & {
   onConfirm: () => void | Promise<void>
 }) {
   const [isOpen, setOpen] = useOpen(open, onOpenChange)
-  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} align={align} side={side} content={
+  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} tooltip={tooltip} align={align} side={side} content={
     <ConfirmBody title={title} description={description} confirmLabel={confirmLabel} cancelLabel={cancelLabel} tone={tone} onConfirm={onConfirm} onClose={() => setOpen(false)} />
   }>{children}</Shell>
 }
 
-export function FormPopover({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onSubmit, canSubmit = true, open, onOpenChange, align = "start", side = "bottom", children, fields, anchor, ref }: PopoverShellProps & {
+export function FormPopover({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onSubmit, canSubmit = true, open, onOpenChange, align = "start", side = "bottom", children, fields, anchor, tooltip, ref }: PopoverShellProps & {
   /** The form fields. */
   fields: ReactNode
   canSubmit?: boolean
   onSubmit: () => void | Promise<void>
 }) {
   const [isOpen, setOpen] = useOpen(open, onOpenChange)
-  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} align={align} side={side} content={
+  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} tooltip={tooltip} align={align} side={side} content={
     <FormBody title={title} description={description} confirmLabel={confirmLabel} cancelLabel={cancelLabel} tone={tone} fields={fields} canSubmit={canSubmit} onSubmit={onSubmit} onClose={() => setOpen(false)} />
   }>{children}</Shell>
 }

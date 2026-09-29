@@ -289,10 +289,10 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         <SandboxAction tooltip={machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={`Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
                           <CopyPlus />
                         </SandboxAction>
-                        <ConfirmPopover align="end" tone="destructive" title={`Delete ${deletionName}?`} description={computerName ? `Removing ${machine.name} from ${computerName}.` : `Removing ${machine.name} from Silo. Persistent volumes are kept.`} confirmLabel="Delete" onConfirm={() => remove(machine)}>
-                          <SandboxAction label={`Delete ${deletionName}`} tooltip={deleteTooltip} disabled={interactionDisabled || runningVM}>
+                        <ConfirmPopover align="end" tone="destructive" title={`Delete ${deletionName}?`} description={computerName ? `Removing ${machine.name} from ${computerName}.` : `Removing ${machine.name} from Silo. Persistent volumes are kept.`} confirmLabel="Delete" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
+                          <Button type="button" variant="ghost" size="icon-xs" aria-label={`Delete ${deletionName}`} disabled={interactionDisabled || runningVM}>
                             <Trash2 />
-                          </SandboxAction>
+                          </Button>
                         </ConfirmPopover>
                       </>}
                     />

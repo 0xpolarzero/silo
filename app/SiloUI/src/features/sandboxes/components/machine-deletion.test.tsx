@@ -47,3 +47,18 @@ it("blocks a deletion if the VM starts before confirmation", async () => {
   await new Promise(resolve => setTimeout(resolve, 20))
   expect(save).not.toHaveBeenCalled()
 })
+
+it("closes the hover-action delete confirmation on one Escape after hovering its trigger", async () => {
+  const machine = productionMachineDefaults[0]
+  const save = vi.fn()
+  const user = userEvent.setup()
+  render(<TooltipProvider><MachineList machines={[machine]} onMachinesChange={save} isMachineRunning={() => false} /></TooltipProvider>)
+  const trigger = screen.getByRole("button", { name: `Delete ${machine.name}` })
+  await user.hover(trigger)
+  await user.click(trigger)
+  expect(await screen.findByText(`Delete ${machine.name}?`)).toBeVisible()
+  await user.keyboard("{Escape}")
+  await waitFor(() => expect(screen.queryByText(`Delete ${machine.name}?`)).not.toBeInTheDocument())
+  expect(trigger).toHaveFocus()
+  expect(save).not.toHaveBeenCalled()
+})

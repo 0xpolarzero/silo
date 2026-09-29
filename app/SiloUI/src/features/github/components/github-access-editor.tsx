@@ -453,29 +453,23 @@ export function GitHubAccessEditor({
                               </span>
                               <span role="columnheader" className="flex justify-start">
                                 <TooltipProvider delayDuration={150}>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <span className="inline-flex">
-                                        {(() => {
-                                          const trigger = <Button
-                                            type="button"
-                                            variant="ghost"
-                                            size="icon-xs"
-                                            className="size-5"
-                                            aria-label={`Clear repositories from ${name}`}
-                                            disabled={workspaceDisabled || !repositoryControlsAvailable}
-                                            onClick={confirmRepositoryClear ? undefined : () => onWorkspaceSelectionsChange(name, [])}
-                                          >
-                                            <Trash2 aria-hidden="true" className="size-3" />
-                                          </Button>
-                                          return confirmRepositoryClear
-                                            ? <ConfirmPopover align="start" tone="destructive" title={`Remove all repositories from ${name}?`} description={`${name} loses GitHub access to them.`} confirmLabel="Remove all" onConfirm={() => onWorkspaceSelectionsChange(name, [])}>{trigger}</ConfirmPopover>
-                                            : trigger
-                                        })()}
-                                      </span>
-                                    </TooltipTrigger>
-                                    <TooltipContent>{`Clear repositories from ${name}`}</TooltipContent>
-                                  </Tooltip>
+                                  {(() => {
+                                    const trigger = <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon-xs"
+                                      className="size-5"
+                                      aria-label={`Clear repositories from ${name}`}
+                                      disabled={workspaceDisabled || !repositoryControlsAvailable}
+                                      onClick={confirmRepositoryClear ? undefined : () => onWorkspaceSelectionsChange(name, [])}
+                                    >
+                                      <Trash2 aria-hidden="true" className="size-3" />
+                                    </Button>
+                                    const label = `Clear repositories from ${name}`
+                                    return confirmRepositoryClear
+                                      ? <ConfirmPopover align="end" tone="destructive" title={`Remove all repositories from ${name}?`} description={`${name} loses GitHub access to them.`} confirmLabel="Remove all" tooltip={label} onConfirm={() => onWorkspaceSelectionsChange(name, [])}>{trigger}</ConfirmPopover>
+                                      : <Tooltip><TooltipTrigger asChild><span className="inline-flex">{trigger}</span></TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>
+                                  })()}
                                 </TooltipProvider>
                               </span>
                             </div>

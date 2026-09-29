@@ -157,6 +157,17 @@ it("adds inside the table and replaces the edited row", async () => {
   await user.click(screen.getByRole("button",{name:"Cancel"}))
   expect(screen.getByText("http://127.0.0.1:43000")).toBeVisible()
 })
+it("closes the removal confirmation on one Escape after hovering its trigger", async () => {
+  const {user,actions} = setup()
+  const trigger = screen.getByRole("button",{name:"Remove port 3000 from dev"})
+  await user.hover(trigger)
+  await user.click(trigger)
+  expect(screen.getByText("Remove port 3000?")).toBeVisible()
+  await user.keyboard("{Escape}")
+  await waitFor(() => expect(screen.queryByText("Remove port 3000?")).not.toBeInTheDocument())
+  expect(trigger).toHaveFocus()
+  expect(actions.removeNetworkPort).not.toHaveBeenCalled()
+})
 it("labels the removal confirmation in words and dismisses on outside click", async () => {
   const {user,actions} = setup()
   await user.click(screen.getByRole("button",{name:"Remove port 3000 from dev"}))

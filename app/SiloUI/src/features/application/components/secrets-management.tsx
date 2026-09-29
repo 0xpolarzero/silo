@@ -155,18 +155,11 @@ export function SecretRow({ secret, manager }: { secret: ApplicationSecret; mana
             </TooltipTrigger>
             <TooltipContent>{`Edit ${secret.name}`}</TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="inline-flex">
-                <ConfirmPopover align="end" tone="destructive" title={`Remove ${secret.name}?`} description="Sandboxes using it lose access after they restart." confirmLabel="Remove" onConfirm={() => manager.removeSecret(secret.id)}>
-                  <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${secret.name}`} disabled={disabled || working || secret.removing}>
-                    {working ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Trash2 aria-hidden="true" />}
-                  </Button>
-                </ConfirmPopover>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent>{`Remove ${secret.name}`}</TooltipContent>
-          </Tooltip>
+          <ConfirmPopover align="end" tone="destructive" title={`Remove ${secret.name}?`} description="Sandboxes using it lose access after they restart." confirmLabel="Remove" tooltip={`Remove ${secret.name}`} onConfirm={() => manager.removeSecret(secret.id)}>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${secret.name}`} disabled={disabled || working || secret.removing}>
+              {working ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Trash2 aria-hidden="true" />}
+            </Button>
+          </ConfirmPopover>
         </div>}
       />
       {failure && <div className="flex items-center justify-between gap-3 px-3 pb-3 text-[11px] text-destructive">

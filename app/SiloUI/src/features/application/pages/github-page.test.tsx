@@ -88,3 +88,18 @@ describe("GitHub operation notifications", () => {
     expect(screen.queryByText("GitHub settings couldn’t be applied.")).not.toBeInTheDocument()
   })
 })
+
+describe("GitHub repository clear confirmation", () => {
+  it("closes on one Escape after hovering the clear button", async () => {
+    const user = userEvent.setup()
+    const actions = {}
+    render(page(sourceWith([]), actions))
+    const trigger = screen.getAllByRole("button", { name: /^Clear repositories from / })[0]
+    await user.hover(trigger)
+    await user.click(trigger)
+    expect(await screen.findByText(/^Remove all repositories from /)).toBeVisible()
+    await user.keyboard("{Escape}")
+    await waitFor(() => expect(screen.queryByText(/^Remove all repositories from /)).not.toBeInTheDocument())
+    expect(trigger).toHaveFocus()
+  })
+})

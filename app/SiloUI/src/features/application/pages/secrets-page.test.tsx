@@ -26,6 +26,20 @@ describe("SecretsPage", () => {
     expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeEnabled()
   })
 
+  it("closes the removal confirmation on one Escape after hovering its trigger", async () => {
+    const user = userEvent.setup()
+    const remove = vi.fn()
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={vi.fn()} onRemoveSecret={remove} />)
+    const trigger = screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" })
+    await user.hover(trigger)
+    await user.click(trigger)
+    expect(screen.getByText("Remove PACKAGE_TOKEN?")).toBeVisible()
+    await user.keyboard("{Escape}")
+    await waitFor(() => expect(screen.queryByText("Remove PACKAGE_TOKEN?")).not.toBeInTheDocument())
+    expect(trigger).toHaveFocus()
+    expect(remove).not.toHaveBeenCalled()
+  })
+
   it("keeps a failed save draft across native refresh, then closes after successful retry", async () => {
     const user = userEvent.setup()
     let reject!: (error: Error) => void
