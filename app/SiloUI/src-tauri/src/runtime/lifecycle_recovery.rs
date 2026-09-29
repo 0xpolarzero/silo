@@ -179,16 +179,20 @@ fn advance(
         // A surviving detached start can win the runtime's own transition guard.
         // Verify the desired state even when its duplicate command reports failure.
         if command == "stop" { storage::before_stop(runner, paths, &observed); }
-        let result = runner.run(
-            paths,
-            &[command.into(), intent.name.clone(), "--quiet".into()],
-            if command == "stop" {
-                STOP_TIMEOUT
-            } else {
-                MUTATION_TIMEOUT
-            },
-        );
-        observed = stable(runner, paths, intent, inspect(runner, paths, intent)?)?;
+        let args = [command.into(), intent.name.clone(), "--quiet".into()];
+        // Stop is not cancellable: a cancel during a restart's stop step is
+        // honoured before the start step instead of killing `msb stop`.
+        let result = if command == "stop" {
+            crate::runtime::operation_gate::uncancellable(|| runner.run(paths, &args, STOP_TIMEOUT))
+        } else {
+            runner.run(paths, &args, MUTATION_TIMEOUT)
+        };
+        let observe = || stable(runner, paths, intent, inspect(runner, paths, intent)?);
+        observed = if command == "stop" {
+            crate::runtime::operation_gate::uncancellable(observe)
+        } else {
+            observe()
+        }?;
         let reached = if command == "stop" {
             stopped(&observed)
         } else {
