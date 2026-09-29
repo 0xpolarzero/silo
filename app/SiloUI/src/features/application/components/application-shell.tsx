@@ -5,6 +5,7 @@ import { ShortcutBadge } from "@/components/shortcut-badge"
 import { shortcutFor, type KeyboardShortcut } from "@/lib/shortcuts"
 import { SiloMark } from "@/components/silo-mark"
 import { SiloWindow } from "@/components/silo-window"
+import { Toaster } from "@/components/ui/sonner"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ApplicationTitleBar } from "@/features/application/components/application-title-bar"
 import { useSidebarDisclosure } from "@/features/application/model/use-sidebar-disclosure"
@@ -429,6 +430,7 @@ export function ApplicationShell({
           <div inert={navigationDisabled || undefined} className={cn("min-h-0 min-w-0 flex-1", activeTab === "workspaces" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
         </div>
       </div>
+      <Toaster reduceMotion={reduceMotion} />
     </SiloWindow>
     </TooltipProvider>
   )

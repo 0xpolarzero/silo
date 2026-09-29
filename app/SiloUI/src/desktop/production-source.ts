@@ -1242,6 +1242,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         return refresh()
       }).catch((cause) => setWorkspaceFailure("start", name, cause))
     },
+    async revealArchive(archive) {
+      await native.invoke("reveal_backup_archive", { archivePath: archive.archivePath })
+    },
     dismissOperation() {
       const operation = snapshot.backup.operation
       if (operation?.kind !== "result") return

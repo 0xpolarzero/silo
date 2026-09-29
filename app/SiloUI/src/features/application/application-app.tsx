@@ -18,6 +18,7 @@ import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
 import { NotificationsPage } from "@/features/application/pages/notifications-page"
 import { OverviewPage } from "@/features/application/pages/overview-page"
+import { useSandboxTransfer } from "@/features/application/components/sandbox-transfer"
 import { SecretsPage } from "@/features/application/pages/secrets-page"
 import { SystemIssuePage } from "@/features/application/pages/system-issue-page"
 import { WorkspacesPage } from "@/features/application/pages/workspaces-page"
@@ -91,7 +92,6 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const [searchRequest, setSearchRequest] = useState(0)
   const [sidebarRequest, setSidebarRequest] = useState(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [importRequest, setImportRequest] = useState(0)
   const [directoryStore] = useState(() => createDirectoryStore(actions.listWorkspaceDirectory))
   useLayoutEffect(() => {
     directoryStore.setLoader(actions.listWorkspaceDirectory)
@@ -146,6 +146,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     repositoryPushOperations,
     preferences: { ...source.preferences, ...settings },
   }
+  const transfer = useSandboxTransfer(backup, { source: applicationSource, openSandbox: (id) => navigation.openSandbox(id) })
 
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
@@ -229,7 +230,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const canCreateSandbox = sandboxConfigurationOperation === null
   const canImport = !backupBusy
   const canCheckUpdates = Boolean(updates && !updates.pending && !["checking", "downloading", "installing"].includes(updates.snapshot?.phase ?? ""))
-  const openImport = () => { navigation.selectWorkspaceSection("overview"); setImportRequest((current) => current + 1) }
+  const openImport = () => { void transfer.beginImport() }
   const nativeMenu = useAppMenu({ ready: true, busy: installingUpdate,
     canGoBack: navigation.canGoBack, canGoForward: navigation.canGoForward,
     canCreateSandbox, canImport, canCheckUpdates, sidebarCollapsed,
@@ -285,7 +286,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} importRequest={importRequest} backup={backup} source={applicationSource}
+          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} onExportSandbox={transfer.exportSandbox} onImportSandbox={openImport} backup={backup} source={applicationSource}
             selectedSandboxId={navigation.workspace ? resolveSandboxId(navigation.workspace) : null}
             sandboxTab={navigation.sandboxTab}
             onOpenSandbox={(id, tab) => navigation.openSandbox(id, tab)}
@@ -336,6 +337,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <div hidden={settingsSection !== "computers"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><RemoteComputersSettings source={source} actions={actions} /></div>
         <div hidden={settingsSection !== "notifications"}><NotificationsPage /></div>
       </section>
+      {transfer.dialogs}
     </ApplicationShell>
   )
 }

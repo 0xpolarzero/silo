@@ -6,7 +6,6 @@ import { workspaceAvailability } from "../model/workspace-availability"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
-import { ImportPanel } from "../components/sandbox-transfer"
 import { SandboxDetailPage, type SandboxDetailControls } from "./sandbox-detail-page"
 import { CircleAlert, Code, CopyPlus, Download, GitFork, HardDrive, History, Loader2, Monitor, Pencil, Play, RotateCw, Square, Terminal, Trash2, TriangleAlert } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState } from "react"
@@ -215,8 +214,8 @@ export function OverviewPage({ active = true, readOnly = false,
   onMachinesChange,
   newSandboxRequest,
   onNewSandboxRequestHandled,
-  importRequest,
-  onImportRequestHandled,
+  onExportSandbox,
+  onImportSandbox,
   selectedSandboxId,
   sandboxTab,
   onOpenSandbox,
@@ -227,8 +226,10 @@ export function OverviewPage({ active = true, readOnly = false,
   readOnly?: boolean
   newSandboxRequest?: number
   onNewSandboxRequestHandled?: (id: number) => void
-  importRequest?: number
-  onImportRequestHandled?: (id: number) => void
+  /** Pick a folder and export a sandbox (or one of its checkpoints) as a background toast. */
+  onExportSandbox?: (sandboxName: string, checkpoint?: { id: string; name: string }) => void
+  /** Open the import review dialog after picking an export file. */
+  onImportSandbox?: () => void
   source: ApplicationSource
   actions: ApplicationActions
   backup?: BackupController
@@ -247,13 +248,6 @@ export function OverviewPage({ active = true, readOnly = false,
   const [connecting, setConnecting] = useState(false)
   const [pendingStart, setPendingStart] = useState<string | null>(null)
   const [operationUnavailable, setOperationUnavailable] = useState(false)
-  // The sandbox whose export the user just opened (drives the native folder picker). An
-  // ongoing/finished export operation also reveals its panel even without this set.
-  const [exportSandboxId, setExportSandboxId] = useState<string | null>(null)
-  // When set alongside exportSandboxId, the export targets this checkpoint's disks rather
-  // than the sandbox's current state. Cleared when the panel closes or a normal export opens.
-  const [exportCheckpoint, setExportCheckpoint] = useState<{ id: string; name: string } | null>(null)
-  const [importing, setImporting] = useState(false)
   // Sandbox detail selection: controlled by the app's navigation when the callbacks are
   // supplied, otherwise kept locally so the page still opens details on its own.
   const controlledNav = onOpenSandbox !== undefined
@@ -272,13 +266,8 @@ export function OverviewPage({ active = true, readOnly = false,
   }
   const backupOperation = backup?.state.operation
   const transferBusy = backupOperation?.kind === "running"
-  const consumedImportRequest = useRef(0)
-  const openImportRequest = useEffectEvent((id: number) => { if (!readOnly && backup) setImporting(true); onImportRequestHandled?.(id) })
-  useEffect(() => {
-    if (!importRequest || consumedImportRequest.current === importRequest) return
-    consumedImportRequest.current = importRequest
-    openImportRequest(importRequest)
-  }, [importRequest])
+  const exportSandbox = !readOnly && backup && onExportSandbox ? onExportSandbox : undefined
+  const importSandbox = !readOnly && backup && onImportSandbox ? onImportSandbox : undefined
   const visibleWorkspaces = displayWorkspaces(source)
   const workspaces = new Map(visibleWorkspaces.map((workspace) => [workspace.machine.id, workspace]))
   const committedWorkspaces = new Map(source.workspaces.map((workspace) => [workspace.machine.id, workspace]))
@@ -342,12 +331,11 @@ export function OverviewPage({ active = true, readOnly = false,
       ...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
       { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer && stale) || (state !== "running" && state !== "failed"), onSelect: () => guarded.restartWorkspace(target) },
       ...(machine.kind === "vm" && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, onSelect: () => setForkStateWorkspaceId(machine.id) }] : []),
-      ...(machine.kind === "vm" && isLocal && backup ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => { setExportCheckpoint(null); setExportSandboxId(machine.id) } }] : []),
+      ...(machine.kind === "vm" && isLocal && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
       { label: "Edit", separatorBefore: true, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: configurationLocked, onSelect: () => requestMachineAction(machine.id, "edit") },
       { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: configurationLocked, onSelect: () => requestMachineAction(machine.id, "duplicate") },
       { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: configurationLocked || (machine.kind === "vm" && isRunning), onSelect: () => requestMachineAction(machine.id, "delete") },
     ]
-    const exportOpen = Boolean(machine.kind === "vm" && isLocal && backup && (exportSandboxId === machine.id || (backupOperation?.operation === "backup" && backupOperation.archive.sandboxes.includes(machine.name))))
     return {
       onBack: closeSandbox,
       activeTab: activeSandboxTab,
@@ -366,11 +354,7 @@ export function OverviewPage({ active = true, readOnly = false,
       onRetryLifecycle: workspace.lifecycleFailure && lifecycleAction && lifecycleAction !== "dismiss-error" && !readOnly
         ? () => { if (lifecycleAction === "start") guarded.startWorkspace(target); else if (lifecycleAction === "stop") guarded.stopWorkspace(target); else if (lifecycleAction === "restart") guarded.restartWorkspace(target) }
         : undefined,
-      exportOpen,
-      exportAutoStart: exportSandboxId === machine.id,
-      exportCheckpoint: exportSandboxId === machine.id ? exportCheckpoint ?? undefined : undefined,
-      onCloseExport: () => { setExportSandboxId((current) => current === machine.id ? null : current); setExportCheckpoint(null) },
-      onCheckpointExport: backup ? (checkpoint: WorkspaceCheckpoint) => { setExportCheckpoint({ id: checkpoint.id, name: checkpoint.name }); setExportSandboxId(machine.id) } : undefined,
+      onCheckpointExport: exportSandbox ? (checkpoint: WorkspaceCheckpoint) => exportSandbox(machine.name, { id: checkpoint.id, name: checkpoint.name }) : undefined,
       checkpointExportDisabled: transferBusy || backup?.state.availability === "unavailable",
     }
   }
@@ -379,11 +363,10 @@ export function OverviewPage({ active = true, readOnly = false,
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="min-h-0 flex-1">
         {detailWorkspace ? (
-          <SandboxDetailPage workspace={detailWorkspace} source={source} actions={actions} backup={backup} controls={detailControls(detailWorkspace)} />
+          <SandboxDetailPage workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />
         ) : (
           <>
             {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
-            {(importing || backupOperation?.operation === "restore") && backup && <div className="mb-3"><ImportPanel source={source} backup={backup} onClose={() => setImporting(false)} /></div>}
             <OperationQueueIndicator queue={source.operationQueue} reduceMotion={source.preferences.reduceMotion} onCancel={readOnly ? undefined : actions.cancelOperation} />
             {configurationOperation?.status === "failed" && <div className="mb-3 rounded-md border border-destructive/30 p-3">
               <p role="alert" className="text-sm text-destructive">{configurationOperation.error.message}</p>
@@ -399,7 +382,7 @@ export function OverviewPage({ active = true, readOnly = false,
               computers={source.remoteComputers}
               getComputerId={machine => workspaces.get(machine.id)?.computer?.id}
               onConnectComputer={actions.connectComputer ? () => setConnecting(true) : undefined}
-              onImportSandbox={backup ? () => setImporting(true) : undefined}
+              onImportSandbox={importSandbox}
               onCommitMachine={actions.saveRemoteMachine ? async (machine, original, computerId, baseline) => {
                 if (computerId) await actions.saveRemoteMachine!(computerId, machine, original)
                 else await updateLocal(machine, original, baseline)
@@ -493,7 +476,7 @@ export function OverviewPage({ active = true, readOnly = false,
                     ...(machine.kind === "vm" && workspace ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
                     ...(machine.kind === "vm" && workspace && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, onSelect: () => setForkStateWorkspaceId(machine.id) }] : []),
                     ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationOperation !== null || workspaceOperationBusy, onSelect: () => openSandbox(machine.id, "storage") }] : []),
-                    ...(machine.kind === "vm" && workspace && !workspace.computer && backup ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => { setExportCheckpoint(null); openSandbox(machine.id); setExportSandboxId(machine.id) } }] : []),
+                    ...(machine.kind === "vm" && workspace && !workspace.computer && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
                   ],
                   expandedContent: workspace?.lifecycleFailure ? <>
                     {(() => {

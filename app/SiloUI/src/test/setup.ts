@@ -7,6 +7,25 @@ Object.defineProperty(navigator, "clipboard", {
   value: { writeText: vi.fn().mockResolvedValue(undefined) },
 })
 
+// jsdom omits matchMedia; the Sonner toaster and a few hooks call it. Individual
+// suites still override this with vi.stubGlobal when they assert on media state.
+if (typeof window.matchMedia !== "function") {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  })
+}
+
 class ResizeObserverStub {
   observe() {}
   unobserve() {}

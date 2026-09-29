@@ -1,85 +1,103 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { toast } from "sonner"
 
-import { ExportPanel, ImportPanel } from "./sandbox-transfer"
+import { useSandboxTransfer } from "./sandbox-transfer"
+import { Toaster } from "@/components/ui/sonner"
+import { SettingsProvider } from "@/features/preferences/settings-store"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { BackupController, BackupOperation } from "../model/backup-source"
 
 const source = applicationSourceForScenario("running")
+const localVm = source.workspaces.find((w) => !w.computer && w.machine.kind === "vm")!
 const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GB", destination: "/backups", sandboxes: ["dev"] }
 
 function controller(overrides: Partial<BackupController["state"]> = {}, actions: Partial<BackupController["actions"]> = {}): BackupController {
   return {
     state: { snapshotId: "1", availability: "available", archives: [archive], operation: null, ...overrides },
-    actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn(), inspectArchive: vi.fn(), startBackup: vi.fn(), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn(), ...actions },
+    actions: { chooseDestination: vi.fn(), chooseArchive: vi.fn(), inspectArchive: vi.fn(), startBackup: vi.fn(), startRestore: vi.fn(), cancelOperation: vi.fn(), retryStart: vi.fn(), dismissOperation: vi.fn(), revealArchive: vi.fn().mockResolvedValue(undefined), ...actions },
   }
 }
 
-describe("ExportPanel", () => {
-  it("starts an export after a folder is chosen and never warns about stopping the sandbox", async () => {
+function Harness({ backup, openSandbox = vi.fn() }: { backup: BackupController; openSandbox?: (id: string) => void }) {
+  const transfer = useSandboxTransfer(backup, { source, openSandbox })
+  return <SettingsProvider initialSettings={{ theme: "light" }}>
+    <Toaster />
+    <button type="button" onClick={() => void transfer.exportSandbox("dev")}>Start export</button>
+    <button type="button" onClick={() => void transfer.beginImport()}>Start import</button>
+    {transfer.dialogs}
+  </SettingsProvider>
+}
+
+afterEach(() => { toast.dismiss() })
+
+describe("export notifications", () => {
+  it("starts the export after a folder is chosen and shows a running toast, not an inline panel", async () => {
     const backup = controller({}, { chooseDestination: vi.fn().mockResolvedValue("/Volumes/Backups") })
-    render(<ExportPanel backup={backup} sandboxName="dev" autoStart onClose={vi.fn()} />)
+    const { rerender } = render(<Harness backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Start export" }))
     await act(async () => { await Promise.resolve() })
-    expect(backup.actions.chooseDestination).toHaveBeenCalledOnce()
     expect(backup.actions.startBackup).toHaveBeenCalledExactlyOnceWith("/Volumes/Backups", ["dev"], undefined)
-    expect(screen.queryByText(/must stop/i)).not.toBeInTheDocument()
-    expect(screen.queryByText(/start fresh/i)).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /Stop and back up/i })).not.toBeInTheDocument()
+    // No inline export panel is rendered anymore.
+    expect(screen.queryByRole("region", { name: /Export dev/i })).not.toBeInTheDocument()
+
+    const running: BackupOperation = { kind: "running", operation: "backup", archive, runningNames: [], progress: 40, phases: [{ title: "Save disk copies", detail: "Saving each managed disk.", tone: "running" }] }
+    rerender(<Harness backup={controller({ operation: running })} />)
+    expect(await screen.findByText("Exporting dev")).toBeInTheDocument()
+    expect(screen.getByRole("progressbar", { name: "Export progress" })).toBeInTheDocument()
   })
 
-  it("closes without starting when the folder picker is cancelled", async () => {
-    const onClose = vi.fn()
+  it("does nothing when the folder picker is cancelled", async () => {
     const backup = controller({}, { chooseDestination: vi.fn().mockResolvedValue(null) })
-    render(<ExportPanel backup={backup} sandboxName="dev" autoStart onClose={onClose} />)
+    render(<Harness backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Start export" }))
     await act(async () => { await Promise.resolve() })
     expect(backup.actions.startBackup).not.toHaveBeenCalled()
-    expect(onClose).toHaveBeenCalledOnce()
   })
 
-  it("shows progress and confirms before cancelling a running export", () => {
-    const operation: BackupOperation = { kind: "running", operation: "backup", archive, runningNames: [], progress: 40, phases: [{ title: "Write and verify archive", detail: "Writing…", tone: "running" }] }
-    const backup = controller({ operation })
-    render(<ExportPanel backup={backup} sandboxName="dev" autoStart={false} onClose={vi.fn()} />)
-    expect(screen.getByRole("progressbar", { name: "Export progress" })).toBeVisible()
-    fireEvent.click(screen.getByRole("button", { name: "Cancel export…" }))
-    expect(screen.getByText("Cancel this export?")).toBeVisible()
-    fireEvent.click(screen.getByRole("button", { name: "Cancel and clean up" }))
-    expect(backup.actions.cancelOperation).toHaveBeenCalledOnce()
+  it("keeps a success toast with Show in Finder that reveals the archive", async () => {
+    const success: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "success", title: "Export ready", message: "done" }
+    const backup = controller({ operation: success })
+    render(<Harness backup={backup} />)
+    expect(await screen.findByText("Exported")).toBeInTheDocument()
+    expect(screen.getByText("dev.silo-backup · 2 GB")).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole("button", { name: /Show in (Finder|folder)/ }))
+    expect(backup.actions.revealArchive).toHaveBeenCalledWith(archive)
   })
 
-  it("keeps a successful export result until the user dismisses it", async () => {
-    vi.useFakeTimers()
-    const onClose = vi.fn()
-    const operation: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "success", title: "Export ready", message: "done" }
-    const backup = controller({ operation })
-    render(<ExportPanel backup={backup} sandboxName="dev" autoStart={false} onClose={onClose} />)
-    expect(screen.getByRole("status")).toHaveTextContent("Export completed successfully.")
-    await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
-    expect(backup.actions.dismissOperation).not.toHaveBeenCalled()
-    expect(onClose).not.toHaveBeenCalled()
-    vi.useRealTimers()
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss success" }))
-    expect(backup.actions.dismissOperation).toHaveBeenCalledOnce()
-    expect(onClose).toHaveBeenCalledOnce()
-  })
-
-  it("exports a checkpoint's disks with its id after a folder is chosen", async () => {
-    const backup = controller({}, { chooseDestination: vi.fn().mockResolvedValue("/Volumes/Backups") })
-    render(<ExportPanel backup={backup} sandboxName="dev" checkpoint={{ id: "point-1", name: "Before refactor" }} autoStart onClose={vi.fn()} />)
-    expect(screen.getByRole("heading", { name: "Export checkpoint “Before refactor”" })).toBeVisible()
-    expect(screen.getByText(/Import restores its disks only/i)).toBeInTheDocument()
+  it("dismissing a result toast clears the backend operation", async () => {
+    const success: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "success", title: "Export ready", message: "done" }
+    const backup = controller({ operation: success })
+    render(<Harness backup={backup} />)
+    fireEvent.click(await screen.findByRole("button", { name: /close|dismiss/i }))
     await act(async () => { await Promise.resolve() })
-    expect(backup.actions.startBackup).toHaveBeenCalledExactlyOnceWith("/Volumes/Backups", ["dev"], "point-1")
+    expect(backup.actions.dismissOperation).toHaveBeenCalled()
+  })
+
+  it("offers Retry on a failed export", async () => {
+    const backup = controller({}, { chooseDestination: vi.fn().mockResolvedValue("/vol") })
+    const { rerender } = render(<Harness backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Start export" }))
+    await act(async () => { await Promise.resolve() })
+    const failed: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "failed", title: "Export could not be verified", message: "The destination disconnected." }
+    rerender(<Harness backup={controller({ operation: failed }, { chooseDestination: backup.actions.chooseDestination, startBackup: backup.actions.startBackup })} />)
+    expect(await screen.findByText("Export could not be verified")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    await act(async () => { await Promise.resolve() })
+    expect(backup.actions.chooseDestination).toHaveBeenCalledTimes(2)
   })
 })
 
-describe("ImportPanel", () => {
-  it("validates the new name, blocks conflicts, and imports the selected sandbox", async () => {
-    const backup = controller({}, { chooseArchive: vi.fn().mockResolvedValue({ archive, valid: true }) })
-    render(<ImportPanel source={source} backup={backup} onClose={vi.fn()} />)
+describe("import notifications and dialog", () => {
+  it("validates the new name, blocks conflicts, offers a source select, and imports", async () => {
+    const multi = { ...archive, sandboxes: ["dev", "api"] }
+    const backup = controller({}, { chooseArchive: vi.fn().mockImplementation(async (onSelected?: (path: string) => void) => { onSelected?.("/p"); return { archive: multi, valid: true } }) })
+    render(<Harness backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Start import" }))
     await act(async () => { await Promise.resolve() })
-    const name = screen.getByRole("textbox", { name: "New sandbox name" })
+    const name = await screen.findByRole("textbox", { name: "New sandbox name" })
     expect(name).toHaveValue("dev-imported")
+    expect(screen.getByRole("combobox", { name: "Sandbox to import" })).toBeInTheDocument()
     fireEvent.change(name, { target: { value: "Dev" } })
     expect(name).toHaveAttribute("aria-invalid", "true")
     expect(screen.getByRole("button", { name: "Import" })).toBeDisabled()
@@ -87,37 +105,37 @@ describe("ImportPanel", () => {
     expect(screen.getByRole("button", { name: "Import" })).toBeDisabled()
     fireEvent.change(name, { target: { value: "dev-copy" } })
     fireEvent.click(screen.getByRole("button", { name: "Import" }))
-    expect(backup.actions.startRestore).toHaveBeenCalledExactlyOnceWith(archive, "dev-copy", "dev")
+    expect(backup.actions.startRestore).toHaveBeenCalledExactlyOnceWith(multi, "dev-copy", "dev")
   })
 
-  it("reports an invalid export file and lets the user choose another", async () => {
-    const backup = controller({}, { chooseArchive: vi.fn().mockResolvedValue({ archive, valid: false, reason: "The checksum does not match." }) })
-    render(<ImportPanel source={source} backup={backup} onClose={vi.fn()} />)
+  it("reports an invalid export file in the dialog and lets the user choose another", async () => {
+    const backup = controller({}, { chooseArchive: vi.fn().mockImplementation(async (onSelected?: (path: string) => void) => { onSelected?.("/p"); return { archive, valid: false, reason: "The checksum does not match." } }) })
+    render(<Harness backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Start import" }))
     await act(async () => { await Promise.resolve() })
-    expect(screen.getByRole("alert")).toHaveTextContent("cannot be imported")
+    expect(await screen.findByText(/This export cannot be imported/)).toBeInTheDocument()
+    expect(screen.getByText(/The checksum does not match/)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Choose another file" })).toBeEnabled()
     expect(backup.actions.startRestore).not.toHaveBeenCalled()
   })
 
-  it("closes when no file is chosen", async () => {
-    const onClose = vi.fn()
-    const backup = controller({}, { chooseArchive: vi.fn().mockResolvedValue(null) })
-    render(<ImportPanel source={source} backup={backup} onClose={onClose} />)
-    await act(async () => { await Promise.resolve() })
-    expect(onClose).toHaveBeenCalledOnce()
-    expect(backup.actions.startRestore).not.toHaveBeenCalled()
+  it("shows an Open action on import success that navigates to the new sandbox", async () => {
+    const openSandbox = vi.fn()
+    const success: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: localVm.machine.name, outcome: "success", title: `${localVm.machine.name} is ready`, message: "ok" }
+    render(<Harness backup={controller({ operation: success })} openSandbox={openSandbox} />)
+    expect(await screen.findByText(`Imported ${localVm.machine.name}`)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Open" }))
+    expect(openSandbox).toHaveBeenCalledWith(localVm.machine.id)
   })
 
-  it("shows running import progress and dismisses a failed result", () => {
-    const running: BackupOperation = { kind: "running", operation: "restore", archive, runningNames: [], targetName: "dev-copy", progress: 30, phases: [{ title: "Create new sandbox", detail: "…", tone: "running" }] }
-    const onClose = vi.fn()
+  it("confirms before cancelling a running import", async () => {
+    const running: BackupOperation = { kind: "running", operation: "restore", archive, runningNames: [], targetName: "dev-copy", progress: 30, phases: [{ title: "Create new sandbox", detail: "Writing managed disk data.", tone: "running" }] }
     const backup = controller({ operation: running })
-    const view = render(<ImportPanel source={source} backup={backup} onClose={onClose} />)
-    expect(screen.getByRole("progressbar", { name: "Import progress" })).toBeVisible()
-    const failed: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: "dev-copy", outcome: "failed", title: "Import did not complete", message: "Verification failed." }
-    view.rerender(<ImportPanel source={source} backup={controller({ operation: failed })} onClose={onClose} />)
-    expect(screen.getByRole("alert")).toHaveTextContent("Import did not complete")
-    fireEvent.click(screen.getByRole("button", { name: "Done" }))
-    expect(onClose).toHaveBeenCalled()
+    render(<Harness backup={backup} />)
+    expect(await screen.findByText("Importing dev-copy")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(await screen.findByText("Cancel and remove dev-copy?")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Cancel and remove" }))
+    expect(backup.actions.cancelOperation).toHaveBeenCalledOnce()
   })
 })

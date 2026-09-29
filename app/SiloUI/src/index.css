@@ -256,6 +256,15 @@ html.native-status body {
   scroll-behavior: auto !important;
 }
 
+/* Toasts render in a portal on <body>, outside the .silo-window, so mirror the
+   reduce-motion rule for the Sonner toaster the app mounts. */
+.silo-toaster[data-reduce-motion="true"] [data-sonner-toast],
+.silo-toaster[data-reduce-motion="true"] [data-sonner-toast] * {
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+  animation: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .silo-window,
   .silo-window * {

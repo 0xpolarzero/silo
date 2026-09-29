@@ -372,17 +372,21 @@ describe("application", () => {
       fireEvent.click(screen.getByRole("button", { name: "Add" }))
       fireEvent.click(screen.getByRole("menuitem", { name: "Import sandbox…" }))
       await act(async () => { await Promise.resolve() })
+      // The import review dialog opens; the import starts from it, then continues as a toast.
       fireEvent.click(screen.getByRole("button", { name: "Import" }))
       expect(overviewNav).toHaveAttribute("aria-busy", "true")
       for (let step = 0; step < 4; step += 1) {
         await act(async () => { await vi.advanceTimersByTimeAsync(900) })
       }
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
       expect(overviewNav).not.toHaveAttribute("aria-busy", "true")
       const overview = within(appPanel("Sandboxes"))
       expect(overview.getByRole("button", { name: "Stop dev" })).toBeEnabled()
       expect(overview.getByRole("button", { name: "Start dev-imported" })).toBeEnabled()
       expect(application.actions.stopWorkspace).not.toHaveBeenCalled()
-      expect(within(screen.getByRole("region", { name: "Import sandbox" })).getByRole("status")).toHaveTextContent("Sandbox imported successfully.")
+      // Completion is a background toast, not an inline panel.
+      expect(screen.queryByRole("region", { name: "Import sandbox" })).not.toBeInTheDocument()
+      expect(screen.getByText("Imported dev-imported")).toBeInTheDocument()
     } finally {
       application.unmount()
       vi.useRealTimers()

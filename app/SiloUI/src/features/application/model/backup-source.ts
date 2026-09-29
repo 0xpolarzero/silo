@@ -49,6 +49,8 @@ export interface BackupActions {
   cancelOperation: () => void
   retryStart: (sandbox: string) => void
   dismissOperation: () => void
+  /** Reveal a completed export in Finder (macOS) or the file manager (Linux). */
+  revealArchive: (archive: BackupArchive) => Promise<void>
 }
 
 export interface BackupController {

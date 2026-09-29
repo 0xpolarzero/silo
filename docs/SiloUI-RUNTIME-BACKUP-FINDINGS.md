@@ -129,6 +129,18 @@ returning "That export file is no longer available." otherwise.
 The dependency is pinned to `~2.5.5` because opener 2.6 requires Tauri 2.12;
 upgrading it should happen together with a deliberate Tauri upgrade.
 
+## Export and import notifications
+
+Export and import progress and results are shown as in-app toasts rather than a
+bespoke notifier. Silo uses [`sonner`](https://sonner.emilkowal.ski/) (MIT), the
+toast component shadcn/ui integrates, added with `npx shadcn@latest add sonner`.
+The shadcn template pulls the theme from `next-themes`; Silo is not a Next app, so
+`next-themes` was removed and the single `<Toaster>` reads the app's own theme
+(`features/preferences/theme.ts`) and CSS variables, mounts in the main-window
+shell, and honours the reduce-motion setting. One toast, keyed by a stable id,
+tracks the global `backup.state.operation` so it survives navigation and reflects
+backend truth.
+
 ## Native picker threading
 
 The native walkthrough reproduced a main-thread deadlock in the synchronous

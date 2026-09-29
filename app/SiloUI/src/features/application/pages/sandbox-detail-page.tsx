@@ -12,10 +12,8 @@ import { CheckpointPanel } from "@/features/application/components/checkpoint-pa
 import { WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
 import { emptyOperationQueue, waitingOperationForVm, cancelledActionLabel } from "@/features/application/model/operation-queue"
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab } from "@/features/application/model/application-source"
-import type { BackupController } from "@/features/application/model/backup-source"
 import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
-import { ExportPanel } from "@/features/application/components/sandbox-transfer"
 import { SshAccessRow, SshAccessBadges } from "@/features/application/pages/ssh-access-panel"
 import { WorkspaceStoragePanel } from "@/features/application/pages/workspace-storage-panel"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
@@ -37,11 +35,7 @@ export interface SandboxDetailControls {
   onStart: () => void
   onStop: () => void
   onRetryLifecycle?: () => void
-  // Export panel, rendered under the header when an export for this sandbox is open/running.
-  exportOpen: boolean
-  exportAutoStart: boolean
-  exportCheckpoint?: { id: string; name: string }
-  onCloseExport: () => void
+  // Export a checkpoint's disks; progress is shown as a background toast.
   onCheckpointExport?: (checkpoint: WorkspaceCheckpoint) => void
   checkpointExportDisabled: boolean
 }
@@ -108,11 +102,10 @@ function OverviewTab({ workspace }: { workspace: ApplicationWorkspace }) {
   </div>
 }
 
-export function SandboxDetailPage({ workspace, source, actions, backup, controls }: {
+export function SandboxDetailPage({ workspace, source, actions, controls }: {
   workspace: ApplicationWorkspace
   source: ApplicationSource
   actions: ApplicationActions
-  backup?: BackupController
   controls: SandboxDetailControls
 }) {
   const { machine } = workspace
@@ -175,10 +168,6 @@ export function SandboxDetailPage({ workspace, source, actions, backup, controls
       </header>
 
       {lifecycleNotice && <div className="mt-3">{lifecycleNotice}</div>}
-
-      {controls.exportOpen && backup && <div className="mt-3 rounded-md border border-border">
-        <ExportPanel key={`export-${machine.id}`} backup={backup} sandboxName={machine.name} checkpoint={controls.exportCheckpoint} autoStart={controls.exportAutoStart} onClose={controls.onCloseExport} />
-      </div>}
 
       <Tabs value={activeTab} onValueChange={value => controls.onSelectTab(value as SandboxDetailTab)} className="mt-4 min-h-0 flex-1">
         <TabsList variant="line" className="border-b border-border pb-0">

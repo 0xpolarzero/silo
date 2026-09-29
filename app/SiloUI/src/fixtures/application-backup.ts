@@ -127,6 +127,7 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
       },
       retryStart(sandbox) { setResult((current) => current && { ...current, outcome: "success", title: "Export ready", message: `${sandbox} export remains complete and verified.` }) },
       dismissOperation: () => setResult(null),
+      async revealArchive() { /* Fixtures have no file manager to reveal; the toast action is exercised in tests. */ },
     },
   }
 }
@@ -143,6 +144,7 @@ export function useUnavailableBackup(source: ApplicationSource): BackupControlle
       cancelOperation: () => undefined,
       retryStart: () => undefined,
       dismissOperation: () => undefined,
+      revealArchive: async () => undefined,
     },
   }
 }
