@@ -33,6 +33,8 @@ has been exercised.
 Research records the inputs to a decision. Follow the implementation documents
 above for current behavior and build commands.
 
+- [Review remediation plan](SiloUI-REVIEW-REMEDIATION-PLAN.md): full ledger of all 397 review findings with fixes and verification, work packages, phases, merge-queue orchestration and live verification sessions.
+
 - [Codebase review, 2026-09-29](research/codebase-review-2026-09-29.md): ranked findings from a read-only review of the whole app — owner decisions, release blockers, security, data loss, stuck states, performance, UX, CI, tests and code health.
 
 - [Jev for natural-language commands](SiloUI-JEV-RESEARCH.md): primary-source findings, command-palette fit, limitations and proposed evaluation.

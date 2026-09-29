@@ -13,6 +13,8 @@ found independently by several reviewers · **suspected** depends on runtime or
 OS behaviour that was not observed. Line numbers refer to `60b23ca`; work that
 landed after it may already address some items.
 
+Execution plan and full ledger of every finding: [review remediation plan](../SiloUI-REVIEW-REMEDIATION-PLAN.md).
+
 Checks at review time: `typecheck` and `lint` passed (7 `only-export-components`
 warnings); 1012 of 1014 frontend tests passed (the 2 failures came from
 uncommitted in-progress work renaming the sandbox "Access" tab to "SSH").
