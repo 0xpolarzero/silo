@@ -10,6 +10,9 @@ on:
       - 'app/SiloUI/patches/**'
       - 'app/SiloUI/src-tauri/src/dependencies.rs'
       - 'app/SiloUI/src-tauri/Cargo.*'
+      - 'app/SiloUI/src-tauri/guest/**'
+      - 'app/SiloUI/src-tauri/build.rs'
+      - 'app/SiloUI/src-tauri/src/main.rs'
       - '.github/workflows/*release*.yml'
       - '.github/workflows/apt-repository.yml'
       - '.github/actions/prepare-release-runtime/**'
@@ -23,6 +26,9 @@ on:
       - 'app/SiloUI/patches/**'
       - 'app/SiloUI/src-tauri/src/dependencies.rs'
       - 'app/SiloUI/src-tauri/Cargo.*'
+      - 'app/SiloUI/src-tauri/guest/**'
+      - 'app/SiloUI/src-tauri/build.rs'
+      - 'app/SiloUI/src-tauri/src/main.rs'
       - '.github/workflows/*release*.yml'
       - '.github/workflows/apt-repository.yml'
       - '.github/actions/prepare-release-runtime/**'
@@ -33,7 +39,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: app/SiloUI
@@ -51,8 +57,8 @@ jobs:
       - run: npm ci
       - run: npm run test:release
       - run: python3 scripts/validate-release-version.py
-      - run: python3 -m unittest discover -s scripts -p 'test_*release*.py'
-      - run: python3 -m unittest discover -s scripts -p 'test_measure_command.py'
+      - run: python3 scripts/check-command-manifest.py
       - run: sudo apt-get update && sudo apt-get install -y gnupg dpkg-dev pkexec
-      - run: python3 -m unittest discover -s scripts -p 'test_apt_repository.py'
+      # Discover every script test so new test files cannot be silently skipped.
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - run: sudo env SILO_APT_LIFECYCLE_TEST=1 python3 -m unittest discover -s scripts -p 'test_debian_installation.py'
