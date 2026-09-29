@@ -51,6 +51,58 @@ const REPOSITORY_PERMISSIONS: &[&str] = &[
     "workflows",
     "actions_variables",
 ];
+// Token permissions are explicit allowlists, each capped by what the App
+// installation grants (docs/SiloUI-REVIEW-DESIGN-NOTES.md, B-05). Admin and
+// secret-bearing scopes are never requested.
+const SANDBOX_READ: &[(&str, &str)] = &[
+    ("metadata", "read"),
+    ("contents", "read"),
+    ("issues", "read"),
+    ("pull_requests", "read"),
+    ("statuses", "read"),
+    ("checks", "read"),
+];
+/// "Allow GitHub changes" also lets agents change workflows and read CI runs.
+const SANDBOX_WRITE: &[(&str, &str)] = &[
+    ("metadata", "read"),
+    ("contents", "write"),
+    ("issues", "write"),
+    ("pull_requests", "write"),
+    ("statuses", "write"),
+    ("checks", "read"),
+    ("workflows", "write"),
+    ("actions", "read"),
+];
+/// Host push publishes one branch of one repository (owner decision 1).
+const HOST_PUSH: &[(&str, &str)] = &[("metadata", "read"), ("contents", "write")];
+fn rank(level: &str) -> u8 {
+    match level {
+        "read" => 1,
+        "write" => 2,
+        "admin" => 3,
+        _ => 0,
+    }
+}
+fn allowed(installation: &Map<String, Value>, allowlist: &[(&str, &str)]) -> Map<String, Value> {
+    let mut selected = Map::new();
+    for (name, wanted) in allowlist {
+        // Every installation can read repository metadata.
+        let granted = if *name == "metadata" {
+            Some("read")
+        } else {
+            installation.get(*name).and_then(Value::as_str)
+        };
+        if let Some(granted) = granted {
+            let level = if rank(granted) >= rank(wanted) {
+                *wanted
+            } else {
+                granted
+            };
+            selected.insert((*name).into(), json!(level));
+        }
+    }
+    selected
+}
 fn text(value: &Value) -> Result<&str, String> {
     value
         .as_str()
@@ -157,6 +209,11 @@ fn execute_with(
             let token = text(&input["accessToken"])?;
             let owner = id(&input["ownerId"])?;
             let changes = input["allowChanges"].as_bool().ok_or(INVALID)?;
+            let host_push = match input.get("purpose") {
+                None => false,
+                Some(purpose) if purpose == "hostPush" => true,
+                Some(_) => return Err(INVALID.into()),
+            };
             let all = input
                 .get("allRepositories")
                 .map(|v| v.as_bool().ok_or(INVALID))
@@ -166,9 +223,17 @@ fn execute_with(
             if repositories.len() > 500
                 || (all && !repositories.is_empty())
                 || (!all && repositories.is_empty())
+                || (host_push && (all || repositories.len() != 1))
             {
                 return Err(INVALID.into());
             }
+            let allowlist = if host_push {
+                HOST_PUSH
+            } else if changes {
+                SANDBOX_WRITE
+            } else {
+                SANDBOX_READ
+            };
             let ids: Vec<u64> = repositories.iter().map(id).collect::<Result<_, _>>()?;
             if ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len() {
                 return Err(INVALID.into());
@@ -195,30 +260,21 @@ fn execute_with(
                     {
                         continue;
                     }
-                    let mut selected = Map::new();
-                    for (name, level) in installation["permissions"]
+                    let granted = installation["permissions"]
                         .as_object()
-                        .ok_or("GitHub returned invalid App permissions.")?
-                    {
+                        .ok_or("GitHub returned invalid App permissions.")?;
+                    for (name, level) in granted {
                         if !REPOSITORY_PERMISSIONS.contains(&name.as_str()) {
                             return Err("The GitHub App has unsupported or non-repository permissions. Its administrator must remove them before Silo can grant sandbox access.".into());
                         }
                         if !matches!(level.as_str(), Some("read" | "write" | "admin")) {
                             return Err("GitHub returned invalid App permissions.".into());
                         }
-                        if !changes && matches!(name.as_str(), "workflows" | "codespaces_secrets") {
-                            continue;
-                        }
-                        selected.insert(
-                            name.clone(),
-                            if changes {
-                                level.clone()
-                            } else {
-                                json!("read")
-                            },
-                        );
                     }
-                    selected.insert("metadata".into(), json!("read"));
+                    let selected = allowed(granted, allowlist);
+                    if host_push && selected.get("contents") != Some(&json!("write")) {
+                        return Err("The GitHub App cannot push commits. Its administrator must grant Contents write access.".into());
+                    }
                     permissions = Some(selected);
                     break;
                 }
@@ -343,12 +399,115 @@ mod tests {
         assert_eq!(calls, 2);
     }
     #[test]
-    fn all_mode_omits_repo_filter_and_write_preserves_app_permissions() {
+    fn all_mode_omits_repo_filter_and_write_keeps_allowed_app_permissions() {
         let mut request = input();
         request["allRepositories"] = json!(true);
         request["repositoryIds"] = json!([]);
         request["allowChanges"] = json!(true);
         execute_with(&config(),Operation::Scope,request,|r| {if r.method==Method::GET {return Ok(json!({"installations":[installation(json!({"contents":"write","workflows":"write"}))]}));}assert!(r.body.get("repository_ids").is_none());assert_eq!(r.body["permissions"],json!({"contents":"write","workflows":"write","metadata":"read"}));Ok(scoped())}).unwrap();
+    }
+    /// Every permission an App can hold, at its highest level.
+    fn broad_installation() -> Value {
+        installation(json!({
+            "actions":"write","administration":"write","checks":"write","codespaces_secrets":"write",
+            "contents":"write","dependabot_secrets":"write","deployments":"write","environments":"write",
+            "issues":"admin","metadata":"read","packages":"write","pages":"write","pull_requests":"write",
+            "repository_hooks":"write","secret_scanning_alerts":"write","secrets":"write",
+            "security_events":"write","statuses":"write","vulnerability_alerts":"write","workflows":"write",
+        }))
+    }
+    fn scoped_permissions(request: Value, installation: Value) -> Result<Value, String> {
+        let mut permissions = Value::Null;
+        execute_with(&config(), Operation::Scope, request, |r| {
+            if r.method == Method::GET {
+                return Ok(json!({"installations":[installation.clone()]}));
+            }
+            permissions = r.body.clone();
+            Ok(scoped())
+        })?;
+        Ok(permissions)
+    }
+    const NEVER_GRANTED: &[&str] = &[
+        "administration",
+        "secrets",
+        "dependabot_secrets",
+        "codespaces_secrets",
+        "environments",
+        "repository_hooks",
+        "secret_scanning_alerts",
+        "security_events",
+    ];
+    #[test]
+    fn sandbox_tokens_use_explicit_allowlists_and_never_admin_or_secret_scopes() {
+        let read = scoped_permissions(input(), broad_installation()).unwrap();
+        assert_eq!(
+            read["permissions"],
+            json!({"metadata":"read","contents":"read","issues":"read","pull_requests":"read","statuses":"read","checks":"read"})
+        );
+        let mut request = input();
+        request["allowChanges"] = json!(true);
+        let write = scoped_permissions(request, broad_installation()).unwrap();
+        // Allowing changes also lets agents edit workflows and read CI runs (owner answer).
+        assert_eq!(
+            write["permissions"],
+            json!({"metadata":"read","contents":"write","issues":"write","pull_requests":"write","statuses":"write","checks":"read","workflows":"write","actions":"read"})
+        );
+        for body in [&read, &write] {
+            for name in NEVER_GRANTED {
+                assert!(body["permissions"].get(*name).is_none(), "{name} granted");
+            }
+        }
+    }
+    #[test]
+    fn allowlists_never_exceed_what_the_installation_grants() {
+        let mut request = input();
+        request["allowChanges"] = json!(true);
+        let body = scoped_permissions(
+            request,
+            installation(json!({"contents":"read","issues":"write","actions":"write"})),
+        )
+        .unwrap();
+        assert_eq!(
+            body["permissions"],
+            json!({"metadata":"read","contents":"read","issues":"write","actions":"read"})
+        );
+    }
+    #[test]
+    fn host_push_tokens_write_contents_of_one_repository_only() {
+        let mut request = input();
+        request["purpose"] = json!("hostPush");
+        request["allowChanges"] = json!(true);
+        request["repositoryIds"] = json!([11]);
+        let body = scoped_permissions(request.clone(), broad_installation()).unwrap();
+        assert_eq!(
+            body["permissions"],
+            json!({"metadata":"read","contents":"write"})
+        );
+        assert_eq!(body["repository_ids"], json!([11]));
+        // One bound repository: several repositories or all repositories never mint.
+        for (key, value) in [
+            ("repositoryIds", json!([11, 12])),
+            ("purpose", json!("other")),
+        ] {
+            let mut invalid = request.clone();
+            invalid[key] = value;
+            assert!(
+                execute_with(&config(), Operation::Scope, invalid, |_| panic!(
+                    "unexpected request"
+                ))
+                .is_err()
+            );
+        }
+        let mut all = request.clone();
+        all["allRepositories"] = json!(true);
+        all["repositoryIds"] = json!([]);
+        assert!(execute_with(&config(), Operation::Scope, all, |_| panic!(
+            "unexpected request"
+        ))
+        .is_err());
+        let error =
+            scoped_permissions(request, installation(json!({"contents":"read"}))).unwrap_err();
+        assert!(error.contains("Contents"), "{error}");
     }
     #[test]
     fn invalid_scope_inputs_never_reach_github() {
