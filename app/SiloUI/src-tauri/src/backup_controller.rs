@@ -330,7 +330,7 @@ fn archive_from(path: &Path, inspected: &backup::ArchiveInspection) -> Archive {
             .unwrap_or("Silo export")
             .to_string(),
         archive_path: path.to_string_lossy().into_owned(),
-        completed_label: "Verified archive".into(),
+        completed_label: "Intact archive".into(),
         size: display_size(inspected.size_bytes),
         destination: path
             .parent()
