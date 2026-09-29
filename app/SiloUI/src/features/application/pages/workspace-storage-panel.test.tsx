@@ -145,3 +145,33 @@ it("keeps real history collapsed, reveals results and refreshes failures from th
   expect(read).toHaveBeenCalledTimes(2)
   expect(screen.getByRole("button", { name: /Reclaim history, 19/ })).toHaveAttribute("aria-expanded", "true")
 })
+
+it("explains each measurement and the automatic reclaim policy in visible text", async () => {
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue(storage)} reclaim={vi.fn()} />)
+  expect(await screen.findByText("36.00 GiB")).toBeVisible()
+  expect(screen.getByText(/Deleted files keep using this space until it is reclaimed/)).toBeVisible()
+  expect(screen.getByText(/Reclaiming space does not shrink it/)).toBeVisible()
+  expect(screen.getByText(/Used inside the sandbox/)).toBeVisible()
+  expect(screen.getByText(/The most the workspace can hold/)).toBeVisible()
+  expect(screen.getByText(/Silo reclaims automatically after 7 days of running/)).toBeVisible()
+})
+
+it("expands a failed reclaim's error inline from its Details button", async () => {
+  const history = [
+    { at: 2000, trigger: "manual", reclaimedBytes: null, error: "The runtime shortened the workspace disk; its original length was restored." },
+    { at: 1000, trigger: "scheduled", reclaimedBytes: gib, error: null },
+  ]
+  const user = userEvent.setup()
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, history })} reclaim={vi.fn()} />)
+  await user.click(await screen.findByRole("button", { name: /Reclaim history, 2/ }))
+  const details = screen.getByRole("button", { name: "Details for reclaim 1" })
+  expect(details).toHaveAttribute("aria-expanded", "false")
+  expect(screen.queryByText(/its original length was restored/)).not.toBeInTheDocument()
+  await user.click(details)
+  expect(details).toHaveAttribute("aria-expanded", "true")
+  expect(screen.getByText(/its original length was restored/)).toBeVisible()
+  await user.click(screen.getByRole("button", { name: "Details for reclaim 2" }))
+  expect(screen.getByText(/Unused blocks were released; workspace files and capacity were preserved/)).toBeVisible()
+  await user.click(details)
+  expect(screen.queryByText(/its original length was restored/)).not.toBeInTheDocument()
+})
