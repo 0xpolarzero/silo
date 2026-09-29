@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
-import type { BackupArchive, BackupController, BackupOperation, BackupOperationKind, BackupPhase } from "@/features/application/model/backup-source"
+import { ExportIncompleteError, type BackupArchive, type BackupController, type BackupOperation, type BackupOperationKind, type BackupPhase, type VerifiedExport } from "@/features/application/model/backup-source"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 
 export const backupFixtureModes = [
@@ -74,12 +74,20 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
   const [archives, setArchives] = useState<BackupArchive[]>(() => source.backup.lastArchive ? [initialBackupArchive(source)] : [])
   const [running, setRunning] = useState<RunningFixture | null>(null)
   const [result, setResult] = useState<BackupOperation | null>(null)
+  // The export awaited through `exportAndVerify`, settled with its fixture result.
+  const awaitedExport = useRef<{ operationId: string; resolve: (value: VerifiedExport) => void; reject: (error: Error) => void } | null>(null)
 
   useEffect(() => {
     if (!running) return
     const timer = window.setTimeout(() => {
       if (running.step < 3) { setRunning({ ...running, step: running.step + 1 }); return }
       const result = resultFor(running, previewMode)
+      const awaited = running.operation === "backup" ? awaitedExport.current : null
+      if (awaited) {
+        awaitedExport.current = null
+        if (result.outcome === "success") awaited.resolve({ operationId: awaited.operationId, archive: result.archive })
+        else awaited.reject(new ExportIncompleteError("failed", result.message, awaited.operationId))
+      }
       if (result.outcome === "success" && running.operation === "backup") setArchives((current) => [running.archive, ...current])
       if (result.outcome === "success" && running.operation === "restore" && running.targetName) onRestoreComplete?.(running.targetName)
       if (result.outcome === "restart-required") onRestartRequired?.(running.runningNames)
@@ -92,6 +100,12 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
   function start(operation: BackupOperationKind, archive: BackupArchive, selected: string[], targetName?: string) {
     setResult(null)
     setRunning({ operation, archive, targetName, step: 0, runningNames: source.workspaces.filter(({ machine, state }) => selected.includes(machine.name) && state === "running").map(({ machine }) => machine.name) })
+  }
+
+  function startBackup(destination: string, sandboxes: string[], checkpointId?: string) {
+    const base = sandboxes.length === 1 ? sandboxes[0] : "Silo-Export"
+    const name = `${base}${checkpointId ? "-checkpoint" : ""}-${new Date().toISOString().slice(0, 10)}.silo-backup`
+    start("backup", { name, archivePath: `${destination}/${name}`, completedLabel: "Just now", size: source.backup.compressedSize, destination, sandboxes }, sandboxes)
   }
 
   return {
@@ -114,14 +128,19 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
         const archive = selection
         return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this backup format is newer than this Silo version." } : { archive, valid: true }
       },
-      startBackup(destination, sandboxes, checkpointId) {
-        const base = sandboxes.length === 1 ? sandboxes[0] : "Silo-Export"
-        const name = `${base}${checkpointId ? "-checkpoint" : ""}-${new Date().toISOString().slice(0, 10)}.silo-backup`
-        start("backup", { name, archivePath: `${destination}/${name}`, completedLabel: "Just now", size: source.backup.compressedSize, destination, sandboxes }, sandboxes)
+      startBackup,
+      exportAndVerify(destination, sandboxes, checkpointId) {
+        if (running) return Promise.reject(new ExportIncompleteError("busy", "Another export or import is running."))
+        startBackup(destination, sandboxes, checkpointId)
+        return new Promise<VerifiedExport>((resolve, reject) => { awaitedExport.current = { operationId: `fixture-export-${Date.now()}`, resolve, reject } })
       },
       startRestore: (archive, newName) => start("restore", archive, archive.sandboxes, newName),
       cancelOperation() {
         if (!running) return
+        if (running.operation === "backup" && awaitedExport.current) {
+          awaitedExport.current.reject(new ExportIncompleteError("cancelled", "The operation was cancelled.", awaitedExport.current.operationId))
+          awaitedExport.current = null
+        }
         setResult({ operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), kind: "result", outcome: "cancelled", title: running.operation === "backup" ? "Export cancelled" : "Import cancelled", message: running.operation === "backup" ? "The incomplete file was removed." : `The incomplete ${running.targetName} sandbox was removed.`, detail: running.operation === "backup" ? "Existing exports were not changed." : "The export file and existing sandboxes were not changed." })
         setRunning(null)
       },
@@ -140,6 +159,7 @@ export function useUnavailableBackup(source: ApplicationSource): BackupControlle
       chooseArchive: async () => null,
       inspectArchive: async (selection) => ({ archive: selection, valid: false, reason: "Native restore validation is unavailable in this Silo build." }),
       startBackup: () => undefined,
+      exportAndVerify: async () => { throw new ExportIncompleteError("rejected", "Export is not available in this Silo build.") },
       startRestore: () => undefined,
       cancelOperation: () => undefined,
       retryStart: () => undefined,

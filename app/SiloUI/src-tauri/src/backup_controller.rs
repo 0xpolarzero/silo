@@ -622,6 +622,9 @@ fn finish(controller: &Controller) {
     controller.busy.store(false, Ordering::Release);
 }
 
+/// Starts an export and returns its operation id: the `operationId` that
+/// `read_backup_state` reports with this export's running state and result, so
+/// a caller can wait for this specific export to finish (E-59).
 #[tauri::command]
 pub(crate) async fn start_backup(
     app: AppHandle,
@@ -630,7 +633,7 @@ pub(crate) async fn start_backup(
     destination: String,
     sandboxes: Vec<String>,
     checkpoint_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     require_main(&window)?;
     // A rejection before the export starts is returned to the caller, which shows it
     // in place; only the background outcome (see `notify_transfer`) reaches the system.
@@ -652,7 +655,7 @@ async fn start_backup_inner(
     destination: String,
     sandboxes: Vec<String>,
     checkpoint_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
     let selected_destination = controller
@@ -693,65 +696,19 @@ async fn start_backup_inner(
     } else {
         None
     };
-    controller
-        .busy
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another export or import is running.".to_string())?;
-    let archive_path = unique_archive(&canonical, &sandboxes, checkpoint_id.is_some());
-    let pending_archive = Archive {
-        name: archive_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
-        archive_path: archive_path.to_string_lossy().into_owned(),
-        completed_label: "In progress".into(),
-        size: "Unknown".into(),
-        destination,
-        sandboxes: sandboxes.clone(),
-    };
-    if let Err(error) = recovery::begin(
+    let ClaimedExport {
+        operation_id,
+        archive_path,
+        archive: pending_archive,
+        cancellation,
+    } = claim_export(
         &controller,
-        recovery::Journal::backup(
-            pending_archive.clone(),
-            sandboxes.clone(),
-            checkpoint_id.clone(),
-        ),
-    ) {
-        finish(&controller);
-        return Err(error);
-    }
-    let cancellation = backup::Cancellation::default();
-    {
-        let mut view = controller
-            .view
-            .lock()
-            // `busy` and the journal are already claimed; returning here would
-            // strand them, so recover a poisoned view instead (E-44).
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        view.cancellation = Some(cancellation.clone());
-        let phase = match &checkpoint_name {
-            Some(name) => Phase {
-                title: format!("Using checkpoint \u{201c}{name}\u{201d}"),
-                detail: "Silo is packaging and verifying the selected checkpoint.".into(),
-                tone: "running",
-            },
-            None => Phase {
-                title: "Capture and verify".into(),
-                detail: "Silo is creating verified self-contained snapshots.".into(),
-                tone: "running",
-            },
-        };
-        view.operation = Some(Operation::Running {
-            operation: "backup",
-            archive: pending_archive.clone(),
-            running_names: Vec::new(),
-            target_name: None,
-            progress: 0,
-            indeterminate: Some(true),
-            phases: vec![phase],
-        });
-    }
+        &canonical,
+        destination,
+        &sandboxes,
+        checkpoint_id.clone(),
+        checkpoint_name.as_deref(),
+    )?;
     publish(&app, &controller);
     let failure_archive = pending_archive.clone();
     let (work_app, work_controller) = (app.clone(), controller.clone());
@@ -771,7 +728,87 @@ async fn start_backup_inner(
             publish(&app, &controller);
         }
     });
-    Ok(())
+    Ok(operation_id)
+}
+
+/// An export that owns the transfer slot and a saved journal.
+struct ClaimedExport {
+    /// The journal id, reported as `operationId` until the result is dismissed.
+    operation_id: String,
+    archive_path: PathBuf,
+    archive: Archive,
+    cancellation: backup::Cancellation,
+}
+
+/// Claims the transfer slot, saves the export's journal and publishes it as
+/// running. Everything after this point reports its outcome as this
+/// operation's result, under the returned operation id.
+fn claim_export(
+    controller: &Controller,
+    destination_directory: &Path,
+    destination: String,
+    sandboxes: &[String],
+    checkpoint_id: Option<String>,
+    checkpoint_name: Option<&str>,
+) -> Result<ClaimedExport, String> {
+    controller
+        .busy
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another export or import is running.".to_string())?;
+    let archive_path = unique_archive(destination_directory, sandboxes, checkpoint_id.is_some());
+    let archive = Archive {
+        name: archive_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        archive_path: archive_path.to_string_lossy().into_owned(),
+        completed_label: "In progress".into(),
+        size: "Unknown".into(),
+        destination,
+        sandboxes: sandboxes.to_vec(),
+    };
+    let journal = recovery::Journal::backup(archive.clone(), sandboxes.to_vec(), checkpoint_id);
+    let operation_id = journal.identity().to_string();
+    if let Err(error) = recovery::begin(controller, journal) {
+        finish(controller);
+        return Err(error);
+    }
+    let cancellation = backup::Cancellation::default();
+    let mut view = controller
+        .view
+        .lock()
+        // `busy` and the journal are already claimed; returning here would
+        // strand them, so recover a poisoned view instead (E-44).
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    view.cancellation = Some(cancellation.clone());
+    let phase = match checkpoint_name {
+        Some(name) => Phase {
+            title: format!("Using checkpoint \u{201c}{name}\u{201d}"),
+            detail: "Silo is packaging and verifying the selected checkpoint.".into(),
+            tone: "running",
+        },
+        None => Phase {
+            title: "Capture and verify".into(),
+            detail: "Silo is creating verified self-contained snapshots.".into(),
+            tone: "running",
+        },
+    };
+    view.operation = Some(Operation::Running {
+        operation: "backup",
+        archive: archive.clone(),
+        running_names: Vec::new(),
+        target_name: None,
+        progress: 0,
+        indeterminate: Some(true),
+        phases: vec![phase],
+    });
+    Ok(ClaimedExport {
+        operation_id,
+        archive_path,
+        archive,
+        cancellation,
+    })
 }
 
 /// Runs a detached export or import worker. A panic would otherwise leave the
@@ -2300,6 +2337,38 @@ mod tests {
             format!("dev-checkpoint-{date}-2.silo-backup")
         );
     }
+    #[test]
+    fn a_claimed_export_reports_the_operation_id_its_result_will_carry() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let claimed = claim_export(
+            &controller,
+            directory.path(),
+            directory.path().to_string_lossy().into_owned(),
+            &["dev".into()],
+            None,
+            None,
+        )
+        .unwrap();
+        uuid::Uuid::parse_str(&claimed.operation_id).unwrap();
+        assert_eq!(recovery::token(&controller).unwrap().as_deref(), Some(claimed.operation_id.as_str()));
+        assert!(claimed.archive_path.starts_with(directory.path()));
+        assert!(matches!(
+            &controller.view.lock().unwrap().operation,
+            Some(Operation::Running { operation: "backup", archive, .. }) if archive.archive_path == claimed.archive_path.to_string_lossy()
+        ));
+        let second = claim_export(
+            &controller,
+            directory.path(),
+            directory.path().to_string_lossy().into_owned(),
+            &["dev".into()],
+            None,
+            None,
+        );
+        assert_eq!(second.err().as_deref(), Some("Another export or import is running."));
+        assert_eq!(recovery::token(&controller).unwrap().as_deref(), Some(claimed.operation_id.as_str()));
+    }
+
     #[test]
     fn multi_vm_restore_requires_an_explicit_source() {
         let names = vec!["first".into(), "second".into()];

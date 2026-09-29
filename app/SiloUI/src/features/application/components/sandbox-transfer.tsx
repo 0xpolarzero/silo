@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { ApplicationSource } from "@/features/application/model/application-source"
-import type { BackupArchive, BackupController, BackupPhase } from "@/features/application/model/backup-source"
+import type { BackupArchive, BackupController, BackupPhase, VerifiedExport } from "@/features/application/model/backup-source"
 import { validateSandboxName } from "@/features/onboarding/model/machine-configuration"
 
 /** One toast tracks the single in-flight export or import; updating it in place keeps the
@@ -69,8 +69,13 @@ function ImportPopover({ source, review, anchor, onReview, onImport, onClose, on
 }
 
 export interface SandboxTransfer {
-  /** Pick a folder, then export a sandbox (or one of its checkpoints) as a background toast. */
-  exportSandbox: (sandboxName: string, checkpoint?: { id: string; name: string }) => Promise<void>
+  /**
+   * Pick a folder, then export a sandbox (or one of its checkpoints) as a background toast.
+   * Resolves once that export finished: with the verified export, or null when none was
+   * produced (folder picker dismissed, export unavailable, busy, refused, failed or cancelled;
+   * the toast explains why). Never rejects. "Export, then delete" deletes only on a result.
+   */
+  exportSandbox: (sandboxName: string, checkpoint?: { id: string; name: string }) => Promise<VerifiedExport | null>
   /** Pick an export file, validate it, then open the import review popover. */
   beginImport: () => Promise<void>
   /** Wraps the sandbox list's Add button: the import review popover anchors to it. */
@@ -96,19 +101,20 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
   // A result already present when the app loads is from a previous session: never toast it.
   const seenOperation = useRef(false)
 
-  async function exportSandbox(sandboxName: string, checkpoint?: { id: string; name: string }) {
+  async function exportSandbox(sandboxName: string, checkpoint?: { id: string; name: string }): Promise<VerifiedExport | null> {
     const controller = backupRef.current
     if (controller.state.availability === "unavailable") {
       showOperationFailure(TRANSFER_TOAST_ID, "Export is unavailable", { description: controller.state.availabilityMessage ?? "Export is not available in this Silo build. No sandbox data was changed.", native: false })
-      return
+      return null
     }
     let destination: string | null
     try { destination = await controller.actions.chooseDestination() }
-    catch (error) { showOperationFailure(TRANSFER_TOAST_ID, "Could not choose a folder", { description: `${errorText(error)} No export was created.`, native: false }); return }
-    if (!destination) return
+    catch (error) { showOperationFailure(TRANSFER_TOAST_ID, "Could not choose a folder", { description: `${errorText(error)} No export was created.`, native: false }); return null }
+    if (!destination) return null
     checkpointRef.current = checkpoint?.name
     retryRef.current = () => { void exportSandbox(sandboxName, checkpoint) }
-    controller.actions.startBackup(destination, [sandboxName], checkpoint?.id)
+    // The toast, driven by the backup state, reports every outcome; only a verified export resolves.
+    return backupRef.current.actions.exportAndVerify(destination, [sandboxName], checkpoint?.id).catch(() => null)
   }
 
   async function beginImport() {

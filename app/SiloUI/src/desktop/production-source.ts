@@ -11,7 +11,7 @@ import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/o
 import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import { operationQueueSchema, isCancelledError, type OperationQueue } from "@/features/application/model/operation-queue"
 import { deriveMachineChanges, isStaleConfigurationError, type MachineConfigurationChange } from "@/features/application/model/machine-change"
-import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
+import { ExportIncompleteError, type BackupArchive, type BackupController, type BackupOperation, type BackupState, type VerifiedExport } from "@/features/application/model/backup-source"
 import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 
@@ -246,6 +246,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let localBackupOperation: BackupOperation | null = null
   const dismissedBackupResults = new Set<string>()
   let requestedOperation: { operation: "backup" | "restore"; archive: BackupArchive; targetName?: string } | null = null
+  // Exports awaiting their own result (E-59). Each sees every backend backup
+  // state read, with the read's sequence, or null when the source is disposed.
+  const exportWaiters = new Set<(state: BackupState | null, sequence: number) => void>()
 
   function sshOwner(target: string) { return parseRemoteWorkspaceTarget(target)?.hostId ?? "" }
   function unavailableSshRows(hostId: string, computerName: string, message: string): SshAccessWorkspace[] {
@@ -546,13 +549,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         source = await unavailableLocalSource(error)
       }
     }
+    let backendBackup: BackupState | null = null
     if (backupResult.status === "fulfilled") {
       try {
-        backup = parseBackupState(backupResult.value)
+        backup = backendBackup = parseBackupState(backupResult.value)
       }
       catch (cause) { backup = unreadableBackup(`Silo returned invalid backup state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
     } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
     if (disposed || sequence !== refreshSequence) return
+    if (backendBackup) { const state = backendBackup; exportWaiters.forEach(waiter => waiter(state, sequence)) }
     if (source && snapshot.source && (githubMutationPending || (source.github.policyRevision ?? 0) < (snapshot.source.github.policyRevision ?? 0))) source = { ...source, github: snapshot.source.github }
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
     publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error })
@@ -1267,6 +1272,29 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
   }
 
+  /** Settles with the result the backend reports under `operationId`. A state read
+   * that began after the export started and shows another id means the result is gone. */
+  function waitForExport(operationId: string): Promise<VerifiedExport> {
+    const startedAfter = refreshSequence
+    return new Promise((resolve, reject) => {
+      const waiter = (state: BackupState | null, sequence: number) => {
+        const operation = state?.operation
+        if (state?.operationId === operationId && operation?.kind !== "result") return
+        if (state && state.operationId !== operationId && sequence <= startedAfter) return
+        exportWaiters.delete(waiter)
+        if (state?.operationId === operationId && operation?.kind === "result") {
+          if (operation.operation === "backup" && operation.outcome === "success") resolve({ operationId, archive: operation.archive })
+          else reject(new ExportIncompleteError(operation.outcome === "cancelled" ? "cancelled" : "failed", operation.message, operationId))
+          return
+        }
+        reject(new ExportIncompleteError("unavailable", state
+          ? "Silo no longer reports this export's result. Check the export folder before relying on it."
+          : "Silo stopped tracking this export before it finished.", operationId))
+      }
+      exportWaiters.add(waiter)
+    })
+  }
+
   const backupActions: BackupController["actions"] = {
     async chooseDestination() {
       const selected = await native.invoke<string | null>("choose_backup_destination")
@@ -1288,13 +1316,25 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     },
     startBackup(destination, sandboxes, checkpointId) {
       if (pendingBackupOperation || snapshot.backup.operation?.kind === "running") return
+      backupActions.exportAndVerify(destination, sandboxes, checkpointId).catch(() => undefined)
+    },
+    async exportAndVerify(destination, sandboxes, checkpointId) {
+      if (pendingBackupOperation || snapshot.backup.operation?.kind === "running") throw new ExportIncompleteError("busy", "Another export or import is running.")
       pendingBackupOperation = true
-      showPendingBackup("backup", { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes })
-      void native.invoke("start_backup", { destination, sandboxes, ...(checkpointId && { checkpointId }) }).then(() => { if (localBackupOperation?.kind === "running") dismissedBackupResults.clear(); return refresh() }).catch((cause) => {
-        const archive: BackupArchive = { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
+      const archive: BackupArchive = { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
+      showPendingBackup("backup", archive)
+      let operationId: string
+      try { operationId = z.string().min(1).parse(await native.invoke("start_backup", { destination, sandboxes, ...(checkpointId && { checkpointId }) })) }
+      catch (cause) {
         localBackupOperation = backupFailure("backup", archive, errorMessage(cause))
         publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
-      }).finally(() => { pendingBackupOperation = false })
+        throw new ExportIncompleteError("rejected", errorMessage(cause))
+      }
+      finally { pendingBackupOperation = false }
+      const completion = waitForExport(operationId)
+      if (localBackupOperation?.kind === "running") dismissedBackupResults.clear()
+      void refresh()
+      return completion
     },
     startRestore(archive, newName, sourceName) {
       if (pendingBackupOperation || snapshot.backup.operation?.kind === "running") return
@@ -1374,7 +1414,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
+    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
   }
 }
 
