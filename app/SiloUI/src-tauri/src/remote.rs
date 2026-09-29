@@ -21,7 +21,8 @@ const INSTALL_PUBLIC_KEY: &str = r#"umask 077; mkdir -p ~/.ssh && touch ~/.ssh/a
 const AUTHORIZED_KEY_OPTIONS: &str = r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge""#;
 const SILO_KEY_COMMENT: &str = "Silo remote management";
 /// Bridge protocol version; both computers must match. 2 adds the method table, capabilities,
-/// and changes named by a stable `operationId` that must start within `startWithinMs`.
+/// changes named by a stable `operationId` that must start within `startWithinMs`, and a
+/// preamble before each bridge reply.
 const VERSION: u32 = 2;
 const LIMIT: usize = 4 * 1024 * 1024;
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
@@ -289,9 +290,39 @@ fn write_frame(mut writer: impl Write, value: &Value) -> Result<(), String> {
         .and_then(|_| writer.write_all(&bytes))
         .map_err(|e| e.to_string())
 }
-fn write_stream_response(mut writer: impl Write, value: &Value) -> Result<(), String> {
+/// Marks the start of the bridge's reply on ssh output, so text printed by the other
+/// account's shell startup files (an `echo` in `.bashrc`, conda init) is skipped instead of
+/// being read as a frame. `\0` occurs only first, so a partial match restarts cleanly.
+const REPLY_PREAMBLE: &[u8] = b"\0SILO-BRIDGE-REPLY\n";
+/// Shell output skipped before a reply at most.
+const REPLY_SEARCH_LIMIT: usize = 64 * 1024;
+/// The bridge's reply on its standard output: the preamble, then one frame.
+fn write_reply(mut writer: impl Write, value: &Value) -> Result<(), String> {
+    writer.write_all(REPLY_PREAMBLE).map_err(|error| error.to_string())?;
     write_frame(&mut writer, value)?;
     writer.flush().map_err(|error| error.to_string())
+}
+/// Reads the bridge's reply from ssh output, skipping anything printed before it.
+fn read_reply(mut reader: impl std::io::BufRead) -> Result<Value, String> {
+    let ended = || "The remote Silo connection ended. Check that Silo is running and remote management is enabled.".to_string();
+    let (mut matched, mut skipped) = (0, 0);
+    while matched < REPLY_PREAMBLE.len() {
+        let available = reader.fill_buf().map_err(|_| ended())?;
+        let Some(&byte) = available.first() else {
+            return Err(ended());
+        };
+        reader.consume(1);
+        if byte == REPLY_PREAMBLE[matched] {
+            matched += 1;
+        } else {
+            skipped += matched + 1;
+            matched = usize::from(byte == REPLY_PREAMBLE[0]);
+            if skipped > REPLY_SEARCH_LIMIT {
+                return Err("The other computer printed unexpected text before Silo's reply. Remove output from its shell startup files, such as echo in .bashrc.".into());
+            }
+        }
+    }
+    read_frame(reader)
 }
 fn copy_raw_stream(mut reader: impl Read, mut writer: impl Write) -> std::io::Result<()> {
     let mut buffer = [0; 16 * 1024];
@@ -636,7 +667,7 @@ fn run_exchange(mut command: Command, request: &Value, deadline: Instant) -> Res
     }
     let mut stdout = stdout;
     stdout.seek(SeekFrom::Start(0)).map_err(failed)?;
-    let response = read_frame(stdout).map_err(Failure::Failed)?;
+    let response = read_reply(std::io::BufReader::new(stdout)).map_err(Failure::Failed)?;
     if let Some(error) = response["error"].as_str() {
         return Err(Failure::Reported(error.into()));
     }
@@ -901,7 +932,7 @@ pub(crate) fn run_bridge() -> Result<(), String> {
         watch_controller(std::io::stdin(), socket.try_clone().map_err(|e| e.to_string())?);
     }
     let response = read_frame(&mut socket)?;
-    write_stream_response(std::io::stdout().lock(), &response)?;
+    write_reply(std::io::stdout().lock(), &response)?;
     if streaming && response.get("error").is_none() {
         socket.set_read_timeout(None).map_err(|e| e.to_string())?;
         let mut input = socket.try_clone().map_err(|e| e.to_string())?;
@@ -946,12 +977,12 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
         .map_err(|e| e.to_string())?;
     let result = (|| {
         let mut input = child.stdin.take().ok_or("SSH input unavailable.")?;
-        let mut output = child.stdout.take().ok_or("SSH output unavailable.")?;
+        let mut output = std::io::BufReader::new(child.stdout.take().ok_or("SSH output unavailable.")?);
         write_frame(
             &mut input,
             &json!({"version":VERSION,"hostId":host.id,"method":method,"params":params}),
         )?;
-        let reply = read_frame(&mut output)?;
+        let reply = read_reply(&mut output)?;
         if let Some(error) = reply["error"].as_str() {
             return Err(error.to_owned());
         }
@@ -1382,12 +1413,12 @@ mod stream_tests {
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         let worker = thread::spawn(move || {
             let mut output = std::io::BufWriter::new(server);
-            write_stream_response(&mut output, &json!({"result":{}})).unwrap();
+            write_reply(&mut output, &json!({"result":{}})).unwrap();
             output.get_mut().set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             let mut banner = [0; 4];
             output.get_mut().read_exact(&mut banner).map(|_| banner)
         });
-        let response = read_frame(&mut client);
+        let response = read_reply(std::io::BufReader::new(&client));
         if response.is_ok() {
             client.write_all(b"SSH-").unwrap();
         }
@@ -1682,6 +1713,47 @@ mod authorized_key_tests {
         assert!(!restrict_authorized_keys_file(&link, &public).unwrap());
         assert_eq!(fs::read_to_string(&target).unwrap(), format!("{public}\n"));
         assert!(!restrict_authorized_keys_file(&home.path().join("missing"), &public).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+    fn reply(value: &Value) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        write_reply(&mut bytes, value).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn replies_are_found_after_shell_startup_output() {
+        let value = json!({"result":{"hostId":"office"}});
+        for noise in [
+            &b""[..],
+            b"Welcome to office\n",
+            b"conda init\n\0\0SILO-BRIDGE\n\0SILO-BRIDGE-REPL",
+            b"\x1b[32mgreen banner\x1b[0m\r\n",
+        ] {
+            let bytes = [noise, &reply(&value)].concat();
+            assert_eq!(read_reply(bytes.as_slice()).unwrap(), value, "{noise:?}");
+        }
+        let flood = [vec![b'x'; REPLY_SEARCH_LIMIT + 1], reply(&value)].concat();
+        assert!(read_reply(flood.as_slice()).unwrap_err().contains("shell startup files"));
+        assert!(read_reply(&b"motd only\n"[..]).unwrap_err().contains("connection ended"));
+        // A frame without the preamble (earlier bridges) is never trusted as a reply.
+        let mut bare = Vec::new();
+        write_frame(&mut bare, &value).unwrap();
+        assert!(read_reply(bare.as_slice()).is_err());
+    }
+
+    #[test]
+    fn an_exchange_skips_what_the_remote_shell_prints() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), reply(&json!({"result":{"ok":true}}))).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "echo 'Last login: today'; printf 'conda: base\\n'; cat \"$0\""]).arg(file.path());
+        let result = run_exchange(command, &json!({"method":"runtime.snapshot"}), Instant::now() + Duration::from_secs(10));
+        assert_eq!(result, Ok(json!({"ok":true})));
     }
 }
 
