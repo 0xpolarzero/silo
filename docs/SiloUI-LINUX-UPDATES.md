@@ -25,7 +25,10 @@ The **Update** action in Silo refreshes package information and requests system
 authentication before upgrading and restarting. For updates started outside Silo,
 quit Silo before applying the system update. Closing its window is not Quit.
 Quitting stops local VMs; remote VMs keep running. The installer refuses to
-replace a running packaged Silo or its runtime and never kills either process.
+replace a running packaged Silo or its runtime, names the blocking process, and
+never kills either. Short-lived remote-management relays (`silo-ui
+--remote-bridge` started by SSH from another computer, and `--remote-guest`
+editor connections) hold no VM or app state, so they do not block an update.
 New package versions also refuse startup while installation is in progress.
 The first migration from an older version cannot enforce that startup guard in
 old code, so keep Silo closed during this first installation.
