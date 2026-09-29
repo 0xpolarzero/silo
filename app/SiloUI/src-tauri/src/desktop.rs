@@ -144,6 +144,12 @@ fn action_timeout(action: &str) -> Duration {
     }
 }
 
+/// How long the operation queue should treat a desktop action as healthy: the
+/// guest command's own limit plus time to start the VM (G-14).
+fn action_expected_duration(action: &str) -> Duration {
+    (action_timeout(action) + Duration::from_secs(5 * 60)).max(Duration::from_secs(10 * 60))
+}
+
 fn action_starts_vm(action: &str) -> bool {
     matches!(action, "start" | "setup-tools")
 }
@@ -325,15 +331,40 @@ fn public_status(value: Value) -> Result<Value, String> {
         .filter(|readiness| matches!(*readiness, "ready" | "unverified" | "failed"));
     Ok(
         json!({"installed":installed,"state":state,"autoStart":auto_start,
-        "version":value["version"].as_str(),"user":value["user"].as_str(),"display":value["display"].as_str(),
+        "version":safe_version(value["version"].as_str()),"user":safe_user(value["user"].as_str()),
+        "display":safe_display(value["display"].as_str()),
         "ludaState":value["ludaState"].as_str().filter(|state| matches!(*state, "missing" | "installing" | "ready" | "failed")),
-        "ludaVersion":value["ludaVersion"].as_str(), "lcuState":lcu_state,
+        "ludaVersion":safe_version(value["ludaVersion"].as_str()), "lcuState":lcu_state,
         "lcuReason":lcu_reason, "lcuVersion":lcu_version,
         "lcuAppVersion":lcu_app_version, "lcuRuntimeVersion":lcu_runtime_version,
         "lcuAgents":lcu_agents, "lcuReadiness":lcu_readiness, "backend":backend,
         "sessionState":session_state, "streamState":stream_state,
         "updateRequired":update_required, "streamerVersion":streamer_version}),
     )
+}
+
+/// A POSIX account name as the guest reports it; anything else is dropped.
+fn safe_user(value: Option<&str>) -> Option<&str> {
+    value.filter(|user| {
+        let mut bytes = user.bytes();
+        bytes
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase() || first == b'_')
+            && user.len() <= 32
+            && bytes.all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)
+            })
+    })
+}
+
+/// An X display such as `:1` or `:1.0`.
+fn safe_display(value: Option<&str>) -> Option<&str> {
+    value.filter(|display| {
+        display.len() <= 32
+            && display.len() > 1
+            && display.starts_with(':')
+            && display[1..].bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+    })
 }
 
 fn safe_version(value: Option<&str>) -> Option<&str> {
@@ -390,15 +421,16 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
     // waits its turn per VM. Reading desktop status observes only, so it takes
     // no gate and stays available during other operations.
     let _guard = match action {
-        Some(_) => {
+        Some(action) => {
             let paths = runtime::runtime_paths(app)?;
             let vm_id = runtime::resolve_vm_id(&paths, workspace).map_err(|e| e.to_string())?;
             let guard = runtime::OPERATIONS
                 .vm(&vm_id, workspace, &format!("Updating {workspace} desktop"))
                 .map_err(|e| e.to_string())?;
-            // Desktop/guest setup is cancellable and expected to finish within 10 minutes.
+            // Desktop/guest setup is cancellable; installs legitimately run up
+            // to their guest timeout, so only flag them after that.
             guard.allow_cancel();
-            guard.expect_within(std::time::Duration::from_secs(10 * 60));
+            guard.expect_within(action_expected_duration(action));
             Some(guard)
         }
         None => None,
@@ -655,6 +687,36 @@ mod tests {
         let ordinary_tools = action_script("setup-tools");
         assert!(!ordinary_tools.contains("setup-lcu.py"));
         assert!(!ordinary_tools.contains("lcu-lock.json"));
+    }
+
+    #[test]
+    fn long_desktop_actions_are_not_flagged_before_their_guest_timeout() {
+        for action in ["start", "stop", "restart", "setup-tools", "restart-streamer", "update-streamer", "setup-lcu"] {
+            assert!(action_expected_duration(action) > action_timeout(action), "{action}");
+            assert!(action_expected_duration(action) >= Duration::from_secs(10 * 60));
+        }
+    }
+
+    #[test]
+    fn status_bounds_guest_supplied_identity_fields() {
+        let long = "9".repeat(65);
+        let status = public_status(json!({
+            "installed":true,"autoStart":false,"state":"running",
+            "version":long,"user":"silo\u{1b}[31m","display":":1; echo",
+            "ludaVersion":"<script>"
+        })).unwrap();
+        assert!(status["version"].is_null());
+        assert!(status["user"].is_null());
+        assert!(status["display"].is_null());
+        assert!(status["ludaVersion"].is_null());
+        let status = public_status(json!({
+            "installed":true,"autoStart":false,"state":"running",
+            "version":"1.2.3","user":"silo","display":":1.0","ludaVersion":"0.3.0"
+        })).unwrap();
+        assert_eq!(status["version"], "1.2.3");
+        assert_eq!(status["user"], "silo");
+        assert_eq!(status["display"], ":1.0");
+        assert_eq!(status["ludaVersion"], "0.3.0");
     }
 
     #[test]

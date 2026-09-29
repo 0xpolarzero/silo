@@ -170,13 +170,40 @@ it("recovers a failed stream without restarting the live desktop session", async
   const user = userEvent.setup()
   render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
   expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
   expect(screen.getByRole("alert")).toHaveTextContent("Display disconnected")
   await user.click(screen.getByRole("button", { name: "Reconnect display" }))
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "restart-streamer" }))
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Connecting display"))
-  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach").length).toBeGreaterThan(1))
+  // The backend refuses to connect until the stream runs; don't attach early.
+  expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
   expect(invoke.mock.calls.some(([command, args]) => command === "desktop_action" && args?.action === "restart")).toBe(false)
+})
+
+it("attaches once the stream becomes ready", async () => {
+  let streamState = "starting"
+  invoke.mockImplementation(async command => command === "read_desktop_state" ? {
+    installed: true, autoStart: true, state: "running", backend: "selkies", sessionState: "running", streamState,
+  } : undefined)
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+    expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
+    expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
+    streamState = "running"
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
+  } finally { vi.useRealTimers() }
+})
+
+it("keeps the desktop usable when the guest reports a failed or unknown diagnostic", async () => {
+  invoke.mockImplementation(async command => command === "read_desktop_state" ? {
+    installed: true, autoStart: true, state: "running", backend: "selkies", sessionState: "running", streamState: "running",
+    lcuState: "failed", lcuReadiness: "failed", lcuReason: 42, ludaVersion: { bad: true },
+  } : undefined)
+  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
+  expect(screen.queryByText(/Desktop unavailable/)).not.toBeInTheDocument()
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
 })
 
 it("offers an explicit stopped-only desktop update without starting or attaching it", async () => {
@@ -227,8 +254,8 @@ it("keeps a healthy stopped legacy desktop startable and makes migration optiona
 
 it("keeps a running desktop healthy when the LCU runtime prerequisite is missing", async () => {
   invoke.mockImplementation(async command => command === "read_desktop_state" ? {
-    installed: true, autoStart: true, state: "failed", backend: "selkies",
-    sessionState: "running", streamState: "failed", lcuState: "needs-runtime",
+    installed: true, autoStart: true, state: "running", backend: "selkies",
+    sessionState: "running", streamState: "running", lcuState: "needs-runtime",
     lcuReason: "chatgpt-app-required",
   } : undefined)
   render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
@@ -256,8 +283,8 @@ it("runs explicit LCU setup in a live session even when its display stream faile
   render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
   expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
   expect(await screen.findByRole("button", { name: "Set up LCU" })).toBeEnabled()
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
-  const attachmentCount = invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach").length
+  // A failed stream cannot be attached; the session stays usable for setup.
+  const attachmentCount = 0
   await user.click(screen.getByRole("button", { name: "Set up LCU" }))
   expect(await screen.findByText(/LCU requires the official ChatGPT app/)).toBeVisible()
   expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "setup-lcu" })

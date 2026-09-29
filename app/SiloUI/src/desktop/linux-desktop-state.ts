@@ -4,8 +4,8 @@ const desktopSessionStateSchema = z.enum(["stopped", "starting", "running", "fai
 
 export const linuxDesktopStateSchema = z.object({
   installed: z.boolean(),
-  version: z.string().nullish(),
-  streamerVersion: z.string().nullish(),
+  version: z.string().nullish().catch(null),
+  streamerVersion: z.string().nullish().catch(null),
   state: z.enum(["running", "starting", "stopped", "failed", "uninstalled", "vm-stopped"]),
   autoStart: z.boolean(),
   backend: z.enum(["kasm", "selkies"]).nullish(),
@@ -13,17 +13,18 @@ export const linuxDesktopStateSchema = z.object({
   streamState: desktopSessionStateSchema.nullish(),
   updateRequired: z.boolean().nullish(),
   ludaState: z.enum(["missing", "installing", "ready", "failed"]).nullish(),
-  ludaVersion: z.string().nullish(),
+  ludaVersion: z.string().nullish().catch(null),
   lcuState: z.enum(["needs-runtime", "not-installed", "installing", "repair-required", "failed", "ready"]).nullish(),
-  lcuReason: z.string().nullish(),
-  lcuVersion: z.string().nullish(),
-  lcuAppVersion: z.string().nullish(),
-  lcuRuntimeVersion: z.string().nullish(),
-  lcuAgents: z.array(z.string()).nullish(),
-  lcuReadiness: z.enum(["ready", "unverified"]).nullish(),
-  port: z.number().nullish(),
-  user: z.string().nullish(),
-  display: z.string().nullish(),
+  lcuReason: z.string().nullish().catch(null),
+  lcuVersion: z.string().nullish().catch(null),
+  lcuAppVersion: z.string().nullish().catch(null),
+  lcuRuntimeVersion: z.string().nullish().catch(null),
+  lcuAgents: z.array(z.string()).nullish().catch(null),
+  // Diagnostic fields must never make the whole desktop state unreadable.
+  lcuReadiness: z.enum(["ready", "unverified", "failed"]).nullish().catch(null),
+  port: z.number().nullish().catch(null),
+  user: z.string().nullish().catch(null),
+  display: z.string().nullish().catch(null),
 })
 export type LinuxDesktopState = z.infer<typeof linuxDesktopStateSchema>
 export type DesktopAction = "start" | "stop" | "restart" | "setup-tools" | "setup-lcu" | "restart-streamer" | "update-streamer"

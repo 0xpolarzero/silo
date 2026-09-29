@@ -32,11 +32,31 @@ pub(crate) struct DirectoryPage {
 }
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 struct Snapshot {
-    id: String,
+    workspace: String,
+    path: String,
     created: Instant,
     entries: Vec<Entry>,
 }
-static SNAPSHOTS: OnceLock<Mutex<HashMap<(String, String), Snapshot>>> = OnceLock::new();
+/// Keyed by snapshot id so two windows listing the same folder paginate their
+/// own scans instead of expiring each other's (G-18).
+static SNAPSHOTS: OnceLock<Mutex<HashMap<String, Snapshot>>> = OnceLock::new();
+
+fn cached_page(
+    cache: &HashMap<String, Snapshot>,
+    workspace: &str,
+    path: &str,
+    offset: usize,
+    snapshot_id: Option<&str>,
+) -> Result<DirectoryPage, String> {
+    let id = snapshot_id.ok_or(EXPIRED)?;
+    let snapshot = cache
+        .get(id)
+        .filter(|s| {
+            s.created.elapsed() < Duration::from_secs(120) && s.workspace == workspace && s.path == path
+        })
+        .ok_or(EXPIRED)?;
+    page(&snapshot.entries, offset, id)
+}
 
 fn valid_path(path: &str) -> bool {
     path.len() <= 4096
@@ -125,7 +145,16 @@ pub(crate) async fn list_workspace_directory(
             }))?;
             return serde_json::from_value(value).map_err(|_| "The remote computer returned an invalid folder listing.".into());
         }
+        crate::runtime::validate_name(&workspace).map_err(|error| error.to_string())?;
         let paths = runtime_paths(&app).map_err(|_| FAILED.to_owned())?;
+        if !crate::runtime::read_metadata(&paths.metadata)
+            .map_err(|_| FAILED.to_owned())?
+            .machines
+            .iter()
+            .any(|machine| machine.is_vm() && machine.name() == workspace)
+        {
+            return Err("Sandbox no longer exists.".into());
+        }
         let state = match crate::runtime::observe_vm(&ProcessRunner, &paths, &workspace).map_err(|_| FAILED.to_owned())? {
             crate::runtime::VmRuntime::Absent => return Err("Start this VM to browse its files.".into()),
             crate::runtime::VmRuntime::Present(state) => state,
@@ -135,24 +164,16 @@ pub(crate) async fn list_workspace_directory(
         if state.status != "Running" {
             return Err("Start this VM to browse its files.".into());
         }
-        let key = (workspace.clone(), path.clone());
         let snapshots = SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()));
         if offset != 0 {
             let cache = snapshots.lock().map_err(|_| FAILED.to_owned())?;
-            let snapshot = cache
-                .get(&key)
-                .filter(|s| {
-                    s.created.elapsed() < Duration::from_secs(120)
-                        && snapshot_id.as_deref() == Some(s.id.as_str())
-                })
-                .ok_or(EXPIRED)?;
-            return page(&snapshot.entries, offset, &snapshot.id);
+            return cached_page(&cache, &workspace, &path, offset, snapshot_id.as_deref());
         }
         let output = run_msb(
             &paths,
             &[
                 "exec".into(),
-                workspace,
+                workspace.clone(),
                 "--user".into(), user.into(),
                 "--env".into(), format!("USER={user}"),
                 "--env".into(), format!("LOGNAME={user}"),
@@ -199,9 +220,10 @@ pub(crate) async fn list_workspace_directory(
             }
         }
         cache.insert(
-            key,
+            id,
             Snapshot {
-                id,
+                workspace,
+                path,
                 created: Instant::now(),
                 entries,
             },
@@ -259,6 +281,25 @@ mod tests {
             parse_listing(&output, &path).unwrap_err(),
             "This folder is too large to list."
         );
+    }
+    #[test]
+    fn two_windows_listing_one_folder_keep_their_own_snapshots() {
+        let snapshot = |name: &str| Snapshot {
+            workspace: "dev".into(),
+            path: "/workspace".into(),
+            created: Instant::now(),
+            entries: (0..300)
+                .map(|i| Entry { name: format!("{name}{i}"), path: i.to_string(), kind: "file".into() })
+                .collect(),
+        };
+        let cache = HashMap::from([("1".to_string(), snapshot("main")), ("2".to_string(), snapshot("status"))]);
+        let main = cached_page(&cache, "dev", "/workspace", 200, Some("1")).unwrap();
+        let status = cached_page(&cache, "dev", "/workspace", 200, Some("2")).unwrap();
+        assert_eq!(main.entries[0].name, "main200");
+        assert_eq!(status.entries[0].name, "status200");
+        assert_eq!(cached_page(&cache, "other", "/workspace", 200, Some("1")).unwrap_err(), EXPIRED);
+        assert_eq!(cached_page(&cache, "dev", "/workspace/x", 200, Some("1")).unwrap_err(), EXPIRED);
+        assert_eq!(cached_page(&cache, "dev", "/workspace", 200, None).unwrap_err(), EXPIRED);
     }
     #[test]
     fn pagination_is_bounded_and_complete() {
