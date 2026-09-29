@@ -43,7 +43,7 @@ rustup override set 1.94.0
 npm --prefix app/SiloUI ci
 ```
 
-Run the remaining commands from this `silo` directory. The first native build downloads and compiles the bundled runtime and prepares the guest image, so it needs internet access and can take substantially longer than later builds.
+`app/SiloUI/src-tauri/rust-toolchain.toml` pins the same toolchain for Cargo and Tauri commands run inside `src-tauri`; the override covers commands run from the repository root. Run the remaining commands from this `silo` directory. The first native build downloads and compiles the bundled runtime and prepares the guest image, so it needs internet access and can take substantially longer than later builds.
 
 ## 3. Create your GitHub App
 
