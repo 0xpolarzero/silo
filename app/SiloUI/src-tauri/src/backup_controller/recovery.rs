@@ -231,7 +231,7 @@ pub(super) fn begin(controller: &Controller, journal: Journal) -> Result<(), Str
         .view
         .lock()
         .map_err(|_| "Backup state unavailable.")?
-        .history_error
+        .journal_error
     {
         return Err(error.clone());
     }
@@ -545,7 +545,6 @@ pub(super) fn recover_at_paths(
                 return Ok(match controller.service.inspect_archive(path, cancellation) {
                     Ok(checked) if checked.sandboxes == *names => {
                         let archive = archive_from(path, &checked);
-                        record_archive(controller, &archive)?;
                         result(archive, "success", "Export complete", "Silo verified this export after relaunching.", None)
                     }
                     _ => result(

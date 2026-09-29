@@ -100,46 +100,38 @@ pub(crate) struct ArchiveInspectionResult {
     reason: Option<String>,
 }
 
+/// `backup-history.json`. Older builds also listed completed exports here; no
+/// UI showed them, so only the chosen export folder is kept (E-45). The file is
+/// advisory: a missing, unreadable or newer file only forgets the folder.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BackupHistory {
     schema_version: u32,
     destination: Option<PathBuf>,
-    archives: Vec<Archive>,
+    /// Always written empty; read only so older files still parse.
+    #[serde(default)]
+    archives: Vec<Value>,
 }
 
-fn load_history(path: &Path) -> Result<BackupHistory, String> {
+fn load_destination(path: &Path) -> Option<PathBuf> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(BackupHistory {
-                schema_version: 1,
-                destination: None,
-                archives: Vec::new(),
-            });
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!("Silo ignored its unreadable export folder setting: {error}");
+            return None;
         }
-        Err(error) => return Err(format!("Silo could not read backup history: {error}")),
     };
-    let history: BackupHistory = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Silo could not read backup history: {error}"))?;
-    if history.schema_version != 1
-        || history
-            .destination
-            .as_ref()
-            .is_some_and(|path| !path.is_absolute())
-        || history.archives.iter().any(|archive| {
-            !Path::new(&archive.archive_path).is_absolute()
-                || !Path::new(&archive.destination).is_absolute()
-                || archive.name.is_empty()
-                || archive.sandboxes.is_empty()
-        })
-    {
-        return Err(
-            "Silo backup history has invalid or unsupported data. The saved file was preserved."
-                .into(),
-        );
+    match serde_json::from_slice::<BackupHistory>(&bytes) {
+        Ok(history) if history.schema_version == 1 => {
+            history.destination.filter(|path| path.is_absolute())
+        }
+        Ok(_) => None,
+        Err(error) => {
+            eprintln!("Silo ignored its unreadable export folder setting: {error}");
+            None
+        }
     }
-    Ok(history)
 }
 
 fn write_history(path: &Path, history: &BackupHistory) -> Result<(), String> {
@@ -157,33 +149,51 @@ fn write_history(path: &Path, history: &BackupHistory) -> Result<(), String> {
     write().map_err(|error| format!("Silo could not save backup history: {error}"))
 }
 
-fn record_archive(controller: &Controller, archive: &Archive) -> Result<(), String> {
-    let mut view = controller
-        .view
-        .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?;
-    if let Some(error) = &view.history_error {
-        return Err(error.clone());
-    }
-    let mut archives = view.archives.clone();
-    archives.retain(|existing| existing.archive_path != archive.archive_path);
-    archives.insert(0, archive.clone());
-    write_history(
+/// Use `destination` as the export folder. Saving it for the next launch is
+/// best effort: a failure never blocks this export.
+fn remember_destination(controller: &Controller, destination: PathBuf) {
+    let saved = write_history(
         &controller.history_path,
         &BackupHistory {
             schema_version: 1,
-            destination: view.destination.clone(),
-            archives: archives.clone(),
+            destination: Some(destination.clone()),
+            archives: Vec::new(),
         },
-    )?;
-    view.archives = archives;
-    Ok(())
+    );
+    if let Err(error) = saved {
+        eprintln!("{error} The export folder is used for this session only.");
+    }
+    controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .destination = Some(destination);
+}
+
+/// What `install` restores from the app data folder.
+struct Saved {
+    destination: Option<PathBuf>,
+    journal: Option<recovery::Journal>,
+    /// A saved operation that could not be read. It may describe unfinished
+    /// work, so exports and imports stay unavailable and the file is kept.
+    journal_error: Option<String>,
+}
+
+fn load_saved(history_path: &Path) -> Saved {
+    let (journal, journal_error) = match recovery::load(history_path) {
+        Ok(journal) => (journal, None),
+        Err(error) => (None, Some(error)),
+    };
+    Saved {
+        destination: load_destination(history_path),
+        journal,
+        journal_error,
+    }
 }
 
 struct ViewState {
-    history_error: Option<String>,
+    journal_error: Option<String>,
     destination: Option<PathBuf>,
-    archives: Vec<Archive>,
     operation: Option<Operation>,
     cancellation: Option<backup::Cancellation>,
 }
@@ -209,24 +219,11 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join("backup-history.json");
-    let (history, mut history_error) = match load_history(&history_path) {
-        Ok(history) => (history, None),
-        Err(error) => (
-            BackupHistory {
-                schema_version: 1,
-                destination: None,
-                archives: Vec::new(),
-            },
-            Some(error),
-        ),
-    };
-    let journal = match recovery::load(&history_path) {
-        Ok(journal) => journal,
-        Err(error) => {
-            history_error = Some(error);
-            None
-        }
-    };
+    let Saved {
+        destination,
+        journal,
+        journal_error,
+    } = load_saved(&history_path);
     let controller = Arc::new(Controller {
         journal: Mutex::new(journal.clone()),
         history_path,
@@ -241,9 +238,8 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
             scratch,
         ),
         view: Mutex::new(ViewState {
-            history_error,
-            destination: history.destination,
-            archives: history.archives,
+            journal_error,
+            destination,
             operation: None,
             cancellation: None,
         }),
@@ -382,7 +378,7 @@ pub(crate) fn read_backup_state(
                     .map(|available| available.min(managed)),
                 None => Some(managed),
             });
-    let availability_message = view.history_error.clone().or_else(|| {
+    let availability_message = view.journal_error.clone().or_else(|| {
         recovery::unresolved(&controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
     });
     Ok(BackupState {
@@ -396,7 +392,7 @@ pub(crate) fn read_backup_state(
         availability_message,
         required_space_gb: None,
         available_space_gb: available.map(|bytes| bytes as f64 / GIB as f64),
-        archives: view.archives.clone(),
+        archives: Vec::new(),
         destination: view
             .destination
             .as_ref()
@@ -434,23 +430,7 @@ pub(crate) async fn choose_backup_destination(
         let path = selected.into_path().map_err(|error| error.to_string())?;
         let path = fs::canonicalize(&path)
             .map_err(|error| format!("Silo could not use the selected destination: {error}"))?;
-        let mut view = controller
-            .view
-            .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
-        if let Some(error) = &view.history_error {
-            return Err(error.clone());
-        }
-        write_history(
-            &controller.history_path,
-            &BackupHistory {
-                schema_version: 1,
-                destination: Some(path.clone()),
-                archives: view.archives.clone(),
-            },
-        )?;
-        view.destination = Some(path.clone());
-        drop(view);
+        remember_destination(&controller, path.clone());
         publish(&app, &controller);
         Ok(Some(path.to_string_lossy().into_owned()))
     })
@@ -528,26 +508,19 @@ pub(crate) async fn inspect_backup_archive(
     .map_err(|error| error.to_string())?
 }
 
-/// Authorizes a reveal request against the controller's known archives. A path
-/// may be revealed only when it matches, byte for byte, the `archive_path` of a
-/// saved history entry or of the current completed export (a `Result` operation
-/// whose outcome finished successfully), and the file still exists. Exact-string
-/// matching rejects traversal (`..`) or otherwise non-identical paths, and the
-/// existence check rejects an archive the user has since moved or deleted.
-fn authorize_reveal(
-    operation: Option<&Operation>,
-    archives: &[Archive],
-    requested: &str,
-) -> Result<PathBuf, String> {
+/// Authorizes a reveal request. A path may be revealed only when it matches,
+/// byte for byte, the `archive_path` of the current completed export (a
+/// `Result` operation whose outcome finished successfully), and the file still
+/// exists. Exact-string matching rejects traversal (`..`) or otherwise
+/// non-identical paths, and the existence check rejects an archive the user
+/// has since moved or deleted.
+fn authorize_reveal(operation: Option<&Operation>, requested: &str) -> Result<PathBuf, String> {
     const UNAVAILABLE: &str = "That export file is no longer available.";
-    let known = archives
-        .iter()
-        .any(|archive| archive.archive_path == requested)
-        || matches!(
-            operation,
-            Some(Operation::Result { outcome: "success", archive, .. })
-                if archive.archive_path == requested
-        );
+    let known = matches!(
+        operation,
+        Some(Operation::Result { outcome: "success", archive, .. })
+            if archive.archive_path == requested
+    );
     if !known {
         return Err(UNAVAILABLE.into());
     }
@@ -571,7 +544,7 @@ pub(crate) async fn reveal_backup_archive(
             .view
             .lock()
             .map_err(|_| "Backup state is unavailable.".to_string())?;
-        authorize_reveal(view.operation.as_ref(), &view.archives, &archive_path)?
+        authorize_reveal(view.operation.as_ref(), &archive_path)?
     };
     // Revealing shells out to the platform file manager, which can block.
     tauri::async_runtime::spawn_blocking(move || {
@@ -874,7 +847,7 @@ fn run_backup(
         checkpoint_id.as_deref(),
         &cancellation,
     );
-    let mut operation = match result {
+    let operation = match result {
         Ok(archive) => Operation::Result {
             operation: "backup",
             archive,
@@ -906,34 +879,6 @@ fn run_backup(
             ),
         },
     };
-    if let Operation::Result {
-        archive,
-        outcome,
-        title,
-        message,
-        detail,
-        ..
-    } = &mut operation
-    {
-        if *outcome == "success" {
-            if let Err(error) = record_archive(&controller, archive) {
-                *outcome = "failed";
-                *title = "Export saved; history update failed".into();
-                *message = format!(
-                    "The verified export remains at {}. {error}",
-                    archive.archive_path
-                );
-                *detail = Some(
-                    format!(
-                        "{} Silo could not save its export records.",
-                        detail.take().unwrap_or_default()
-                    )
-                    .trim()
-                    .into(),
-                );
-            }
-        }
-    }
     let operation = recovery::complete(&controller, operation);
     notify_transfer(&app, &operation, started.elapsed());
     let _ = set_operation(&controller, operation);
@@ -1675,9 +1620,8 @@ mod tests {
                 PathBuf::from("/unused/scratch"),
             ),
             view: Mutex::new(ViewState {
-                history_error: None,
+                journal_error: None,
                 destination: Some(PathBuf::from("/backups")),
-                archives: Vec::new(),
                 operation: None,
                 cancellation: None,
             }),
@@ -1853,29 +1797,26 @@ mod tests {
         archive.archive_path = path.clone();
 
         let operation = completed_operation(archive.clone(), "success");
-        let resolved = authorize_reveal(Some(&operation), &[], &path).unwrap();
+        let resolved = authorize_reveal(Some(&operation), &path).unwrap();
         assert_eq!(resolved, file);
         for outcome in ["restart-required", "cancelled"] {
             let operation = completed_operation(archive.clone(), outcome);
-            assert!(authorize_reveal(Some(&operation), &[], &path).is_err());
+            assert!(authorize_reveal(Some(&operation), &path).is_err());
         }
     }
 
     #[test]
-    fn reveal_allows_a_saved_history_entry_when_the_file_exists() {
+    fn reveal_rejects_an_earlier_export_that_is_no_longer_the_current_result() {
         let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("history.silo-backup");
+        let file = directory.path().join("earlier.silo-backup");
         std::fs::write(&file, b"archive").unwrap();
         let path = file.to_string_lossy().into_owned();
-        let mut archive = completed_archive();
-        archive.archive_path = path.clone();
 
-        let resolved = authorize_reveal(None, std::slice::from_ref(&archive), &path).unwrap();
-        assert_eq!(resolved, file);
+        assert!(authorize_reveal(None, &path).is_err());
     }
 
     #[test]
-    fn reveal_rejects_a_path_not_present_in_history_or_the_current_operation() {
+    fn reveal_rejects_a_path_other_than_the_current_export() {
         let directory = tempfile::tempdir().unwrap();
         let stranger = directory.path().join("stranger.silo-backup");
         std::fs::write(&stranger, b"archive").unwrap();
@@ -1888,12 +1829,8 @@ mod tests {
             .into_owned();
         std::fs::write(directory.path().join("known.silo-backup"), b"archive").unwrap();
 
-        let error = authorize_reveal(
-            None,
-            std::slice::from_ref(&archive),
-            &stranger.to_string_lossy(),
-        )
-        .unwrap_err();
+        let operation = completed_operation(archive, "success");
+        let error = authorize_reveal(Some(&operation), &stranger.to_string_lossy()).unwrap_err();
         assert_eq!(error, "That export file is no longer available.");
     }
 
@@ -1915,7 +1852,8 @@ mod tests {
             .into_owned();
         assert_ne!(traversal, archive.archive_path);
 
-        let error = authorize_reveal(None, std::slice::from_ref(&archive), &traversal).unwrap_err();
+        let operation = completed_operation(archive, "success");
+        let error = authorize_reveal(Some(&operation), &traversal).unwrap_err();
         assert_eq!(error, "That export file is no longer available.");
     }
 
@@ -1928,8 +1866,7 @@ mod tests {
         archive.archive_path = path.clone();
         let operation = completed_operation(archive.clone(), "success");
 
-        let error =
-            authorize_reveal(Some(&operation), std::slice::from_ref(&archive), &path).unwrap_err();
+        let error = authorize_reveal(Some(&operation), &path).unwrap_err();
         assert_eq!(error, "That export file is no longer available.");
     }
 
@@ -1943,7 +1880,7 @@ mod tests {
         archive.archive_path = path.clone();
         let operation = completed_operation(archive, "failed");
 
-        let error = authorize_reveal(Some(&operation), &[], &path).unwrap_err();
+        let error = authorize_reveal(Some(&operation), &path).unwrap_err();
         assert_eq!(error, "That export file is no longer available.");
     }
 
@@ -2007,38 +1944,67 @@ mod tests {
     }
 
     #[test]
-    fn completed_backup_history_and_destination_survive_reload() {
+    fn the_chosen_destination_survives_reload_and_exports_are_not_recorded() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
-        let archive = completed_archive();
-        record_archive(&controller, &archive).unwrap();
-        let restored = load_history(&path).unwrap();
-        assert_eq!(restored.archives, vec![archive]);
-        assert_eq!(restored.destination, Some(PathBuf::from("/backups")));
+        remember_destination(&controller, directory.path().to_path_buf());
+        let saved = load_saved(&path);
+        assert_eq!(saved.destination.as_deref(), Some(directory.path()));
+        assert!(saved.journal_error.is_none());
         let bytes = fs::read_to_string(path).unwrap();
-        assert!(!bytes.contains("operation"));
-        assert!(!bytes.contains("running"));
+        assert!(!bytes.contains("silo-backup"), "{bytes}");
     }
 
     #[test]
-    fn failed_history_write_does_not_publish_a_saved_history_entry() {
+    fn a_destination_that_cannot_be_saved_is_still_used_this_session() {
         let directory = tempfile::tempdir().unwrap();
         let blocked = directory.path().join("not-a-directory");
         fs::write(&blocked, b"preserve").unwrap();
         let controller = history_controller(blocked.join("backup-history.json"));
-        assert!(record_archive(&controller, &completed_archive()).is_err());
-        assert!(controller.view.lock().unwrap().archives.is_empty());
+        remember_destination(&controller, PathBuf::from("/Volumes/Exports"));
+        assert_eq!(
+            controller.view.lock().unwrap().destination.as_deref(),
+            Some(Path::new("/Volumes/Exports"))
+        );
         assert_eq!(fs::read(&blocked).unwrap(), b"preserve");
     }
 
     #[test]
-    fn malformed_backup_history_is_preserved_and_reported() {
+    fn unreadable_or_newer_export_history_never_blocks_exports_or_imports() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
-        fs::write(&path, b"broken history").unwrap();
-        assert!(load_history(&path).is_err());
-        assert_eq!(fs::read(path).unwrap(), b"broken history");
+        for saved in [
+            &b"broken history"[..],
+            br#"{"schemaVersion":2,"destination":"/backups","archives":[]}"#,
+        ] {
+            fs::write(&path, saved).unwrap();
+            let loaded = load_saved(&path);
+            assert!(loaded.destination.is_none());
+            assert!(loaded.journal_error.is_none());
+        }
+        // An older build's history with recorded exports still yields its destination.
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "destination": "/backups",
+                "archives": [serde_json::to_value(completed_archive()).unwrap()],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_saved(&path).destination, Some(PathBuf::from("/backups")));
+    }
+
+    #[test]
+    fn an_unreadable_saved_operation_still_blocks_new_transfers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        fs::write(directory.path().join("backup-operation.json"), b"broken").unwrap();
+        let loaded = load_saved(&path);
+        assert!(loaded.journal.is_none());
+        assert!(loaded.journal_error.is_some());
     }
 
     #[test]
@@ -2438,9 +2404,8 @@ mod tests {
                 directory.path().join("scratch"),
             ),
             view: Mutex::new(ViewState {
-                history_error: None,
+                journal_error: None,
                 destination: None,
-                archives: Vec::new(),
                 operation: None,
                 cancellation: None,
             }),
@@ -2898,9 +2863,8 @@ mod tests {
                 directory.path().join("scratch"),
             ),
             view: Mutex::new(ViewState {
-                history_error: None,
+                journal_error: None,
                 destination: None,
-                archives: Vec::new(),
                 operation: None,
                 cancellation: None,
             }),
