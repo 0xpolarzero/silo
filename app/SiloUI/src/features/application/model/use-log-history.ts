@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react"
 import type { ApplicationWorkspace } from "./application-source"
-import { logIdentity, type LogEntry, type LogLoader, type LogPage, type LogQuery } from "./logs"
+import { isUnsupportedRemote, logIdentity, type LogEntry, type LogLoader, type LogPage, type LogQuery } from "./logs"
 
 export type LogHistoryRow = { entry: LogEntry; workspace: ApplicationWorkspace }
 export type LogHistoryResult = { workspace: ApplicationWorkspace; page: LogPage; request: LogQuery }
@@ -32,6 +32,22 @@ const MAX_CACHED_VIEWS = 8
 const MAX_CACHED_BYTES = 8 * 1024 * 1024
 const caches = new WeakMap<LogLoader, Map<string, HistoryStore>>()
 const unavailable: LogLoader = async () => { throw new Error("Retained log service unavailable") }
+function unsupportedPage(): LogPage {
+  return { entries: [], nextCursor: null, oldestAvailableTimestamp: null, newestAvailableTimestamp: null, totalMatches: 0, timestampEstimated: false, unsupported: true }
+}
+function list(names: string[]): string {
+  return names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`
+}
+/** One plain notice per computer whose Silo cannot serve logs, instead of a raw error per sandbox. */
+export function unsupportedLogsNotice(results: LogHistoryResult[]): string {
+  const byComputer = new Map<string, string[]>()
+  for (const { workspace, page } of results) {
+    if (!page.unsupported) continue
+    const computer = workspace.computer?.name ?? "that computer"
+    byComputer.set(computer, [...(byComputer.get(computer) ?? []), workspace.machine.name])
+  }
+  return [...byComputer].map(([computer, names]) => `Update Silo on ${computer} to see logs for ${list(names)}.`).join(" ")
+}
 function ownerKey(workspace: ApplicationWorkspace): string {
   const identity = logIdentity(workspace)
   return JSON.stringify([identity.computerId ?? "local", identity.sandboxId])
@@ -133,6 +149,7 @@ class HistoryStore {
       const { workspace } = this.requests[index]
       const key = ownerKey(workspace)
       if (value.status === "fulfilled") results.push(value.value)
+      else if (isUnsupportedRemote(value.reason)) results.push({ workspace, request: this.requests[index].request, cursors: new Set(), page: unsupportedPage() })
       else {
         const retained = previous.get(key)
         if (retained) results.push(retained)
@@ -212,5 +229,6 @@ export function useLogHistory(options: Options) {
   const refresh = useCallback(() => active && !invalidRange ? history.refresh() : Promise.resolve(), [history, active, invalidRange])
   const loadOlder = useCallback(() => active && !invalidRange ? history.loadOlder() : Promise.resolve(), [history, active, invalidRange])
   const retry = useCallback(() => active && !invalidRange ? history.retry() : Promise.resolve(), [history, active, invalidRange])
-  return { ...snapshot, results, rows, hasOlder: results.some(result => Boolean(result.page.nextCursor)), refresh, loadOlder, retry, setScrollTop: history.setScrollTop, setExpandedRows: history.setExpandedRows }
+  const unsupportedNotice = useMemo(() => unsupportedLogsNotice(results), [results])
+  return { ...snapshot, results, rows, unsupportedNotice, hasOlder: results.some(result => Boolean(result.page.nextCursor)), refresh, loadOlder, retry, setScrollTop: history.setScrollTop, setExpandedRows: history.setExpandedRows }
 }

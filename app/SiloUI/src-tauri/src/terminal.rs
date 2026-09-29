@@ -9,6 +9,20 @@ fn command(paths: &RuntimePaths, name: &str, user: &str) -> Result<String, Strin
     let args = ["/usr/bin/env".to_string(), format!("MSB_HOME={}", paths.home.display()), format!("MSB_PATH={}", paths.executable.display()), format!("MSB_LIBKRUNFW_PATH={}", paths.library.display()), paths.executable.to_str().ok_or("Invalid runtime path.")?.into(), "exec".into(), name.into(), "--user".into(), user.into(), "--env".into(), format!("USER={user}"), "--env".into(), format!("LOGNAME={user}"), "--no-start".into(), "--workdir".into(), "/workspace".into(), "--tty".into()];
     Ok(args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "))
 }
+/// The inspected VM, or "Start <name> first." when it is stopped or has no runtime sandbox yet.
+pub(crate) fn running_vm(paths: &RuntimePaths, name: &str) -> Result<runtime::InspectedSandbox, String> {
+    running_vm_with(&runtime::ProcessRunner, paths, name)
+}
+pub(crate) fn running_vm_with(runner: &dyn runtime::RuntimeRunner, paths: &RuntimePaths, name: &str) -> Result<runtime::InspectedSandbox, String> {
+    let inspected = match runtime::observe_vm(runner, paths, name).map_err(|e| e.to_string())? {
+        runtime::VmRuntime::Absent => return Err(start_first(name)),
+        runtime::VmRuntime::Present(inspected) => inspected,
+    };
+    runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
+    if inspected.status != "Running" { return Err(start_first(name)); }
+    Ok(inspected)
+}
+pub(crate) fn start_first(name: &str) -> String { format!("Start {name} first.") }
 pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
     if let Some((host, vm)) = crate::remote_access::target(name)? {
         let (alias, config) = crate::editor::prepare_remote(app, &host, &vm, "/workspace")?;
@@ -22,9 +36,7 @@ pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
     if !metadata.machines.iter().any(|m| m.name() == name && m.is_vm()) { return Err("Choose a local Silo VM.".into()); }
-    let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, name).map_err(|_| "Could not check this VM.")?;
-    runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
-    if inspected.status != "Running" { return Err("Start this VM before opening its terminal.".into()); }
+    let inspected = running_vm(&paths, name)?;
     let user = crate::working_account::working_user(&inspected.config)?;
     applications::open_terminal(app, &application, &command(&paths, name, user)?)
 }

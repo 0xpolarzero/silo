@@ -219,10 +219,12 @@ fn status_with(
     machine: &MachineConfiguration,
 ) -> Result<Value, String> {
     let settings = configuration(machine);
-    let inspected =
-        runtime::inspect_workspace(runner, paths, machine.name()).map_err(|e| e.to_string())?;
     let fallback = |state: &str| json!({"installed": settings.is_some(), "state":state, "autoStart":settings.is_some_and(|s| s.start_with_sandbox), "backend":null, "sessionState":"stopped", "streamState":"stopped", "updateRequired":false, "streamerVersion":null, "lcuState":null, "lcuReason":null, "lcuVersion":null, "lcuAppVersion":null, "lcuRuntimeVersion":null, "lcuAgents":null, "lcuReadiness":null});
-    if inspected.status != "Running" {
+    let inspected = match runtime::observe_vm(runner, paths, machine.name()).map_err(|e| e.to_string())? {
+        runtime::VmRuntime::Present(inspected) => Some(inspected),
+        runtime::VmRuntime::Absent => None,
+    };
+    if inspected.as_ref().is_none_or(|inspected| inspected.status != "Running") {
         return Ok(fallback(if settings.is_some() {
             "vm-stopped"
         } else {
@@ -410,8 +412,10 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
         if configuration(&machine).is_none() {
             return Err("Add a Linux desktop in sandbox settings first.".into());
         }
-        let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, workspace)
-            .map_err(|e| e.to_string())?;
+        let inspected = match runtime::observe_vm(&runtime::ProcessRunner, &paths, workspace).map_err(|e| e.to_string())? {
+            runtime::VmRuntime::Absent => return Err(crate::terminal::start_first(workspace)),
+            runtime::VmRuntime::Present(inspected) => inspected,
+        };
         if action_starts_vm(action) && matches!(inspected.status.as_str(), "Created" | "Stopped") {
             runtime::start_for_desktop(&paths, workspace).map_err(|e| e.to_string())?;
         } else if inspected.status != "Running" {

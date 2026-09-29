@@ -21,7 +21,13 @@ export const logPageSchema = z.object({
   entries: z.array(logEntrySchema), nextCursor: z.string().nullable(),
   oldestAvailableTimestamp: z.string().nullable(), newestAvailableTimestamp: z.string().nullable(),
   totalMatches: z.number(), timestampEstimated: z.boolean(),
+  /** The owning computer runs a Silo that cannot serve logs. */
+  unsupported: z.boolean().optional(),
 })
+export function isUnsupportedRemote(reason: unknown): boolean {
+  const message = String(reason)
+  return message.includes("Unsupported remote request") || message.includes("does not support that remote operation")
+}
 export type LogEntry = z.infer<typeof logEntrySchema>
 export type LogPage = z.infer<typeof logPageSchema>
 export type LogLoader = (request: LogQuery) => Promise<LogPage>

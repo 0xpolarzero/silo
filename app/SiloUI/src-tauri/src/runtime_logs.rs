@@ -38,6 +38,9 @@ pub(crate) struct Page {
     pub newest_available_timestamp: Option<String>,
     pub total_matches: usize,
     pub timestamp_estimated: bool,
+    /// The owning computer runs a Silo that cannot serve logs. Older hosts never send this.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unsupported: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Segment {
@@ -201,6 +204,7 @@ fn cached_page(
         newest_available_timestamp: cached.newest.clone(),
         total_matches: cached.records.len(),
         timestamp_estimated: cached.estimated,
+        unsupported: false,
     })
 }
 fn stamp(value: &str) -> Result<String, String> {
@@ -299,18 +303,41 @@ pub(crate) fn query(app: &AppHandle, request: Query) -> Result<Page, String> {
         .as_deref()
         .filter(|id| *id != computer_id && *id != "local")
     {
-        let value = crate::remote::call_remote(
+        let outcome = crate::remote::call_remote(
             app,
             owner,
             "runtime.logs",
             serde_json::to_value(&request).map_err(|e| e.to_string())?,
-        )?;
-        return serde_json::from_value(value).map_err(|_| {
-            "The remote computer returned invalid logs. Update Silo on both computers.".into()
-        });
+        );
+        return remote_page(outcome);
     }
     let paths = runtime_paths(app)?;
     query_local(&paths, request, &computer_id, &computer_name)
+}
+/// A computer running an older Silo rejects `runtime.logs` as an unknown request. That is
+/// an expected, structured outcome (an empty page marked unsupported), not a failure.
+pub(crate) fn is_unsupported_remote(message: &str) -> bool {
+    matches!(
+        message,
+        "Unsupported remote request." | "This Silo version does not support that remote operation."
+    )
+}
+fn remote_page(outcome: Result<Value, String>) -> Result<Page, String> {
+    match outcome {
+        Ok(value) => serde_json::from_value(value).map_err(|_| {
+            "The remote computer returned invalid logs. Update Silo on both computers.".into()
+        }),
+        Err(message) if is_unsupported_remote(&message) => Ok(Page {
+            entries: Vec::new(),
+            next_cursor: None,
+            oldest_available_timestamp: None,
+            newest_available_timestamp: None,
+            total_matches: 0,
+            timestamp_estimated: false,
+            unsupported: true,
+        }),
+        Err(message) => Err(message),
+    }
 }
 pub(super) fn query_local(
     paths: &RuntimePaths,
@@ -414,6 +441,7 @@ fn read(
         newest_available_timestamp: None,
         total_matches: 0,
         timestamp_estimated: false,
+        unsupported: false,
     };
     let needle = request.query.as_deref().unwrap_or("").to_lowercase();
 
@@ -640,6 +668,13 @@ fn read(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unsupported_remote_request_becomes_a_structured_outcome() {
+        let page = super::remote_page(Err("Unsupported remote request.".into())).unwrap();
+        assert!(page.unsupported && page.entries.is_empty());
+        assert!(super::remote_page(Err("This Silo version does not support that remote operation.".into())).unwrap().unsupported);
+        assert_eq!(super::remote_page(Err("Connection refused.".into())).err().unwrap(), "Connection refused.");
+    }
     use super::*;
     #[test]
     fn boot_failure_is_searchable_with_its_timestamp_context_and_pagination() {

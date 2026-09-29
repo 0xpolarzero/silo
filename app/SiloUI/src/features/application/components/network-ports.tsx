@@ -62,7 +62,8 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     .sort((a, b) => a.workspace.machine.name.localeCompare(b.workspace.machine.name) || a.port.port - b.port.port)
   const errors = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))
-    return item?.error ? [`${workspace.machine.name}: ${item.error}`] : []
+    // A stopped sandbox has no live services to observe; its saved ports show as "VM stopped".
+    return item?.error && workspace.state !== "stopped" ? [`${workspace.machine.name}: ${item.error}`] : []
   })
 
   function add(workspace = localWorkspaces[0] ? workspaceTarget(localWorkspaces[0]) : "", port = "") {

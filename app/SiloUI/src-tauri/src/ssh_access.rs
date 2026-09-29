@@ -264,8 +264,12 @@ fn spawn(paths: &RuntimePaths, config: &Configuration) -> Result<Listener, Strin
     Ok(listener)
 }
 fn inspect_running(paths: &RuntimePaths, config: &Configuration) -> Result<bool, String> {
-    let inspected = runtime::inspect_workspace(&ProcessRunner, paths, &config.workspace)
-        .map_err(|_| "Could not verify sandbox status. SSH access is closed.")?;
+    let inspected = match runtime::observe_vm(&ProcessRunner, paths, &config.workspace)
+        .map_err(|e| format!("Could not verify sandbox status ({e}). SSH access is closed."))?
+    {
+        runtime::VmRuntime::Absent => return Ok(false),
+        runtime::VmRuntime::Present(inspected) => inspected,
+    };
     runtime::ensure_managed(&inspected).map_err(|_| "This sandbox is not managed by Silo.")?;
     if inspected
         .config

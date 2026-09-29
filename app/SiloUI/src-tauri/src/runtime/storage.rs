@@ -350,6 +350,17 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
         let paths = runtime_paths(&app)?;
         let result = (|| {
             let machine = machine(&paths, &id)?;
+            if checkpoints::is_pending(&paths, machine.id())? {
+                // No runtime sandbox or disk exists until the user starts it.
+                if reclaim { return Err(failure(&format!("Start {} first.", machine.name()))); }
+                let record = load(&paths, machine.id())?;
+                return Ok(StorageState {
+                    history: record.history, workspace_host_bytes: 0, runtime_host_bytes: 0,
+                    workspace_used_bytes: None, workspace_capacity_bytes: None,
+                    last_reclaimed_bytes: record.last_reclaimed_bytes, last_trim_at: record.last_trim_at,
+                    last_error: None,
+                });
+            }
             let observed = inspect_workspace(&ProcessRunner, &paths, machine.name())?;
             verify(&machine, &observed)?;
             if reclaim { trim(&ProcessRunner, &paths, &machine, &observed, TRIM_BUDGET, now())?; }

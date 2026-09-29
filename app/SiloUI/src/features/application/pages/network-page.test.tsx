@@ -152,3 +152,14 @@ it("uses icons for removal confirmation and dismisses on outside click", async (
   expect(screen.queryByRole("button",{name:"Remove"})).not.toBeInTheDocument()
   expect(actions.removeNetworkPort).not.toHaveBeenCalled()
 })
+
+describe("Network stopped sandboxes", () => {
+  it("shows a stopped sandbox's saved ports as stopped rather than as an error", () => {
+    const stopped = [{ ...workspaces[0], state: "stopped" as const }]
+    const state: NetworkState = { workspaces: [{ workspace: "dev", error: "Could not inspect dev", ports: [{ port: 3000, hostPort: null, scheme: "http", state: "waiting", configured: true }] }] }
+    const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
+    render(<NetworkPage workspaces={stopped} browser="Firefox" network={state} actions={actions} active />)
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByText("VM stopped")).toBeVisible()
+  })
+})

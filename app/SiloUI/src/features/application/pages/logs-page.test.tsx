@@ -261,4 +261,28 @@ describe("retained logs", () => {
     await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ computerId: "office", sandboxId: "remote-vm", source: "runtime" })))
   })
 
+  it("shows one update notice per computer instead of raw errors when its Silo cannot serve logs", async () => {
+    const { workspace, actions } = fixture()
+    workspace.logs = workspace.logs.slice(0, 2)
+    const remote = (name: string) => ({ ...workspace, machine: { ...workspace.machine, id: `silo-remote:zeronival:${name}`, name }, computer: { id: "zeronival", vmId: name, name: "zeronival", address: "zeronival.local", connected: true } })
+    const empty = { entries: [], nextCursor: null, oldestAvailableTimestamp: null, newestAvailableTimestamp: null, totalMatches: 0, timestampEstimated: false }
+    actions.queryLogs = vi.fn(async (request: LogQuery) => {
+      if (request.computerId === "zeronival") return { ...empty, unsupported: true }
+      return fixtureLogPage(workspace, request)
+    })
+    render(<Logs workspaces={[workspace, remote("dev-zeronival"), remote("trade-zeronival")]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    await screen.findByText("record 1")
+    expect(screen.getByText("Update Silo on zeronival to see logs for dev-zeronival and trade-zeronival.")).toBeVisible()
+    expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
+  })
+
+  it("treats a raw unsupported-request rejection as an update hint too", async () => {
+    const { workspace, actions } = fixture()
+    const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:zeronival:dev-zeronival", name: "dev-zeronival" }, computer: { id: "zeronival", vmId: "dev-zeronival", name: "zeronival", address: "zeronival.local", connected: true } }
+    actions.queryLogs = vi.fn(async () => { throw new Error("Unsupported remote request.") })
+    render(<Logs workspaces={[remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    expect(await screen.findByText("Update Silo on zeronival to see logs for dev-zeronival.")).toBeVisible()
+    expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
+  })
+
 })

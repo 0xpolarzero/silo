@@ -2920,6 +2920,49 @@ pub(crate) fn inspect_workspace(
     })
 }
 
+/// Live runtime state of a Silo VM that may not exist in the runtime yet.
+pub(crate) enum VmRuntime {
+    /// No runtime sandbox exists (a checkpoint restore is pending). It is stopped.
+    Absent,
+    Present(InspectedSandbox),
+}
+
+fn is_missing_sandbox(error: &RuntimeError) -> bool {
+    match error {
+        RuntimeError::Failed { detail, .. } => {
+            let detail = detail.to_ascii_lowercase();
+            detail.contains("not found") || detail.contains("no such sandbox") || detail.contains("does not exist")
+        }
+        _ => false,
+    }
+}
+
+/// A Silo VM that is pending checkpoint restore has no runtime sandbox to configure yet.
+pub(crate) fn is_pending_restore(paths: &RuntimePaths, name: &str) -> bool {
+    resolve_vm_id(paths, name)
+        .and_then(|id| checkpoints::is_pending(paths, &id))
+        .unwrap_or(false)
+}
+
+/// Inspect a Silo VM without treating "not created yet" as a failure. A sandbox that
+/// is pending restore is decided from Silo's own record before the runtime is asked;
+/// a runtime that reports the sandbox as missing is likewise `Absent`.
+pub(crate) fn observe_vm(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<VmRuntime, RuntimeError> {
+    validate_name(name)?;
+    if is_pending_restore(paths, name) {
+        return Ok(VmRuntime::Absent);
+    }
+    match inspect_workspace(runner, paths, name) {
+        Ok(inspected) => Ok(VmRuntime::Present(inspected)),
+        Err(error) if is_missing_sandbox(&error) => Ok(VmRuntime::Absent),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn ensure_managed(inspected: &InspectedSandbox) -> Result<(), RuntimeError> {
     if inspected.name.is_empty()
         || inspected

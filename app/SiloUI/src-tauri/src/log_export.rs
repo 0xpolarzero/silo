@@ -181,6 +181,7 @@ mod tests {
             newest_available_timestamp: Some("2026-09-18T10:00:00Z".into()),
             total_matches: total,
             timestamp_estimated: false,
+            unsupported: false,
         }
     }
 

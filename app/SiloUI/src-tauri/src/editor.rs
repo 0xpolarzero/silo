@@ -47,12 +47,7 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     {
         return Err("This sandbox does not support local editor connections.".into());
     }
-    let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, name)
-        .map_err(|_| "Could not check this sandbox.")?;
-    runtime::ensure_managed(&inspected).map_err(|error| error.to_string())?;
-    if inspected.status != "Running" {
-        return Err("Start this VM before opening its files in your editor.".into());
-    }
+    let inspected = crate::terminal::running_vm(&paths, name)?;
     let user = crate::working_account::working_user(&inspected.config)?;
     // Validate the exact folder inside the guest, as positional data, before handoff.
     runtime::run_msb(
@@ -359,9 +354,7 @@ pub(crate) fn authorize_remote(paths: &RuntimePaths, name: &str, public: &str, p
     crate::runtime::shutdown::ensure_accepting_operations()?;
     validate_public_key(public)?;
     validate_path(path)?;
-    let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, paths, name).map_err(|e| e.to_string())?;
-    runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
-    if inspected.status != "Running" { return Err("Start this VM before connecting.".into()) }
+    let inspected = crate::terminal::running_vm(paths, name)?;
     let user = crate::working_account::working_user(&inspected.config)?;
     runtime::run_msb(paths, &[
         "exec".into(), name.into(), "--no-start".into(), "--user".into(),

@@ -543,11 +543,17 @@ fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
 }
 
 pub fn snapshot(app: &tauri::AppHandle) -> Result<Value, String> {
-    Ok(observed_snapshot(
+    let mut value = observed_snapshot(
         load(app)?,
         observed_credential(),
         crate::host_identity::read(),
-    ))
+    );
+    // Saved choices for a sandbox that has no runtime yet are not a failure; they apply
+    // once it starts.
+    if let Some(operations) = value["workspaceOperations"].as_array_mut() {
+        operations.retain(|op| !op["workspace"].as_str().is_some_and(|name| is_pending_restore(app, name)));
+    }
+    Ok(value)
 }
 fn observed_snapshot(
     document: Document,
@@ -714,6 +720,9 @@ fn worker_due(d: &Document, pending: Option<Instant>, at: u64, instant: Instant)
         None => d.session != session() || at >= d.refresh_at || catalog_refresh_due(d, at),
     }
 }
+fn is_pending_restore(app: &tauri::AppHandle, name: &str) -> bool {
+    crate::runtime::runtime_paths(app).is_ok_and(|paths| crate::runtime::is_pending_restore(&paths, name))
+}
 fn apply(
     app: &tauri::AppHandle,
     _document: &mut Document,
@@ -737,6 +746,17 @@ fn apply(
     for w in &d.workspaces {
         let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
         if workspace.is_some_and(|target| target != name) {
+            continue;
+        }
+        // A sandbox pending checkpoint restore has no runtime yet. Its saved choices stay
+        // pending and apply when it starts (`workspace_restored`); this is not a failure.
+        if is_pending_restore(app, name) {
+            let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+            let mut current = load(app)?;
+            if current.revision == d.revision && current.operations.iter().any(|op| op["workspace"].as_str() == Some(name)) {
+                current.operations.retain(|op| op["workspace"].as_str() != Some(name));
+                save(app, &current)?;
+            }
             continue;
         }
         // Identity changes are independent of token issuance, including offline edits.
@@ -1209,7 +1229,7 @@ fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
     if d.session != session() && d.grants_issued {
         for w in &d.workspaces {
             if let Some(name) = w["workspace"].as_str() {
-                if !active()
+                if !is_pending_restore(app, name) && !active()
                     .lock()
                     .map_err(|_| "GitHub state is unavailable.")?
                     .contains_key(&active_key(app, name)?)

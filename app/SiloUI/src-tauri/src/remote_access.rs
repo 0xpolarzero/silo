@@ -153,12 +153,7 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
     let name = vm_name(app, params)?;
     runtime::shutdown::ensure_accepting_operations()?;
     let paths = runtime::runtime_paths(app)?;
-    let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, &name)
-        .map_err(|e| e.to_string())?;
-    runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
-    if inspected.status != "Running" {
-        return Err("Start this VM before connecting.".into());
-    }
+    let inspected = crate::terminal::running_vm(&paths, &name)?;
     crate::working_account::require_runtime(&paths, crate::working_account::working_user(&inspected.config)?)?;
     Command::new(&paths.executable)
         .env("MSB_HOME", &paths.home)

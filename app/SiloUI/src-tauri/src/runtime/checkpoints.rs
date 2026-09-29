@@ -2201,6 +2201,62 @@ mod tests {
         assert_eq!(collision.calls.lock().unwrap().len(), 1);
     }
 
+    struct Observed {
+        status: &'static str,
+        missing: bool,
+        calls: Mutex<usize>,
+    }
+    impl RuntimeRunner for Observed {
+        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            *self.calls.lock().unwrap() += 1;
+            assert_eq!(args[0], "inspect");
+            if self.missing {
+                return Err(RuntimeError::Failed { operation: "Inspecting the sandbox".into(), detail: "exit code 1: sandbox 'dev' not found".into() });
+            }
+            Ok(CommandOutput {
+                stdout: serde_json::json!({"name":"dev","status":self.status,"config":{"labels":{"silo.managed":"true","silo.machine-id":ID}}}).to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+    #[test]
+    fn pending_and_stopped_vms_read_as_stopped_and_ask_to_be_started() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![machine()] }).unwrap();
+
+        // Normally stopped: inspected, present, and actions say to start it.
+        let stopped = Observed { status: "Stopped", missing: false, calls: Mutex::new(0) };
+        assert!(matches!(observe_vm(&stopped, &paths, "dev").unwrap(), VmRuntime::Present(_)));
+        assert_eq!(crate::terminal::running_vm_with(&stopped, &paths, "dev").err().unwrap(), "Start dev first.");
+
+        // A runtime that does not know the sandbox is stopped, not an error.
+        let missing = Observed { status: "", missing: true, calls: Mutex::new(0) };
+        assert!(matches!(observe_vm(&missing, &paths, "dev").unwrap(), VmRuntime::Absent));
+
+        // Pending restore: decided from Silo's record; the runtime is never asked.
+        let mut record = Record::default();
+        record.pending_checkpoint_restore = Some(PendingRestore { checkpoint_id: "c000000000000000000000000000000".into(), source_workspace: "source".into(), state: "full".into() });
+        save(&paths, ID, &record).unwrap();
+        let pending = Observed { status: "Running", missing: false, calls: Mutex::new(0) };
+        assert!(matches!(observe_vm(&pending, &paths, "dev").unwrap(), VmRuntime::Absent));
+        assert!(is_pending_restore(&paths, "dev"));
+        assert_eq!(crate::terminal::running_vm_with(&pending, &paths, "dev").err().unwrap(), "Start dev first.");
+        assert_eq!(*pending.calls.lock().unwrap(), 0);
+
+        // Other runtime failures still surface.
+        struct Broken;
+        impl RuntimeRunner for Broken {
+            fn run(&self, _: &RuntimePaths, _: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+                Err(RuntimeError::Unavailable("runtime down".into()))
+            }
+        }
+        delete_record_for_test(&paths);
+        assert!(observe_vm(&Broken, &paths, "dev").is_err());
+    }
+    fn delete_record_for_test(paths: &RuntimePaths) {
+        save(paths, ID, &Record::default()).unwrap();
+    }
     #[test]
     fn pending_fork_survives_reload_and_cannot_auto_start_or_use_lifecycle_start() {
         let directory = tempfile::tempdir().unwrap();

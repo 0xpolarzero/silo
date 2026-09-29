@@ -1,5 +1,5 @@
 //! Read-only, bounded directory snapshots. Pagination never combines two scans.
-use crate::runtime::{ensure_managed, inspect_workspace, run_msb, runtime_paths, ProcessRunner};
+use crate::runtime::{ensure_managed, run_msb, runtime_paths, ProcessRunner};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -126,8 +126,10 @@ pub(crate) async fn list_workspace_directory(
             return serde_json::from_value(value).map_err(|_| "The remote computer returned an invalid folder listing.".into());
         }
         let paths = runtime_paths(&app).map_err(|_| FAILED.to_owned())?;
-        let state =
-            inspect_workspace(&ProcessRunner, &paths, &workspace).map_err(|_| FAILED.to_owned())?;
+        let state = match crate::runtime::observe_vm(&ProcessRunner, &paths, &workspace).map_err(|_| FAILED.to_owned())? {
+            crate::runtime::VmRuntime::Absent => return Err("Start this VM to browse its files.".into()),
+            crate::runtime::VmRuntime::Present(state) => state,
+        };
         ensure_managed(&state).map_err(|_| FAILED.to_owned())?;
         let user = crate::working_account::working_user(&state.config)?;
         if state.status != "Running" {

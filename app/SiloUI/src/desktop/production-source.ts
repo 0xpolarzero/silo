@@ -1,5 +1,5 @@
 import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
-import { logPageSchema } from "@/features/application/model/logs"
+import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { useSyncExternalStore } from "react"
@@ -295,7 +295,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const local = networkStateShape.parse(await native.invoke("read_network_state"))
         const remotes = await Promise.all(remoteComputers.map(async computer => {
           try { return networkStateShape.parse(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
-          catch (cause) { return (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error: errorMessage(cause) })) }
+          catch (cause) {
+            const message = errorMessage(cause)
+            const error = isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : message
+            return (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
+          }
         }))
         const result = { workspaces: [...local.workspaces, ...remotes.flat()] }
         if (revision !== networkRevision || disposed) return
