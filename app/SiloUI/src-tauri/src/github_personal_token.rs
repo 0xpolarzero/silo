@@ -120,45 +120,65 @@ pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result
 
 /// Remove token authority before a method switch, removal, failed validation or replacement.
 /// OAuth reconciliation never substitutes its own credential for a disconnected personal token.
-pub(super) fn narrow(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
-    let prefix = format!("{}:", path(app)?.display());
-    let cached = applied()
-        .lock()
-        .map_err(|_| "GitHub token state is unavailable.")?
-        .clone();
+/// Every VM is detached even when another fails; failures are reported per workspace.
+pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowErrors) {
+    let prefix = match path(app) {
+        Ok(path) => format!("{}:", path.display()),
+        Err(error) => return errors.record_all(error),
+    };
+    let cached = match applied().lock() {
+        Ok(cached) => cached.clone(),
+        Err(_) => return errors.record_all("GitHub token state is unavailable.".into()),
+    };
     let current = value().ok().map(|token| fingerprint(&token));
-    for (key, attached) in cached.iter().filter(|(key, _)| key.starts_with(&prefix)) {
-        let name = &key[prefix.len()..];
-        let keep = d
-            .workspaces
-            .iter()
-            .any(|w| w["workspace"] == name && selected(w))
-            && current.as_ref() == Some(attached);
-        if !keep {
-            crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[]))?;
-            applied()
-                .lock()
-                .map_err(|_| "GitHub token state is unavailable.")?
-                .remove(key);
-        }
-    }
+    let detach = |name: &str, key: &str| -> Result<(), String> {
+        detach_result(
+            app,
+            name,
+            crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[])),
+        )?;
+        applied()
+            .lock()
+            .map_err(|_| "GitHub token state is unavailable.")?
+            .remove(key);
+        Ok(())
+    };
+    let stale: Vec<(String, String)> = cached
+        .iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .filter_map(|(key, attached)| {
+            let name = &key[prefix.len()..];
+            let keep = d
+                .workspaces
+                .iter()
+                .any(|w| w["workspace"] == name && selected(w))
+                && current.as_ref() == Some(attached);
+            (!keep).then(|| (name.to_owned(), key.clone()))
+        })
+        .collect();
+    each_workspace(stale.iter().map(|(name, key)| (name.as_str(), key.as_str())), errors, |name, key| detach(name, key));
     // A surviving runtime may still hold a token from the preceding app process.
     if d.session != session() {
+        let mut restored = Vec::new();
         for w in d.workspaces.iter().filter(|w| selected(w)) {
-            let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
-            applied()
-                .lock()
-                .map_err(|_| "GitHub token state is unavailable.")?
-                .entry(active_key(app, name)?)
-                .or_insert_with(|| "unverified".into());
-            crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[]))?;
-            applied()
-                .lock()
-                .map_err(|_| "GitHub token state is unavailable.")?
-                .remove(&active_key(app, name)?);
+            let Some(name) = w["workspace"].as_str() else {
+                errors.record_all("Invalid sandbox policy.".into());
+                continue;
+            };
+            match active_key(app, name) {
+                Ok(key) => restored.push((name.to_owned(), key)),
+                Err(error) => errors.record(name, error),
+            }
         }
+        each_workspace(restored.iter().map(|(name, key)| (name.as_str(), key.as_str())), errors, |name, key| {
+            applied()
+                .lock()
+                .map_err(|_| "GitHub token state is unavailable.")?
+                .entry(key.to_owned())
+                .or_insert_with(|| "unverified".into());
+            detach(name, key)
+        });
     }
-    Ok(())
 }
 fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String> {
     let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
@@ -180,7 +200,9 @@ fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String>
     }
     mark_pending_for(&mut d, &names);
     save(app, &d)?;
-    let result = narrow(app, &d);
+    let mut errors = NarrowErrors::default();
+    narrow(app, &d, &mut errors);
+    let result = errors.into_result();
     schedule(Duration::ZERO);
     let _ = app.emit("silo://application-state-changed", ());
     result

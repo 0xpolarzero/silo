@@ -760,7 +760,7 @@ fn apply(
     let narrowing_error = {
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         if load(app)?.revision != d.revision { schedule(Duration::ZERO); return Ok(()); }
-        narrow_now(app, &mut d.clone()).err()
+        narrow_each(app, &d)
     };
     let mut refresh_at = if now() < d.refresh_at {
         d.refresh_at
@@ -818,7 +818,7 @@ fn apply(
             }
         }
         let result = if access_requested {
-            let result = if let Some(error) = &narrowing_error { Err(error.clone()) } else if personal_token::selected(w) {
+            let result = if let Some(error) = narrowing_error.for_workspace(name) { Err(error.clone()) } else if personal_token::selected(w) {
                 personal_token::apply(app, name, d.revision)
             } else { runtime_grants_for(app, &d, w, &previous).and_then(|grants| {
                 let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
@@ -1251,31 +1251,111 @@ fn narrow(grants: &[RuntimeGrant], desired: &[GrantScope]) -> Vec<RuntimeGrant> 
         })
         .collect()
 }
+/// Per-workspace narrowing failures. One VM's failure never leaves other VMs with
+/// authority, and never blocks grants for the other VMs.
+#[derive(Default, Debug)]
+pub(super) struct NarrowErrors {
+    workspaces: std::collections::BTreeMap<String, String>,
+    all: Option<String>,
+}
+impl NarrowErrors {
+    pub(super) fn record(&mut self, workspace: &str, error: String) {
+        self.workspaces.entry(workspace.into()).or_insert(error);
+    }
+    /// A failure that is not specific to one workspace.
+    pub(super) fn record_all(&mut self, error: String) {
+        self.all.get_or_insert(error);
+    }
+    fn for_workspace(&self, workspace: &str) -> Option<&String> {
+        self.workspaces.get(workspace).or(self.all.as_ref())
+    }
+    pub(super) fn into_result(self) -> Result<(), String> {
+        match self.all.or_else(|| self.workspaces.into_values().next()) {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+/// Run `detach` for every workspace, recording each failure under its own workspace.
+pub(super) fn each_workspace<'a, T: 'a>(
+    items: impl IntoIterator<Item = (&'a str, T)>,
+    errors: &mut NarrowErrors,
+    mut detach: impl FnMut(&str, T) -> Result<(), String>,
+) {
+    for (name, item) in items {
+        if let Err(error) = detach(name, item) {
+            errors.record(name, error);
+        }
+    }
+}
+/// A removed VM has no authority left to detach. Its cache entry is dropped instead of
+/// failing every later narrowing until the app restarts.
+fn vm_removed(app: &tauri::AppHandle, name: &str) -> bool {
+    crate::runtime::runtime_paths(app).is_ok_and(|paths| {
+        matches!(
+            crate::runtime::resolve_vm_id(&paths, name),
+            Err(crate::runtime::RuntimeError::Invalid(_))
+        )
+    })
+}
+pub(super) fn detach_result(
+    app: &tauri::AppHandle,
+    name: &str,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    match result {
+        Err(_) if vm_removed(app, name) => Ok(()),
+        other => other,
+    }
+}
 fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
-    personal_token::narrow(app, d)?;
-    let prefix = format!("{}:", path(app)?.display());
-    let mut failure = None;
+    narrow_each(app, d).into_result()
+}
+fn narrow_each(app: &tauri::AppHandle, d: &Document) -> NarrowErrors {
+    let mut errors = NarrowErrors::default();
+    // Token VMs and OAuth VMs are narrowed independently; neither blocks the other.
+    personal_token::narrow(app, d, &mut errors);
+    let prefix = match path(app) {
+        Ok(path) => format!("{}:", path.display()),
+        Err(error) => {
+            errors.record_all(error);
+            return errors;
+        }
+    };
     if d.session != session() && d.grants_issued {
         for w in &d.workspaces {
             if let Some(name) = w["workspace"].as_str() {
-                if !is_pending_restore(app, name) && !active()
-                    .lock()
-                    .map_err(|_| "GitHub state is unavailable.")?
-                    .contains_key(&active_key(app, name)?)
-                {
-                    if let Err(error) =
-                        crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[]))
-                    {
-                        failure.get_or_insert(error);
+                let attached = match active_key(app, name).and_then(|key| {
+                    Ok(active()
+                        .lock()
+                        .map_err(|_| "GitHub state is unavailable.")?
+                        .contains_key(&key))
+                }) {
+                    Ok(attached) => attached,
+                    Err(error) => {
+                        errors.record(name, error);
+                        continue;
+                    }
+                };
+                if !is_pending_restore(app, name) && !attached {
+                    if let Err(error) = detach_result(
+                        app,
+                        name,
+                        crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[])),
+                    ) {
+                        errors.record(name, error);
                     }
                 }
             }
         }
     }
-    let cached = active()
-        .lock()
-        .map_err(|_| "GitHub state is unavailable.")?
-        .clone();
+    let cached = match active().lock() {
+        Ok(cached) => cached.clone(),
+        Err(_) => {
+            errors.record_all("GitHub state is unavailable.".into());
+            return errors;
+        }
+    };
     for (key, previous) in cached.iter().filter(|(key, _)| key.starts_with(&prefix)) {
         let name = &key[prefix.len()..];
         let desired = d
@@ -1289,22 +1369,30 @@ fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
         // that the user just removed. Detach first, retain the validation error.
         let (retained, validation_error) = narrow_checked(previous, desired);
         if let Some(error) = validation_error {
-            failure.get_or_insert(error);
+            errors.record(name, error);
         }
         if retained != *previous {
-            if let Err(error) =
-                crate::runtime::apply_github_policy(app, name, d.revision, &profile(&retained))
-            {
-                failure.get_or_insert(error);
+            let result =
+                crate::runtime::apply_github_policy(app, name, d.revision, &profile(&retained));
+            if result.is_err() && vm_removed(app, name) {
+                if let Ok(mut active) = active().lock() {
+                    active.remove(key);
+                }
                 continue;
             }
-            active()
-                .lock()
-                .map_err(|_| "GitHub state is unavailable.")?
-                .insert(key.clone(), retained);
+            if let Err(error) = result {
+                errors.record(name, error);
+                continue;
+            }
+            match active().lock() {
+                Ok(mut active) => {
+                    active.insert(key.clone(), retained);
+                }
+                Err(_) => errors.record(name, "GitHub state is unavailable.".into()),
+            }
         }
     }
-    failure.map_or(Ok(()), Err)
+    errors
 }
 
 fn narrow_checked(
@@ -2106,6 +2194,26 @@ pub async fn retry_github_configuration(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn one_failing_detach_does_not_stop_the_others() {
+        let mut errors = super::NarrowErrors::default();
+        let mut detached = Vec::new();
+        super::each_workspace([("a", 1), ("b", 2), ("c", 3)], &mut errors, |name, _| {
+            detached.push(name.to_owned());
+            if name == "b" { Err("b failed".into()) } else { Ok(()) }
+        });
+        assert_eq!(detached, ["a", "b", "c"]);
+        assert_eq!(errors.for_workspace("b").map(String::as_str), Some("b failed"));
+        assert_eq!(errors.for_workspace("a"), None);
+        assert_eq!(errors.for_workspace("c"), None);
+        assert_eq!(errors.into_result(), Err("b failed".into()));
+    }
+    #[test]
+    fn a_general_narrowing_failure_applies_to_every_workspace() {
+        let mut errors = super::NarrowErrors::default();
+        errors.record_all("storage".into());
+        assert_eq!(errors.for_workspace("any").map(String::as_str), Some("storage"));
+    }
     #[test]
     fn session_secret_reads_once_and_writes_only_changes() {
         let cache = super::SessionSecret::new();
