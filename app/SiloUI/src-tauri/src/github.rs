@@ -1663,30 +1663,18 @@ fn read_callback_request(reader: &mut impl Read) -> Option<String> {
     }
     None
 }
-fn open_browser(url: &str) -> Result<(), String> {
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    if std::process::Command::new(opener)
-        .arg(url)
-        .status()
-        .map_err(|_| "Cannot open the browser.")?
-        .success()
-    {
-        Ok(())
-    } else {
-        Err("Cannot open the browser.".into())
-    }
+/// Open GitHub pages with the browser chosen in Settings. The platform launcher returns
+/// once the browser was asked to open, so the callback wait is never blocked by it.
+fn open_browser(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
+    crate::applications::open_browser(app, url)
 }
-fn open_authorization_browser(generation: u64, url: &str) -> Result<(), String> {
+fn open_authorization_browser(app: &tauri::AppHandle, generation: u64, url: &str) -> Result<(), String> {
     {
         let mut pending = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?;
         if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
         pending.0 = Some((generation, url.to_owned()));
     }
-    open_browser(url)
+    open_browser(app, url)
 }
 
 fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
@@ -1730,7 +1718,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
-    open_authorization_browser(generation, url.as_str())?;
+    open_authorization_browser(app, generation, url.as_str())?;
     let deadline = Instant::now() + Duration::from_secs(300);
     let code = loop {
         if CANCELLATION.load(Ordering::SeqCst) != generation {
@@ -1781,7 +1769,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         if !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             return Err("GitHub App identifier is invalid.".into());
         }
-        open_authorization_browser(generation, &format!("https://github.com/apps/{slug}/installations/new"))?;
+        open_authorization_browser(app, generation, &format!("https://github.com/apps/{slug}/installations/new"))?;
         let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             if CANCELLATION.load(Ordering::SeqCst) != generation {
@@ -2087,7 +2075,7 @@ pub async fn reopen_github_authorization(window: tauri::WebviewWindow) -> Result
     tauri::async_runtime::spawn_blocking(move || {
         let url = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?
             .url(CANCELLATION.load(Ordering::SeqCst))?;
-        open_browser(&url)
+        open_browser(window.app_handle(), &url)
     }).await.map_err(|_| "Cannot reopen GitHub authorization.")?
 }
 
@@ -2099,7 +2087,7 @@ pub async fn manage_github_repositories(window: tauri::WebviewWindow) -> Result<
         if !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             return Err("Invalid GitHub App slug.".into());
         }
-        open_browser(&format!("https://github.com/apps/{slug}/installations/new"))
+        open_browser(window.app_handle(), &format!("https://github.com/apps/{slug}/installations/new"))
     }).await.map_err(|_| "Cannot open GitHub repository access.")?
 }
 
