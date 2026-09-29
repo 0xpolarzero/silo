@@ -3070,9 +3070,16 @@ fn read_application_state_with(
         list_managed(runner, paths)?
     } else { Vec::new() };
     let listed_names: HashSet<&str> = listed.iter().map(|entry| entry.name.as_str()).collect();
+    // Whether each VM is read from Silo's pending-restore record rather than the runtime.
+    // An unreadable record (damaged, or written by a newer Silo) degrades only its own
+    // sandbox: the runtime decides, and its row is flagged when checkpoints are loaded.
+    let from_record = |machine: &MachineConfiguration| {
+        let listed = listed_names.contains(machine.name());
+        checkpoints::pending_view(paths, machine.id(), listed).unwrap_or(!listed)
+    };
     let mut configured_names = HashSet::new();
     for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
-        if !checkpoints::pending_view(paths, machine.id(), listed_names.contains(machine.name()))? {
+        if !from_record(machine) {
             configured_names.insert(machine.name());
         }
     }
@@ -3086,7 +3093,7 @@ fn read_application_state_with(
     for machine in metadata.machines {
         match &machine {
             MachineConfiguration::Vm { name, .. } => {
-                if checkpoints::pending_view(paths, machine.id(), listed_names.contains(name.as_str()))? {
+                if from_record(&machine) {
                     workspaces.push(checkpoints::pending_workspace(machine)?);
                     continue;
                 }
@@ -3140,11 +3147,24 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
     for workspace in &mut workspaces {
         if workspace.machine.is_vm() {
             workspace.lifecycle_failure = failures.remove(workspace.machine.id());
-            let checkpoint = checkpoints::load(paths, workspace.machine.id())?;
-            workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
-            workspace.checkpoints = checkpoint.checkpoints;
-            let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
-            workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
+            match checkpoints::load(paths, workspace.machine.id()) {
+                Ok(checkpoint) => {
+                    workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
+                    workspace.checkpoints = checkpoint.checkpoints;
+                    let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
+                    workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
+                }
+                // One unreadable record must not fail every sandbox: flag only this one.
+                Err(error) => {
+                    workspace.checkpoints = Vec::new();
+                    workspace.pending_checkpoint_restore = None;
+                    workspace.checkpoint_operation = None;
+                    workspace.attention = Some(WorkspaceAttention {
+                        level: AttentionLevel::Error,
+                        message: format!("{error} Checkpoints and actions that need them are unavailable for this sandbox."),
+                    });
+                }
+            }
         }
         workspace.secret_names = secrets.iter().filter(|secret| secret["removing"] != true && secret["workspaces"].as_array().is_some_and(|names| names.iter().any(|name| name.as_str() == Some(workspace.machine.name()))))
             .filter_map(|secret| secret["name"].as_str().map(str::to_owned)).collect();
@@ -5821,6 +5841,58 @@ esac
         assert_eq!((capacity.logical_cpus, capacity.max_memory_gib), (8, 15));
         assert!(HostCapacity::of(&HostResources { logical_cpus: 8, physical_memory_bytes: None }).is_none());
         assert!(HostCapacity::of(&HostResources { logical_cpus: 0, physical_memory_bytes: Some(gib) }).is_none());
+    }
+
+    fn second_vm() -> MachineConfiguration {
+        let mut other = vm();
+        if let MachineConfiguration::Vm { id, name, .. } = &mut other {
+            *id = "00000000-0000-4000-8000-000000000002".into();
+            *name = "work".into();
+        }
+        other
+    }
+
+    fn inspect_named(paths: &RuntimePaths, machine: &MachineConfiguration, status: &str) -> Value {
+        let mut inspected = inspect(paths, status);
+        inspected["name"] = json!(machine.name());
+        inspected["config"]["labels"]["silo.machine-id"] = json!(machine.id());
+        inspected
+    }
+
+    fn damaged_checkpoint_record(paths: &RuntimePaths, machine: &MachineConfiguration) {
+        let directory = paths.metadata.with_file_name("checkpoints");
+        fs::create_dir_all(&directory).unwrap();
+        // For example, written by a newer Silo before a downgrade.
+        fs::write(directory.join(format!("{}.json", machine.id())), json!({"version": 2, "checkpoints": []}).to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_checkpoint_record_degrades_only_its_own_sandbox() {
+        for listed in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+            damaged_checkpoint_record(&paths, &vm());
+            let mut outputs = Vec::new();
+            if listed {
+                outputs.push(json!([{"name": "dev"}, {"name": "work"}]));
+                outputs.push(inspect_named(&paths, &vm(), "Running"));
+            } else {
+                // A pending fork with no runtime VM yet: its record decides, and is unreadable.
+                outputs.push(json!([{"name": "work"}]));
+            }
+            outputs.push(inspect_named(&paths, &second_vm(), "Running"));
+            let runner = StubRunner::successful_json(outputs);
+            let source = read_application_state_with(&runner, &paths).unwrap();
+            let encoded = serde_json::to_value(&source).unwrap();
+            let damaged = &encoded["workspaces"][0];
+            assert_eq!(damaged["attention"]["level"], "error", "{listed}");
+            assert!(damaged["attention"]["message"].as_str().unwrap().contains("Checkpoint history is invalid"));
+            assert!(damaged.get("checkpoints").is_none() && damaged.get("pendingCheckpointRestore").is_none());
+            let healthy = &encoded["workspaces"][1];
+            assert_eq!(healthy["state"], "running");
+            assert!(healthy.get("attention").is_none());
+        }
     }
 
     #[test]
