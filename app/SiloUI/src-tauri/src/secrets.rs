@@ -91,17 +91,23 @@ fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new("org.silo.Silo.secrets", "values").map_err(|_| STORE_ERROR.into())
 }
 fn read_vault() -> Result<Vault, String> {
-    let mut cached = lock_vault();
-    expire_failure(&mut cached, Instant::now());
-    cached
-        .get_or_insert_with(|| {
-            let result = entry().and_then(|entry| match entry.get_password() {
-                Ok(value) => serde_json::from_str(&value).map_err(|_| STORE_ERROR.into()),
-                Err(keyring::Error::NoEntry) => Ok(Vault::new()),
-                Err(_) => Err(STORE_ERROR.into()),
-            });
-            (result, Instant::now())
-        })
+    {
+        let mut cached = lock_vault();
+        expire_failure(&mut cached, Instant::now());
+        if let Some((result, _)) = cached.as_ref() {
+            return result.clone();
+        }
+    }
+    // Ask the store without holding the cache lock: a macOS Keychain prompt can wait
+    // indefinitely, and other readers must not queue behind it.
+    let result = entry().and_then(|entry| match entry.get_password() {
+        Ok(value) => serde_json::from_str(&value).map_err(|_| STORE_ERROR.into()),
+        Err(keyring::Error::NoEntry) => Ok(Vault::new()),
+        Err(_) => Err(STORE_ERROR.into()),
+    });
+    // A write or another read that finished meanwhile is at least as recent; keep it.
+    lock_vault()
+        .get_or_insert_with(|| (result, Instant::now()))
         .0
         .clone()
 }
