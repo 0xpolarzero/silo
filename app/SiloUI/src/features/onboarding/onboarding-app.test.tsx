@@ -942,7 +942,7 @@ describe("onboarding", () => {
 
     await user.click(screen.getByRole("button", { name: "Delete dev" }))
     expect(screen.getByText("Delete dev?")).toBeVisible()
-    expect(screen.getByText("Removing dev from Silo. Persistent volumes are kept.")).toBeVisible()
+    expect(screen.getByText("Its files and checkpoints will be deleted. This can't be undone.")).toBeVisible()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(screen.queryByText("Delete dev?")).not.toBeInTheDocument()

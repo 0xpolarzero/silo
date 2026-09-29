@@ -14,6 +14,7 @@ import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
+import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
 import { CheckpointPanel } from "@/features/application/components/checkpoint-panel"
 import { WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
 import { emptyOperationQueue, waitingOperationForVm } from "@/features/application/model/operation-queue"
@@ -347,7 +348,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const editMenuActions: MenuAction[] = editingContext ? [
     { label: "Edit", separatorBefore: controls.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: controls.configurationLocked, onSelect: () => editing.startEdit(machine) },
     { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: controls.configurationLocked || !controls.onDuplicate, onSelect: () => controls.onDuplicate?.() },
-    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), popover: "delete" },
+    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), tooltip: machine.kind === "vm" && state === "running" ? "Stop the sandbox before deleting it." : undefined, popover: "delete" },
   ] : []
   const menuActions = [...controls.menuActions, ...editMenuActions]
 
@@ -374,7 +375,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     delete: close => <ConfirmBody
       tone="destructive"
       title={deleteTitle}
-      description={`Removing ${machine.name} from Silo. Persistent volumes are kept.`}
+      description={deleteSandboxDescription(machine.kind, workspace.checkpoints?.length)}
       confirmLabel="Delete"
       onClose={close}
       onConfirm={async () => {

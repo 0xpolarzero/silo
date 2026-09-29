@@ -318,7 +318,7 @@ it("confirms a delete in a popover on the detail page and returns to the list", 
   expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
   expect(screen.queryByRole("dialog", { hidden: true })?.getAttribute("aria-modal")).not.toBe("true")
   const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
-  expect(popover.getByText(/Persistent volumes are kept/)).toBeVisible()
+  expect(popover.getByText(/will be deleted. This can't be undone./)).toBeVisible()
   await user.click(popover.getByRole("button", { name: "Delete" }))
 
   expect(onMachinesChange).toHaveBeenCalled()
@@ -389,7 +389,7 @@ it("confirms a delete from the list row ⋯ menu with the same popover as the de
   await user.click(await screen.findByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
   expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
   const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
-  expect(popover.getByText(`Removing ${workspace.machine.name} from Silo. Persistent volumes are kept.`)).toBeVisible()
+  expect(popover.getByText("Its files and checkpoints will be deleted. This can't be undone.")).toBeVisible()
   expect(screen.queryByRole("menuitem", { name: /Confirm deletion/ })).not.toBeInTheDocument()
   await user.click(popover.getByRole("button", { name: "Delete" }))
   await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())

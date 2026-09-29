@@ -12,6 +12,7 @@ import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
 import { SandboxAction, SandboxList, SandboxListItem, SandboxListRow, type SandboxIconState, type SandboxRowTone } from "@/features/sandboxes/components/sandbox-list"
 import { machineSummary } from "@/features/sandboxes/model/machine-summary"
+import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
@@ -267,7 +268,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         delete: close => <ConfirmBody
                           tone="destructive"
                           title={`Delete ${deletionName}?`}
-                          description={`Removing ${machine.name} from Silo. Persistent volumes are kept.`}
+                          description={deleteSandboxDescription(machine.kind)}
                           confirmLabel="Delete"
                           onClose={close}
                           onConfirm={() => deleteWithNotice(machine).then(() => undefined)}
@@ -289,7 +290,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         <SandboxAction tooltip={machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={`Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
                           <CopyPlus />
                         </SandboxAction>
-                        <ConfirmPopover align="end" tone="destructive" title={`Delete ${deletionName}?`} description={computerName ? `Removing ${machine.name} from ${computerName}.` : `Removing ${machine.name} from Silo. Persistent volumes are kept.`} confirmLabel="Delete" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
+                        <ConfirmPopover align="end" tone="destructive" title={`Delete ${deletionName}?`} description={deleteSandboxDescription(machine.kind)} confirmLabel="Delete" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
                           <Button type="button" variant="ghost" size="icon-xs" aria-label={`Delete ${deletionName}`} disabled={interactionDisabled || runningVM}>
                             <Trash2 />
                           </Button>

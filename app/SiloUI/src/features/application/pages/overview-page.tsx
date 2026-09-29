@@ -127,7 +127,7 @@ function configurationRowView(
   if (removed) {
     return {
       status: "running",
-      message: "Removing sandbox from Silo. Persistent volumes will be retained.",
+      message: "Deleting the sandbox’s files and checkpoints.",
       retryable: false,
     }
   }

@@ -15,7 +15,7 @@ it("confirms a row deletion in a popover anchored to the ⋯ menu", async () => 
   await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${machine.name}` }))
   expect(await screen.findByText(`Delete ${machine.name}?`)).toBeVisible()
-  expect(screen.getByText(`Removing ${machine.name} from Silo. Persistent volumes are kept.`)).toBeVisible()
+  expect(screen.getByText("Its files and checkpoints will be deleted. This can't be undone.")).toBeVisible()
   expect(save).not.toHaveBeenCalled()
   await user.click(popoverButton("Delete"))
   await waitFor(() => expect(save).toHaveBeenCalledWith([], [machine]))
