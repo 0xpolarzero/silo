@@ -169,24 +169,51 @@ struct Credential {
 }
 // One serialized Keychain read per entry per app session. Cache denials too:
 // background reconciliation must never reopen a dismissed permission dialog.
-struct SessionSecret<T>(Mutex<Option<Result<T, String>>>);
+// A failed write keeps the new value in memory (a rotated credential must stay
+// usable) and marks it unsaved; the store is retried by `flush`, never by `write`.
+struct SessionSecret<T>(Mutex<SecretSlot<T>>);
+struct SecretSlot<T> {
+    value: Option<Result<T, String>>,
+    unsaved: Option<String>,
+    blocked: bool,
+}
 impl<T: Clone + PartialEq> SessionSecret<T> {
-    const fn new() -> Self { Self(Mutex::new(None)) }
+    const fn new() -> Self { Self(Mutex::new(SecretSlot { value: None, unsaved: None, blocked: false })) }
     fn read(&self, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
-        state.get_or_insert_with(read).clone()
+        state.value.get_or_insert_with(read).clone()
     }
     fn write(&self, value: T, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
         let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
-        if let Some(Err(error)) = state.as_ref() { return Err(error.clone()); }
-        if matches!(state.as_ref(), Some(Ok(current)) if current == &value) { return Ok(()); }
+        if let Some(Err(error)) = state.value.as_ref() { return Err(error.clone()); }
+        if state.blocked {
+            if let Some(error) = state.unsaved.clone() {
+                // Keep the newest value usable in memory; `flush` stores it later.
+                state.value = Some(Ok(value));
+                return Err(error);
+            }
+        }
+        if state.unsaved.is_none() && matches!(state.value.as_ref(), Some(Ok(current)) if current == &value) { return Ok(()); }
         let result = write();
-        *state = Some(result.clone().map(|_| value));
+        state.value = Some(Ok(value));
+        state.unsaved = result.clone().err();
+        state.blocked = state.unsaved.is_some();
+        result
+    }
+    /// Store an in-memory value whose earlier write failed. Returns whether storage is current.
+    fn flush(&self, write: impl FnOnce(&T) -> Result<(), String>) -> Result<(), String> {
+        let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
+        if state.unsaved.is_none() { return Ok(()); }
+        let Some(Ok(value)) = state.value.clone() else { return Ok(()); };
+        let result = write(&value);
+        state.unsaved = result.clone().err();
+        state.blocked = state.unsaved.is_some();
         result
     }
     fn retry(&self) {
         if let Ok(mut state) = self.0.lock() {
-            if matches!(state.as_ref(), Some(Err(_))) { *state = None; }
+            if matches!(state.value.as_ref(), Some(Err(_))) { state.value = None; }
+            state.blocked = false;
         }
     }
 }
@@ -353,6 +380,23 @@ fn store(c: &Credential) -> Result<(), String> {
     );
     result
 }
+/// Retry storing a credential whose earlier write failed (for example a renewed
+/// credential after a refresh), at most every 15 minutes so a denied Keychain prompt
+/// is not reopened in a loop. Until then the renewed credential is used in memory.
+fn flush_account_credential() {
+    static FLUSH_AT: AtomicU64 = AtomicU64::new(0);
+    if now() < FLUSH_AT.load(Ordering::SeqCst) {
+        return;
+    }
+    FLUSH_AT.store(now() + 900, Ordering::SeqCst);
+    let _ = ACCOUNT_SECRET.flush(|credential| match credential {
+        Some(c) => entry().and_then(|entry| store_entry(&entry, c)),
+        None => match entry()?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err("Cannot remove GitHub credentials from the system credential store.".into()),
+        },
+    });
+}
 fn store_entry(entry: &keyring::Entry, c: &Credential) -> Result<(), String> {
     entry
         .set_password(&serde_json::to_string(c).map_err(|_| "Cannot encode GitHub credentials.")?)
@@ -495,12 +539,15 @@ fn refresh_credential_with(
         .as_deref()
         .ok_or("GitHub access expired. Reconnect GitHub.")?;
     let renewed = renew(token)?;
-    *pending = Some(PendingRefresh {
-        previous_access: current.access_token,
-        renewed,
-    });
-    persist(&pending.as_ref().unwrap().renewed)?;
-    Ok(pending.take().unwrap().renewed)
+    // GitHub consumed the old refresh token. Use the renewed credential even when
+    // secure storage fails; `pending` keeps it so storage is retried later.
+    if persist(&renewed).is_err() {
+        *pending = Some(PendingRefresh {
+            previous_access: current.access_token,
+            renewed: renewed.clone(),
+        });
+    }
+    Ok(renewed)
 }
 
 fn github(token: &str, path: &str) -> Result<Value, String> {
@@ -1735,6 +1782,7 @@ pub fn install(app: &tauri::AppHandle) {
             .and_then(|p| *p);
         let pending_due = pending_deadline.is_some_and(|time| Instant::now() >= time);
         personal_token::check(&app);
+        flush_account_credential();
         if let Ok(_network) = OPERATION.try_lock() {
             let observed = {
                 let _state = STATE.lock().ok();
@@ -2257,6 +2305,18 @@ mod tests {
         assert_eq!(cache.read(|| panic!("Read after write")).unwrap(), Some(2));
     }
     #[test]
+    fn failed_store_keeps_the_new_value_usable_and_retries_on_flush() {
+        let cache = super::SessionSecret::new();
+        assert_eq!(cache.read(|| Ok(Some(1))).unwrap(), Some(1));
+        assert!(cache.write(Some(2), || Err("store locked".into())).is_err());
+        // The renewed value is used in memory; storage is not retried by later writes.
+        assert_eq!(cache.read(|| panic!("Read after failed write")).unwrap(), Some(2));
+        assert!(cache.write(Some(2), || panic!("Automatic write retry")).is_err());
+        cache.flush(|value| { assert_eq!(*value, Some(2)); Ok(()) }).unwrap();
+        cache.flush(|_| panic!("Flush after successful store")).unwrap();
+        cache.write(Some(2), || panic!("Unchanged write after flush")).unwrap();
+    }
+    #[test]
     fn concurrent_secret_reads_share_one_keychain_request() {
         let cache = super::SessionSecret::new();
         let reads = std::sync::atomic::AtomicUsize::new(0);
@@ -2726,7 +2786,8 @@ mod tests {
             },
             |_| Err("secure store locked".into()),
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().access_token, "new");
+        assert!(pending.is_some());
         let restored = refresh_credential_with(
             old,
             &mut pending,
