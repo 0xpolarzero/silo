@@ -30,7 +30,7 @@ export function NetworkPage({ workspaces, browser, network, error, actions, acti
         <div role="row" className={`${grid} shrink-0 border-b border-border bg-muted/45 font-medium text-muted-foreground`}><span role="columnheader">Port</span><span role="columnheader" className="hidden sm:block">Address</span><span role="columnheader">State</span><span role="columnheader">Sandbox</span><span role="columnheader" className="sr-only">Actions</span></div>
         <div className="min-h-0 divide-y divide-border overflow-y-auto bg-card" data-table-scroll="network">{draft && !draft.editing && draftRow}{rows.map(({ workspace, port }) => {
           const key = `${workspaceTarget(workspace)}:${port.port}`
-          if (draft?.editing && draft.workspace === workspaceTarget(workspace) && draft.port === String(port.port)) return draftRow
+          if (draft?.editing && draft.workspace === workspaceTarget(workspace) && draft.port === String(port.port)) return <NetworkPortForm key={key} controller={controller} fieldID={fieldID} />
           const address = networkAddress(port)
           const state = networkPortState(workspace, port, error, errors)
           return <div key={key} role="row" className={`${grid} hover:bg-muted/55 focus-within:bg-muted/55`}>
