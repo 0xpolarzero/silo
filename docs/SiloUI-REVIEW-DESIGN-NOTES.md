@@ -617,3 +617,18 @@ struct BridgeError {
 
 **Open question.** Is parking_lot acceptable instead? It is simpler, but it
 loses the log line that a panic happened under a lock.
+
+## Owner answers (2026-09-29)
+
+- **E-03 automatic cleanup:** no. Checkpoints (including "Before restore" and
+  "Fork point") are removed only by an explicit Delete checkpoint action or
+  when their sandbox is deleted.
+- **C-24 published-port hosts:** `*.localhost` addresses are acceptable and
+  Safari must work. Verify Safari resolution in the macOS live session; if
+  Safari cannot open `*.localhost`, fall back to `127.0.0.1` for Safari.
+- **E-19/E-20 foreign export files:** importing export files made by other
+  people is allowed (no blocking warning). The import safety checks (size and
+  entry caps, manifest-versus-snapshot config comparison, "Intact archive"
+  wording) still apply.
+- Pending owner confirmation: D-02 busy-row presentation, B-05 `workflows` and
+  `actions` permissions, F-09 debug/release instance sharing.
