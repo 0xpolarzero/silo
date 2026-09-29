@@ -678,24 +678,20 @@ mod tests {
     }
 }
 
-pub fn open_terminal(app: &tauri::AppHandle, application: &Application, command: &str) -> Result<(), String> {
+pub fn open_terminal(_app: &tauri::AppHandle, application: &Application, command: &str) -> Result<(), String> {
     let id = autoreleasepool(|_| {
         let url = NSURL::fileURLWithPath(&NSString::from_str(&application.path));
         NSBundle::bundleWithURL(&url).and_then(|b| b.bundleIdentifier()).map(|id| id.to_string())
     });
     if id.as_deref() == Some("com.mitchellh.ghostty") {
-        let source = ghostty_script(command);
-        let (send, receive) = std::sync::mpsc::sync_channel(1);
-        app.run_on_main_thread(move || {
-            let result = autoreleasepool(|_| {
-                let script = objc2_foundation::NSAppleScript::initWithSource(objc2_foundation::NSAppleScript::alloc(), &NSString::from_str(&source)).ok_or("Could not prepare Ghostty's command.")?;
-                let mut error = None;
-                unsafe { script.executeAndReturnError(Some(&mut error)); }
-                if error.is_some() { Err("Ghostty could not open the terminal. Use Ghostty 1.3 or newer and allow Silo in System Settings → Privacy & Security → Automation.".to_string()) } else { Ok(()) }
-            });
-            let _ = send.send(result);
-        }).map_err(|_| "Could not contact the terminal launcher.")?;
-        return receive.recv_timeout(std::time::Duration::from_secs(60)).map_err(|_| "Ghostty did not respond. Check its Automation permission before retrying.")?;
+        // Callers run on a worker. osascript keeps the first-run Automation
+        // prompt or a busy Ghostty from freezing Silo's main thread (G-05).
+        return match run_bounded(ghostty_launch(command), GHOSTTY_TIMEOUT) {
+            Ok(status) if status.success() => Ok(()),
+            Ok(_) => Err("Ghostty could not open the terminal. Use Ghostty 1.3 or newer and allow Silo in System Settings → Privacy & Security → Automation.".into()),
+            Err(Bounded::Spawn) => Err("Could not contact the terminal launcher.".into()),
+            Err(Bounded::TimedOut) => Err("Ghostty did not respond. Check its Automation permission before retrying.".into()),
+        };
     }
     if !matches!(id.as_deref(), Some("com.apple.Terminal" | "com.googlecode.iterm2")) {
         return Err("This terminal does not have a supported command launcher. Choose Ghostty, Terminal, or iTerm in Settings.".into());
@@ -707,21 +703,104 @@ pub fn open_terminal(app: &tauri::AppHandle, application: &Application, command:
     if result.is_err() { let _ = fs::remove_file(file); }
     result
 }
-fn ghostty_script(command: &str) -> String {
-    // Escape AppleScript strings separately from the shell argument quoting.
-    let command = command.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r");
-    format!(r#"with timeout of 30 seconds
- tell application id "com.mitchellh.ghostty"
-  activate
-  set cfg to new surface configuration
-  set command of cfg to "{command}"
-  set wait after command of cfg to true
-  if (count of windows) is 0 then
-   new window with configuration cfg
-  else
-   set newTab to new tab in front window with configuration cfg
-   select tab newTab
-  end if
- end tell
-end timeout"#)
+/// Ghostty's scripting dictionary (1.3+). The command arrives as `argv`,
+/// never as AppleScript source, so it needs no AppleScript escaping.
+const GHOSTTY_SCRIPT: &str = r#"on run argv
+ with timeout of 30 seconds
+  tell application id "com.mitchellh.ghostty"
+   activate
+   set cfg to new surface configuration
+   set command of cfg to item 1 of argv
+   set wait after command of cfg to true
+   if (count of windows) is 0 then
+    new window with configuration cfg
+   else
+    set newTab to new tab in front window with configuration cfg
+    select tab newTab
+   end if
+  end tell
+ end timeout
+end run"#;
+/// Longer than the script's own Apple Event timeout, so a first-run
+/// Automation prompt has time to be answered.
+const GHOSTTY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+fn ghostty_launch(command: &str) -> std::process::Command {
+    let mut launch = std::process::Command::new("/usr/bin/osascript");
+    launch.arg("-e").arg(GHOSTTY_SCRIPT).arg("--").arg(command);
+    launch
+}
+
+#[derive(Debug, PartialEq)]
+enum Bounded {
+    Spawn,
+    TimedOut,
+}
+
+/// Runs a helper to completion or kills it at the deadline.
+fn run_bounded(
+    mut command: std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<std::process::ExitStatus, Bounded> {
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| Bounded::Spawn)?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Bounded::TimedOut);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    #[test]
+    fn ghostty_runs_in_osascript_with_the_command_as_data() {
+        let command = r#"'/usr/bin/ssh' '-F' '/a "b"\c' $(touch /tmp/never)"#;
+        let launch = ghostty_launch(command);
+        assert_eq!(launch.get_program(), "/usr/bin/osascript");
+        let args: Vec<_> = launch.get_args().map(|arg| arg.to_str().unwrap()).collect();
+        assert_eq!(args, ["-e", GHOSTTY_SCRIPT, "--", command]);
+        assert!(GHOSTTY_SCRIPT.contains("set command of cfg to item 1 of argv"));
+    }
+
+    #[test]
+    fn osascript_passes_the_command_through_argv_unchanged() {
+        // Same argument shape as Ghostty's launch, without contacting any app.
+        let command = "-x 'a\"b' \\n $(y)";
+        let output = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", "on run argv\n return item 1 of argv\nend run", "--", command])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), format!("{command}\n"));
+    }
+
+    #[test]
+    fn an_unresponsive_helper_is_stopped_at_the_deadline() {
+        let started = std::time::Instant::now();
+        let mut sleeper = std::process::Command::new("/bin/sleep");
+        sleeper.arg("30");
+        assert_eq!(
+            run_bounded(sleeper, std::time::Duration::from_millis(200)),
+            Err(Bounded::TimedOut)
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let status = run_bounded(std::process::Command::new("/usr/bin/false"), GHOSTTY_TIMEOUT).unwrap();
+        assert!(!status.success());
+    }
 }
