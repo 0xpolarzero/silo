@@ -456,16 +456,18 @@ pub(super) fn resume(
     controller
         .view
         .lock()
-        .map_err(|_| "Backup state unavailable.")?
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .cancellation = Some(cancellation.clone());
-    tauri::async_runtime::spawn_blocking(move || {
+    let (kind, archive, target) = (journal.kind(), journal.archive.clone(), journal.target());
+    let (outer_app, outer_controller) = (app.clone(), controller.clone());
+    let work = move || {
         let result = recover(&app, &controller, &journal, &cancellation);
         match result {
             Ok(true) => {
                 let journal = controller
                     .journal
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clone()
                     .unwrap_or(journal);
                 let operation = Operation::Result {
@@ -543,6 +545,11 @@ pub(super) fn resume(
                 finish(&controller);
                 publish(&app, &controller);
             }
+        }
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if super::contain_worker_panic(&outer_controller, kind, &archive, target, work) {
+            publish(&outer_app, &outer_controller);
         }
     });
     Ok(())

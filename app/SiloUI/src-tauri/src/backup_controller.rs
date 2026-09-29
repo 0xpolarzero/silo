@@ -726,7 +726,9 @@ async fn start_backup_inner(
         let mut view = controller
             .view
             .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
+            // `busy` and the journal are already claimed; returning here would
+            // strand them, so recover a poisoned view instead (E-44).
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         view.cancellation = Some(cancellation.clone());
         let phase = match &checkpoint_name {
             Some(name) => Phase {
@@ -751,20 +753,68 @@ async fn start_backup_inner(
         });
     }
     publish(&app, &controller);
-    let app_for_work = app.clone();
-    let controller_for_work = controller.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let failure_archive = pending_archive.clone();
+    let (work_app, work_controller) = (app.clone(), controller.clone());
+    let work = move || {
         run_backup(
-            app_for_work,
-            controller_for_work,
+            work_app,
+            work_controller,
             archive_path,
             sandboxes,
             checkpoint_id,
             cancellation,
             pending_archive,
         )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if contain_worker_panic(&controller, "backup", &failure_archive, None, work) {
+            publish(&app, &controller);
+        }
     });
     Ok(())
+}
+
+/// Runs a detached export or import worker. A panic would otherwise leave the
+/// operation Running with `busy` set until relaunch, refusing new transfers,
+/// dismissal and updates; record a terminal failure and release the slot.
+/// Returns whether the worker panicked.
+fn contain_worker_panic(
+    controller: &Controller,
+    operation: &'static str,
+    archive: &Archive,
+    target_name: Option<String>,
+    work: impl FnOnce(),
+) -> bool {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_ok() {
+        return false;
+    }
+    let failure = recovery::complete(
+        controller,
+        Operation::Result {
+            operation,
+            archive: archive.clone(),
+            target_name,
+            running_names: vec![],
+            outcome: "failed",
+            title: if operation == "backup" {
+                "Export failed"
+            } else {
+                "Import failed"
+            }
+            .into(),
+            message: "Silo hit an internal error and stopped this operation.".into(),
+            detail: Some("Files it had already written were kept.".into()),
+        },
+    );
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    view.operation = Some(failure);
+    view.cancellation = None;
+    drop(view);
+    controller.busy.store(false, Ordering::Release);
+    true
 }
 
 fn run_backup(
@@ -1278,7 +1328,9 @@ async fn start_restore_inner(
         let mut view = controller
             .view
             .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
+            // `busy` and the journal are already claimed; returning here would
+            // strand them, so recover a poisoned view instead (E-44).
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         view.cancellation = Some(cancellation.clone());
         view.operation = Some(Operation::Running {
             operation: "restore",
@@ -1295,18 +1347,23 @@ async fn start_restore_inner(
         });
     }
     publish(&app, &controller);
-    let app_for_work = app.clone();
-    let controller_for_work = controller.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let (failure_archive, target) = (archive.clone(), Some(new_name.clone()));
+    let (work_app, work_controller) = (app.clone(), controller.clone());
+    let work = move || {
         run_restore(
-            app_for_work,
-            controller_for_work,
+            work_app,
+            work_controller,
             path,
             new_name,
             source_name,
             cancellation,
             archive,
         )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if contain_worker_panic(&controller, "restore", &failure_archive, target, work) {
+            publish(&app, &controller);
+        }
     });
     Ok(())
 }
@@ -1782,6 +1839,45 @@ mod tests {
         )
         .unwrap());
         assert!(recovery::pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn a_panicking_worker_records_a_failure_and_releases_the_slot() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        controller.busy.store(true, Ordering::Release);
+        controller.view.lock().unwrap().cancellation = Some(backup::Cancellation::default());
+        assert!(contain_worker_panic(
+            &controller,
+            "backup",
+            &completed_archive(),
+            None,
+            || panic!("worker bug")
+        ));
+        assert!(!controller.busy.load(Ordering::Acquire));
+        assert!(!recovery::pending(&controller).unwrap());
+        let view = controller.view.lock().unwrap();
+        assert!(view.cancellation.is_none());
+        assert!(matches!(
+            view.operation,
+            Some(Operation::Result {
+                outcome: "failed",
+                ..
+            })
+        ));
+        drop(view);
+        assert!(!contain_worker_panic(
+            &controller,
+            "backup",
+            &completed_archive(),
+            None,
+            || {}
+        ));
     }
 
     fn completed_operation(archive: Archive, outcome: &'static str) -> Operation {
