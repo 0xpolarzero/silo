@@ -85,11 +85,23 @@ pub(super) fn value() -> Result<String, String> {
 fn fingerprint(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
+/// The connected token's fingerprint from memory only, like `value()` without the store.
+fn current_fingerprint() -> Option<String> {
+    if !connected() {
+        return None;
+    }
+    match SECRET.peek() {
+        Some(Ok(Some(token))) => Some(fingerprint(&token.token)),
+        _ => None,
+    }
+}
 fn applied() -> &'static Mutex<HashMap<String, String>> {
     APPLIED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result<(), String> {
+    // The credential store can wait on a permission prompt; never read it under STATE.
+    let token = value();
     let _state = serialize(&STATE);
     let d = load(app)?;
     if d.revision != revision {
@@ -99,7 +111,7 @@ pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result
     if !d.access_enabled {
         return Ok(());
     }
-    let token = value()?;
+    let token = token?;
     let profile = json!({"version":2,"owners":[],"personalToken":token});
     if crate::runtime::github_policy_is_cached(app, name, &profile)?
         && applied()
@@ -142,7 +154,9 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
         Ok(cached) => cached.clone(),
         Err(_) => return errors.record_all("GitHub token state is unavailable.".into()),
     };
-    let current = value().ok().map(|token| fingerprint(&token));
+    // Narrowing runs under STATE, so it never opens the credential store (which can wait
+    // on a permission prompt). A token not read yet this session was never attached.
+    let current = current_fingerprint();
     let detach = |name: &str, key: &str| -> Result<(), String> {
         detach_result(
             app,

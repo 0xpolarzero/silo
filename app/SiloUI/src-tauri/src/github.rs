@@ -210,17 +210,28 @@ struct Credential {
 // background reconciliation must never reopen a dismissed permission dialog.
 // A failed write keeps the new value in memory (a rotated credential must stay
 // usable) and marks it unsaved; the store is retried by `flush`, never by `write`.
-struct SessionSecret<T>(Mutex<SecretSlot<T>>);
+struct SessionSecret<T>(Mutex<SecretSlot<T>>, Mutex<Option<Result<T, String>>>);
 struct SecretSlot<T> {
     value: Option<Result<T, String>>,
     unsaved: Option<String>,
     blocked: bool,
 }
 impl<T: Clone + PartialEq> SessionSecret<T> {
-    const fn new() -> Self { Self(Mutex::new(SecretSlot { value: None, unsaved: None, blocked: false })) }
+    const fn new() -> Self { Self(Mutex::new(SecretSlot { value: None, unsaved: None, blocked: false }), Mutex::new(None)) }
+    /// Mirror the cached value for `peek`; the mirror is never held across the store.
+    fn publish(&self, value: &Option<Result<T, String>>) {
+        *self.1.lock().unwrap_or_else(PoisonError::into_inner) = value.clone();
+    }
+    /// The value already known this session, without opening the credential store or
+    /// waiting for a read or permission prompt in progress. `None` means not read yet.
+    fn peek(&self) -> Option<Result<T, String>> {
+        self.1.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
     fn read(&self, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
-        state.value.get_or_insert_with(read).clone()
+        let value = state.value.get_or_insert_with(read).clone();
+        self.publish(&state.value);
+        value
     }
     fn write(&self, value: T, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
         let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
@@ -229,12 +240,14 @@ impl<T: Clone + PartialEq> SessionSecret<T> {
             if let Some(error) = state.unsaved.clone() {
                 // Keep the newest value usable in memory; `flush` stores it later.
                 state.value = Some(Ok(value));
+                self.publish(&state.value);
                 return Err(error);
             }
         }
         if state.unsaved.is_none() && matches!(state.value.as_ref(), Some(Ok(current)) if current == &value) { return Ok(()); }
         let result = write();
         state.value = Some(Ok(value));
+        self.publish(&state.value);
         state.unsaved = result.clone().err();
         state.blocked = state.unsaved.is_some();
         result
@@ -253,6 +266,7 @@ impl<T: Clone + PartialEq> SessionSecret<T> {
         if let Ok(mut state) = self.0.lock() {
             if matches!(state.value.as_ref(), Some(Err(_))) { state.value = None; }
             state.blocked = false;
+            self.publish(&state.value);
         }
     }
 }
@@ -1951,20 +1965,19 @@ pub fn install(app: &tauri::AppHandle) {
                                 .map(|_| ())
                             })
                         });
+                        // The credential store can wait on a permission prompt; never
+                        // delete from it under STATE. Connect cannot interleave: this
+                        // worker pass holds OPERATION.
+                        let result = result.and_then(|()| delete_account_credential());
                         { let _state = serialize(&STATE);
                             if let Ok(mut current) = load(&app) {
                                 match result {
-                                    Ok(()) => match delete_account_credential() {
-                                        Ok(()) => {
-                                            current.disconnect_pending = false;
-                                            current.account = None;
-                                            current.repositories.clear();
-                                            current.catalog_error = None;
-                                        }
-                                        Err(error) => {
-                                            current.catalog_error = Some(error);
-                                        }
-                                    },
+                                    Ok(()) => {
+                                        current.disconnect_pending = false;
+                                        current.account = None;
+                                        current.repositories.clear();
+                                        current.catalog_error = None;
+                                    }
                                     Err(message) => {
                                         current.catalog_error = Some(message);
                                     }
@@ -2418,6 +2431,30 @@ mod tests {
         cache.flush(|value| { assert_eq!(*value, Some(2)); Ok(()) }).unwrap();
         cache.flush(|_| panic!("Flush after successful store")).unwrap();
         cache.write(Some(2), || panic!("Unchanged write after flush")).unwrap();
+    }
+    #[test]
+    fn peeking_a_secret_never_waits_for_the_credential_store() {
+        let cache = super::SessionSecret::<Option<u64>>::new();
+        assert_eq!(cache.peek(), None);
+        let (started, reading) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                cache.read(move || {
+                    started.send(()).unwrap();
+                    released.recv().unwrap();
+                    Ok(Some(1))
+                })
+            });
+            reading.recv_timeout(Duration::from_secs(1)).unwrap();
+            // A read waiting on the store (or its permission prompt) does not block peek.
+            assert_eq!(cache.peek(), None);
+            release.send(()).unwrap();
+        });
+        assert_eq!(cache.peek(), Some(Ok(Some(1))));
+        // A failed write keeps the newest value in memory, and peek sees it too.
+        assert!(cache.write(Some(2), || Err("store locked".into())).is_err());
+        assert_eq!(cache.peek(), Some(Ok(Some(2))));
     }
     #[test]
     fn concurrent_secret_reads_share_one_keychain_request() {
