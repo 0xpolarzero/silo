@@ -394,7 +394,9 @@ export function applicationSourceForScenario(
         ? { ...workspace, attention: { level: "error", message: "GitHub access could not be applied." } }
       : workspace
   ))
-  return {
+  // Deep-clone so a test that mutates its source cannot leak into the
+  // module-level fixture data shared by every later test.
+  return structuredClone({
     runtimeRepair: runtimeRepairForFixture(scenario, systemIssueMode),
     workspaces,
     activities: applicationActivitiesForFixture(
@@ -451,5 +453,5 @@ export function applicationSourceForScenario(
       browser: "Safari",
       reduceMotion: false,
     },
-  }
+  } satisfies ApplicationSource)
 }
