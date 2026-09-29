@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { CopyButton } from "@/components/copy-button"
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { errorMessage, showActionFailure, showOperationFailure, showOperationLoading, showOperationSuccess } from "@/lib/operation-toast"
+import { errorMessage, showActionFailure, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import type { ApplicationActions, ApplicationWorkspace, NetworkPort, NetworkPortRequest, NetworkState } from "@/features/application/model/application-source"
 
@@ -54,9 +54,9 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   }, [active, refreshNetwork])
 
   /** Runs a port operation with the shared loading → success/failure notifications. Failures offer Retry. */
-  async function run(id: string, copy: { loading: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
+  async function run(id: string, copy: { loading: string; step?: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
     setBusy(true)
-    showOperationLoading(id, copy.loading)
+    showOperationProgress(id, { title: copy.loading, step: copy.step ?? `${copy.loading}…`, progress: null })
     try {
       await operation()
       showOperationSuccess(id, copy.success)
@@ -134,8 +134,8 @@ export function NetworkPortForm({ controller, fieldID, hideSandbox = false, clas
     if (actions.saveNetworkPort) {
       const verb = draft.editing ? "edit" : "add"
       void run(`network-port:${draft.workspace}:${request.port}:${verb}`, draft.editing
-        ? { loading: `Saving port ${request.port}`, success: `Port ${request.port} saved`, failure: `Could not save port ${request.port}` }
-        : { loading: `Adding port ${request.port}`, success: `Port ${request.port} added`, failure: `Could not add port ${request.port}` }, () => actions.saveNetworkPort!(request), () => setDraft(null))
+        ? { loading: `Saving port ${request.port}`, step: `Saving port ${request.port} on ${draft.workspace}`, success: `Port ${request.port} saved`, failure: `Could not save port ${request.port}` }
+        : { loading: `Adding port ${request.port}`, step: `Publishing port ${request.port} on ${draft.workspace}`, success: `Port ${request.port} added`, failure: `Could not add port ${request.port}` }, () => actions.saveNetworkPort!(request), () => setDraft(null))
     }
   }}>
     <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">VM port<Input aria-label="VM port" aria-invalid={Boolean(fieldErrors.port)} aria-describedby={fieldErrors.port ? `${fieldID}-port-error` : undefined} className="h-8 w-full" type="number" min={1} max={65535} required autoFocus={!draft.editing} disabled={busy || draft.editing} value={draft.port} onChange={e => { setDraft({ ...draft, port: e.target.value }); setFieldErrors(current => ({ ...current, port: undefined })) }} />{fieldErrors.port && <span id={`${fieldID}-port-error`} className="text-destructive">{fieldErrors.port}</span>}</label></div>
@@ -161,11 +161,11 @@ export function NetworkPortRowActions({ controller, workspace, port, state, brow
   const key = `${workspaceTarget(workspace)}:${port.port}`
   const address = networkAddress(port)
   return <InlineConfirmation active={confirm === key} onDismiss={() => setConfirm(null)}>
-    {confirm === key ? <><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label="Cancel" disabled={busy} onClick={() => setConfirm(null)}><X /></Button></TooltipTrigger><TooltipContent>Cancel</TooltipContent></Tooltip><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" className="text-destructive" aria-label="Remove" disabled={busy} onClick={() => void run(`network-port:${key}:remove`, { loading: `Removing port ${port.port}`, success: `Port ${port.port} removed`, failure: `Could not remove port ${port.port}` }, () => actions.removeNetworkPort!(workspaceTarget(workspace), port.port))}>{busy ? <LoaderCircle className="animate-spin" /> : <Check />}</Button></TooltipTrigger><TooltipContent>Confirm removal</TooltipContent></Tooltip></> : <>
+    {confirm === key ? <><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label="Cancel" disabled={busy} onClick={() => setConfirm(null)}><X /></Button></TooltipTrigger><TooltipContent>Cancel</TooltipContent></Tooltip><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" className="text-destructive" aria-label="Remove" disabled={busy} onClick={() => void run(`network-port:${key}:remove`, { loading: `Removing port ${port.port}`, step: `Removing port ${port.port} from ${workspace.machine.name}`, success: `Port ${port.port} removed`, failure: `Could not remove port ${port.port}` }, () => actions.removeNetworkPort!(workspaceTarget(workspace), port.port))}>{busy ? <LoaderCircle className="animate-spin" /> : <Check />}</Button></TooltipTrigger><TooltipContent>Confirm removal</TooltipContent></Tooltip></> : <>
       {address && port.scheme && state === "Reachable" && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Open ${address} in ${browser}`} onClick={() => void open(workspaceTarget(workspace), port.port)} disabled={!actions.openNetworkPort}><ExternalLink /></Button></TooltipTrigger><TooltipContent>Open in {browser}</TooltipContent></Tooltip>}
       {address && <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" value={address} labels={{ idle: `Copy ${address}`, copied: "Address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy address</TooltipContent></Tooltip>}
       {port.configured && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Edit port ${port.port} from ${workspace.machine.name}`} disabled={busy || !actions.saveNetworkPort} onClick={() => controller.startEdit(workspace, port)}><Pencil /></Button></TooltipTrigger><TooltipContent>Edit port</TooltipContent></Tooltip>}
-      {port.configured ? <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Remove port ${port.port} from ${workspace.machine.name}`} disabled={busy || !actions.removeNetworkPort} onClick={() => { setConfirm(key); setDraft(null) }}><Trash2 /></Button></TooltipTrigger><TooltipContent>Remove port</TooltipContent></Tooltip> : <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Forward port ${port.port} to ${thisComputer}`} disabled={busy || !actions.saveNetworkPort} onClick={() => { setConnecting(key); void run(`network-port:${key}:add`, { loading: `Forwarding port ${port.port}`, success: `Port ${port.port} forwarded`, failure: `Could not forward port ${port.port}` }, () => actions.saveNetworkPort!({ workspace: workspaceTarget(workspace), port: port.port, hostPort: null, scheme: "http" })).finally(() => setConnecting(null)) }}>{connecting === key ? <LoaderCircle className="animate-spin" /> : <Plus />}</Button></TooltipTrigger><TooltipContent><span className="block font-medium">Forward to {thisComputer}</span><span className="block">Make this port reachable from this computer</span></TooltipContent></Tooltip>}
+      {port.configured ? <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Remove port ${port.port} from ${workspace.machine.name}`} disabled={busy || !actions.removeNetworkPort} onClick={() => { setConfirm(key); setDraft(null) }}><Trash2 /></Button></TooltipTrigger><TooltipContent>Remove port</TooltipContent></Tooltip> : <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Forward port ${port.port} to ${thisComputer}`} disabled={busy || !actions.saveNetworkPort} onClick={() => { setConnecting(key); void run(`network-port:${key}:add`, { loading: `Forwarding port ${port.port}`, step: `Publishing port ${port.port} on ${workspace.machine.name}`, success: `Port ${port.port} forwarded`, failure: `Could not forward port ${port.port}` }, () => actions.saveNetworkPort!({ workspace: workspaceTarget(workspace), port: port.port, hostPort: null, scheme: "http" })).finally(() => setConnecting(null)) }}>{connecting === key ? <LoaderCircle className="animate-spin" /> : <Plus />}</Button></TooltipTrigger><TooltipContent><span className="block font-medium">Forward to {thisComputer}</span><span className="block">Make this port reachable from this computer</span></TooltipContent></Tooltip>}
     </>}
   </InlineConfirmation>
 }

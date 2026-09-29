@@ -26,6 +26,8 @@ function Harness({ source, actions }: { source: ApplicationSource; actions: Appl
   </SettingsProvider>
 }
 
+function confirmButton(name: string) { return within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name }) }
+
 it("toasts a created fork with an Open action that navigates to the new sandbox", async () => {
   const { source, workspace } = withCheckpoint()
   const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
@@ -37,8 +39,9 @@ it("toasts a created fork with an Open action that navigates to the new sandbox"
   await user.click(screen.getByRole("menuitem", { name: `Checkpoints for ${workspace.machine.name}` }))
   await user.click(within(screen.getByText("Before deploy").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Checkpoint actions for Before deploy" }))
   await user.click(screen.getByRole("menuitem", { name: "Fork Before deploy" }))
-  await user.type(within(screen.getByRole("dialog", { name: "Fork from “Before deploy”" })).getByRole("textbox", { name: "New sandbox name" }), "experiment")
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Fork" }))
+  expect(await screen.findByText("Fork from “Before deploy”")).toBeVisible()
+  await user.type(await screen.findByRole("textbox", { name: "New sandbox name" }), "experiment")
+  await user.click(screen.getByRole("button", { name: "Fork" }))
 
   await waitFor(() => expect(forkCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "checkpoint-1", "experiment"))
   expect(await screen.findByText("Fork created")).toBeVisible()
@@ -65,7 +68,7 @@ it("toasts a created fork from the sandbox current-state menu", async () => {
 
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Fork ${workspace.machine.name}` }))
-  await user.type(screen.getByRole("textbox", { name: "New sandbox name" }), "spinoff")
+  await user.type(await screen.findByRole("textbox", { name: "New sandbox name" }), "spinoff")
   await user.click(screen.getByRole("button", { name: "Fork" }))
 
   await waitFor(() => expect(forkCheckpoint).toHaveBeenCalledWith(workspace.machine.name, null, "spinoff"))
@@ -84,7 +87,8 @@ it("toasts a restored checkpoint with a Start action that runs the guarded start
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Checkpoints for ${workspace.machine.name}` }))
   await user.click(within(screen.getByText("Before deploy").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Restore" }))
-  await user.click(within(screen.getByRole("dialog", { name: "Restore “Before deploy”" })).getByRole("button", { name: "Restore" }))
+  expect(await screen.findByText("Restore “Before deploy”?")).toBeVisible()
+  await user.click(confirmButton("Restore"))
 
   await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "checkpoint-1"))
   expect(await screen.findByText("Restored “Before deploy”")).toBeVisible()
@@ -106,7 +110,7 @@ it("routes the restored-toast Start through the guard, so an unavailable VM oper
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Checkpoints for ${workspace.machine.name}` }))
   await user.click(within(screen.getByText("Before deploy").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Restore" }))
-  await user.click(within(screen.getByRole("dialog", { name: "Restore “Before deploy”" })).getByRole("button", { name: "Restore" }))
+  await user.click(confirmButton("Restore"))
 
   await screen.findByText("Restored “Before deploy”")
   await user.click(screen.getByRole("button", { name: "Start" }))

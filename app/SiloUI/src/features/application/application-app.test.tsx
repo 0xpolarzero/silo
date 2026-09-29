@@ -372,8 +372,9 @@ describe("application", () => {
       fireEvent.click(screen.getByRole("button", { name: "Add" }))
       fireEvent.click(screen.getByRole("menuitem", { name: "Import sandbox…" }))
       await act(async () => { await Promise.resolve() })
-      // The import review dialog opens; the import starts from it, then continues as a toast.
+      // The import review popover opens anchored to Add; the import starts from it, then continues as a toast.
       fireEvent.click(screen.getByRole("button", { name: "Import" }))
+      await act(async () => { await Promise.resolve() })
       expect(overviewNav).toHaveAttribute("aria-busy", "true")
       for (let step = 0; step < 4; step += 1) {
         await act(async () => { await vi.advanceTimersByTimeAsync(900) })

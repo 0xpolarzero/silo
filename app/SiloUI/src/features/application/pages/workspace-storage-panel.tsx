@@ -1,9 +1,8 @@
 import { useEffect, useEffectEvent, useRef, useState, type ReactElement } from 'react'
 import type { WorkspaceStorageState } from '../model/workspace-storage'
 import { HardDrive, Database, Folder, Gauge, RefreshCw, Sparkles, History, ChevronDown, Check, CircleAlert, Clock } from 'lucide-react'
-import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { errorMessage, showOperationFailure, showOperationLoading, showOperationSuccess } from '@/lib/operation-toast'
+import { dismissOperationToast, errorMessage, showOperationFailure, showOperationProgress, showOperationSuccess } from '@/lib/operation-toast'
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip'
 
 function Tip({ text, children }: { text: string; children: ReactElement }) {
@@ -54,12 +53,12 @@ function WorkspaceStorageContent({ workspaceId, running, disabled = false, read,
     setBusy(true)
     setReclaiming(reclaimSpace)
     const toastId = `storage-reclaim:${workspaceId}`
-    if (reclaimSpace) showOperationLoading(toastId, 'Reclaiming unused space', 'Your files stay available.')
+    if (reclaimSpace) showOperationProgress(toastId, { title: 'Reclaiming unused space', step: 'Your files stay available' })
     try {
       const value = await (reclaimSpace ? reclaim! : read)(workspaceId)
       if (requests.current.generation !== request) return
       setStorage(value)
-      toast.dismiss(`storage-read:${workspaceId}`)
+      dismissOperationToast(`storage-read:${workspaceId}`)
       if (reclaimSpace) {
         if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { description: value.lastError, retry: () => void load(true) })
         else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: 'Freed on this computer.' })

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { Toaster } from "@/components/ui/sonner"
@@ -104,4 +104,35 @@ it("keeps a known lifecycle action visible while its remote computer refreshes s
   view.rerender(<><Toaster /><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /></>)
   expect(row.getByRole("status")).toHaveTextContent("Refreshing status…")
   expect(row.queryByText(/Applying VM changes/)).not.toBeInTheDocument()
+})
+
+it("shows a lifecycle progress notification only for actions slower than the debounce, then dismisses it", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const source = structuredClone(applicationSourceForScenario("complete"))
+    const workspace = source.workspaces.find(item => item.machine.name === "dev")!
+    workspace.state = "stopped"
+    const actions = {} as ApplicationActions
+    const view = render(page(source, actions))
+
+    // An instant action never flashes a notification.
+    workspace.lifecycleAction = "start"
+    view.rerender(page(source, actions))
+    delete workspace.lifecycleAction
+    view.rerender(page(source, actions))
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.queryByText("Starting dev")).toBeNull()
+
+    workspace.lifecycleAction = "start"
+    view.rerender(page(source, actions))
+    expect(screen.queryByText("Starting dev")).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(900) })
+    expect(await screen.findByText("Starting dev")).toBeVisible()
+
+    delete workspace.lifecycleAction
+    view.rerender(page(source, actions))
+    await waitFor(() => expect(screen.queryByText("Starting dev")).toBeNull())
+  } finally {
+    vi.useRealTimers()
+  }
 })

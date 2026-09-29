@@ -1,13 +1,11 @@
 import { useEffect, useState } from "react"
 import { X } from "lucide-react"
-import { toast } from "sonner"
 
-import { Button } from "@/components/ui/button"
+import { dismissOperationToast, showOperationProgress } from "@/lib/operation-toast"
+
 import {
   emptyOperationQueue,
-  formatElapsed,
   isOperationStuck,
-  operationElapsedMs,
   toastableQueue,
   waitingOperationForVm,
   waitingStatusText,
@@ -47,28 +45,13 @@ function useNow(active: boolean, intervalMs = 1000): number {
   return now
 }
 
-/** Body of the operation-queue toast: elapsed time, a stuck warning, and waiting entries. */
-function OperationQueueToastBody({ queue, now }: { queue: OperationQueue; now: number }) {
-  const primary = queue.running[0]
-  const stuck = queue.running.some((entry) => isOperationStuck(entry, now))
-  const shownWaiting = queue.waiting.slice(0, 2)
-  const moreWaiting = queue.waiting.length - shownWaiting.length
-  return (
-    <div className="grid gap-1 text-xs">
-      {(primary || stuck) && (
-        <div className="flex items-center gap-2">
-          {primary && <span className="tabular-nums text-muted-foreground">{formatElapsed(operationElapsedMs(primary, now))}</span>}
-          {stuck && <span className="font-medium text-amber-700 dark:text-amber-400">Taking longer than expected</span>}
-        </div>
-      )}
-      {shownWaiting.map((entry) => (
-        <p key={entry.id} className="truncate text-muted-foreground" title={entry.label}>
-          {entry.label} — {waitingStatusText(queue, entry)}
-        </p>
-      ))}
-      {moreWaiting > 0 && <p className="text-muted-foreground">and {moreWaiting} more</p>}
-    </div>
-  )
+/** Step line for the operation-queue toast: a stuck warning, else a summary of waiting entries. */
+function queueStep(queue: OperationQueue, now: number): string | undefined {
+  if (queue.running.some((entry) => isOperationStuck(entry, now))) return "Taking longer than expected"
+  const first = queue.waiting[0]
+  if (!first) return undefined
+  const more = queue.waiting.length - 1
+  return `${first.label} — ${waitingStatusText(queue, first)}${more > 0 ? ` (and ${more} more)` : ""}`
 }
 
 /**
@@ -106,7 +89,7 @@ export function OperationQueueToast({ queue, onCancel }: { queue?: OperationQueu
 
   useEffect(() => {
     if (!show) {
-      toast.dismiss(OPERATION_QUEUE_TOAST_ID)
+      dismissOperationToast(OPERATION_QUEUE_TOAST_ID)
       return
     }
     const total = running.length + waiting.length
@@ -114,20 +97,18 @@ export function OperationQueueToast({ queue, onCancel }: { queue?: OperationQueu
       ? running[0].label
       : `${total} ${total === 1 ? "operation" : "operations"} in progress`
     const cancellable = running.find((entry) => entry.cancellable)
-    const action = onCancel && cancellable
-      ? <Button variant="outline" size="xs" onClick={() => onCancel(cancellable.id)}>Cancel</Button>
-      : undefined
-    toast.loading(title, {
-      id: OPERATION_QUEUE_TOAST_ID,
-      duration: Infinity,
-      description: <OperationQueueToastBody queue={visibleQueue} now={now} />,
-      action,
+    const primary = running[0]
+    showOperationProgress(OPERATION_QUEUE_TOAST_ID, {
+      title,
+      step: queueStep(visibleQueue, now),
+      startedAt: primary?.sinceMs ?? earliest,
+      cancel: onCancel && cancellable ? { onCancel: () => onCancel(cancellable.id) } : undefined,
     })
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [show, queue, now, onCancel])
 
   // Never let the toast outlive the page that drives it.
-  useEffect(() => () => { toast.dismiss(OPERATION_QUEUE_TOAST_ID) }, [])
+  useEffect(() => () => { dismissOperationToast(OPERATION_QUEUE_TOAST_ID) }, [])
 
   return null
 }

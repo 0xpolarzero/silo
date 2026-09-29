@@ -40,7 +40,7 @@ describe("operation-queue toast", () => {
   it("shows a title and elapsed time for a running operation, and lists waiting entries", async () => {
     render(<ToastHarness queue={fixtureOperationQueue()} />)
     expect(await screen.findByText("Backing up sandboxes")).toBeInTheDocument()
-    expect(screen.getByText("3 min")).toBeInTheDocument()
+    expect(screen.getByText("3m 0s")).toBeInTheDocument()
     expect(screen.getByText(/Restarting dev — Waiting for Backing up sandboxes…/)).toBeInTheDocument()
   })
 

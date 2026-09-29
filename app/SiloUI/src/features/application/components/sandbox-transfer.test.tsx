@@ -25,7 +25,7 @@ function Harness({ backup, openSandbox = vi.fn() }: { backup: BackupController; 
     <Toaster />
     <button type="button" onClick={() => void transfer.exportSandbox("dev")}>Start export</button>
     <button type="button" onClick={() => void transfer.beginImport()}>Start import</button>
-    {transfer.dialogs}
+    {transfer.importPopover(<button type="button">Add</button>)}
   </SettingsProvider>
 }
 
@@ -44,7 +44,7 @@ describe("export notifications", () => {
     const running: BackupOperation = { kind: "running", operation: "backup", archive, runningNames: [], progress: 40, phases: [{ title: "Save disk copies", detail: "Saving each managed disk.", tone: "running" }] }
     rerender(<Harness backup={controller({ operation: running })} />)
     expect(await screen.findByText("Exporting dev")).toBeInTheDocument()
-    expect(screen.getByRole("progressbar", { name: "Export progress" })).toBeInTheDocument()
+    expect(screen.getByRole("progressbar", { name: "Saving each managed disk." })).toBeInTheDocument()
   })
 
   it("does nothing when the folder picker is cancelled", async () => {
@@ -88,7 +88,7 @@ describe("export notifications", () => {
   })
 })
 
-describe("import notifications and dialog", () => {
+describe("import notifications and popover", () => {
   it("validates the new name, blocks conflicts, offers a source select, and imports", async () => {
     const multi = { ...archive, sandboxes: ["dev", "api"] }
     const backup = controller({}, { chooseArchive: vi.fn().mockImplementation(async (onSelected?: (path: string) => void) => { onSelected?.("/p"); return { archive: multi, valid: true } }) })
@@ -105,10 +105,11 @@ describe("import notifications and dialog", () => {
     expect(screen.getByRole("button", { name: "Import" })).toBeDisabled()
     fireEvent.change(name, { target: { value: "dev-copy" } })
     fireEvent.click(screen.getByRole("button", { name: "Import" }))
+    await act(async () => { await Promise.resolve() })
     expect(backup.actions.startRestore).toHaveBeenCalledExactlyOnceWith(multi, "dev-copy", "dev")
   })
 
-  it("reports an invalid export file in the dialog and lets the user choose another", async () => {
+  it("reports an invalid export file in the popover and lets the user choose another", async () => {
     const backup = controller({}, { chooseArchive: vi.fn().mockImplementation(async (onSelected?: (path: string) => void) => { onSelected?.("/p"); return { archive, valid: false, reason: "The checksum does not match." } }) })
     render(<Harness backup={backup} />)
     fireEvent.click(screen.getByRole("button", { name: "Start import" }))
@@ -134,8 +135,8 @@ describe("import notifications and dialog", () => {
     render(<Harness backup={backup} />)
     expect(await screen.findByText("Importing dev-copy")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
-    expect(await screen.findByText("Cancel and remove dev-copy?")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Cancel and remove" }))
+    expect(await screen.findByText("Remove the incomplete sandbox?")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }))
     expect(backup.actions.cancelOperation).toHaveBeenCalledOnce()
   })
 })

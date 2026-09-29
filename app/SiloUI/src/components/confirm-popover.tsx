@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react"
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -32,6 +32,8 @@ interface PopoverShellProps {
   children?: ReactNode
   /** External anchor: the popover positions against this instead of a trigger. */
   anchor?: ReactNode
+  /** Forwarded to the anchor element, so popovers can be nested around one button. */
+  ref?: Ref<HTMLElement>
 }
 
 function useOpen(open: boolean | undefined, onOpenChange: ((open: boolean) => void) | undefined) {
@@ -41,7 +43,13 @@ function useOpen(open: boolean | undefined, onOpenChange: ((open: boolean) => vo
   return [value, set] as const
 }
 
-function Shell({ open, setOpen, children, anchor, align, side, content }: {
+function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
+  if (typeof ref === "function") ref(value)
+  else if (ref) ref.current = value
+}
+
+function Shell({ open, setOpen, children, anchor, anchorRef, align, side, content }: {
+  anchorRef?: Ref<HTMLElement>
   open: boolean
   setOpen: (open: boolean) => void
   children?: ReactNode
@@ -50,15 +58,17 @@ function Shell({ open, setOpen, children, anchor, align, side, content }: {
   side: "top" | "right" | "bottom" | "left"
   content: ReactNode
 }) {
+  const element = useRef<HTMLElement | null>(null)
+  const setElement = (node: HTMLElement | null) => { element.current = node; assignRef(anchorRef, node) }
   return <Popover open={open} onOpenChange={setOpen}>
-    {anchor ? <PopoverAnchor asChild>{anchor}</PopoverAnchor> : children ? <PopoverTrigger asChild>{children}</PopoverTrigger> : null}
-    <PopoverContent align={align} side={side} className="w-64 p-3 text-xs" onCloseAutoFocus={(event) => { if (anchor) event.preventDefault() }}>
+    {anchor ? <PopoverAnchor asChild ref={setElement}>{anchor}</PopoverAnchor> : children ? <PopoverTrigger asChild>{children}</PopoverTrigger> : null}
+    <PopoverContent align={align} side={side} className="w-64 p-3 text-xs" onCloseAutoFocus={(event) => { if (anchor) { event.preventDefault(); element.current?.focus() } }}>
       {content}
     </PopoverContent>
   </Popover>
 }
 
-export function ConfirmPopover({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onConfirm, open, onOpenChange, align = "start", side = "bottom", children, anchor }: PopoverShellProps & {
+export function ConfirmPopover({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onConfirm, open, onOpenChange, align = "start", side = "bottom", children, anchor, ref }: PopoverShellProps & {
   onConfirm: () => void | Promise<void>
 }) {
   const [isOpen, setOpen] = useOpen(open, onOpenChange)
@@ -66,7 +76,7 @@ export function ConfirmPopover({ title, description, confirmLabel, cancelLabel =
     setOpen(false)
     void Promise.resolve().then(onConfirm)
   }
-  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} align={align} side={side} content={
+  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} align={align} side={side} content={
     <div className="grid gap-2" onKeyDown={(event) => { if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) { event.preventDefault(); confirm() } }}>
       <p className="font-medium">{title}</p>
       {description && <div className="text-muted-foreground">{description}</div>}
@@ -78,7 +88,7 @@ export function ConfirmPopover({ title, description, confirmLabel, cancelLabel =
   }>{children}</Shell>
 }
 
-export function FormPopover({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onSubmit, canSubmit = true, open, onOpenChange, align = "start", side = "bottom", children, fields, anchor }: PopoverShellProps & {
+export function FormPopover({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onSubmit, canSubmit = true, open, onOpenChange, align = "start", side = "bottom", children, fields, anchor, ref }: PopoverShellProps & {
   /** The form fields. */
   fields: ReactNode
   canSubmit?: boolean
@@ -97,7 +107,7 @@ export function FormPopover({ title, description, confirmLabel, cancelLabel = "C
     setOpen(false)
     void Promise.resolve().then(onSubmit)
   }
-  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} align={align} side={side} content={
+  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} align={align} side={side} content={
     <form ref={form} className="grid gap-2" onSubmit={submit}>
       <p className="font-medium">{title}</p>
       {description && <div className="text-muted-foreground">{description}</div>}

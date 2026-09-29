@@ -8,8 +8,7 @@ import { Input } from "@/components/ui/input"
 import type { ApplicationActions, ApplicationWorkspace } from "../model/application-source"
 import { formatLog } from "../model/logs"
 import { useLogHistory } from "../model/use-log-history"
-import { errorMessage, showActionFailure, showOperationFailure, showOperationLoading, showOperationSuccess } from "@/lib/operation-toast"
-import { toast } from "sonner"
+import { dismissOperationToast, errorMessage, showActionFailure, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 
 export interface LogWindow { since: string; until: string }
 export function Logs({ workspaces, query, onQueryChange, actions, active, window: initialWindow, onWindowChange }: {
@@ -39,10 +38,13 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
     if (!actions.exportLogs) return
     const id = "logs-export"
     setExporting(true)
-    showOperationLoading(id, "Exporting logs…")
+    showOperationProgress(id, {
+      title: "Exporting logs…",
+      cancel: actions.cancelLogExport ? { onCancel: () => void actions.cancelLogExport?.().catch(cause => showActionFailure("Cancellation failed", cause)) } : undefined,
+    })
     try {
       if (await actions.exportLogs(results.map(result => result.request))) showOperationSuccess(id, "Logs saved")
-      else toast.dismiss(id)
+      else dismissOperationToast(id)
     } catch (cause) {
       showOperationFailure(id, "Export failed", { description: errorMessage(cause), retry: () => void exportMatches() })
     } finally { setExporting(false) }
@@ -57,7 +59,6 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
       <Button size="xs" variant="outline" aria-pressed={following} onClick={() => setFollowing(value => !value)}>{following ? "Pause" : "Follow"}</Button>
       <CopyButton variant="outline" size="xs" title="Copy the logs in this list" value={copiedLogs} disabled={!rows.length || invalidRange} labels={{ idle: "Copy logs", copied: "Logs copied", failed: "Copy logs failed" }} text={{ idle: "Copy", copied: "Copied", failed: "Copy failed" }} />
       {actions.exportLogs && <Button size="xs" variant="outline" title="Save all logs matching your search and filters to a file" disabled={busy || invalidRange || Boolean(error) || query !== searchQuery || !results.length || exporting} onClick={() => void exportMatches()}>Export…</Button>}
-      {exporting && actions.cancelLogExport && <Button size="xs" variant="outline" onClick={() => void actions.cancelLogExport?.().catch(cause => showActionFailure("Cancellation failed", cause))}>Cancel export</Button>}
     </div>
     <LogFilters source={source} since={since} until={until} onChange={filters => {
       setSource(filters.source); setSince(filters.since); setUntil(filters.until)

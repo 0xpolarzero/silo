@@ -8,7 +8,7 @@ import { githubFailure } from "./github-failure"
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { showOperationFailure, showOperationLoading, showOperationSuccess } from "@/lib/operation-toast"
+import { showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 import type {
   ApplicationActions,
   ApplicationGitHubConfiguration,
@@ -196,7 +196,7 @@ export function GitHubPage({
       if (announced.current.get(name) === key) continue
       announced.current.set(name, key)
       const id = `github-apply:${name}`
-      if (operation.status === "applying") showOperationLoading(id, operation.message, name)
+      if (operation.status === "applying") showOperationProgress(id, { title: operation.message, step: name })
       else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name })
       else {
         const failure = githubFailure(operation.message)

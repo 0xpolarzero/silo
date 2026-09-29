@@ -292,7 +292,7 @@ it("confirms before removing a port from the Overview tab", async () => {
   expect(removeNetworkPort).toHaveBeenCalledWith(workspaceTarget(workspace), 3000)
 })
 
-it("confirms a delete in a dialog on the detail page and returns to the list", async () => {
+it("confirms a delete in a popover on the detail page and returns to the list", async () => {
   const source = localVmSource()
   // A stopped VM so Delete is allowed.
   const workspace = source.workspaces.find(item => item.machine.kind === "vm" && item.state !== "running")
@@ -306,10 +306,12 @@ it("confirms a delete in a dialog on the detail page and returns to the list", a
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
 
-  // The confirmation is a dialog with the retention warning and a destructive confirm button.
-  const dialog = screen.getByRole("dialog")
-  expect(within(dialog).getByText(/Persistent volumes will be retained/)).toBeVisible()
-  await user.click(within(dialog).getByRole("button", { name: `Delete ${workspace.machine.name}` }))
+  // The confirmation is a popover anchored to the menu button, not a dialog.
+  expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
+  expect(screen.queryByRole("dialog", { hidden: true })?.getAttribute("aria-modal")).not.toBe("true")
+  const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
+  expect(popover.getByText(/Persistent volumes are kept/)).toBeVisible()
+  await user.click(popover.getByRole("button", { name: "Delete" }))
 
   expect(onMachinesChange).toHaveBeenCalled()
   expect(await screen.findByRole("list", { name: "Configured sandboxes" })).toBeVisible()

@@ -25,10 +25,10 @@ describe("repository push notifications", () => {
   it("shows loading, then a success that stays and clears the finished operation", async () => {
     const { update, onDismiss } = setup([])
     update([{ ...base, status: "pushing" }])
-    expect(await within(document.body).findByText("Pushing 2 commits · silo")).toBeInTheDocument()
+    expect(await within(document.body).findByText("Pushing 2 commits")).toBeInTheDocument()
     update([{ ...base, status: "succeeded" }])
     expect(await within(document.body).findByText("Pushed 2 commits · silo")).toBeInTheDocument()
-    expect(within(document.body).queryByText("Pushing 2 commits · silo")).not.toBeInTheDocument()
+    expect(within(document.body).queryByText("Pushing 2 commits")).not.toBeInTheDocument()
     expect(onDismiss).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo")
   })
 

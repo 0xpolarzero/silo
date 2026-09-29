@@ -1,4 +1,5 @@
-import { ForkStateDialog } from "../components/fork-state-dialog"
+import { ForkPopover } from "../components/fork-popover"
+import { runCheckpointOperation, syncCheckpointProgress } from "../model/checkpoint-operation-toast"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
 import { SshAccessBadges } from "./ssh-access-panel"
 import { StatusFolderPicker } from "@/features/status-bar/status-folder-picker"
@@ -9,9 +10,8 @@ import { ConnectComputerForm } from "../components/remote-computers-settings"
 import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditing } from "./sandbox-detail-page"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
-import { useEffect, useEffectEvent, useRef, useState } from "react"
-import { toast } from "sonner"
-import { showActionFailure, showOperationFailure } from "@/lib/operation-toast"
+import { useEffect, useEffectEvent, useRef, useState, type ReactElement, type ReactNode } from "react"
+import { dismissOperationToast, showActionFailure, showOperationFailure, showOperationNotice, showOperationProgress } from "@/lib/operation-toast"
 
 import type { MenuAction } from "@/components/actions-menu"
 import type { BackupController } from "../model/backup-source"
@@ -23,7 +23,7 @@ import { Progress } from "@/components/ui/progress"
 import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { OperationQueueToast, WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
-import { emptyOperationQueue, waitingOperationForVm, cancelledActionLabel } from "@/features/application/model/operation-queue"
+import { emptyOperationQueue, waitingOperationForVm, waitingStatusText, cancelledActionLabel } from "@/features/application/model/operation-queue"
 import type {
   ApplicationActions,
   ApplicationSource,
@@ -37,6 +37,9 @@ import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/compo
 
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
+
+/** A lifecycle action shows a progress notification only if it is still running after this long. */
+const LIFECYCLE_TOAST_DELAY_MS = 800
 
 const attentionPriority: Record<SandboxIconState, number> = {
   error: 0,
@@ -219,6 +222,7 @@ export function OverviewPage({ active = true, readOnly = false,
   onNewSandboxRequestHandled,
   onExportSandbox,
   onImportSandbox,
+  importPopover,
   selectedSandboxId,
   sandboxTab,
   onOpenSandbox,
@@ -234,6 +238,8 @@ export function OverviewPage({ active = true, readOnly = false,
   onExportSandbox?: (sandboxName: string, checkpoint?: { id: string; name: string }) => void
   /** Open the import review dialog after picking an export file. */
   onImportSandbox?: () => void
+  /** Wraps the sandbox list's Add button so the import review popover anchors to it. */
+  importPopover?: (addButton: ReactNode) => ReactNode
   source: ApplicationSource
   actions: ApplicationActions
   backup?: BackupController
@@ -283,7 +289,18 @@ export function OverviewPage({ active = true, readOnly = false,
   const workspaces = new Map(visibleWorkspaces.map((workspace) => [workspace.machine.id, workspace]))
   const committedWorkspaces = new Map(source.workspaces.map((workspace) => [workspace.machine.id, workspace]))
   const machines = visibleWorkspaces.map(({ machine }) => machine)
-  const forkStateWorkspace = forkStateWorkspaceId ? workspaces.get(forkStateWorkspaceId) : undefined
+  /** Anchors the Fork popover to a sandbox's ⋯ menu (row or detail page). */
+  function wrapForkMenu(workspace: ApplicationWorkspace | undefined, menu: ReactElement): ReactElement {
+    if (!workspace || !actions.forkCheckpoint) return menu
+    return <ForkPopover
+      open={forkStateWorkspaceId === workspace.machine.id}
+      onOpenChange={open => { if (!open) setForkStateWorkspaceId(null) }}
+      anchor={menu}
+      sandboxName={workspace.machine.name}
+      disabled={configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale" || workspace.checkpointOperation?.status === "running"}
+      onFork={name => forkCurrentState(workspace, name)}
+    />
+  }
   const configurationOperation = source.sandboxConfigurationOperation
   const configurationLocked = readOnly || configurationOperation !== null
   const localMachines = machines.filter(machine => !workspaces.get(machine.id)?.computer)
@@ -376,7 +393,7 @@ export function OverviewPage({ active = true, readOnly = false,
       const name = workspace.machine.name
       const id = `lifecycle:${key}`
       if (workspace.lifecycleFailureCancelled) {
-        toast(cancelledActionLabel(action), { id, duration: 4000 })
+        showOperationNotice(id, cancelledActionLabel(action))
         continue
       }
       if (action === "dismiss-error") continue
@@ -384,33 +401,76 @@ export function OverviewPage({ active = true, readOnly = false,
       const target = workspaceTarget(workspace)
       const guarded = guardedLifecycle(workspace)
       const retry = readOnly ? undefined : () => { if (action === "start") guarded.startWorkspace(target); else if (action === "stop") guarded.stopWorkspace(target); else guarded.restartWorkspace(target) }
-      toast.dismiss(id)
+      dismissOperationToast(id)
       showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ?? undefined, retry })
     }
   })
   useEffect(() => { lifecycleToasts(source.workspaces) }, [source.workspaces])
 
-  // A finished fork is otherwise silent: the new sandbox is stopped and easy to miss. Auto-dismiss
-  // is fine since it also appears in the list; Open jumps to it, resolved fresh at click time.
-  function notifyForkCreated(name: string) {
-    toast.success("Fork created", {
-      description: `${name} is stopped. Start it when you’re ready.`,
-      duration: 6000,
-      action: <Button variant="outline" size="xs" onClick={() => {
+  // Checkpoint operations report through one progress notification each (see
+  // model/checkpoint-operation-toast). Both the list and the detail page render from here, so
+  // the backend stage refinement lives in this single effect. A finished fork is easy to miss
+  // (the new sandbox is stopped), so Open jumps to it, resolved fresh at click time.
+  useEffect(() => { syncCheckpointProgress(source.workspaces) }, [source.workspaces])
+
+  function forkOpenAction(name: string) {
+    return {
+      label: "Open",
+      onClick: () => {
         const match = workspacesRef.current.find(({ machine, computer }) => !computer && machine.name === name)
         if (match) openSandbox(match.machine.id)
-      }}>Open</Button>,
+      },
+    }
+  }
+
+  function forkCurrentState(workspace: ApplicationWorkspace, name: string) {
+    const target = workspaceTarget(workspace)
+    void runCheckpointOperation({
+      id: `checkpoint:${target}:fork`,
+      kind: "fork",
+      target,
+      title: `Creating fork ${name}`,
+      run: () => actions.forkCheckpoint!(target, null, name),
+      success: { title: "Fork created", description: `${name} is stopped. Start it when you’re ready.`, action: forkOpenAction(name) },
+      failureTitle: `Could not create fork ${name}`,
     })
   }
 
-  // A finished restore leaves the sandbox stopped, so confirm what happened and offer the
-  // guarded start (capacity and unavailable-operation notices) instead of a raw start.
-  function notifyCheckpointRestored(checkpoint: WorkspaceCheckpoint, workspace: ApplicationWorkspace, onStart: () => void) {
-    toast.success(`Restored “${checkpoint.name}”`, {
-      description: `${workspace.machine.name} is stopped. A recovery checkpoint was saved first.`,
-      action: <Button variant="outline" size="xs" onClick={onStart}>Start</Button>,
-    })
-  }
+  // Lifecycle Start/Stop/Restart: a progress notification appears only if the action takes
+  // longer than a moment (instant ones never flash) and is dismissed when it finishes; the row
+  // state already shows the outcome. Failures keep their own retryable notification.
+  const lifecycleProgress = useRef(new Map<string, { timer?: number; shown: boolean; startedAt: number }>())
+  const trackLifecycle = useEffectEvent((all: ApplicationWorkspace[]) => {
+    const tracked = lifecycleProgress.current
+    const live = new Set<string>()
+    for (const workspace of all) {
+      const action = workspace.lifecycleAction
+      if (!action || action === "dismiss-error") continue
+      const key = `${workspace.computer?.id ?? ""}:${workspace.machine.id}`
+      live.add(key)
+      const id = `lifecycle:${key}`
+      const name = workspace.machine.name
+      const title = action === "restart" ? `Restarting ${name}` : action === "stop" ? `Stopping ${name}` : `Starting ${name}`
+      const waiting = !workspace.computer ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, workspace.machine.id) : undefined
+      const step = waiting && source.operationQueue ? waitingStatusText(source.operationQueue, waiting) : action === "restart" ? "Restarting…" : action === "stop" ? "Stopping…" : "Starting…"
+      const existing = tracked.get(key)
+      const entry = existing ?? { shown: false, startedAt: Date.now() } as { timer?: number; shown: boolean; startedAt: number }
+      const show = () => showOperationProgress(id, { title, step, startedAt: entry.startedAt })
+      if (!existing) {
+        tracked.set(key, entry)
+        entry.timer = window.setTimeout(() => { entry.shown = true; entry.timer = undefined; show() }, LIFECYCLE_TOAST_DELAY_MS)
+      } else if (entry.shown) show()
+    }
+    for (const [key, entry] of tracked) {
+      if (live.has(key)) continue
+      if (entry.timer) window.clearTimeout(entry.timer)
+      if (entry.shown && !all.some(workspace => `${workspace.computer?.id ?? ""}:${workspace.machine.id}` === key && workspace.lifecycleFailure)) dismissOperationToast(`lifecycle:${key}`)
+      tracked.delete(key)
+    }
+  })
+  // Declared before the failure effect so a failed action's Retry toast replaces the dismissal.
+  useEffect(() => { trackLifecycle(source.workspaces) }, [source.workspaces, source.operationQueue])
+  useEffect(() => () => { for (const entry of lifecycleProgress.current.values()) if (entry.timer) window.clearTimeout(entry.timer) }, [])
 
   const folderWorkspace = folderWorkspaceId ? workspaces.get(folderWorkspaceId) : undefined
   if (folderWorkspace && workspaceAvailability(folderWorkspace, source).canOpen) {
@@ -432,7 +492,7 @@ export function OverviewPage({ active = true, readOnly = false,
     const menuActions: MenuAction[] = [
       ...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
       { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer && stale) || (state !== "running" && state !== "failed"), onSelect: () => guarded.restartWorkspace(target) },
-      ...(machine.kind === "vm" && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, onSelect: () => setForkStateWorkspaceId(machine.id) }] : []),
+      ...(machine.kind === "vm" && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, opensPopover: true, onSelect: () => setForkStateWorkspaceId(machine.id) }] : []),
       ...(machine.kind === "vm" && isLocal && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
     ]
     // Edit and Delete are appended and handled in place by the detail page; Duplicate hands
@@ -462,6 +522,7 @@ export function OverviewPage({ active = true, readOnly = false,
       canStart: availability.canStart && !readOnly,
       canStop: availability.canStop && !readOnly,
       menuActions,
+      wrapMenu: menu => wrapForkMenu(workspace, menu),
       onTerminal: () => actions.openTerminal(target),
       onEditor: () => setFolderWorkspaceId(machine.id),
       onStart: () => guarded.startWorkspace(target),
@@ -471,8 +532,8 @@ export function OverviewPage({ active = true, readOnly = false,
         : undefined,
       onCheckpointExport: exportSandbox ? (checkpoint: WorkspaceCheckpoint) => exportSandbox(machine.name, { id: checkpoint.id, name: checkpoint.name }) : undefined,
       checkpointExportDisabled: transferBusy || backup?.state.availability === "unavailable",
-      onCheckpointForked: notifyForkCreated,
-      onCheckpointRestored: (checkpoint) => notifyCheckpointRestored(checkpoint, workspace, () => guarded.startWorkspace(target)),
+      onCheckpointForkedAction: forkOpenAction,
+      onCheckpointRestoredAction: () => ({ label: "Start", onClick: () => guarded.startWorkspace(target) }),
     }
   }
 
@@ -502,6 +563,7 @@ export function OverviewPage({ active = true, readOnly = false,
               getComputerId={getMachineComputerId}
               onConnectComputer={actions.connectComputer ? () => setConnecting(true) : undefined}
               onImportSandbox={importSandbox}
+              importPopover={importSandbox ? importPopover : undefined}
               onCommitMachine={commitMachine}
               onDeleteMachine={deleteMachine}
               isMachineCreated={isMachineCreated}
@@ -567,11 +629,12 @@ export function OverviewPage({ active = true, readOnly = false,
                 return {
                   kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
                   badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
+                  wrapMenu: (menu: ReactElement) => wrapForkMenu(workspace, menu),
                   menuActions: [
                     ...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && stale), onSelect: () => { void actions.openDesktop!(workspace ? workspaceTarget(workspace) : machine.name) } }] : []),
                     { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && stale) || (state !== "running" && state !== "failed"), onSelect: () => guarded.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name) },
                     ...(machine.kind === "vm" && workspace ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
-                    ...(machine.kind === "vm" && workspace && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, onSelect: () => setForkStateWorkspaceId(machine.id) }] : []),
+                    ...(machine.kind === "vm" && workspace && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, opensPopover: true, onSelect: () => setForkStateWorkspaceId(machine.id) }] : []),
                     ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationOperation !== null || workspaceOperationBusy, onSelect: () => openSandbox(machine.id, "storage") }] : []),
                     ...(machine.kind === "vm" && workspace && !workspace.computer && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
                   ],
@@ -611,14 +674,6 @@ export function OverviewPage({ active = true, readOnly = false,
           </>
         )}
       </div>
-      {forkStateWorkspace && actions.forkCheckpoint && <ForkStateDialog
-        key={forkStateWorkspace.machine.id}
-        sandboxName={forkStateWorkspace.machine.name}
-        disabled={configurationLocked || Boolean(forkStateWorkspace.lifecycleAction) || Boolean(forkStateWorkspace.computer?.busy) || forkStateWorkspace.freshness === "stale" || forkStateWorkspace.checkpointOperation?.status === "running"}
-        progressStage={forkStateWorkspace.checkpointOperation?.status === "running" ? forkStateWorkspace.checkpointOperation.stage : undefined}
-        fork={async name => { await actions.forkCheckpoint!(workspaceTarget(forkStateWorkspace), null, name); notifyForkCreated(name) }}
-        onClose={() => setForkStateWorkspaceId(null)}
-      />}
       {pendingStart && source.resourceNotice?.kind === "start-memory" && <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[.07] p-3" role="status">
         <div className="flex gap-2"><TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600" aria-hidden="true" /><div><p className="text-xs font-medium">Starting {pendingStart} may slow this computer</p><p className="mt-1 text-[11px] text-muted-foreground">Silo found high memory pressure now. This VM can use up to {source.resourceNotice.memoryGiB} GB. Close memory-heavy apps, or start anyway.</p></div></div>
         <div className="mt-2 flex justify-end gap-1"><Button type="button" variant="ghost" size="xs" onClick={() => setPendingStart(null)}>Cancel</Button><Button type="button" variant="outline" size="xs" onClick={() => { actions.startWorkspace(pendingStart); setPendingStart(null) }}>Start anyway</Button></div>

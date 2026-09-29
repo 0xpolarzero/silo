@@ -1,5 +1,5 @@
 import { ActionsMenu, type MenuAction } from "@/components/actions-menu"
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactElement, type ReactNode } from "react"
 import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Trash2, X } from "lucide-react"
 
 import { InlineConfirmation } from "@/components/inline-confirmation"
@@ -17,6 +17,8 @@ import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-
 export interface MachineRowPresentation {
   expandedContent?: ReactNode
   menuActions?: MenuAction[]
+  /** Wraps the ⋯ menu, e.g. in a popover anchored to its button. */
+  wrapMenu?: (menu: ReactElement) => ReactElement
   kindBadge?: ReactNode
   badge?: ReactNode
   detail?: ReactNode
@@ -38,6 +40,8 @@ interface MachineListProps {
   onDeleteMachine?: (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => Promise<void>
   onConnectComputer?: () => void
   onImportSandbox?: () => void
+  /** Wraps the Add button so an import review popover can anchor to it. */
+  importPopover?: (addButton: ReactNode) => ReactNode
   onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
   getRowPresentation?: (machine: SetupMachineConfiguration) => MachineRowPresentation
   sortPriority?: (machine: SetupMachineConfiguration) => number
@@ -58,7 +62,7 @@ interface MachineListProps {
   validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
 }
 
-export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
+export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
   const {
     computerId, setComputerId,
     committing,
@@ -191,7 +195,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
         <ListHeader
           heading={<h3 id="machine-list-heading" className={listHeadingClassName}>Sandboxes</h3>}
           subtitle={summary ?? <>{machines.length} {machines.length === 1 ? "sandbox" : "sandboxes"} · {machines.length - remoteCount} on this computer · {remoteCount} remote</>}
-          actions={<Popover open={addOpen} onOpenChange={setAddOpen}>
+          actions={(importPopover ?? ((node: ReactNode) => node))(<Popover open={addOpen} onOpenChange={setAddOpen}>
             <PopoverTrigger asChild>
               <Button type="button" variant="outline" size="xs" aria-haspopup="menu" disabled={interactionDisabled} onClick={beginOperation}>
                 <Plus aria-hidden="true" data-icon="inline-start" /> Add
@@ -202,7 +206,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { if (onConnectComputer) { setAddOpen(false); onConnectComputer() } else { setAddOpen(false); startAdd("ssh") } }}>{onConnectComputer ? "Connect computer…" : "Connect a machine via SSH"}</button>
               {onImportSandbox && <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { setAddOpen(false); onImportSandbox() }}>Import sandbox…</button>}
             </PopoverContent>
-          </Popover>}
+          </Popover>)}
         />
 
         <SandboxList label="Configured sandboxes" className="max-h-full min-h-0" data-testid="machine-list">
@@ -260,7 +264,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       >
                         <GripVertical className="size-4" aria-hidden="true" />
                       </span>}
-                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu label={`More actions for ${machine.name}`} disabled={rowInteractionsDisabled} onClose={() => setPendingDelete(null)} items={[
+                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && (presentation.wrapMenu ?? ((menu: ReactElement) => menu))(<ActionsMenu label={`More actions for ${machine.name}`} disabled={rowInteractionsDisabled} onClose={() => setPendingDelete(null)} items={[
                         ...presentation.menuActions,
                         { label: "Edit", separatorBefore: presentation.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled, onSelect: () => startEdit(machine) },
                         { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: interactionDisabled, onSelect: () => startDuplicate(machine) },
@@ -271,7 +275,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         } }] : []),
                         ...(deleteArmed ? [{ label: "Cancel deletion", icon: X, accessibleLabel: `Cancel deletion of ${machine.name}`, onSelect: () => setPendingDelete(null) }] : []),
                         { icon: deleteArmed ? Check : Trash2, label: deleteArmed ? `Confirm deletion${computerName ? ` on ${computerName}` : ""}` : "Delete", accessibleLabel: deleteArmed ? `Confirm deletion of ${deletionName}` : `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled || runningVM, tooltip: deleteTooltip, keepOpen: true, onSelect: () => { void remove(machine) } },
-                      ]} />}</> : undefined}
+                      ]} />)}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
                         <SandboxAction label={`Edit ${machine.name}`} disabled={interactionDisabled} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -7,33 +7,38 @@ import { Toaster } from "@/components/ui/sonner"
 import { OverviewPage } from "./overview-page"
 import type { ApplicationWorkspace } from "../model/application-source"
 
-it("keeps current-state fork progress visible when launched from a sandbox menu", async () => {
+function confirmButton(name: string) { return within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name }) }
+
+it("closes the fork popover at once and continues current-state fork progress in a notification", async () => {
   let finishFork!: () => void
   const forkCheckpoint = vi.fn(() => new Promise<void>(resolve => { finishFork = resolve }))
   const actions = { forkCheckpoint } as unknown as ApplicationActions
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
   const user = userEvent.setup()
-  const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const view = render(<><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /><Toaster /></>)
 
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Fork ${workspace.machine.name}` }))
-  fireEvent.change(screen.getByRole("textbox", { name: "New sandbox name" }), { target: { value: "experiment" } })
+  fireEvent.change(await screen.findByRole("textbox", { name: "New sandbox name" }), { target: { value: "experiment" } })
   await user.click(screen.getByRole("button", { name: "Fork" }))
 
-  expect(forkCheckpoint).toHaveBeenCalledWith(workspace.machine.name, null, "experiment")
-  expect(screen.getByRole("progressbar", { name: "Fork progress" })).toBeVisible()
-  const dialog = within(screen.getByRole("dialog"))
-  expect(dialog.getByRole("status")).toHaveTextContent("Creating fork…")
-  expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled()
+  await waitFor(() => expect(forkCheckpoint).toHaveBeenCalledWith(workspace.machine.name, null, "experiment"))
+  // The popover closed immediately; progress lives in one notification.
+  expect(screen.queryByRole("textbox", { name: "New sandbox name" })).toBeNull()
+  expect(await screen.findByText("Creating fork experiment")).toBeVisible()
+  expect(screen.getByRole("progressbar", { name: "Starting…" })).toBeVisible()
 
   const progressing = structuredClone(source)
   const progressingWorkspace = progressing.workspaces.find(item => item.machine.id === workspace.machine.id)!
   progressingWorkspace.checkpointOperation = { kind: "fork", status: "running", stage: "copying-disk" }
-  view.rerender(<OverviewPage source={progressing} actions={actions} onMachinesChange={vi.fn()} />)
-  expect(dialog.getByRole("status")).toHaveTextContent("copying-disk")
+  view.rerender(<><OverviewPage source={progressing} actions={actions} onMachinesChange={vi.fn()} /><Toaster /></>)
+  expect(await screen.findByText("copying-disk", { selector: "[data-sonner-toast] span" })).toBeVisible()
+  expect(screen.getAllByText("Creating fork experiment")).toHaveLength(1)
 
-  finishFork()
+  await act(async () => { finishFork() })
+  expect(await screen.findByText("Fork created")).toBeVisible()
+  expect(screen.queryByText("Creating fork experiment")).toBeNull()
 })
 
 it("allows current-state Fork for a pending restored sandbox without starting it", async () => {
@@ -50,7 +55,7 @@ it("allows current-state Fork for a pending restored sandbox without starting it
 
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Fork ${workspace.machine.name}` }))
-  await user.type(screen.getByRole("textbox", { name: "New sandbox name" }), "pending-fork")
+  await user.type(await screen.findByRole("textbox", { name: "New sandbox name" }), "pending-fork")
   await user.click(screen.getByRole("button", { name: "Fork" }))
 
   expect(forkCheckpoint).toHaveBeenCalledWith(workspace.machine.name, null, "pending-fork")
@@ -88,13 +93,12 @@ it("opens the Checkpoints tab from the Overview menu and drives fork, restore, a
 
   await user.click(savedRow.getByRole("button", { name: "Checkpoint actions for Before deploy" }))
   await user.click(screen.getByRole("menuitem", { name: "Fork Before deploy" }))
-  const forkDialog = within(screen.getByRole("dialog", { name: "Fork from “Before deploy”" }))
-  await user.type(forkDialog.getByRole("textbox", { name: "New sandbox name" }), "experiment")
-  await user.click(forkDialog.getByRole("button", { name: "Fork" }))
+  await user.type(await screen.findByRole("textbox", { name: "New sandbox name" }), "experiment")
+  await user.click(screen.getByRole("button", { name: "Fork" }))
   await waitFor(() => expect(forkCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "checkpoint-1", "experiment"))
 
   await user.click(savedRow.getByRole("button", { name: "Restore" }))
-  await user.click(within(screen.getByRole("dialog", { name: "Restore “Before deploy”" })).getByRole("button", { name: "Restore" }))
+  await user.click(confirmButton("Restore"))
   await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "checkpoint-1"))
 
   await user.click(panel.getByRole("button", { name: "New checkpoint" }))

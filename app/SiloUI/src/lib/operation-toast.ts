@@ -1,4 +1,4 @@
-import { createElement, useEffect, useRef } from "react"
+import { createElement, useEffect, useRef, type ReactNode } from "react"
 import { toast } from "sonner"
 
 import { OperationToastBody, type OperationProgressOptions } from "@/components/operation-toast-body"
@@ -44,22 +44,42 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function showOperationLoading(id: string, title: string, description?: string) {
-  toast.loading(title, { id, description, duration: Infinity })
+/** A result-toast action: a label + handler, or a ready-made element such as a `<Button>`. */
+export type OperationAction = { label: string; onClick: () => void } | ReactNode
+
+/** Options shared by every finished-state notification. */
+export interface OperationResultOptions {
+  description?: ReactNode
+  action?: OperationAction
+  /** Called when the user closes the notification or it closes by itself. */
+  onDismiss?: () => void
 }
 
-export function showOperationSuccess(id: string, title: string, options: { description?: string; action?: { label: string; onClick: () => void } } = {}) {
-  toast.success(title, { id, description: options.description, duration: Infinity, closeButton: true, action: options.action })
+export function showOperationSuccess(id: string, title: string, options: OperationResultOptions = {}) {
+  toast.success(title, { id, description: options.description, duration: Infinity, closeButton: true, action: options.action, onDismiss: options.onDismiss, onAutoClose: options.onDismiss })
 }
 
-export function showOperationFailure(id: string, title: string, options: { description?: string; retry?: () => void } = {}) {
-  toast.error(title, {
+export function showOperationFailure(id: string, title: string, options: Omit<OperationResultOptions, "action"> & { retry?: () => void; action?: OperationAction; tone?: "error" | "warning" } = {}) {
+  const notify = options.tone === "warning" ? toast.warning : toast.error
+  notify(title, {
     id,
     description: options.description,
     duration: Infinity,
     closeButton: true,
-    action: options.retry ? { label: "Retry", onClick: options.retry } : undefined,
+    action: options.action ?? (options.retry ? { label: "Retry", onClick: options.retry } : undefined),
+    onDismiss: options.onDismiss,
+    onAutoClose: options.onDismiss,
   })
+}
+
+/** Close a notification (e.g. when the state it reported has gone away). */
+export function dismissOperationToast(id: string) {
+  toast.dismiss(id)
+}
+
+/** A neutral, short-lived notice for an outcome that is neither success nor failure (e.g. cancelled). */
+export function showOperationNotice(id: string, title: string, options: { description?: ReactNode; onDismiss?: () => void; duration?: number } = {}) {
+  toast(title, { id, description: options.description, duration: options.duration ?? 4000, closeButton: true, onDismiss: options.onDismiss, onAutoClose: options.onDismiss })
 }
 
 /**
@@ -76,8 +96,8 @@ export function showOperationProgress(id: string, options: OperationProgressOpti
 export type OperationProgressState =
   | { status: "idle" }
   | ({ status: "running" } & OperationProgressOptions)
-  | { status: "success"; title: string; description?: string; action?: { label: string; onClick: () => void } }
-  | { status: "failure"; title: string; description?: string; retry?: () => void }
+  | ({ status: "success"; title: string } & OperationResultOptions)
+  | { status: "failure"; title: string; description?: ReactNode; retry?: () => void; onDismiss?: () => void }
 
 /**
  * Maps an operation state to progress/success/failure toasts under `id`. A state that is
@@ -95,9 +115,9 @@ export function useOperationProgressToast(id: string, state: OperationProgressSt
     } else if (before === null) {
       return
     } else if (state.status === "success" && before !== "success") {
-      showOperationSuccess(id, state.title, { description: state.description, action: state.action })
+      showOperationSuccess(id, state.title, { description: state.description, action: state.action, onDismiss: state.onDismiss })
     } else if (state.status === "failure" && before !== "failure") {
-      showOperationFailure(id, state.title, { description: state.description, retry: state.retry })
+      showOperationFailure(id, state.title, { description: state.description, retry: state.retry, onDismiss: state.onDismiss })
     } else if (state.status === "idle" && before === "running") {
       toast.dismiss(id)
     }
@@ -106,7 +126,7 @@ export function useOperationProgressToast(id: string, state: OperationProgressSt
 
 /** Run a user-initiated action with the standard loading → success/failure notifications. */
 export async function runWithOperationToast<T>(id: string, copy: OperationToastCopy, action: () => Promise<T>, options: OperationToastOptions = {}): Promise<T | undefined> {
-  showOperationLoading(id, copy.loading, copy.description)
+  showOperationProgress(id, { title: copy.loading, step: copy.description, progress: null })
   try {
     const result = await action()
     showOperationSuccess(id, copy.success, { description: copy.description, action: options.successAction })

@@ -26,6 +26,8 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+function confirmButton(name: string) { return within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name }) }
+
 it("shows a Restore button and a menu with Fork and Export on a local checkpoint", async () => {
   const onExport = vi.fn()
   const user = userEvent.setup()
@@ -61,18 +63,18 @@ it("disables Export while a transfer is running", async () => {
   expect(screen.getByRole("menuitem", { name: "Export Before refactor" })).toHaveAttribute("aria-disabled", "true")
 })
 
-it("confirms a restore in a dialog before restoring", async () => {
+it("confirms a restore in a popover before restoring", async () => {
   const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ restoreCheckpoint } as unknown as ApplicationActions} disabled={false} />)
   await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Restore" }))
-  const dialog = within(screen.getByRole("dialog", { name: "Restore “Before refactor”" }))
-  expect(dialog.getByText(/saves a recovery checkpoint first/i)).toBeVisible()
+  expect(await screen.findByText("Restore “Before refactor”?")).toBeVisible()
+  expect(screen.getByText(/saves a recovery checkpoint first/i)).toBeVisible()
   expect(restoreCheckpoint).not.toHaveBeenCalled()
-  await user.click(dialog.getByRole("button", { name: "Cancel" }))
-  expect(screen.queryByRole("dialog")).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Cancel" }))
+  expect(screen.queryByText("Restore “Before refactor”?")).toBeNull()
   await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Restore" }))
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Restore" }))
+  await user.click(confirmButton("Restore"))
   await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledWith("dev", "point-1"))
 })
 
@@ -82,9 +84,9 @@ it("names a stopped fork from the selected checkpoint", async () => {
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} />)
   await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   await user.click(screen.getByRole("menuitem", { name: "Fork Before refactor" }))
-  const dialog = within(screen.getByRole("dialog", { name: "Fork from “Before refactor”" }))
-  await user.type(dialog.getByRole("textbox", { name: "New sandbox name" }), "experiment")
-  await user.click(dialog.getByRole("button", { name: "Fork" }))
+  expect(await screen.findByText("Fork from “Before refactor”")).toBeVisible()
+  await user.type(await screen.findByRole("textbox", { name: "New sandbox name" }), "experiment")
+  await user.click(screen.getByRole("button", { name: "Fork" }))
   await waitFor(() => expect(forkCheckpoint).toHaveBeenCalledWith("dev", "point-1", "experiment"))
 })
 
@@ -146,4 +148,32 @@ it("shows a loading notification while a create is pending and marks the region 
   task.resolve()
   expect(await screen.findByText("Checkpoint created")).toBeInTheDocument()
   await waitFor(() => expect(screen.getByRole("region", { name: "Checkpoints for dev" })).not.toHaveAttribute("aria-busy"))
+})
+
+it("reports a restore as one progress notification that turns into the result, with no dialog", async () => {
+  const task = deferred()
+  const restoreCheckpoint = vi.fn(() => task.promise)
+  const user = userEvent.setup()
+  render(withToaster(<CheckpointPanel workspace={workspace} target="dev" actions={{ restoreCheckpoint } as unknown as ApplicationActions} disabled={false} restoredAction={() => ({ label: "Start", onClick: vi.fn() })} />))
+  await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Restore" }))
+  await user.click(within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Restore" }))
+  expect(await screen.findByText("Restoring “Before refactor”")).toBeVisible()
+  expect(screen.getByRole("list", { name: "Steps" })).toHaveTextContent("Save recovery checkpoint")
+  expect(screen.queryByRole("dialog")).toBeNull()
+  task.resolve()
+  expect(await screen.findByText("Restored “Before refactor”")).toBeVisible()
+  expect(screen.queryByText("Restoring “Before refactor”")).toBeNull()
+  expect(screen.getByRole("button", { name: "Start" })).toBeVisible()
+})
+
+it("keeps a failed restore in its notification with Retry", async () => {
+  const restoreCheckpoint = vi.fn().mockRejectedValueOnce(new Error("Disk is busy")).mockResolvedValue(undefined)
+  const user = userEvent.setup()
+  render(withToaster(<CheckpointPanel workspace={workspace} target="dev" actions={{ restoreCheckpoint } as unknown as ApplicationActions} disabled={false} />))
+  await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Restore" }))
+  await user.click(within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Restore" }))
+  expect(await screen.findByText("Disk is busy")).toBeVisible()
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(await screen.findByText("Restored “Before refactor”")).toBeInTheDocument()
+  expect(restoreCheckpoint).toHaveBeenCalledTimes(2)
 })

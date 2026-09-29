@@ -1,8 +1,8 @@
 import { ChevronRight, Code, CopyPlus, Cpu, GitBranch, Globe, KeyRound, Pencil, Play, Plus, Server, Square, Terminal, Trash2 } from "lucide-react"
-import { useId, useState, type FormEvent, type MouseEvent, type ReactNode } from "react"
-import { Dialog } from "radix-ui"
+import { useId, useState, type MouseEvent, type ReactElement, type ReactNode } from "react"
 
 import { ActionsMenu, type MenuAction } from "@/components/actions-menu"
+import { ConfirmPopover } from "@/components/confirm-popover"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
@@ -53,6 +53,8 @@ export interface SandboxDetailControls {
   canStart: boolean
   canStop: boolean
   menuActions: MenuAction[]
+  /** Wraps the ⋯ menu, e.g. in a popover anchored to its button. */
+  wrapMenu?: (menu: ReactElement) => ReactElement
   onTerminal: () => void
   onEditor: () => void
   onStart: () => void
@@ -68,8 +70,8 @@ export interface SandboxDetailControls {
   onCheckpointExport?: (checkpoint: WorkspaceCheckpoint) => void
   checkpointExportDisabled: boolean
   // Toast a created fork (with Open) and a restored checkpoint (with Start).
-  onCheckpointForked?: (name: string) => void
-  onCheckpointRestored?: (checkpoint: WorkspaceCheckpoint) => void
+  onCheckpointForkedAction?: (name: string) => { label: string; onClick: () => void }
+  onCheckpointRestoredAction?: (checkpoint: WorkspaceCheckpoint) => { label: string; onClick: () => void }
 }
 
 const Sep = () => <span aria-hidden="true" className="mx-1">·</span>
@@ -349,7 +351,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const editMenuActions: MenuAction[] = editingContext ? [
     { label: "Edit", separatorBefore: controls.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: controls.configurationLocked, onSelect: () => editing.startEdit(machine) },
     { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: controls.configurationLocked || !controls.onDuplicate, onSelect: () => controls.onDuplicate?.() },
-    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), onSelect: () => setDeleting(true) },
+    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), opensPopover: true, onSelect: () => setDeleting(true) },
   ] : []
   const menuActions = [...controls.menuActions, ...editMenuActions]
 
@@ -370,6 +372,8 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     { value: "access", label: "SSH", visible: showAccess },
   ]
   const visibleTabs = tabs.filter(tab => tab.visible)
+  const menu = <ActionsMenu label={`More actions for ${machine.name}`} items={menuActions} />
+  const menuWithFork = controls.wrapMenu ? controls.wrapMenu(menu) : menu
   const activeTab = visibleTabs.some(tab => tab.value === controls.activeTab) ? controls.activeTab : "overview"
 
   const startStopDisabled = controls.readOnly || controls.configurationLocked || controls.workspaceOperationBusy
@@ -389,7 +393,26 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           {canStop
             ? <Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={startStopDisabled || !controls.canStop} onClick={controls.onStop}><Square aria-hidden="true" data-icon="inline-start" />Stop</Button>
             : <Button type="button" variant="outline" size="xs" aria-label={`Start ${machine.name}`} disabled={startStopDisabled || !controls.canStart} onClick={controls.onStart}><Play aria-hidden="true" data-icon="inline-start" />Start</Button>}
-          {menuActions.length > 0 && <ActionsMenu label={`More actions for ${machine.name}`} items={menuActions} />}
+          {menuActions.length > 0 && (editingContext ?
+            <ConfirmPopover
+              open={deleting}
+              onOpenChange={setDeleting}
+              anchor={menuWithFork}
+              align="end"
+              tone="destructive"
+              title={`Delete ${workspace.computer ? `${machine.name} on ${workspace.computer.name}` : machine.name}?`}
+              description={`Removing ${machine.name} from Silo. Persistent volumes are kept.`}
+              confirmLabel="Delete"
+              onConfirm={async () => {
+                try {
+                  await editing.deleteMachineNow(machine)
+                  controls.onBack()
+                } catch (cause) {
+                  showActionFailure(`Couldn't delete ${machine.name}`, cause)
+                }
+              }}
+            />
+            : menuWithFork)}
         </div>}
       />
 
@@ -428,7 +451,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           <div className="pt-4">
             <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview"} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
-              <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} onForked={controls.onCheckpointForked} onRestored={controls.onCheckpointRestored} />
+              <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
             </TabsContent>}
             {showStorage && actions.readWorkspaceStorage && <TabsContent value="storage">
               <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />
@@ -440,53 +463,6 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         </ScrollArea>
       </Tabs>
       )}
-      {deleting && editingContext && <SandboxDeleteDialog
-        name={machine.name}
-        computerName={workspace.computer?.name}
-        confirm={() => Promise.resolve(editing.deleteMachineNow(machine))}
-        onDeleted={() => { setDeleting(false); controls.onBack() }}
-        onClose={() => setDeleting(false)}
-      />}
     </div>
   </TooltipProvider>
-}
-
-function SandboxDeleteDialog({ name, computerName, confirm, onDeleted, onClose }: {
-  name: string
-  computerName?: string
-  confirm: () => Promise<void>
-  onDeleted: () => void
-  onClose: () => void
-}) {
-  const [busy, setBusy] = useState(false)
-  const label = computerName ? `${name} on ${computerName}` : name
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (busy) return
-    setBusy(true)
-    try {
-      await confirm()
-      onDeleted()
-    } catch (cause) {
-      showActionFailure(`Couldn't delete ${name}`, cause)
-      setBusy(false)
-    }
-  }
-
-  return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose() }}>
-    <Dialog.Portal>
-      <Dialog.Overlay className="fixed inset-0 z-50 bg-black/20" />
-      <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-xl outline-none">
-        <Dialog.Title className="text-sm font-medium">Delete {label}?</Dialog.Title>
-        <Dialog.Description className="mt-1 text-xs text-muted-foreground">Removing {name} from Silo. Persistent volumes will be retained.</Dialog.Description>
-        <form className="mt-3 grid gap-2" onSubmit={submit}>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={onClose}>Cancel</Button>
-            <Button type="submit" variant="destructive" size="sm" disabled={busy}>{busy ? "Deleting…" : `Delete ${name}`}</Button>
-          </div>
-        </form>
-      </Dialog.Content>
-    </Dialog.Portal>
-  </Dialog.Root>
 }

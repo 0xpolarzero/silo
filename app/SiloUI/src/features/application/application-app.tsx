@@ -230,7 +230,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const canCreateSandbox = sandboxConfigurationOperation === null
   const canImport = !backupBusy
   const canCheckUpdates = Boolean(updates && !updates.pending && !["checking", "downloading", "installing"].includes(updates.snapshot?.phase ?? ""))
-  const openImport = () => { void transfer.beginImport() }
+  // The review popover anchors to the sandbox list's Add button, so show the list first.
+  const openImport = () => { navigation.selectWorkspaceSection("overview"); navigation.closeSandbox(); void transfer.beginImport() }
   const nativeMenu = useAppMenu({ ready: true, busy: installingUpdate,
     canGoBack: navigation.canGoBack, canGoForward: navigation.canGoForward,
     canCreateSandbox, canImport, canCheckUpdates, sidebarCollapsed,
@@ -286,7 +287,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} onExportSandbox={transfer.exportSandbox} onImportSandbox={openImport} backup={backup} source={applicationSource}
+          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} onExportSandbox={transfer.exportSandbox} onImportSandbox={openImport} importPopover={transfer.importPopover} backup={backup} source={applicationSource}
             selectedSandboxId={navigation.workspace ? resolveSandboxId(navigation.workspace) : null}
             sandboxTab={navigation.sandboxTab}
             onOpenSandbox={(id, tab) => navigation.openSandbox(id, tab)}
@@ -338,7 +339,6 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <div hidden={settingsSection !== "computers"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><RemoteComputersSettings source={source} actions={actions} /></div>
         <div hidden={settingsSection !== "notifications"}><NotificationsPage /></div>
       </section>
-      {transfer.dialogs}
     </ApplicationShell>
   )
 }

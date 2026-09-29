@@ -1,12 +1,11 @@
 import { useEffect, useRef } from "react"
-import { toast } from "sonner"
 import { CircleAlert, CircleCheck, Loader2, RotateCw } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { commitLabel } from "@/features/application/model/repository-push"
 import type { RepositoryPushOperation } from "@/features/application/model/application-source"
-import { showOperationFailure, showOperationLoading, showOperationSuccess } from "@/lib/operation-toast"
+import { dismissOperationToast, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 
 const pushToastId = (operation: RepositoryPushOperation) => `repository-push:${operation.workspace}:${operation.repositoryPath}`
 const repositoryName = (path: string) => path.split("/").filter(Boolean).at(-1) ?? path
@@ -34,7 +33,7 @@ export function useRepositoryPushToasts(
       if (before === operation.status) continue
       const name = repositoryName(operation.repositoryPath)
       if (operation.status === "pushing") {
-        showOperationLoading(id, `Pushing ${commitLabel(operation.commitCount)} · ${name}`, operation.message)
+        showOperationProgress(id, { title: `Pushing ${commitLabel(operation.commitCount)}`, step: operation.message ? `${name} · ${operation.message}` : name })
       } else if (operation.status === "succeeded") {
         // Nothing stays inline for a finished push, so clear it; only announce one that finished while watching.
         if (!initial) showOperationSuccess(id, `Pushed ${commitLabel(operation.commitCount)} · ${name}`)
@@ -47,10 +46,10 @@ export function useRepositoryPushToasts(
           retry: () => callbacks.current.onPush(operation.workspace, operation.repositoryPath, operation.commitCount),
         })
       } else {
-        toast.dismiss(id)
+        dismissOperationToast(id)
       }
     }
-    for (const [id, status] of previous) if (status === "pushing" && !next.has(id)) toast.dismiss(id)
+    for (const [id, status] of previous) if (status === "pushing" && !next.has(id)) dismissOperationToast(id)
     seen.current = next
   }, [operations])
 }
