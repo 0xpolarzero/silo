@@ -9,6 +9,7 @@ import { ConnectComputerForm } from "../components/remote-computers-settings"
 import { SandboxDetailPage, type SandboxDetailControls } from "./sandbox-detail-page"
 import { CircleAlert, Code, CopyPlus, Download, GitFork, HardDrive, History, Loader2, Monitor, Pencil, Play, RotateCw, Square, Terminal, Trash2, TriangleAlert } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState } from "react"
+import { toast } from "sonner"
 
 import type { MenuAction } from "@/components/actions-menu"
 import type { BackupController } from "../model/backup-source"
@@ -269,6 +270,10 @@ export function OverviewPage({ active = true, readOnly = false,
   const exportSandbox = !readOnly && backup && onExportSandbox ? onExportSandbox : undefined
   const importSandbox = !readOnly && backup && onImportSandbox ? onImportSandbox : undefined
   const visibleWorkspaces = displayWorkspaces(source)
+  // Resolved lazily when a "Fork created" toast's Open button is clicked, so it finds the
+  // newly forked sandbox once the backend snapshot includes it rather than at toast time.
+  const workspacesRef = useRef(visibleWorkspaces)
+  useEffect(() => { workspacesRef.current = visibleWorkspaces })
   const workspaces = new Map(visibleWorkspaces.map((workspace) => [workspace.machine.id, workspace]))
   const committedWorkspaces = new Map(source.workspaces.map((workspace) => [workspace.machine.id, workspace]))
   const machines = visibleWorkspaces.map(({ machine }) => machine)
@@ -307,6 +312,28 @@ export function OverviewPage({ active = true, readOnly = false,
       stopWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
       restartWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
     }
+  }
+
+  // A finished fork is otherwise silent: the new sandbox is stopped and easy to miss. Auto-dismiss
+  // is fine since it also appears in the list; Open jumps to it, resolved fresh at click time.
+  function notifyForkCreated(name: string) {
+    toast.success("Fork created", {
+      description: `${name} is stopped. Start it when you’re ready.`,
+      duration: 6000,
+      action: <Button variant="outline" size="xs" onClick={() => {
+        const match = workspacesRef.current.find(({ machine, computer }) => !computer && machine.name === name)
+        if (match) openSandbox(match.machine.id)
+      }}>Open</Button>,
+    })
+  }
+
+  // A finished restore leaves the sandbox stopped, so confirm what happened and offer the
+  // guarded start (capacity and unavailable-operation notices) instead of a raw start.
+  function notifyCheckpointRestored(checkpoint: WorkspaceCheckpoint, workspace: ApplicationWorkspace, onStart: () => void) {
+    toast.success(`Restored “${checkpoint.name}”`, {
+      description: `${workspace.machine.name} is stopped. A recovery checkpoint was saved first.`,
+      action: <Button variant="outline" size="xs" onClick={onStart}>Start</Button>,
+    })
   }
 
   const folderWorkspace = folderWorkspaceId ? workspaces.get(folderWorkspaceId) : undefined
@@ -356,6 +383,8 @@ export function OverviewPage({ active = true, readOnly = false,
         : undefined,
       onCheckpointExport: exportSandbox ? (checkpoint: WorkspaceCheckpoint) => exportSandbox(machine.name, { id: checkpoint.id, name: checkpoint.name }) : undefined,
       checkpointExportDisabled: transferBusy || backup?.state.availability === "unavailable",
+      onCheckpointForked: notifyForkCreated,
+      onCheckpointRestored: (checkpoint) => notifyCheckpointRestored(checkpoint, workspace, () => guarded.startWorkspace(target)),
     }
   }
 
@@ -544,7 +573,7 @@ export function OverviewPage({ active = true, readOnly = false,
         sandboxName={forkStateWorkspace.machine.name}
         disabled={configurationLocked || Boolean(forkStateWorkspace.lifecycleAction) || Boolean(forkStateWorkspace.computer?.busy) || forkStateWorkspace.freshness === "stale" || forkStateWorkspace.checkpointOperation?.status === "running"}
         progressStage={forkStateWorkspace.checkpointOperation?.status === "running" ? forkStateWorkspace.checkpointOperation.stage : undefined}
-        fork={name => actions.forkCheckpoint!(workspaceTarget(forkStateWorkspace), null, name)}
+        fork={async name => { await actions.forkCheckpoint!(workspaceTarget(forkStateWorkspace), null, name); notifyForkCreated(name) }}
         onClose={() => setForkStateWorkspaceId(null)}
       />}
       {pendingStart && source.resourceNotice?.kind === "start-memory" && <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[.07] p-3" role="status">

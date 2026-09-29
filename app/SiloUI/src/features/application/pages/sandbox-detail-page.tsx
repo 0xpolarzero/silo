@@ -38,6 +38,9 @@ export interface SandboxDetailControls {
   // Export a checkpoint's disks; progress is shown as a background toast.
   onCheckpointExport?: (checkpoint: WorkspaceCheckpoint) => void
   checkpointExportDisabled: boolean
+  // Toast a created fork (with Open) and a restored checkpoint (with Start).
+  onCheckpointForked?: (name: string) => void
+  onCheckpointRestored?: (checkpoint: WorkspaceCheckpoint) => void
 }
 
 function StatusLine({ workspace, source, readOnly, onCancel }: { workspace: ApplicationWorkspace; source: ApplicationSource; readOnly: boolean; onCancel?: ApplicationActions["cancelOperation"] }) {
@@ -177,7 +180,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           <div className="py-4">
             <TabsContent value="overview"><OverviewTab workspace={workspace} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
-              <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} />
+              <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} onForked={controls.onCheckpointForked} onRestored={controls.onCheckpointRestored} />
             </TabsContent>}
             {showStorage && actions.readWorkspaceStorage && <TabsContent value="storage">
               <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />

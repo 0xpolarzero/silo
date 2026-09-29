@@ -21,13 +21,17 @@ function checkpointTag(checkpoint: WorkspaceCheckpoint) {
   return checkpoint.scope === "full" ? "Includes memory" : "Disks only"
 }
 
-export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false }: {
+export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false, onForked, onRestored }: {
   workspace: ApplicationWorkspace
   target: string
   actions: ApplicationActions
   disabled: boolean
   onExport?: (checkpoint: WorkspaceCheckpoint) => void
   exportDisabled?: boolean
+  /** Called with the new sandbox name after a fork resolves, so the caller can toast it. */
+  onForked?: (name: string) => void
+  /** Called with the restored checkpoint after a restore resolves, so the caller can toast it. */
+  onRestored?: (checkpoint: WorkspaceCheckpoint) => void
 }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [name, setName] = useState(suggestedName)
@@ -66,6 +70,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
     try {
       await actions.restoreCheckpoint(target, checkpoint.id)
       setRestoreCheckpoint(null)
+      onRestored?.(checkpoint)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -142,7 +147,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
         description="Creates a new stopped sandbox from this checkpoint. Select Start when ready."
         disabled={disabled || running}
         progressStage={running ? operation?.stage : undefined}
-        fork={newName => actions.forkCheckpoint!(target, forkCheckpoint.id, newName)}
+        fork={async newName => { await actions.forkCheckpoint!(target, forkCheckpoint.id, newName); onForked?.(newName) }}
         onClose={() => setForkCheckpoint(null)}
       />}
 
