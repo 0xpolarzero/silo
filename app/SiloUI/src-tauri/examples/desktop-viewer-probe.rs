@@ -22,6 +22,9 @@ use tauri::{
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Connection {
+    /// Unix socket of an `ssh -L <socket>:127.0.0.1:<port>` forward (G-04).
+    socket: PathBuf,
+    /// The guest's desktop port.
     port: u16,
     username: String,
     password: String,
@@ -38,7 +41,11 @@ fn stage(log: &ProbeLog, message: &str) {
 fn read_connection(path: PathBuf) -> Result<Connection, &'static str> {
     let bytes = fs::read(path).map_err(|_| "could not read private connection JSON")?;
     let input: Connection = serde_json::from_slice(&bytes).map_err(|_| "invalid private connection JSON")?;
-    if input.port == 0 || input.username.is_empty() || input.password.is_empty() {
+    if input.port == 0
+        || !input.socket.is_absolute()
+        || input.username.is_empty()
+        || input.password.is_empty()
+    {
         return Err("invalid connection fields");
     }
     Ok(input)
@@ -187,15 +194,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log = Arc::new(Mutex::new(log_options.open(log_path)?));
     let frame_path = PathBuf::from(frame_path);
     let input = read_connection(PathBuf::from(input_path))?;
-    let upstream_port = input.port;
+    let upstream = input.socket.display().to_string();
     stage(&log, "starting loopback proxy");
-    let proxy = desktop_proxy::Proxy::start(input.port, &input.username, &input.password)
+    let proxy = desktop_proxy::Proxy::start(input.socket.clone(), input.port, &input.username, &input.password)
         .map_err(|error| {
             stage(&log, &format!("proxy startup failed ({error})"));
             error
         })?;
     drop(input);
-    stage(&log, &format!("proxy ready on 127.0.0.1:{}; SSH upstream is 127.0.0.1:{upstream_port}", proxy.port));
+    stage(&log, &format!("proxy ready on 127.0.0.1:{}; SSH upstream is {upstream}", proxy.port));
     let cleanup = Arc::new(Mutex::new(Some(proxy)));
     let cleanup_for_setup = cleanup.clone();
     let cleanup_on_close = cleanup.clone();

@@ -3,8 +3,9 @@ use crate::{desktop_proxy::Proxy, editor, remote, remote_access, runtime};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    net::{TcpListener, TcpStream},
-    path::Path,
+    fs,
+    os::unix::{fs::{FileTypeExt, MetadataExt}, net::UnixStream},
+    path::{Path, PathBuf},
     process::{Child, Stdio},
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
@@ -14,11 +15,22 @@ use tauri::{
     WebviewWindowBuilder, Window,
 };
 
-struct Tunnel(Child);
+/// The ssh forward and the private directory holding its Unix socket (G-04).
+struct Tunnel {
+    child: Child,
+    /// Removed after the child is reaped (fields drop after `drop`).
+    _directory: Option<tempfile::TempDir>,
+}
+impl Tunnel {
+    #[cfg(test)]
+    fn new(child: Child) -> Self {
+        Self { child, _directory: None }
+    }
+}
 impl Drop for Tunnel {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 struct Viewer {
@@ -45,7 +57,7 @@ impl Viewer {
             && self
                 .tunnel
                 .as_mut()
-                .is_some_and(|tunnel| matches!(tunnel.0.try_wait(), Ok(None)))
+                .is_some_and(|tunnel| matches!(tunnel.child.try_wait(), Ok(None)))
     }
 }
 /// What `desktop_viewer_attach` must do once the registry lock is released.
@@ -153,15 +165,68 @@ pub(crate) fn local_connection(app: &AppHandle, workspace: &str) -> Result<Value
     crate::desktop::connection_local(app, workspace)
 }
 
-fn forward_command(config: &Path, alias: &str, local_port: u16, guest_port: u16) -> std::process::Command {
+/// `sun_path` holds 104 bytes on macOS and 108 on Linux, including the NUL.
+const SOCKET_PATH_MAX: usize = 103;
+
+/// Forward the guest listener to a Unix socket (G-04). Unlike a loopback TCP
+/// port, the socket sits in a private directory: no other local process can
+/// connect to the guest through it or bind it first to receive the viewer's
+/// credentials.
+fn forward_command(
+    config: &Path,
+    alias: &str,
+    socket: &Path,
+    guest_port: u16,
+) -> Result<std::process::Command, String> {
+    let socket = socket
+        .to_str()
+        // ssh splits -L on ':'; sun_path bounds the length.
+        .filter(|socket| !socket.contains(':') && socket.len() <= SOCKET_PATH_MAX)
+        .ok_or("Your home folder's path is too long for a desktop connection.")?;
     let mut command = std::process::Command::new("/usr/bin/ssh");
     command
         .arg("-F")
         .arg(config)
-        .args(["-N", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=15", "-L"])
-        .arg(format!("127.0.0.1:{local_port}:127.0.0.1:{guest_port}"))
+        .args([
+            "-N",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ConnectTimeout=15",
+            "-o",
+            "StreamLocalBindUnlink=yes",
+            "-o",
+            "StreamLocalBindMask=0177",
+            "-L",
+        ])
+        .arg(format!("{socket}:127.0.0.1:{guest_port}"))
         .arg(alias);
-    command
+    Ok(command)
+}
+
+/// A fresh 0700 directory inside Silo's private `~/.silo`, short enough for
+/// `sun_path` whatever the workspace or computer identifiers are.
+fn socket_directory(root: &Path) -> Result<tempfile::TempDir, String> {
+    use std::os::unix::fs::PermissionsExt;
+    runtime::prepare_private_directory(root).map_err(|error| error.to_string())?;
+    tempfile::Builder::new()
+        .prefix("desktop-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(root)
+        .map_err(|_| "Could not prepare the desktop connection.".into())
+}
+
+/// True once the tunnel's socket accepts connections. Anything at that path
+/// other than a socket owned by this account is refused, never connected to.
+fn socket_ready(path: &Path, uid: u32) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("Could not check the desktop connection.".into()),
+        Ok(metadata) if !metadata.file_type().is_socket() || metadata.uid() != uid => {
+            Err("The desktop connection is not private. Reconnect the desktop.".into())
+        }
+        Ok(_) => Ok(UnixStream::connect(path).is_ok()),
+    }
 }
 
 fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), String> {
@@ -184,33 +249,26 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
         let directory = paths.home.join("ssh/desktop-viewer").join(workspace);
         editor::prepare_private_transport(&paths, workspace, &directory)?
     };
-    let reservation = TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|_| "Could not reserve desktop connection.")?;
-    let local = reservation
-        .local_addr()
-        .map_err(|_| "Could not read desktop connection.")?
-        .port();
-    let mut command = forward_command(&config, &alias, local, guest);
-    drop(reservation);
-    let mut tunnel = Tunnel(
-        command
+    let home = app.path().home_dir().map_err(|_| "Could not prepare the desktop connection.")?;
+    let directory = socket_directory(&home.join(".silo"))?;
+    let socket: PathBuf = directory.path().join("desktop.sock");
+    let mut command = forward_command(&config, &alias, &socket, guest)?;
+    let mut tunnel = Tunnel {
+        child: command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| "Could not connect to the desktop.")?,
-    );
+        _directory: Some(directory),
+    };
+    let uid = unsafe { libc::geteuid() };
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        if tunnel.0.try_wait().map_err(|_| "Desktop tunnel failed.")?.is_some() {
+        if tunnel.child.try_wait().map_err(|_| "Desktop tunnel failed.")?.is_some() {
             return Err("Desktop tunnel closed. Check the VM connection.".into());
         }
-        if TcpStream::connect_timeout(
-            &format!("127.0.0.1:{local}").parse().unwrap(),
-            Duration::from_millis(150),
-        )
-        .is_ok()
-        {
+        if socket_ready(&socket, uid)? {
             break;
         }
         if Instant::now() >= deadline {
@@ -224,7 +282,7 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let password = connection["password"]
         .as_str()
         .ok_or("Missing desktop credentials.")?;
-    let proxy = Proxy::start(local, username, password)?;
+    let proxy = Proxy::start(socket, guest, username, password)?;
     Ok((proxy, Some(tunnel)))
 }
 #[tauri::command]
@@ -590,13 +648,14 @@ mod transport_tests {
     use super::*;
 
     #[test]
-    fn desktop_forward_uses_pinned_ssh_config_and_loopback_only() {
+    fn desktop_forward_uses_pinned_ssh_config_and_a_private_socket() {
         let command = forward_command(
             Path::new("/tmp/silo-private-ssh.conf"),
             "silo-remote-host-vm",
-            42123,
+            Path::new("/home/user/.silo/desktop-abc/desktop.sock"),
             6901,
-        );
+        )
+        .unwrap();
         assert_eq!(command.get_program().to_string_lossy(), "/usr/bin/ssh");
         let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(args, [
@@ -607,17 +666,83 @@ mod transport_tests {
             "ExitOnForwardFailure=yes",
             "-o",
             "ConnectTimeout=15",
+            "-o",
+            "StreamLocalBindUnlink=yes",
+            "-o",
+            "StreamLocalBindMask=0177",
             "-L",
-            "127.0.0.1:42123:127.0.0.1:6901",
+            "/home/user/.silo/desktop-abc/desktop.sock:127.0.0.1:6901",
             "silo-remote-host-vm",
         ]);
+        // No TCP listener: nothing binds a loopback port for the guest.
+        assert!(!args.iter().any(|arg| arg.starts_with("127.0.0.1:")));
+        // The system OpenSSH reads it as a Unix-socket forward.
+        let command = forward_command(
+            Path::new("/dev/null"),
+            "silo-test-alias",
+            Path::new("/tmp/silo-test/desktop.sock"),
+            6901,
+        )
+        .unwrap();
+        let parsed = std::process::Command::new("/usr/bin/ssh")
+            .arg("-G")
+            .args(command.get_args())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(parsed.status.success());
+        let parsed = String::from_utf8(parsed.stdout).unwrap();
+        assert!(parsed.contains("localforward /tmp/silo-test/desktop.sock [127.0.0.1]:6901\n"), "{parsed}");
+        assert!(parsed.contains("streamlocalbindmask 0177\n"));
+    }
+
+    #[test]
+    fn socket_paths_that_ssh_or_sun_path_cannot_hold_are_refused() {
+        let config = Path::new("/tmp/config");
+        let long = format!("/home/{}/desktop.sock", "u".repeat(100));
+        for socket in ["/home/a:b/.silo/desktop-x/desktop.sock", long.as_str()] {
+            assert!(forward_command(config, "alias", Path::new(socket), 6901).is_err());
+        }
+    }
+
+    #[test]
+    fn the_socket_directory_is_private_and_removed_with_the_tunnel() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join(".silo");
+        let directory = socket_directory(&root).unwrap();
+        let path = directory.path().to_path_buf();
+        for private in [&root, &path] {
+            let metadata = fs::metadata(private).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o077, 0, "{}", private.display());
+            assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        }
+        let child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        drop(Tunnel { child, _directory: Some(directory) });
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn readiness_accepts_only_this_accounts_listening_socket() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("desktop.sock");
+        let uid = unsafe { libc::geteuid() };
+        assert!(!socket_ready(&socket, uid).unwrap(), "missing socket is not ready yet");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(socket_ready(&socket, uid).unwrap());
+        // A socket another account created first is never used.
+        assert!(socket_ready(&socket, uid + 1).is_err());
+        drop(listener);
+        fs::remove_file(&socket).unwrap();
+        fs::write(&socket, b"not a socket").unwrap();
+        assert!(socket_ready(&socket, uid).is_err());
     }
 
     #[test]
     fn closing_viewer_tunnel_reaps_its_ssh_child() {
         let child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
         let pid = child.id();
-        drop(Tunnel(child));
+        drop(Tunnel::new(child));
         assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
         assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     }
@@ -631,7 +756,7 @@ mod registry_tests {
         HashMap::from([("shell".to_string(), Viewer::new("dev".into()))])
     }
     fn live_tunnel() -> Tunnel {
-        Tunnel(std::process::Command::new("sleep").arg("30").spawn().unwrap())
+        Tunnel::new(std::process::Command::new("sleep").arg("30").spawn().unwrap())
     }
 
     #[test]
