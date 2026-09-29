@@ -288,7 +288,11 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
             return Ok(());
         }
         if !controller.busy.load(Ordering::Acquire) {
-            return Err("The interrupted export or import could not finish. Open Silo to see the error. Saved progress was preserved.".into());
+            // Recovery failed and published its error in the export/import
+            // view, where the user can retry by relaunching or abandon it.
+            // Exports no longer stop sandboxes and imports stay pending until
+            // an explicit Start, so the rest of startup may proceed (E-43).
+            return Ok(());
         }
         if started.elapsed() >= RESTORE_TIMEOUT {
             return Err(
@@ -326,7 +330,7 @@ fn archive_from(path: &Path, inspected: &backup::ArchiveInspection) -> Archive {
             .unwrap_or("Silo export")
             .to_string(),
         archive_path: path.to_string_lossy().into_owned(),
-        completed_label: "Verified archive".into(),
+        completed_label: "Intact archive".into(),
         size: display_size(inspected.size_bytes),
         destination: path
             .parent()
@@ -722,7 +726,9 @@ async fn start_backup_inner(
         let mut view = controller
             .view
             .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
+            // `busy` and the journal are already claimed; returning here would
+            // strand them, so recover a poisoned view instead (E-44).
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         view.cancellation = Some(cancellation.clone());
         let phase = match &checkpoint_name {
             Some(name) => Phase {
@@ -747,20 +753,68 @@ async fn start_backup_inner(
         });
     }
     publish(&app, &controller);
-    let app_for_work = app.clone();
-    let controller_for_work = controller.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let failure_archive = pending_archive.clone();
+    let (work_app, work_controller) = (app.clone(), controller.clone());
+    let work = move || {
         run_backup(
-            app_for_work,
-            controller_for_work,
+            work_app,
+            work_controller,
             archive_path,
             sandboxes,
             checkpoint_id,
             cancellation,
             pending_archive,
         )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if contain_worker_panic(&controller, "backup", &failure_archive, None, work) {
+            publish(&app, &controller);
+        }
     });
     Ok(())
+}
+
+/// Runs a detached export or import worker. A panic would otherwise leave the
+/// operation Running with `busy` set until relaunch, refusing new transfers,
+/// dismissal and updates; record a terminal failure and release the slot.
+/// Returns whether the worker panicked.
+fn contain_worker_panic(
+    controller: &Controller,
+    operation: &'static str,
+    archive: &Archive,
+    target_name: Option<String>,
+    work: impl FnOnce(),
+) -> bool {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_ok() {
+        return false;
+    }
+    let failure = recovery::complete(
+        controller,
+        Operation::Result {
+            operation,
+            archive: archive.clone(),
+            target_name,
+            running_names: vec![],
+            outcome: "failed",
+            title: if operation == "backup" {
+                "Export failed"
+            } else {
+                "Import failed"
+            }
+            .into(),
+            message: "Silo hit an internal error and stopped this operation.".into(),
+            detail: Some("Files it had already written were kept.".into()),
+        },
+    );
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    view.operation = Some(failure);
+    view.cancellation = None;
+    drop(view);
+    controller.busy.store(false, Ordering::Release);
+    true
 }
 
 fn run_backup(
@@ -1274,7 +1328,9 @@ async fn start_restore_inner(
         let mut view = controller
             .view
             .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
+            // `busy` and the journal are already claimed; returning here would
+            // strand them, so recover a poisoned view instead (E-44).
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         view.cancellation = Some(cancellation.clone());
         view.operation = Some(Operation::Running {
             operation: "restore",
@@ -1291,18 +1347,23 @@ async fn start_restore_inner(
         });
     }
     publish(&app, &controller);
-    let app_for_work = app.clone();
-    let controller_for_work = controller.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let (failure_archive, target) = (archive.clone(), Some(new_name.clone()));
+    let (work_app, work_controller) = (app.clone(), controller.clone());
+    let work = move || {
         run_restore(
-            app_for_work,
-            controller_for_work,
+            work_app,
+            work_controller,
             path,
             new_name,
             source_name,
             cancellation,
             archive,
         )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if contain_worker_panic(&controller, "restore", &failure_archive, target, work) {
+            publish(&app, &controller);
+        }
     });
     Ok(())
 }
@@ -1517,16 +1578,22 @@ pub(crate) fn cancel_backup_operation(
     controller: State<'_, Arc<Controller>>,
 ) -> Result<(), String> {
     require_main(&window)?;
-    let view = controller
+    cancel_operation(&controller)
+}
+
+fn cancel_operation(controller: &Controller) -> Result<(), String> {
+    let cancellation = controller
         .view
         .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?;
-    let cancellation = view
+        .map_err(|_| "Backup state is unavailable.".to_string())?
         .cancellation
-        .as_ref()
+        .clone()
         .ok_or("No export or import is running.")?;
-    recovery::cancel(&controller)?;
+    // Cancel in process first: a journal write failure (full disk, permissions)
+    // must not leave the running operation uncancellable. The persisted flag
+    // only matters for a later relaunch.
     cancellation.cancel();
+    let _ = recovery::cancel(controller);
     Ok(())
 }
 
@@ -1537,16 +1604,19 @@ pub(crate) fn dismiss_backup_operation(
     controller: State<'_, Arc<Controller>>,
     expected_operation: Value,
     expected_operation_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     require_main(&window)?;
-    if dismiss_finished_operation(
+    // Report whether the result was actually dismissed so the caller does not
+    // hide a result the backend still holds (E-49).
+    let dismissed = dismiss_finished_operation(
         &controller,
         Some(&expected_operation),
         expected_operation_id.as_deref(),
-    )? {
+    )?;
+    if dismissed {
         publish(&app, &controller);
     }
-    Ok(())
+    Ok(dismissed)
 }
 
 fn dismiss_finished_operation(
@@ -1561,7 +1631,19 @@ fn dismiss_finished_operation(
     if matches!(view.operation, Some(Operation::Running { .. })) {
         return Ok(false);
     }
-    if recovery::unresolved(controller)? {
+    // A pending journal with no worker means relaunch recovery failed and is
+    // showing its failure. Dismissing that failure abandons the retry (E-43);
+    // otherwise the operation would block startup and updates on every launch.
+    let abandon = recovery::unresolved(controller)?;
+    if abandon
+        && !matches!(
+            view.operation,
+            Some(Operation::Result {
+                outcome: "failed",
+                ..
+            })
+        )
+    {
         return Ok(false);
     }
     if recovery::token(controller)?.as_deref() != expected_id {
@@ -1571,6 +1653,9 @@ fn dismiss_finished_operation(
         if serde_json::to_value(&view.operation).map_err(|e| e.to_string())? != *expected {
             return Ok(false);
         }
+    }
+    if abandon {
+        recovery::abandon(controller)?;
     }
     recovery::dismiss(controller)?;
     Ok(view.operation.take().is_some())
@@ -1663,6 +1748,139 @@ mod tests {
             destination: "/backups".into(),
             sandboxes: vec!["dev".into()],
         }
+    }
+
+    #[test]
+    fn update_guard_refuses_while_an_interrupted_operation_is_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "restored".into(), Some("dev".into())),
+        )
+        .unwrap();
+        let error = update_guard_for(controller.clone())
+            .err()
+            .expect("a pending journal must block updates");
+        assert!(error.contains("interrupted export or import"), "{error}");
+        assert!(!controller.busy.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn cancel_sets_the_in_process_flag_even_when_the_journal_cannot_be_saved() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = directory.path().join("storage");
+        let controller = history_controller(storage.join("backup-history.json"));
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "restored".into(), Some("dev".into())),
+        )
+        .unwrap();
+        let cancellation = backup::Cancellation::default();
+        controller.view.lock().unwrap().cancellation = Some(cancellation.clone());
+        // Make every later journal write fail.
+        fs::remove_dir_all(&storage).unwrap();
+        fs::write(&storage, b"not a directory").unwrap();
+        cancel_operation(&controller).unwrap();
+        assert!(cancellation.cancelled());
+    }
+
+    #[test]
+    fn dismissing_a_failed_recovery_abandons_it_and_keeps_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let controller = history_controller(path.clone());
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        let failure = Operation::Result {
+            operation: "backup",
+            archive: completed_archive(),
+            target_name: None,
+            running_names: vec![],
+            outcome: "failed",
+            title: "Could not resume the interrupted operation".into(),
+            message: "Destination unavailable".into(),
+            detail: None,
+        };
+        set_operation(&controller, failure.clone()).unwrap();
+        let leftover = directory.path().join("leftover");
+        fs::write(&leftover, b"kept").unwrap();
+        assert!(recovery::unresolved(&controller).unwrap());
+        let id = recovery::token(&controller).unwrap();
+        assert!(dismiss_finished_operation(
+            &controller,
+            Some(&serde_json::to_value(Some(failure)).unwrap()),
+            id.as_deref(),
+        )
+        .unwrap());
+        assert!(!recovery::pending(&controller).unwrap());
+        assert!(recovery::load(&path).unwrap().is_none());
+        assert!(leftover.exists());
+        assert!(update_guard_for(Arc::new(history_controller(path))).is_ok());
+    }
+
+    #[test]
+    fn a_pending_journal_without_a_failed_result_is_not_abandoned() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let controller = history_controller(path.clone());
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        let id = recovery::token(&controller).unwrap();
+        assert!(!dismiss_finished_operation(
+            &controller,
+            Some(&serde_json::Value::Null),
+            id.as_deref()
+        )
+        .unwrap());
+        assert!(recovery::pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn a_panicking_worker_records_a_failure_and_releases_the_slot() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        controller.busy.store(true, Ordering::Release);
+        controller.view.lock().unwrap().cancellation = Some(backup::Cancellation::default());
+        assert!(contain_worker_panic(
+            &controller,
+            "backup",
+            &completed_archive(),
+            None,
+            || panic!("worker bug")
+        ));
+        assert!(!controller.busy.load(Ordering::Acquire));
+        assert!(!recovery::pending(&controller).unwrap());
+        let view = controller.view.lock().unwrap();
+        assert!(view.cancellation.is_none());
+        assert!(matches!(
+            view.operation,
+            Some(Operation::Result {
+                outcome: "failed",
+                ..
+            })
+        ));
+        drop(view);
+        assert!(!contain_worker_panic(
+            &controller,
+            "backup",
+            &completed_archive(),
+            None,
+            || {}
+        ));
     }
 
     fn completed_operation(archive: Archive, outcome: &'static str) -> Operation {
@@ -2862,13 +3080,17 @@ impl Drop for UpdateGuard {
     }
 }
 pub(crate) fn update_guard(app: &AppHandle) -> Result<UpdateGuard, String> {
-    let controller = app.state::<Arc<Controller>>().inner().clone();
+    update_guard_for(app.state::<Arc<Controller>>().inner().clone())
+}
+fn update_guard_for(controller: Arc<Controller>) -> Result<UpdateGuard, String> {
     controller
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Wait for the export or import to finish before updating.")?;
     let guard = UpdateGuard(controller);
-    if recovery::unresolved(&guard.0)? {
+    // The guard now owns `busy`, so check the saved journal directly;
+    // `recovery::unresolved` treats a busy controller as resolved.
+    if recovery::pending(&guard.0)? {
         return Err("An interrupted export or import must finish before updating.".into());
     }
     Ok(guard)

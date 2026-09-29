@@ -222,13 +222,17 @@ fn update(controller: &Controller, change: impl FnOnce(&mut Journal)) -> Result<
     Ok(())
 }
 pub(super) fn unresolved(controller: &Controller) -> Result<bool, String> {
-    Ok(!controller.busy.load(Ordering::Acquire)
-        && controller
-            .journal
-            .lock()
-            .map_err(|_| "Saved operation unavailable.")?
-            .as_ref()
-            .is_some_and(Journal::is_pending))
+    Ok(!controller.busy.load(Ordering::Acquire) && pending(controller)?)
+}
+/// Whether the saved journal still describes an unfinished operation,
+/// regardless of whether this process currently holds the worker slot.
+pub(super) fn pending(controller: &Controller) -> Result<bool, String> {
+    Ok(controller
+        .journal
+        .lock()
+        .map_err(|_| "Saved operation unavailable.")?
+        .as_ref()
+        .is_some_and(Journal::is_pending))
 }
 pub(super) fn token(controller: &Controller) -> Result<Option<String>, String> {
     Ok(controller
@@ -246,7 +250,15 @@ fn cleanup_archive_partial(journal: &Journal) -> Result<(), String> {
         .parent()
         .ok_or("Missing backup destination.")?;
     let prefix = format!(".silo-backup-{}-", journal.id);
-    for entry in fs::read_dir(parent).map_err(|e| e.to_string())? {
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        // An unplugged or renamed destination holds no partial file that this
+        // process could reach; failing here would block recovery until the
+        // drive returns (E-36).
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.file_name().to_string_lossy().starts_with(&prefix)
             && entry.file_type().map_err(|e| e.to_string())?.is_file()
@@ -345,6 +357,21 @@ pub(super) fn remove_disk_marker(directory: &Path) -> Result<(), String> {
 pub(super) fn cancel(controller: &Controller) -> Result<(), String> {
     update(controller, |j| j.cancelled = true)
 }
+/// Stop retrying an interrupted operation whose recovery failed. The journal
+/// becomes a terminal failure so it can be dismissed; no files are removed.
+pub(super) fn abandon(controller: &Controller) -> Result<(), String> {
+    update(controller, |j| {
+        if j.terminal.is_none() {
+            j.terminal = Some(Terminal {
+                outcome: "failed".into(),
+                title: "Interrupted operation abandoned".into(),
+                message: "Silo stopped retrying this interrupted export or import. Files it left were kept.".into(),
+                detail: None,
+                running: vec![],
+            });
+        }
+    })
+}
 pub(super) fn dismiss(controller: &Controller) -> Result<(), String> {
     let mut saved = controller
         .journal
@@ -437,16 +464,18 @@ pub(super) fn resume(
     controller
         .view
         .lock()
-        .map_err(|_| "Backup state unavailable.")?
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .cancellation = Some(cancellation.clone());
-    tauri::async_runtime::spawn_blocking(move || {
+    let (kind, archive, target) = (journal.kind(), journal.archive.clone(), journal.target());
+    let (outer_app, outer_controller) = (app.clone(), controller.clone());
+    let work = move || {
         let result = recover(&app, &controller, &journal, &cancellation);
         match result {
             Ok(true) => {
                 let journal = controller
                     .journal
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clone()
                     .unwrap_or(journal);
                 let operation = Operation::Result {
@@ -516,13 +545,19 @@ pub(super) fn resume(
                         title: "Could not resume the interrupted operation".into(),
                         message: error,
                         detail: Some(
-                            "Saved progress was preserved. Relaunch Silo to retry.".into(),
+                            "Saved progress was preserved. Relaunch Silo to retry, or dismiss this to stop retrying. Dismissing keeps any files it left."
+                                .into(),
                         ),
                     },
                 );
                 finish(&controller);
                 publish(&app, &controller);
             }
+        }
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if super::contain_worker_panic(&outer_controller, kind, &archive, target, work) {
+            publish(&outer_app, &outer_controller);
         }
     });
     Ok(())
@@ -802,6 +837,20 @@ mod tests {
             fs::read(&journal.archive.archive_path).unwrap(),
             b"completed archive"
         );
+    }
+
+    #[test]
+    fn archive_cleanup_treats_a_missing_destination_as_nothing_to_clean() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut archive = completed_archive();
+        archive.archive_path = directory
+            .path()
+            .join("unplugged")
+            .join("saved.silo-backup")
+            .to_string_lossy()
+            .into_owned();
+        let journal = Journal::backup(archive, vec!["dev".into()], None);
+        cleanup_archive_partial(&journal).unwrap();
     }
 
     #[test]
