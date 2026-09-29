@@ -31,7 +31,7 @@ for fixes and **minor** for features and incompatible changes. Silo stays below
 1.0.0 until the owner explicitly decides on a stable release, so never use
 **major**: `sync-release.mjs` and `release.mjs` refuse 1.0.0 or later unless
 `--allow-stable` is passed (for example
-`npm run release:sync -- --allow-stable`). Include any migration steps. Commit the generated `.changeset/*.md`
+`npm run release:version -- --allow-stable`). Include any migration steps. Commit the generated `.changeset/*.md`
 file alongside the change. Edit the Markdown freely before release. Internal
 refactors, tests, and documentation do not require a note unless users are affected.
 
@@ -46,8 +46,10 @@ npm run release:status
 npm run release:version
 ```
 
-Changesets chooses the next version, updates `package.json` and `CHANGELOG.md`,
-and consumes the pending notes. Our adapter updates `package-lock.json`,
+`release:version` first asks Changesets for the planned version and checks it:
+below 1.0.0, no existing `docs/releases/VERSION.md`, and version metadata our
+adapter can update. A failed check changes nothing. Changesets then updates
+`package.json` and `CHANGELOG.md` and consumes the pending notes. Our adapter updates `package-lock.json`,
 `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock` to the same version without
 changing dependencies. It exports the new changelog entry to
 `docs/releases/VERSION.md`, which becomes the GitHub release body and app update

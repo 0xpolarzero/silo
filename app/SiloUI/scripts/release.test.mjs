@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execFileSync } from "node:child_process"
-import { syncRelease } from "./sync-release.mjs"
+import { syncRelease, versionRelease } from "./sync-release.mjs"
 import { release } from "./release.mjs"
 
 const source = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -98,6 +98,48 @@ for (const [name, mutate, error] of [
     assert.deepEqual(snapshot(root), before)
     const notes = resolve(root, "../../docs/releases/0.98.7.md")
     if (existsSync(notes)) assert.equal(read(notes), "Reviewed notes\n")
+  })
+}
+
+const quiet = root => (command, args) => execFileSync(command, args, { cwd: root, stdio: "pipe" })
+function pendingChangeset(root, bump) {
+  writeFileSync(join(root, ".changeset/pending-release.md"), `---\n"silo-ui": ${bump}\n---\n\nPrepare the next release.\n`)
+}
+const untouched = root => ({
+  metadata: snapshot(root),
+  changelog: existsSync(join(root, "CHANGELOG.md")),
+  pending: readdirSync(join(root, ".changeset")).sort(),
+})
+
+test("release:version checks the planned version, then versions with Changesets and synchronizes metadata", t => {
+  const root = fixture(t)
+  const oldVersion = JSON.parse(read(join(root, "package.json"))).version
+  const expected = oldVersion.replace(/\.(\d+)\.\d+$/, (_, minor) => `.${Number(minor) + 1}.0`)
+  pendingChangeset(root, "minor")
+  assert.equal(versionRelease(root, { run: quiet(root) }), expected)
+  assert.equal(JSON.parse(read(join(root, "package.json"))).version, expected)
+  assert.equal(existsSync(join(root, ".changeset/pending-release.md")), false)
+  assert.match(read(resolve(root, "../../docs/releases", `${expected}.md`)), /Prepare the next release\./)
+})
+
+for (const [name, prepareInputs, error] of [
+  ["a planned 1.0.0 release", root => pendingChangeset(root, "major"), /below 1\.0\.0/],
+  ["stale notes for the planned version", root => {
+    pendingChangeset(root, "minor")
+    const version = JSON.parse(read(join(root, "package.json"))).version.replace(/\.(\d+)\.\d+$/, (_, minor) => `.${Number(minor) + 1}.0`)
+    const notes = resolve(root, "../../docs/releases", `${version}.md`)
+    mkdirSync(dirname(notes), { recursive: true })
+    writeFileSync(notes, "Stale notes\n")
+  }, /already exists before/],
+  ["malformed Rust metadata", root => { pendingChangeset(root, "patch"); writeFileSync(join(root, "src-tauri/Cargo.lock"), '[[package]]\nname = "other"\nversion = "1.0.0"\n') }, /exactly one/],
+  ["no pending changesets", () => {}, /No pending silo-ui changesets/],
+]) {
+  test(`release:version refuses ${name} before Changesets consumes anything`, t => {
+    const root = fixture(t)
+    prepareInputs(root)
+    const before = untouched(root)
+    assert.throws(() => versionRelease(root, { run: quiet(root) }), error)
+    assert.deepEqual(untouched(root), before)
   })
 }
 

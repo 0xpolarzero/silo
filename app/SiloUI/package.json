@@ -35,7 +35,7 @@
     "guest:image:build": "node scripts/build-guest-image.mjs",
     "changeset": "changeset",
     "release:status": "changeset status",
-    "release:version": "changeset version && node scripts/sync-release.mjs",
+    "release:version": "node scripts/sync-release.mjs version",
     "release:sync": "node scripts/sync-release.mjs",
     "release:draft": "node scripts/release.mjs draft",
     "release:publish": "node scripts/release.mjs publish",
