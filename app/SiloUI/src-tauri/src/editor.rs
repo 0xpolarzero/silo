@@ -239,20 +239,86 @@ fn prepare(
     let known_hosts = root.join(format!("{name}.known_hosts"));
     let alias = prepare_configuration(paths, name, &config, &known_hosts)?;
     let _guard = files_lock();
-    let ssh_root = user_home.join(".ssh");
-    private_directory(&ssh_root)?;
-    let user_config = ssh_root.join("config");
-    let old = read_regular(&user_config)?;
-    let include = format!("Include {}\n", ssh_quote(&root.join("*.conf"))?);
-    if !old
-        .split(|byte| *byte == b'\n')
-        .any(|line| line == include.trim_end().as_bytes())
-    {
-        let mut new = include.into_bytes();
-        new.extend_from_slice(&old);
-        write_private(&user_config, &new)?;
-    }
+    install_include(user_home, &format!("Include {}", ssh_quote(&root.join("*.conf"))?))?;
     Ok((alias, config))
+}
+
+fn owned(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.uid() == unsafe { libc::geteuid() }
+}
+
+fn manual_include(config: &Path, include: &str) -> String {
+    format!(
+        "Silo can't safely update {}, which links to a file it can't change. Add this line at the top of that file, then try again: {include}",
+        config.display()
+    )
+}
+
+fn has_line(contents: &[u8], line: &str) -> bool {
+    contents.split(|byte| *byte == b'\n').any(|current| current == line.as_bytes())
+}
+
+/// Prepends Silo's `Include` to the user's SSH configuration once. Links from
+/// dotfile managers (stow, chezmoi) are followed when they lead to a folder or
+/// file this account owns; otherwise, such as a read-only home-manager file,
+/// the user gets the exact line to add (G-11).
+fn install_include(user_home: &Path, include: &str) -> Result<(), String> {
+    let link = user_home.join(".ssh");
+    let user_config = link.join("config");
+    let manual = || manual_include(&user_config, include);
+    let ssh_root = match fs::symlink_metadata(&link) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let target = fs::canonicalize(&link).map_err(|_| manual())?;
+            match fs::metadata(&target) {
+                Ok(metadata) if metadata.is_dir() && owned(&metadata) => target,
+                _ => return Err(manual()),
+            }
+        }
+        _ => {
+            private_directory(&link)?;
+            link.clone()
+        }
+    };
+    let config = ssh_root.join("config");
+    if !fs::symlink_metadata(&config).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        let old = read_regular(&config)?;
+        if !has_line(&old, include) {
+            let mut new = format!("{include}\n").into_bytes();
+            new.extend_from_slice(&old);
+            write_private(&config, &new)?;
+        }
+        return Ok(());
+    }
+    let target = fs::canonicalize(&config).map_err(|_| manual())?;
+    let old = read_regular(&target)?;
+    if has_line(&old, include) {
+        return Ok(());
+    }
+    let parent_owned = target
+        .parent()
+        .and_then(|parent| fs::metadata(parent).ok())
+        .is_some_and(|metadata| owned(&metadata));
+    if !parent_owned || !fs::metadata(&target).is_ok_and(|metadata| metadata.is_file() && owned(&metadata)) {
+        return Err(manual());
+    }
+    let mut new = format!("{include}\n").into_bytes();
+    new.extend_from_slice(&old);
+    // Replacing the resolved file keeps the user's link in place.
+    replace_file(&target, &new).map_err(|_| manual())
+}
+
+/// Atomically replaces a regular file and keeps its permission bits.
+fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let mode = fs::metadata(path)?.mode() & 0o666;
+    let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.as_file().set_permissions(fs::Permissions::from_mode(mode))?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// Private connections share the editor's host-only identity, without installing
@@ -433,15 +499,7 @@ pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) 
     let root = config.parent().ok_or(FAILED)?;
     let home = app.path().home_dir().map_err(|_| FAILED)?;
     let _guard = files_lock();
-    let ssh_root = home.join(".ssh");
-    private_directory(&ssh_root)?;
-    let user_config = ssh_root.join("config");
-    let old = read_regular(&user_config)?;
-    let include = format!("Include {}\n", ssh_quote(&root.join("*.conf"))?);
-    if !old.split(|byte| *byte == b'\n').any(|line| line == include.trim_end().as_bytes()) {
-        let mut updated = include.into_bytes(); updated.extend_from_slice(&old);
-        write_private(&user_config, &updated)?;
-    }
+    install_include(&home, &format!("Include {}", ssh_quote(&root.join("*.conf"))?))?;
     Ok((alias, config))
 }
 
@@ -515,6 +573,69 @@ mod tests {
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(write_private(&link, b"replace").is_err());
         assert_eq!(fs::read(&file).unwrap(), b"Host existing\n  User user\n");
+    }
+
+    const INCLUDE: &str = "Include \"/home/user/.silo/abc/ssh/*.conf\"";
+
+    #[test]
+    fn a_stow_linked_ssh_config_is_updated_through_its_link() {
+        let home = tempfile::tempdir().unwrap();
+        let dotfiles = home.path().join("dotfiles/ssh");
+        fs::create_dir_all(&dotfiles).unwrap();
+        fs::write(dotfiles.join("config"), b"Host personal\n  User me\n").unwrap();
+        fs::set_permissions(dotfiles.join("config"), fs::Permissions::from_mode(0o644)).unwrap();
+        private_directory(&home.path().join(".ssh")).unwrap();
+        std::os::unix::fs::symlink("../dotfiles/ssh/config", home.path().join(".ssh/config")).unwrap();
+        install_include(home.path(), INCLUDE).unwrap();
+        install_include(home.path(), INCLUDE).unwrap();
+        let link = home.path().join(".ssh/config");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays");
+        assert_eq!(
+            fs::read(&link).unwrap(),
+            format!("{INCLUDE}\nHost personal\n  User me\n").as_bytes()
+        );
+        assert_eq!(fs::metadata(&link).unwrap().permissions().mode() & 0o777, 0o644);
+    }
+
+    #[test]
+    fn a_linked_ssh_folder_receives_a_new_config_without_replacing_the_link() {
+        let home = tempfile::tempdir().unwrap();
+        let dotfiles = home.path().join("dotfiles/ssh");
+        fs::create_dir_all(&dotfiles).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, home.path().join(".ssh")).unwrap();
+        install_include(home.path(), INCLUDE).unwrap();
+        assert!(fs::symlink_metadata(home.path().join(".ssh")).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(dotfiles.join("config")).unwrap(), format!("{INCLUDE}\n").as_bytes());
+    }
+
+    #[test]
+    fn an_unwritable_linked_config_explains_the_line_to_add() {
+        let home = tempfile::tempdir().unwrap();
+        let store = home.path().join("store");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("config"), b"Host managed\n").unwrap();
+        private_directory(&home.path().join(".ssh")).unwrap();
+        std::os::unix::fs::symlink(store.join("config"), home.path().join(".ssh/config")).unwrap();
+        // Like a read-only home-manager file in the Nix store.
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o555)).unwrap();
+        let error = install_include(home.path(), INCLUDE).unwrap_err();
+        assert!(error.ends_with(&format!("Add this line at the top of that file, then try again: {INCLUDE}")), "{error}");
+        assert_eq!(fs::read(store.join("config")).unwrap(), b"Host managed\n");
+        // Once the user adds the line, nothing needs to be written.
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(store.join("config"), format!("{INCLUDE}\nHost managed\n")).unwrap();
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o555)).unwrap();
+        install_include(home.path(), INCLUDE).unwrap();
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn a_dangling_config_link_is_not_replaced() {
+        let home = tempfile::tempdir().unwrap();
+        private_directory(&home.path().join(".ssh")).unwrap();
+        std::os::unix::fs::symlink("/silo-test-missing/config", home.path().join(".ssh/config")).unwrap();
+        assert!(install_include(home.path(), INCLUDE).unwrap_err().contains(INCLUDE));
+        assert!(fs::symlink_metadata(home.path().join(".ssh/config")).unwrap().file_type().is_symlink());
     }
 
     #[test]
