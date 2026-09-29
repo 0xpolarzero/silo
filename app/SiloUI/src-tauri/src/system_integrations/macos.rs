@@ -4,7 +4,7 @@ use std::time::Duration;
 use block2::RcBlock;
 use objc2::runtime::Bool;
 use objc2_app_kit::NSWorkspace;
-use objc2_foundation::{NSError, NSOperatingSystemVersion, NSProcessInfo, NSString, NSURL};
+use objc2_foundation::{NSBundle, NSError, NSOperatingSystemVersion, NSProcessInfo, NSString, NSURL};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNUserNotificationCenter,
@@ -20,6 +20,13 @@ fn macos_10_14_or_newer() -> bool {
         minorVersion: 14,
         patchVersion: 0,
     })
+}
+
+/// UserNotifications requires a real application bundle: it throws (and aborts) when the
+/// process runs as a bare executable, as `tauri dev` does. Treat notifications as
+/// unavailable there instead of crashing.
+fn notifications_supported() -> bool {
+    macos_10_14_or_newer() && NSBundle::mainBundle().bundlePath().to_string().ends_with(".app")
 }
 
 fn macos_13_or_newer() -> bool {
@@ -70,7 +77,7 @@ fn map_notification_status(status: UNAuthorizationStatus) -> IntegrationStatus {
 }
 
 fn notification_status() -> IntegrationStatus {
-    if !macos_10_14_or_newer() {
+    if !notifications_supported() {
         return IntegrationStatus::new("unavailable");
     }
     let center = UNUserNotificationCenter::currentNotificationCenter();
@@ -134,7 +141,7 @@ pub fn set_login_item(enabled: bool) -> Result<IntegrationStatus, String> {
 }
 
 pub fn request_notifications() -> Result<IntegrationStatus, String> {
-    if !macos_10_14_or_newer() {
+    if !notifications_supported() {
         return Ok(IntegrationStatus::new("unavailable"));
     }
     let before = notification_status();
@@ -206,7 +213,7 @@ define_class!(
 
 thread_local! { static NOTIFICATION_DELEGATE: std::cell::RefCell<Option<Retained<NotificationDelegate>>> = const { std::cell::RefCell::new(None) }; }
 pub fn install_notifications() {
-    if !macos_10_14_or_newer() {
+    if !notifications_supported() {
         return;
     }
     use objc2::AnyThread;
