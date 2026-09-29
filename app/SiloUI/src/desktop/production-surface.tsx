@@ -8,7 +8,7 @@ import type { SiloPreflightCheck } from "@/contracts/silo"
 import { SiloWindow } from "@/components/silo-window"
 import { useDependencyStore, type DependencyStore } from "@/desktop/dependencies"
 import { ProductionOnboarding } from "@/desktop/production-onboarding"
-import { useProductionSource, type ProductionSource } from "@/desktop/production-source"
+import { localUpdatingNotice, useProductionSource, type ProductionSource } from "@/desktop/production-source"
 import { StatusPanel } from "@/desktop/status-panel"
 import { ApplicationLoading, StatusPanelUnavailable } from "@/desktop/application-loading"
 import { ApplicationApp } from "@/features/application/application-app"
@@ -90,9 +90,12 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   const remoteOnly = Boolean(current.source.remoteComputers?.length)
     && !current.source.workspaces.some(workspace => !workspace.computer && workspace.machine.kind === "vm")
   const localRuntimeFailures = remoteOnly ? [] : failures
+  // Connected computers stay usable while this computer's sandboxes update; say why
+  // the local ones are missing.
+  const notice = current.localUpdating ? localUpdatingNotice : undefined
   return statusPanel
-    ? <StatusPanel source={current.source} actions={source.statusActions} />
-    : <UpdatesProvider backend={updateBackend}><UpdateInstallationBoundary preparing={preparingUpdate}><ApplicationApp routeRequest={routeRequest} source={localRuntimeFailures.length ? { ...current.source, runtimeRepair: {
+    ? <StatusPanel source={current.source} actions={source.statusActions} notice={notice} />
+    : <UpdatesProvider backend={updateBackend}><UpdateInstallationBoundary preparing={preparingUpdate}>{notice && <p role="status" className="border-b bg-muted px-4 py-2 text-xs">{notice}</p>}<ApplicationApp routeRequest={routeRequest} source={localRuntimeFailures.length ? { ...current.source, runtimeRepair: {
       status: "unavailable", checking,
       reason: failures.map(({ title, detail }) => `${title}: ${detail}`).join("\n"),
       recovery: [...new Set(failures.map(({ remediation }) => remediation).filter(Boolean))].join("\n"),

@@ -9,17 +9,17 @@ const native = vi.hoisted(() => ({ invoke: vi.fn(async (_command: string, _args?
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => false }))
 vi.mock("./shutdown-boundary", () => ({ ShutdownBoundary: ({ children, pendingWork }: { children: import("react").ReactNode; pendingWork?: string }) => <>{pendingWork && <p>Quit overlay: {pendingWork}</p>}{children}</> }))
 vi.mock("./runtime-migration-boundary", () => ({ RuntimeMigrationBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
-const state = vi.hoisted(() => ({ source: {} as object | null, loading: false, error: null as string | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn(), setupDrain: undefined as string | undefined }))
-vi.mock("./production-source", () => ({ useProductionSource: () => ({ source: state.source, backup: {}, loading: state.loading, error: state.error, setupDrain: state.setupDrain, savedMachines: [{ id: "saved", name: "saved-machine", kind: "ssh", host: "host", user: "user", port: 22 }] }) }))
+const state = vi.hoisted(() => ({ source: {} as object | null, loading: false, error: null as string | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn(), setupDrain: undefined as string | undefined, localUpdating: false }))
+vi.mock("./production-source", () => ({ localUpdatingNotice: "Local sandboxes are updating.", useProductionSource: () => ({ source: state.source, backup: {}, loading: state.loading, error: state.error, setupDrain: state.setupDrain, localUpdating: state.localUpdating, savedMachines: [{ id: "saved", name: "saved-machine", kind: "ssh", host: "host", user: "user", port: 22 }] }) }))
 vi.mock("./dependencies", () => ({ useDependencyStore: () => ({ checks: state.checks, retry: state.retry }) }))
 vi.mock("./production-onboarding", () => ({ ProductionOnboarding: ({ onOpenApp }: { onOpenApp: () => void }) => <button onClick={onOpenApp}>Open Silo</button> }))
 vi.mock("@/features/application/application-app", () => ({ ApplicationApp: ({ source, actions }: { source: { runtimeRepair?: { reason: string; recovery: string; checking: boolean } }; actions: { retryRuntimeChecks: () => void } }) => <div>Main app{source.runtimeRepair && <div role="alert">{source.runtimeRepair.reason}{source.runtimeRepair.recovery}<button disabled={source.runtimeRepair.checking} onClick={actions.retryRuntimeChecks}>Retry checks</button></div>}</div> }))
-vi.mock("./status-panel", () => ({ StatusPanel: () => <div>Status panel</div> }))
+vi.mock("./status-panel", () => ({ StatusPanel: ({ notice }: { notice?: string }) => <div>Status panel{notice && <p>Tray notice: {notice}</p>}</div> }))
 
 const source = { applicationActions: {}, statusActions: {}, refresh: vi.fn(), initialize: vi.fn(() => Promise.resolve()) } as unknown as ProductionSource
 const dependencyStore = {} as DependencyStore
 
-beforeEach(() => { state.source = {}; state.loading = false; state.error = null; state.checks = []; state.setupDrain = undefined; vi.clearAllMocks() })
+beforeEach(() => { state.source = {}; state.loading = false; state.error = null; state.checks = []; state.setupDrain = undefined; state.localUpdating = false; vi.clearAllMocks() })
 
 describe("production completion routing", () => {
   it("shows the actual shell and saved rows while live state loads, then replaces skeletons", () => {
@@ -99,6 +99,20 @@ describe("status panel without application state", () => {
     fireEvent.click(screen.getByRole("button", { name: "Quit Silo" }))
     await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("quit_app"))
     expect(native.invoke).toHaveBeenCalledWith("open_main")
+  })
+})
+
+describe("local sandboxes updating while connected computers are shown", () => {
+  it("explains the missing local sandboxes in the main window and the tray", () => {
+    state.source = { workspaces: [], remoteComputers: [{ id: "office", connected: true }] }
+    state.localUpdating = true
+    const settings = createMemorySettingsStore({ onboardingComplete: true })
+    const main = render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
+    expect(screen.getByText("Main app")).toBeVisible()
+    expect(screen.getByRole("status")).toHaveTextContent("Local sandboxes are updating.")
+    main.unmount()
+    render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={null} statusPanel /></SettingsProvider>)
+    expect(screen.getByText("Tray notice: Local sandboxes are updating.")).toBeVisible()
   })
 })
 

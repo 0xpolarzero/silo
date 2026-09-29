@@ -104,6 +104,57 @@ describe("production setup drain", () => {
   })
 })
 
+describe("local state updating at launch", () => {
+  const office = { id: "office", name: "Office Mac", address: "user@office" }
+  function updating(options: { remotes: boolean; updatingReads?: number }) {
+    let updatingReads = options.updatingReads ?? Number.POSITIVE_INFINITY
+    return bridge({ invoke: (command, args) => {
+      if (command === "read_application_state") return updatingReads-- > 0 ? Promise.reject(new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")) : Promise.resolve(structuredClone(source))
+      if (command === "remote_host_list") return Promise.resolve(options.remotes ? [office] : [])
+      if (command === "remote_host_snapshot") return Promise.resolve(structuredClone(source))
+      if (command === "remote_management_status") return Promise.resolve({ enabled: false, hostId: "this-mac", name: "This Mac", address: "this-mac.local" })
+      if (command === "read_application_shell") return Promise.resolve({ ...structuredClone(source), workspaces: [], runtimeRepair: { status: "unavailable", reason: String(args?.error) } })
+      return undefined
+    } })
+  }
+
+  it("shows connected computers, not a skeleton, while this computer's sandboxes update", async () => {
+    const mock = updating({ remotes: true, updatingReads: 2 })
+    const store = createProductionSource(mock.bridge)
+    try {
+      await store.initialize()
+      await vi.waitFor(() => expect(store.getSnapshot().source).not.toBeNull())
+      const snapshot = store.getSnapshot()
+      expect(snapshot.loading).toBe(false)
+      expect(snapshot.error).toBeNull()
+      expect(snapshot.localUpdating).toBe(true)
+      // Updating is not a runtime failure, and local changes wait for it.
+      expect(snapshot.source?.runtimeRepair).toBeNull()
+      expect(snapshot.source?.vmOperationsUnavailable).toMatch(/updating/)
+      expect(snapshot.source?.workspaces.length).toBeGreaterThan(0)
+      expect(snapshot.source?.workspaces.every((workspace) => workspace.computer?.id === "office")).toBe(true)
+      // Still updating: the shell stays.
+      await store.refresh()
+      expect(store.getSnapshot().localUpdating).toBe(true)
+      // The update finished: the real local state replaces the shell.
+      await store.refresh()
+      expect(store.getSnapshot().localUpdating).toBe(false)
+      expect(store.getSnapshot().source?.workspaces.some((workspace) => !workspace.computer)).toBe(true)
+    } finally { store.dispose() }
+  })
+
+  it("keeps loading without connected computers", async () => {
+    const mock = updating({ remotes: false })
+    const store = createProductionSource(mock.bridge)
+    try {
+      await store.initialize()
+      expect(store.getSnapshot().source).toBeNull()
+      expect(store.getSnapshot().loading).toBe(true)
+      expect(mock.count("read_application_shell")).toBe(0)
+    } finally { store.dispose() }
+  })
+})
+
 describe("saved sandbox list for the loading skeleton", () => {
   const machine = source.workspaces[0].machine
   it.each([

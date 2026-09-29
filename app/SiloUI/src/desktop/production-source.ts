@@ -175,11 +175,15 @@ export interface ProductionSnapshot {
   setupCandidate?: SetupMachineConfigurationRequest
   /** The setup work Quit is waiting for while it drains setup. */
   setupDrain?: string
+  /** `source` is a shell for connected computers while this computer's sandboxes update. */
+  localUpdating?: boolean
   source: ApplicationSource | null
   backup: BackupState
   loading: boolean
   error: string | null
 }
+
+export const localUpdatingNotice = "Sandboxes on this computer are updating. They appear here when the update finishes."
 
 /** The runtime's "configuration is updating" sentinel, bare or wrapped by a remote bridge. */
 export function isUpdateInProgress(cause: unknown) {
@@ -496,10 +500,26 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (!snapshot.source && snapshot.error) {
         const source = await unavailableLocalSource(snapshot.error)
         if (!snapshot.source && source) publish({ ...snapshot, source })
+      } else if (!snapshot.source && localStateUpdating) {
+        const source = await updatingLocalSource()
+        if (!snapshot.source && source) publish({ ...snapshot, source, loading: false, localUpdating: true })
       }
       publish({ ...snapshot })
     })().finally(() => { remoteRefresh = undefined })
     return remoteRefresh
+  }
+
+  // While this computer's sandbox state is updating (computer-wide work such as
+  // resuming sandboxes at launch), connected computers stay usable through the shell
+  // source instead of a skeleton for the whole operation. Updating is not a runtime
+  // failure, and local changes wait for it; `localUpdating` marks the shell.
+  let localStateUpdating = false
+  async function updatingLocalSource(): Promise<ApplicationSource | null> {
+    if (!remoteComputers.some(computer => computer.connected && remoteSnapshots.has(computer.id))) return null
+    try {
+      const shell = parseApplicationSource(await native.invoke("read_application_shell", { error: localUpdatingNotice }))
+      return { ...shell, runtimeRepair: null, vmOperationsUnavailable: localUpdatingNotice }
+    } catch { return null }
   }
 
   async function unavailableLocalSource(message: string): Promise<ApplicationSource | null> {
@@ -546,7 +566,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (!configurationUpdating) {
         error = `Silo could not read application state: ${errorMessage(applicationResult.reason)}`
         source = await unavailableLocalSource(error)
-      }
+      } else if (!source) source = await updatingLocalSource()
     }
     if (backupResult.status === "fulfilled") {
       try {
@@ -557,7 +577,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (disposed || sequence !== refreshSequence) return
     if (source && snapshot.source && (githubMutationPending || (source.github.policyRevision ?? 0) < (snapshot.source.github.policyRevision ?? 0))) source = { ...source, github: snapshot.source.github }
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
-    publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error })
+    localStateUpdating = configurationUpdating
+    publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error, localUpdating: configurationUpdating && source !== null && (snapshot.source === null || snapshot.localUpdating === true) })
     void refreshNetwork()
     void refreshComputers()
   }

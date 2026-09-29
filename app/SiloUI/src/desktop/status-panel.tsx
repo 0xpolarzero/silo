@@ -14,7 +14,7 @@ import { statusBarHealth } from "@/features/status-bar/status-bar-model"
 import { useSettings } from "@/features/preferences/settings-store"
 import type { StatusBarActions } from "@/features/status-bar/status-bar-types"
 
-export function StatusPanel({ source: input, actions }: { source: ApplicationSource; actions: StatusBarActions }) {
+export function StatusPanel({ source: input, actions, notice }: { source: ApplicationSource; actions: StatusBarActions; notice?: string }) {
   const { settings } = useSettings(input.preferences)
   const source = { ...input, preferences: { ...input.preferences, ...settings } }
   const content = useRef<HTMLDivElement>(null)
@@ -52,7 +52,7 @@ export function StatusPanel({ source: input, actions }: { source: ApplicationSou
         // Nested menus consume Escape first; the next Escape dismisses the panel.
         if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); void desktopCommand("hide_status") }
       }}>
-      <ShutdownBoundary compact><StatusBarContent workspaceMenu={NativeWorkspaceMenu} key={opening} source={source} actions={nativeActions} focusContent={() => content.current?.focus()} /></ShutdownBoundary>
+      <ShutdownBoundary compact>{notice && <p role="status" className="shrink-0 px-3 pt-2 text-[11px] text-muted-foreground">{notice}</p>}<StatusBarContent workspaceMenu={NativeWorkspaceMenu} key={opening} source={source} actions={nativeActions} focusContent={() => content.current?.focus()} /></ShutdownBoundary>
     </div>
     <Toaster position="bottom-center" offset={8} mobileOffset={8} visibleToasts={3} expand={false} reduceMotion={source.preferences.reduceMotion} toastOptions={{ classNames: { toast: "cn-toast !w-[calc(100vw-16px)] max-w-[364px]" } }} />
   </TooltipProvider>
