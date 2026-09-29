@@ -20,7 +20,7 @@ const MAGIC: &[u8; 16] = b"SILO-BACKUP\0\0\0\0\0";
 const FORMAT_VERSION: u32 = 3;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_COMMAND_OUTPUT: usize = 32 * 1024;
-const MAX_SNAPSHOT_INDEX_OUTPUT: usize = 1024 * 1024;
+const MAX_STRUCTURED_OUTPUT: usize = 1024 * 1024;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const DEFAULT_MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
@@ -110,9 +110,18 @@ impl MsbRunner for SystemMsbRunner {
             .map_err(BackupError::Io)?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-        let snapshot_index = arguments.iter().map(String::as_str).eq(["snapshot", "list", "--format", "json"]);
+        // JSON is parsed, so keep it whole from the start (like the runtime
+        // runner) and fail on truncation. Other output is only diagnostics,
+        // where the tail matters most.
+        let structured = arguments
+            .windows(2)
+            .any(|pair| pair[0] == "--format" && pair[1] == "json");
         let stdout_reader = thread::spawn(move || {
-            read_output(stdout, if snapshot_index { MAX_SNAPSHOT_INDEX_OUTPUT } else { MAX_COMMAND_OUTPUT }, !snapshot_index)
+            read_output(
+                stdout,
+                if structured { MAX_STRUCTURED_OUTPUT } else { MAX_COMMAND_OUTPUT },
+                !structured,
+            )
         });
         let stderr_reader = thread::spawn(move || read_output(stderr, MAX_COMMAND_OUTPUT, true));
         let started = Instant::now();
@@ -138,14 +147,23 @@ impl MsbRunner for SystemMsbRunner {
                 let (stderr, _) = stderr_reader
                     .join()
                     .map_err(|_| BackupError::Io(io::Error::other("stderr reader failed")))??;
-                if snapshot_index && stdout_truncated {
-                    return Err(BackupError::InvalidRequest(
-                        "The runtime checkpoint index exceeds Silo's size safety limit.".into(),
-                    ));
+                if structured && stdout_truncated {
+                    let what = if arguments.first().is_some_and(|arg| arg == "snapshot") {
+                        "checkpoint index"
+                    } else {
+                        "sandbox list"
+                    };
+                    return Err(BackupError::InvalidRequest(format!(
+                        "The runtime {what} exceeds Silo's 1 MiB size safety limit."
+                    )));
                 }
                 return Ok(CommandOutput {
                     status,
-                    stdout: if snapshot_index { String::from_utf8_lossy(&stdout).trim().to_owned() } else { bounded_output(&stdout) },
+                    stdout: if structured {
+                        String::from_utf8_lossy(&stdout).trim().to_owned()
+                    } else {
+                        bounded_output(&stdout)
+                    },
                     stderr: bounded_output(&stderr),
                 });
             }
@@ -2512,6 +2530,45 @@ mod tests {
     }
 
     #[test]
+    fn large_sandbox_list_is_read_whole_and_oversized_json_fails_explicitly() {
+        // 2000 sandboxes produce ~60 KiB of JSON, well past the 32 KiB log tail.
+        let directory = tempfile::tempdir().unwrap();
+        let rows = (0..2000)
+            .map(|index| format!("{{\"name\":\"sandbox-{index:05}\",\"status\":\"Stopped\"}}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let listing = directory.path().join("listing.json");
+        fs::write(&listing, format!("[{rows}]")).unwrap();
+        let command = script_command(
+            directory.path(),
+            &format!("#!/bin/sh\ncat '{}'\n", listing.display()),
+        );
+        let output = SystemMsbRunner
+            .run(
+                &command,
+                &["list".into(), "--format".into(), "json".into()],
+                Duration::from_secs(5),
+                &Cancellation::default(),
+            )
+            .unwrap();
+        assert!(output.stdout.len() > MAX_COMMAND_OUTPUT);
+        let parsed: Vec<Value> = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(parsed.len(), 2000);
+        assert_eq!(parsed[0]["name"], "sandbox-00000");
+
+        fs::write(&listing, vec![b' '; MAX_STRUCTURED_OUTPUT + 1]).unwrap();
+        let error = SystemMsbRunner
+            .run(
+                &command,
+                &["list".into(), "--format".into(), "json".into()],
+                Duration::from_secs(5),
+                &Cancellation::default(),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("safety limit"), "{error}");
+    }
+
+    #[test]
     fn growing_native_snapshot_index_is_complete_or_explicitly_rejected() {
         let rows: Vec<_> = (0..600)
             .map(|index| serde_json::json!({
@@ -2523,11 +2580,11 @@ mod tests {
             .collect();
         let index = serde_json::to_vec(&rows).unwrap();
         assert!(index.len() > MAX_COMMAND_OUTPUT);
-        let (complete, truncated) = read_output(index.as_slice(), MAX_SNAPSHOT_INDEX_OUTPUT, false).unwrap();
+        let (complete, truncated) = read_output(index.as_slice(), MAX_STRUCTURED_OUTPUT, false).unwrap();
         assert!(!truncated);
         assert_eq!(serde_json::from_slice::<Vec<Value>>(&complete).unwrap().len(), rows.len());
-        let oversized = vec![b'x'; MAX_SNAPSHOT_INDEX_OUTPUT + 1];
-        let (_, truncated) = read_output(oversized.as_slice(), MAX_SNAPSHOT_INDEX_OUTPUT, false).unwrap();
+        let oversized = vec![b'x'; MAX_STRUCTURED_OUTPUT + 1];
+        let (_, truncated) = read_output(oversized.as_slice(), MAX_STRUCTURED_OUTPUT, false).unwrap();
         assert!(truncated, "oversized structured output must fail before JSON parsing");
         let (tail, truncated) = read_output(index.as_slice(), MAX_COMMAND_OUTPUT, true).unwrap();
         assert!(truncated);
