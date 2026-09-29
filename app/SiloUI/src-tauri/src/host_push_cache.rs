@@ -160,16 +160,22 @@ fn sweep(root: &Path, budget: u64) -> Result<(), String> {
     for entry in fs::read_dir(root).map_err(|_| FAILED)? {
         let entry = entry.map_err(|_| FAILED)?;
         let name = entry.file_name();
+        // Unknown entries (for example Finder's .DS_Store) are not cache
+        // repositories; leave them alone instead of failing every push.
         let Some(name) = name.to_str() else {
-            return Err(FAILED.into());
+            continue;
         };
-        if name == ".lock" {
+        if name == ".lock"
+            || name.len() != 64
+            || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
             continue;
         }
-        if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(FAILED.into());
-        }
         let path = entry.path();
+        if !fs::symlink_metadata(&path).map_err(|_| FAILED)?.is_dir() {
+            fs::remove_file(&path).map_err(|_| FAILED)?;
+            continue;
+        }
         let bytes = tree_size(&path)?;
         if bytes > budget {
             fs::remove_dir_all(&path).map_err(|_| FAILED)?;
@@ -195,6 +201,17 @@ fn sweep(root: &Path, budget: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sweep_skips_unknown_entries() {
+        let temporary = tempfile::tempdir().unwrap();
+        fs::write(temporary.path().join(".DS_Store"), b"finder").unwrap();
+        fs::create_dir(temporary.path().join("notes")).unwrap();
+        fs::write(temporary.path().join("a".repeat(64)), b"stray").unwrap();
+        sweep(temporary.path(), 1024).unwrap();
+        assert!(temporary.path().join(".DS_Store").exists());
+        assert!(temporary.path().join("notes").exists());
+        assert!(!temporary.path().join("a".repeat(64)).exists());
+    }
     #[test]
     fn inherited_lock_survives_parent_exit_until_git_child_finishes() {
         let temporary = tempfile::tempdir().unwrap();
