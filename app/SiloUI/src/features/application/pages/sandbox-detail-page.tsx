@@ -25,7 +25,8 @@ import { WorkspaceStoragePanel } from "@/features/application/pages/workspace-st
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { AddSecretEditor, SecretRow } from "@/features/application/components/secrets-management"
 import { useSecretsManager } from "@/features/application/components/secrets-manager"
-import { NetworkPortForm, NetworkPortRowActions, networkAddress, networkPortState, useNetworkPorts } from "@/features/application/components/network-ports"
+import { NetworkPortForm, NetworkPortRowActions } from "@/features/application/components/network-ports"
+import { networkAddress, networkPortState, useNetworkPorts } from "@/features/application/components/network-ports-state"
 import { cn } from "@/lib/utils"
 
 /** Everything the detail page needs to edit or delete this sandbox in place, sharing the
