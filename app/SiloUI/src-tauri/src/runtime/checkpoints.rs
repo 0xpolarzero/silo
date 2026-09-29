@@ -641,6 +641,7 @@ pub async fn create_checkpoint(
             .name()
             .to_owned();
         let guard = OPERATIONS
+            .kind(super::operation_gate::OperationKind::CheckpointCapture)
             .vm(&workspace_id, &vm_name, "Creating checkpoint")
             .map_err(|error| error.to_string())?;
         // Checkpoint capture is cancellable and expected to finish within 15 minutes.
@@ -1282,6 +1283,7 @@ pub async fn fork_checkpoint(
         let paths = runtime_paths(&worker_app)?;
         // Fork creates a new VM and edits the shared inventory; computer scope.
         let guard = OPERATIONS
+            .kind(super::operation_gate::OperationKind::CheckpointFork)
             .computer("Forking checkpoint")
             .map_err(|error| error.to_string())?;
         // Fork is not cancellable; flag it slow after the default window.
@@ -1583,6 +1585,7 @@ pub async fn restore_checkpoint(
             .name()
             .to_owned();
         let guard = OPERATIONS
+            .kind(super::operation_gate::OperationKind::CheckpointRestore)
             .vm(&workspace_id, &vm_name, "Restoring checkpoint")
             .map_err(|error| error.to_string())?;
         // Restore is deliberately not cancellable; flag it slow after the restore window.

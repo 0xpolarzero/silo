@@ -539,7 +539,9 @@ pub(crate) async fn install_update(
             let github = crate::github::update_guard()?;
             let secrets = crate::secrets::update_guard()?;
             // The installer waits its turn for computer-wide work before stopping VMs.
-            let runtime = crate::runtime::OPERATIONS.computer("Installing update").map_err(|e| e.to_string())?;
+            let runtime = crate::runtime::OPERATIONS
+                .kind(crate::runtime::operation_gate::OperationKind::Shutdown)
+                .computer("Installing update").map_err(|e| e.to_string())?;
             crate::runtime::shutdown::ensure_accepting_operations()?;
             Ok::<_, String>((admission, backup, github, secrets, runtime))
         })();

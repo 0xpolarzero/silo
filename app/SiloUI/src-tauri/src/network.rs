@@ -701,6 +701,7 @@ pub(crate) async fn save_network_port(
         // for that VM. NETWORK_LOCK stays the short data lock around the saved table.
         let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
         let _gate = runtime::OPERATIONS
+            .kind(runtime::operation_gate::OperationKind::PortPublish)
             .vm(&vm_id, &workspace, &format!("Publishing a port on {workspace}"))
             .map_err(|e| e.to_string())?;
         runtime::shutdown::ensure_accepting_operations()?;
@@ -764,6 +765,7 @@ pub(crate) async fn remove_network_port(
         // for that VM. NETWORK_LOCK stays the short data lock around the saved table.
         let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
         let _gate = runtime::OPERATIONS
+            .kind(runtime::operation_gate::OperationKind::PortRemove)
             .vm(&vm_id, &workspace, &format!("Removing a port on {workspace}"))
             .map_err(|e| e.to_string())?;
         runtime::shutdown::ensure_accepting_operations()?;

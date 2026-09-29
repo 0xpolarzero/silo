@@ -865,6 +865,7 @@ fn run_backup(
 
 fn mutation_guard(
     cancellation: &backup::Cancellation,
+    kind: runtime::operation_gate::OperationKind,
     label: &str,
     cancellable: bool,
 ) -> Result<runtime::operation_gate::OperationGuard<'static>, String> {
@@ -875,6 +876,7 @@ fn mutation_guard(
     }
     let started = std::time::Instant::now();
     let mut guard = runtime::OPERATIONS
+        .kind(kind)
         .acquire_while(runtime::operation_gate::Scope::Computer, None, label, &|| {
             !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
         })
@@ -906,7 +908,7 @@ fn backup_work(
     checkpoint_id: Option<&str>,
     cancellation: &backup::Cancellation,
 ) -> Result<(Archive, Vec<backup::RestartFailure>), String> {
-    let _guard = mutation_guard(cancellation, "Exporting sandbox", true)?;
+    let _guard = mutation_guard(cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true)?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if names.is_empty() {
@@ -1402,7 +1404,7 @@ fn restore_at_paths(
     progress: &dyn Fn(&str),
 ) -> Result<(), String> {
     progress("Preparing import");
-    let _guard = mutation_guard(cancellation, "Importing sandbox", false)?;
+    let _guard = mutation_guard(cancellation, runtime::operation_gate::OperationKind::Import, "Importing sandbox", false)?;
     let original = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if original
         .machines
@@ -1932,14 +1934,14 @@ mod tests {
         let guard = runtime::OPERATIONS.computer("Contended work").unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = mutation_guard(&backup::Cancellation::default(), "Exporting sandbox", true).map(|_| ());
+            let result = mutation_guard(&backup::Cancellation::default(), runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true).map(|_| ());
             sender.send(result).unwrap();
         });
         assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
         let cancellation = backup::Cancellation::default();
         cancellation.cancel();
         assert_eq!(
-            mutation_guard(&cancellation, "Exporting sandbox", true).unwrap_err(),
+            mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true).unwrap_err(),
             "The operation was cancelled."
         );
         drop(guard);

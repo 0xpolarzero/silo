@@ -126,6 +126,7 @@ fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Resul
     let allow_cancel = matches!(action.as_str(), "start" | "restart");
     let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
         OPERATIONS
+            .kind(operation_gate::OperationKind::Lifecycle)
             .acquire(
                 operation_gate::Scope::Vm { id: vm_id.clone() },
                 Some(name.clone()),

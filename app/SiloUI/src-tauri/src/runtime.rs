@@ -1678,7 +1678,10 @@ pub(crate) fn apply_github_identity(
     })).map_err(|_| "Invalid Git author configuration.".to_string())?;
     let base_label = format!("Applying GitHub access to {workspace}");
     let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
-        OPERATIONS.vm(&vm_id, workspace, label).map_err(RuntimeError::from)
+        OPERATIONS
+            .kind(operation_gate::OperationKind::GithubApply)
+            .vm(&vm_id, workspace, label)
+            .map_err(RuntimeError::from)
     };
     // Applying identity to a running guest can be cancelled; its child polling loops
     // observe the request through the current-operation token.
@@ -1831,12 +1834,12 @@ fn read_application_snapshot_once(
 
 /// A background health observation uses the same real inspection as the UI, without
 /// host identity discovery. Never hold the mutation lock while inspecting: user
-/// actions take priority. Discard observations overlapping an ongoing mutation or
-/// metadata change. No sandbox is created, started, or changed here.
-pub(crate) fn health_observations(
-    app: &AppHandle,
-) -> Option<crate::health_watch::HealthObservations> {
-    if !OPERATIONS.is_idle() { return None; }
+/// actions take priority. Each VM reports whether it stayed idle and untouched by any
+/// operation during the read, so the caller skips busy VMs without discarding the
+/// rest; a metadata change during the read discards the whole reading. No sandbox is
+/// created, started, or changed here.
+pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Reading {
+    use crate::health_watch::{Reading, VmReading};
     struct HealthRunner(Instant);
     impl RuntimeRunner for HealthRunner {
         fn run(
@@ -1869,53 +1872,51 @@ pub(crate) fn health_observations(
         .as_ref()
         .ok()
         .and_then(|paths| fs::read(&paths.metadata).ok());
+    // Generations at the start: an unchanged generation and an idle VM afterwards mean
+    // no operation touched the VM during the read.
+    let started = OPERATIONS.generations();
     let source = paths.as_ref().map_err(Clone::clone).and_then(|paths| {
         read_application_state_with(&HealthRunner(Instant::now()), paths)
             .map_err(|error| error.to_string())
     });
-    if !OPERATIONS.is_idle() { return None; }
     let after = paths
         .as_ref()
         .ok()
         .and_then(|paths| fs::read(&paths.metadata).ok());
     if before != after {
-        return None;
+        return Reading::Discarded;
     }
-    let mut observations = std::collections::HashMap::new();
-    observations.insert(
-        "runtime".into(),
-        (
-            "Silo".into(),
-            if source.is_err() {
-                "Health checks unavailable"
-            } else {
-                "Health checks available"
-            },
-        ),
-    );
-    if let Ok(source) = source {
-        for workspace in source
+    let Ok(source) = source else {
+        return Reading::Unavailable;
+    };
+    Reading::Vms(
+        source
             .workspaces
             .into_iter()
             .filter(|workspace| workspace.machine.is_vm())
-        {
-            let state = if workspace.attention.is_some() {
-                "Health or configuration check failed"
-            } else {
-                match workspace.state {
-                    WorkspaceState::Running => "Running",
-                    WorkspaceState::Stopped => "Stopped",
-                    WorkspaceState::Starting => "Starting",
-                    WorkspaceState::Failed => "Failed",
+            .map(|workspace| {
+                let id = workspace.machine.id().to_owned();
+                let state = if workspace.attention.is_some() {
+                    "Health or configuration check failed"
+                } else {
+                    match workspace.state {
+                        WorkspaceState::Running => "Running",
+                        WorkspaceState::Stopped => "Stopped",
+                        WorkspaceState::Starting => "Starting",
+                        WorkspaceState::Failed => "Failed",
+                    }
+                };
+                let generation = started.of(&id);
+                VmReading {
+                    settled: OPERATIONS.is_vm_idle(&id) && OPERATIONS.generation(&id) == generation,
+                    generation,
+                    name: workspace.machine.name().into(),
+                    state,
+                    id,
                 }
-            };
-            observations.insert(
-                format!("vm:{}", workspace.machine.id()),
-                (workspace.machine.name().into(), state),
-            );
-        }
-    }
-    Some(observations)
+            })
+            .collect(),
+    )
 }
 
 /// User-facing label for a lifecycle action on one VM.
@@ -2103,6 +2104,7 @@ pub async fn workspace_action(
         let allow_cancel = matches!(action.as_str(), "start" | "restart");
         let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
             OPERATIONS
+                .kind(operation_gate::OperationKind::Lifecycle)
                 .acquire(
                     operation_gate::Scope::Vm { id: vm_id.clone() },
                     Some(name.clone()),
@@ -3125,6 +3127,7 @@ pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
     let paths = runtime_paths(app)?;
     // Launch-time start reads the shared inventory to resolve the VM; computer-wide.
     let _guard = OPERATIONS
+        .kind(operation_gate::OperationKind::Lifecycle)
         .computer("Starting sandbox")
         .map_err(|e| e.to_string())?;
     shutdown::ensure_accepting_operations()?;

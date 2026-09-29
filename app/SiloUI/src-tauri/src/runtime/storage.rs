@@ -340,6 +340,7 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
         let _guard = if reclaim {
             Some(
                 OPERATIONS
+                    .kind(super::operation_gate::OperationKind::StorageReclaim)
                     .computer("Reclaiming sandbox storage")
                     .map_err(|e| e.to_string())?,
             )

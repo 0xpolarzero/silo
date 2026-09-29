@@ -477,6 +477,7 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
     let repo = repository(origin.trim())?;
     let token = crate::github::host_push_credential(app, workspace, &repo)?;
     let _guard = runtime::OPERATIONS
+        .kind(runtime::operation_gate::OperationKind::Push)
         .vm(&vm_id, workspace, &format!("Pushing from {workspace}"))
         .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
