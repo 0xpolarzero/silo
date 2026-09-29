@@ -1,5 +1,5 @@
 import type { SetupVirtualMachineConfiguration } from "@/contracts/silo"
-import type { MachineValidationErrors } from "@/features/onboarding/model/machine-configuration"
+import { supportedCPUs, supportedMemoryGiB, type MachineValidationErrors } from "@/features/onboarding/model/machine-configuration"
 
 /**
  * What the runtime accepts for a sandbox's resources: CPU counts are stored as a `u8`,
@@ -10,6 +10,16 @@ export const runtimeLimits = {
   memoryGiB: 4_294_967_295,
   storageGiB: 4_194_303,
 } as const
+
+/**
+ * The computer a sandbox runs on, as the runtime checks it before creating or changing a
+ * sandbox: its CPU and memory ceilings may not exceed the logical CPUs and physical memory
+ * (`validate_host_ceiling`). Undefined when the computer has not reported it (D-46).
+ */
+export interface HostCapacity {
+  logicalCPUs: number
+  memoryGiB: number
+}
 
 type ResourceField = "cpus" | "maxCPUs" | "memoryGiB" | "maxMemoryGiB" | "workspaceStorageGiB" | "runtimeStorageGiB"
 export const resourceFields: readonly ResourceField[] = ["cpus", "maxCPUs", "memoryGiB", "maxMemoryGiB", "workspaceStorageGiB", "runtimeStorageGiB"]
@@ -26,11 +36,52 @@ function wholeNumberIn(value: number, maximum: number) {
 
 const number = (value: number) => value.toLocaleString("en-US")
 
+/** The largest CPU and memory values a custom field accepts on this computer. */
+export function resourceMaximums(capacity?: HostCapacity) {
+  return {
+    cpus: Math.min(runtimeLimits.cpus, capacity?.logicalCPUs ?? runtimeLimits.cpus),
+    memoryGiB: Math.min(runtimeLimits.memoryGiB, capacity?.memoryGiB ?? runtimeLimits.memoryGiB),
+  }
+}
+
+/** Presets the computer can run, plus its own maximum when the presets stop short of it. */
+export function presetsWithin(presets: readonly number[], maximum: number | undefined): readonly number[] {
+  if (maximum === undefined || !Number.isSafeInteger(maximum) || maximum < 1) return presets
+  const within = presets.filter(value => value <= maximum)
+  return within.includes(maximum) ? within : [...within, maximum]
+}
+
+function largestPresetAtMost(value: number, presets: readonly number[]) {
+  return [...presets].reverse().find(preset => preset <= value) ?? 1
+}
+
+/**
+ * New-sandbox defaults fitted to the computer: ceilings no higher than the computer, and
+ * limits no more than half of it (snapped down to a preset) so the host keeps headroom.
+ * Defaults a computer can already run are unchanged.
+ */
+export function fitMachineToCapacity(machine: SetupVirtualMachineConfiguration, capacity: HostCapacity | undefined): SetupVirtualMachineConfiguration {
+  if (!capacity) return machine
+  const maximums = resourceMaximums(capacity)
+  const maxCPUs = Math.min(machine.maxCPUs, maximums.cpus)
+  const maxMemoryGiB = Math.min(machine.maxMemoryGiB, maximums.memoryGiB)
+  const halfCPUs = largestPresetAtMost(Math.max(1, Math.floor(maximums.cpus / 2)), supportedCPUs)
+  const halfMemoryGiB = largestPresetAtMost(Math.max(1, Math.floor(maximums.memoryGiB / 2)), supportedMemoryGiB)
+  return {
+    ...machine,
+    maxCPUs,
+    cpus: Math.min(machine.cpus, halfCPUs, maxCPUs),
+    maxMemoryGiB,
+    memoryGiB: Math.min(machine.memoryGiB, halfMemoryGiB, maxMemoryGiB),
+  }
+}
+
 /**
  * Readable range checks for a VM's resource fields. They replace the contract schema's
- * messages ("Too small: expected number to be >=1") for these fields.
+ * messages ("Too small: expected number to be >=1") for these fields and, when the
+ * computer's capacity is known, reject ceilings the runtime would refuse.
  */
-export function validateMachineResources(machine: SetupVirtualMachineConfiguration): MachineValidationErrors {
+export function validateMachineResources(machine: SetupVirtualMachineConfiguration, capacity?: HostCapacity, computerName = "This computer"): MachineValidationErrors {
   const errors: MachineValidationErrors = {}
   const range = (field: ResourceField, maximum: number, unit: string) => {
     if (!wholeNumberIn(machine[field], maximum)) errors[field] = `Enter a whole number of ${unit} from 1 to ${number(maximum)}.`
@@ -41,6 +92,11 @@ export function validateMachineResources(machine: SetupVirtualMachineConfigurati
   range("maxMemoryGiB", runtimeLimits.memoryGiB, "GB")
   range("workspaceStorageGiB", runtimeLimits.storageGiB, "GB")
   range("runtimeStorageGiB", runtimeLimits.storageGiB, "GB")
+  if (capacity) {
+    const { cpus, memoryGiB } = resourceMaximums(capacity)
+    if (!errors.maxCPUs && machine.maxCPUs > cpus) errors.maxCPUs = `${computerName} has ${number(cpus)} CPUs. Choose ${number(cpus)} or fewer.`
+    if (!errors.maxMemoryGiB && machine.maxMemoryGiB > memoryGiB) errors.maxMemoryGiB = `${computerName} has ${number(memoryGiB)} GB of memory. Choose ${number(memoryGiB)} GB or fewer.`
+  }
   if (!errors.cpus && !errors.maxCPUs && machine.cpus > machine.maxCPUs) errors.cpus = "CPU limit cannot exceed its ceiling."
   if (!errors.memoryGiB && !errors.maxMemoryGiB && machine.memoryGiB > machine.maxMemoryGiB) errors.memoryGiB = "Memory limit cannot exceed its ceiling."
   if (!errors.workspaceStorageGiB && !errors.runtimeStorageGiB && machine.workspaceStorageGiB + machine.runtimeStorageGiB > runtimeLimits.storageGiB) {

@@ -11,6 +11,7 @@ import {
 } from "@/features/onboarding/model/machine-configuration"
 import { isStaleConfigurationError } from "@/features/application/model/machine-change"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
+import { fitMachineToCapacity, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
 
 export interface MachineEditingOptions {
   machines: readonly SetupMachineConfiguration[]
@@ -23,6 +24,8 @@ export interface MachineEditingOptions {
   onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
   initialEditorDraft?: MachineEditorDraft | null
   interactionDisabled?: boolean
+  /** The capacity of a computer ("" is this one), when known, so new sandboxes fit it. */
+  getHostCapacity?: (computerId: string) => HostCapacity | undefined
 }
 
 /**
@@ -42,6 +45,7 @@ export function useMachineEditing({
   onEditorDraftChange,
   initialEditorDraft = null,
   interactionDisabled = false,
+  getHostCapacity,
 }: MachineEditingOptions) {
   const [computerId, setComputerId] = useState("")
   const [committing, setCommitting] = useState(false)
@@ -90,7 +94,8 @@ export function useMachineEditing({
     captureBaseline()
     setComputerId("")
     setEditor({
-      draft: kind === "vm" ? newVirtualMachine(machines) : newSSHMachine(machines),
+      // New sandboxes start on this computer, so fit the defaults to it.
+      draft: kind === "vm" ? fitMachineToCapacity(newVirtualMachine(machines), getHostCapacity?.("")) : newSSHMachine(machines),
       insertAt: machines.length,
     })
   }

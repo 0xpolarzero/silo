@@ -13,6 +13,7 @@ import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editin
 import { SandboxAction, SandboxList, SandboxListItem, SandboxListRow, type SandboxIconState, type SandboxRowTone } from "@/features/sandboxes/components/sandbox-list"
 import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
+import type { HostCapacity } from "@/features/sandboxes/model/machine-limits"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
@@ -61,9 +62,11 @@ interface MachineListProps {
   isMachineCreated?: (machine: SetupMachineConfiguration) => boolean
   isMachineRunning?: (machine: SetupMachineConfiguration) => boolean
   validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
+  /** The CPUs and memory of a computer ("" is this one), when known: fits new-sandbox defaults and presets, and rejects ceilings above it. */
+  getHostCapacity?: (computerId: string) => HostCapacity | undefined
 }
 
-export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
+export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getHostCapacity }: MachineListProps) {
   const {
     computerId, setComputerId,
     committing,
@@ -74,7 +77,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     baselineRef,
     captureBaseline, beginOperation, dispatchChange,
     startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteWithNotice,
-  } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp })
+  } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getHostCapacity })
 
   const [addOpen, setAddOpen] = useState(false)
   const [draggedID, setDraggedID] = useState<string | null>(null)
@@ -229,7 +232,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                   onDrop={(event) => drop(event, index, Boolean(presentation?.suppressInteractions))}
                 >
                   {isEditing && editor ? (
-                    <MachineEditor key={`${editor.draft.id}:${editorResetToken}`} saving={committing} editorHeader={computers && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={computerId} disabled={Boolean(editor.originalID) || committing} onChange={event => setComputerId(event.target.value)}><option value="">This computer</option>{computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} baselineMachine={editorBaseline ?? undefined} conflict={editorConflict} machines={getComputerId ? machines.filter(machine => (getComputerId(machine) ?? "") === computerId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} onReview={reviewConflict} onDiscard={() => setEditor(null)} />
+                    <MachineEditor key={`${editor.draft.id}:${editorResetToken}`} saving={committing} editorHeader={computers && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={computerId} disabled={Boolean(editor.originalID) || committing} onChange={event => setComputerId(event.target.value)}><option value="">This computer</option>{computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} capacity={getHostCapacity?.(computerId)} computerName={computers?.find(computer => computer.id === computerId)?.name} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} baselineMachine={editorBaseline ?? undefined} conflict={editorConflict} machines={getComputerId ? machines.filter(machine => (getComputerId(machine) ?? "") === computerId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} onReview={reviewConflict} onDiscard={() => setEditor(null)} />
                   ) : (
                     <SandboxListRow
                       name={machine.name}

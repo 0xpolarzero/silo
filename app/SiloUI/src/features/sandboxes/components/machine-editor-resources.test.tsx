@@ -56,6 +56,34 @@ describe("machine editor resource fields", () => {
     expect(storage).toHaveAccessibleDescription("Enter a whole number of GB from 1 to 4,194,303.")
   })
 
+  it("fits a new sandbox to a small computer so Save succeeds", async () => {
+    const onMachinesChange = vi.fn()
+    render(<TooltipProvider><MachineList machines={[]} onMachinesChange={onMachinesChange} getHostCapacity={(computer) => computer === "" ? { logicalCPUs: 8, memoryGiB: 16 } : undefined} /></TooltipProvider>)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+    expect(screen.getByRole("combobox", { name: "CPU ceiling" })).toHaveValue("8")
+    expect(screen.getByRole("combobox", { name: "Memory ceiling" })).toHaveValue("16")
+    const options = (label: string) => [...screen.getByRole("combobox", { name: label }).querySelectorAll("option")].map(option => option.value)
+    expect(options("CPU ceiling")).toEqual(["1", "2", "4", "6", "8", "custom"])
+    expect(options("Memory ceiling")).toEqual(["1", "2", "4", "8", "12", "16", "custom"])
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ cpus: 4, maxCPUs: 8, memoryGiB: 8, maxMemoryGiB: 16 })])
+  })
+
+  it("rejects a ceiling above the computer before the runtime does", async () => {
+    const onMachinesChange = vi.fn()
+    render(<TooltipProvider><MachineList machines={[]} onMachinesChange={onMachinesChange} getHostCapacity={() => ({ logicalCPUs: 8, memoryGiB: 16 })} /></TooltipProvider>)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+    const input = await enterCustom(user, "CPU ceiling", "CPUs", "12")
+    expect(input).toHaveAttribute("max", "8")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(onMachinesChange).not.toHaveBeenCalled()
+    expect(input).toHaveAccessibleDescription("This computer has 8 CPUs. Choose 8 or fewer.")
+  })
+
   it("saves a valid whole custom value", async () => {
     const { user, onMachinesChange } = await openNewSandbox()
     await enterCustom(user, "CPU ceiling", "CPUs", "10")

@@ -18,7 +18,7 @@ import {
 } from "@/features/onboarding/model/machine-configuration"
 import { divergentMachineFields, sameMachineConfiguration } from "@/features/application/model/machine-change"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
-import { parseWholeNumber, resourceFields, runtimeLimits, validateMachineResources } from "@/features/sandboxes/model/machine-limits"
+import { parseWholeNumber, presetsWithin, resourceFields, resourceMaximums, runtimeLimits, validateMachineResources, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
 
 function SelectField({ label, value, values, suffix, max, error, readOnly = false, custom = false, onChange }: {
   label: string
@@ -98,13 +98,17 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-export function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running }: {
+export function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName }: {
   saving?: boolean
   editorHeader?: ReactNode
   editor: MachineEditorDraft
   focusRequest: number
   created: boolean
   running: boolean
+  /** The CPUs and memory of the computer the sandbox runs on, when known. */
+  capacity?: HostCapacity
+  /** That computer's name for messages; defaults to "This computer". */
+  computerName?: string
   machines: readonly SetupMachineConfiguration[]
   /** The VM's saved configuration when this editor opened, for divergence detection. */
   baselineMachine?: SetupMachineConfiguration
@@ -135,6 +139,10 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
     && JSON.stringify(original.desktop) !== JSON.stringify(draft.desktop)
     && JSON.stringify({ ...original, desktop: undefined }) === JSON.stringify({ ...draft, desktop: undefined })
   const requiresStop = running && !desktopOnlyChange
+  // Offer only what the computer can run; the runtime rejects ceilings above it.
+  const maximums = resourceMaximums(capacity)
+  const cpuPresets = presetsWithin(supportedCPUs, capacity?.logicalCPUs)
+  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity?.memoryGiB)
 
   useEffect(() => {
     firstField.current?.focus()
@@ -159,7 +167,7 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
     if (draft.kind === "vm") {
       // Resource fields get readable range messages instead of the contract schema's.
       for (const field of resourceFields) delete nextErrors[field]
-      Object.assign(nextErrors, validateMachineResources(draft))
+      Object.assign(nextErrors, validateMachineResources(draft, capacity, computerName))
     }
     if (!editor.originalID && machines.length >= maximumMachineCount) {
       nextErrors.form = `Configure no more than ${maximumMachineCount} sandboxes.`
@@ -212,10 +220,10 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
 
       {draft.kind === "vm" ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
-          <SelectField custom label="CPU limit" value={draft.cpus} values={supportedCPUs} max={runtimeLimits.cpus} suffix="CPU" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="CPU ceiling" value={draft.maxCPUs} values={supportedCPUs} max={runtimeLimits.cpus} suffix="CPU" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory limit" value={draft.memoryGiB} values={supportedMemoryGiB} max={runtimeLimits.memoryGiB} suffix="GB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={supportedMemoryGiB} max={runtimeLimits.memoryGiB} suffix="GB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="CPU limit" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPU" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="CPU ceiling" value={draft.maxCPUs} values={cpuPresets} max={maximums.cpus} suffix="CPU" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory limit" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
           <SelectField custom readOnly={created} label="Workspace storage" value={draft.workspaceStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
           <SelectField custom readOnly={created} label="Runtime storage" value={draft.runtimeStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
         </div>
