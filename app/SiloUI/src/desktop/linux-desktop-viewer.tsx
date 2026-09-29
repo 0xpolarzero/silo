@@ -113,8 +113,10 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     const interval = window.setInterval(() => { void refresh() }, 5000)
     return () => { window.clearTimeout(initial); window.clearInterval(interval) }
   }, [refresh])
+  // The backend connects only once the stream runs; legacy guests omit it.
+  const streamReady = state?.state === "running" && (state.streamState == null || state.streamState === "running")
   useEffect(() => {
-    if (state?.state !== "running" || !screenRef.current) {
+    if (!streamReady || !screenRef.current) {
       void transport(() => invoke("desktop_viewer_detach")).catch(cause => setError(String(cause)))
       return
     }
@@ -139,7 +141,7 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     window.addEventListener("resize", updateBounds)
     void attach()
     return () => { disposed = true; observer.disconnect(); window.removeEventListener("resize", updateBounds); void transport(() => invoke("desktop_viewer_detach")).catch(() => {}) }
-  }, [workspace, state?.state, connection, transport])
+  }, [workspace, streamReady, connection, transport])
   async function handleAction(action: DesktopAction) {
     if (operation.current) return
     operation.current = true
