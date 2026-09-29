@@ -12,6 +12,7 @@ import {
 import { isStaleConfigurationError } from "@/features/application/model/machine-change"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 import { fitMachineToCapacity, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
+import { rebaseMachineDraft, type MachineReview } from "@/features/sandboxes/model/machine-review"
 
 export const defaultSaveBlockedReason = "Saving is paused while another sandbox change is in progress or needs review."
 
@@ -67,6 +68,7 @@ export function useMachineEditing({
   // The edited VM's baseline, plus editor conflict state, drive the in-editor notices.
   const [editorBaseline, setEditorBaseline] = useState<SetupMachineConfiguration | null>(null)
   const [editorConflict, setEditorConflict] = useState(false)
+  const [editorReview, setEditorReview] = useState<MachineReview | null>(null)
   const [editorResetToken, setEditorResetToken] = useState(0)
 
   function captureBaseline() {
@@ -79,7 +81,7 @@ export function useMachineEditing({
     editorRef.current = next
     setEditorState(next)
     onEditorDraftChange?.(next)
-    if (!next) { setEditorConflict(false); setEditorBaseline(null) }
+    if (!next) { setEditorConflict(false); setEditorBaseline(null); setEditorReview(null) }
   }
 
   /**
@@ -182,14 +184,22 @@ export function useMachineEditing({
     setEditor(null)
   }
 
+  // "Review changes" after a stale rejection: rebase the user's edits onto the latest saved
+  // configuration (instead of replacing them), re-baseline so the next Save applies to it,
+  // and list what changed on both sides.
   function reviewConflict() {
     if (!editor?.originalID) return
     const latest = machines.find(({ id }) => id === editor.originalID)
     if (!latest) { setEditor(null); return }
+    const { draft, review } = rebaseMachineDraft(editorBaseline ?? latest, latest, editor.draft)
     captureBaseline()
     setEditorBaseline(structuredClone(latest))
-    setEditorState({ ...editor, draft: structuredClone(latest) })
+    const next = { ...editor, draft }
+    editorRef.current = next
+    setEditorState(next)
+    onEditorDraftChange?.(next)
     setEditorConflict(false)
+    setEditorReview(review)
     setEditorResetToken(token => token + 1)
   }
 
@@ -247,7 +257,7 @@ export function useMachineEditing({
     interactionDisabled: disabled,
     saveBlockedReason,
     editor, setEditor,
-    editorBaseline, editorConflict, editorResetToken,
+    editorBaseline, editorConflict, editorReview, editorResetToken,
     editorFocusRequest, setEditorFocusRequest,
     baselineRef,
     captureBaseline, beginOperation, scopedBaseline, dispatchChange,

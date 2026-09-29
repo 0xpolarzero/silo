@@ -30,10 +30,32 @@ it("keeps the editor open with the user's edits when a save is rejected as stale
   expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
   expect(screen.getByRole("button", { name: "Review changes" })).toBeInTheDocument()
 
-  // Review changes reloads the latest configuration and clears the conflict.
+  // Review changes clears the conflict but keeps the user's edit on the latest settings.
   await user.click(screen.getByRole("button", { name: "Review changes" }))
   expect(screen.queryByText("This VM changed since you opened it.")).not.toBeInTheDocument()
-  expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveValue(String(machine.cpus))
+  expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+  expect(screen.getByRole("status", { name: "Review changes" })).toHaveTextContent("Your edits are kept on top of the latest settings.")
+})
+
+it("shows fields changed on both sides and saves the user's edits on top of the latest settings", async () => {
+  const onCommitMachine = vi.fn().mockRejectedValueOnce(staleError).mockResolvedValue(undefined)
+  const props = { onCommitMachine, getComputerId: () => "" }
+  const { user, view } = await openEditor([machine], props)
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+  const latest = { ...machine, cpus: 6, maxMemoryGiB: 64 }
+  view.rerender(<TooltipProvider><MachineList machines={[latest]} onMachinesChange={vi.fn()}
+    isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} {...props} /></TooltipProvider>)
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  await user.click(await screen.findByRole("button", { name: "Review changes" }))
+
+  const review = screen.getByRole("status", { name: "Review changes" })
+  expect(review).toHaveTextContent("CPU limit: yours 4 CPUs, elsewhere 6 CPUs")
+  expect(review).toHaveTextContent("Updated from elsewhere: Memory ceiling.")
+  expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+  expect(screen.getByRole("combobox", { name: "Memory ceiling" })).toHaveValue("64")
+
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(onCommitMachine).toHaveBeenLastCalledWith({ ...latest, cpus: 4 }, latest, "", [latest])
 })
 
 it("discards edits and closes the editor from the conflict prompt", async () => {

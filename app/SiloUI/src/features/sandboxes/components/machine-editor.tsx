@@ -18,6 +18,7 @@ import {
 } from "@/features/onboarding/model/machine-configuration"
 import { divergentMachineFields, sameMachineConfiguration } from "@/features/application/model/machine-change"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
+import { machineFieldLabel, type MachineReview } from "@/features/sandboxes/model/machine-review"
 import { parseWholeNumber, presetsWithin, resourceFields, resourceMaximums, runtimeLimits, validateMachineResources, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
 
 function SelectField({ label, value, values, suffix, max, error, readOnly = false, custom = false, onChange }: {
@@ -98,7 +99,7 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName }: {
+export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, review, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName }: {
   saving?: boolean
   /** Why Save is unavailable right now (another change locks editing); the draft is kept. */
   blockedReason?: string
@@ -116,6 +117,8 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   baselineMachine?: SetupMachineConfiguration
   /** A save was rejected because the VM changed while the edit waited. */
   conflict?: boolean
+  /** After "Review changes": the draft was rebased onto the latest settings, with these differences. */
+  review?: MachineReview | null
   onCancel: () => void
   onSave: (machine: SetupMachineConfiguration) => void
   onDraftChange: (draft: SetupMachineConfiguration) => void
@@ -201,8 +204,20 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         </div>
       ) : divergent ? (
         <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-          This VM was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.join(", ")}.` : ""}
+          This VM was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.map(machineFieldLabel).join(", ")}.` : ""}
         </p>
+      ) : review ? (
+        <div role="status" aria-label="Review changes" className="grid gap-1 rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <p>Your edits are kept on top of the latest settings.</p>
+          {review.conflicts.length > 0 && <>
+            <p>Also changed elsewhere:</p>
+            <ul className="grid gap-0.5 pl-3">
+              {review.conflicts.map(conflict => <li key={conflict.field} className="list-disc">{conflict.label}: yours {conflict.mine}, elsewhere {conflict.theirs}</li>)}
+            </ul>
+          </>}
+          {review.adopted.length > 0 && <p>Updated from elsewhere: {review.adopted.join(", ")}.</p>}
+          <p>Save to apply your edits, or Cancel to keep the latest settings.</p>
+        </div>
       ) : null}
       {/* Lock every field while saving so edits typed after Save aren't silently discarded. */}
       <fieldset disabled={saving} className="m-0 grid min-w-0 gap-3 border-0 p-0">

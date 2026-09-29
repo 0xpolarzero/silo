@@ -424,6 +424,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
                 editor={editing.editor}
                 baselineMachine={editing.editorBaseline ?? undefined}
                 conflict={editing.editorConflict}
+                review={editing.editorReview}
                 machines={editComputerMachines}
                 onCancel={() => editing.setEditor(null)}
                 onSave={editing.save}
