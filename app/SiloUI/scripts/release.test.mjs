@@ -154,6 +154,9 @@ function runner(overrides = {}) {
     "git push origin refs/tags/v0.98.7": "",
     "git ls-remote origin refs/tags/v0.98.7 refs/tags/v0.98.7^{}": "tag-object\trefs/tags/v0.98.7\nhead-commit\trefs/tags/v0.98.7^{}",
     "gh workflow run publish-release.yml --ref v0.98.7 -f version=0.98.7": "",
+    "git fetch --quiet origin main": "",
+    "git merge-base --is-ancestor HEAD origin/main": "",
+    "git ls-remote --tags origin refs/tags/v*": "old-commit\trefs/tags/v0.98.6\ntag-object\trefs/tags/v0.9.0\nold-commit\trefs/tags/v0.9.0^{}",
     ...overrides,
   }
   return { calls, run(command, args) {
@@ -161,6 +164,7 @@ function runner(overrides = {}) {
     if (command === process.execPath && args[1] === "git-tag") return ""
     const key = [command, ...args].join(" ")
     assert.ok(Object.hasOwn(outputs, key), `Unexpected command: ${key}`)
+    if (outputs[key] instanceof Error) throw outputs[key]
     return outputs[key]
   } }
 }
@@ -176,7 +180,7 @@ test("draft uses Changesets to tag and pushes only the exact release tag", t => 
 
 test("draft retries an existing matching tag without retagging", t => {
   const root = ready(t)
-  const fake = runner({ "git tag --list v0.98.7": "v0.98.7" })
+  const fake = runner({ "git tag --list v0.98.7": "v0.98.7", "git ls-remote --tags origin refs/tags/v*": "tag-object\trefs/tags/v0.98.7\nhead-commit\trefs/tags/v0.98.7^{}" })
   release("draft", root, fake.run)
   assert.equal(fake.calls.some(([command]) => command === process.execPath), false)
 })
@@ -196,6 +200,9 @@ for (const [name, action, overrides, mutate, error] of [
   ["mismatched local tag", "draft", { "git tag --list v0.98.7": "v0.98.7", "git rev-parse v0.98.7^{commit}": "old-commit" }, () => {}, /different commit/],
   ["incorrect generated tag", "draft", { "git rev-parse v0.98.7^{commit}": "old-commit" }, () => {}, /does not identify/],
   ["mismatched remote tag", "publish", { "git ls-remote origin refs/tags/v0.98.7 refs/tags/v0.98.7^{}": "old-commit\trefs/tags/v0.98.7" }, () => {}, /remote.*does not identify/],
+  ["a commit that is not on origin/main", "draft", { "git merge-base --is-ancestor HEAD origin/main": new Error("exit 1") }, () => {}, /not on origin\/main/],
+  ["a newer release tag on origin", "draft", { "git ls-remote --tags origin refs/tags/v*": "tag-object\trefs/tags/v0.99.0\nold-commit\trefs/tags/v0.99.0^{}\nold-commit\trefs/tags/v0.98.10" }, () => {}, /already has v0\.99\.0/],
+  ["this release tag on origin at another commit", "draft", { "git ls-remote --tags origin refs/tags/v*": "tag-object\trefs/tags/v0.98.7\nold-commit\trefs/tags/v0.98.7^{}" }, () => {}, /remote v0\.98\.7 belongs to a different commit/],
 ]) {
   test(`release rejects ${name} without pushing or dispatching`, t => {
     const root = ready(t)
@@ -232,6 +239,7 @@ test("release refuses to tag or publish a 1.0.0 or later version unless explicit
     "git tag --list v1.0.0": "",
     "git rev-parse v1.0.0^{commit}": "head-commit",
     "git push origin refs/tags/v1.0.0": "",
+    "git ls-remote --tags origin refs/tags/v*": "",
   }
   for (const action of ["draft", "publish"]) {
     const fake = runner(outputs)

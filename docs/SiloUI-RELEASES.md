@@ -69,8 +69,10 @@ new changelog entry and `docs/releases/VERSION.md` consistent.
 npm run release:draft
 ```
 
-This requires a clean working tree, synchronized versions, release notes, and no
-pending changesets. Changesets creates the `vVERSION` tag; the command pushes
+This requires a clean working tree, synchronized versions, release notes, no
+pending changesets, a commit already on `origin/main`, and no release tag on
+`origin` for a newer version or for this version at another commit. These checks
+run locally, before any tag is pushed. Changesets creates the `vVERSION` tag; the command pushes
 only that tag to `origin`. The tag push automatically runs **Build Silo release**.
 Approve `release-signing` in GitHub Actions if requested. All three platforms
 must pass before the complete draft appears under GitHub Releases. Nothing is
