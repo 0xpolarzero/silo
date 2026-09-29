@@ -14,6 +14,7 @@ import { ApplicationCommandMenu } from "@/features/application/components/applic
 import { applicationCommands } from "@/features/application/components/application-commands"
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
+import { defaultStartupWorkspaceIds } from "@/features/application/model/startup-workspaces"
 import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
@@ -77,10 +78,9 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
 type ApplicationAppProps = { source: ApplicationSource; actions: ApplicationActions; backup: BackupController; initialRoute?: ApplicationInitialRoute; routeRequest?: ApplicationInitialRoute }
 
 export function ApplicationApp(props: ApplicationAppProps) {
-  const initialWorkspace = props.source.workspaces.find(({ machine }) => machine.name === "dev") ?? props.source.workspaces[0]
   return <SettingsProvider initialSettings={{
     ...props.source.preferences,
-    startupWorkspaceIds: props.source.preferences.startupWorkspaceIds ?? (initialWorkspace ? [initialWorkspace.machine.id] : []),
+    startupWorkspaceIds: props.source.preferences.startupWorkspaceIds ?? defaultStartupWorkspaceIds(props.source.workspaces),
   }}><ApplicationContent {...props} /></SettingsProvider>
 }
 

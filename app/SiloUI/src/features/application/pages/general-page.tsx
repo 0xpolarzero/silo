@@ -8,10 +8,11 @@ import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { ApplicationSource } from "@/features/application/model/application-source"
+import { defaultStartupWorkspaceIds, startupWorkspaceCandidates } from "@/features/application/model/startup-workspaces"
 import { ApplicationPreferenceFields } from "@/features/preferences/components/application-preference-fields"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 import { useTheme } from "@/features/preferences/theme"
-import { SettingsProvider, useSettings } from "@/features/preferences/settings-store"
+import { useSettings } from "@/features/preferences/settings-store"
 import { useSystemIntegrations } from "@/features/preferences/system-integrations-store"
 
 function SettingRow({ icon: Icon, title, description, control }: { icon: typeof Power; title: string; description: string; control: React.ReactNode }) {
@@ -35,15 +36,8 @@ type GeneralPageProps = {
   onReduceMotionChange: (enabled: boolean) => void
 }
 
-export function GeneralPage(props: GeneralPageProps) {
-  const initialWorkspace = props.source.workspaces.filter(workspace => !workspace.computer).find(({ machine }) => machine.name === "dev") ?? props.source.workspaces.find(workspace => !workspace.computer)
-  return <SettingsProvider initialSettings={{
-    ...props.source.preferences,
-    startupWorkspaceIds: props.source.preferences.startupWorkspaceIds ?? (initialWorkspace ? [initialWorkspace.machine.id] : []),
-  }}><GeneralPageContent {...props} /></SettingsProvider>
-}
-
-function GeneralPageContent({
+/** Uses the application's settings store; the startup default only ever names local sandboxes. */
+export function GeneralPage({
   source,
   applicationPreferences,
   onApplicationPreferencesChange,
@@ -57,9 +51,8 @@ function GeneralPageContent({
   const startupWorkspaces = new Set(settings.startupWorkspaceIds)
 
   useLayoutEffect(() => {
-    const initial = source.workspaces.filter(workspace => !workspace.computer).find(({ machine }) => machine.name === "dev") ?? source.workspaces.find(workspace => !workspace.computer)
     store.updateDefaults({
-      startupWorkspaceIds: source.preferences.startupWorkspaceIds ?? (initial ? [initial.machine.id] : []),
+      startupWorkspaceIds: source.preferences.startupWorkspaceIds ?? defaultStartupWorkspaceIds(source.workspaces),
     })
   }, [store, source.workspaces, source.preferences.startupWorkspaceIds])
 
@@ -101,7 +94,7 @@ function GeneralPageContent({
             {startAtLaunch && (
               <ListRowDetails label="Sandboxes to start at launch" className="gap-2">
                 <FilterCombobox
-                  options={source.workspaces.filter(workspace => !workspace.computer).map(({ machine }) => ({ value: machine.id, label: machine.name }))}
+                  options={startupWorkspaceCandidates(source.workspaces).map(({ machine }) => ({ value: machine.id, label: machine.name }))}
                   selectedValues={startupWorkspaces}
                   onChange={(selected) => { void updateSettings({ startupWorkspaceIds: [...selected] }) }}
                   label="Startup sandboxes"
