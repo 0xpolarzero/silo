@@ -98,8 +98,10 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-export function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName }: {
+export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName }: {
   saving?: boolean
+  /** Why Save is unavailable right now (another change locks editing); the draft is kept. */
+  blockedReason?: string
   editorHeader?: ReactNode
   editor: MachineEditorDraft
   focusRequest: number
@@ -125,6 +127,7 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
   const firstField = useRef<HTMLInputElement>(null)
   const container = useRef<HTMLDivElement>(null)
   const portErrorId = useId()
+  const blockedReasonId = useId()
   // Bumped by each failed Save so focus moves to the first invalid field once it renders.
   const [failedValidation, setFailedValidation] = useState(0)
   const original = machines.find(machine => machine.id === editor.originalID)
@@ -263,9 +266,10 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
       </section>}
       </fieldset>
 
+      {blockedReason && !saving && <p id={blockedReasonId} role="status" className="text-right text-[11px] text-muted-foreground">{blockedReason}</p>}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>
-        <Button type="button" size="sm" disabled={saving || deletedElsewhere} onClick={save}>{saving ? "Saving…" : requiresStop ? "Stop VM and save" : "Save"}</Button>
+        <Button type="button" size="sm" disabled={saving || deletedElsewhere || Boolean(blockedReason)} aria-describedby={blockedReason && !saving ? blockedReasonId : undefined} onClick={save}>{saving ? "Saving…" : requiresStop ? "Stop VM and save" : "Save"}</Button>
       </div>
       {errors.form && <p className="text-xs text-destructive" role="alert">{errors.form}</p>}
     </div>

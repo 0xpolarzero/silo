@@ -13,6 +13,8 @@ import { isStaleConfigurationError } from "@/features/application/model/machine-
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 import { fitMachineToCapacity, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
 
+export const defaultSaveBlockedReason = "Saving is paused while another sandbox change is in progress or needs review."
+
 export interface MachineEditingOptions {
   machines: readonly SetupMachineConfiguration[]
   getComputerId?: (machine: SetupMachineConfiguration) => string | undefined
@@ -24,6 +26,8 @@ export interface MachineEditingOptions {
   onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
   initialEditorDraft?: MachineEditorDraft | null
   interactionDisabled?: boolean
+  /** Why `interactionDisabled` blocks saving an open editor; a generic reason by default. */
+  interactionDisabledReason?: string
   /** The capacity of a computer ("" is this one), when known, so new sandboxes fit it. */
   getHostCapacity?: (computerId: string) => HostCapacity | undefined
 }
@@ -45,11 +49,15 @@ export function useMachineEditing({
   onEditorDraftChange,
   initialEditorDraft = null,
   interactionDisabled = false,
+  interactionDisabledReason = defaultSaveBlockedReason,
   getHostCapacity,
 }: MachineEditingOptions) {
   const [computerId, setComputerId] = useState("")
   const [committing, setCommitting] = useState(false)
   const disabled = interactionDisabled || committing
+  // An editor can stay open while another change starts (or fails and awaits review):
+  // Save is then disabled with this reason instead of silently doing nothing.
+  const saveBlockedReason = interactionDisabled ? interactionDisabledReason : undefined
   const [editorFocusRequest, setEditorFocusRequest] = useState(0)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
   // The saved configuration captured when the current operation began. Every local
@@ -130,7 +138,8 @@ export function useMachineEditing({
   }
 
   async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetComputerId = computerId) {
-    if (disabled) return
+    if (committing) return
+    if (saveBlockedReason) { showActionFailure(`Couldn't save ${machine.name}`, saveBlockedReason, undefined, { native: false }); return }
     const blocked = validateOperation?.(machine, !originalID, targetComputerId)
     if (blocked) { showActionFailure(`Couldn't save ${machine.name}`, blocked, undefined, { native: false }); return }
     const baseline = baselineRef.current ?? undefined
@@ -227,6 +236,7 @@ export function useMachineEditing({
     computerId, setComputerId,
     committing,
     interactionDisabled: disabled,
+    saveBlockedReason,
     editor, setEditor,
     editorBaseline, editorConflict, editorResetToken,
     editorFocusRequest, setEditorFocusRequest,

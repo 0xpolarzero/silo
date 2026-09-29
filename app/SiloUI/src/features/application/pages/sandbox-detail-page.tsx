@@ -416,6 +416,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
               <MachineEditor
                 key={`${editing.editor.draft.id}:${editing.editorResetToken}`}
                 saving={editing.committing}
+                blockedReason={editing.saveBlockedReason}
                 editorHeader={editingContext?.computers && editing.editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.computerId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setComputerId(event.target.value)}><option value="">This computer</option>{editingContext.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined}
                 focusRequest={editing.editorFocusRequest}
                 created={Boolean(editing.editor.originalID && editingContext?.isMachineCreated?.(machine))}
