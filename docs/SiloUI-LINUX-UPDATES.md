@@ -49,6 +49,10 @@ component `main`, architectures `amd64` and `arm64`.
 succeeds, manually, and weekly to refresh expiring metadata. It downloads only
 public stable releases, verifies both package checksums against `SHA256SUMS`,
 validates their internal package/version/architecture, and signs the indexes.
+Because `SHA256SUMS` is part of the same editable release, each release must also
+be immutable, and every package must match GitHub's release attestation
+(`gh release verify-asset`), which GitHub signs at publication and later edits
+cannot change. A mutable or unattested release stops the job before signing.
 Drafts never enter the repository. The latest release must be the numerically
 highest stable release and must not change during publication.
 
@@ -64,7 +68,8 @@ See [GitHub scheduled workflow behavior](https://docs.github.com/en/actions/refe
 
 Infrastructure setup:
 
-1. Enable GitHub Pages with GitHub Actions as its build source.
+1. Enable GitHub Pages with GitHub Actions as its build source, and keep release
+   immutability enabled in the repository settings.
 2. Create an `apt-publish` environment restricted to the `main` branch.
 3. Store the dedicated ASCII-armored private archive key in that environment's
    `SILO_APT_SIGNING_KEY` secret. Do not use the Tauri updater key. Never commit

@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      # Read GitHub's signed release attestations for each downloaded package.
+      attestations: read
       pages: write
       id-token: write
     steps:

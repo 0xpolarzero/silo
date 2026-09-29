@@ -1,4 +1,9 @@
-"""Fetch the latest published stable release and its predecessor, checking all bytes."""
+"""Fetch the latest published stable release and its predecessor, checking all bytes.
+
+The release's own SHA256SUMS is editable with the release, so each package must
+also match GitHub's release attestation, which GitHub signs when an immutable
+release is published and which later release edits cannot change.
+"""
 import hashlib
 import json
 import os
@@ -21,6 +26,8 @@ def download(output, repository):
         raise ValueError('Latest release must be the highest published stable version')
     output.mkdir(parents=True, exist_ok=False)
     for release in stable[:2]:
+        if release.get('immutable') is not True:
+            raise ValueError(f"{release['tag_name']} is not an immutable release; enable release immutability before publishing")
         version = release['tag_name'][1:]
         target = output / version
         target.mkdir()
@@ -35,6 +42,8 @@ def download(output, repository):
             package = target / name
             if package.is_symlink() or hashlib.sha256(package.read_bytes()).hexdigest() != hashes.get(name):
                 raise ValueError('Release package checksum mismatch')
+            # Fails unless the bytes match the digest GitHub attested at publication.
+            subprocess.run(['gh', 'release', 'verify-asset', release['tag_name'], str(package), '--repo', repository], check=True)
     (output / 'latest-version').write_text(latest['tag_name'])
 
 
