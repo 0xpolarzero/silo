@@ -22,8 +22,10 @@ function checkpointTag(checkpoint: WorkspaceCheckpoint) {
   return checkpoint.scope === "full" ? "Includes memory" : "Disks only"
 }
 
-export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false, forkedAction, restoredAction }: {
+export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false, forkedAction, restoredAction, takenNames }: {
   workspace: ApplicationWorkspace
+  /** Sandbox names already used on this sandbox's computer, so a fork name conflict shows inline. */
+  takenNames?: readonly string[]
   target: string
   actions: ApplicationActions
   disabled: boolean
@@ -158,7 +160,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                 <ActionsMenu
                   label={`Checkpoint actions for ${checkpoint.name}`}
                   disabled={locked}
-                  popovers={{ fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox from this checkpoint. Select Start when ready." disabled={locked} onFork={newName => fork(checkpoint, newName)} onClose={close} /> }}
+                  popovers={{ fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox from this checkpoint. Select Start when ready." disabled={locked} takenNames={takenNames} onFork={newName => fork(checkpoint, newName)} onClose={close} /> }}
                   items={[
                     ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
                     ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),
