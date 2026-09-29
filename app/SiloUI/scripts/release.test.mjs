@@ -34,9 +34,9 @@ function fixture(t) {
 }
 function prepare(root) {
   const pkg = JSON.parse(read(join(root, "package.json")))
-  pkg.version = "9.8.7"
+  pkg.version = "0.98.7"
   writeFileSync(join(root, "package.json"), JSON.stringify(pkg, null, 2) + "\n")
-  writeFileSync(join(root, "CHANGELOG.md"), "# silo-ui\n\n## 9.8.7\n\n### Patch Changes\n\n- Clear release notes.\n\n## 0.1.0\n\nOlder notes.\n")
+  writeFileSync(join(root, "CHANGELOG.md"), "# silo-ui\n\n## 0.98.7\n\n### Patch Changes\n\n- Clear release notes.\n\n## 0.1.0\n\nOlder notes.\n")
 }
 const snapshot = root => Object.fromEntries(metadata.map(file => [file, read(join(root, file))]))
 
@@ -82,12 +82,12 @@ test("real Changesets versions a private app, consumes notes, and syncs desktop 
 })
 
 for (const [name, mutate, error] of [
-  ["invalid stable version", root => { const pkg = JSON.parse(read(join(root, "package.json"))); pkg.version = "9.8.7-beta.1"; writeFileSync(join(root, "package.json"), JSON.stringify(pkg)) }, /stable version/],
+  ["invalid stable version", root => { const pkg = JSON.parse(read(join(root, "package.json"))); pkg.version = "0.98.7-beta.1"; writeFileSync(join(root, "package.json"), JSON.stringify(pkg)) }, /stable version/],
   ["missing changelog version", root => writeFileSync(join(root, "CHANGELOG.md"), "## 0.1.0\n\nOld notes.\n"), /No changelog/],
-  ["empty notes", root => writeFileSync(join(root, "CHANGELOG.md"), "## 9.8.7\n\n"), /empty/],
+  ["empty notes", root => writeFileSync(join(root, "CHANGELOG.md"), "## 0.98.7\n\n"), /empty/],
   ["malformed Rust metadata", root => writeFileSync(join(root, "src-tauri/Cargo.lock"), '[[package]]\nname = "other"\nversion = "1.0.0"\n'), /exactly one/],
   ["malformed npm lock", root => writeFileSync(join(root, "package-lock.json"), "{}"), /lockfile/],
-  ["conflicting existing notes", root => { const path = resolve(root, "../../docs/releases/9.8.7.md"); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "Reviewed notes\n") }, /different notes/],
+  ["conflicting existing notes", root => { const path = resolve(root, "../../docs/releases/0.98.7.md"); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "Reviewed notes\n") }, /different notes/],
 ]) {
   test(`sync rejects ${name} before writing any metadata`, t => {
     const root = fixture(t)
@@ -96,7 +96,7 @@ for (const [name, mutate, error] of [
     const before = snapshot(root)
     assert.throws(() => syncRelease(root), error)
     assert.deepEqual(snapshot(root), before)
-    const notes = resolve(root, "../../docs/releases/9.8.7.md")
+    const notes = resolve(root, "../../docs/releases/0.98.7.md")
     if (existsSync(notes)) assert.equal(read(notes), "Reviewed notes\n")
   })
 }
@@ -105,13 +105,13 @@ function runner(overrides = {}) {
   const calls = []
   const outputs = {
     "git status --porcelain": "",
-    "python3 scripts/validate-release-version.py": "9.8.7",
+    "python3 scripts/validate-release-version.py": "0.98.7",
     "git rev-parse HEAD": "head-commit",
-    "git tag --list v9.8.7": "",
-    "git rev-parse v9.8.7^{commit}": "head-commit",
-    "git push origin refs/tags/v9.8.7": "",
-    "git ls-remote origin refs/tags/v9.8.7 refs/tags/v9.8.7^{}": "tag-object\trefs/tags/v9.8.7\nhead-commit\trefs/tags/v9.8.7^{}",
-    "gh workflow run publish-release.yml --ref v9.8.7 -f version=9.8.7": "",
+    "git tag --list v0.98.7": "",
+    "git rev-parse v0.98.7^{commit}": "head-commit",
+    "git push origin refs/tags/v0.98.7": "",
+    "git ls-remote origin refs/tags/v0.98.7 refs/tags/v0.98.7^{}": "tag-object\trefs/tags/v0.98.7\nhead-commit\trefs/tags/v0.98.7^{}",
+    "gh workflow run publish-release.yml --ref v0.98.7 -f version=0.98.7": "",
     ...overrides,
   }
   return { calls, run(command, args) {
@@ -129,12 +129,12 @@ test("draft uses Changesets to tag and pushes only the exact release tag", t => 
   const fake = runner()
   release("draft", root, fake.run)
   assert.deepEqual(fake.calls.filter(([command]) => command === process.execPath), [[process.execPath, [join(root, "node_modules/@changesets/cli/bin.js"), "git-tag"]]])
-  assert.deepEqual(fake.calls.filter(([, args]) => args[0] === "push"), [["git", ["push", "origin", "refs/tags/v9.8.7"]]])
+  assert.deepEqual(fake.calls.filter(([, args]) => args[0] === "push"), [["git", ["push", "origin", "refs/tags/v0.98.7"]]])
 })
 
 test("draft retries an existing matching tag without retagging", t => {
   const root = ready(t)
-  const fake = runner({ "git tag --list v9.8.7": "v9.8.7" })
+  const fake = runner({ "git tag --list v0.98.7": "v0.98.7" })
   release("draft", root, fake.run)
   assert.equal(fake.calls.some(([command]) => command === process.execPath), false)
 })
@@ -143,17 +143,17 @@ test("publish verifies the peeled remote tag and explicitly dispatches the exist
   const root = ready(t)
   const fake = runner()
   release("publish", root, fake.run)
-  assert.deepEqual(fake.calls.at(-1), ["gh", ["workflow", "run", "publish-release.yml", "--ref", "v9.8.7", "-f", "version=9.8.7"]])
+  assert.deepEqual(fake.calls.at(-1), ["gh", ["workflow", "run", "publish-release.yml", "--ref", "v0.98.7", "-f", "version=0.98.7"]])
   assert.equal(fake.calls.some(([, args]) => args[0] === "push"), false)
 })
 
 for (const [name, action, overrides, mutate, error] of [
   ["dirty checkout", "draft", { "git status --porcelain": " M package.json" }, () => {}, /Commit or stash/],
   ["pending changeset", "draft", {}, root => writeFileSync(join(root, ".changeset/pending.md"), "pending"), /Unreleased changesets/],
-  ["missing release notes", "draft", {}, root => rmSync(resolve(root, "../../docs/releases/9.8.7.md")), /Missing release notes/],
-  ["mismatched local tag", "draft", { "git tag --list v9.8.7": "v9.8.7", "git rev-parse v9.8.7^{commit}": "old-commit" }, () => {}, /different commit/],
-  ["incorrect generated tag", "draft", { "git rev-parse v9.8.7^{commit}": "old-commit" }, () => {}, /does not identify/],
-  ["mismatched remote tag", "publish", { "git ls-remote origin refs/tags/v9.8.7 refs/tags/v9.8.7^{}": "old-commit\trefs/tags/v9.8.7" }, () => {}, /remote.*does not identify/],
+  ["missing release notes", "draft", {}, root => rmSync(resolve(root, "../../docs/releases/0.98.7.md")), /Missing release notes/],
+  ["mismatched local tag", "draft", { "git tag --list v0.98.7": "v0.98.7", "git rev-parse v0.98.7^{commit}": "old-commit" }, () => {}, /different commit/],
+  ["incorrect generated tag", "draft", { "git rev-parse v0.98.7^{commit}": "old-commit" }, () => {}, /does not identify/],
+  ["mismatched remote tag", "publish", { "git ls-remote origin refs/tags/v0.98.7 refs/tags/v0.98.7^{}": "old-commit\trefs/tags/v0.98.7" }, () => {}, /remote.*does not identify/],
 ]) {
   test(`release rejects ${name} without pushing or dispatching`, t => {
     const root = ready(t)
@@ -163,3 +163,40 @@ for (const [name, action, overrides, mutate, error] of [
     assert.equal(fake.calls.some(([command, args]) => command === "gh" || args[0] === "push"), false)
   })
 }
+
+function stable(root) {
+  const pkg = JSON.parse(read(join(root, "package.json")))
+  pkg.version = "1.0.0"
+  writeFileSync(join(root, "package.json"), JSON.stringify(pkg, null, 2) + "\n")
+  writeFileSync(join(root, "CHANGELOG.md"), "# silo-ui\n\n## 1.0.0\n\n### Major Changes\n\n- First stable release.\n")
+}
+
+test("sync refuses a 1.0.0 or later version unless the stable release is explicitly allowed", t => {
+  const root = fixture(t)
+  stable(root)
+  const before = snapshot(root)
+  assert.throws(() => syncRelease(root), /below 1\.0\.0.*--allow-stable/s)
+  assert.deepEqual(snapshot(root), before)
+  assert.equal(existsSync(resolve(root, "../../docs/releases/1.0.0.md")), false)
+  assert.equal(syncRelease(root, { allowStable: true }), "1.0.0")
+})
+
+test("release refuses to tag or publish a 1.0.0 or later version unless explicitly allowed", t => {
+  const root = fixture(t)
+  stable(root)
+  syncRelease(root, { allowStable: true })
+  const outputs = {
+    "python3 scripts/validate-release-version.py": "1.0.0",
+    "git tag --list v1.0.0": "",
+    "git rev-parse v1.0.0^{commit}": "head-commit",
+    "git push origin refs/tags/v1.0.0": "",
+  }
+  for (const action of ["draft", "publish"]) {
+    const fake = runner(outputs)
+    assert.throws(() => release(action, root, fake.run), /below 1\.0\.0.*--allow-stable/s)
+    assert.equal(fake.calls.some(([command, args]) => command === "gh" || args[0] === "push" || args[1] === "git-tag"), false)
+  }
+  const fake = runner(outputs)
+  release("draft", root, fake.run, { allowStable: true })
+  assert.deepEqual(fake.calls.filter(([, args]) => args[0] === "push"), [["git", ["push", "origin", "refs/tags/v1.0.0"]]])
+})

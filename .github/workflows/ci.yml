@@ -1,0 +1,108 @@
+name: CI
+
+# Work lands directly on main, so every push to main and every pull request
+# runs the ordinary checks. Release, packaging and live VM checks stay in their
+# own workflows.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  frontend:
+    name: Frontend and scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app/SiloUI
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            app/SiloUI/package-lock.json
+            website/package-lock.json
+            demo/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: node scripts/preflight.mjs
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test -- --maxWorkers=2
+      - run: npm run test:release
+      - run: python3 scripts/validate-release-version.py
+      - name: Check build.rs declares every registered Tauri command
+        run: python3 scripts/check-command-manifest.py
+      - name: Install Debian and APT tooling for script tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg dpkg-dev
+      - name: Run every release and packaging script test
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Typecheck the website demo
+        working-directory: website
+        run: |
+          npm ci
+          npm run typecheck
+      - name: Typecheck the demo films
+        working-directory: demo
+        run: |
+          npm ci
+          npm run typecheck
+
+  rust:
+    name: Rust tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: app/SiloUI
+    env:
+      # Synthetic build values from the release guide: these tests never sign in
+      # to a GitHub account, and the test executables are never distributed.
+      SILO_GITHUB_APP_SLUG: silo-ci-test
+      SILO_GITHUB_CLIENT_ID: test-client
+      SILO_GITHUB_CLIENT_SECRET: test-secret
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: app/SiloUI/package-lock.json
+      - run: node scripts/preflight.mjs
+      - name: Install Linux build dependencies and the pinned Rust toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libclang-dev libcap-ng-dev cmake
+          runtime_toolchain=$(node -p "require(process.env.GITHUB_WORKSPACE + '/app/SiloUI/runtime-inputs.json').toolchain")
+          rustup toolchain install "$runtime_toolchain" --profile minimal --component rustfmt
+          rustup default "$runtime_toolchain"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/SiloUI/src-tauri
+      - run: npm ci
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - run: npm run runtime:prepare
+      # The suite shares process-wide state and only passes serially.
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
+      # Report-only until the formatting sweep lands (K-19).
+      - name: Report cargo fmt differences
+        continue-on-error: true
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check

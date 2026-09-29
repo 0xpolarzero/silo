@@ -4,13 +4,15 @@ import { fileURLToPath } from "node:url"
 import { execFileSync } from "node:child_process"
 
 import { preflight } from "./preflight.mjs"
+import { assertPreStable } from "./sync-release.mjs"
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
-export function release(action, root = app, run = (command, args) => execFileSync(command, args, { cwd: root, encoding: "utf8", stdio: ["inherit", "pipe", "inherit"] }).trim()) {
+export function release(action, root = app, run = (command, args) => execFileSync(command, args, { cwd: root, encoding: "utf8", stdio: ["inherit", "pipe", "inherit"] }).trim(), { allowStable = false } = {}) {
   if (!["draft", "publish"].includes(action)) throw new Error("Use npm run release:draft or npm run release:publish.")
   if (run("git", ["status", "--porcelain"])) throw new Error("Commit or stash your changes before releasing. No tag was pushed.")
   const version = run("python3", ["scripts/validate-release-version.py"])
+  assertPreStable(version, allowStable)
   const tag = `v${version}`
   const pending = readdirSync(resolve(root, ".changeset")).filter(name => name.endsWith(".md") && name !== "README.md")
   if (pending.length) throw new Error("Unreleased changesets remain. Run npm run release:version, review, and commit first.")
@@ -38,6 +40,6 @@ export function release(action, root = app, run = (command, args) => execFileSyn
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { release(process.argv[2]) }
+  try { release(process.argv[2], app, undefined, { allowStable: process.argv.includes("--allow-stable") }) }
   catch (error) { console.error(error.message); process.exitCode = 1 }
 }

@@ -1,13 +1,15 @@
 # Silo release notes
 
 Run `npm run changeset` from `app/SiloUI` when completing a user-visible change.
-Choose `silo-ui`, select patch/minor/major, and describe the change for someone
+Choose `silo-ui`, select patch or minor, and describe the change for someone
 using the app. Commit the generated Markdown file with the implementation.
 Agents may write the same Markdown format directly.
 
 - **patch**: a fix or compatible refinement.
-- **minor**: a new compatible feature.
-- **major**: an incompatible change; explain migration steps.
+- **minor**: a new feature, or an incompatible change; explain migration steps.
+- **major**: do not use. Silo stays below 1.0.0 until the owner decides on a
+  stable release; `release:version` and `release:draft` refuse 1.0.0 or later
+  unless `--allow-stable` is passed.
 
 Internal refactors, tests, and documentation do not need a release note unless
 they affect users. Several changesets are combined into one release; Changesets

@@ -25,7 +25,7 @@ describe('the embedded production UI', () => {
     const user = userEvent.setup();
     render(<ReadOnlyDemo />);
     const sidebar = screen.getByRole('navigation', { name: 'Silo navigation' });
-    for (const name of ['Files', 'Logs', 'Network', 'Activity', 'GitHub', 'Backup', 'Settings', 'Computers', 'Notifications']) {
+    for (const name of ['Files', 'Logs', 'Network', 'Activity', 'GitHub', 'Secrets', 'Settings', 'Computers', 'Notifications']) {
       await user.click(within(sidebar).getByRole('button', { name: new RegExp(`^${name}`) }));
       const page = screen.getByRole('group', { name: 'Read-only sample data' });
       expect(page).toBeVisible();

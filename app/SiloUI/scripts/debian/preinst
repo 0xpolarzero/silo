@@ -8,7 +8,7 @@ case "$1" in install|upgrade)
     for executable in /proc/[0-9]*/exe; do
         target=$(readlink "$executable" 2>/dev/null) || continue
         case "$target" in
-            /usr/bin/silo-ui|'/usr/bin/silo-ui (deleted)'|/usr/lib/Silo/bin/msb|'/usr/lib/Silo/bin/msb (deleted)')
+            /usr/bin/silo-ui|'/usr/bin/silo-ui (deleted)'|/usr/libexec/silo/tools/msb|'/usr/libexec/silo/tools/msb (deleted)')
                 # Only the authenticated updater may keep its inert UI alive.
                 # Other Silo instances and all running local runtimes still block.
                 pid=${executable#/proc/}; pid=${pid%/exe}

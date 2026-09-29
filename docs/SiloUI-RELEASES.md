@@ -27,8 +27,11 @@ npm run changeset
 ```
 
 Choose `silo-ui`, the bump type, and write a user-facing summary. Use **patch**
-for fixes, **minor** for compatible features, and **major** for incompatible
-changes. Include any migration steps. Commit the generated `.changeset/*.md`
+for fixes and **minor** for features and incompatible changes. Silo stays below
+1.0.0 until the owner explicitly decides on a stable release, so never use
+**major**: `sync-release.mjs` and `release.mjs` refuse 1.0.0 or later unless
+`--allow-stable` is passed (for example
+`npm run release:sync -- --allow-stable`). Include any migration steps. Commit the generated `.changeset/*.md`
 file alongside the change. Edit the Markdown freely before release. Internal
 refactors, tests, and documentation do not require a note unless users are affected.
 
@@ -279,7 +282,7 @@ Linux builds target Ubuntu 24.04-compatible systems and require KVM for VMs.
 AppImage bundles application libraries but does not make glibc or GPU support
 universal. Debian upgrades use the package manager and download flow, never
 replace package-owned binaries in place. Intel macOS and Windows are unsupported.
-Debian packages keep runtime/Git helpers in `/usr/lib/Silo/bin`; they never
+Linux packages keep runtime/Git helpers in `/usr/libexec/silo/tools`; they never
 overwrite system Git in `/usr/bin`. AppImage keeps its helpers inside the image.
 The guest image, native runtime, host Git/LFS tools and notices are packaged with
 the application; existing VM disks are not release assets.
