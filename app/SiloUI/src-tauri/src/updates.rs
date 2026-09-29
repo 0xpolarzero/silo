@@ -260,17 +260,22 @@ pub(crate) async fn get_update_state(app: AppHandle) -> Result<Snapshot, String>
     .map_err(|_| "Update state could not be read.".to_string())?
 }
 #[tauri::command]
-pub(crate) fn set_update_automatic_checks(
+pub(crate) async fn set_update_automatic_checks(
     app: AppHandle,
     enabled: bool,
 ) -> Result<Snapshot, String> {
-    save_preferences(&app.state::<Controller>().preferences, enabled)?;
-    modify(&app, |s| {
-        if enabled && !s.snapshot.automatic_checks {
-            s.schedule.enable(SystemTime::now());
-        }
-        s.snapshot.automatic_checks = enabled;
+    // The durable write fsyncs twice; keep it off the main thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        save_preferences(&app.state::<Controller>().preferences, enabled)?;
+        modify(&app, |s| {
+            if enabled && !s.snapshot.automatic_checks {
+                s.schedule.enable(SystemTime::now());
+            }
+            s.snapshot.automatic_checks = enabled;
+        })
     })
+    .await
+    .map_err(|_| "Update preferences could not be saved.".to_owned())?
 }
 #[tauri::command]
 pub(crate) async fn check_for_update(app: AppHandle) -> Result<Snapshot, String> {
