@@ -85,3 +85,34 @@ export async function connectSettingsLifecycle(store: SettingsStore, main: boole
   await connect()
   return () => { disposed = true; stop?.(); window.removeEventListener("focus", refresh) }
 }
+
+const quitRequestSchema = z.object({
+  requestId: z.number().int().nonnegative(),
+  /** Running local sandbox names; empty when their status could not be read. */
+  sandboxes: z.array(z.string()),
+})
+export type QuitRequest = z.infer<typeof quitRequestSchema>
+
+/**
+ * Opt the main window in to confirming Quit while local sandboxes run (decision 7).
+ * `ask` resolves true for "Quit and stop" and false for "Cancel". A repeated Quit
+ * while the prompt is open re-sends the same request and is ignored here.
+ */
+export async function connectQuitConfirmation(ask: (request: QuitRequest) => Promise<boolean>) {
+  let active: number | null = null
+  const stop = await listen("silo://quit-requested", (event) => {
+    const parsed = quitRequestSchema.safeParse(event.payload)
+    if (!parsed.success) { console.error("Silo quit request was invalid:", parsed.error); return }
+    const { requestId } = parsed.data
+    if (active === requestId) return
+    active = requestId
+    void ask(parsed.data)
+      .catch((error: unknown) => { console.error("Silo quit confirmation:", error); return false })
+      .then((confirmed) => invoke("answer_quit_request", { requestId, confirmed }))
+      .catch((error: unknown) => console.error("Silo quit answer:", error))
+      .finally(() => { if (active === requestId) active = null })
+  })
+  try { await invoke("enable_quit_confirmation") }
+  catch (error) { stop(); throw error }
+  return stop
+}

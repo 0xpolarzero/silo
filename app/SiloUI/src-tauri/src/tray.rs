@@ -150,7 +150,7 @@ mod platform {
                 .into(),
                 ksni::menu::StandardItem {
                     label: "Quit Silo".into(),
-                    activate: Box::new(|tray: &mut Self| tray.app.exit(0)),
+                    activate: Box::new(|tray: &mut Self| crate::settings::request_quit(&tray.app)),
                     ..Default::default()
                 }
                 .into(),

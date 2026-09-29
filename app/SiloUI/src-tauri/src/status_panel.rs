@@ -159,7 +159,7 @@ pub fn take_main_route(app: AppHandle) -> Option<serde_json::Value> {
 
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
-    app.exit(0);
+    crate::settings::request_quit(&app);
 }
 
 #[cfg(test)]

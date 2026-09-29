@@ -590,6 +590,7 @@ fn settings_path(app: &AppHandle) -> tauri::Result<Option<PathBuf>> {
 pub fn install(app: &AppHandle) {
     app.manage(SettingsState::default());
     app.manage(ShutdownState::default());
+    app.manage(QuitConfirmation::default());
 }
 
 /// Read validated, persisted preferences from a blocking native worker.
@@ -789,6 +790,111 @@ pub fn read_shutdown_state(app: AppHandle) -> bool {
     app.state::<ShutdownState>().active()
 }
 
+/// One confirm-capable Quit path (decision 7). Until the main UI opts in with
+/// `enable_quit_confirmation`, requests exit directly as before.
+#[derive(Default)]
+struct QuitConfirmation(Mutex<QuitRequests>);
+#[derive(Default)]
+struct QuitRequests { enabled: bool, pending: Option<u64>, next: u64 }
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuitRequest {
+    request_id: u64,
+    /// Running local sandbox names. Empty means their status could not be read.
+    sandboxes: Vec<String>,
+}
+
+impl QuitConfirmation {
+    fn enabled(&self) -> bool {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).enabled
+    }
+    /// `None` exits now: nothing runs, or no UI can answer.
+    fn ask(&self, running: Result<Vec<String>, String>) -> Option<QuitRequest> {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.enabled {
+            return None;
+        }
+        let sandboxes = match running {
+            Ok(names) if names.is_empty() => return None,
+            Ok(names) => names,
+            Err(error) => {
+                eprintln!("Silo quit: sandbox status is unavailable: {error}");
+                Vec::new()
+            }
+        };
+        let request_id = match state.pending {
+            Some(id) => id,
+            None => {
+                state.next += 1;
+                state.pending = Some(state.next);
+                state.next
+            }
+        };
+        Some(QuitRequest { request_id, sandboxes })
+    }
+    /// Returns whether Silo should exit.
+    fn answer(&self, request_id: u64, confirmed: bool) -> Result<bool, String> {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.pending != Some(request_id) {
+            return Err("This Quit request is no longer current.".into());
+        }
+        state.pending = None;
+        Ok(confirmed)
+    }
+}
+
+/// Every user Quit entry point (menus and ⌘Q, tray, status panel, and window close
+/// on Linux without a tray) calls this. When local sandboxes are running it shows
+/// the main window and emits `silo://quit-requested`; the UI answers with
+/// `answer_quit_request`. Otherwise it enters the graceful exit path directly.
+pub(crate) fn request_quit(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let confirmation = app.state::<QuitConfirmation>();
+        let main = app.get_webview_window("main");
+        if !confirmation.enabled() || main.is_none() || app.state::<ShutdownState>().active() {
+            app.exit(0);
+            return;
+        }
+        let running = crate::runtime::update_recovery::running_names(&app);
+        let Some(request) = confirmation.ask(running) else {
+            app.exit(0);
+            return;
+        };
+        if let Some(window) = main {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        if app.emit_to("main", "silo://quit-requested", &request).is_err() {
+            let _ = confirmation.answer(request.request_id, true);
+            app.exit(0);
+        }
+    });
+}
+
+#[tauri::command]
+pub fn enable_quit_confirmation(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    require_main(window.label())?;
+    app.state::<QuitConfirmation>().0.lock().unwrap_or_else(|error| error.into_inner()).enabled = true;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn answer_quit_request(
+    app: AppHandle,
+    window: WebviewWindow,
+    request_id: u64,
+    confirmed: bool,
+) -> Result<(), String> {
+    require_main(window.label())?;
+    if app.state::<QuitConfirmation>().answer(request_id, confirmed)? {
+        app.exit(0);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn begin_settings_flush(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     require_main(window.label())?;
@@ -979,6 +1085,25 @@ mod tests {
         assert_eq!(saved["settings"]["launchAtLogin"], false);
         assert_eq!(saved["settings"]["futurePreference"], 42);
         assert_eq!(saved["futureDocumentField"]["keep"], true);
+    }
+
+    #[test]
+    fn quit_asks_only_when_sandboxes_run_and_a_ui_can_answer() {
+        let quit = QuitConfirmation::default();
+        assert_eq!(quit.ask(Ok(vec!["dev".into()])), None, "no UI has opted in");
+        quit.0.lock().unwrap().enabled = true;
+        assert_eq!(quit.ask(Ok(vec![])), None, "nothing is running");
+        let request = quit.ask(Ok(vec!["dev".into(), "api".into()])).unwrap();
+        assert_eq!(request.sandboxes, vec!["dev", "api"]);
+        let again = quit.ask(Ok(vec!["dev".into()])).unwrap();
+        assert_eq!(again.request_id, request.request_id, "a repeated Quit reuses the open prompt");
+        assert_eq!(quit.answer(request.request_id + 1, true), Err("This Quit request is no longer current.".into()));
+        assert_eq!(quit.answer(request.request_id, false), Ok(false));
+        assert!(quit.answer(request.request_id, true).is_err(), "an answered request is closed");
+        let unknown = quit.ask(Err("inspect failed".into())).unwrap();
+        assert!(unknown.sandboxes.is_empty());
+        assert_ne!(unknown.request_id, request.request_id);
+        assert_eq!(quit.answer(unknown.request_id, true), Ok(true));
     }
 
     #[test]
