@@ -98,6 +98,28 @@ fn operation(job: &Job) -> Value {
     }
     value
 }
+/// Finished history is bounded: keep active work, the latest job for each
+/// repository, and recent undismissed results; drop the rest.
+fn prune(jobs: &mut Journal, now: u64) {
+    const RETAIN: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
+    let mut latest = HashMap::<String, (u64, String)>::new();
+    for (id, job) in jobs.iter() {
+        let key = format!(
+            "{}\0{}",
+            job.operation["workspace"], job.operation["repositoryPath"]
+        );
+        if latest.get(&key).is_none_or(|(updated, _)| *updated <= job.updated) {
+            latest.insert(key, (job.updated, id.clone()));
+        }
+    }
+    let keep: std::collections::HashSet<String> =
+        latest.into_values().map(|(_, id)| id).collect();
+    jobs.retain(|id, job| {
+        keep.contains(id)
+            || job.operation["status"] == "pushing"
+            || (!job.dismissed && now.saturating_sub(job.updated) < RETAIN)
+    });
+}
 fn claim(
     jobs: &mut Journal,
     id: &str,
@@ -119,6 +141,7 @@ fn claim(
     }) {
         return Ok((operation(job), false));
     }
+    prune(jobs, now());
     if jobs.len() >= MAX_JOBS {
         return Err("Saved push history reached its 10,000-operation safety limit. No new push was started. Contact Silo support to archive the history without replaying previous requests.".into());
     }
@@ -156,22 +179,32 @@ pub(crate) fn start(
         let result = host_push::push_repository(app.clone(), workspace.clone(), path.clone()).await;
         let mut value = result.unwrap_or_else(|message| json!({"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":message}));
         value["operationId"] = json!(id);
-        if let Ok(_guard) = LOCK.lock() {
-            if let Ok(mut completed) = COMPLETED.get_or_init(|| Mutex::new(HashMap::new())).lock() {
-                completed.insert(id.clone(), (value.clone(), now()));
-            }
-            if let Ok(mut jobs) = read(&journal) {
-                if let Some(job) = jobs.get_mut(&id) {
-                    job.operation = value;
-                    job.updated = now();
-                }
-                // A failed save leaves the previous durable record unresolved, never a fabricated success.
-                let _ = write(&journal, &jobs);
-            }
-        }
+        // The std lock and fsync'd journal write block; keep them off the async workers.
+        let _ = tauri::async_runtime::spawn_blocking(move || record_completion(&journal, &id, value)).await;
         let _ = app.emit("silo://application-state-changed", ());
     });
     Ok(value)
+}
+fn record_completion(journal: &Path, id: &str, value: Value) {
+    let Ok(_guard) = LOCK.lock() else {
+        return;
+    };
+    if let Ok(mut completed) = COMPLETED.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        completed.insert(id.to_owned(), (value.clone(), now()));
+    }
+    if let Ok(mut jobs) = read(journal) {
+        if let Some(job) = jobs.get_mut(id) {
+            job.operation = value;
+            job.updated = now();
+        }
+        // A failed save leaves the previous durable record unresolved, never a fabricated success.
+        // Once saved, the durable record replaces the in-memory copy.
+        if write(journal, &jobs).is_ok() {
+            if let Ok(mut completed) = COMPLETED.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+                completed.remove(id);
+            }
+        }
+    }
 }
 pub(crate) fn status(
     app: &AppHandle,
@@ -329,6 +362,25 @@ pub async fn repository_push_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claim_prunes_dismissed_and_old_finished_history() {
+        let mut jobs = Journal::new();
+        let job = |status: &str, path: &str, updated: u64, dismissed: bool| Job {
+            session: "old".into(),
+            updated,
+            dismissed,
+            operation: json!({"workspace":"dev","repositoryPath":path,"status":status}),
+        };
+        jobs.insert("old-dismissed".into(), job("failed", "/workspace/a", 1, true));
+        jobs.insert("latest-a".into(), job("failed", "/workspace/a", 2, true));
+        jobs.insert("old-finished".into(), job("succeeded", "/workspace/b", 1, false));
+        jobs.insert("latest-b".into(), job("succeeded", "/workspace/b", 2, false));
+        jobs.insert("active".into(), job("pushing", "/workspace/c", 1, false));
+        prune(&mut jobs, 30 * 24 * 60 * 60 * 1_000_000_000);
+        let mut kept: Vec<_> = jobs.keys().cloned().collect();
+        kept.sort();
+        assert_eq!(kept, ["active", "latest-a", "latest-b"]);
+    }
     #[test]
     fn corrupt_journal_degrades_to_current_pushes() {
         let temporary = tempfile::tempdir().unwrap();
