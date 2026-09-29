@@ -1,3 +1,4 @@
+import "./ssh-access-panel.css"
 import { ConnectionIcon } from "@/components/connection-icon"
 import { ActionsMenu } from "@/components/actions-menu"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
