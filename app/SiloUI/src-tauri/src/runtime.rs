@@ -1818,7 +1818,7 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
         source.github = crate::github::snapshot(&app).unwrap_or_else(|message| serde_json::json!({
             "state": "disconnected", "accessEnabled": false, "repositoryCatalog": [],
             "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
-            "workspaceOperations": [], "hostIdentity": crate::host_identity::read(),
+            "workspaceOperations": [], "hostIdentity": crate::host_identity::cached(|| {}),
         }));
         Ok(source)
     })
@@ -1836,7 +1836,7 @@ pub async fn read_application_shell(app: AppHandle, error: String) -> Result<App
         source.github = crate::github::snapshot(&app).unwrap_or_else(|message| serde_json::json!({
             "state": "disconnected", "accessEnabled": false, "repositoryCatalog": [],
             "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
-            "workspaceOperations": [], "hostIdentity": crate::host_identity::read(),
+            "workspaceOperations": [], "hostIdentity": crate::host_identity::cached(|| {}),
         }));
         Ok(source)
     }).await.map_err(|error| error.to_string())?

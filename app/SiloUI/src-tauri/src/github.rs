@@ -657,12 +657,17 @@ fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
     Err("GitHub installation catalog exceeds the supported size.".into())
 }
 
+/// The host Git identity without waiting for Git: snapshots are taken on every state
+/// refresh and sometimes under GitHub locks, so they never spawn Git themselves.
+fn host_identity() -> Option<crate::host_identity::HostIdentity> {
+    crate::host_identity::cached(|| {
+        if let Some(app) = OBSERVATION_APP.get() {
+            let _ = app.emit("silo://application-state-changed", ());
+        }
+    })
+}
 pub fn snapshot(app: &tauri::AppHandle) -> Result<Value, String> {
-    let mut value = observed_snapshot(
-        load(app)?,
-        observed_credential(),
-        crate::host_identity::read(),
-    );
+    let mut value = observed_snapshot(load(app)?, observed_credential(), host_identity());
     // Saved choices for a sandbox that has no runtime yet are not a failure; they apply
     // once it starts.
     if let Some(operations) = value["workspaceOperations"].as_array_mut() {
@@ -1859,6 +1864,8 @@ fn catalog_refresh_due(d: &Document, now: u64) -> bool {
 /// Re-establish host-only grants after relaunch and renew them before expiry.
 pub fn install(app: &tauri::AppHandle) {
     let _ = OBSERVATION_APP.set(app.clone());
+    // Start the first host identity read now so the first GitHub view already has it.
+    host_identity();
     if let Ok(document) = load(app) {
         crate::github_http::restore_retry_floors(&document.rate_retry);
     }
