@@ -37,6 +37,41 @@ it("keeps row controls mounted and in place across a busy transition", () => {
   expect(reorder).toHaveAttribute("tabindex", "0")
 })
 
+it("reorders only this computer's sandboxes, around remote rows", async () => {
+  const { default: userEvent } = await import("@testing-library/user-event")
+  const base = productionMachineDefaults[0]
+  const first = { ...base, id: "00000000-0000-4000-8000-00000000000a", name: "first" }
+  const remote = { ...base, id: "00000000-0000-4000-8000-00000000000b", name: "remote" }
+  const second = { ...base, id: "00000000-0000-4000-8000-00000000000c", name: "second" }
+  const onMachinesChange = vi.fn()
+  render(<TooltipProvider><MachineList machines={[first, remote, second]} onMachinesChange={onMachinesChange}
+    getComputerId={(machine) => machine.id === remote.id ? "office" : undefined} /></TooltipProvider>)
+  // A remote sandbox's order is its own computer's: it offers no reorder control.
+  expect(screen.queryByRole("button", { name: "Reorder remote" })).not.toBeInTheDocument()
+  screen.getByRole("button", { name: "Reorder first" }).focus()
+  await userEvent.setup().keyboard("{ArrowDown}")
+  expect(onMachinesChange).toHaveBeenCalledExactlyOnceWith([second, first], [first, second])
+  expect(screen.getByText("first moved to position 2 of 2.")).toBeInTheDocument()
+})
+
+it("waits for the source to publish a keyboard move before the next one", async () => {
+  const { default: userEvent } = await import("@testing-library/user-event")
+  const base = productionMachineDefaults[0]
+  const [a, b, c] = ["a", "b", "c"].map((name, index) => ({ ...base, id: `00000000-0000-4000-8000-00000000001${index}`, name }))
+  const onMachinesChange = vi.fn(() => new Promise<void>(() => {}))
+  const view = (machines: typeof base[]) => <TooltipProvider><MachineList machines={machines} onMachinesChange={onMachinesChange} /></TooltipProvider>
+  const { rerender } = render(view([a, b, c]))
+  const user = userEvent.setup()
+  screen.getByRole("button", { name: "Reorder a" }).focus()
+  await user.keyboard("{ArrowDown}{ArrowDown}")
+  // The second press would have recomputed from the stale order and repeated the first move.
+  expect(onMachinesChange).toHaveBeenCalledExactlyOnceWith([b, a, c], [a, b, c])
+  rerender(view([b, a, c]))
+  screen.getByRole("button", { name: "Reorder a" }).focus()
+  await user.keyboard("{ArrowDown}")
+  expect(onMachinesChange).toHaveBeenLastCalledWith([b, c, a], [b, a, c])
+})
+
 it("keeps the sandbox name field free of auto-capitalization and autocorrect", async () => {
   const { default: userEvent } = await import("@testing-library/user-event")
   const user = userEvent.setup()

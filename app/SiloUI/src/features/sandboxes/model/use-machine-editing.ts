@@ -140,13 +140,15 @@ export function useMachineEditing({
     return getComputerId ? baseline.filter(machine => (getComputerId(machine) ?? "") === computerId) : baseline
   }
 
-  function dispatchChange(next: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[], saved?: Pick<SetupMachineConfiguration, "id" | "name">) {
+  /** Applies a whole-list change; returns its settlement (failures already reported) when asynchronous. */
+  function dispatchChange(next: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[], saved?: Pick<SetupMachineConfiguration, "id" | "name">): Promise<void> | undefined {
     // Only pass a baseline when one was captured, keeping the no-baseline call shape
     // (onboarding drafts) exactly one argument.
     const outcome = baseline ? onMachinesChange(next, baseline) : onMachinesChange(next)
     if (outcome && typeof (outcome as Promise<void>).then === "function") {
-      void (outcome as Promise<void>).catch((cause) => reportSaveFailure(cause, saved))
+      return (outcome as Promise<void>).catch((cause) => reportSaveFailure(cause, saved))
     }
+    return undefined
   }
 
   async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetComputerId = computerId) {
