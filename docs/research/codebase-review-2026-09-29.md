@@ -17,54 +17,117 @@ Checks at review time: `typecheck` and `lint` passed (7 `only-export-components`
 warnings); 1012 of 1014 frontend tests passed (the 2 failures came from
 uncommitted in-progress work renaming the sandbox "Access" tab to "SSH").
 
-## Decisions for the owner
+## Owner decisions (settled 2026-09-29)
 
-These items need a product or security call before fixing, or change what users
-see. Everything else in this report can be fixed without changing intended
-behaviour.
+The owner reviewed these items on 2026-09-29. Nothing has been implemented; this
+section records the agreed direction. Every other finding in this report is
+accepted as a bug to fix without changing intended behaviour.
 
-1. **Host Push trust model (security).** The host re-reads repository, branch
-   and commit from the guest after the user clicks Push, then mints a write token
-   (including `workflows`) even for a sandbox whose grant is read-only. Decide
-   whether Push requires the repository to be write-granted, whether Push shows a
-   confirmation naming repository and branch, and whether host-push tokens drop
-   `workflows`.
-2. **Remote-management SSH key (security).** The key is passphraseless and
-   installed in `authorized_keys` without restrictions. Restricting it
-   (`restrict,command=…,permitopen=…`) means existing remote computers must have
-   the key re-installed.
-3. **"Disable access" semantics (security/UX).** Disable access and Disconnect do
-   not affect sandboxes using a personal token. Decide whether Disable access is
-   a global kill switch.
-4. **Secret domain wildcards (security/UX).** `*.github.io`, `*.vercel.app` and
-   `*.co.uk` are accepted. Decide block vs. warn for public-suffix wildcards.
-5. **Editor handoff trust (security/UX).** VS Code Remote-SSH into an untrusted
-   guest can reach host GitHub credentials (git askpass) and auto-forward guest
-   ports. Decide between documenting it, a per-sandbox confirmation, or launching
-   VS Code with a Silo profile that disables Git authentication and port
-   auto-forwarding.
-6. **Delete copy (UX, data loss).** The Delete dialog says "Persistent volumes
-   will be retained" but the disk and checkpoints are deleted. New copy should
-   state what is lost and suggest Export first.
-7. **Quit behaviour (UX, data loss).** The tray power button quits and stops all
-   VMs in one click; on Linux without a tray, closing the window is a full Quit;
-   macOS Dock Quit and logout skip the graceful stop. Decide on a Quit
-   confirmation and on window-close behaviour without a tray.
-8. **Confirmation policy (UX).** Stop/Restart are one click in the main window
-   and command palette but confirmed in the tray; Delete has three different
-   confirmation patterns. Pick one policy.
-9. **Checkpoint deletion (new UI).** Checkpoint snapshots are never deleted and
-   there is no Delete checkpoint action; storage use is invisible and grows until
-   export/import/checkpoints fail. Needs a Delete action and storage visibility.
-10. **Terminology (copy-wide).** Pick one glossary: sandbox vs VM / machine /
-    workspace; export/import vs backup/restore/archive/snapshot; "this computer"
-    only for the local Mac; SSH host vs SSH access vs Remote Login.
-11. **Release version.** The pending `major` changeset would produce 1.0.0, which
-    already exists as a tag and release notes. Choose the next version (for
-    example 1.1.0).
-12. **CI on main.** Frontend tests only run on release tags and Rust tests only on
-    PRs, while work lands directly on `main`. Decide whether to add a push-to-main
-    verification workflow.
+1. **Host Push (security) — accepted.** The host currently re-reads repository,
+   branch and commit from the guest after the user clicks Push, then mints a write
+   token (including `workflows`) even for a sandbox whose grant is read-only.
+   - Bind each push to the repository, branch and commit shown in the UI; abort
+     if the guest reports anything else.
+   - Show a confirmation naming the repository and branch before pushing.
+   - Require the repository to be write-granted to that sandbox.
+   - Mint host-push tokens with `contents: write` only (no `workflows`) and revoke
+     them after the push.
+2. **Remote-management SSH key (security) — accepted.** Install Silo's key with
+   `restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge"`.
+   Silo only uses the key to run the bridge (`remote.rs:383`, `:635`) and for
+   `-N` tunnels to `127.0.0.1` (published ports, desktop viewer), so no feature
+   changes. Existing remote computers need no user action: Silo rewrites its own
+   `authorized_keys` line over the current connection the next time it connects.
+3. **"Disable access" — accepted as a global kill switch.** Disable access
+   detaches every sandbox's GitHub access (OAuth and personal token) and blocks
+   host push.
+4. **Secret domain wildcards — no change.** Choosing allowed domains is the
+   user's responsibility; users should allow specific subdomains rather than
+   wildcards on shared suffixes such as `*.github.io`.
+5. **Editor handoff — accepted.** VS Code Remote-SSH runs a helper server inside
+   the sandbox connected back to VS Code on the host; guest code can use it to
+   obtain the host VS Code's GitHub session for `git` and to auto-forward guest
+   ports to host `localhost` (from code and documentation; not tested against a
+   hostile guest).
+   - Launch VS Code for Silo sandboxes with a dedicated "Silo" profile that sets
+     `github.gitAuthentication: false`, `git.terminalAuthentication: false` and
+     `remote.autoForwardPorts: false`, leaving the user's normal profile
+     untouched.
+   - Document the remaining trust expansion in `SiloUI-EDITOR-HANDOFF.md` and
+     check Zed's equivalent behaviour.
+6. **Delete sandbox — accepted.** One dialog, identical from the list row and the
+   sandbox page:
+   - Title: "Delete {name} permanently?"
+   - Body: "Its files ({size}) and {n} checkpoints will be deleted. This can't be
+     undone."
+   - **Export, then delete**: choose a file, export, verify; delete only if the
+     export succeeded.
+   - **Delete permanently** (destructive style) and **Cancel**.
+7. **Quit confirmation — accepted.** When sandboxes are running, show "Quit Silo?
+   This stops {n} running sandboxes: {names}." with **Quit and stop** /
+   **Cancel**; no prompt when nothing is running. Applies to the tray power
+   button, ⌘Q and menus, macOS Dock Quit (requires handling
+   `applicationShouldTerminate:`), and Linux window close when no tray is
+   available. Logout and shutdown must still stop sandboxes gracefully.
+8. **Confirmation policy — accepted.**
+   - Stop/Restart a running sandbox: always confirm, using the tray's inline
+     confirmation, everywhere (list row, page header, command palette, menus).
+   - Delete sandbox: always the dialog in decision 6.
+   - Remove a port, secret or computer: inline two-step confirmation in
+     destructive style.
+   - Start and Open: never confirm.
+   - Labels end with "…" only when a confirmation or dialog follows.
+9. **Checkpoint storage — accepted.** Add a Delete checkpoint action (confirmed,
+   respecting checkpoints that forks depend on); remove native snapshots when a
+   sandbox is deleted or a capture or import fails; show checkpoint storage in
+   the Storage tab.
+10. **Terminology — accepted.** Use this glossary in all user-facing text (UI,
+    notifications, tray and native menus, backend messages, help):
+
+    | Concept | Say | Stop saying |
+    |---|---|---|
+    | A Linux VM Silo manages | **sandbox** | VM, virtual machine, machine |
+    | A machine connected over SSH that Silo doesn't manage | **SSH host** | SSH machine, machine |
+    | The `/workspace` folder and its disk | **workspace** (only this meaning) | workspace for the sandbox itself |
+    | A physical machine running Silo | **computer**; the local one is "this computer", others by name | "this computer" for a remote one, host |
+    | Saved state of a sandbox | **checkpoint** | snapshot, saved state |
+    | Rewind a sandbox to a checkpoint | **Restore** | "restore" for anything else |
+    | New sandbox from a checkpoint or current state | **Fork** — "a new sandbox with a copy of its files" | clone, copy |
+    | New empty sandbox with the same settings | **Duplicate settings** | Duplicate |
+    | Sandbox to file, and back | **Export** / **Import**; the file is an **export file** | backup, archive, restore |
+    | SSH into a sandbox | **SSH access** | Access |
+    | Remote computer states | **Offline** / **Updating…** | Unavailable, busy, Applying VM changes |
+
+    Optional later: rename the `.silo-backup` extension to `.silo-export` while
+    still importing the old one.
+11. **Versioning — accepted.** Silo stays pre-1.0; the first stable release
+    happens only when the owner explicitly decides.
+    - Facts: 1.0.0 was never published (latest GitHub release is 0.9.0). A
+      mistaken "Release Silo 1.0.0" commit (`c305d4d`) was corrected to 0.9.0 in
+      `1890947`, but the `v1.0.0` tag (`bd721d6`, local and on GitHub) and
+      `docs/releases/1.0.0.md` remain. Root cause: `AGENTS.md` tells agents to use
+      `major` for incompatible changes, and Changesets turns a pre-1.0 `major`
+      into 1.0.0.
+    - Change `app/SiloUI/.changeset/runtime-checkpoints-migration.md` to `minor`,
+      so the next release is 0.10.0.
+    - `AGENTS.md`: before 1.0, breaking changes use `minor`; `major` only when the
+      owner explicitly decides to release 1.0.0.
+    - Release tooling refuses any version ≥ 1.0.0 unless an explicit flag is
+      given, checked before `changeset version` consumes the changesets.
+    - Delete the stale `v1.0.0` tag (local and GitHub) and
+      `docs/releases/1.0.0.md` (approved by the owner).
+12. **CI — accepted: a GitHub Actions workflow on push to `main` and on pull
+    requests** (not a local git hook).
+    - Fast job: typecheck, lint, frontend tests, all release-script tests
+      (including the ones currently never run), `website/` and `demo/`
+      typecheck, and a check that `build.rs`'s command list matches the handlers
+      registered in `main.rs`.
+    - Rust job: `cargo test --locked -- --test-threads=1` on Linux with the
+      synthetic GitHub configuration release CI already uses.
+    - Linux packaging (bundle plus `package-debian-release.py`) only when
+      packaging files change, or nightly.
+    - `cargo fmt --check` report-only until a one-time reformat is scheduled
+      while no other work is in flight.
 
 ## 1. Release blockers
 
@@ -79,10 +142,10 @@ behaviour.
   `app/SiloUI/src-tauri/build.rs` omits it although it is registered, granted and
   invoked. A stale local autogenerated permission file masks this; a clean build
   is expected to fail permission validation (not reproduced).
-- **Version collision** ✓ — `app/SiloUI/.changeset/runtime-checkpoints-migration.md`
-  is `major` → 1.0.0; `v1.0.0` and `docs/releases/1.0.0.md` exist, so
-  `release:version` fails half-way (changesets consumed before `sync-release`
-  validates).
+- **Unintended 1.0.0 bump** ✓ — `app/SiloUI/.changeset/runtime-checkpoints-migration.md`
+  is `major`, which Changesets turns into 1.0.0; the stale `v1.0.0` tag and
+  `docs/releases/1.0.0.md` also make `release:version` fail half-way (changesets
+  consumed before `sync-release` validates). See owner decision 11.
 - **Website and demo builds broken** ✓ — `website/src/demo/read-only-demo.tsx:11`,
   `demo/src/release-backup.tsx:5` and `demo/src/preparation.tsx:16` import the
   deleted `backup-page`. No CI job builds `website/` or `demo/`.
@@ -110,6 +173,7 @@ behaviour.
   `github.json`. A new sandbox reusing a name may inherit grants.
 - **Public-suffix secret wildcards** (2×) — `app/SiloUI/src-tauri/src/secrets.rs:284-300`,
   `app/SiloUI/src/features/application/model/secret-configuration.ts:21-28`.
+  Owner decision 4: no change; allowed domains are the user's responsibility.
 - **Secrets in process environments** — `SILO_GITHUB` (`runtime.rs:1634`) and
   `GIT_CONFIG_VALUE_0` (`host_push.rs:267-279`) are readable by same-user
   processes; host-push tokens are not revoked. Secret names become host `msb`
