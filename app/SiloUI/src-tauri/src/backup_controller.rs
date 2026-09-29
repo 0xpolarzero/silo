@@ -1537,6 +1537,11 @@ fn restore_at_paths(
             cancellation,
         )
         .map_err(|error| error.to_string())?;
+    // Until the new sandbox is saved, a failure removes the loaded import
+    // group instead of stranding it in the native store (E-23).
+    let import_group = controller
+        .service
+        .discard_import_on_failure(&prepared.snapshot_group);
     if prepared.source_name != source_name || prepared.new_name != new_name {
         return Err("The verified backup restore identity changed unexpectedly.".into());
     }
@@ -1569,6 +1574,7 @@ fn restore_at_paths(
         let _ = runtime::checkpoints::forget_removed(paths, &id);
         return Err(error.to_string());
     }
+    import_group.keep();
     Ok(())
 }
 

@@ -24,6 +24,7 @@ const MAX_STRUCTURED_OUTPUT: usize = 1024 * 1024;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const WORKER_LOCK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DEFAULT_MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Default)]
@@ -420,6 +421,35 @@ struct PackageSandbox {
     volumes: Vec<Value>,
 }
 
+/// See `BackupService::discard_import_on_failure`.
+#[must_use = "dropping the guard immediately discards the import"]
+pub(crate) struct ImportGroupGuard<'a, R: MsbRunner> {
+    service: &'a BackupService<R>,
+    group: String,
+    keep: bool,
+}
+
+impl<R: MsbRunner> ImportGroupGuard<'_, R> {
+    /// The new sandbox now owns the group.
+    pub(crate) fn keep(mut self) {
+        self.keep = true;
+    }
+}
+
+impl<R: MsbRunner> Drop for ImportGroupGuard<'_, R> {
+    fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
+        if let Err(error) = self.service.discard_import_group(&self.group) {
+            eprintln!(
+                "Silo could not remove the incomplete import {}: {error}",
+                self.group
+            );
+        }
+    }
+}
+
 struct OperationGuard<'a>(&'a AtomicBool);
 
 impl Drop for OperationGuard<'_> {
@@ -641,14 +671,7 @@ impl<R: MsbRunner> BackupService<R> {
         name: &str,
         cancellation: &Cancellation,
     ) -> Result<PathBuf, BackupError> {
-        let output = self.require_success(
-            "Locating captured VM disk",
-            &["snapshot".into(), "list".into(), "--format".into(), "json".into()],
-            cancellation,
-        )?;
-        let entries: Vec<Value> = serde_json::from_str(&output.stdout).map_err(|_| {
-            BackupError::InvalidRequest("The runtime returned an invalid snapshot index.".into())
-        })?;
+        let entries = self.snapshot_index("Locating captured VM disk", cancellation)?;
         let mut matches = entries.iter().filter(|entry| {
             entry["group"] == group && entry["name"] == name && entry["availability"] == "ready"
         });
@@ -657,15 +680,27 @@ impl<R: MsbRunner> BackupService<R> {
                 "The runtime did not publish exactly one ready captured snapshot.".into(),
             )
         })?;
-        let id = entry["snapshot_id"].as_str().filter(|id| {
-            id.len() == 37
-                && id.starts_with("snap_")
-                && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
-        }).ok_or_else(|| BackupError::InvalidRequest("The runtime returned an invalid snapshot identity.".into()))?;
+        self.member_artifact(entry, group)
+    }
+
+    /// The canonical artifact directory of an indexed member, confined to
+    /// `<native store>/snapshots/<group>/<snapshot id>`.
+    fn member_artifact(&self, entry: &Value, group: &str) -> Result<PathBuf, BackupError> {
+        let id = entry["snapshot_id"]
+            .as_str()
+            .filter(|id| valid_snapshot_id(id))
+            .ok_or_else(|| {
+                BackupError::InvalidRequest("The runtime returned an invalid snapshot identity.".into())
+            })?;
         let path = Path::new(entry["artifact_path"].as_str().ok_or_else(|| {
             BackupError::InvalidRequest("The runtime omitted the captured snapshot path.".into())
         })?);
-        let native_store = self.command.storage_home.as_deref().unwrap_or(&self.command.home).join("snapshots");
+        let native_store = self
+            .command
+            .storage_home
+            .as_deref()
+            .unwrap_or(&self.command.home)
+            .join("snapshots");
         let native_store = fs::canonicalize(native_store)?;
         let path = fs::canonicalize(path)?;
         if !path.is_dir()
@@ -703,7 +738,24 @@ impl<R: MsbRunner> BackupService<R> {
         request: RestoreRequest,
         cancellation: &Cancellation,
     ) -> Result<PreparedRestore, BackupError> {
+        self.prepare_restore_in_group(request, &new_import_group(), cancellation)
+    }
+
+    /// Like `prepare_restore`, but loads into a group the caller named first,
+    /// so a journal can record the group before any native data exists and
+    /// relaunch recovery can discard it after a crash.
+    pub(crate) fn prepare_restore_in_group(
+        &self,
+        request: RestoreRequest,
+        import_group: &str,
+        cancellation: &Cancellation,
+    ) -> Result<PreparedRestore, BackupError> {
         let _guard = self.begin()?;
+        if !valid_import_group(import_group) {
+            return Err(BackupError::InvalidRequest(
+                "The import checkpoint group name is invalid.".into(),
+            ));
+        }
         validate_sandbox_name(&request.new_name)?;
         let names = self.list_sandbox_names(cancellation)?;
         if names.contains(&request.new_name) {
@@ -727,98 +779,107 @@ impl<R: MsbRunner> BackupService<R> {
             .ok_or_else(|| {
                 BackupError::InvalidArchive("snapshot payload was not extracted".into())
             })?;
-        let import_group = format!("silo-import-{}", uuid::Uuid::new_v4().simple());
-        let before = self.require_success(
-            "Checking imported checkpoint identity",
-            &[
-                "snapshot".into(),
-                "list".into(),
-                "--format".into(),
-                "json".into(),
-            ],
-            cancellation,
-        )?;
-        let before: Vec<Value> = serde_json::from_str(&before.stdout).map_err(|_| {
-            BackupError::InvalidArchive("the runtime returned an invalid checkpoint index".into())
-        })?;
+        let before = self.snapshot_index("Checking imported checkpoint identity", cancellation)?;
         if before.iter().any(|entry| entry["group"] == import_group) {
-            return Err(BackupError::ImportGroupConflict(import_group));
+            // Never load into, or clean up, a group this attempt did not create.
+            return Err(BackupError::ImportGroupConflict(import_group.into()));
         }
         let import_stages_before = cache_import_stages(&self.command.home)?;
-        let load_result = self.require_success(
+        // From here on the runtime may hold native data for this group. Every
+        // failure, including Cancel and a timed-out or killed load, removes the
+        // group and the runtime's leftover import staging before returning.
+        match self.load_import_group(payload_path, import_group, cancellation) {
+            Ok(snapshot_member) => Ok(PreparedRestore {
+                source_name: source.name.clone(),
+                new_name: request.new_name,
+                runtime_config: source.runtime_config.clone(),
+                machine_config: source.machine_config.clone(),
+                snapshot_group: import_group.into(),
+                snapshot_member,
+                _stage: stage,
+            }),
+            Err(error) => {
+                cleanup_new_cache_import_stages(&self.command.home, &import_stages_before);
+                if let Err(cleanup) = self.remove_import_group(import_group) {
+                    eprintln!(
+                        "Silo could not remove the incomplete import {import_group}: {cleanup}"
+                    );
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Load the verified payload into `import_group` and return its verified head member.
+    fn load_import_group(
+        &self,
+        payload_path: &Path,
+        import_group: &str,
+        cancellation: &Cancellation,
+    ) -> Result<String, BackupError> {
+        self.require_success(
             "Loading VM snapshot",
             &[
                 "snapshot".into(),
                 "load".into(),
                 payload_path.to_string_lossy().into_owned(),
                 "--group".into(),
-                import_group.clone(),
+                import_group.into(),
             ],
             cancellation,
-        );
-        let _output = match load_result {
-            Ok(output) => output,
-            Err(error) => {
-                cleanup_new_cache_import_stages(&self.command.home, &import_stages_before);
-                return Err(error);
-            }
-        };
+        )?;
         // The CLI's printed reference is useful for diagnostics only. Resolve
         // the loaded member from the runtime's indexed JSON before using it.
-        let indexed = match self.require_success(
-            "Checking imported checkpoint",
-            &[
-                "snapshot".into(),
-                "list".into(),
-                "--format".into(),
-                "json".into(),
-            ],
-            cancellation,
-        ) {
-            Ok(indexed) => indexed,
-            Err(error) => {
-                eprintln!("Retained imported snapshot group {import_group} for native recovery after index failure.");
-                return Err(error);
-            }
-        };
-        let entries: Vec<Value> = match serde_json::from_str(&indexed.stdout) {
-            Ok(entries) => entries,
-            Err(_) => {
-                eprintln!("Retained imported snapshot group {import_group} for native recovery after invalid index data.");
-                return Err(BackupError::InvalidArchive(
-                    "the runtime returned an invalid checkpoint index".into(),
-                ));
-            }
-        };
+        let entries = self.snapshot_index("Checking imported checkpoint", cancellation)?;
         let imported: Vec<_> = entries
             .iter()
             .filter(|entry| entry["group"] == import_group)
             .collect();
         if imported.is_empty() || imported.iter().any(|entry| entry["availability"] != "ready") {
-            cleanup_new_cache_import_stages(&self.command.home, &import_stages_before);
-            eprintln!("Retained imported snapshot group {import_group} for native recovery after incomplete import.");
             return Err(BackupError::InvalidArchive(
                 "the runtime did not publish a complete ready imported checkpoint group".into(),
             ));
         }
         let head = self.require_success(
             "Checking imported checkpoint head",
-            &["snapshot".into(), "head".into(), import_group.clone(), "--format".into(), "json".into()],
+            &[
+                "snapshot".into(),
+                "head".into(),
+                import_group.into(),
+                "--format".into(),
+                "json".into(),
+            ],
             cancellation,
         )?;
         let head: Value = serde_json::from_str(&head.stdout).map_err(|_| {
-            BackupError::InvalidArchive("the runtime returned an invalid imported checkpoint head".into())
+            BackupError::InvalidArchive(
+                "the runtime returned an invalid imported checkpoint head".into(),
+            )
         })?;
         if head["group"] != import_group {
-            return Err(BackupError::InvalidArchive("the imported checkpoint head belongs to another group".into()));
+            return Err(BackupError::InvalidArchive(
+                "the imported checkpoint head belongs to another group".into(),
+            ));
         }
-        let head_id = head["head"].as_str().filter(|id| {
-            id.len() == 37 && id.starts_with("snap_") && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
-        }).ok_or_else(|| BackupError::InvalidArchive("the imported checkpoint head is missing or invalid".into()))?;
-        let mut matches = imported.iter().filter(|entry| entry["snapshot_id"] == head_id);
-        let head_member = matches.next().filter(|_| matches.next().is_none()).ok_or_else(|| {
-            BackupError::InvalidArchive("the imported checkpoint head is not uniquely indexed".into())
-        })?;
+        let head_id = head["head"]
+            .as_str()
+            .filter(|id| valid_snapshot_id(id))
+            .ok_or_else(|| {
+                BackupError::InvalidArchive(
+                    "the imported checkpoint head is missing or invalid".into(),
+                )
+            })?;
+        let mut matches = imported
+            .iter()
+            .filter(|entry| entry["snapshot_id"] == head_id);
+        let head_member = matches
+            .next()
+            .filter(|_| matches.next().is_none())
+            .ok_or_else(|| {
+                BackupError::InvalidArchive(
+                    "the imported checkpoint head is not uniquely indexed".into(),
+                )
+            })?;
         let snapshot_member = head_member["name"]
             .as_str()
             .filter(|name| !name.is_empty())
@@ -828,7 +889,7 @@ impl<R: MsbRunner> BackupService<R> {
                 )
             })?
             .to_owned();
-        if let Err(error) = self.require_success(
+        self.require_success(
             "Verifying restored VM disk",
             &[
                 "snapshot".into(),
@@ -836,19 +897,153 @@ impl<R: MsbRunner> BackupService<R> {
                 format!("{import_group}:{snapshot_member}"),
             ],
             cancellation,
-        ) {
-            eprintln!("Retained imported snapshot group {import_group} for native recovery after verification failure.");
-            cleanup_new_cache_import_stages(&self.command.home, &import_stages_before);
-            return Err(error);
+        )?;
+        Ok(snapshot_member)
+    }
+
+    /// Remove a Silo import group that no sandbox uses: after a failed import,
+    /// or during relaunch recovery of an interrupted one. Idempotent.
+    pub(crate) fn discard_import_group(&self, group: &str) -> Result<(), BackupError> {
+        let _guard = self.begin()?;
+        self.remove_import_group(group)
+    }
+
+    /// Covers the steps between a successful `prepare_restore` and the saved
+    /// sandbox: unless `keep` is called, dropping the guard discards the group.
+    pub(crate) fn discard_import_on_failure(&self, group: &str) -> ImportGroupGuard<'_, R> {
+        ImportGroupGuard {
+            service: self,
+            group: group.to_owned(),
+            keep: false,
         }
-        Ok(PreparedRestore {
-            source_name: source.name.clone(),
-            new_name: request.new_name,
-            runtime_config: source.runtime_config.clone(),
-            machine_config: source.machine_config.clone(),
-            snapshot_group: import_group,
-            snapshot_member,
-            _stage: stage,
+    }
+
+    /// Remove every member through `msb snapshot remove`, never `--force`:
+    /// children before parents, with a root selected as head and removed
+    /// last, because MicroSandbox refuses to remove a snapshot with indexed
+    /// children or the head of a group that still has other members. Runs
+    /// with its own cancellation so a cancelled import still cleans up.
+    fn remove_import_group(&self, group: &str) -> Result<(), BackupError> {
+        if !valid_import_group(group) {
+            return Err(BackupError::InvalidRequest(
+                "Only Silo import checkpoint groups can be discarded.".into(),
+            ));
+        }
+        let cleanup = Cancellation::default();
+        let timeout = self.command_timeout.min(CLEANUP_COMMAND_TIMEOUT);
+        let entries = self.snapshot_index_with("Checking incomplete import", timeout, &cleanup)?;
+        let members: Vec<&Value> = entries
+            .iter()
+            .filter(|entry| entry["group"] == group)
+            .collect();
+        if members.is_empty() {
+            return Ok(());
+        }
+        let selector = |entry: &Value| -> Result<String, BackupError> {
+            entry["name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .or_else(|| {
+                    entry["snapshot_id"]
+                        .as_str()
+                        .filter(|id| valid_snapshot_id(id))
+                })
+                .map(|member| format!("{group}:{member}"))
+                .ok_or_else(|| {
+                    BackupError::InvalidArchive(
+                        "an imported checkpoint member has no identity".into(),
+                    )
+                })
+        };
+        // Depth within the group's own parent chain; deeper members go first.
+        let parent_in_group = |entry: &Value| {
+            let parent = entry["parent_digest"].as_str()?;
+            members
+                .iter()
+                .copied()
+                .find(|candidate| candidate["digest"].as_str() == Some(parent))
+        };
+        let depth = |entry: &Value| {
+            let mut depth = 0_usize;
+            let mut current = entry;
+            while let Some(parent) = parent_in_group(current) {
+                depth += 1;
+                if depth > members.len() {
+                    break; // A valid index has no cycles; stop regardless.
+                }
+                current = parent;
+            }
+            depth
+        };
+        let mut ordered: Vec<(usize, &Value)> = members
+            .iter()
+            .map(|entry| (depth(entry), *entry))
+            .collect();
+        // Deepest first; the shallowest (a root) ends up last.
+        ordered.sort_by(|left, right| right.0.cmp(&left.0));
+        let (_, last) = ordered.pop().expect("members is not empty");
+        if !ordered.is_empty() {
+            // Keep one root as the group's head so every other member can go.
+            self.require_success_with(
+                "Selecting the incomplete import to remove last",
+                &["snapshot".into(), "head".into(), selector(last)?],
+                timeout,
+                &cleanup,
+            )?;
+        }
+        for (_, entry) in ordered {
+            self.remove_snapshot_member(&selector(entry)?, timeout, &cleanup)?;
+        }
+        self.remove_snapshot_member(&selector(last)?, timeout, &cleanup)
+    }
+
+    fn remove_snapshot_member(
+        &self,
+        selector: &str,
+        timeout: Duration,
+        cancellation: &Cancellation,
+    ) -> Result<(), BackupError> {
+        self.require_success_with(
+            "Removing incomplete import",
+            &[
+                "snapshot".into(),
+                "remove".into(),
+                "--quiet".into(),
+                selector.into(),
+            ],
+            timeout,
+            cancellation,
+        )
+        .map(|_| ())
+    }
+
+    fn snapshot_index(
+        &self,
+        operation: &str,
+        cancellation: &Cancellation,
+    ) -> Result<Vec<Value>, BackupError> {
+        self.snapshot_index_with(operation, self.command_timeout, cancellation)
+    }
+
+    fn snapshot_index_with(
+        &self,
+        operation: &str,
+        timeout: Duration,
+        cancellation: &Cancellation,
+    ) -> Result<Vec<Value>, BackupError> {
+        let output = self.require_success_with(
+            operation,
+            &[
+                "snapshot".into(),
+                "list".into(),
+                "--format".into(),
+                "json".into(),
+            ],
+            timeout,
+            cancellation,
+        )?;
+        serde_json::from_str(&output.stdout).map_err(|_| {
+            BackupError::InvalidRequest("The runtime returned an invalid snapshot index.".into())
         })
     }
 
@@ -889,9 +1084,19 @@ impl<R: MsbRunner> BackupService<R> {
         arguments: &[String],
         cancellation: &Cancellation,
     ) -> Result<CommandOutput, BackupError> {
-        let output =
-            self.runner
-                .run(&self.command, arguments, self.command_timeout, cancellation)?;
+        self.require_success_with(operation, arguments, self.command_timeout, cancellation)
+    }
+
+    fn require_success_with(
+        &self,
+        operation: &str,
+        arguments: &[String],
+        timeout: Duration,
+        cancellation: &Cancellation,
+    ) -> Result<CommandOutput, BackupError> {
+        let output = self
+            .runner
+            .run(&self.command, arguments, timeout, cancellation)?;
         if output.status.success() {
             return Ok(output);
         }
@@ -1828,6 +2033,26 @@ fn check_cancelled(cancellation: &Cancellation) -> Result<(), BackupError> {
     }
 }
 
+/// MicroSandbox snapshot identity: `snap_` and 32 hex digits.
+fn valid_snapshot_id(id: &str) -> bool {
+    id.len() == 37 && id.starts_with("snap_") && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// The only native groups export/import may create or discard: `silo-import-`
+/// and 32 lowercase hex digits.
+pub(crate) fn valid_import_group(group: &str) -> bool {
+    group.strip_prefix("silo-import-").is_some_and(|suffix| {
+        suffix.len() == 32
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+pub(crate) fn new_import_group() -> String {
+    format!("silo-import-{}", uuid::Uuid::new_v4().simple())
+}
+
 fn is_sha256(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|digest| {
         digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -1860,10 +2085,12 @@ mod tests {
         /// Pre-captured `(group, member)` snapshots published by `snapshot list`,
         /// so a checkpoint export can locate a member without a fresh capture.
         existing_members: Mutex<Vec<(String, String)>>,
-        fail_start: AtomicBool,
-        fail_running_verification: AtomicBool,
+        /// `group:member` selectors removed through `snapshot remove`.
+        removed: Mutex<Vec<String>>,
         fail_load: AtomicBool,
         fail_save: AtomicBool,
+        fail_import_verify: AtomicBool,
+        cancel_during_load: AtomicBool,
         invalid_import_head: AtomicBool,
         cancel_after_snapshot: AtomicBool,
     }
@@ -1899,12 +2126,22 @@ mod tests {
                     }
                     Ok(success())
                 }
+                ["snapshot", "verify", target]
+                    if target.starts_with("silo-import-")
+                        && self.fail_import_verify.load(Ordering::Acquire) =>
+                {
+                    Ok(CommandOutput {
+                        status: ExitStatus::from_raw(1 << 8),
+                        stderr: "simulated verification failure".into(),
+                        ..success()
+                    })
+                }
                 ["snapshot", "verify", _] => Ok(success()),
-                ["inspect", _, "--format", "json"] => Ok(CommandOutput {
-                    status: ExitStatus::from_raw(0),
-                    stdout: serde_json::json!({"status": if self.fail_running_verification.load(Ordering::Acquire) {"Stopped"} else {"Running"}}).to_string(),
-                    stderr: String::new(),
-                }),
+                ["snapshot", "head", _selector] => Ok(success()),
+                ["snapshot", "remove", "--quiet", selector] => {
+                    self.removed.lock().unwrap().push((*selector).to_owned());
+                    Ok(success())
+                }
                 ["snapshot", "save", _, output, "--with-parents", "--with-image"] => {
                     if self.fail_save.load(Ordering::Acquire) {
                         return Ok(CommandOutput {
@@ -1917,6 +2154,14 @@ mod tests {
                     Ok(success())
                 }
                 ["snapshot", "load", _, "--group", group] => {
+                    if self.cancel_during_load.load(Ordering::Acquire) {
+                        // The runner killed msb after it had installed members.
+                        fs::create_dir_all(
+                            command.home.join("cache/tmp/snapshot-import-killed"),
+                        )?;
+                        cancellation.cancel();
+                        return Err(BackupError::Cancelled);
+                    }
                     if self.fail_load.load(Ordering::Acquire) {
                         fs::create_dir_all(
                             command.home.join("cache/tmp/snapshot-import-interrupted"),
@@ -1962,9 +2207,19 @@ mod tests {
                         }));
                     }
                     if let Some(load) = calls.iter().rev().find(|call| call.get(1).is_some_and(|part| part == "load")) {
-                        entries.push(serde_json::json!({"group":load.last().unwrap(),"name":"imported-parent","availability":"ready","snapshot_id":"snap_00000000000000000000000000000000"}));
-                        entries.push(serde_json::json!({"group":load.last().unwrap(),"name":"imported-member","availability":"ready","snapshot_id":"snap_11111111111111111111111111111111"}));
+                        let parent = format!("sha256:{}", "a".repeat(64));
+                        entries.push(serde_json::json!({"group":load.last().unwrap(),"name":"imported-parent","availability":"ready","snapshot_id":"snap_00000000000000000000000000000000","digest":parent,"parent_digest":null}));
+                        entries.push(serde_json::json!({"group":load.last().unwrap(),"name":"imported-member","availability":"ready","snapshot_id":"snap_11111111111111111111111111111111","digest":format!("sha256:{}", "b".repeat(64)),"parent_digest":parent}));
                     }
+                    let removed = self.removed.lock().unwrap();
+                    entries.retain(|entry| {
+                        let selector = format!(
+                            "{}:{}",
+                            entry["group"].as_str().unwrap_or_default(),
+                            entry["name"].as_str().unwrap_or_default()
+                        );
+                        !removed.contains(&selector)
+                    });
                     Ok(CommandOutput {
                         stdout: serde_json::to_string(&entries)?,
                         ..success()
@@ -1994,11 +2249,6 @@ mod tests {
                         ..success()
                     })
                 }
-                ["start", _] if self.fail_start.load(Ordering::Acquire) => Ok(CommandOutput {
-                    status: ExitStatus::from_raw(1 << 8),
-                    stderr: "restart refused".into(),
-                    ..success()
-                }),
                 _ => Ok(success()),
             }
         }
@@ -2808,6 +3058,143 @@ mod tests {
                 .join("home/cache/tmp/snapshot-import-interrupted")
                 .exists()
         );
+    }
+
+    fn restore_request(archive: PathBuf) -> RestoreRequest {
+        RestoreRequest {
+            archive,
+            source_name: None,
+            new_name: "dev-restored".into(),
+        }
+    }
+
+    fn import_group_calls(service: &BackupService<FakeRunner>, verb: &str) -> Vec<Vec<String>> {
+        service
+            .runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|args| {
+                args.get(1).is_some_and(|arg| arg == verb)
+                    && args.last().is_some_and(|arg| arg.starts_with("silo-import-"))
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn failed_import_verification_removes_the_loaded_group_children_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let service = service(&temp, FakeRunner::default());
+        create_one(&service, destination.clone(), false).unwrap();
+        service.runner.fail_import_verify.store(true, Ordering::Release);
+        let group = new_import_group();
+        let result = service.prepare_restore_in_group(
+            restore_request(destination),
+            &group,
+            &Cancellation::default(),
+        );
+        assert!(matches!(result, Err(BackupError::CommandFailed { .. })));
+        // The root becomes head, the child goes first, then the root: no --force.
+        assert_eq!(
+            import_group_calls(&service, "head"),
+            [vec!["snapshot".to_string(), "head".into(), format!("{group}:imported-parent")]]
+        );
+        assert_eq!(
+            import_group_calls(&service, "remove"),
+            [
+                vec!["snapshot".to_string(), "remove".into(), "--quiet".into(), format!("{group}:imported-member")],
+                vec!["snapshot".to_string(), "remove".into(), "--quiet".into(), format!("{group}:imported-parent")],
+            ]
+        );
+        assert!(
+            !service
+                .runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|args| args.iter().any(|arg| arg == "--force" || arg == "-f"))
+        );
+    }
+
+    #[test]
+    fn cancelled_load_removes_the_partial_import_and_runtime_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let service = service(&temp, FakeRunner::default());
+        create_one(&service, destination.clone(), false).unwrap();
+        service.runner.cancel_during_load.store(true, Ordering::Release);
+        let result = service.prepare_restore(restore_request(destination), &Cancellation::default());
+        assert!(matches!(result, Err(BackupError::Cancelled)));
+        assert_eq!(import_group_calls(&service, "remove").len(), 2);
+        assert!(!temp.path().join("home/cache/tmp/snapshot-import-killed").exists());
+        assert!(fs::read_dir(temp.path().join("scratch")).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn an_existing_import_group_is_refused_and_never_cleaned_up() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let group = new_import_group();
+        let runner = FakeRunner::default();
+        runner
+            .existing_members
+            .lock()
+            .unwrap()
+            .push((group.clone(), "someone-else".into()));
+        let service = service(&temp, runner);
+        create_one(&service, destination.clone(), false).unwrap();
+        let result = service.prepare_restore_in_group(
+            restore_request(destination),
+            &group,
+            &Cancellation::default(),
+        );
+        assert!(matches!(result, Err(BackupError::ImportGroupConflict(_))));
+        assert!(import_group_calls(&service, "load").is_empty());
+        assert!(service.runner.removed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn discarding_is_limited_to_import_groups_and_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = service(&temp, FakeRunner::default());
+        for foreign in ["dev", "silo-import-short", "silo-import-6B79CF8F70B34F2D93D13EEB3798A8B9"] {
+            assert!(matches!(
+                service.discard_import_group(foreign),
+                Err(BackupError::InvalidRequest(_))
+            ));
+        }
+        assert!(service.runner.calls.lock().unwrap().is_empty());
+        service.discard_import_group(&new_import_group()).unwrap();
+        let calls = service.runner.calls.lock().unwrap();
+        assert!(calls.iter().all(|args| args.get(1).is_some_and(|arg| arg == "list")));
+    }
+
+    #[test]
+    fn import_guard_discards_unless_the_sandbox_was_saved() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let service = service(&temp, FakeRunner::default());
+        create_one(&service, destination.clone(), false).unwrap();
+        let kept = service
+            .prepare_restore(restore_request(destination.clone()), &Cancellation::default())
+            .unwrap();
+        service.discard_import_on_failure(&kept.snapshot_group).keep();
+        assert!(service.runner.removed.lock().unwrap().is_empty());
+
+        let failed = service
+            .prepare_restore(restore_request(destination), &Cancellation::default())
+            .unwrap();
+        {
+            let _guard = service.discard_import_on_failure(&failed.snapshot_group);
+            // A later step (metadata write, identity check) fails here.
+        }
+        let removed = service.runner.removed.lock().unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(removed.iter().all(|selector| selector.starts_with(&failed.snapshot_group)));
     }
 
     #[test]
