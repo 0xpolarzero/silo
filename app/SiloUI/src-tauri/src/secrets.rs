@@ -8,6 +8,7 @@ use std::{
     io::Read,
     path::PathBuf,
     sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError},
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
@@ -15,7 +16,18 @@ static PATH: OnceLock<PathBuf> = OnceLock::new();
 static OPERATION: Mutex<()> = Mutex::new(());
 static DOCUMENT: Mutex<()> = Mutex::new(());
 type Vault = BTreeMap<String, String>;
-static VAULT: Mutex<Option<Result<Vault, String>>> = Mutex::new(None);
+/// The credential-store result and when it was obtained. A failure is cached only
+/// briefly so a locked or denied store does not fail every later VM start until
+/// the user edits a secret; the store is asked again after `STORE_RETRY_AFTER`.
+type Cached = Option<(Result<Vault, String>, Instant)>;
+static VAULT: Mutex<Cached> = Mutex::new(None);
+const STORE_RETRY_AFTER: Duration = Duration::from_secs(10);
+fn expire_failure(cached: &mut Cached, now: Instant) {
+    if matches!(cached, Some((Err(_), at)) if now.saturating_duration_since(*at) >= STORE_RETRY_AFTER)
+    {
+        *cached = None;
+    }
+}
 /// `OPERATION` and `DOCUMENT` guard no data, so a panic while holding them leaves
 /// nothing inconsistent: recover the guard instead of failing until restart.
 fn lock_unit(mutex: &'static Mutex<()>) -> MutexGuard<'static, ()> {
@@ -30,7 +42,7 @@ fn try_lock_unit(mutex: &'static Mutex<()>) -> Option<MutexGuard<'static, ()>> {
 }
 /// A panic during a vault access may leave a partial cache; drop it so the next
 /// access reloads from the credential store.
-fn lock_vault() -> MutexGuard<'static, Option<Result<Vault, String>>> {
+fn lock_vault() -> MutexGuard<'static, Cached> {
     VAULT.lock().unwrap_or_else(|poisoned| {
         let mut cached = poisoned.into_inner();
         *cached = None;
@@ -80,32 +92,38 @@ fn entry() -> Result<keyring::Entry, String> {
 }
 fn read_vault() -> Result<Vault, String> {
     let mut cached = lock_vault();
+    expire_failure(&mut cached, Instant::now());
     cached
-        .get_or_insert_with(|| match entry()?.get_password() {
-            Ok(value) => serde_json::from_str(&value).map_err(|_| STORE_ERROR.into()),
-            Err(keyring::Error::NoEntry) => Ok(Vault::new()),
-            Err(_) => Err(STORE_ERROR.into()),
+        .get_or_insert_with(|| {
+            let result = entry().and_then(|entry| match entry.get_password() {
+                Ok(value) => serde_json::from_str(&value).map_err(|_| STORE_ERROR.into()),
+                Err(keyring::Error::NoEntry) => Ok(Vault::new()),
+                Err(_) => Err(STORE_ERROR.into()),
+            });
+            (result, Instant::now())
         })
+        .0
         .clone()
 }
 fn write_vault(value: Vault) -> Result<(), String> {
     let mut cached = lock_vault();
-    if let Some(Err(error)) = cached.as_ref() {
+    expire_failure(&mut cached, Instant::now());
+    if let Some((Err(error), _)) = cached.as_ref() {
         return Err(error.clone());
     }
-    if matches!(cached.as_ref(), Some(Ok(old)) if old == &value) {
+    if matches!(cached.as_ref(), Some((Ok(old), _)) if old == &value) {
         return Ok(());
     }
     let encoded = serde_json::to_string(&value).map_err(|_| STORE_ERROR)?;
     let result = entry()?
         .set_password(&encoded)
         .map_err(|_| STORE_ERROR.to_string());
-    *cached = Some(result.clone().map(|_| value));
+    *cached = Some((result.clone().map(|_| value), Instant::now()));
     result
 }
 fn retry_store() {
     let mut cached = lock_vault();
-    if matches!(cached.as_ref(), Some(Err(_))) {
+    if matches!(cached.as_ref(), Some((Err(_), _))) {
         *cached = None;
     }
 }
@@ -794,6 +812,18 @@ mod tests {
         let held = try_lock_unit(&TEST).expect("poisoned lock is recoverable");
         assert!(try_lock_unit(&TEST).is_none());
         drop(held);
+    }
+    #[test]
+    fn cached_store_failure_expires_so_later_starts_ask_the_store_again() {
+        let failed_at = Instant::now();
+        let mut cached: Cached = Some((Err(STORE_ERROR.into()), failed_at));
+        expire_failure(&mut cached, failed_at + Duration::from_secs(1));
+        assert!(cached.is_some(), "a fresh failure is not retried in a tight loop");
+        expire_failure(&mut cached, failed_at + STORE_RETRY_AFTER);
+        assert!(cached.is_none(), "an old failure no longer blocks VM starts");
+        let mut unlocked: Cached = Some((Ok(Vault::new()), failed_at));
+        expire_failure(&mut unlocked, failed_at + STORE_RETRY_AFTER * 100);
+        assert!(unlocked.is_some(), "successful reads stay cached");
     }
     #[test]
     fn history_is_bounded_and_contains_no_values() {
