@@ -108,7 +108,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
   return <TooltipProvider delayDuration={250}>
     <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="grid gap-1.5 text-xs">
       <div className="flex min-h-6 items-center justify-between gap-2">
-        <h3 className="text-xs font-medium" title="Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.">Checkpoints</h3>
+        <h3 className="text-xs font-medium">Checkpoints</h3>
         {actions.createCheckpoint && <FormPopover
           open={createOpen}
           onOpenChange={open => { if (!open || !locked) { setCreateOpen(open); if (open) setName(suggestedName()) } }}
@@ -122,6 +122,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
           <Button size="xs" variant="outline" className="shrink-0" disabled={locked}>New checkpoint</Button>
         </FormPopover>}
       </div>
+      <p className="text-[11px] text-muted-foreground">Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.</p>
 
       {staleFailure && <p className="text-muted-foreground">Last checkpoint operation failed: <span className="text-destructive">{staleFailure}</span></p>}
 

@@ -74,6 +74,11 @@ it("explains the pause, memory checkpoint and force-stop before restoring a runn
   expect(description).toHaveTextContent(/not undone/)
 })
 
+it("explains Restore and Fork in visible helper text", () => {
+  render(<CheckpointPanel workspace={workspace} target="dev" actions={{} as ApplicationActions} disabled={false} />)
+  expect(screen.getByText("Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.")).toBeVisible()
+})
+
 it("confirms a restore in a popover before restoring", async () => {
   const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
   const user = userEvent.setup()
