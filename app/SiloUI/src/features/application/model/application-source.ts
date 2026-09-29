@@ -95,6 +95,8 @@ export interface SshAccessWorkspace {
   workspace: string; enabled: boolean; port: number; bindAddress: string; keys: string[]
   state: "disabled" | "waiting" | "listening" | "error"; message: string | null
   fingerprint: string | null; computerName: string; addresses: string[]
+  /** Guest account SSH clients log in as; older owners omit it. */
+  user?: string
 }
 export interface SshAccessState { workspaces: SshAccessWorkspace[] }
 export type SshAccessRequest = Pick<SshAccessWorkspace, "workspace" | "enabled" | "port" | "bindAddress" | "keys">

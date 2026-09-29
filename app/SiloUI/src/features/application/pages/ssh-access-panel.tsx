@@ -16,6 +16,7 @@ import { workspaceTarget } from "../model/remote-computers"
 import type { ApplicationActions, ApplicationWorkspace, SshAccessRequest, SshAccessState, SshAccessWorkspace } from "../model/application-source"
 
 const statuses = { disabled: "SSH off", waiting: "SSH waiting", listening: "SSH listening", error: "SSH error" }
+const sshEndpoint = (user: string, host: string, port: number) => `ssh -p ${port} ${user}@${host}`
 
 export function SshAccessPanel({ workspaces, state, error, actions, active }: { workspaces: ApplicationWorkspace[]; state?: SshAccessState; error?: string | null; actions: ApplicationActions; active: boolean }) {
   useSshAccessRefresh(actions.refreshSshAccess, active)
@@ -91,6 +92,9 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
           const host = network ? access.bindAddress : "127.0.0.1"
           const scope = network ? "network" : "local"
           const label = network ? "Allow SSH from other computers" : `Allow SSH from ${access.computerName}`
+          // The owner's loopback address is meaningless on another computer.
+          const ownerOnly = !network && Boolean(workspace.computer)
+          const endpoint = sshEndpoint(access.user ?? "silo", host, access.port)
           return <div key={scope} className="space-y-1" role="group" aria-label={label}>
             <div className="flex items-center justify-between gap-3"><span className="flex items-center gap-2"><ConnectionIcon kind="ssh" network={network} />{label}</span><Switch aria-label={label} checked={network ? external || address !== null : access.enabled} disabled={blocked || (network && !access.enabled)} onCheckedChange={enabled => {
               if (!network) { void change({ enabled }); return }
@@ -100,9 +104,9 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
             }} /></div>
             {access.enabled && (!network || external) && <div className="ssh-endpoint grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1 text-muted-foreground">
               <div className="ssh-endpoint-address flex min-w-0 flex-wrap items-center gap-x-3">
-                <Tooltip><TooltipTrigger asChild><code tabIndex={0} className="min-w-0 break-all">root@{host}:{access.port}</code></TooltipTrigger><TooltipContent className="max-w-sm break-all">{access.computerName}{access.fingerprint ? ` · Host key: ${access.fingerprint}` : ""}</TooltipContent></Tooltip>
+                {ownerOnly ? <span>Only on {access.computerName}</span> : <Tooltip><TooltipTrigger asChild><code tabIndex={0} className="min-w-0 break-all">{endpoint}</code></TooltipTrigger><TooltipContent className="max-w-sm break-all">{access.computerName}{access.fingerprint ? ` · Host key: ${access.fingerprint}` : ""}</TooltipContent></Tooltip>}
               </div>
-              <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" value={`root@${host}:${access.port}`} labels={{ idle: network ? "Copy network SSH address" : "Copy SSH address", copied: "SSH address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy address</TooltipContent></Tooltip>
+              {ownerOnly ? <span /> : <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" value={endpoint} labels={{ idle: network ? "Copy network SSH address" : "Copy SSH address", copied: "SSH address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy address</TooltipContent></Tooltip>}
               <ActionsMenu label={`More ${scope} SSH actions`} items={[
                 { icon: Pencil, label: network ? "Edit address and port" : "Edit port", accessibleLabel: network ? "Edit network connection" : "Edit connection", disabled: blocked, onSelect: () => { setPort(String(access.port)); setAddress(network ? access.bindAddress : null) } },
                 { icon: copied === scope ? Check : Terminal, label: copied === scope ? "Command copied" : "Copy terminal command", accessibleLabel: `Copy ${scope} SSH command`, disabled: blocked || !connection || (!network && Boolean(workspace.computer)), onSelect: () => { void connect(false, network) } },

@@ -23,12 +23,12 @@ it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", asy
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
   await user.click(screen.getByRole("tab", { name: "SSH" }))
   expect(screen.getAllByRole("switch")).toHaveLength(2)
-  expect(screen.getByText("root@127.0.0.1:2222")).toBeVisible()
-  expect(screen.getByText("root@192.168.1.42:2222")).toBeVisible()
+  expect(screen.getByText("ssh -p 2222 silo@127.0.0.1")).toBeVisible()
+  expect(screen.getByText("ssh -p 2222 silo@192.168.1.42")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Copy SSH address" }))
-  expect(await navigator.clipboard.readText()).toBe("root@127.0.0.1:2222")
+  expect(await navigator.clipboard.readText()).toBe("ssh -p 2222 silo@127.0.0.1")
   await user.click(screen.getByRole("button", { name: "Copy network SSH address" }))
-  expect(await navigator.clipboard.readText()).toBe("root@192.168.1.42:2222")
+  expect(await navigator.clipboard.readText()).toBe("ssh -p 2222 silo@192.168.1.42")
 
   // The detail subtitle reflects that SSH is enabled without a separate scope chip;
   // the network/local scope stays visible in the SSH tab controls above.
@@ -54,7 +54,7 @@ it("allows read-only SSH disclosure without refreshing, copying, or changing the
   expect(screen.getByRole("button", { name: "Stop dev" })).toBeDisabled()
   await user.click(screen.getByRole("button", { name: "Open dev" }))
   await user.click(screen.getByRole("tab", { name: "SSH" }))
-  expect(screen.getByText("root@192.168.1.42:2222")).toBeVisible()
+  expect(screen.getByText("ssh -p 2222 silo@192.168.1.42")).toBeVisible()
   for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled()
   expect(screen.getByRole("button", { name: "Copy SSH address" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Copy network SSH address" })).toBeDisabled()

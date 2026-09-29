@@ -35,7 +35,7 @@ describe("managed SSH access", () => {
     expect(screen.getByText("SSH listening")).toBeVisible()
     await expand(user)
     expect(screen.getAllByRole("switch")).toHaveLength(2)
-    expect(screen.getByText("root@127.0.0.1:2222")).toBeVisible()
+    expect(screen.getByText("ssh -p 2222 silo@127.0.0.1")).toBeVisible()
     expect(screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" })).toBeChecked()
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument()
@@ -78,8 +78,8 @@ describe("managed SSH access", () => {
     const { user } = setup({ bindAddress: "192.168.1.42" })
     await expand(user)
     await user.click(screen.getByRole("button", { name: "Copy network SSH address" }))
-    expect(await navigator.clipboard.readText()).toBe("root@192.168.1.42:2222")
-    await user.hover(screen.getByText("root@192.168.1.42:2222"))
+    expect(await navigator.clipboard.readText()).toBe("ssh -p 2222 silo@192.168.1.42")
+    await user.hover(screen.getByText("ssh -p 2222 silo@192.168.1.42"))
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Host key: SHA256:example")
   })
   it("groups each address with its toggle and provides network editing and endpoint-specific commands", async () => {
@@ -87,8 +87,8 @@ describe("managed SSH access", () => {
     await expand(user)
     const local = within(screen.getByRole("group", { name: "Allow SSH from Ada’s Mac mini" }))
     const network = within(screen.getByRole("group", { name: "Allow SSH from other computers" }))
-    expect(local.getByText("root@127.0.0.1:2222")).toBeVisible()
-    expect(network.getByText("root@192.168.1.42:2222")).toBeVisible()
+    expect(local.getByText("ssh -p 2222 silo@127.0.0.1")).toBeVisible()
+    expect(network.getByText("ssh -p 2222 silo@192.168.1.42")).toBeVisible()
     await selectAction(user, "Copy local SSH command")
     expect(actions.sshConnection).toHaveBeenLastCalledWith("dev", false, false)
     await selectAction(user, "Copy network SSH command")
@@ -207,6 +207,17 @@ describe("managed SSH access", () => {
     expect(actions.sshConnection).toHaveBeenCalledWith(target, false, true)
     await user.click(screen.getByRole("switch", { name: "Allow SSH from Office Mac" }))
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ workspace: target, enabled: false, keys: [publicKey] }))
+  })
+  it("hides the owner's loopback address on remote rows and uses the reported account", async () => {
+    const remote = { ...workspace, computer: { id: "office", vmId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }
+    const { user } = setup({ workspace: "silo-remote:office:vm-immutable-id", computerName: "Office Mac", bindAddress: "192.168.1.42", user: "guest" }, undefined, undefined, remote)
+    await expand(user)
+    const local = within(screen.getByRole("group", { name: "Allow SSH from Office Mac" }))
+    expect(local.getByText("Only on Office Mac")).toBeVisible()
+    expect(screen.queryByText(/127\.0\.0\.1/)).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Copy SSH address" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Copy network SSH address" }))
+    expect(await navigator.clipboard.readText()).toBe("ssh -p 2222 guest@192.168.1.42")
   })
   it("disables stale remote connections and changes", async () => {
     const remote = { ...workspace, computer: { id: "office", vmId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }

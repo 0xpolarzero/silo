@@ -40,6 +40,8 @@ pub(crate) struct Workspace {
     fingerprint: Option<String>,
     computer_name: String,
     addresses: Vec<String>,
+    /// Guest account SSH clients log in as.
+    user: &'static str,
 }
 #[derive(Serialize)]
 pub(crate) struct State {
@@ -459,6 +461,7 @@ fn state(paths: &RuntimePaths) -> Result<State, String> {
                     },
                     computer_name: computer_name.clone(),
                     addresses: addresses.clone(),
+                    user: "silo",
                 }
             })
             .collect(),
