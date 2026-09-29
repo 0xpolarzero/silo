@@ -248,3 +248,26 @@ repository initially cached at 0.1.0, publication of 0.2.0, refresh/download/ins
 refusal with a second Silo process, version verification, cleanup, and downgrade
 refusal. The process fixtures use a copied sleep executable, not live VMs. The
 GUI authentication prompt and a live desktop VM restart were not exercised.
+
+## Stopping sandboxes only for installation, 29 September 2026
+
+Review finding F-04: the in-app update stopped every local VM before system
+authentication, the source check, the APT refresh and the download, and waited
+without limit while holding the installation and VM operation gates. Cancelling
+the authentication prompt, a disabled source, another package manager holding the
+lock, or a release not yet published to APT stopped and restarted every VM, and
+Quit waited behind the prompt.
+
+The helper now prints `ready` after the download and waits up to 30 minutes for
+`install` on its standard input (pkexec passes standard input through). Silo
+answers only after flushing settings, recording the running set and stopping it;
+any other answer, end of input or the timeout installs nothing. An already
+installed target version uses the same handshake before Silo restarts. Silo waits
+up to 30 minutes for `ready` while sandboxes keep running and new operations are
+refused; the VM operation gate is taken only for the install stage, so Quit is
+not queued behind authentication. On timeout Silo closes the helper's input, stops
+the prompt if authentication has not completed, and reports that no sandbox was
+stopped. A failure after `install` restores the recorded running set. APT's
+existing 60-second lock timeout bounds the install stage. Unit tests use shell
+fixtures for the handshake and Python tests for the helper; the packaged pkexec
+prompt and a live Debian upgrade were not exercised.

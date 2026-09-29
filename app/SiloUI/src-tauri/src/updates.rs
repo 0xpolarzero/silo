@@ -572,6 +572,58 @@ fn available_install_space(parent: &Path) -> Result<u64, String> {
         .ok_or_else(|| "Available installation space is invalid.".into())
 }
 
+/// Debian installs through APT with system authentication. Authentication, the
+/// source check, the refresh and the download all happen while sandboxes keep
+/// running; they are stopped only once the package is ready to install, and
+/// restored if installation then fails.
+fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), String> {
+    debian::preflight()?;
+    // Refuse new work while the update prepares; the helper's timeout bounds this.
+    let admission = ADMISSION
+        .try_write()
+        .map_err(|_| "Wait for active operations to finish before updating.")?;
+    let backup = crate::backup_controller::update_guard(app)?;
+    let github = crate::github::update_guard()?;
+    let secrets = crate::secrets::update_guard()?;
+    crate::runtime::shutdown::ensure_accepting_operations()?;
+    let mut runtime = None;
+    let result = debian::install(
+        version,
+        |status| {
+            let _ = modify(app, |s| s.snapshot.install_status = Some(status.into()));
+        },
+        || {
+            // Only now wait for computer-wide work, so Quit is never queued behind
+            // an authentication prompt or a download.
+            let guard = crate::runtime::OPERATIONS
+                .kind(crate::runtime::operation_gate::OperationKind::Shutdown)
+                .computer("Installing update")
+                .map_err(|e| e.to_string())?;
+            runtime = Some(guard);
+            crate::runtime::shutdown::ensure_accepting_operations()?;
+            crate::settings::flush_for_update(app)?;
+            crate::runtime::update_recovery::prepare(app, consent)
+        },
+    );
+    if let Err(error) = result {
+        // Sandboxes can only have stopped once the install stage took the gate.
+        if runtime.is_some() {
+            if let Err(resume) = crate::runtime::update_recovery::restore_locked(app) {
+                return Err(format!(
+                    "{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry."
+                ));
+            }
+        }
+        return Err(error);
+    }
+    // Close admission before releasing installation guards. The update journal
+    // retains the running set for startup to restore after restart.
+    crate::runtime::shutdown::begin();
+    drop((admission, backup, github, secrets, runtime));
+    let result = debian::restart();
+    crate::runtime::shutdown::cancel();
+    result
+}
 #[tauri::command]
 pub(crate) async fn install_update(
     app: AppHandle,
@@ -612,6 +664,9 @@ pub(crate) async fn install_update(
     let worker = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         crate::startup::cancel_and_wait(&worker);
+        if is_debian {
+            return install_debian(&worker, &update.version, stop_sandboxes);
+        }
         // Reservation uses the same atomic gate as backup/restore admission.
         let admission = (|| {
             let admission = ADMISSION.try_write().map_err(|_| "Wait for active operations to finish before updating.")?;
@@ -627,18 +682,15 @@ pub(crate) async fn install_update(
         })();
         let (_admission, _backup, _github, _secrets, _runtime) = match admission {
             Ok(guards) => guards,
-            Err(error) => { let _ = modify(&worker, |s| { if !is_debian { s.bytes = Some(bytes); } }); return Err(error); }
+            Err(error) => { let _ = modify(&worker, |s| s.bytes = Some(bytes)); return Err(error); }
         };
-        let result = (if is_debian { debian::preflight() } else { installation_preflight(&bytes) })
+        let result = installation_preflight(&bytes)
             .and_then(|_| crate::settings::flush_for_update(&worker))
-            .and_then(|_| crate::runtime::update_recovery::prepare(&worker, stop_sandboxes)).and_then(|_| {
-                if is_debian { debian::install(&update.version, |status| {
-                    let _ = modify(&worker, |s| s.snapshot.install_status = Some(status.into()));
-                }) } else { update.install(&bytes).map_err(|e| e.to_string()) }
-            });
+            .and_then(|_| crate::runtime::update_recovery::prepare(&worker, stop_sandboxes))
+            .and_then(|_| update.install(&bytes).map_err(|e| e.to_string()));
         if let Err(error) = result {
             let restore = crate::runtime::update_recovery::restore_locked(&worker);
-            let _ = modify(&worker, |s| { if !is_debian { s.bytes = Some(bytes); } });
+            let _ = modify(&worker, |s| s.bytes = Some(bytes));
             return Err(match restore { Ok(()) => error, Err(resume) => format!("{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry.") });
         }
         // Settings are flushed before installation and the UI stays inert.
@@ -647,11 +699,6 @@ pub(crate) async fn install_update(
         // journal retains the running set for startup to restore after restart.
         crate::runtime::shutdown::begin();
         drop((_admission, _backup, _github, _secrets, _runtime));
-        if is_debian {
-            let result = debian::restart();
-            crate::runtime::shutdown::cancel();
-            result?;
-        }
         worker.restart()
     }).await.unwrap_or_else(|_| Err("Update installation was interrupted. Relaunch Silo to restore the saved sandbox state, then download the update again.".into()));
     match result {
