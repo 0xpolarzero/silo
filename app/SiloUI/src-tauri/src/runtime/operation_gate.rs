@@ -719,9 +719,11 @@ impl OperationGate {
 
     /// Signal every waiting entry to leave the queue with `GateError::Cancelled`.
     /// Running work is left untouched. Used by Quit: once admission is refused a
-    /// waiter would only be rejected when its turn came, so it is cancelled at once.
+    /// waiter would only be rejected when its turn came, so it is cancelled at once,
+    /// and again before Quit releases the gate so work requested before its VMs
+    /// stopped never runs after a failed Quit (D-30).
     pub(crate) fn cancel_all_waiting(&self) {
-        let mut state = self.lock();
+        let state = self.lock();
         if state.waiting.is_empty() {
             return;
         }

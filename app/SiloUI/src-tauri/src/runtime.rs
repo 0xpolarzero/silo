@@ -2088,11 +2088,14 @@ fn gated_auto_retry_classified<T, E>(
     // The first attempt's start time, so every attempt reports one continuous
     // operation in the queue and slow-operation flagging can fire (D-27).
     let mut first_since = None;
+    // A Quit or update that began after this request stopped the VMs; even if it failed
+    // and admission reopened, a later attempt must not undo that (D-30).
+    let quit = shutdown::generation();
     let mut attempt = 0usize;
     loop {
         // A cancel from a previous attempt (or during its backoff) stops the sequence before
         // re-acquiring the gate.
-        if token.load(Ordering::SeqCst) {
+        if token.load(Ordering::SeqCst) || shutdown::generation() != quit {
             return Err(cancelled());
         }
         let label = if attempt == 0 {
@@ -2102,6 +2105,9 @@ fn gated_auto_retry_classified<T, E>(
         };
         let outcome = {
             let mut guard = acquire(&label)?;
+            if shutdown::generation() != quit {
+                return Err(cancelled());
+            }
             match first_since {
                 Some(since) => guard.continue_since(since),
                 None => first_since = Some(guard.since()),
@@ -2127,7 +2133,7 @@ fn gated_auto_retry_classified<T, E>(
                     let mut remaining = delays[attempt];
                     let slice = Duration::from_millis(100);
                     while !remaining.is_zero() {
-                        if token.load(Ordering::SeqCst) {
+                        if token.load(Ordering::SeqCst) || shutdown::generation() != quit {
                             return Err(cancelled());
                         }
                         let step = remaining.min(slice);
@@ -4305,6 +4311,42 @@ mod tests {
         let seen = seen.into_inner().unwrap();
         assert_eq!(seen.len(), 3);
         assert!(seen.iter().all(|since| *since == seen[0]), "{seen:?}");
+    }
+
+    #[test]
+    fn auto_retry_does_not_resume_after_a_quit_began_even_if_it_failed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Reopen;
+        impl Drop for Reopen {
+            fn drop(&mut self) { shutdown::cancel(); }
+        }
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let attempts = AtomicUsize::new(0);
+        let delays = [Duration::from_millis(300), Duration::from_millis(300)];
+        let result: Result<(), RuntimeError> = gated_auto_retry_classified(
+            &delays,
+            "Starting quit-dev",
+            |label| gate.vm("quit-dev-id", "quit-dev", label).map_err(RuntimeError::from),
+            |_guard| {},
+            || {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // Quit begins while this attempt backs off, stops the VMs, fails fast
+                    // and reopens admission before the backoff ends.
+                    std::thread::spawn(|| {
+                        std::thread::sleep(Duration::from_millis(50));
+                        let _reopen = Reopen;
+                        shutdown::begin();
+                    });
+                }
+                Err(RuntimeError::TimedOut { operation: "Starting quit-dev".into() })
+            },
+            transient_runtime_error,
+            || RuntimeError::Cancelled { operation: "Starting quit-dev".into() },
+        );
+        assert!(matches!(result, Err(RuntimeError::Cancelled { .. })), "{result:?}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(shutdown::ensure_accepting_operations().is_ok());
     }
 
     #[test]
