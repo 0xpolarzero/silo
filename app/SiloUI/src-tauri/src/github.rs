@@ -59,8 +59,22 @@ fn schedule(delay: Duration) {
         *pending = Some(Instant::now() + delay);
     }
 }
-pub(crate) fn workspace_restored() {
+static RESTORED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// A sandbox just started from a checkpoint; its GitHub settings must be applied once.
+pub(crate) fn workspace_restored(name: &str) {
+    if let Ok(mut restored) = RESTORED.lock() {
+        if !restored.iter().any(|n| n == name) {
+            restored.push(name.into());
+        }
+    }
     schedule(Duration::ZERO);
+}
+fn take_restored(name: &str) -> bool {
+    RESTORED.lock().is_ok_and(|mut restored| {
+        let before = restored.len();
+        restored.retain(|n| n != name);
+        restored.len() != before
+    })
 }
 fn active() -> &'static Mutex<std::collections::HashMap<String, Vec<RuntimeGrant>>> {
     ACTIVE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
@@ -711,8 +725,18 @@ fn finish_application(
     (combined, identity)
 }
 
-fn access_update_due(d: &Document, name: &str, at: u64) -> bool {
-    d.access_pending.iter().any(|n| n == name) || d.session != session() || at >= d.refresh_at
+/// Settings are re-applied when the user changed them, once per app session, after a sandbox
+/// restore, or when this sandbox's own grants are about to expire or its last attempt failed.
+/// A global deadline reached by another sandbox's retry must not re-apply unchanged settings.
+fn access_update_due(d: &Document, name: &str, at: u64, restored: bool, previous: &[RuntimeGrant]) -> bool {
+    if restored || d.access_pending.iter().any(|n| n == name) || d.session != session() {
+        return true;
+    }
+    if at < d.refresh_at {
+        return false;
+    }
+    let verified = d.operations.iter().any(|op| op["workspace"].as_str() == Some(name) && op["status"] == "succeeded");
+    !verified || previous.iter().any(|g| g.expires_at.saturating_sub(120) <= at)
 }
 fn worker_due(d: &Document, pending: Option<Instant>, at: u64, instant: Instant) -> bool {
     match pending {
@@ -787,7 +811,12 @@ fn apply(
             .get(&key)
             .cloned()
             .unwrap_or_default();
-        let access_requested = access_update_due(&d, name, now());
+        let access_requested = access_update_due(&d, name, now(), take_restored(name), &previous);
+        if !access_requested {
+            if let Some(expiry) = previous.iter().map(|g| g.expires_at).min() {
+                refresh_at = refresh_at.min(expiry.saturating_sub(120).max(now() + 30));
+            }
+        }
         let result = if access_requested {
             let result = if let Some(error) = &narrowing_error { Err(error.clone()) } else if personal_token::selected(w) {
                 personal_token::apply(app, name, d.revision)
@@ -2171,9 +2200,39 @@ mod tests {
             identity_pending: vec!["dev".into()],
             ..Default::default()
         };
-        assert!(!access_update_due(&d, "dev", 100));
-        assert!(access_update_due(&d, "dev", 160));
+        assert!(!access_update_due(&d, "dev", 100, false, &[]));
+        assert!(access_update_due(&d, "dev", 160, false, &[]));
         assert_eq!(d.refresh_at, 160);
+    }
+    #[test]
+    fn verified_sandbox_is_not_reapplied_at_another_sandboxs_retry_deadline() {
+        let mut d = Document {
+            session: session().into(),
+            refresh_at: 160,
+            operations: vec![json!({"workspace":"dev","status":"succeeded","message":"GitHub access verified."})],
+            ..Document::default()
+        };
+        let grant = |expires_at| RuntimeGrant { owner_id: 1, owner_login: "o".into(), repository_ids: vec![], read_token: "r".into(), write_token: None, write_repository_ids: vec![], expires_at, read_expires_at: expires_at, write_expires_at: expires_at, all_repositories: false };
+        // Deadline reached, nothing changed and grants are still valid: no re-apply.
+        assert!(!access_update_due(&d, "dev", 200, false, &[grant(3600)]));
+        // Its own grants near expiry, a restore, a pending edit or a failed attempt still apply.
+        assert!(access_update_due(&d, "dev", 200, false, &[grant(300)]));
+        assert!(access_update_due(&d, "dev", 100, true, &[grant(3600)]));
+        d.access_pending.push("dev".into());
+        assert!(access_update_due(&d, "dev", 100, false, &[]));
+        d.access_pending.clear();
+        d.operations[0]["status"] = json!("failed");
+        assert!(access_update_due(&d, "dev", 200, false, &[grant(3600)]));
+        // A stale session is verified again.
+        d.operations[0]["status"] = json!("succeeded");
+        d.session = "older".into();
+        assert!(access_update_due(&d, "dev", 100, false, &[grant(3600)]));
+    }
+    #[test]
+    fn restored_sandbox_is_taken_once() {
+        workspace_restored("restored-once");
+        assert!(take_restored("restored-once"));
+        assert!(!take_restored("restored-once"));
     }
     #[test]
     fn repository_catalog_has_independent_refresh_deadline() {

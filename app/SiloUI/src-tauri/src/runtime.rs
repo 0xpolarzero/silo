@@ -3187,7 +3187,7 @@ fn explicit_workspace_action_with(
         {
             if checkpoints::needs_explicit_start(paths, machine.id())? {
                 checkpoints::start_pending(runner, paths, &machine)?;
-                crate::github::workspace_restored();
+                crate::github::workspace_restored(name);
                 return Ok(());
             }
         }

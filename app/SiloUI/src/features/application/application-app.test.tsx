@@ -1759,6 +1759,8 @@ describe("application", () => {
       application.rerender(<ApplicationPreview source={fixture} actions={application.actions} />)
     }
 
+    // Only changes the user starts notify; background operations never do.
+    await application.user.click(github.getByRole("button", { name: "Disable access" }))
     next("applying", 1)
     expect(await screen.findByText("Applying repository access…")).toBeVisible()
     expect(github.getByRole("region", { name: "Sandbox Git identity and repository access" })).toHaveAttribute("aria-busy", "true")
@@ -1767,6 +1769,7 @@ describe("application", () => {
     expect(await screen.findByText("GitHub settings applied")).toBeVisible()
     expect(screen.queryByText("Applying repository access…")).not.toBeInTheDocument()
 
+    await application.user.click(github.getByRole("button", { name: "Disable access" }))
     next("failed", 3)
     expect(await screen.findByText(/GitHub settings couldn’t be applied\./)).toBeVisible()
     expect(screen.queryByText("GitHub settings applied")).not.toBeInTheDocument()
@@ -1805,6 +1808,7 @@ describe("application", () => {
       fireEvent.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
       const succeeded = applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "succeeded")
       succeeded.github.policyRevision = 5
+      fireEvent.click(screen.getByRole("button", { name: "Disable access" }))
       application.rerender(<ApplicationPreview source={succeeded} actions={application.actions} />)
       await act(async () => { await vi.advanceTimersByTimeAsync(50) })
       expect(screen.getByText("GitHub settings applied")).toBeVisible()

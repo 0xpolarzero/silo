@@ -40,6 +40,10 @@ const Toaster = ({ reduceMotion = false, ...props }: ToasterProps & { reduceMoti
           "--border-radius": "var(--radius)",
         } as React.CSSProperties
       }
+      // Persistent and actionable notifications must not be silently collapsed behind newer
+      // ones. The close button is restyled in index.css (.silo-toaster).
+      visibleToasts={5}
+      expand
       toastOptions={{
         classNames: {
           toast: "cn-toast",

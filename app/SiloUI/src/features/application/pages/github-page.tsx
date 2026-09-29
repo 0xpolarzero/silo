@@ -190,11 +190,17 @@ export function GitHubPage({
   retryRef.current = retryWorkspace
   const announced = useRef(new Map<string, string>(Object.entries(workspaceOperations).map(([name, operation]) => [name, `${operation.status}|${operation.message}`])))
 
+  // Only operations the user started here notify. Background verification and renewal update
+  // the small inline label but never toast.
+  const userInitiated = useRef(new Set<string>())
+
   useEffect(() => {
     for (const [name, operation] of Object.entries(workspaceOperations)) {
       const key = `${operation.status}|${operation.message}`
       if (announced.current.get(name) === key) continue
       announced.current.set(name, key)
+      if (!userInitiated.current.has(name)) continue
+      if (operation.status !== "applying") userInitiated.current.delete(name)
       const id = `github-apply:${name}`
       if (operation.status === "applying") showOperationProgress(id, { title: operation.message, step: name })
       else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name })
@@ -211,6 +217,7 @@ export function GitHubPage({
 
   function applyWorkspaceDraft(workspace: string, nextDraft: GitHubDraft, message: string) {
     setDraft(nextDraft)
+    userInitiated.current.add(workspace)
     setWorkspaceOperations((current) => ({
       ...current,
       [workspace]: { workspace, status: "applying", message },
@@ -281,6 +288,7 @@ export function GitHubPage({
       applyWorkspaceDraft(workspace, draft, "Retrying GitHub access…")
       return
     }
+    userInitiated.current.add(workspace)
     setWorkspaceOperations((current) => ({
       ...current,
       [workspace]: { workspace, status: "applying", message: "Retrying GitHub access…" },
@@ -290,6 +298,7 @@ export function GitHubPage({
 
   function toggleAccess() {
     const nextEnabled = !accessEnabled
+    source.workspaces.filter((w) => !w.computer).forEach(({ machine }) => userInitiated.current.add(machine.name))
     actions.setGitHubAccessEnabled?.(nextEnabled)
   }
 

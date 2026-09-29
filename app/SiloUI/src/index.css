@@ -265,6 +265,45 @@ html.native-status body {
   animation: none !important;
 }
 
+/* Sonner hangs its close button off the toast's top-left corner as a tiny circle. Place a
+   normal ghost-style icon button inside the top-right corner for every toast, and reserve room
+   so the title, description and actions never run under it. */
+.silo-toaster [data-sonner-toast][data-styled="true"] {
+  padding-right: 34px;
+}
+
+.silo-toaster [data-sonner-toast][data-styled="true"] [data-close-button] {
+  left: auto;
+  right: 6px;
+  top: 6px;
+  width: 22px;
+  height: 22px;
+  transform: none;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 1;
+}
+
+.silo-toaster [data-sonner-toast][data-styled="true"] [data-close-button] svg {
+  width: 14px;
+  height: 14px;
+}
+
+.silo-toaster [data-sonner-toast][data-styled="true"] [data-close-button]:hover,
+.silo-toaster [data-sonner-toast][data-styled="true"]:hover [data-close-button]:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border: 0;
+}
+
+.silo-toaster [data-sonner-toast][data-styled="true"] [data-close-button]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 0;
+  box-shadow: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .silo-window,
   .silo-window * {
