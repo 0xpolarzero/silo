@@ -309,21 +309,51 @@ pub(crate) async fn set_update_automatic_checks(
 pub(crate) async fn check_for_update(app: AppHandle) -> Result<Snapshot, String> {
     check(app, false).await
 }
+/// Background checks never replace verified bytes or a pending download or install
+/// retry. An update that was only found (not downloaded) can be superseded.
+fn blocks_automatic_check(phase: &str, has_update: bool, has_bytes: bool) -> bool {
+    has_bytes || (has_update && phase != "available")
+}
+/// Apply a successful check. A verified download of the same version survives the
+/// check; returns true when the pending update (and its bytes) should be kept.
+fn settle_check(
+    snapshot: &mut Snapshot,
+    bytes: &mut Option<Vec<u8>>,
+    pending: Option<&str>,
+    found: Option<(&str, Option<&str>)>,
+) -> bool {
+    let keep = bytes.is_some() && found.is_some_and(|(version, _)| Some(version) == pending);
+    snapshot.retry_action = None;
+    if keep {
+        snapshot.phase = "ready".into();
+    } else {
+        *bytes = None;
+        snapshot.phase = if found.is_some() { "available" } else { "idle" }.into();
+        snapshot.downloaded_bytes = 0;
+        snapshot.total_bytes = None;
+    }
+    snapshot.available_version = found.map(|(version, _)| version.to_owned());
+    snapshot.release_notes = found.and_then(|(_, notes)| notes.map(str::to_owned));
+    keep
+}
 async fn check(app: AppHandle, automatic: bool) -> Result<Snapshot, String> {
-    {
+    let previous_phase = {
         let controller = app.state::<Controller>();
         let mut state = controller
             .state
             .lock()
             .map_err(|_| "Update state is unavailable.")?;
-        // Admit automatic checks under the same lock as manual actions. Never
-        // discard a discovered update, a download retry, or verified bytes.
+        // Admit automatic checks under the same lock as manual actions.
         if automatic
             && !state.schedule.due(
                 SystemTime::now(),
                 state.snapshot.automatic_checks,
                 busy(&state.snapshot.phase),
-                state.update.is_some() || state.bytes.is_some(),
+                blocks_automatic_check(
+                    &state.snapshot.phase,
+                    state.update.is_some(),
+                    state.bytes.is_some(),
+                ),
             )
         {
             return Ok(state.snapshot.clone());
@@ -331,13 +361,13 @@ async fn check(app: AppHandle, automatic: bool) -> Result<Snapshot, String> {
         if busy(&state.snapshot.phase) {
             return Err("An update operation is already running.".into());
         }
-        state.snapshot.phase = "checking".into();
+        // Keep a discovered update and verified bytes until the result is known.
+        let previous = std::mem::replace(&mut state.snapshot.phase, "checking".into());
         state.snapshot.error = None;
         state.snapshot.error_details = None;
-        state.update = None;
-        state.bytes = None;
         let _ = app.emit("silo://update-state", &state.snapshot);
-    }
+        previous
+    };
     let result = async {
         app.updater_builder()
             .timeout(Duration::from_secs(30))
@@ -352,22 +382,34 @@ async fn check(app: AppHandle, automatic: bool) -> Result<Snapshot, String> {
             s.snapshot.last_checked = time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
                 .ok();
-            s.snapshot.retry_action = None;
-            s.snapshot.phase = if update.is_some() {
-                "available"
-            } else {
-                "idle"
+            let pending = s.update.as_ref().map(|u| u.version.clone());
+            let found = update.as_ref().map(|u| (u.version.as_str(), u.body.as_deref()));
+            // The kept bytes were verified against the pending update's signature.
+            if !settle_check(&mut s.snapshot, &mut s.bytes, pending.as_deref(), found) {
+                s.update = update;
             }
-            .into();
-            s.snapshot.available_version = update.as_ref().map(|u| u.version.clone());
-            s.snapshot.release_notes = update.as_ref().and_then(|u| u.body.clone());
-            s.snapshot.downloaded_bytes = 0;
-            s.snapshot.total_bytes = None;
-            s.update = update;
         }),
         Err(e) => {
             modify(&app, |s| s.schedule.completed(SystemTime::now(), false))?;
-            fail(&app, check_error_message(&e), e)
+            let pending = app
+                .state::<Controller>()
+                .state
+                .lock()
+                .map_or(false, |s| s.update.is_some());
+            if !pending {
+                return fail(&app, check_error_message(&e), e);
+            }
+            // A failed re-check leaves a found or downloaded update actionable.
+            modify(&app, |s| {
+                s.snapshot.phase = if matches!(previous_phase.as_str(), "available" | "ready") {
+                    previous_phase
+                } else {
+                    "error".into()
+                };
+                s.snapshot.error = Some(check_error_message(&e).into());
+                s.snapshot.error_details = Some(e.to_string());
+                s.snapshot.retry_action = Some("check".into());
+            })
         }
     }
 }
@@ -656,6 +698,64 @@ mod tests {
             check_error_message(&invalid.into()),
             "The update service returned invalid release information. Try again later."
         );
+    }
+    fn snapshot(phase: &str) -> Snapshot {
+        Snapshot {
+            phase: phase.into(),
+            last_checked: None,
+            retry_action: None,
+            current_version: "1.0.0".into(),
+            available_version: None,
+            release_notes: None,
+            downloaded_bytes: 0,
+            total_bytes: None,
+            automatic_checks: true,
+            package_kind: "macos".into(),
+            release_url: RELEASE_URL.into(),
+            error: None,
+            error_details: None,
+            running_sandboxes: vec![],
+            can_install: false,
+            install_block_reason: None,
+            install_status: None,
+        }
+    }
+    #[test]
+    fn recheck_keeps_a_verified_download_and_replaces_a_superseded_release() {
+        let mut state = snapshot("checking");
+        state.downloaded_bytes = 3;
+        state.total_bytes = Some(3);
+        let mut bytes = Some(vec![1, 2, 3]);
+        assert!(settle_check(&mut state, &mut bytes, Some("1.2.0"), Some(("1.2.0", None))));
+        assert_eq!(state.phase, "ready");
+        assert_eq!(bytes.as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!((state.downloaded_bytes, state.total_bytes), (3, Some(3)));
+        assert_eq!(state.available_version.as_deref(), Some("1.2.0"));
+        // A newer release supersedes the pending one; its download no longer applies.
+        assert!(!settle_check(&mut state, &mut bytes, Some("1.2.0"), Some(("1.3.0", Some("notes")))));
+        assert_eq!(state.phase, "available");
+        assert!(bytes.is_none());
+        assert_eq!((state.downloaded_bytes, state.total_bytes), (0, None));
+        assert_eq!(state.available_version.as_deref(), Some("1.3.0"));
+        assert_eq!(state.release_notes.as_deref(), Some("notes"));
+        // Same version without a download: refresh the release, nothing to keep.
+        assert!(!settle_check(&mut state, &mut bytes, Some("1.3.0"), Some(("1.3.0", None))));
+        assert_eq!(state.phase, "available");
+        assert!(!settle_check(&mut state, &mut bytes, Some("1.3.0"), None));
+        assert_eq!(state.phase, "idle");
+        assert!(state.available_version.is_none());
+    }
+    #[test]
+    fn automatic_checks_run_while_an_update_is_only_available() {
+        // A newer release can supersede one that was found but not downloaded.
+        assert!(!blocks_automatic_check("available", true, false));
+        assert!(!blocks_automatic_check("idle", false, false));
+        // A failed check keeps retrying on its backoff.
+        assert!(!blocks_automatic_check("error", false, false));
+        // Verified bytes and download or install retries are never replaced in the background.
+        assert!(blocks_automatic_check("ready", true, true));
+        assert!(blocks_automatic_check("error", true, false));
+        assert!(blocks_automatic_check("error", true, true));
     }
     #[test]
     fn readiness_probe_never_rejects_concurrent_operations() {
