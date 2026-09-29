@@ -1,0 +1,221 @@
+import { useRef, useState } from "react"
+
+import type { SetupMachineConfiguration } from "@/contracts/silo"
+import {
+  configurationRequest,
+  duplicateMachine,
+  newSSHMachine,
+  newVirtualMachine,
+} from "@/features/onboarding/model/machine-configuration"
+import { isStaleConfigurationError } from "@/features/application/model/machine-change"
+import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
+
+export interface MachineEditingOptions {
+  machines: readonly SetupMachineConfiguration[]
+  getComputerId?: (machine: SetupMachineConfiguration) => string | undefined
+  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
+  onDeleteMachine?: (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => Promise<void>
+  onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
+  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
+  isMachineRunning?: (machine: SetupMachineConfiguration) => boolean
+  onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
+  initialEditorDraft?: MachineEditorDraft | null
+  interactionDisabled?: boolean
+}
+
+/**
+ * Owns every piece of the sandbox editing flow — draft state, validation, stale-baseline
+ * conflict detection and review, committing/deleting, and the Run-on computer selection —
+ * so the sandbox list and the sandbox detail page share exactly the same behaviour. The
+ * caller renders `MachineEditor` with the returned state and wires its handlers.
+ */
+export function useMachineEditing({
+  machines,
+  getComputerId,
+  onCommitMachine,
+  onDeleteMachine,
+  onMachinesChange,
+  validateOperation,
+  isMachineRunning,
+  onEditorDraftChange,
+  initialEditorDraft = null,
+  interactionDisabled = false,
+}: MachineEditingOptions) {
+  const [computerId, setComputerId] = useState("")
+  const [committing, setCommitting] = useState(false)
+  const disabled = interactionDisabled || committing
+  const [editorFocusRequest, setEditorFocusRequest] = useState(0)
+  const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState("")
+  // The saved configuration captured when the current operation began. Every local
+  // save/delete/reorder carries it as the change's `expected` baseline, so a queued edit
+  // applies to fresh state — or is rejected — instead of overwriting concurrent work.
+  const baselineRef = useRef<SetupMachineConfiguration[] | null>(null)
+  // The edited VM's baseline, plus editor conflict state, drive the in-editor notices.
+  const [editorBaseline, setEditorBaseline] = useState<SetupMachineConfiguration | null>(null)
+  const [editorConflict, setEditorConflict] = useState(false)
+  const [editorResetToken, setEditorResetToken] = useState(0)
+
+  function captureBaseline() {
+    baselineRef.current = structuredClone(machines as SetupMachineConfiguration[])
+  }
+
+  function setEditor(next: MachineEditorDraft | null) {
+    setEditorState(next)
+    onEditorDraftChange?.(next)
+    if (!next) { setEditorConflict(false); setEditorBaseline(null) }
+  }
+
+  function beginOperation() {
+    setPendingDelete(null)
+    setOperationError("")
+    setEditor(null)
+  }
+
+  function startEdit(machine: SetupMachineConfiguration) {
+    if (disabled) return
+    beginOperation()
+    captureBaseline()
+    setEditorBaseline(structuredClone(machine))
+    setComputerId(getComputerId?.(machine) ?? "")
+    setEditor({
+      draft: structuredClone(machine),
+      originalID: machine.id,
+      insertAt: machines.findIndex(({ id }) => id === machine.id),
+    })
+  }
+
+  function startAdd(kind: SetupMachineConfiguration["kind"]) {
+    if (disabled) return
+    beginOperation()
+    captureBaseline()
+    setComputerId("")
+    setEditor({
+      draft: kind === "vm" ? newVirtualMachine(machines) : newSSHMachine(machines),
+      insertAt: machines.length,
+    })
+  }
+
+  function startDuplicate(machine: SetupMachineConfiguration) {
+    if (disabled) return
+    beginOperation()
+    captureBaseline()
+    const sourceIndex = machines.findIndex(({ id }) => id === machine.id)
+    setComputerId(getComputerId?.(machine) ?? "")
+    setEditor({ draft: duplicateMachine(machine, machines), insertAt: sourceIndex + 1, displayAfterID: machine.id })
+  }
+
+  // Restrict a captured baseline to the machines this list actually commits (local vs a
+  // single remote computer), matching the list the save is derived against.
+  function scopedBaseline(): SetupMachineConfiguration[] | undefined {
+    const baseline = baselineRef.current
+    if (!baseline) return undefined
+    return getComputerId ? baseline.filter(machine => (getComputerId(machine) ?? "") === computerId) : baseline
+  }
+
+  function dispatchChange(next: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) {
+    // Only pass a baseline when one was captured, keeping the no-baseline call shape
+    // (onboarding drafts) exactly one argument.
+    const outcome = baseline ? onMachinesChange(next, baseline) : onMachinesChange(next)
+    if (outcome && typeof (outcome as Promise<void>).then === "function") {
+      void (outcome as Promise<void>).catch((cause) => {
+        if (editor?.originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
+        else setOperationError(cause instanceof Error ? cause.message : String(cause))
+      })
+    }
+  }
+
+  async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetComputerId = computerId) {
+    if (disabled) return
+    const blocked = validateOperation?.(machine, !originalID, targetComputerId)
+    if (blocked) { setOperationError(blocked); return }
+    const baseline = baselineRef.current ?? undefined
+    if (onCommitMachine) {
+      setCommitting(true)
+      try {
+        await onCommitMachine(machine, machines.find(item => item.id === originalID), targetComputerId, baseline)
+        setEditor(null)
+      } catch (cause) {
+        // A stale-baseline rejection keeps the editor open with the user's edits so they
+        // can review the latest values or discard; other failures surface as before.
+        if (originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
+        else setOperationError(cause instanceof Error ? cause.message : String(cause))
+      }
+      finally { setCommitting(false) }
+      return
+    }
+    const base = baseline ?? [...machines]
+    const updated = [...base]
+    if (originalID) {
+      const index = updated.findIndex(({ id }) => id === originalID)
+      if (index < 0) return
+      updated[index] = machine
+    } else {
+      updated.splice(editor?.insertAt ?? updated.length, 0, machine)
+    }
+    dispatchChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines, baseline ? scopedBaseline() : undefined)
+    setEditor(null)
+  }
+
+  function reviewConflict() {
+    if (!editor?.originalID) return
+    const latest = machines.find(({ id }) => id === editor.originalID)
+    if (!latest) { setEditor(null); return }
+    captureBaseline()
+    setEditorBaseline(structuredClone(latest))
+    setEditorState({ ...editor, draft: structuredClone(latest) })
+    setEditorConflict(false)
+    setEditorResetToken(token => token + 1)
+  }
+
+  async function remove(machine: SetupMachineConfiguration) {
+    if (disabled || (machine.kind === "vm" && isMachineRunning?.(machine))) return
+    if (pendingDelete !== machine.id) {
+      beginOperation()
+      captureBaseline()
+      setPendingDelete(machine.id)
+      return
+    }
+    const baseline = baselineRef.current ?? undefined
+    if (onDeleteMachine) {
+      setCommitting(true)
+      try { await onDeleteMachine(machine, baseline); setPendingDelete(null) }
+      catch (cause) { setOperationError(cause instanceof Error ? cause.message : String(cause)) }
+      finally { setCommitting(false) }
+      return
+    }
+    const base = baseline ?? machines
+    dispatchChange(configurationRequest(base.filter(({ id }) => id !== machine.id)).machines, baseline ? scopedBaseline() : undefined)
+    setPendingDelete(null)
+  }
+
+  // Delete a machine without the list's two-step arm/confirm gate — the detail page confirms
+  // in its own dialog, so it captures a fresh baseline and awaits the deletion here, letting
+  // failures propagate to the dialog instead of the inline notice.
+  async function deleteMachineNow(machine: SetupMachineConfiguration) {
+    captureBaseline()
+    const baseline = baselineRef.current ?? undefined
+    if (onDeleteMachine) { await onDeleteMachine(machine, baseline); return }
+    const base = baseline ?? machines
+    const next = configurationRequest(base.filter(({ id }) => id !== machine.id)).machines
+    const outcome = baseline
+      ? onMachinesChange(next, scopedBaseline())
+      : onMachinesChange(next)
+    if (outcome) await outcome
+  }
+
+  return {
+    computerId, setComputerId,
+    committing,
+    interactionDisabled: disabled,
+    editor, setEditor,
+    editorBaseline, editorConflict, editorResetToken,
+    editorFocusRequest, setEditorFocusRequest,
+    pendingDelete, setPendingDelete,
+    operationError, setOperationError,
+    baselineRef,
+    captureBaseline, beginOperation, scopedBaseline, dispatchChange,
+    startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteMachineNow,
+  }
+}

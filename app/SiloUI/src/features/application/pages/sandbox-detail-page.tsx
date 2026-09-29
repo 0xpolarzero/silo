@@ -1,5 +1,6 @@
-import { ChevronRight, Code, Cpu, GitBranch, Globe, KeyRound, Play, Server, Square, Terminal } from "lucide-react"
-import type { ReactNode } from "react"
+import { ChevronRight, Code, CopyPlus, Cpu, GitBranch, Globe, KeyRound, Pencil, Play, Server, Square, Terminal, Trash2 } from "lucide-react"
+import { useState, type FormEvent, type ReactNode } from "react"
+import { Dialog } from "radix-ui"
 
 import { ActionsMenu, type MenuAction } from "@/components/actions-menu"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
@@ -8,6 +9,10 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import type { SetupMachineConfiguration } from "@/contracts/silo"
+import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
+import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
+import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { WorkspaceStateDot, WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { CheckpointPanel } from "@/features/application/components/checkpoint-panel"
 import { WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
@@ -19,6 +24,20 @@ import { SshAccessRow } from "@/features/application/pages/ssh-access-panel"
 import { WorkspaceStoragePanel } from "@/features/application/pages/workspace-storage-panel"
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { cn } from "@/lib/utils"
+
+/** Everything the detail page needs to edit or delete this sandbox in place, sharing the
+ * list's `useMachineEditing` behaviour (validation, stale-baseline conflict review, saving). */
+export interface SandboxDetailEditing {
+  machines: readonly SetupMachineConfiguration[]
+  computers?: readonly { id: string; name: string; connected: boolean }[]
+  getComputerId?: (machine: SetupMachineConfiguration) => string | undefined
+  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
+  onDeleteMachine?: (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => Promise<void>
+  onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
+  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
+  isMachineCreated?: (machine: SetupMachineConfiguration) => boolean
+  isMachineRunning?: (machine: SetupMachineConfiguration) => boolean
+}
 
 export interface SandboxDetailControls {
   onBack: () => void
@@ -35,8 +54,12 @@ export interface SandboxDetailControls {
   onEditor: () => void
   onStart: () => void
   onStop: () => void
-  /** Opens the sandbox editor (Edit flow), reused by the Overview "Edit" action. */
-  onEdit?: () => void
+  /** In-place Edit/Delete of this sandbox. Absent in read-only or standalone renders. */
+  editing?: SandboxDetailEditing
+  /** Duplicate opens the list editor for the new sandbox (it leaves the detail page). */
+  onDuplicate?: () => void
+  /** Jump to another section (Files/Network filtered to this sandbox, or the Secrets tab). */
+  onNavigate?: (route: ApplicationInitialRoute) => void
   onRetryLifecycle?: () => void
   // Export a checkpoint's disks; progress is shown as a background toast.
   onCheckpointExport?: (checkpoint: WorkspaceCheckpoint) => void
@@ -107,7 +130,21 @@ function repositoryName(path: string) {
   return path.split("/").filter(Boolean).pop() ?? path
 }
 
-function OverviewTab({ workspace, source, onEdit }: { workspace: ApplicationWorkspace; source: ApplicationSource; onEdit?: () => void }) {
+/** A right-aligned link that jumps to the section this data is managed in, scoped to the
+ * sandbox where applicable. Shown even when the section is empty — it is still the place
+ * to manage it. */
+function ViewAllAction({ label, onClick }: { label: string; onClick: () => void }) {
+  return <button
+    type="button"
+    aria-label={label}
+    onClick={onClick}
+    className="inline-flex shrink-0 items-center gap-0.5 rounded-sm text-[11px] text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+  >
+    View all<ChevronRight className="size-3" aria-hidden="true" />
+  </button>
+}
+
+function OverviewTab({ workspace, source, onEdit, onNavigate }: { workspace: ApplicationWorkspace; source: ApplicationSource; onEdit?: () => void; onNavigate?: (route: ApplicationInitialRoute) => void }) {
   const { machine } = workspace
   const isVm = machine.kind === "vm"
   const repositories = workspace.repositories ?? []
@@ -132,7 +169,7 @@ function OverviewTab({ workspace, source, onEdit }: { workspace: ApplicationWork
       </ListCard>
     </Section>
 
-    <Section label="Repositories">
+    <Section label="Repositories" action={onNavigate ? <ViewAllAction label="View all files for this sandbox" onClick={() => onNavigate({ workspaceSection: "files", workspace: machine.id })} /> : undefined}>
       <ListCard divided={repositories.length + extraGithub.length > 1}>
         {hasRepositories ? <>
           {repositories.map(repo => <ListRow
@@ -155,7 +192,7 @@ function OverviewTab({ workspace, source, onEdit }: { workspace: ApplicationWork
       </ListCard>
     </Section>
 
-    <Section label="Secrets">
+    <Section label="Secrets" action={onNavigate ? <ViewAllAction label="View all secrets" onClick={() => onNavigate({ tab: "secrets" })} /> : undefined}>
       <ListCard divided={secretNames.length > 1}>
         {secretNames.length > 0 ? secretNames.map(name => {
           const secret = source.secrets.find(item => item.name === name)
@@ -174,9 +211,9 @@ function OverviewTab({ workspace, source, onEdit }: { workspace: ApplicationWork
       </ListCard>
     </Section>
 
-    {ports.length > 0 && <Section label="Ports">
+    {(ports.length > 0 || onNavigate) && <Section label="Ports" action={onNavigate ? <ViewAllAction label="View all network for this sandbox" onClick={() => onNavigate({ workspaceSection: "network", workspace: machine.id })} /> : undefined}>
       <ListCard divided={ports.length > 1}>
-        {ports.map(port => {
+        {ports.length > 0 ? ports.map(port => {
           const url = `${port.scheme ? `${port.scheme}://` : ""}localhost:${port.hostPort ?? port.port}`
           return <ListRow
             key={port.port}
@@ -187,7 +224,11 @@ function OverviewTab({ workspace, source, onEdit }: { workspace: ApplicationWork
               {port.listening === true ? "Listening" : port.listening === false ? "Not listening" : "Unknown"}
             </span>}
           />
-        })}
+        }) : <ListRow
+          icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
+          title={<span className="font-normal text-muted-foreground">No forwarded ports.</span>}
+          detail=""
+        />}
       </ListCard>
     </Section>}
   </div>
@@ -203,6 +244,32 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const target = workspaceTarget(workspace)
   const state = workspace.state
   const canStop = state === "running" || state === "starting"
+
+  // The detail page edits and deletes this sandbox in place using the same flow as the list.
+  const editingContext = controls.editing
+  const editing = useMachineEditing({
+    machines: editingContext?.machines ?? [machine],
+    getComputerId: editingContext?.getComputerId,
+    onCommitMachine: editingContext?.onCommitMachine,
+    onDeleteMachine: editingContext?.onDeleteMachine,
+    onMachinesChange: editingContext?.onMachinesChange ?? (() => {}),
+    validateOperation: editingContext?.validateOperation,
+    isMachineRunning: editingContext?.isMachineRunning,
+    interactionDisabled: controls.configurationLocked,
+  })
+  const [deleting, setDeleting] = useState(false)
+  const canEdit = Boolean(editingContext) && !controls.configurationLocked
+  const isEditing = Boolean(editing.editor)
+  const editComputerMachines = editingContext?.getComputerId
+    ? (editingContext.machines).filter(item => (editingContext.getComputerId!(item) ?? "") === editing.computerId)
+    : (editingContext?.machines ?? [machine])
+
+  const editMenuActions: MenuAction[] = editingContext ? [
+    { label: "Edit", separatorBefore: controls.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: controls.configurationLocked, onSelect: () => editing.startEdit(machine) },
+    { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: controls.configurationLocked || !controls.onDuplicate, onSelect: () => controls.onDuplicate?.() },
+    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), onSelect: () => setDeleting(true) },
+  ] : []
+  const menuActions = [...controls.menuActions, ...editMenuActions]
 
   const access = source.sshAccess?.workspaces.find(row => row.workspace === target)
   const sshAvailable = machine.kind === "vm" && Boolean(source.sshAccess || actions.refreshSshAccess)
@@ -253,12 +320,38 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           {canStop
             ? <Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={startStopDisabled || !controls.canStop} onClick={controls.onStop}><Square aria-hidden="true" data-icon="inline-start" />Stop</Button>
             : <Button type="button" variant="outline" size="xs" aria-label={`Start ${machine.name}`} disabled={startStopDisabled || !controls.canStart} onClick={controls.onStart}><Play aria-hidden="true" data-icon="inline-start" />Start</Button>}
-          {controls.menuActions.length > 0 && <ActionsMenu label={`More actions for ${machine.name}`} items={controls.menuActions} />}
+          {menuActions.length > 0 && <ActionsMenu label={`More actions for ${machine.name}`} items={menuActions} />}
         </div>}
       />
 
       {lifecycleNotice && <div className="mb-3">{lifecycleNotice}</div>}
 
+      {isEditing && editing.editor ? (
+        <ScrollArea className="min-h-0 flex-1">
+          <Section label={`Edit ${machine.name}`}>
+            <div className="rounded-lg border border-border bg-background">
+              <MachineEditor
+                key={`${editing.editor.draft.id}:${editing.editorResetToken}`}
+                saving={editing.committing}
+                editorHeader={editingContext?.computers && editing.editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.computerId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setComputerId(event.target.value)}><option value="">This computer</option>{editingContext.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined}
+                focusRequest={editing.editorFocusRequest}
+                created={Boolean(editing.editor.originalID && editingContext?.isMachineCreated?.(machine))}
+                running={Boolean(editing.editor.originalID && machine.kind === "vm" && editingContext?.isMachineRunning?.(machine))}
+                editor={editing.editor}
+                baselineMachine={editing.editorBaseline ?? undefined}
+                conflict={editing.editorConflict}
+                machines={editComputerMachines}
+                onCancel={() => editing.setEditor(null)}
+                onSave={editing.save}
+                onDraftChange={(draft) => editing.setEditor({ ...editing.editor!, draft })}
+                onReview={editing.reviewConflict}
+                onDiscard={() => editing.setEditor(null)}
+              />
+            </div>
+            {editing.operationError && <p className="text-xs text-destructive" role="alert">{editing.operationError}</p>}
+          </Section>
+        </ScrollArea>
+      ) : (
       <Tabs value={activeTab} onValueChange={value => controls.onSelectTab(value as SandboxDetailTab)} className="flex min-h-0 flex-1 flex-col gap-0">
         <div className="relative z-10 border-b border-border">
           <TabsList variant="line" className="-ml-1.5 w-fit">
@@ -267,7 +360,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="pt-4">
-            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} onEdit={controls.onEdit} /></TabsContent>
+            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
               <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} onForked={controls.onCheckpointForked} onRestored={controls.onCheckpointRestored} />
             </TabsContent>}
@@ -288,6 +381,57 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           </div>
         </ScrollArea>
       </Tabs>
+      )}
+      {deleting && editingContext && <SandboxDeleteDialog
+        name={machine.name}
+        computerName={workspace.computer?.name}
+        confirm={() => Promise.resolve(editing.deleteMachineNow(machine))}
+        onDeleted={() => { setDeleting(false); controls.onBack() }}
+        onClose={() => setDeleting(false)}
+      />}
     </div>
   </TooltipProvider>
+}
+
+function SandboxDeleteDialog({ name, computerName, confirm, onDeleted, onClose }: {
+  name: string
+  computerName?: string
+  confirm: () => Promise<void>
+  onDeleted: () => void
+  onClose: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const label = computerName ? `${name} on ${computerName}` : name
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await confirm()
+      onDeleted()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      setBusy(false)
+    }
+  }
+
+  return <Dialog.Root open onOpenChange={open => { if (!open && !busy) onClose() }}>
+    <Dialog.Portal>
+      <Dialog.Overlay className="fixed inset-0 z-50 bg-black/20" />
+      <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-xl outline-none">
+        <Dialog.Title className="text-sm font-medium">Delete {label}?</Dialog.Title>
+        <Dialog.Description className="mt-1 text-xs text-muted-foreground">Removing {name} from Silo. Persistent volumes will be retained.</Dialog.Description>
+        <form className="mt-3 grid gap-2" onSubmit={submit}>
+          {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={onClose}>Cancel</Button>
+            <Button type="submit" variant="destructive" size="sm" disabled={busy}>{busy ? "Deleting…" : `Delete ${name}`}</Button>
+          </div>
+        </form>
+      </Dialog.Content>
+    </Dialog.Portal>
+  </Dialog.Root>
 }

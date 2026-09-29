@@ -6,8 +6,9 @@ import { workspaceAvailability } from "../model/workspace-availability"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
-import { SandboxDetailPage, type SandboxDetailControls } from "./sandbox-detail-page"
-import { CircleAlert, Code, CopyPlus, Download, GitFork, HardDrive, History, Loader2, Monitor, Pencil, Play, RotateCw, Square, Terminal, Trash2, TriangleAlert } from "lucide-react"
+import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditing } from "./sandbox-detail-page"
+import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
+import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState } from "react"
 import { toast } from "sonner"
 
@@ -222,6 +223,7 @@ export function OverviewPage({ active = true, readOnly = false,
   onOpenSandbox,
   onCloseSandbox,
   onSelectSandboxTab,
+  onNavigate,
 }: {
   active?: boolean
   readOnly?: boolean
@@ -242,6 +244,8 @@ export function OverviewPage({ active = true, readOnly = false,
   onOpenSandbox?: (workspace: string, tab?: SandboxDetailTab) => void
   onCloseSandbox?: () => void
   onSelectSandboxTab?: (tab: SandboxDetailTab) => void
+  /** Navigate to another section (Files/Network filtered to a sandbox, or the Secrets tab). */
+  onNavigate?: (route: ApplicationInitialRoute) => void
 }) {
   useSshAccessRefresh(readOnly ? undefined : actions.refreshSshAccess, active)
   const [folderWorkspaceId, setFolderWorkspaceId] = useState<string | null>(null)
@@ -258,12 +262,14 @@ export function OverviewPage({ active = true, readOnly = false,
   const openSandbox = (id: string, tab: SandboxDetailTab = "overview") => { if (controlledNav) onOpenSandbox!(id, tab); else setInternalSandbox({ id, tab }) }
   const closeSandbox = () => { if (controlledNav) onCloseSandbox?.(); else setInternalSandbox(null) }
   const selectSandboxTab = (tab: SandboxDetailTab) => { if (controlledNav) onSelectSandboxTab?.(tab); else setInternalSandbox((current) => current ? { ...current, tab } : current) }
-  // Edit/Duplicate/Delete from a detail page are run by the list, which owns those flows.
-  const [machineAction, setMachineAction] = useState<{ token: number; machineId: string; action: "edit" | "duplicate" | "delete" }>()
+  // Duplicate from a detail page opens the list editor for the new sandbox, so it hands the
+  // request to the list (which owns that flow) and returns to the list. Edit and Delete are
+  // now handled in place on the detail page.
+  const [machineAction, setMachineAction] = useState<{ token: number; machineId: string; action: "duplicate" }>()
   const machineActionToken = useRef(0)
-  function requestMachineAction(machineId: string, action: "edit" | "duplicate" | "delete") {
+  function requestDuplicate(machineId: string) {
     closeSandbox()
-    setMachineAction({ token: ++machineActionToken.current, machineId, action })
+    setMachineAction({ token: ++machineActionToken.current, machineId, action: "duplicate" })
   }
   const backupOperation = backup?.state.operation
   const transferBusy = backupOperation?.kind === "running"
@@ -298,6 +304,38 @@ export function OverviewPage({ active = true, readOnly = false,
     const next = original ? base.map(item => item.id === original.id ? machine : item) : [...base, machine]
     return onMachinesChange(next, baseline ? base : undefined)
   }
+
+  // The sandbox editing callbacks, shared by the list and the detail page's in-place editor
+  // and delete dialog so both commit, delete, and validate through exactly the same paths.
+  const getMachineComputerId = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.computer?.id
+  const commitMachine = actions.saveRemoteMachine ? async (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => {
+    if (computerId) await actions.saveRemoteMachine!(computerId, machine, original)
+    else await updateLocal(machine, original, baseline)
+  } : undefined
+  const deleteMachine = actions.deleteRemoteMachine ? async (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => {
+    const computer = workspaces.get(machine.id)?.computer
+    if (computer) {
+      if (!computer.connected) throw new Error("This computer is unavailable. Reconnect before deleting its VM.")
+      await actions.deleteRemoteMachine!(computer.id, machine)
+    } else {
+      const base = baseline ? localOnly(baseline) : localMachines
+      await onMachinesChange(base.filter(item => item.id !== machine.id), baseline ? base : undefined)
+    }
+  } : undefined
+  const changeMachines = (next: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => {
+    if (source.vmOperationsUnavailable) { setOperationUnavailable(true); return }
+    return onMachinesChange(localOnly(next), baseline ? localOnly(baseline) : undefined)
+  }
+  const validateMachineOperation = (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => {
+    const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
+    if (computer) return computer.busy ? "This computer is refreshing its VM status. Try again shortly." : computer.connected ? undefined : "This computer is unavailable. Reconnect before changing its VMs."
+    if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
+    const notice = source.resourceNotice
+    if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
+    return `Not enough storage to create ${machine.name}. About ${notice.requiredGB} GB is needed on ${notice.volume}; ${notice.availableGB} GB is available. No sandbox was created.`
+  }
+  const isMachineCreated = (machine: SetupMachineConfiguration) => committedWorkspaces.has(machine.id)
+  const isMachineRunning = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.state === "running"
 
   // A single set of lifecycle handlers, guarded for capacity and unavailable-operation
   // notices, shared by the row controls and the detail page so both behave identically.
@@ -349,7 +387,6 @@ export function OverviewPage({ active = true, readOnly = false,
     const state = workspace.state
     const stale = workspace.freshness === "stale"
     const isLocal = !workspace.computer
-    const isRunning = state === "running"
     const workspaceOperationBusy = Boolean(workspace.lifecycleAction) || workspace.checkpointOperation?.status === "running" || Boolean(workspace.computer?.busy)
     const availability = workspaceAvailability(workspace, source)
     const guarded = guardedLifecycle(workspace)
@@ -359,11 +396,24 @@ export function OverviewPage({ active = true, readOnly = false,
       { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer && stale) || (state !== "running" && state !== "failed"), onSelect: () => guarded.restartWorkspace(target) },
       ...(machine.kind === "vm" && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, onSelect: () => setForkStateWorkspaceId(machine.id) }] : []),
       ...(machine.kind === "vm" && isLocal && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
-      { label: "Edit", separatorBefore: true, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: configurationLocked, onSelect: () => requestMachineAction(machine.id, "edit") },
-      { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: configurationLocked, onSelect: () => requestMachineAction(machine.id, "duplicate") },
-      { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: configurationLocked || (machine.kind === "vm" && isRunning), onSelect: () => requestMachineAction(machine.id, "delete") },
     ]
+    // Edit and Delete are appended and handled in place by the detail page; Duplicate hands
+    // off to the list editor for the new sandbox. Editing is offered only when not read-only.
+    const editing: SandboxDetailEditing | undefined = readOnly ? undefined : {
+      machines,
+      computers: source.remoteComputers,
+      getComputerId: getMachineComputerId,
+      onCommitMachine: commitMachine,
+      onDeleteMachine: deleteMachine,
+      onMachinesChange: changeMachines,
+      validateOperation: validateMachineOperation,
+      isMachineCreated,
+      isMachineRunning,
+    }
     return {
+      editing,
+      onDuplicate: readOnly ? undefined : () => requestDuplicate(machine.id),
+      onNavigate,
       onBack: closeSandbox,
       activeTab: activeSandboxTab,
       onSelectTab: selectSandboxTab,
@@ -376,7 +426,6 @@ export function OverviewPage({ active = true, readOnly = false,
       menuActions,
       onTerminal: () => actions.openTerminal(target),
       onEditor: () => setFolderWorkspaceId(machine.id),
-      onEdit: () => requestMachineAction(machine.id, "edit"),
       onStart: () => guarded.startWorkspace(target),
       onStop: () => guarded.stopWorkspace(target),
       onRetryLifecycle: workspace.lifecycleFailure && lifecycleAction && lifecycleAction !== "dismiss-error" && !readOnly
@@ -412,38 +461,16 @@ export function OverviewPage({ active = true, readOnly = false,
               onMachineActionHandled={(token) => setMachineAction((current) => current?.token === token ? undefined : current)}
               machines={machines}
               computers={source.remoteComputers}
-              getComputerId={machine => workspaces.get(machine.id)?.computer?.id}
+              getComputerId={getMachineComputerId}
               onConnectComputer={actions.connectComputer ? () => setConnecting(true) : undefined}
               onImportSandbox={importSandbox}
-              onCommitMachine={actions.saveRemoteMachine ? async (machine, original, computerId, baseline) => {
-                if (computerId) await actions.saveRemoteMachine!(computerId, machine, original)
-                else await updateLocal(machine, original, baseline)
-              } : undefined}
-              onDeleteMachine={actions.deleteRemoteMachine ? async (machine, baseline) => {
-                const computer = workspaces.get(machine.id)?.computer
-                if (computer) {
-                  if (!computer.connected) throw new Error("This computer is unavailable. Reconnect before deleting its VM.")
-                  await actions.deleteRemoteMachine!(computer.id, machine)
-                } else {
-                  const base = baseline ? localOnly(baseline) : localMachines
-                  await onMachinesChange(base.filter(item => item.id !== machine.id), baseline ? base : undefined)
-                }
-              } : undefined}
-              isMachineCreated={(machine) => committedWorkspaces.has(machine.id)}
-              isMachineRunning={(machine) => workspaces.get(machine.id)?.state === "running"}
-              onMachinesChange={(next, baseline) => {
-                if (source.vmOperationsUnavailable) { setOperationUnavailable(true); return }
-                return onMachinesChange(localOnly(next), baseline ? localOnly(baseline) : undefined)
-              }}
+              onCommitMachine={commitMachine}
+              onDeleteMachine={deleteMachine}
+              isMachineCreated={isMachineCreated}
+              isMachineRunning={isMachineRunning}
+              onMachinesChange={changeMachines}
               interactionDisabled={configurationLocked}
-              validateOperation={(machine, isNew, computerId) => {
-                const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
-                if (computer) return computer.busy ? "This computer is refreshing its VM status. Try again shortly." : computer.connected ? undefined : "This computer is unavailable. Reconnect before changing its VMs."
-                if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
-                const notice = source.resourceNotice
-                if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
-                return `Not enough storage to create ${machine.name}. About ${notice.requiredGB} GB is needed on ${notice.volume}; ${notice.availableGB} GB is available. No sandbox was created.`
-              }}
+              validateOperation={validateMachineOperation}
               summary={configurationOperation ? <>{source.workspaces.length} configured · {configurationOperation.status === "failed" ? "Sandbox changes failed" : "Applying sandbox changes"}</> : undefined}
               sortPriority={(machine) => {
                 const workspace = workspaces.get(machine.id)

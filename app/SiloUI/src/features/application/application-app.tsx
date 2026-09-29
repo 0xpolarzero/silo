@@ -292,6 +292,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
             onOpenSandbox={(id, tab) => navigation.openSandbox(id, tab)}
             onCloseSandbox={() => navigation.closeSandbox()}
             onSelectSandboxTab={(tab) => navigation.selectSandboxTab(tab)}
+            onNavigate={navigateCommand}
             actions={{ ...actions, dismissMachineConfigurationError: () => {
             if (sandboxConfigurationOperation?.status !== "failed") return
             actions.dismissMachineConfigurationError()
