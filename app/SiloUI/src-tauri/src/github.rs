@@ -106,40 +106,79 @@ static AUTHORIZATION: Mutex<PendingAuthorization> = Mutex::new(PendingAuthorizat
 // jobs out of order. This queue contains local updates only, never HTTP calls.
 struct IntentQueue {
     issued: AtomicU64,
-    turn: Mutex<u64>,
+    turn: Mutex<Turn>,
     ready: Condvar,
+}
+/// The ticket whose turn it is, and tickets given up before their turn came.
+struct Turn {
+    next: u64,
+    abandoned: std::collections::BTreeSet<u64>,
 }
 impl IntentQueue {
     const fn new() -> Self {
         Self {
             issued: AtomicU64::new(0),
-            turn: Mutex::new(1),
+            turn: Mutex::new(Turn { next: 1, abandoned: std::collections::BTreeSet::new() }),
             ready: Condvar::new(),
         }
     }
-    fn ticket(&self) -> u64 {
-        self.issued.fetch_add(1, Ordering::SeqCst) + 1
+    fn ticket(&self) -> IntentTicket<'_> {
+        IntentTicket { queue: self, number: Some(self.issued.fetch_add(1, Ordering::SeqCst) + 1) }
     }
-    fn wait(&self, ticket: u64) -> Result<IntentTurn<'_>, String> {
-        let mut turn = self
-            .turn
-            .lock()
-            .map_err(|_| "GitHub settings queue is unavailable.")?;
-        while *turn != ticket {
-            turn = self
-                .ready
-                .wait(turn)
-                .map_err(|_| "GitHub settings queue is unavailable.")?;
+    fn advance(&self, turn: &mut Turn) {
+        turn.next += 1;
+        while turn.abandoned.remove(&turn.next) {
+            turn.next += 1;
         }
-        Ok(IntentTurn(self))
+        self.ready.notify_all();
+    }
+}
+/// A place in the queue. Dropping it without waiting (an early return or a panic
+/// before its turn) gives the place up instead of blocking every later intent.
+struct IntentTicket<'a> {
+    queue: &'a IntentQueue,
+    number: Option<u64>,
+}
+impl<'a> IntentTicket<'a> {
+    fn wait(mut self) -> Result<IntentTurn<'a>, String> {
+        let queue = self.queue;
+        let ticket = self.number.take().ok_or("GitHub settings queue is unavailable.")?;
+        let mut turn = match queue.turn.lock() {
+            Ok(turn) => turn,
+            Err(_) => {
+                self.number = Some(ticket);
+                return Err("GitHub settings queue is unavailable.".into());
+            }
+        };
+        while turn.next != ticket {
+            turn = match queue.ready.wait(turn) {
+                Ok(turn) => turn,
+                Err(_) => {
+                    self.number = Some(ticket);
+                    return Err("GitHub settings queue is unavailable.".into());
+                }
+            };
+        }
+        Ok(IntentTurn(queue))
+    }
+}
+impl Drop for IntentTicket<'_> {
+    fn drop(&mut self) {
+        let Some(ticket) = self.number else { return };
+        if let Ok(mut turn) = self.queue.turn.lock() {
+            if turn.next == ticket {
+                self.queue.advance(&mut turn);
+            } else if turn.next < ticket {
+                turn.abandoned.insert(ticket);
+            }
+        }
     }
 }
 struct IntentTurn<'a>(&'a IntentQueue);
 impl Drop for IntentTurn<'_> {
     fn drop(&mut self) {
         if let Ok(mut turn) = self.0.turn.lock() {
-            *turn += 1;
-            self.0.ready.notify_all();
+            self.0.advance(&mut turn);
         }
     }
 }
@@ -2094,7 +2133,7 @@ pub async fn disconnect_github(
     let ticket = INTENTS.ticket();
     CANCELLATION.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        let _turn = INTENTS.wait(ticket)?;
+        let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
@@ -2123,7 +2162,7 @@ pub async fn set_github_access_enabled(
         CANCELLATION.fetch_add(1, Ordering::SeqCst);
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let _turn = INTENTS.wait(ticket)?;
+        let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
@@ -2205,7 +2244,7 @@ pub async fn save_github_configuration(
         let enabled = configuration["accessEnabled"]
             .as_bool()
             .ok_or("Missing GitHub access choice.")?;
-        let _turn = INTENTS.wait(ticket)?;
+        let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
@@ -2279,7 +2318,7 @@ pub async fn retry_github_configuration(
     let ticket = INTENTS.ticket();
     crate::github_http::reset_retries();
     tauri::async_runtime::spawn_blocking(move || {
-        let _turn = INTENTS.wait(ticket)?;
+        let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         let mut d = load(&app)?;
@@ -2490,23 +2529,55 @@ mod tests {
     }
     #[test]
     fn local_edits_preserve_submission_order_without_holding_network_lock() {
-        let queue = std::sync::Arc::new(IntentQueue::new());
+        let queue = IntentQueue::new();
         let first = queue.ticket();
         let second = queue.ticket();
-        let first_turn = queue.wait(first).unwrap();
+        let first_turn = first.wait().unwrap();
         let (sent, received) = std::sync::mpsc::channel();
-        let other = queue.clone();
-        let worker = std::thread::spawn(move || {
-            let _turn = other.wait(second).unwrap();
-            sent.send("second applied").unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _turn = second.wait().unwrap();
+                sent.send("second applied").unwrap();
+            });
+            assert!(received.try_recv().is_err());
+            drop(first_turn);
+            assert_eq!(
+                received.recv_timeout(Duration::from_secs(1)).unwrap(),
+                "second applied"
+            );
         });
-        assert!(received.try_recv().is_err());
-        drop(first_turn);
-        assert_eq!(
-            received.recv_timeout(Duration::from_secs(1)).unwrap(),
-            "second applied"
-        );
-        worker.join().unwrap();
+    }
+    #[test]
+    fn an_abandoned_intent_never_blocks_later_intents() {
+        let queue = IntentQueue::new();
+        let first = queue.ticket();
+        let second = queue.ticket();
+        let third = queue.ticket();
+        let fourth = queue.ticket();
+        // Given up before its turn (for example an early return before waiting).
+        drop(second);
+        let first_turn = first.wait().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _turn = third.wait().unwrap();
+                sent.send("third applied").unwrap();
+            });
+            assert!(received.try_recv().is_err());
+            drop(first_turn);
+            assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), "third applied");
+        });
+        // Given up exactly at its turn.
+        drop(fourth);
+        let fifth = queue.ticket();
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _turn = fifth.wait().unwrap();
+                sent.send("fifth applied").unwrap();
+            });
+            assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), "fifth applied");
+        });
     }
     #[test]
     fn invalid_remaining_selection_never_preserves_removed_repository_access() {
