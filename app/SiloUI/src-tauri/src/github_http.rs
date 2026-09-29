@@ -105,6 +105,7 @@ impl Gates {
         rate: bool,
         jitter: u64,
         message: &str,
+        persistent: bool,
     ) -> String {
         let attempts = self
             .requests
@@ -121,7 +122,9 @@ impl Gates {
         if rate {
             self.rate_until = self.rate_until.max(until);
         }
-        let retry = retryable && attempts <= MAX_RETRIES;
+        // Safe reads (such as token validation) keep retrying with capped backoff;
+        // a network outage must never leave them permanently stopped.
+        let retry = retryable && (persistent || attempts <= MAX_RETRIES);
         let message = if retry {
             waiting(until, at)
         } else {
@@ -166,11 +169,11 @@ fn preflight(key: &str) -> Result<(), String> {
         .map_err(|_| "GitHub retry state is unavailable.")?
         .check(key, now())
 }
-fn failure(key: &str, retryable: bool, floor: u64, rate: bool, message: &str) -> String {
+fn failure(key: &str, retryable: bool, floor: u64, rate: bool, message: &str, safe: bool) -> String {
     let jitter = u64::from(uuid::Uuid::new_v4().as_bytes()[0]);
     gates()
         .lock()
-        .map(|mut g| g.fail(key.into(), now(), retryable, floor, rate, jitter, message))
+        .map(|mut g| g.fail(key.into(), now(), retryable, floor, rate, jitter, message, safe))
         .unwrap_or_else(|_| "GitHub retry state is unavailable.".into())
 }
 fn number(headers: &HeaderMap, name: &str) -> Option<u64> {
@@ -231,6 +234,7 @@ fn response(
             0,
             false,
             "Cannot reach GitHub. The request outcome is unknown.",
+            safe,
         )
     })?;
     let status = response.status().as_u16();
@@ -246,6 +250,7 @@ fn response(
                 retry_after(&headers, now()),
                 is_rate_limit(status, &headers, &Value::Null),
                 "GitHub returned an incomplete response.",
+                safe,
             )
         })?;
     if bytes.len() as u64 > MAX_RESPONSE {
@@ -255,6 +260,7 @@ fn response(
             0,
             false,
             "GitHub response exceeds the supported size.",
+            safe,
         ));
     }
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
@@ -272,6 +278,7 @@ fn response(
                 0,
                 false,
                 "GitHub rejected the authorization. Connect GitHub again.",
+                safe,
             ));
         }
         if body.is_null() {
@@ -281,6 +288,7 @@ fn response(
                 0,
                 false,
                 "GitHub returned an invalid response.",
+                safe,
             ));
         }
         if let Ok(mut g) = gates().lock() {
@@ -300,7 +308,7 @@ fn response(
     } else {
         "GitHub access could not be updated."
     };
-    Err(failure(key, retryable, floor, rate, message))
+    Err(failure(key, retryable, floor, rate, message, safe))
 }
 /// Only fixed GitHub destinations are accepted. Tokens never follow redirects.
 pub(crate) enum Authentication {
@@ -444,8 +452,8 @@ mod tests {
     #[test]
     fn expired_superseded_key_does_not_keep_scheduling_work() {
         let mut g = Gates::default();
-        g.fail("obsolete".into(), 100, true, 0, false, 0, "offline");
-        g.fail("current".into(), 110, true, 0, false, 0, "offline");
+        g.fail("obsolete".into(), 100, true, 0, false, 0, "offline", false);
+        g.fail("current".into(), 110, true, 0, false, 0, "offline", false);
         assert_eq!(g.next_retry(101), 102);
         assert_eq!(g.next_retry(102), 112);
         assert_eq!(g.next_retry(112), 0);
@@ -521,7 +529,7 @@ mod tests {
         let mut at = 100;
         let mut delays = Vec::new();
         for _ in 0..5 {
-            g.fail("scope".into(), at, true, 0, true, 0, "limit");
+            g.fail("scope".into(), at, true, 0, true, 0, "limit", false);
             let until = g.requests["scope"].until.unwrap();
             assert!(g.check("scope", until - 1).is_err());
             assert!(g.check("scope", until).is_ok());
@@ -529,14 +537,14 @@ mod tests {
             at = until;
         }
         assert_eq!(delays, [60, 120, 240, 480, 900]);
-        g.fail("scope".into(), at, true, 0, true, 0, "limit");
+        g.fail("scope".into(), at, true, 0, true, 0, "limit", false);
         assert!(g.requests["scope"].until.is_none());
         assert!(g.check("scope", u64::MAX).is_err());
     }
     #[test]
     fn server_wait_is_a_floor_and_jitter_only_extends_it() {
         let mut g = Gates::default();
-        g.fail("a".into(), 100, true, 5000, true, 3, "limit");
+        g.fail("a".into(), 100, true, 5000, true, 3, "limit", false);
         assert_eq!(g.requests["a"].until, Some(5003));
         assert!(g.check("other", 5002).is_err());
         // Explicit retry preserves the shared wait even after per-request reset.
@@ -546,7 +554,7 @@ mod tests {
     #[test]
     fn ambiguous_mint_is_not_replayed_but_new_choice_can_proceed() {
         let mut g = Gates::default();
-        g.fail("old".into(), 100, false, 0, false, 0, "unknown");
+        g.fail("old".into(), 100, false, 0, false, 0, "unknown", false);
         assert!(g.check("old", u64::MAX).is_err());
         assert!(g.check("new", 100).is_ok());
     }
@@ -566,13 +574,29 @@ mod tests {
         assert_eq!(retry_after(&h, 100), 1445412480);
     }
     #[test]
+    fn safe_reads_keep_retrying_after_repeated_network_failures() {
+        let mut g = Gates::default();
+        let mut at = 100;
+        for _ in 0..(MAX_RETRIES + 5) {
+            g.fail("/user".into(), at, true, 0, false, 0, "offline", true);
+            at = g.requests["/user"].until.expect("safe read stopped retrying");
+        }
+        assert!(g.check("/user", at).is_ok());
+        // Unsafe requests still stop to avoid repeating a side effect.
+        let mut g = Gates::default();
+        for _ in 0..=MAX_RETRIES {
+            g.fail("post".into(), 100, true, 0, false, 0, "offline", false);
+        }
+        assert_eq!(g.requests["post"].until, None);
+    }
+    #[test]
     fn transient_reads_back_off_without_delaying_unrelated_keys() {
         let mut g = Gates::default();
-        g.fail("read".into(), 100, true, 0, false, 0, "offline");
+        g.fail("read".into(), 100, true, 0, false, 0, "offline", false);
         assert!(g.check("read", 101).is_err());
         assert!(g.check("read", 102).is_ok());
         assert!(g.check("other", 100).is_ok());
-        g.fail("read".into(), 102, true, 0, false, 0, "offline");
+        g.fail("read".into(), 102, true, 0, false, 0, "offline", false);
         assert_eq!(g.requests["read"].until, Some(106));
     }
 }

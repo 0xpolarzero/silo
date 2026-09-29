@@ -271,6 +271,8 @@ pub async fn save_github_personal_token(
         let _network = TOKEN_OPERATION
             .lock()
             .map_err(|_| "GitHub operation failed.")?;
+        // Saving a token is an explicit retry; never leave validation blocked by earlier failures.
+        crate::github_http::reset_retries();
         let token = validated(token.trim())?;
         SECRET.retry();
         SECRET.write(Some(token.clone()), || {
