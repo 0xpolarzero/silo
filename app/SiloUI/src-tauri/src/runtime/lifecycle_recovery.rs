@@ -245,6 +245,10 @@ fn settle(
     }
     result
 }
+/// True when an unfinished action is saved for this VM.
+pub(super) fn has_intent(paths: &RuntimePaths, machine_id: &str) -> bool {
+    path(paths, machine_id).exists()
+}
 pub(super) fn perform(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
