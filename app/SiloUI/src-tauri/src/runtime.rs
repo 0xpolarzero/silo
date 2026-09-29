@@ -792,20 +792,21 @@ fn run_msb_with_progress(
                 Some("start" | "restart" | "exec")
             )
     }) {
-        let lock =
-            github_revision_lock(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
-        let guard = lock.lock().map_err(|_| {
-            RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
-        })?;
+        // `--no-start` never boots the VM, so it must not wait behind a live access
+        // change holding the revision lock (read paths such as repository discovery).
         if args[0] == "exec"
             && args
                 .iter()
                 .take_while(|arg| arg.as_str() != "--")
                 .any(|arg| arg == "--no-start")
         {
-            drop(guard);
             return run_msb_process(paths, args, timeout, report);
         }
+        let lock =
+            github_revision_lock(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
+        let guard = lock.lock().map_err(|_| {
+            RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
+        })?;
         if args[0] != "exec" {
             let result = run_msb_process(paths, args, timeout, report);
             drop(guard);
@@ -820,12 +821,24 @@ fn run_msb_with_progress(
         let state = inspect_workspace(&ProcessRunner, paths, workspace)?;
         let temporary_boot = matches!(state.status.as_str(), "Created" | "Stopped" | "Crashed");
         if temporary_boot {
-            run_msb_process(
+            if let Err(error) = run_msb_process(
                 paths,
                 &["start".into(), workspace.clone()],
                 MUTATION_TIMEOUT,
                 report,
-            )?;
+            ) {
+                // A cancelled or failed start may already have booted the VM. The
+                // cleanup stop is not cancellable, so the VM is not left running.
+                let _ = without_cancellation(|| run_msb_process(
+                    paths,
+                    &["stop".into(), workspace.clone()],
+                    STOP_TIMEOUT,
+                    &|_| {},
+                ));
+                drop(guard);
+                crate::ssh_access::reconcile(paths);
+                return Err(error);
+            }
         }
         drop(guard);
         if temporary_boot {
@@ -838,12 +851,12 @@ fn run_msb_with_progress(
             let _guard = lock.lock().map_err(|_| {
                 RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
             })?;
-            let stopped = run_msb_process(
+            let stopped = without_cancellation(|| run_msb_process(
                 paths,
                 &["stop".into(), workspace.clone()],
                 STOP_TIMEOUT,
                 &|_| {},
-            );
+            ));
             drop(_guard);
             crate::ssh_access::reconcile(paths);
             return match (result, stopped) {
@@ -862,6 +875,24 @@ fn run_msb_with_progress(
         crate::ssh_access::reconcile(paths);
     }
     result
+}
+
+thread_local! {
+    /// Set while cleanup that must finish (such as the stop after exec's temporary
+    /// boot) runs, so a cancel of the surrounding operation does not kill it.
+    static CANCELLATION_MASKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `work` with this thread's operation cancellation ignored by runtime commands.
+fn without_cancellation<T>(work: impl FnOnce() -> T) -> T {
+    let previous = CANCELLATION_MASKED.with(|masked| masked.replace(true));
+    let result = work();
+    CANCELLATION_MASKED.with(|masked| masked.set(previous));
+    result
+}
+
+fn runtime_cancel_requested() -> bool {
+    !CANCELLATION_MASKED.with(std::cell::Cell::get) && operation_gate::cancel_requested()
 }
 
 fn run_msb_process(
@@ -1027,7 +1058,7 @@ fn run_msb_process(
             break status;
         }
         // A cancellable operation asked to stop: kill the child like the timeout path.
-        if operation_gate::cancel_requested() {
+        if runtime_cancel_requested() {
             let _ = child.kill();
             if child.wait().is_ok() {
                 if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
@@ -4400,6 +4431,63 @@ mod tests {
                 .pop_front()
                 .expect("missing stub output")
         }
+    }
+
+    fn fake_lifecycle_msb(paths: &RuntimePaths, block_on: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test").unwrap();
+        fs::write(paths.home.join("state"), "Stopped").unwrap();
+        fs::write(&paths.executable, format!(r#"#!/bin/sh
+printf '%s\n' "$1" >> "$MSB_HOME/calls"
+case "$1" in
+  inspect) state=$(cat "$MSB_HOME/state"); printf '{{"name":"cleanup","status":"%s","config":{{"labels":{{"silo.managed":"true"}}}},"active_config":{{}}}}\n' "$state" ;;
+  start) printf Running > "$MSB_HOME/state" ;;
+  stop) printf Stopped > "$MSB_HOME/state" ;;
+esac
+if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
+"#)).unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn cancelling_exec_still_stops_its_temporary_boot() {
+        for block_on in ["start", "exec"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            fake_lifecycle_msb(&paths, block_on);
+            let guard = OPERATIONS.vm("cleanup-id", "cleanup", "Running a guest command").unwrap();
+            guard.allow_cancel();
+            let token = guard.cancel_token();
+            let blocked = paths.home.join("blocked");
+            let canceller = thread::spawn(move || {
+                while !blocked.exists() { thread::sleep(Duration::from_millis(10)); }
+                token.store(true, Ordering::SeqCst);
+            });
+            let result = run_msb_with_progress(&paths, &["exec".into(), "cleanup".into(), "--".into(), "true".into()], Duration::from_secs(20), &|_| {});
+            canceller.join().unwrap();
+            drop(guard);
+            assert!(matches!(result, Err(RuntimeError::Cancelled { .. })), "{block_on}: {result:?}");
+            let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
+            assert_eq!(calls.lines().last(), Some("stop"), "{block_on}: {calls}");
+            assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), "Stopped", "{block_on}");
+        }
+    }
+
+    #[test]
+    fn exec_without_start_does_not_wait_for_the_github_revision_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_lifecycle_msb(&paths, "never");
+        let lock = github_revision_lock(&paths.home, "cleanup").unwrap();
+        let _held = lock.lock().unwrap();
+        let worker_paths = paths.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let result = run_msb_with_progress(&worker_paths, &["exec".into(), "cleanup".into(), "--no-start".into(), "--".into(), "true".into()], Duration::from_secs(5), &|_| {});
+            let _ = sender.send(result.is_ok());
+        });
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(5)), Ok(true));
     }
 
     #[test]
