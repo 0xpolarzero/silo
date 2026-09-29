@@ -713,10 +713,10 @@ Paths relative to `app/SiloUI/` unless noted. K-04, K-05, K-10 and K-12 run in P
 |---|---|---|---|---|
 | A Release, CI, packaging, docs | 29 | | G Desktop, editor, files, applications | 25 |
 | B GitHub, host push, secrets | 52 | | H Frontend data layer, onboarding | 39 |
-| C Remote, SSH, network | 29 | | I Frontend UI | 44 |
+| C Remote, SSH, network | 30 | | I Frontend UI | 44 |
 | D Runtime core, gate, lifecycle | 46 | | J Terminology and copy | 18 |
 | E Checkpoints, storage, export/import | 59 | | K Tests, harness, code health | 26 |
-| F Lifecycle, settings, updates, logs | 30 | | **Total** | **397** |
+| F Lifecycle, settings, updates, logs | 30 | | **Total** | **398** |
 
 The 20 reviewer reports contained 413 findings plus 16 from the consolidating
 reviewer; overlapping findings were merged into one entry (marked ×n) and a few
