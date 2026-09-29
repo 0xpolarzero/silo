@@ -75,6 +75,18 @@ fn github_revision_lock(home: &Path, workspace: &str) -> Result<Arc<Mutex<u64>>,
         .clone())
 }
 
+/// Forget cached GitHub state for a removed sandbox so a new sandbox reusing its
+/// name never starts with the old one's access profile.
+fn forget_github_state(home: &Path, workspace: &str) {
+    let key = (home.to_owned(), workspace.to_owned());
+    if let Ok(mut profiles) = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        profiles.remove(&key);
+    }
+    if let Ok(mut locks) = GITHUB_REVISION_LOCKS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        locks.remove(&key);
+    }
+}
+
 fn accept_github_revision(current: &mut u64, revision: u64) -> Result<(), String> {
     if revision < *current {
         return Err("A newer GitHub access choice has replaced this update.".into());
@@ -792,20 +804,21 @@ fn run_msb_with_progress(
                 Some("start" | "restart" | "exec")
             )
     }) {
-        let lock =
-            github_revision_lock(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
-        let guard = lock.lock().map_err(|_| {
-            RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
-        })?;
+        // `--no-start` never boots the VM, so it must not wait behind a live access
+        // change holding the revision lock (read paths such as repository discovery).
         if args[0] == "exec"
             && args
                 .iter()
                 .take_while(|arg| arg.as_str() != "--")
                 .any(|arg| arg == "--no-start")
         {
-            drop(guard);
             return run_msb_process(paths, args, timeout, report);
         }
+        let lock =
+            github_revision_lock(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
+        let guard = lock.lock().map_err(|_| {
+            RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
+        })?;
         if args[0] != "exec" {
             let result = run_msb_process(paths, args, timeout, report);
             drop(guard);
@@ -820,12 +833,24 @@ fn run_msb_with_progress(
         let state = inspect_workspace(&ProcessRunner, paths, workspace)?;
         let temporary_boot = matches!(state.status.as_str(), "Created" | "Stopped" | "Crashed");
         if temporary_boot {
-            run_msb_process(
+            if let Err(error) = run_msb_process(
                 paths,
                 &["start".into(), workspace.clone()],
                 MUTATION_TIMEOUT,
                 report,
-            )?;
+            ) {
+                // A cancelled or failed start may already have booted the VM. The
+                // cleanup stop is not cancellable, so the VM is not left running.
+                let _ = without_cancellation(|| run_msb_process(
+                    paths,
+                    &["stop".into(), workspace.clone()],
+                    STOP_TIMEOUT,
+                    &|_| {},
+                ));
+                drop(guard);
+                crate::ssh_access::reconcile(paths);
+                return Err(error);
+            }
         }
         drop(guard);
         if temporary_boot {
@@ -838,12 +863,12 @@ fn run_msb_with_progress(
             let _guard = lock.lock().map_err(|_| {
                 RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
             })?;
-            let stopped = run_msb_process(
+            let stopped = without_cancellation(|| run_msb_process(
                 paths,
                 &["stop".into(), workspace.clone()],
                 STOP_TIMEOUT,
                 &|_| {},
-            );
+            ));
             drop(_guard);
             crate::ssh_access::reconcile(paths);
             return match (result, stopped) {
@@ -862,6 +887,24 @@ fn run_msb_with_progress(
         crate::ssh_access::reconcile(paths);
     }
     result
+}
+
+thread_local! {
+    /// Set while cleanup that must finish (such as the stop after exec's temporary
+    /// boot) runs, so a cancel of the surrounding operation does not kill it.
+    static CANCELLATION_MASKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `work` with this thread's operation cancellation ignored by runtime commands.
+fn without_cancellation<T>(work: impl FnOnce() -> T) -> T {
+    let previous = CANCELLATION_MASKED.with(|masked| masked.replace(true));
+    let result = work();
+    CANCELLATION_MASKED.with(|masked| masked.set(previous));
+    result
+}
+
+fn runtime_cancel_requested() -> bool {
+    !CANCELLATION_MASKED.with(std::cell::Cell::get) && operation_gate::cancel_requested()
 }
 
 fn run_msb_process(
@@ -1027,7 +1070,7 @@ fn run_msb_process(
             break status;
         }
         // A cancellable operation asked to stop: kill the child like the timeout path.
-        if operation_gate::cancel_requested() {
+        if runtime_cancel_requested() {
             let _ = child.kill();
             if child.wait().is_ok() {
                 if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
@@ -1745,7 +1788,9 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
     crate::runtime_migration::ensure_ready(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        let mut source = read_application_snapshot(&ProcessRunner, &paths, &|| OPERATIONS.is_idle())?;
+        // Only visible computer-wide work (sandbox configuration) can add or remove
+        // sandboxes; hidden housekeeping or work on one VM must not freeze every row.
+        let mut source = read_application_snapshot(&ProcessRunner, &paths, &|| OPERATIONS.is_computer_idle())?;
         // Opportunistic log cleanup; skip when any operation is active or waiting.
         if let Ok(_guard) = OPERATIONS.try_computer_hidden("Cleaning up expired logs") {
             for workspace in &mut source.workspaces {
@@ -2116,7 +2161,7 @@ pub async fn workspace_action(
     let started = std::time::Instant::now();
     let notice_action = action.clone();
     let notice_name = name.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(String, ApplicationSource), (Option<String>, LifecycleFailure, String)> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(String, ApplicationSource, bool), (Option<String>, LifecycleFailure, String)> {
         let app = worker_app;
         // Setup failures before the operation runs are genuine faults worth notifying about.
         let paths = runtime_paths(&app).map_err(|error| (None, LifecycleFailure::Failed, error))?;
@@ -2182,11 +2227,12 @@ pub async fn workspace_action(
             }
         };
         let _ = app.emit("silo://application-state-changed", ());
+        let (result, handed_off) = hand_off_duplicate(result);
         let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
         // Classify before the typed error is flattened to a message: a cancellation or a
         // deduplicated request is an expected outcome, not a failure to notify about.
         match result {
-            Ok(state) => Ok((vm_id, state)),
+            Ok(state) => Ok((vm_id, state, handed_off)),
             Err(error) => Err((
                 Some(vm_id),
                 lifecycle_failure(&error),
@@ -2202,8 +2248,12 @@ pub async fn workspace_action(
         }
     };
     match result {
-        Ok((vm_id, state)) => {
-            notify(Some(vm_id), crate::notifications::Outcome::Succeeded);
+        Ok((vm_id, state, handed_off)) => {
+            notify(Some(vm_id), if handed_off {
+                crate::notifications::Outcome::AlreadyQueued
+            } else {
+                crate::notifications::Outcome::Succeeded
+            });
             Ok(state)
         }
         Err((vm_id, failure, message)) => {
@@ -2228,6 +2278,16 @@ impl LifecycleFailure {
             Self::AlreadyQueued => crate::notifications::Outcome::AlreadyQueued,
             Self::Failed => crate::notifications::Outcome::Failed(message),
         }
+    }
+}
+
+/// A request deduplicated into an identical queued action (a double-click, or an
+/// auto-retry finding the same request already waiting) was handed off, not failed:
+/// the caller returns current state without an error row or notification (D-13).
+fn hand_off_duplicate(result: Result<(), RuntimeError>) -> (Result<(), RuntimeError>, bool) {
+    match result {
+        Err(error) if lifecycle_failure(&error) == LifecycleFailure::AlreadyQueued => (Ok(()), true),
+        other => (other, false),
     }
 }
 
@@ -2905,6 +2965,17 @@ fn read_application_state_with(
     application_source_for_workspaces(paths, workspaces)
 }
 
+/// A persisted running checkpoint operation is interrupted only when no operation
+/// currently holds its VM; otherwise it is live and keeps its running stage.
+fn checkpoint_operation_view(mut operation: checkpoints::Operation, live: bool) -> checkpoints::Operation {
+    if operation.status == "running" && !live {
+        operation.status = "failed".into();
+        operation.stage = "Interrupted operation".into();
+        operation.error = Some("Silo closed during this operation. Retry to reconcile its saved checkpoint.".into());
+    }
+    operation
+}
+
 fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<ApplicationWorkspace>) -> Result<ApplicationSource, RuntimeError> {
     let secrets = crate::secrets::snapshot().map_err(RuntimeError::Unavailable)?;
     // Journal read failures are reported as an Activity warning by read() below.
@@ -2915,14 +2986,8 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
             let checkpoint = checkpoints::load(paths, workspace.machine.id())?;
             workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
             workspace.checkpoints = checkpoint.checkpoints;
-            workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|mut operation| {
-                if operation.status == "running" {
-                    operation.status = "failed".into();
-                    operation.stage = "Interrupted operation".into();
-                    operation.error = Some("Silo closed during this operation. Retry to reconcile its saved checkpoint.".into());
-                }
-                operation
-            });
+            let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
+            workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
         }
         workspace.secret_names = secrets.iter().filter(|secret| secret["removing"] != true && secret["workspaces"].as_array().is_some_and(|names| names.iter().any(|name| name.as_str() == Some(workspace.machine.name()))))
             .filter_map(|secret| secret["name"].as_str().map(str::to_owned)).collect();
@@ -3368,6 +3433,27 @@ fn apply_whole_configuration_with_progress(
     let mut applied = previous.clone();
     let mut changed = false;
     let result = (|| {
+        // Removals run first, as the frontend sends them: deleting a sandbox and adding
+        // a new one with the same name in one batch must free its name and storage.
+        for machine in previous
+            .machines
+            .iter()
+            .filter(|machine| !requested_ids.contains(machine.id()))
+        {
+            progress("workspace-removal", machine.name(), 0);
+            remove_machine_runtime(runner, paths, machine)?;
+            changed = true;
+            applied
+                .machines
+                .retain(|existing| existing.id() != machine.id());
+            write_metadata(&paths.metadata, &applied)?;
+            lifecycle_recovery::forget_removed(paths, machine)?;
+            crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
+            forget_github_state(&paths.home, machine.name());
+            remove_machine_volumes(paths, machine)?;
+            checkpoints::forget_removed(paths, machine.id())?;
+            progress("workspace-removal", machine.name(), 1);
+        }
         for machine in &request.machines {
             match previous_by_id.get(machine.id()) {
                 None => {
@@ -3400,24 +3486,6 @@ fn apply_whole_configuration_with_progress(
                 verify_machine_configuration(runner, paths, machine)?;
                 progress("workspace-verification", machine.name(), 1);
             }
-        }
-        for machine in previous
-            .machines
-            .iter()
-            .filter(|machine| !requested_ids.contains(machine.id()))
-        {
-            progress("workspace-removal", machine.name(), 0);
-            remove_machine_runtime(runner, paths, machine)?;
-            changed = true;
-            applied
-                .machines
-                .retain(|existing| existing.id() != machine.id());
-            write_metadata(&paths.metadata, &applied)?;
-            lifecycle_recovery::forget_removed(paths, machine)?;
-            crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
-            remove_machine_volumes(paths, machine)?;
-            checkpoints::forget_removed(paths, machine.id())?;
-            progress("workspace-removal", machine.name(), 1);
         }
         write_metadata(&paths.metadata, &request)?;
         configuration_recovery::finish(paths)
@@ -4400,6 +4468,63 @@ mod tests {
         }
     }
 
+    fn fake_lifecycle_msb(paths: &RuntimePaths, block_on: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test").unwrap();
+        fs::write(paths.home.join("state"), "Stopped").unwrap();
+        fs::write(&paths.executable, format!(r#"#!/bin/sh
+printf '%s\n' "$1" >> "$MSB_HOME/calls"
+case "$1" in
+  inspect) state=$(cat "$MSB_HOME/state"); printf '{{"name":"cleanup","status":"%s","config":{{"labels":{{"silo.managed":"true"}}}},"active_config":{{}}}}\n' "$state" ;;
+  start) printf Running > "$MSB_HOME/state" ;;
+  stop) printf Stopped > "$MSB_HOME/state" ;;
+esac
+if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
+"#)).unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn cancelling_exec_still_stops_its_temporary_boot() {
+        for block_on in ["start", "exec"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            fake_lifecycle_msb(&paths, block_on);
+            let guard = OPERATIONS.vm("cleanup-id", "cleanup", "Running a guest command").unwrap();
+            guard.allow_cancel();
+            let token = guard.cancel_token();
+            let blocked = paths.home.join("blocked");
+            let canceller = thread::spawn(move || {
+                while !blocked.exists() { thread::sleep(Duration::from_millis(10)); }
+                token.store(true, Ordering::SeqCst);
+            });
+            let result = run_msb_with_progress(&paths, &["exec".into(), "cleanup".into(), "--".into(), "true".into()], Duration::from_secs(20), &|_| {});
+            canceller.join().unwrap();
+            drop(guard);
+            assert!(matches!(result, Err(RuntimeError::Cancelled { .. })), "{block_on}: {result:?}");
+            let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
+            assert_eq!(calls.lines().last(), Some("stop"), "{block_on}: {calls}");
+            assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), "Stopped", "{block_on}");
+        }
+    }
+
+    #[test]
+    fn exec_without_start_does_not_wait_for_the_github_revision_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_lifecycle_msb(&paths, "never");
+        let lock = github_revision_lock(&paths.home, "cleanup").unwrap();
+        let _held = lock.lock().unwrap();
+        let worker_paths = paths.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let result = run_msb_with_progress(&worker_paths, &["exec".into(), "cleanup".into(), "--no-start".into(), "--".into(), "true".into()], Duration::from_secs(5), &|_| {});
+            let _ = sender.send(result.is_ok());
+        });
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(5)), Ok(true));
+    }
+
     #[test]
     fn desktop_guest_configuration_preserves_vm_lifecycle_even_when_guest_fails() {
         let _guard = OPERATIONS.computer("Test serialization").unwrap();
@@ -5185,6 +5310,54 @@ esac
         fs::write(folder.join("unknown.raw"), b"keep").unwrap();
         assert!(remove_machine_volumes(&paths, &vm()).is_err());
         assert_eq!(fs::read(folder.join("unknown.raw")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn removed_sandbox_github_profile_is_not_inherited_by_a_new_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
+            .insert((paths.home.clone(), "dev".into()), r#"{"version":1,"owners":["old"]}"#.into());
+        let args = ["start".to_string(), "dev".to_string()];
+        assert_ne!(github_environment(&paths, &args), DISABLED_GITHUB_PROFILE);
+        forget_github_state(&paths.home, "dev");
+        assert_eq!(github_environment(&paths, &args), DISABLED_GITHUB_PROFILE);
+    }
+
+    #[test]
+    fn duplicate_lifecycle_request_is_handed_off_not_failed() {
+        let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::from(operation_gate::GateError::AlreadyQueued)));
+        assert!(result.is_ok() && handed_off);
+        let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::Busy));
+        assert!(result.is_err() && !handed_off);
+        let (result, handed_off) = hand_off_duplicate(Ok(()));
+        assert!(result.is_ok() && !handed_off);
+    }
+
+    #[test]
+    fn running_checkpoint_operation_is_interrupted_only_when_its_vm_is_idle() {
+        let running = || checkpoints::Operation { kind: "create".into(), status: "running".into(), stage: "Saving disk".into(), error: None };
+        let live = checkpoint_operation_view(running(), true);
+        assert_eq!((live.status.as_str(), live.stage.as_str(), live.error), ("running", "Saving disk", None));
+        let interrupted = checkpoint_operation_view(running(), false);
+        assert_eq!(interrupted.status, "failed");
+        assert!(interrupted.error.unwrap().contains("Silo closed"));
+    }
+
+    #[test]
+    fn application_snapshot_ignores_hidden_housekeeping_and_single_vm_work() {
+        let gate = operation_gate::OperationGate::new();
+        assert!(gate.is_computer_idle());
+        let housekeeping = gate.try_computer_hidden("Cleaning up expired logs").unwrap();
+        assert!(!gate.is_idle());
+        assert!(gate.is_computer_idle(), "hidden housekeeping must not freeze state reads");
+        drop(housekeeping);
+        let checkpoint = gate.vm("a-id", "a", "Creating checkpoint").unwrap();
+        assert!(gate.is_computer_idle(), "work on one VM must not freeze every sandbox");
+        drop(checkpoint);
+        let change = gate.computer("Applying sandbox changes").unwrap();
+        assert!(!gate.is_computer_idle());
+        drop(change);
     }
 
     #[test]
