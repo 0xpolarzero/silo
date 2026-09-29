@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { BackupState } from "@/features/application/model/backup-source"
-import { createProductionSource, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
+import { createProductionSource, isUpdateInProgress, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
 import { siloProgressEventSchema } from "@/contracts/silo"
 
 const toasts = vi.hoisted(() => ({ showOperationFailure: vi.fn() }))
@@ -221,6 +221,12 @@ describe("production application bridge", () => {
     expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "restore", checkpointId: "point-id" })
     expect(mock.invoke.mock.calls.some(([command]) => ["create_checkpoint", "fork_checkpoint", "restore_checkpoint"].includes(command as string))).toBe(false)
     store.dispose()
+  })
+
+  it("recognizes the updating sentinel whether bare or wrapped by a remote bridge", () => {
+    expect(isUpdateInProgress(new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS"))).toBe(true)
+    expect(isUpdateInProgress("remote request failed: SILO_SANDBOX_UPDATE_IN_PROGRESS")).toBe(true)
+    expect(isUpdateInProgress(new Error("runtime unavailable"))).toBe(false)
   })
 
   it("re-reads the operation queue once when it changes during a read", async () => {

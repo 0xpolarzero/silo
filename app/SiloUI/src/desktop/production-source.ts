@@ -179,6 +179,11 @@ export interface ProductionSnapshot {
   error: string | null
 }
 
+/** The runtime's "configuration is updating" sentinel, bare or wrapped by a remote bridge. */
+export function isUpdateInProgress(cause: unknown) {
+  return errorMessage(cause).includes("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+}
+
 export function createProductionSource(native: ProductionBridge = bridge) {
   let snapshot: ProductionSnapshot = {
     setupQueue: ["workspaceRun", "workspaceVerify", "identityRun", "identityVerify", "githubRun", "githubVerify", "completion"].map((id) => ({ id: id as SetupQueueItemID, status: "idle" })),
@@ -279,7 +284,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const current = remoteComputers.find(item => item.id === computer.id)
         if (!current) return []
         if (result.status === "fulfilled" && current.connected) return result.value.workspaces
-        const unsupported = current.connected && result.status === "rejected" && errorMessage(result.reason).includes("does not support that remote operation")
+        const unsupported = current.connected && result.status === "rejected" && isUnsupportedRemote(result.reason)
         const message = unsupported
           ? `Update Silo on ${computer.name} to manage SSH access. That version does not support remote SSH management.`
           : `SSH status on ${computer.name} is unavailable. Reconnect and refresh before changing access.`
@@ -477,7 +482,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
             if (revision === remotePushRevisions.get(computer.id)) remoteSnapshots.set(computer.id, source)
             return { ...computer, connected: true, lastSeen: Date.now() }
           } catch (cause) {
-            if (errorMessage(cause).includes("SILO_SANDBOX_UPDATE_IN_PROGRESS")) return { ...computer, connected: true, busy: true, lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
+            if (isUpdateInProgress(cause)) return { ...computer, connected: true, busy: true, lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
             return { ...computer, connected: false, error: errorMessage(cause), lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
           }
         }))
@@ -535,7 +540,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         source = await unavailableLocalSource(error)
       }
     } else {
-      configurationUpdating = errorMessage(applicationResult.reason) === "SILO_SANDBOX_UPDATE_IN_PROGRESS"
+      configurationUpdating = isUpdateInProgress(applicationResult.reason)
       if (!configurationUpdating) {
         error = `Silo could not read application state: ${errorMessage(applicationResult.reason)}`
         source = await unavailableLocalSource(error)
