@@ -19,11 +19,16 @@ SHA256SUMS, the recipe, setup script and source commit. The image itself retains
 Ubuntu's package copyright files under `/usr/share/doc`.
 
 `.github/workflows/guest-image.yml` publishes using GitHub's short-lived job token
-with package and release write permissions. The recipe's OCI source and revision
+with package and release write permissions, only after a reviewer approves the
+`guest-image-publish` environment. Create that environment once with required
+reviewers and a deployment branch rule for `publish-guest-*`; the workflow refuses
+to publish while the environment has no required reviewers. The recipe's OCI source and revision
 labels link the image to its code. Check package visibility after first publication and change it to Public if needed;
 anonymous pulls must be verified. This publication was already public.
-Published version tags are never intentionally reused. Increment the version in
-the recipe, build script and workflow for an image update. The workflow refuses
+Published version tags are never intentionally reused. For an image update,
+increment `GUEST_IMAGE_VERSION` in `app/SiloUI/scripts/build-guest-image.mjs`
+(and the recipe as needed); the workflow derives the release tag, title and
+container image names from it and from the publishing repository. The workflow refuses
 publication once its companion release or an architecture tag exists. If publication
 fails halfway, recover the exact already-built artifacts; do not rebuild over the
 version. Otherwise increment the version.
