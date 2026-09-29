@@ -21,7 +21,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         WindowEvent::Focused(false) => {
             if let Some(panel) = handle.get_webview_window("status") {
                 if panel.is_visible().unwrap_or(false) {
-                    *handle.state::<PanelState>().blurred_at.lock().unwrap() = Some(Instant::now());
+                    *handle.state::<PanelState>().blurred_at.lock().unwrap_or_else(|error| error.into_inner()) = Some(Instant::now());
                     report(panel.hide());
                 }
             }
@@ -42,21 +42,21 @@ pub fn report<T, E: std::fmt::Display>(result: Result<T, E>) {
 }
 
 pub fn toggle(app: &AppHandle, anchor: PhysicalPosition<f64>) -> tauri::Result<()> {
-    let panel = app
-        .get_webview_window("status")
-        .expect("status window is configured");
+    let Some(panel) = app.get_webview_window("status") else {
+        return Ok(()); // The window is already gone during teardown.
+    };
     let state = app.state::<PanelState>();
     // Clicking the status item can blur the panel before its activation arrives.
     let just_blurred = state
         .blurred_at
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .take()
         .is_some_and(|time| time.elapsed() < Duration::from_millis(200));
     if panel.is_visible()? || just_blurred {
         return panel.hide();
     }
-    *state.anchor.lock().unwrap() = Some(anchor);
+    *state.anchor.lock().unwrap_or_else(|error| error.into_inner()) = Some(anchor);
     position(app)?;
     app.emit_to("status", "desktop:status-opened", ())?;
     panel.show()?;
@@ -64,10 +64,10 @@ pub fn toggle(app: &AppHandle, anchor: PhysicalPosition<f64>) -> tauri::Result<(
 }
 
 fn position(app: &AppHandle) -> tauri::Result<()> {
-    let panel = app
-        .get_webview_window("status")
-        .expect("status window is configured");
-    let Some(anchor) = *app.state::<PanelState>().anchor.lock().unwrap() else {
+    let Some(panel) = app.get_webview_window("status") else {
+        return Ok(());
+    };
+    let Some(anchor) = *app.state::<PanelState>().anchor.lock().unwrap_or_else(|error| error.into_inner()) else {
         return Ok(());
     };
     let monitor = app
@@ -132,21 +132,22 @@ pub fn resize_status(app: AppHandle, height: f64) -> Result<(), String> {
 
 #[tauri::command]
 pub fn hide_status(app: AppHandle) -> tauri::Result<()> {
-    app.get_webview_window("status")
-        .expect("status window is configured")
-        .hide()
+    match app.get_webview_window("status") {
+        Some(panel) => panel.hide(),
+        None => Ok(()),
+    }
 }
 
 #[tauri::command]
 pub fn open_main(app: AppHandle, route: Option<serde_json::Value>) -> tauri::Result<()> {
     if let Some(route) = route {
-        *app.state::<PanelState>().route.lock().expect("route lock") = Some(route);
+        *app.state::<PanelState>().route.lock().unwrap_or_else(|error| error.into_inner()) = Some(route);
         app.emit_to("main", "desktop:route-requested", ())?;
     }
     hide_status(app.clone())?;
-    let main = app
-        .get_webview_window("main")
-        .expect("main window is configured");
+    let Some(main) = app.get_webview_window("main") else {
+        return Ok(());
+    };
     main.show()?;
     main.unminimize()?;
     main.set_focus()
@@ -159,7 +160,7 @@ pub fn take_main_route(app: AppHandle) -> Option<serde_json::Value> {
 
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
-    app.exit(0);
+    crate::settings::request_quit(&app);
 }
 
 #[cfg(test)]

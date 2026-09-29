@@ -22,6 +22,9 @@ pub struct Snapshot {
     settings: Map<String, Value>,
     onboarding_draft: Value,
     save_error: Option<String>,
+    /// The settings file is protected from writes (newer, invalid or unreadable).
+    /// Changes apply for this session only; Quit and updates still proceed.
+    write_protected: bool,
 }
 
 impl Snapshot {
@@ -55,6 +58,7 @@ impl SettingsStore {
                 settings: Map::new(),
                 onboarding_draft: Value::Null,
                 save_error: None,
+                write_protected: false,
             },
             protected_error: None,
             dirty: false,
@@ -99,6 +103,7 @@ impl SettingsStore {
     fn protect(&mut self, error: &str) {
         self.protected_error = Some(error.to_owned());
         self.snapshot.save_error = self.protected_error.clone();
+        self.snapshot.write_protected = true;
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -148,11 +153,11 @@ impl SettingsStore {
     }
 
     fn save(&mut self) -> Result<(), String> {
-        if let Some(error) = &self.protected_error {
-            return Err(error.clone());
-        }
         if !self.dirty {
             return Ok(());
+        }
+        if let Some(error) = &self.protected_error {
+            return Err(error.clone());
         }
         let mut document = self.document.clone();
         let settings = document.entry("settings").or_insert_with(|| json!({}));
@@ -175,6 +180,18 @@ impl SettingsStore {
             self.dirty = false;
         }
         result
+    }
+
+    /// Persist pending changes before Quit or an update. Write protection blocks
+    /// only the disk write: the session keeps its in-memory settings and continues.
+    fn flush(&mut self) -> Result<(), String> {
+        match self.save() {
+            Err(error) if self.protected_error.as_ref() == Some(&error) => {
+                eprintln!("Silo settings: changes were not saved: {error}");
+                Ok(())
+            }
+            result => result,
+        }
     }
 }
 
@@ -573,16 +590,18 @@ fn settings_path(app: &AppHandle) -> tauri::Result<Option<PathBuf>> {
 pub fn install(app: &AppHandle) {
     app.manage(SettingsState::default());
     app.manage(ShutdownState::default());
+    app.manage(QuitConfirmation::default());
 }
 
 /// Read validated, persisted preferences from a blocking native worker.
 pub(crate) fn current_settings(app: &AppHandle) -> Result<Map<String, Value>, String> {
     let state = app.state::<SettingsState>();
     let snapshot = state.initialize(|| settings_path(app).map_err(|error| error.to_string()))?;
-    match snapshot.save_error {
-        Some(error) => Err(error),
-        None => Ok(snapshot.settings),
+    // A save failure affects persistence only; the in-memory settings are authoritative.
+    if let Some(error) = &snapshot.save_error {
+        eprintln!("Silo settings: using unsaved settings: {error}");
     }
+    Ok(snapshot.settings)
 }
 
 #[tauri::command]
@@ -694,13 +713,16 @@ pub async fn import_legacy_theme(
 #[tauri::command]
 pub async fn flush_settings(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     require_main(window.label())?;
-    let snapshot = change(app, |store| {
+    let flushed = std::sync::Arc::new(std::sync::Mutex::new(Ok(())));
+    let result = flushed.clone();
+    change(app, move |store| {
         store.snapshot.revision += 1;
-        let _ = store.save();
+        *result.lock().map_err(|_| "Settings storage is unavailable.")? = store.flush();
         Ok(store.snapshot())
     })
     .await?;
-    snapshot.save_error.map_or(Ok(()), Err)
+    let result = flushed.lock().map_err(|_| "Settings storage is unavailable.")?.clone();
+    result
 }
 
 fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64>) {
@@ -716,7 +738,7 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64
     let saved = app.state::<SettingsState>().store.lock()
         .map_err(|_| "Settings storage is unavailable.".to_string())
         .and_then(|mut initialized| match initialized.as_mut() {
-            Some(current) => current.store.save(),
+            Some(current) => current.store.flush(),
             None => Ok(()),
         });
     if let Err(error) = saved {
@@ -766,6 +788,111 @@ pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi) {
 #[tauri::command]
 pub fn read_shutdown_state(app: AppHandle) -> bool {
     app.state::<ShutdownState>().active()
+}
+
+/// One confirm-capable Quit path (decision 7). Until the main UI opts in with
+/// `enable_quit_confirmation`, requests exit directly as before.
+#[derive(Default)]
+struct QuitConfirmation(Mutex<QuitRequests>);
+#[derive(Default)]
+struct QuitRequests { enabled: bool, pending: Option<u64>, next: u64 }
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuitRequest {
+    request_id: u64,
+    /// Running local sandbox names. Empty means their status could not be read.
+    sandboxes: Vec<String>,
+}
+
+impl QuitConfirmation {
+    fn enabled(&self) -> bool {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).enabled
+    }
+    /// `None` exits now: nothing runs, or no UI can answer.
+    fn ask(&self, running: Result<Vec<String>, String>) -> Option<QuitRequest> {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.enabled {
+            return None;
+        }
+        let sandboxes = match running {
+            Ok(names) if names.is_empty() => return None,
+            Ok(names) => names,
+            Err(error) => {
+                eprintln!("Silo quit: sandbox status is unavailable: {error}");
+                Vec::new()
+            }
+        };
+        let request_id = match state.pending {
+            Some(id) => id,
+            None => {
+                state.next += 1;
+                state.pending = Some(state.next);
+                state.next
+            }
+        };
+        Some(QuitRequest { request_id, sandboxes })
+    }
+    /// Returns whether Silo should exit.
+    fn answer(&self, request_id: u64, confirmed: bool) -> Result<bool, String> {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.pending != Some(request_id) {
+            return Err("This Quit request is no longer current.".into());
+        }
+        state.pending = None;
+        Ok(confirmed)
+    }
+}
+
+/// Every user Quit entry point (menus and ⌘Q, tray, status panel, and window close
+/// on Linux without a tray) calls this. When local sandboxes are running it shows
+/// the main window and emits `silo://quit-requested`; the UI answers with
+/// `answer_quit_request`. Otherwise it enters the graceful exit path directly.
+pub(crate) fn request_quit(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let confirmation = app.state::<QuitConfirmation>();
+        let main = app.get_webview_window("main");
+        if !confirmation.enabled() || main.is_none() || app.state::<ShutdownState>().active() {
+            app.exit(0);
+            return;
+        }
+        let running = crate::runtime::update_recovery::running_names(&app);
+        let Some(request) = confirmation.ask(running) else {
+            app.exit(0);
+            return;
+        };
+        if let Some(window) = main {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        if app.emit_to("main", "silo://quit-requested", &request).is_err() {
+            let _ = confirmation.answer(request.request_id, true);
+            app.exit(0);
+        }
+    });
+}
+
+#[tauri::command]
+pub fn enable_quit_confirmation(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    require_main(window.label())?;
+    app.state::<QuitConfirmation>().0.lock().unwrap_or_else(|error| error.into_inner()).enabled = true;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn answer_quit_request(
+    app: AppHandle,
+    window: WebviewWindow,
+    request_id: u64,
+    confirmed: bool,
+) -> Result<(), String> {
+    require_main(window.label())?;
+    if app.state::<QuitConfirmation>().answer(request_id, confirmed)? {
+        app.exit(0);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -958,6 +1085,59 @@ mod tests {
         assert_eq!(saved["settings"]["launchAtLogin"], false);
         assert_eq!(saved["settings"]["futurePreference"], 42);
         assert_eq!(saved["futureDocumentField"]["keep"], true);
+    }
+
+    #[test]
+    fn quit_asks_only_when_sandboxes_run_and_a_ui_can_answer() {
+        let quit = QuitConfirmation::default();
+        assert_eq!(quit.ask(Ok(vec!["dev".into()])), None, "no UI has opted in");
+        quit.0.lock().unwrap().enabled = true;
+        assert_eq!(quit.ask(Ok(vec![])), None, "nothing is running");
+        let request = quit.ask(Ok(vec!["dev".into(), "api".into()])).unwrap();
+        assert_eq!(request.sandboxes, vec!["dev", "api"]);
+        let again = quit.ask(Ok(vec!["dev".into()])).unwrap();
+        assert_eq!(again.request_id, request.request_id, "a repeated Quit reuses the open prompt");
+        assert_eq!(quit.answer(request.request_id + 1, true), Err("This Quit request is no longer current.".into()));
+        assert_eq!(quit.answer(request.request_id, false), Ok(false));
+        assert!(quit.answer(request.request_id, true).is_err(), "an answered request is closed");
+        let unknown = quit.ask(Err("inspect failed".into())).unwrap();
+        assert!(unknown.sandboxes.is_empty());
+        assert_ne!(unknown.request_id, request.request_id);
+        assert_eq!(quit.answer(unknown.request_id, true), Ok(true));
+    }
+
+    #[test]
+    fn write_protected_settings_never_block_quit_or_updates() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let bytes = br#"{"schemaVersion":2,"settings":{"theme":"dark"}}"#;
+        std::fs::write(&path, bytes).unwrap();
+        let mut store = SettingsStore::load(Some(path.clone()));
+        assert!(store.snapshot().write_protected);
+        assert_eq!(store.save(), Ok(()));
+        assert_eq!(store.flush(), Ok(()));
+        store
+            .update(json!({"editor":"Cursor"}).as_object().unwrap().clone())
+            .unwrap();
+        assert!(store.save().is_err());
+        assert_eq!(store.flush(), Ok(()));
+        assert_eq!(store.snapshot().settings["editor"], "Cursor");
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn storage_failures_still_fail_a_flush() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().join("settings.json")));
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        store
+            .update(json!({"editor":"Cursor"}).as_object().unwrap().clone())
+            .unwrap();
+        let flushed = store.flush();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(!store.snapshot().write_protected);
+        assert!(flushed.is_err());
     }
 
     #[test]
@@ -1376,6 +1556,6 @@ mod tests {
 pub(crate) fn flush_for_update(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<SettingsState>();
     let mut initialized = state.store.lock().map_err(|_| "Settings could not be saved before updating.")?;
-    if let Some(current) = initialized.as_mut() { current.store.save()?; }
+    if let Some(current) = initialized.as_mut() { current.store.flush()?; }
     Ok(())
 }

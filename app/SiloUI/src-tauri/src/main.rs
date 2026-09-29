@@ -107,6 +107,8 @@ fn main() {
             status_panel::hide_status,
             status_panel::resize_status,
             status_panel::quit_app,
+            settings::enable_quit_confirmation,
+            settings::answer_quit_request,
             tray::update_tray,
             host_push_operations::start_repository_push,
             host_push_operations::repository_push_status,
@@ -235,7 +237,7 @@ fn main() {
                             status_panel::report(window.hide());
                         }
                     } else {
-                        handle.exit(0);
+                        settings::request_quit(&handle);
                     }
                 }
             });

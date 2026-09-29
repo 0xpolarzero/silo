@@ -117,6 +117,8 @@
     "allow-remote-save-network-port",
     "allow-remote-remove-network-port",
     "allow-cancel-settings-flush",
+    "allow-enable-quit-confirmation",
+    "allow-answer-quit-request",
     "allow-read-desktop-state",
     "allow-desktop-action",
     "allow-open-desktop"

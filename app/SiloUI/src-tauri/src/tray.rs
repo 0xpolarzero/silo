@@ -150,7 +150,7 @@ mod platform {
                 .into(),
                 ksni::menu::StandardItem {
                     label: "Quit Silo".into(),
-                    activate: Box::new(|tray: &mut Self| tray.app.exit(0)),
+                    activate: Box::new(|tray: &mut Self| crate::settings::request_quit(&tray.app)),
                     ..Default::default()
                 }
                 .into(),
@@ -191,7 +191,7 @@ mod platform {
             .spawn()
             .await
             {
-                Ok(handle) => *app.state::<TrayState>().handle.lock().unwrap() = Some(handle),
+                Ok(handle) => *app.state::<TrayState>().handle.lock().unwrap_or_else(|error| error.into_inner()) = Some(handle),
                 Err(error) => {
                     app.state::<TrayState>()
                         .online
@@ -205,7 +205,7 @@ mod platform {
     }
 
     pub async fn update(app: &AppHandle, tone: Tone, label: String) -> Result<(), String> {
-        let handle = app.state::<TrayState>().handle.lock().unwrap().clone();
+        let handle = app.state::<TrayState>().handle.lock().unwrap_or_else(|error| error.into_inner()).clone();
         if let Some(handle) = handle {
             handle
                 .update(move |tray| {

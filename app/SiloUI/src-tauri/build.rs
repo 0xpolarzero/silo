@@ -34,6 +34,8 @@ fn main() {
             "hide_status",
             "resize_status",
             "quit_app",
+            "enable_quit_confirmation",
+            "answer_quit_request",
             "update_tray",
             "initialize_settings",
             "read_settings",

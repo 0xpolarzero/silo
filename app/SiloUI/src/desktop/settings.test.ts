@@ -9,7 +9,7 @@ const native = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen }))
 
-import { connectSettingsLifecycle, createDesktopSettingsStore } from "./settings"
+import { connectQuitConfirmation, connectSettingsLifecycle, createDesktopSettingsStore } from "./settings"
 import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 import type { OnboardingDraft } from "@/features/onboarding/model/onboarding-draft"
 
@@ -216,6 +216,18 @@ describe("native settings transport", () => {
     expect(native.invoke).not.toHaveBeenCalledWith("complete_settings_flush")
   })
 
+  it("does not block Quit when the settings file is write-protected", async () => {
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "read_settings") return { ...snapshot(0, {}, "Settings use an unsupported file version; the file was left unchanged."), writeProtected: true }
+    })
+    const settings = store()
+    await settings.initialize()
+    cleanups.push(await connectSettingsLifecycle(settings, true))
+    native.handlers.get("settings:flush-request")?.({ payload: null })
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("complete_settings_flush"))
+    expect(native.invoke).not.toHaveBeenCalledWith("cancel_settings_flush")
+  })
+
   it("includes changes made while the final native flush is running before acknowledging Quit", async () => {
     const flushStarted = deferred<void>()
     const finishFlush = deferred<void>()
@@ -274,5 +286,22 @@ describe("native settings transport", () => {
     expect(state.settings.browser).toBe("Firefox")
     expect(state.onboardingDraft).toEqual(savedDraft)
     expect(settings.getSnapshot().saveError).toBeNull()
+  })
+})
+
+describe("quit confirmation", () => {
+  it("opts in, asks once per request, and answers with the user's choice", async () => {
+    native.invoke.mockResolvedValue(undefined)
+    let answer!: (confirmed: boolean) => void
+    const ask = vi.fn(() => new Promise<boolean>((resolve) => { answer = resolve }))
+    cleanups.push(await connectQuitConfirmation(ask))
+    expect(native.invoke).toHaveBeenCalledWith("enable_quit_confirmation")
+    const request = { requestId: 3, sandboxes: ["dev", "api"] }
+    native.handlers.get("silo://quit-requested")?.({ payload: request })
+    native.handlers.get("silo://quit-requested")?.({ payload: request })
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask).toHaveBeenCalledWith(request)
+    answer(false)
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("answer_quit_request", { requestId: 3, confirmed: false }))
   })
 })
