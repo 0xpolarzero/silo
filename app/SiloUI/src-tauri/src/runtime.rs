@@ -4022,26 +4022,55 @@ fn update_machine(
     }
 }
 
+/// What deleting a VM removes from the runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemovalTarget {
+    /// Nothing: an SSH entry, or a pending checkpoint restore with no runtime VM yet.
+    Nothing,
+    /// An ordinary stopped VM.
+    Stopped,
+    /// The runtime VM a pending restore's attempt created (then failed verification or
+    /// timed out). Its sandbox cannot be started or stopped normally, so deletion stops
+    /// it first when it is still running.
+    RestoreAttempt { running: bool },
+}
+
 fn preflight_removal(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
-) -> Result<(), RuntimeError> {
+) -> Result<RemovalTarget, RuntimeError> {
     let MachineConfiguration::Vm { name, .. } = machine else {
-        return Ok(());
+        return Ok(RemovalTarget::Nothing);
     };
-    if checkpoints::is_pending(paths, machine.id())? { return Ok(()); }
-    let inspected = inspect_workspace(runner, paths, name)?;
+    // An unreadable checkpoint record leaves the pending state unknown; the runtime and
+    // its labels then decide, so a damaged record never blocks deleting its sandbox.
+    let pending = checkpoints::is_pending(paths, machine.id()).ok();
+    let inspected = match inspect_workspace(runner, paths, name) {
+        Ok(inspected) => inspected,
+        Err(error) if pending != Some(false) && is_missing_sandbox(&error) => return Ok(RemovalTarget::Nothing),
+        Err(error) => return Err(error),
+    };
     ensure_managed(&inspected)?;
     if inspected.name != *name || inspected.config.pointer("/labels/silo.machine-id").and_then(Value::as_str) != Some(machine.id()) {
         return Err(RuntimeError::Invalid("The sandbox selected for deletion changed identity. It was preserved.".into()));
     }
-    if !matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed") {
+    let stopped = matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed");
+    let attempt = inspected.config.pointer("/labels/silo.restore-attempt").and_then(Value::as_str).is_some();
+    if pending != Some(false) && attempt {
+        return Ok(RemovalTarget::RestoreAttempt { running: !stopped });
+    }
+    if pending == Some(true) {
+        return Err(RuntimeError::Invalid(format!(
+            "A runtime sandbox named '{name}' was not created by this sandbox's checkpoint restore. It was preserved."
+        )));
+    }
+    if !stopped {
         return Err(RuntimeError::Invalid(format!(
             "Stop sandbox '{name}' before removing it from Silo. This sandbox was not removed."
         )));
     }
-    Ok(())
+    Ok(RemovalTarget::Stopped)
 }
 
 fn remove_machine_runtime(
@@ -4049,14 +4078,17 @@ fn remove_machine_runtime(
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
-    let MachineConfiguration::Vm { name, .. } = machine else {
-        return Ok(());
-    };
-    preflight_removal(runner, paths, machine)?;
-    if checkpoints::is_pending(paths, machine.id())? { return Ok(()); }
+    let name = machine.name();
+    match preflight_removal(runner, paths, machine)? {
+        RemovalTarget::Nothing => return Ok(()),
+        RemovalTarget::Stopped | RemovalTarget::RestoreAttempt { running: false } => {}
+        RemovalTarget::RestoreAttempt { running: true } => {
+            runner.run(paths, &["stop".into(), name.into(), "--quiet".into()], STOP_TIMEOUT)?;
+        }
+    }
     runner.run(
         paths,
-        &["remove".into(), "--quiet".into(), name.clone()],
+        &["remove".into(), "--quiet".into(), name.into()],
         STOP_TIMEOUT,
     )?;
     Ok(())
@@ -6636,6 +6668,84 @@ esac
             .any(|args| args[0] == "remove"));
         assert_eq!(read_metadata(&paths.metadata).unwrap().machines, vec![vm()]);
         assert!(error.to_string().contains("Completed changes were kept"));
+    }
+
+    const ATTEMPT_ID: &str = "00000000-0000-4000-8000-0000000000aa";
+
+    fn pending_restore_record(paths: &RuntimePaths, attempted: bool) {
+        let directory = paths.metadata.with_file_name("checkpoints");
+        fs::create_dir_all(&directory).unwrap();
+        let mut record = json!({
+            "version": 1,
+            "checkpoints": [],
+            "snapshotGroup": "dev",
+            "pendingCheckpointRestore": {"checkpointId": "c000000000000000000000000000000", "sourceWorkspace": "dev", "state": "full"},
+            "checkpointOperation": null,
+        });
+        if attempted {
+            record["restoreAttempted"] = json!(true);
+            record["restoreAttemptId"] = json!(ATTEMPT_ID);
+        }
+        fs::write(directory.join(format!("{}.json", vm().id())), record.to_string()).unwrap();
+    }
+
+    fn restore_attempt(paths: &RuntimePaths, status: &str) -> Value {
+        let mut attempt = inspect(paths, status);
+        attempt["config"]["labels"]["silo.restore-attempt"] = json!(ATTEMPT_ID);
+        attempt
+    }
+
+    fn missing_sandbox() -> Result<CommandOutput, RuntimeError> {
+        Err(RuntimeError::Failed { operation: "inspect dev".into(), detail: "exit code 1: sandbox not found".into() })
+    }
+
+    #[test]
+    fn deleting_a_pending_restore_removes_the_runtime_its_attempt_created() {
+        for (status, stops) in [("Stopped", false), ("Running", true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            pending_restore_record(&paths, true);
+            let attempt = restore_attempt(&paths, status);
+            let mut outputs = vec![attempt.clone(), attempt];
+            if stops { outputs.push(json!(null)); }
+            outputs.push(json!(null));
+            let runner = StubRunner::successful_json(outputs);
+            apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+            let calls = runner.calls.lock().unwrap();
+            let commands: Vec<&str> = calls.iter().map(|args| args[0].as_str()).collect();
+            let expected: &[&str] = if stops { &["inspect", "inspect", "stop", "remove"] } else { &["inspect", "inspect", "remove"] };
+            assert_eq!(commands, expected, "{status}");
+            assert!(calls.last().unwrap().contains(&"dev".to_string()));
+            // The runtime VM is removed before Silo forgets the sandbox and its record.
+            assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+            assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{}.json", vm().id())).exists());
+        }
+    }
+
+    #[test]
+    fn deleting_a_pending_restore_without_runtime_state_removes_only_silo_records() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        pending_restore_record(&paths, false);
+        let runner = StubRunner::new(vec![missing_sandbox(), missing_sandbox()]);
+        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+    }
+
+    #[test]
+    fn deleting_a_pending_restore_preserves_runtime_state_it_did_not_create() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        pending_restore_record(&paths, true);
+        let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped")]);
+        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap_err();
+        assert!(error.to_string().contains("preserved"), "{error}");
+        assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        assert_eq!(read_metadata(&paths.metadata).unwrap().machines, vec![vm()]);
     }
 
     #[test]
