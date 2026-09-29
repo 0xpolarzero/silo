@@ -1333,20 +1333,16 @@ pub(crate) fn host_push_credential(
     validate(std::slice::from_ref(policy))?;
     if personal_token::selected(policy) { return personal_token::value(); }
     if !d.access_enabled { return Err("Enable GitHub access before pushing.".into()); }
-    if policy["repositoryMode"].as_str() != Some("all")
-        && !policy["repositories"].as_array().is_some_and(|repos| {
-            repos
-                .iter()
-                .any(|r| r["repository"].as_str() == Some(repository))
-        })
-    {
-        return Err("This repository is not authorized for the sandbox.".into());
-    }
+    push_authorized(policy, repository)?;
     let c = active_credential()?;
     let catalog = catalog(&c)?;
     let repo = catalog
         .iter()
-        .find(|r| r["name"].as_str() == Some(repository))
+        .find(|r| {
+            r["name"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(repository))
+        })
         .ok_or("GitHub no longer authorizes this repository.")?;
     let owner = repo["ownerId"]
         .as_u64()
@@ -1364,6 +1360,48 @@ pub(crate) fn host_push_credential(
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| "GitHub returned no restricted push credential.".into())
+}
+
+/// Host push publishes changes, so the sandbox needs a push (write) grant for
+/// the repository, not only read access. GitHub names are case-insensitive.
+fn push_authorized(policy: &Value, repository: &str) -> Result<(), String> {
+    let allowed = if policy["repositoryMode"].as_str() == Some("all") {
+        policy["allRepositoriesAllowChanges"] == true
+    } else {
+        policy["repositories"].as_array().is_some_and(|repos| {
+            repos.iter().any(|r| {
+                r["allowPushes"] == true
+                    && r["repository"]
+                        .as_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(repository))
+            })
+        })
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err("This sandbox is not allowed to push to this repository.".into())
+    }
+}
+
+#[cfg(test)]
+mod host_push_authorization_tests {
+    use serde_json::json;
+
+    #[test]
+    fn host_push_requires_a_write_grant_and_ignores_name_case() {
+        let read_only = json!({"repositoryMode":"selected","repositories":[{"repository":"owner/repo","allowPushes":false}]});
+        assert!(super::push_authorized(&read_only, "owner/repo").is_err());
+        let write = json!({"repositoryMode":"selected","repositories":[{"repository":"owner/repo","allowPushes":true}]});
+        assert!(super::push_authorized(&write, "Owner/Repo").is_ok());
+        assert!(super::push_authorized(&write, "owner/other").is_err());
+        assert!(super::push_authorized(&json!({"repositoryMode":"all"}), "owner/repo").is_err());
+        assert!(super::push_authorized(
+            &json!({"repositoryMode":"all","allRepositoriesAllowChanges":true}),
+            "owner/repo"
+        )
+        .is_ok());
+    }
 }
 
 fn callback(request: &str, state: &str) -> Result<Option<String>, String> {

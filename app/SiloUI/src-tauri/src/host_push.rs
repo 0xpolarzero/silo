@@ -75,9 +75,12 @@ fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Resul
     let mut command = vec![
         "exec".into(),
         name.into(),
-        "--user".into(), user.into(),
-        "--env".into(), format!("USER={user}"),
-        "--env".into(), format!("LOGNAME={user}"),
+        "--user".into(),
+        user.into(),
+        "--env".into(),
+        format!("USER={user}"),
+        "--env".into(),
+        format!("LOGNAME={user}"),
         "--no-start".into(),
         "--no-tty".into(),
         "--quiet".into(),
@@ -96,10 +99,26 @@ fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Resul
         .map(|o| o.stdout)
         .map_err(|_| "Could not read committed repository data from the sandbox.".into())
 }
+/// The system store carries administrator-installed and updated roots (for
+/// example TLS-inspecting proxies); the bundled file is only a fallback.
+fn linux_ca_bundle(support: &Path) -> PathBuf {
+    ca_bundle_from(
+        &[
+            Path::new("/etc/ssl/certs/ca-certificates.crt"),
+            Path::new("/etc/pki/tls/certs/ca-bundle.crt"),
+        ],
+        support,
+    )
+}
+fn ca_bundle_from(system: &[&Path], support: &Path) -> PathBuf {
+    system
+        .iter()
+        .find(|path| fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0))
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| support.join("ssl/cacert.pem"))
+}
 fn valid_path(path: &str) -> bool {
-    path.starts_with("/workspace/")
-        && !path.chars().any(char::is_control)
-        && !path.split('/').any(|s| s == "..")
+    crate::host_push_transport::valid_repository_path(path)
 }
 fn repository(url: &str) -> Result<String, String> {
     let name = url
@@ -121,7 +140,11 @@ fn repository(url: &str) -> Result<String, String> {
     }
     Ok(name.into())
 }
-pub(crate) fn discover(paths: &RuntimePaths, name: &str, refresh: bool) -> Result<Vec<Value>, String> {
+pub(crate) fn discover(
+    paths: &RuntimePaths,
+    name: &str,
+    refresh: bool,
+) -> Result<Vec<Value>, String> {
     let key = format!("{}:{name}", paths.home.display());
     let cache = DISCOVERIES.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some((at, result)) = cache
@@ -217,7 +240,13 @@ impl HostGit {
                 "-c",
                 "core.fsmonitor=false",
                 "-c",
-                "protocol.file.allow=always",
+                // Production sources are ssh://; only the local test harness
+                // publishes from file paths.
+                if cfg!(test) {
+                    "protocol.file.allow=always"
+                } else {
+                    "protocol.file.allow=never"
+                },
                 "-c",
                 "protocol.ext.allow=never",
                 "-c",
@@ -262,7 +291,7 @@ impl HostGit {
                 .env("GIT_SSH_VARIANT", "ssh");
         }
         if cfg!(target_os = "linux") {
-            command.env("GIT_SSL_CAINFO", self.support.join("ssl/cacert.pem"));
+            command.env("GIT_SSL_CAINFO", linux_ca_bundle(&self.support));
         }
         if let Some(token) = token {
             command
@@ -346,9 +375,10 @@ impl HostGit {
             .join(" ");
         match outcome {
             Ok(status) if !status.success() => {
-                return Err(format!("Git {stage} failed ({status}). {diagnostic}"))
+                // The first line is the summary; the rest becomes diagnostic details.
+                return Err(format!("Git {stage} failed ({status}).\n{diagnostic}"));
             }
-            Err(message) => return Err(format!("{message} {diagnostic}")),
+            Err(message) => return Err(format!("{message}\n{diagnostic}")),
             _ => {}
         }
         if overflow {
@@ -463,7 +493,11 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
         .ok_or("Choose a managed Silo VM.")?;
     // Host-push reads and writes one VM's guest; it waits its turn for that VM.
     let read_guard = runtime::OPERATIONS
-        .vm(&vm_id, workspace, &format!("Reading repository in {workspace}"))
+        .vm(
+            &vm_id,
+            workspace,
+            &format!("Reading repository in {workspace}"),
+        )
         .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
     require_running(&paths, workspace)?;
@@ -501,6 +535,8 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
 
 // The host owns all configuration and credentials. The source remote supplies
 // Git/LFS data through their standard protocols, never hooks or configuration.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn publish_committed(
     git: &HostGit,
     source: &str,
@@ -510,6 +546,33 @@ fn publish_committed(
     branch: &str,
     remote: &str,
     token: Option<&str>,
+) -> Result<u64, String> {
+    let mut imported = false;
+    publish_committed_tracking(
+        git,
+        source,
+        source_lfs,
+        source_ref,
+        expected_commit,
+        branch,
+        remote,
+        token,
+        &mut imported,
+    )
+}
+/// `imported` becomes true once the sandbox commit is fully in the cache;
+/// later failures (remote rejections, network) leave the cache consistent.
+#[allow(clippy::too_many_arguments)]
+fn publish_committed_tracking(
+    git: &HostGit,
+    source: &str,
+    source_lfs: &str,
+    source_ref: &str,
+    expected_commit: &str,
+    branch: &str,
+    remote: &str,
+    token: Option<&str>,
+    imported_into_cache: &mut bool,
 ) -> Result<u64, String> {
     git.run(&["check-ref-format", "--branch", branch], None, "")?;
     git.run(&["init", "--bare", "--quiet"], None, "")?;
@@ -539,6 +602,7 @@ fn publish_committed(
     if imported.trim() != expected_commit {
         return Err("The sandbox repository changed during export. Retry the push.".into());
     }
+    *imported_into_cache = true;
     // fetch.fsckObjects verifies incoming objects without rescanning the
     // complete trusted cache on every incremental push.
     // Only the currently advertised destination ref may exclude LFS uploads.
@@ -691,7 +755,8 @@ printf '%s\n%s\n' "$branch" "$commit"
             .map_err(|_| "Cannot create isolated host Git directory.")?;
         let source = transport.repository_url(path)?;
         let source_lfs = format!("ssh://{}{export}/source.git", transport.alias);
-        let publication = publish_committed(
+        let mut imported = false;
+        let publication = publish_committed_tracking(
             &git,
             &source,
             &source_lfs,
@@ -700,8 +765,11 @@ printf '%s\n%s\n' "$branch" "$commit"
             branch,
             &format!("https://github.com/{repo}.git"),
             Some(token),
+            &mut imported,
         );
-        if publication.is_err() {
+        // Keep a consistent cache across remote rejections and network
+        // failures so large (LFS) repositories do not re-transfer on retry.
+        if publication.is_err() && !imported {
             cache.discard();
         }
         let count = publication?;
@@ -728,8 +796,7 @@ printf '%s\n%s\n' "$branch" "$commit"
     );
     result
 }
-#[tauri::command]
-pub async fn push_repository(
+pub(crate) async fn push_repository(
     app: tauri::AppHandle,
     workspace: String,
     repository_path: String,
@@ -747,7 +814,37 @@ pub async fn push_repository(
         .map_err(|_| "Remote repository request failed.".to_string())?;
     }
     let key = format!("{workspace}\0{repository_path}");
-    let planned_count = runtime::runtime_paths(&app)
+    let planned_count = planned_count(&app, &workspace, &repository_path);
+    {
+        let mut r = results().lock().map_err(|_| "Push state unavailable.")?;
+        if r.get(&key).is_some_and(|(v, _)| v["status"] == "pushing") {
+            return Err("This repository is already being pushed.".into());
+        }
+        r.insert(key.clone(),(json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":planned_count,"status":"pushing"}),Instant::now()));
+    }
+    let _ = app.emit("silo://application-state-changed", ());
+    let task = {
+        let (app, workspace, repository_path) =
+            (app.clone(), workspace.clone(), repository_path.clone());
+        tauri::async_runtime::spawn_blocking(move || perform(&app, &workspace, &repository_path))
+    };
+    // A panicked task must still resolve the entry, or it would stay
+    // "pushing" forever and block every retry.
+    let outcome = task
+        .await
+        .unwrap_or_else(|_| Err("Host push task failed.".into()));
+    let value = finished_result(&workspace, &repository_path, outcome);
+    results()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, (value.clone(), Instant::now()));
+    let _ = app.emit("silo://application-state-changed", ());
+    Ok(value)
+}
+/// The commit count last shown for this repository, so an active push reports
+/// the planned number instead of zero.
+pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_path: &str) -> u64 {
+    runtime::runtime_paths(app)
         .ok()
         .and_then(|paths| {
             DISCOVERIES
@@ -762,20 +859,34 @@ pub async fn push_repository(
                 .find(|repo| repo["path"] == repository_path)?["ahead"]
                 .as_u64()
         })
-        .unwrap_or(0);
-    {
-        let mut r = results().lock().map_err(|_| "Push state unavailable.")?;
-        if r.get(&key).is_some_and(|(v, _)| v["status"] == "pushing") {
-            return Err("This repository is already being pushed.".into());
+        .unwrap_or(0)
+}
+fn finished_result(workspace: &str, repository_path: &str, outcome: Result<u64, String>) -> Value {
+    match outcome {
+        Ok(count) => json!({
+            "workspace": workspace,
+            "repositoryPath": repository_path,
+            "commitCount": count,
+            "status": "succeeded",
+        }),
+        Err(message) => {
+            let mut value = json!({
+                "workspace": workspace,
+                "repositoryPath": repository_path,
+                "commitCount": 0,
+                "status": "failed",
+            });
+            // Keep the visible message short; Git output goes to the Details disclosure.
+            match message.split_once('\n') {
+                Some((summary, details)) if !details.trim().is_empty() => {
+                    value["message"] = json!(summary.trim());
+                    value["diagnosticDetails"] = json!(details.trim());
+                }
+                _ => value["message"] = json!(message.trim()),
+            }
+            value
         }
-        r.insert(key.clone(),(json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":planned_count,"status":"pushing"}),Instant::now()));
     }
-    let _ = app.emit("silo://application-state-changed", ());
-    tauri::async_runtime::spawn_blocking(move||{
-        let outcome=perform(&app,&workspace,&repository_path);
-        let value=match outcome {Ok(count)=>json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":count,"status":"succeeded"}),Err(message)=>json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":0,"status":"failed","message":message})};
-        results().lock().map_err(|_|"Push state unavailable.")?.insert(key,(value.clone(),Instant::now()));let _=app.emit("silo://application-state-changed",());Ok(value)
-    }).await.map_err(|_|"Host push task failed.")?
 }
 #[cfg(test)]
 mod tests {
@@ -816,7 +927,10 @@ mod tests {
         };
         let key = format!("{}:test", paths.home.display());
         let cached = vec![json!({"path": "removed-repository"})];
-        DISCOVERIES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
+        DISCOVERIES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
             .insert(key.clone(), (Instant::now(), Ok(cached.clone())));
         assert_eq!(discover(&paths, "test", false).unwrap(), cached);
         // A forced read must reach the missing runtime instead of returning
@@ -947,9 +1061,43 @@ mod tests {
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
     #[test]
+    fn failed_results_separate_summary_from_git_diagnostics() {
+        let value = super::finished_result(
+            "dev",
+            "/workspace/repo",
+            Err("Git push failed (exit status: 1).\nremote: rejected\nmore".into()),
+        );
+        assert_eq!(value["message"], "Git push failed (exit status: 1).");
+        assert_eq!(value["diagnosticDetails"], "remote: rejected\nmore");
+        let plain =
+            super::finished_result("dev", "/workspace/repo", Err("Start the sandbox.".into()));
+        assert_eq!(plain["message"], "Start the sandbox.");
+        assert!(plain.get("diagnosticDetails").is_none());
+    }
+    #[test]
+    fn linux_prefers_the_system_certificate_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let system = directory.path().join("system.crt");
+        let support = directory.path().join("support");
+        assert_eq!(
+            super::ca_bundle_from(&[system.as_path()], &support),
+            support.join("ssl/cacert.pem")
+        );
+        std::fs::write(&system, b"roots").unwrap();
+        assert_eq!(super::ca_bundle_from(&[system.as_path()], &support), system);
+    }
+    #[test]
     fn requires_workspace_repository_paths() {
         assert!(valid_path("/workspace/repo"));
-        for path in ["/etc", "/workspace/../etc", "/workspace/repo\nother"] {
+        for path in [
+            "/etc",
+            "/workspace/../etc",
+            "/workspace/repo\nother",
+            "/workspace/",
+            "/workspace//x",
+            "/workspace/./x",
+            "/workspace/x/",
+        ] {
             assert!(!valid_path(path));
         }
     }
