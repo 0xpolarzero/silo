@@ -25,7 +25,8 @@ pub(crate) fn running_vm_with(runner: &dyn runtime::RuntimeRunner, paths: &Runti
 pub(crate) fn start_first(name: &str) -> String { format!("Start {name} first.") }
 pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
     if let Some((host, vm)) = crate::remote_access::target(name)? {
-        let (alias, config) = crate::editor::prepare_remote(app, &host, &vm, "/workspace")?;
+        // ssh gets `-F`, so the user's ~/.ssh/config needs no Include (G-11).
+        let (alias, config) = crate::editor::prepare_remote_private(app, &host, &vm, "/workspace")?;
         let application = applications::selected_terminal(app)?;
         let command = ["/usr/bin/ssh", "-F", config.to_str().ok_or("Invalid SSH configuration path.")?, "-t", &alias]
             .iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" ");
