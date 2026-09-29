@@ -789,6 +789,28 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
     let _ = child.wait();
     result
 }
+const ACCEPT_BACKOFF: (Duration, Duration) = (Duration::from_millis(50), Duration::from_secs(2));
+/// Accept errors (EMFILE, ECONNABORTED) are transient: keep serving after a bounded backoff.
+fn serve_connections<S>(
+    incoming: impl Iterator<Item = std::io::Result<S>>,
+    (initial, limit): (Duration, Duration),
+    mut handle: impl FnMut(S),
+) {
+    let mut backoff = initial;
+    for stream in incoming {
+        match stream {
+            Ok(stream) => {
+                backoff = initial;
+                handle(stream);
+            }
+            Err(error) => {
+                eprintln!("Remote management could not accept a connection: {error}");
+                thread::sleep(backoff);
+                backoff = (backoff * 2).min(limit);
+            }
+        }
+    }
+}
 pub(crate) fn start(app: AppHandle) -> Result<(), String> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
@@ -824,14 +846,13 @@ pub(crate) fn start(app: AppHandle) -> Result<(), String> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
     thread::spawn(move || {
         let _lease = lease;
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
+        serve_connections(listener.incoming(), ACCEPT_BACKOFF, |mut stream| {
             let Some(permit) = ConnectionPermit::acquire() else {
                 let _ = write_frame(
                     &mut stream,
                     &json!({"error":"This computer has too many active Silo connections. Close an unused connection and retry."}),
                 );
-                continue;
+                return;
             };
             let app = app.clone();
             thread::spawn(move || {
@@ -869,7 +890,7 @@ pub(crate) fn start(app: AppHandle) -> Result<(), String> {
                     Ok(None) => {}
                 }
             });
-        }
+        });
     });
     Ok(())
 }
@@ -1382,6 +1403,30 @@ mod setup_tests {
             fs::read_to_string(authorized).unwrap(),
             format!("existing-key-without-final-newline\n{public}\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod accept_tests {
+    use super::*;
+    #[test]
+    fn accept_errors_do_not_stop_the_owner_listener() {
+        let incoming = vec![
+            Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
+            Ok(1),
+            Err(std::io::Error::from_raw_os_error(libc::ECONNABORTED)),
+            Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
+            Ok(2),
+        ];
+        let mut served = Vec::new();
+        let started = Instant::now();
+        serve_connections(
+            incoming.into_iter(),
+            (Duration::from_millis(5), Duration::from_millis(8)),
+            |stream| served.push(stream),
+        );
+        assert_eq!(served, [1, 2]);
+        assert!(started.elapsed() >= Duration::from_millis(18));
     }
 }
 
