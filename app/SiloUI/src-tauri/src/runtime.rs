@@ -2085,6 +2085,9 @@ fn gated_auto_retry_classified<T, E>(
     let total = delays.len() + 1;
     // One shared cancel token for the whole retry sequence, created before the first attempt.
     let token = Arc::new(AtomicBool::new(false));
+    // The first attempt's start time, so every attempt reports one continuous
+    // operation in the queue and slow-operation flagging can fire (D-27).
+    let mut first_since = None;
     let mut attempt = 0usize;
     loop {
         // A cancel from a previous attempt (or during its backoff) stops the sequence before
@@ -2099,6 +2102,10 @@ fn gated_auto_retry_classified<T, E>(
         };
         let outcome = {
             let mut guard = acquire(&label)?;
+            match first_since {
+                Some(since) => guard.continue_since(since),
+                None => first_since = Some(guard.since()),
+            }
             // Share the sequence-wide token so a cancel against this attempt is observed by
             // the work (through the current-operation token) and carries to later attempts.
             guard.adopt_cancel_token(token.clone());
@@ -4273,6 +4280,31 @@ mod tests {
             lifecycle_failure(&RuntimeError::from(operation_gate::GateError::Nested)),
             LifecycleFailure::Failed
         );
+    }
+
+    #[test]
+    fn auto_retry_attempts_keep_the_first_attempts_start_time() {
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let seen = Mutex::new(Vec::new());
+        let delays = [Duration::from_millis(20), Duration::from_millis(20)];
+        let result: Result<(), RuntimeError> = gated_auto_retry_classified(
+            &delays,
+            "Stopping since-dev",
+            |label| gate.vm("since-dev-id", "since-dev", label).map_err(RuntimeError::from),
+            |_guard| {},
+            || {
+                let mut seen = seen.lock().unwrap();
+                seen.push(gate.snapshot().running[0].since_ms);
+                if seen.len() < 3 { Err(RuntimeError::TimedOut { operation: "Stopping since-dev".into() }) } else { Ok(()) }
+            },
+            transient_runtime_error,
+            || RuntimeError::Cancelled { operation: "Stopping since-dev".into() },
+        );
+        assert!(result.is_ok());
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(seen.iter().all(|since| *since == seen[0]), "{seen:?}");
     }
 
     #[test]

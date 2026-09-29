@@ -780,6 +780,27 @@ impl OperationGate {
         self.notify();
     }
 
+    fn since_of(&self, id: u64) -> Since {
+        let state = self.lock();
+        state
+            .running
+            .iter()
+            .find(|entry| entry.id == id)
+            .map_or_else(|| Since { at: Instant::now(), ms: now_ms() }, |entry| Since { at: entry.since, ms: entry.since_ms })
+    }
+
+    /// Report a running operation as started at `since`, for a later attempt of one
+    /// logical operation (D-27). Slow-operation flagging then counts the whole sequence.
+    fn set_since(&self, id: u64, since: Since) {
+        let mut state = self.lock();
+        if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
+            entry.since = since.at;
+            entry.since_ms = since.ms;
+        }
+        drop(state);
+        self.notify();
+    }
+
     /// Point a running operation's cancel flag at an externally owned one, so a subsystem
     /// with its own cancellation (for example backups) and the gate agree on one bit.
     fn replace_token(&self, id: u64, token: Arc<AtomicBool>) {
@@ -793,6 +814,14 @@ impl OperationGate {
         }
         drop(state);
     }
+}
+
+/// When an operation started running, carried from the first attempt of a retry
+/// sequence to the later ones so the queue keeps one continuous start time.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Since {
+    at: Instant,
+    ms: u64,
 }
 
 /// Held for the duration of one operation, including all of its internal steps.
@@ -819,6 +848,17 @@ impl OperationGuard<'_> {
     /// Declare the expected maximum duration so the UI can flag the operation as slow.
     pub(crate) fn expect_within(&self, expected: Duration) {
         self.gate.set_expected(self.id, expected);
+    }
+
+    /// When this operation started running.
+    pub(crate) fn since(&self) -> Since {
+        self.gate.since_of(self.id)
+    }
+
+    /// Continue an earlier attempt's start time: a retry of the same operation is one
+    /// continuous piece of work in the queue, so "taking longer than expected" can fire.
+    pub(crate) fn continue_since(&self, since: Since) {
+        self.gate.set_since(self.id, since);
     }
 
     /// A cloneable handle to this operation's cancel flag, for passing to work that runs
@@ -1236,6 +1276,22 @@ mod tests {
         assert!(!gate.snapshot().waiting[0].blocked_by_hidden);
         drop(visible);
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn a_later_attempt_can_continue_the_first_attempts_start_time() {
+        let gate = leak();
+        let first = gate.vm("id-a", "a", "Stopping a").unwrap();
+        let since = first.since();
+        let reported = gate.snapshot().running[0].since_ms;
+        drop(first);
+        thread::sleep(Duration::from_millis(5));
+        let second = gate.vm("id-a", "a", "Stopping a (attempt 2 of 3)").unwrap();
+        assert!(gate.snapshot().running[0].since_ms >= reported);
+        second.continue_since(since);
+        assert_eq!(gate.snapshot().running[0].since_ms, reported);
+        assert!(gate.oldest_running().unwrap().1 >= Duration::from_millis(5));
+        drop(second);
     }
 
     #[test]
