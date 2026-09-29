@@ -148,7 +148,7 @@ it("keeps a reachable computer connected while its VM configuration is busy", as
     const workspace = store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)!
     expect(workspace.computer!.connected).toBe(true)
     expect(workspace.freshness).toBe("stale")
-    expect(workspace.stateDetail).toBe("Applying VM changes")
+    expect(workspace.stateDetail).toBe("Refreshing status")
   } finally { store.dispose() }
 })
 
