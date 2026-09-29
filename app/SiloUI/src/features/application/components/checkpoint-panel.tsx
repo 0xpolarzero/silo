@@ -1,13 +1,26 @@
 import { useState } from "react"
-import { InlineConfirmation } from "@/components/inline-confirmation"
+import { Dialog } from "radix-ui"
+import { History, Loader2, ShieldCheck } from "lucide-react"
+import { ActionsMenu } from "@/components/actions-menu"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Progress } from "@/components/ui/progress"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { formatAbsoluteTime, formatRelativeTime } from "@/lib/relative-time"
+import { ForkStateDialog } from "./fork-state-dialog"
 import type { ApplicationActions, ApplicationWorkspace } from "@/features/application/model/application-source"
 import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 
-type Choice = { action: "fork" | "restore"; checkpointId: string }
+function suggestedName(now = new Date()) {
+  return `Checkpoint ${now.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+}
+
+function checkpointTag(checkpoint: WorkspaceCheckpoint) {
+  if (checkpoint.reason === "before-restore") return "Recovery"
+  return checkpoint.scope === "full" ? "Includes memory" : "Disks only"
+}
+
 export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false }: {
   workspace: ApplicationWorkspace
   target: string
@@ -16,24 +29,28 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
   onExport?: (checkpoint: WorkspaceCheckpoint) => void
   exportDisabled?: boolean
 }) {
-  const [name, setName] = useState("")
-  const [forkName, setForkName] = useState("")
-  const [choice, setChoice] = useState<Choice | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [name, setName] = useState(suggestedName)
+  const [forkCheckpoint, setForkCheckpoint] = useState<WorkspaceCheckpoint | null>(null)
+  const [restoreCheckpoint, setRestoreCheckpoint] = useState<WorkspaceCheckpoint | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const checkpoints = workspace.checkpoints ?? []
+  const checkpoints = [...(workspace.checkpoints ?? [])].sort((left, right) => right.createdAt.localeCompare(left.createdAt))
   const operation = workspace.checkpointOperation
-  const busy = pending || operation?.status === "running"
+  const running = operation?.status === "running"
+  const busy = pending || running
   const locked = disabled || busy
-  async function perform(action: () => Promise<void>, kind: "create" | "fork" | "restore") {
-    if (locked) return
+  const isLocal = !workspace.computer
+
+  async function create() {
+    const title = name.trim()
+    if (locked || !title || !actions.createCheckpoint) return
     setPending(true)
     setError(null)
     try {
-      await action()
-      setChoice(null)
-      if (kind === "create") setName("")
-      if (kind === "fork") setForkName("")
+      await actions.createCheckpoint(target, title)
+      setCreateOpen(false)
+      setName(suggestedName())
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -41,66 +58,109 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
     }
   }
 
-  return <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="border-t border-border p-3 text-xs">
-    <div>
-      <h3 className="font-medium">Checkpoints</h3>
-      <p className="mt-0.5 text-muted-foreground">Save this sandbox’s current session and disks. Forks start stopped.</p>
-    </div>
-    <form className="mt-3 flex gap-2" onSubmit={event => { event.preventDefault(); const title = name.trim(); if (!locked && title && actions.createCheckpoint) void perform(() => actions.createCheckpoint!(target, title), "create") }}>
-      <Input aria-label="Checkpoint name" className="h-7 flex-1 text-xs" maxLength={80} value={choice ? "" : name} disabled={locked || Boolean(choice) || !actions.createCheckpoint} placeholder="Checkpoint name" onChange={event => setName(event.target.value)} />
-      <Button type="submit" size="xs" disabled={locked || Boolean(choice) || !name.trim() || !actions.createCheckpoint}>Create</Button>
-    </form>
-    {checkpoints.length === 0 ? <p className="mt-3 text-muted-foreground">No checkpoints yet.</p> : <ol className="mt-3 divide-y divide-border border-t border-border" aria-label="Checkpoint history">
-      {[...checkpoints].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map(item => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-        <div className="min-w-0">
-          <p className="truncate font-medium" title={item.name}>{item.name}</p>
-          <p className="text-[11px] text-muted-foreground">{item.reason === "before-restore" ? "Recovery" : "Manual"} · {item.scope === "full" ? "Session and disks" : "Disks"} · <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time></p>
-        </div>
-        <div className="flex items-center gap-1">
-          {choice?.action === "restore" && choice.checkpointId === item.id ? <InlineConfirmation active onDismiss={() => { setChoice(null); setError(null) }}>
-            <Button size="xs" variant="ghost" disabled={locked} onClick={() => { setChoice(null); setError(null) }}>Cancel</Button>
-            <Button size="xs" disabled={locked || !actions.restoreCheckpoint} onClick={() => { if (actions.restoreCheckpoint) void perform(() => actions.restoreCheckpoint!(target, item.id), "restore") }}>Confirm restore</Button>
-          </InlineConfirmation> : <>
-            <Popover open={choice?.action === "fork" && choice.checkpointId === item.id} onOpenChange={open => { if (!open && choice?.action === "fork" && choice.checkpointId === item.id) setChoice(null) }}>
-              <PopoverTrigger asChild>
-                <Button size="xs" variant="ghost" disabled={locked || !actions.forkCheckpoint} onClick={() => { setChoice({ action: "fork", checkpointId: item.id }); setError(null) }}>Fork</Button>
-              </PopoverTrigger>
-              {choice?.action === "fork" && choice.checkpointId === item.id && <ForkPopover name={forkName} setName={setForkName} busy={locked} onCancel={() => { setChoice(null); setForkName("") }} onCreate={() => {
-                const title = forkName.trim()
-                if (locked || !title || !actions.forkCheckpoint) return
-                setChoice(null)
-                void perform(() => actions.forkCheckpoint!(target, item.id, title), "fork")
-              }} />}
-            </Popover>
-            <TooltipProvider delayDuration={250}>
-              <Tooltip><TooltipTrigger asChild><Button size="xs" variant="ghost" disabled={locked || !actions.restoreCheckpoint} onClick={() => { setChoice({ action: "restore", checkpointId: item.id }); setError(null) }}>Restore</Button></TooltipTrigger>
-                <TooltipContent>Save a recovery checkpoint, then restore this state. The sandbox stays stopped.</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-            {!workspace.computer && onExport && <Button size="xs" variant="ghost" disabled={locked || exportDisabled} onClick={() => onExport(item)}>Export</Button>}
-          </>}
-        </div>
-      </li>)}
-    </ol>}
-    {operation?.status === "failed" && !pending && (operation.error ?? operation.stage) !== error && <p role="alert" className="mt-2 text-destructive">{operation.error ?? operation.stage}</p>}
-    {error && <p role="alert" className="mt-2 text-destructive">{error}</p>}
-    {!actions.createCheckpoint && <p className="mt-2 text-muted-foreground">Checkpoint operations are unavailable in this build.</p>}
-  </section>
-}
+  async function restore() {
+    const checkpoint = restoreCheckpoint
+    if (locked || !checkpoint || !actions.restoreCheckpoint) return
+    setPending(true)
+    setError(null)
+    try {
+      await actions.restoreCheckpoint(target, checkpoint.id)
+      setRestoreCheckpoint(null)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setPending(false)
+    }
+  }
 
-function ForkPopover({ name, setName, busy, onCancel, onCreate }: {
-  name: string
-  setName: (value: string) => void
-  busy: boolean
-  onCancel: () => void
-  onCreate: () => void
-}) {
-  return <PopoverContent align="end" aria-label="Create stopped fork" className="w-64 p-3 text-xs">
-    <form className="space-y-2" onSubmit={event => { event.preventDefault(); if (!busy && name.trim()) onCreate() }}>
-      <p className="font-medium">Create stopped fork</p>
-      <p className="text-muted-foreground">Creates a stopped sandbox. Select Start when ready.</p>
-      <Input aria-label="Fork name" className="h-7 text-xs" maxLength={32} value={name} disabled={busy} placeholder="New sandbox name" onChange={event => setName(event.target.value)} />
-      <div className="flex justify-end gap-1"><Button type="button" size="xs" variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button><Button type="submit" size="xs" disabled={busy || !name.trim()}>Create fork</Button></div>
-    </form>
-  </PopoverContent>
+  const operationError = operation?.status === "failed" ? operation.error ?? operation.stage : null
+
+  return <TooltipProvider delayDuration={250}>
+    <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="grid gap-3 text-xs">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-muted-foreground">Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.</p>
+        {actions.createCheckpoint && <Popover open={createOpen} onOpenChange={open => { if (!locked) { setCreateOpen(open); if (open) { setName(suggestedName()); setError(null) } } }}>
+          <PopoverTrigger asChild>
+            <Button size="xs" variant="outline" className="shrink-0" disabled={locked}>New checkpoint</Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" aria-label="New checkpoint" className="w-72 p-3 text-xs">
+            <form className="grid gap-2" onSubmit={event => { event.preventDefault(); void create() }}>
+              <p className="font-medium">New checkpoint</p>
+              <Input aria-label="Checkpoint name" className="h-7 text-xs" maxLength={80} autoFocus value={name} disabled={locked} placeholder="Checkpoint name" onChange={event => setName(event.target.value)} />
+              <div className="flex justify-end gap-1">
+                <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={() => setCreateOpen(false)}>Cancel</Button>
+                <Button type="submit" size="xs" disabled={locked || !name.trim()}>Create</Button>
+              </div>
+            </form>
+          </PopoverContent>
+        </Popover>}
+      </div>
+
+      {running && operation && <div role="status" aria-live="polite" aria-atomic="true" className="grid gap-1.5">
+        <p className="flex items-center gap-1.5 text-muted-foreground"><Loader2 className="size-3 animate-spin" aria-hidden="true" />{operation.stage}</p>
+        <Progress value={null} aria-label="Checkpoint operation progress" />
+      </div>}
+      {error && <p role="alert" className="text-destructive">{error}</p>}
+      {operationError && !pending && operationError !== error && <p role="alert" className="text-destructive">{operationError}</p>}
+
+      {checkpoints.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-muted-foreground">
+          <p className="font-medium text-foreground">No checkpoints yet</p>
+          <p className="mt-1">A checkpoint saves this sandbox’s disks — and its memory when running — so you can restore or fork it later.</p>
+        </div>
+      ) : (
+        <ol className="divide-y divide-border border-t border-border" aria-label="Checkpoint history">
+          {checkpoints.map(checkpoint => {
+            const Icon = checkpoint.reason === "before-restore" ? ShieldCheck : History
+            return <li key={checkpoint.id} className="flex items-center gap-3 py-2.5">
+              <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground"><Icon className="size-3.5" aria-hidden="true" /></span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-medium" title={checkpoint.name}>{checkpoint.name}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  <time dateTime={checkpoint.createdAt} title={formatAbsoluteTime(checkpoint.createdAt)}>{formatRelativeTime(checkpoint.createdAt) || formatAbsoluteTime(checkpoint.createdAt)}</time>
+                  {" · "}{checkpointTag(checkpoint)}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button size="xs" variant="outline" disabled={locked || !actions.restoreCheckpoint} onClick={() => { setError(null); setRestoreCheckpoint(checkpoint) }}>Restore</Button>
+                <ActionsMenu label={`Checkpoint actions for ${checkpoint.name}`} disabled={locked} items={[
+                  ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, onSelect: () => { setError(null); setForkCheckpoint(checkpoint) } }] : []),
+                  ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),
+                ]} />
+              </div>
+            </li>
+          })}
+        </ol>
+      )}
+
+      {!actions.createCheckpoint && <p className="text-muted-foreground">Checkpoint operations are unavailable in this build.</p>}
+
+      {forkCheckpoint && actions.forkCheckpoint && <ForkStateDialog
+        key={forkCheckpoint.id}
+        sandboxName={workspace.machine.name}
+        title={`Fork from “${forkCheckpoint.name}”`}
+        description="Creates a new stopped sandbox from this checkpoint. Select Start when ready."
+        disabled={disabled || running}
+        progressStage={running ? operation?.stage : undefined}
+        fork={newName => actions.forkCheckpoint!(target, forkCheckpoint.id, newName)}
+        onClose={() => setForkCheckpoint(null)}
+      />}
+
+      {restoreCheckpoint && <Dialog.Root open onOpenChange={open => { if (!open && !busy) setRestoreCheckpoint(null) }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/20" />
+          <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-xl outline-none">
+            <Dialog.Title className="text-sm font-medium">Restore “{restoreCheckpoint.name}”</Dialog.Title>
+            <Dialog.Description className="mt-1 text-xs text-muted-foreground">Silo saves a recovery checkpoint first, then rewinds {workspace.machine.name}. The sandbox stays stopped.</Dialog.Description>
+            {busy && <div className="mt-3 grid gap-1.5" role="status" aria-live="polite"><p className="text-xs text-muted-foreground">{running ? operation?.stage : "Restoring…"}</p><Progress value={null} aria-label="Restore progress" /></div>}
+            {error && <p role="alert" className="mt-2 text-xs text-destructive">{error}</p>}
+            <div className="mt-3 flex justify-end gap-2">
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setRestoreCheckpoint(null)}>Cancel</Button>
+              <Button type="button" size="sm" disabled={locked || !actions.restoreCheckpoint} onClick={() => void restore()}>Restore</Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>}
+    </section>
+  </TooltipProvider>
 }

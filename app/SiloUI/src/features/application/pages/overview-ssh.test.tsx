@@ -8,30 +8,32 @@ import { ConnectionIcon } from "@/components/connection-icon"
 import { SshAccessBadges } from "./ssh-access-panel"
 import { NetworkPage } from "./network-page"
 
-it("shows one SSH scope badge and keeps both addresses in expanded controls", async () => {
+it("surfaces both SSH addresses and the scope badge on the sandbox Access tab", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
   source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "192.168.1.42", keys: [], state: "listening", message: null, fingerprint: null, computerName: "Ada Mac", addresses: ["127.0.0.1", "192.168.1.42"] }] }
-  const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), saveSshAccess: vi.fn(), sshConnection: vi.fn() } as unknown as ApplicationActions
+  const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  // The list row keeps a single scope badge and no inline SSH controls.
   const row = within(screen.getByLabelText("SSH from Ada Mac and other computers").closest("li")!)
-  expect(row.getByLabelText("SSH from Ada Mac and other computers")).toBeVisible()
   expect(row.queryByRole("switch")).not.toBeInTheDocument()
-  expect(row.queryByLabelText("SSH from Ada Mac only")).not.toBeInTheDocument()
-  await user.click(row.getByRole("button", { name: `SSH controls for ${workspace.machine.name}` }))
-  expect(row.getAllByRole("switch")).toHaveLength(2)
-  expect(row.getByText("root@127.0.0.1:2222")).toBeVisible()
-  expect(row.getByText("root@192.168.1.42:2222")).toBeVisible()
-  await user.click(row.getByRole("button", { name: "Copy SSH address" }))
+  expect(row.queryByRole("button", { name: /SSH controls/ })).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
+  await user.click(screen.getByRole("tab", { name: "Access" }))
+  expect(screen.getAllByRole("switch")).toHaveLength(2)
+  expect(screen.getByText("root@127.0.0.1:2222")).toBeVisible()
+  expect(screen.getByText("root@192.168.1.42:2222")).toBeVisible()
+  await user.click(screen.getByRole("button", { name: "Copy SSH address" }))
   expect(await navigator.clipboard.readText()).toBe("root@127.0.0.1:2222")
-  await user.click(row.getByRole("button", { name: "Copy network SSH address" }))
+  await user.click(screen.getByRole("button", { name: "Copy network SSH address" }))
   expect(await navigator.clipboard.readText()).toBe("root@192.168.1.42:2222")
-  await user.click(row.getByRole("button", { name: `SSH controls for ${workspace.machine.name}` }))
+
   source.sshAccess.workspaces[0].bindAddress = "127.0.0.1"
   view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
-  expect(row.getByLabelText("SSH from Ada Mac only")).toBeVisible()
-  expect(row.queryByLabelText("SSH from Ada Mac and other computers")).not.toBeInTheDocument()
+  expect(screen.getByLabelText("SSH from Ada Mac only")).toBeVisible()
+  expect(screen.queryByLabelText("SSH from Ada Mac and other computers")).not.toBeInTheDocument()
 })
 
 it("keeps Network limited to service ports", () => {
@@ -49,15 +51,12 @@ it("allows read-only SSH disclosure without refreshing, copying, or changing the
   render(<OverviewPage readOnly source={source} actions={actions} onMachinesChange={vi.fn()} />)
   expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Stop dev" })).toBeDisabled()
-  const disclosure = screen.getByRole("button", { name: "SSH controls for dev" })
-  await user.click(disclosure)
-  expect(disclosure).toHaveAttribute("aria-expanded", "true")
+  await user.click(screen.getByRole("button", { name: "Open dev" }))
+  await user.click(screen.getByRole("tab", { name: "Access" }))
   expect(screen.getByText("root@192.168.1.42:2222")).toBeVisible()
   for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled()
   expect(screen.getByRole("button", { name: "Copy SSH address" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Copy network SSH address" })).toBeDisabled()
-  await user.click(disclosure)
-  expect(disclosure).toHaveAttribute("aria-expanded", "false")
   for (const action of Object.values(actions)) expect(action).not.toHaveBeenCalled()
 })
 

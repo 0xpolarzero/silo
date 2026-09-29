@@ -66,6 +66,7 @@ export function SandboxListRow({
   actionsClassName,
   hoverActions,
   tone,
+  onOpen,
 }: {
   name: string
   kind: "vm" | "ssh"
@@ -81,9 +82,12 @@ export function SandboxListRow({
   actionsClassName?: string
   hoverActions?: ReactNode
   tone?: SandboxRowTone
+  onOpen?: () => void
 }) {
   return (
     <ListRow
+      onOpen={onOpen}
+      openLabel={onOpen ? `Open ${name}` : undefined}
       className={cn(
         "sandbox-row",
         !tone && "hover:bg-muted/35 focus-within:bg-muted/35",

@@ -1,11 +1,16 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import type { ApplicationActions, ApplicationWorkspace } from "@/features/application/model/application-source"
 import { CheckpointPanel } from "./checkpoint-panel"
 
 const workspace = {
   machine: { id: "vm-dev", name: "dev", kind: "vm" },
-  checkpoints: [{ id: "point-1", name: "Before refactor", createdAt: "2026-09-25T10:00:00Z", scope: "full", reason: "manual" }],
+  checkpoints: [
+    { id: "point-1", name: "Before refactor", createdAt: "2026-09-25T10:00:00Z", scope: "full", reason: "manual" },
+    { id: "point-2", name: "Disk snapshot", createdAt: "2026-09-24T10:00:00Z", scope: "disk", reason: "manual" },
+    { id: "point-3", name: "Before restore", createdAt: "2026-09-23T10:00:00Z", scope: "full", reason: "before-restore" },
+  ],
 } as ApplicationWorkspace
 
 function deferred() {
@@ -15,145 +20,118 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-it("offers Fork, Restore and Export on a local checkpoint and reports the checkpoint on export", () => {
+it("shows a Restore button and a menu with Fork and Export on a local checkpoint", async () => {
   const onExport = vi.fn()
+  const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={onExport} />)
-  const row = screen.getByText("Before refactor").closest("li")!
-  const buttons = within(row).getAllByRole("button").map((button) => button.textContent)
-  expect(buttons).toEqual(["Fork", "Restore", "Export"])
-  fireEvent.click(within(row).getByRole("button", { name: "Export" }))
+  const row = within(screen.getByText("Before refactor").closest("li")!)
+  expect(row.getByRole("button", { name: "Restore" })).toBeVisible()
+  await user.click(row.getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  expect(screen.getByRole("menuitem", { name: "Fork Before refactor" })).toBeVisible()
+  await user.click(screen.getByRole("menuitem", { name: "Export Before refactor" }))
   expect(onExport).toHaveBeenCalledWith(workspace.checkpoints![0])
 })
 
-it("hides Export for a remote sandbox checkpoint", () => {
+it("labels checkpoint scope and recovery with a short tag", () => {
+  render(<CheckpointPanel workspace={workspace} target="dev" actions={{} as ApplicationActions} disabled={false} />)
+  expect(within(screen.getByText("Before refactor").closest("li")!).getByText(/Includes memory/)).toBeVisible()
+  expect(within(screen.getByText("Disk snapshot").closest("li")!).getByText(/Disks only/)).toBeVisible()
+  expect(within(screen.getByText("Before restore").closest("li")!).getByText(/Recovery/)).toBeVisible()
+})
+
+it("hides Export for a remote sandbox checkpoint", async () => {
   const remote = { ...workspace, computer: { id: "mac", name: "Ada’s Mac mini", connected: true } } as ApplicationWorkspace
+  const user = userEvent.setup()
   render(<CheckpointPanel workspace={remote} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={vi.fn()} />)
-  const row = screen.getByText("Before refactor").closest("li")!
-  expect(within(row).queryByRole("button", { name: "Export" })).toBeNull()
+  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  expect(screen.queryByRole("menuitem", { name: "Export Before refactor" })).toBeNull()
+  expect(screen.getByRole("menuitem", { name: "Fork Before refactor" })).toBeVisible()
 })
 
-it("disables Export while a transfer is running", () => {
+it("disables Export while a transfer is running", async () => {
+  const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={vi.fn()} exportDisabled />)
-  const row = screen.getByText("Before refactor").closest("li")!
-  expect(within(row).getByRole("button", { name: "Export" })).toBeDisabled()
+  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  expect(screen.getByRole("menuitem", { name: "Export Before refactor" })).toHaveAttribute("aria-disabled", "true")
 })
 
-it("shows short restore guidance and inline cancel/confirm controls", async () => {
+it("confirms a restore in a dialog before restoring", async () => {
   const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
+  const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ restoreCheckpoint } as unknown as ApplicationActions} disabled={false} />)
-  fireEvent.focus(screen.getByRole("button", { name: "Restore" }))
-  expect(await screen.findByRole("tooltip")).toHaveTextContent("Save a recovery checkpoint, then restore this state. The sandbox stays stopped.")
-  fireEvent.click(screen.getByRole("button", { name: "Restore" }))
-  expect(screen.getByRole("button", { name: "Confirm restore" })).toBeVisible()
-  expect(screen.getByText("Before refactor")).toBeVisible()
+  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Restore" }))
+  const dialog = within(screen.getByRole("dialog", { name: "Restore “Before refactor”" }))
+  expect(dialog.getByText(/saves a recovery checkpoint first/i)).toBeVisible()
   expect(restoreCheckpoint).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
-  expect(restoreCheckpoint).not.toHaveBeenCalled()
-  expect(screen.getByRole("button", { name: "Restore" })).toBeVisible()
-  fireEvent.click(screen.getByRole("button", { name: "Restore" }))
-  fireEvent.keyDown(document, { key: "Escape" })
-  expect(screen.queryByRole("button", { name: "Confirm restore" })).toBeNull()
+  await user.click(dialog.getByRole("button", { name: "Cancel" }))
+  expect(screen.queryByRole("dialog")).toBeNull()
+  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Restore" }))
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Restore" }))
+  await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledWith("dev", "point-1"))
 })
 
-it("uses a compact popover to name a stopped fork from the selected checkpoint", async () => {
+it("names a stopped fork from the selected checkpoint", async () => {
   const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
+  const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} />)
-  const savedCheckpoint = screen.getByText("Before refactor").closest("li")!
-  fireEvent.click(within(savedCheckpoint).getByRole("button", { name: "Fork" }))
-  expect(await screen.findByText("Create stopped fork")).toBeVisible()
-  expect(screen.getByRole("dialog", { name: "Create stopped fork" })).toBeVisible()
-  expect(screen.getByRole("textbox", { name: "Fork name" })).toBeVisible()
-  fireEvent.change(screen.getByRole("textbox", { name: "Fork name" }), { target: { value: "experiment" } })
-  fireEvent.submit(screen.getByRole("textbox", { name: "Fork name" }).closest("form")!)
-  expect(forkCheckpoint).toHaveBeenCalledWith("dev", "point-1", "experiment")
+  await user.click(within(screen.getByText("Before refactor").closest("li")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  await user.click(screen.getByRole("menuitem", { name: "Fork Before refactor" }))
+  const dialog = within(screen.getByRole("dialog", { name: "Fork from “Before refactor”" }))
+  await user.type(dialog.getByRole("textbox", { name: "New sandbox name" }), "experiment")
+  await user.click(dialog.getByRole("button", { name: "Fork" }))
+  await waitFor(() => expect(forkCheckpoint).toHaveBeenCalledWith("dev", "point-1", "experiment"))
 })
 
-it("preserves the checkpoint name draft when a fork is created", async () => {
-  const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
-  render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint, createCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} />)
-  fireEvent.change(screen.getByRole("textbox", { name: "Checkpoint name" }), { target: { value: "keep this draft" } })
-  fireEvent.click(screen.getByRole("button", { name: "Fork" }))
-  fireEvent.change(await screen.findByRole("textbox", { name: "Fork name" }), { target: { value: "experiment" } })
-  fireEvent.click(screen.getByRole("button", { name: "Create fork" }))
-  await waitFor(() => expect(forkCheckpoint).toHaveBeenCalledOnce())
-  expect(screen.getByRole("textbox", { name: "Checkpoint name" })).toHaveValue("keep this draft")
-})
-
-it("keeps the panel busy without duplicating fork progress while creation is pending", async () => {
-  const task = deferred()
-  const forkCheckpoint = vi.fn(() => task.promise)
-  render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} />)
-  fireEvent.click(screen.getByRole("button", { name: "Fork" }))
-  fireEvent.change(await screen.findByRole("textbox", { name: "Fork name" }), { target: { value: "experiment" } })
-  fireEvent.click(screen.getByRole("button", { name: "Create fork" }))
-  expect(screen.getByRole("region", { name: "Checkpoints for dev" })).toHaveAttribute("aria-busy", "true")
-  expect(screen.queryByRole("status")).toBeNull()
-  expect(screen.queryByRole("progressbar")).toBeNull()
-  task.resolve()
-  await waitFor(() => expect(screen.queryByRole("status")).toBeNull())
-})
-
-it("keeps the panel busy without duplicating checkpoint progress while creation is pending", async () => {
-  const task = deferred()
-  const createCheckpoint = vi.fn(() => task.promise)
+it("creates a checkpoint from a prefilled name in a popover", async () => {
+  const createCheckpoint = vi.fn().mockResolvedValue(undefined)
+  const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint } as unknown as ApplicationActions} disabled={false} />)
-  fireEvent.change(screen.getByRole("textbox", { name: "Checkpoint name" }), { target: { value: "before deploy" } })
-  fireEvent.click(screen.getByRole("button", { name: "Create" }))
-  expect(screen.getByRole("region", { name: "Checkpoints for dev" })).toHaveAttribute("aria-busy", "true")
-  expect(screen.queryByRole("status")).toBeNull()
-  expect(screen.queryByRole("progressbar")).toBeNull()
-  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled()
-  task.resolve()
-  await waitFor(() => expect(screen.getByRole("region", { name: "Checkpoints for dev" })).not.toHaveAttribute("aria-busy"))
-  expect(screen.getByRole("textbox", { name: "Checkpoint name" })).toHaveValue("")
+  await user.click(screen.getByRole("button", { name: "New checkpoint" }))
+  const input = screen.getByRole("textbox", { name: "Checkpoint name" })
+  expect((input as HTMLInputElement).value).toMatch(/^Checkpoint /)
+  await user.clear(input)
+  await user.type(input, "before deploy")
+  await user.click(screen.getByRole("button", { name: "Create" }))
+  await waitFor(() => expect(createCheckpoint).toHaveBeenCalledWith("dev", "before deploy"))
 })
 
-it("keeps the panel busy without duplicating restore progress while restore is pending", async () => {
-  const task = deferred()
-  const restoreCheckpoint = vi.fn(() => task.promise)
-  render(<CheckpointPanel workspace={workspace} target="dev" actions={{ restoreCheckpoint } as unknown as ApplicationActions} disabled={false} />)
-  fireEvent.click(screen.getByRole("button", { name: "Restore" }))
-  fireEvent.click(screen.getByRole("button", { name: "Confirm restore" }))
+it("shows a calm empty state with the New checkpoint button", () => {
+  const empty = { ...workspace, checkpoints: [] } as ApplicationWorkspace
+  render(<CheckpointPanel workspace={empty} target="dev" actions={{ createCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} />)
+  expect(screen.getByText("No checkpoints yet")).toBeVisible()
+  expect(screen.getByRole("button", { name: "New checkpoint" })).toBeVisible()
+})
+
+it("shows inline operation progress and marks the region busy", () => {
+  const running = { ...workspace, checkpointOperation: { kind: "capture", status: "running", stage: "Capturing VM state" } } as ApplicationWorkspace
+  render(<CheckpointPanel workspace={running} target="dev" actions={{ createCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} />)
   expect(screen.getByRole("region", { name: "Checkpoints for dev" })).toHaveAttribute("aria-busy", "true")
-  expect(screen.queryByRole("status")).toBeNull()
-  expect(screen.queryByRole("progressbar")).toBeNull()
-  expect(screen.getByRole("button", { name: "Confirm restore" })).toBeDisabled()
-  task.resolve()
-  await waitFor(() => expect(screen.getByRole("region", { name: "Checkpoints for dev" })).not.toHaveAttribute("aria-busy"))
+  expect(screen.getByRole("status")).toHaveTextContent("Capturing VM state")
+  expect(screen.getByRole("progressbar", { name: "Checkpoint operation progress" })).toBeVisible()
 })
 
 it("shows action errors after an operation fails", async () => {
   const createCheckpoint = vi.fn().mockRejectedValue(new Error("Disk is full"))
+  const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint } as unknown as ApplicationActions} disabled={false} />)
-  fireEvent.change(screen.getByRole("textbox", { name: "Checkpoint name" }), { target: { value: "before deploy" } })
-  fireEvent.click(screen.getByRole("button", { name: "Create" }))
+  await user.click(screen.getByRole("button", { name: "New checkpoint" }))
+  await user.clear(screen.getByRole("textbox", { name: "Checkpoint name" }))
+  await user.type(screen.getByRole("textbox", { name: "Checkpoint name" }), "before deploy")
+  await user.click(screen.getByRole("button", { name: "Create" }))
   expect(await screen.findByRole("alert")).toHaveTextContent("Disk is full")
 })
 
-it("allows create, restoring a different checkpoint, and saved checkpoint forks while restore is pending", async () => {
-  const createCheckpoint = vi.fn().mockResolvedValue(undefined)
-  const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
-  const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
-  const pendingWorkspace = {
-    ...workspace,
-    checkpoints: [...workspace.checkpoints!, { id: "point-2", name: "After deploy", createdAt: "2026-09-26T10:00:00Z", scope: "disk", reason: "manual" }],
-    pendingCheckpointRestore: { checkpointId: "point-1", sourceWorkspace: "dev", state: "full" },
-  } as ApplicationWorkspace
-  const actions = { createCheckpoint, restoreCheckpoint, forkCheckpoint } as unknown as ApplicationActions
-  render(<CheckpointPanel workspace={pendingWorkspace} target="dev" actions={actions} disabled={false} />)
-  fireEvent.change(screen.getByRole("textbox", { name: "Checkpoint name" }), { target: { value: "After restore" } })
-  fireEvent.click(screen.getByRole("button", { name: "Create" }))
-  await waitFor(() => expect(createCheckpoint).toHaveBeenCalledWith("dev", "After restore"))
-
-  const differentCheckpoint = screen.getByText("After deploy").closest("li")!
-  fireEvent.click(within(differentCheckpoint).getByRole("button", { name: "Restore" }))
-  expect(within(differentCheckpoint).getByRole("button", { name: "Confirm restore" })).toBeVisible()
-  fireEvent.click(within(differentCheckpoint).getByRole("button", { name: "Confirm restore" }))
-  await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledWith("dev", "point-2"))
-
-  const savedCheckpoint = screen.getByText("Before refactor").closest("li")!
-  fireEvent.click(within(savedCheckpoint).getByRole("button", { name: "Fork" }))
-  fireEvent.change(await screen.findByRole("textbox", { name: "Fork name" }), { target: { value: "saved-fork" } })
-  fireEvent.click(screen.getByRole("button", { name: "Create fork" }))
-  await waitFor(() => expect(forkCheckpoint).toHaveBeenCalledWith("dev", "point-1", "saved-fork"))
+it("keeps the create button disabled while a create is pending", async () => {
+  const task = deferred()
+  const createCheckpoint = vi.fn(() => task.promise)
+  const user = userEvent.setup()
+  render(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint } as unknown as ApplicationActions} disabled={false} />)
+  await user.click(screen.getByRole("button", { name: "New checkpoint" }))
+  await user.clear(screen.getByRole("textbox", { name: "Checkpoint name" }))
+  await user.type(screen.getByRole("textbox", { name: "Checkpoint name" }), "before deploy")
+  await user.click(screen.getByRole("button", { name: "Create" }))
+  expect(screen.getByRole("region", { name: "Checkpoints for dev" })).toHaveAttribute("aria-busy", "true")
+  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled()
+  task.resolve()
+  await waitFor(() => expect(screen.getByRole("region", { name: "Checkpoints for dev" })).not.toHaveAttribute("aria-busy"))
 })

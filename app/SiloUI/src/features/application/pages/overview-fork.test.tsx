@@ -68,13 +68,10 @@ it("shows persisted checkpoint progress and locks the workspace row after remoun
   expect(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` })).toBeDisabled()
 })
 
-it("opens checkpoints from the Overview menu and exposes create, fork, and restore progress", async () => {
-  let finishCreate!: () => void
-  let finishFork!: () => void
-  let finishRestore!: () => void
-  const createCheckpoint = vi.fn(() => new Promise<void>(resolve => { finishCreate = resolve }))
-  const forkCheckpoint = vi.fn(() => new Promise<void>(resolve => { finishFork = resolve }))
-  const restoreCheckpoint = vi.fn(() => new Promise<void>(resolve => { finishRestore = resolve }))
+it("opens the Checkpoints tab from the Overview menu and drives fork, restore, and create", async () => {
+  const createCheckpoint = vi.fn().mockResolvedValue(undefined)
+  const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
+  const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
   const actions = { createCheckpoint, forkCheckpoint, restoreCheckpoint } as unknown as ApplicationActions
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
@@ -85,45 +82,29 @@ it("opens checkpoints from the Overview menu and exposes create, fork, and resto
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Checkpoints for ${workspace.machine.name}` }))
   const panel = within(screen.getByRole("region", { name: `Checkpoints for ${workspace.machine.name}` }))
-  expect(panel.queryByRole("button", { name: "Fork current state" })).not.toBeInTheDocument()
-  expect(panel.getByRole("button", { name: "Fork" })).toBeVisible()
-  expect(panel.getByRole("button", { name: "Restore" })).toBeVisible()
+  const savedRow = within(panel.getByText("Before deploy").closest("li")!)
+  expect(savedRow.getByRole("button", { name: "Restore" })).toBeVisible()
 
-  await user.click(panel.getByRole("button", { name: "Fork" }))
-  const forkPopover = within(screen.getByRole("dialog", { name: "Create stopped fork" }))
-  await user.type(forkPopover.getByRole("textbox", { name: "Fork name" }), "experiment")
-  await user.click(forkPopover.getByRole("button", { name: "Create fork" }))
-  expect(forkCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "checkpoint-1", "experiment")
+  await user.click(savedRow.getByRole("button", { name: "Checkpoint actions for Before deploy" }))
+  await user.click(screen.getByRole("menuitem", { name: "Fork Before deploy" }))
+  const forkDialog = within(screen.getByRole("dialog", { name: "Fork from “Before deploy”" }))
+  await user.type(forkDialog.getByRole("textbox", { name: "New sandbox name" }), "experiment")
+  await user.click(forkDialog.getByRole("button", { name: "Fork" }))
+  await waitFor(() => expect(forkCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "checkpoint-1", "experiment"))
 
-  const showSingleRowProgress = (kind: "capture" | "fork" | "restore", stage: string) => {
-    const progressing = structuredClone(source)
-    progressing.workspaces.find(item => item.machine.id === workspace.machine.id)!.checkpointOperation = { kind, status: "running", stage }
-    view.rerender(<OverviewPage source={progressing} actions={actions} onMachinesChange={vi.fn()} />)
-    expect(panel.queryByRole("status")).not.toBeInTheDocument()
-    expect(panel.queryByRole("progressbar")).not.toBeInTheDocument()
-    expect(screen.getAllByRole("progressbar")).toHaveLength(1)
-    expect(screen.getByRole("progressbar", { name: "Checkpoint operation progress" })).toBeVisible()
-    expect(screen.getByRole("status")).toHaveTextContent(stage)
-  }
-  showSingleRowProgress("fork", "Copying saved checkpoint")
-  finishFork()
-  view.rerender(<OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} />)
-  await waitFor(() => expect(screen.getByRole("region", { name: `Checkpoints for ${workspace.machine.name}` })).not.toHaveAttribute("aria-busy"))
+  await user.click(savedRow.getByRole("button", { name: "Restore" }))
+  await user.click(within(screen.getByRole("dialog", { name: "Restore “Before deploy”" })).getByRole("button", { name: "Restore" }))
+  await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "checkpoint-1"))
 
-  await user.click(panel.getByRole("button", { name: "Restore" }))
-  expect(panel.getByRole("button", { name: "Confirm restore" })).toBeVisible()
-  await user.click(panel.getByRole("button", { name: "Confirm restore" }))
-  expect(restoreCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "checkpoint-1")
-  showSingleRowProgress("restore", "Saving recovery point and restoring")
-  finishRestore()
-  view.rerender(<OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} />)
-  await waitFor(() => expect(screen.getByRole("region", { name: `Checkpoints for ${workspace.machine.name}` })).not.toHaveAttribute("aria-busy"))
+  await user.click(panel.getByRole("button", { name: "New checkpoint" }))
+  await user.clear(screen.getByRole("textbox", { name: "Checkpoint name" }))
+  await user.type(screen.getByRole("textbox", { name: "Checkpoint name" }), "After deploy")
+  await user.click(screen.getByRole("button", { name: "Create" }))
+  await waitFor(() => expect(createCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "After deploy"))
 
-  await user.type(panel.getByRole("textbox", { name: "Checkpoint name" }), "After deploy")
-  await user.click(panel.getByRole("button", { name: "Create" }))
-  expect(createCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "After deploy")
-  expect(panel.getByRole("button", { name: "Create" })).toBeDisabled()
-  showSingleRowProgress("capture", "Creating checkpoint")
-  finishCreate()
-  view.rerender(<OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} />)
+  const progressing = structuredClone(source)
+  progressing.workspaces.find(item => item.machine.id === workspace.machine.id)!.checkpointOperation = { kind: "capture", status: "running", stage: "Creating checkpoint" }
+  view.rerender(<OverviewPage source={progressing} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(screen.getByRole("progressbar", { name: "Checkpoint operation progress" })).toBeVisible()
+  expect(screen.getByRole("status")).toHaveTextContent("Creating checkpoint")
 })

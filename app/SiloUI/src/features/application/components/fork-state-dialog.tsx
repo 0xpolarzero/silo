@@ -5,8 +5,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 
-export function ForkStateDialog({ sandboxName, disabled, progressStage, fork, onClose }: {
+export function ForkStateDialog({ sandboxName, title, description, disabled, progressStage, fork, onClose }: {
   sandboxName: string
+  /** Defaults to "Fork <sandboxName>"; a checkpoint fork names the source checkpoint. */
+  title?: string
+  /** Defaults to the current-state description; a checkpoint fork explains the source. */
+  description?: string
   disabled: boolean
   progressStage?: string
   fork: (name: string) => Promise<void>
@@ -36,8 +40,8 @@ export function ForkStateDialog({ sandboxName, disabled, progressStage, fork, on
     <Dialog.Portal>
       <Dialog.Overlay className="fixed inset-0 z-50 bg-black/20" />
       <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-popover p-4 text-popover-foreground shadow-xl outline-none">
-        <Dialog.Title className="text-sm font-medium">Fork {sandboxName}</Dialog.Title>
-        <Dialog.Description className="mt-1 text-xs text-muted-foreground">Creates a stopped fork from the current state.</Dialog.Description>
+        <Dialog.Title className="text-sm font-medium">{title ?? `Fork ${sandboxName}`}</Dialog.Title>
+        <Dialog.Description className="mt-1 text-xs text-muted-foreground">{description ?? "Creates a stopped fork from the current state."}</Dialog.Description>
         <form className="mt-3 grid gap-2" onSubmit={submit}>
           <Input aria-label="New sandbox name" autoFocus maxLength={32} value={name} disabled={disabled || busy} placeholder="New sandbox name" onChange={event => setName(event.target.value)} />
           {busy && <div className="grid gap-1.5" role="status" aria-live="polite">

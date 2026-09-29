@@ -57,6 +57,11 @@ interface MachineListProps {
   sortPriority?: (machine: SetupMachineConfiguration) => number
   newSandboxRequest?: number
   onNewSandboxRequestHandled?: (id: number) => void
+  /** Opens the sandbox's detail page when its row body is activated. */
+  onOpenMachine?: (machine: SetupMachineConfiguration) => void
+  /** Runs Edit/Duplicate/Delete against a machine on behalf of its detail page. */
+  machineActionRequest?: { token: number; machineId: string; action: "edit" | "duplicate" | "delete" }
+  onMachineActionHandled?: (token: number) => void
   interactionDisabled?: boolean
   summary?: ReactNode
   footer?: ReactNode
@@ -277,7 +282,7 @@ function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, b
   )
 }
 
-export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, newSandboxRequest, onNewSandboxRequestHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
+export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
   const [computerId, setComputerId] = useState("")
   const [committing, setCommitting] = useState(false)
   interactionDisabled = interactionDisabled || committing
@@ -373,6 +378,22 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     consumedNewRequest.current = newSandboxRequest
     openRequestedVM(newSandboxRequest)
   }, [newSandboxRequest])
+
+  const consumedMachineAction = useRef(0)
+  const runMachineAction = useEffectEvent((request: NonNullable<MachineListProps["machineActionRequest"]>) => {
+    const machine = machines.find(({ id }) => id === request.machineId)
+    if (machine && !interactionDisabled) {
+      if (request.action === "edit") startEdit(machine)
+      else if (request.action === "duplicate") startDuplicate(machine)
+      else void remove(machine)
+    }
+    onMachineActionHandled?.(request.token)
+  })
+  useEffect(() => {
+    if (!machineActionRequest || consumedMachineAction.current === machineActionRequest.token) return
+    consumedMachineAction.current = machineActionRequest.token
+    runMachineAction(machineActionRequest)
+  }, [machineActionRequest])
 
   function startDuplicate(machine: SetupMachineConfiguration) {
     if (interactionDisabled) return
@@ -576,6 +597,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                     <SandboxListRow
                       name={machine.name}
                       kind={machine.kind}
+                      onOpen={onOpenMachine && !presentation?.suppressInteractions ? () => onOpenMachine(machine) : undefined}
                       remote={Boolean(getComputerId?.(machine)) || machine.kind === "ssh"}
                       kindBadge={presentation?.kindBadge}
                       badge={presentation?.badge}

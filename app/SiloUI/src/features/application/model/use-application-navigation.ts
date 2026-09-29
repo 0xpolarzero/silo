@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useState } from "react"
 
-import type { ApplicationTab, SettingsSection, WorkspaceSection } from "./application-source"
+import type { ApplicationTab, SandboxDetailTab, SettingsSection, WorkspaceSection } from "./application-source"
 
 interface Location {
   tab: ApplicationTab
   workspaceSection: WorkspaceSection
   settingsSection: SettingsSection
+  /** The sandbox whose detail page is open in the Sandboxes overview, by machine id. */
+  workspace?: string
+  /** The active tab on that sandbox's detail page. */
+  sandboxTab?: SandboxDetailTab
 }
 
 export type ApplicationInitialRoute = Partial<Location> & { workspace?: string }
@@ -16,9 +20,14 @@ interface History {
 }
 
 function sameDestination(left: Location, right: Location) {
-  return left.tab === right.tab
-    && (left.tab !== "workspaces" || left.workspaceSection === right.workspaceSection)
-    && (left.tab !== "settings" || left.settingsSection === right.settingsSection)
+  if (left.tab !== right.tab) return false
+  if (left.tab === "settings") return left.settingsSection === right.settingsSection
+  if (left.tab !== "workspaces") return true
+  if (left.workspaceSection !== right.workspaceSection) return false
+  // On the Sandboxes overview an open sandbox detail (and its tab) is its own destination.
+  if (left.workspaceSection !== "overview") return true
+  return (left.workspace ?? undefined) === (right.workspace ?? undefined)
+    && (left.sandboxTab ?? undefined) === (right.sandboxTab ?? undefined)
 }
 
 function withoutSystemIssue(history: History): History {
@@ -42,6 +51,10 @@ export function useApplicationNavigation(hasSystemIssue: boolean, initialRoute?:
       tab: initialRoute?.tab ?? "workspaces",
       workspaceSection: initialRoute?.workspaceSection ?? "overview",
       settingsSection: initialRoute?.settingsSection ?? "general",
+      // A deep link into the overview can preselect a sandbox detail page and tab.
+      ...((initialRoute?.workspaceSection ?? "overview") === "overview" && initialRoute?.workspace
+        ? { workspace: initialRoute.workspace, sandboxTab: initialRoute.sandboxTab ?? "overview" }
+        : {}),
     }],
     index: 0,
   })
@@ -78,7 +91,11 @@ export function useApplicationNavigation(hasSystemIssue: boolean, initialRoute?:
     goBack: () => move(-1),
     goForward: () => move(1),
     selectTab: (tab: ApplicationTab) => navigate({ tab }),
-    selectWorkspaceSection: (workspaceSection: WorkspaceSection) => navigate({ tab: "workspaces", workspaceSection }),
+    // Selecting a workspace section clears any open sandbox detail so the section shows plainly.
+    selectWorkspaceSection: (workspaceSection: WorkspaceSection) => navigate({ tab: "workspaces", workspaceSection, workspace: undefined, sandboxTab: undefined }),
     selectSettingsSection: (settingsSection: SettingsSection) => navigate({ tab: "settings", settingsSection }),
+    openSandbox: (workspace: string, sandboxTab: SandboxDetailTab = "overview") => navigate({ tab: "workspaces", workspaceSection: "overview", workspace, sandboxTab }),
+    selectSandboxTab: (sandboxTab: SandboxDetailTab) => navigate({ tab: "workspaces", workspaceSection: "overview", sandboxTab }),
+    closeSandbox: () => navigate({ tab: "workspaces", workspaceSection: "overview", workspace: undefined, sandboxTab: undefined }),
   }
 }

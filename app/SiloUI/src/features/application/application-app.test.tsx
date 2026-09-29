@@ -168,6 +168,23 @@ describe("application", () => {
     expect(within(appNavigation()).getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page")
   })
 
+  it("opens a sandbox detail page and returns to the list with the app's Back control", async () => {
+    const { user } = renderApplication("running")
+    await user.click(within(appPanel("Sandboxes")).getByRole("button", { name: "Open dev" }))
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Sandboxesdev")
+    expect(within(appPanel("Sandboxes")).queryByRole("list", { name: "Configured sandboxes" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Go back" }))
+    expect(within(appPanel("Sandboxes")).getByRole("list", { name: "Configured sandboxes" })).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Go forward" }))
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Sandboxesdev")
+  })
+
+  it("deep-links into a sandbox detail page and tab from an initial route", () => {
+    render(<ApplicationPreview source={applicationSourceForScenario("complete")} initialRoute={{ workspace: "dev", sandboxTab: "checkpoints" }} />)
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Sandboxesdev")
+    expect(screen.getByRole("tab", { name: "Checkpoints" })).toHaveAttribute("aria-selected", "true")
+  })
+
   it("collapses the sidebar to labelled icons and keeps every destination usable", async () => {
     const { user } = renderApplication()
     const navigation = within(appNavigation())

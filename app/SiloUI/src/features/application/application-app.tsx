@@ -201,8 +201,15 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     setRepositoryPushOperations((current) => current.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath))
   }, [actions])
 
+  function resolveSandboxId(value: string) {
+    return source.workspaces.find(({ machine }) => machine.id === value || machine.name === value)?.machine.id ?? value
+  }
+
   function navigateCommand(route: ApplicationInitialRoute) {
-    if (route.workspace || (route.workspaceSection && route.workspaceSection !== "overview")) {
+    const wantsSection = Boolean(route.workspaceSection && route.workspaceSection !== "overview")
+    // A workspace without a detail section deep-links into that sandbox's overview page.
+    if (route.workspace && !wantsSection) { navigation.openSandbox(resolveSandboxId(route.workspace), route.sandboxTab); return }
+    if (route.workspace || wantsSection) {
       setSelectedWorkspaceIds(new Set(source.workspaces
         .filter(({ machine }) => machine.id === route.workspace || machine.name === route.workspace)
         .map(({ machine }) => machine.id)))
@@ -278,7 +285,13 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} importRequest={importRequest} backup={backup} source={applicationSource} actions={{ ...actions, dismissMachineConfigurationError: () => {
+          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} importRequest={importRequest} backup={backup} source={applicationSource}
+            selectedSandboxId={navigation.workspace ? resolveSandboxId(navigation.workspace) : null}
+            sandboxTab={navigation.sandboxTab}
+            onOpenSandbox={(id, tab) => navigation.openSandbox(id, tab)}
+            onCloseSandbox={() => navigation.closeSandbox()}
+            onSelectSandboxTab={(tab) => navigation.selectSandboxTab(tab)}
+            actions={{ ...actions, dismissMachineConfigurationError: () => {
             if (sandboxConfigurationOperation?.status !== "failed") return
             actions.dismissMachineConfigurationError()
             setSandboxConfigurationOperation(null)

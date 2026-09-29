@@ -17,6 +17,8 @@ export type ApplicationTab = "workspaces" | "github" | "secrets" | "system" | "s
 export type SettingsSection = "general" | "computers" | "notifications"
 export type WorkspaceSection = "overview" | "files" | "logs" | "network" | "activity"
 export type WorkspaceDetailSection = Exclude<WorkspaceSection, "overview">
+/** Tabs on a single sandbox's detail page, reached from the Sandboxes overview. */
+export type SandboxDetailTab = "overview" | "checkpoints" | "storage" | "access"
 export type WorkspaceState = "running" | "starting" | "stopped" | "failed"
 
 export type RuntimeRepairPresentation = {

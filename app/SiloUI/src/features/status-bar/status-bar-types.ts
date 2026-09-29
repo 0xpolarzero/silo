@@ -1,9 +1,10 @@
-import type { ApplicationActions, ApplicationTab, WorkspaceSection } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationTab, SandboxDetailTab, WorkspaceSection } from "@/features/application/model/application-source"
 
 export interface StatusBarRoute {
   tab?: ApplicationTab
   workspaceSection?: WorkspaceSection
   workspace?: string
+  sandboxTab?: SandboxDetailTab
 }
 
 export interface StatusBarActions extends Pick<ApplicationActions, "startWorkspace" | "stopWorkspace" | "restartWorkspace" | "openTerminal" | "pushRepository" | "listWorkspaceDirectory"> {
