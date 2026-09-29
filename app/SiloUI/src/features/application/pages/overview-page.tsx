@@ -256,7 +256,10 @@ export function OverviewPage({ active = true, readOnly = false,
   onNavigate?: (route: ApplicationInitialRoute) => void
 }) {
   useSshAccessRefresh(readOnly ? undefined : actions.refreshSshAccess, active)
-  const [folderWorkspaceId, setFolderWorkspaceId] = useState<string | null>(null)
+  // The editor folder picker replaces the page for the route it was opened from. It closes
+  // for good when that route changes (palette, status panel, Back/Forward, another section)
+  // or when its sandbox can no longer be opened, so it never takes the screen over later.
+  const [folderPicker, setFolderPicker] = useState<{ workspaceId: string; route: string } | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [pendingStart, setPendingStart] = useState<string | null>(null)
   // Sandbox detail selection: controlled by the app's navigation when the callbacks are
@@ -493,10 +496,15 @@ export function OverviewPage({ active = true, readOnly = false,
   useEffect(() => { trackLifecycle(source.workspaces) }, [source.workspaces, source.operationQueue])
   useEffect(() => () => { for (const entry of lifecycleProgress.current.values()) if (entry.timer) window.clearTimeout(entry.timer) }, [])
 
-  const folderWorkspace = folderWorkspaceId ? workspaces.get(folderWorkspaceId) : undefined
-  if (folderWorkspace && workspaceAvailability(folderWorkspace, source).canOpen) {
+  const pickerRoute = `${active}:${selectedId ?? ""}:${activeSandboxTab}`
+  const openFolderPicker = (workspaceId: string) => setFolderPicker({ workspaceId, route: pickerRoute })
+  const folderWorkspace = folderPicker && folderPicker.route === pickerRoute ? workspaces.get(folderPicker.workspaceId) : undefined
+  const showFolderPicker = Boolean(folderWorkspace && workspaceAvailability(folderWorkspace, source).canOpen)
+  // Adjusting state while rendering: the picker is dropped before it could reappear.
+  if (folderPicker && !showFolderPicker) setFolderPicker(null)
+  if (folderWorkspace && showFolderPicker) {
     return <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
-      <StatusFolderPicker key={folderWorkspace.machine.id} workspace={folderWorkspace} editor={source.preferences.editor} listDirectory={actions.listWorkspaceDirectory} onBack={() => setFolderWorkspaceId(null)} onOpen={(path) => actions.openEditor(workspaceTarget(folderWorkspace), path)} />
+      <StatusFolderPicker key={folderWorkspace.machine.id} workspace={folderWorkspace} editor={source.preferences.editor} listDirectory={actions.listWorkspaceDirectory} onBack={() => setFolderPicker(null)} onOpen={(path) => actions.openEditor(workspaceTarget(folderWorkspace), path)} />
     </div>
   }
 
@@ -546,7 +554,7 @@ export function OverviewPage({ active = true, readOnly = false,
       menuActions,
       popovers: forkPopovers(workspace),
       onTerminal: () => actions.openTerminal(target),
-      onEditor: () => setFolderWorkspaceId(machine.id),
+      onEditor: () => openFolderPicker(machine.id),
       onStart: () => guarded.startWorkspace(target),
       onStop: () => guarded.stopWorkspace(target),
       onRetryLifecycle: workspace.lifecycleFailure && lifecycleAction && lifecycleAction !== "dismiss-error" && !readOnly
@@ -685,7 +693,7 @@ export function OverviewPage({ active = true, readOnly = false,
                   ),
                   actions: <>
                     <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={readOnly || !workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction>
-                    <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={readOnly || !workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => setFolderWorkspaceId(machine.id)}><Code /></SandboxAction>
+                    <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={readOnly || !workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => openFolderPicker(machine.id)}><Code /></SandboxAction>
                     <WorkspaceActions target={workspace && workspaceTarget(workspace)} machine={machine} state={state} actions={{
                     ...actions,
                     ...guarded,
