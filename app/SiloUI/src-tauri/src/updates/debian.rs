@@ -175,7 +175,8 @@ pub(super) fn failure_message(details: &str) -> &'static str {
         "Silo could not finish the system update. Check Details, then retry."
     }
 }
-pub(super) fn restart() -> Result<(), String> {
+/// Returns only if this process could not be replaced.
+pub(super) fn restart() -> String {
     // Replace this process, rather than resolving /proc/self/exe after dpkg has
     // unlinked the old binary. Also ignore unrelated inherited AppImage paths.
     use std::os::unix::process::CommandExt;
@@ -183,9 +184,7 @@ pub(super) fn restart() -> Result<(), String> {
         .env_remove("APPIMAGE")
         .env_remove("APPDIR")
         .exec();
-    Err(format!(
-        "Silo was updated but could not restart. Quit and reopen Silo. {error}"
-    ))
+    format!("Silo could not start its updated version: {error}")
 }
 #[cfg(test)]
 mod tests {
