@@ -82,9 +82,11 @@ Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. On macOS, t
 ## SiloUI release notes
 
 For each user-visible SiloUI feature, fix, or behavior change, include a Markdown
-changeset in `app/SiloUI/.changeset/` with `"silo-ui": patch|minor|major` front
+changeset in `app/SiloUI/.changeset/` with `"silo-ui": patch|minor` front
 matter and a concise user-facing summary. Agents may write the file directly.
-Use patch for fixes, minor for compatible features, and major for incompatible
-changes. Internal-only changes need no changeset. Do not bump versions, consume
+Silo stays below 1.0.0 until the owner explicitly decides otherwise: use patch
+for fixes and minor for features and incompatible changes. Never use major; the
+release scripts refuse 1.0.0 or later without an explicit `--allow-stable` flag.
+Internal-only changes need no changeset. Do not bump versions, consume
 changesets, create release tags, or publish unless requested. Follow
 `docs/SiloUI-RELEASES.md` for release preparation and verification.

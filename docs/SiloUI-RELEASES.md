@@ -27,8 +27,11 @@ npm run changeset
 ```
 
 Choose `silo-ui`, the bump type, and write a user-facing summary. Use **patch**
-for fixes, **minor** for compatible features, and **major** for incompatible
-changes. Include any migration steps. Commit the generated `.changeset/*.md`
+for fixes and **minor** for features and incompatible changes. Silo stays below
+1.0.0 until the owner explicitly decides on a stable release, so never use
+**major**: `sync-release.mjs` and `release.mjs` refuse 1.0.0 or later unless
+`--allow-stable` is passed (for example
+`npm run release:sync -- --allow-stable`). Include any migration steps. Commit the generated `.changeset/*.md`
 file alongside the change. Edit the Markdown freely before release. Internal
 refactors, tests, and documentation do not require a note unless users are affected.
 

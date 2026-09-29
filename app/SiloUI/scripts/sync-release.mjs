@@ -4,13 +4,21 @@ import { fileURLToPath } from "node:url"
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
+/** Silo stays below 1.0.0 until the owner explicitly decides on a stable release. */
+export function assertPreStable(version, allowStable = false) {
+  if (!allowStable && Number(version.split(".")[0]) >= 1) {
+    throw new Error(`Silo releases stay below 1.0.0; refusing ${version}. Use a minor changeset for breaking changes, or pass --allow-stable only for an approved 1.0 release.`)
+  }
+}
+
 /** Changesets owns the version and changelog; mirror them into desktop metadata. */
-export function syncRelease(root = app) {
+export function syncRelease(root = app, { allowStable = false } = {}) {
   const read = path => readFileSync(resolve(root, path), "utf8")
   const version = JSON.parse(read("package.json")).version
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version) || version === "0.0.0") {
     throw new Error("Desktop releases require a nonzero stable version.")
   }
+  assertPreStable(version, allowStable)
   const changelog = read("CHANGELOG.md")
   const heading = `## ${version}`
   const lines = changelog.split("\n")
@@ -53,7 +61,7 @@ export function syncRelease(root = app) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    console.log(`Prepared Silo ${syncRelease()}. Review and commit the version files, changelog, release notes, and consumed changesets. Then run npm run release:draft.`)
+    console.log(`Prepared Silo ${syncRelease(app, { allowStable: process.argv.includes("--allow-stable") })}. Review and commit the version files, changelog, release notes, and consumed changesets. Then run npm run release:draft.`)
   } catch (error) {
     console.error(error.message)
     process.exitCode = 1
