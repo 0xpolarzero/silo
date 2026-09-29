@@ -16,6 +16,7 @@ const nativeSnapshotSchema = z.object({
     return null
   }),
   saveError: z.string().nullable(),
+  writeProtected: z.boolean().optional(),
 })
 
 export function createDesktopSettingsStore(initialSettings: SettingsPatch, main: boolean) {
@@ -61,8 +62,10 @@ export async function connectSettingsLifecycle(store: SettingsStore, main: boole
                 .then(beforeFlush)
                 .then(() => store.flush())
                 .then(() => {
-                  const error = store.getSnapshot().saveError
-                  if (error) throw new Error(error)
+                  // A write-protected settings file must not block Quit: the file is
+                  // intentionally left unchanged and this session's changes are dropped.
+                  const { saveError, writeProtected } = store.getSnapshot()
+                  if (saveError && !writeProtected) throw new Error(saveError)
                   return invoke("complete_settings_flush")
                 })
                 .catch(async (error: unknown) => {

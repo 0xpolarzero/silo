@@ -7,6 +7,8 @@ export interface SettingsSnapshot {
   settings: Record<string, unknown>
   onboardingDraft: OnboardingDraft | null
   saveError: string | null
+  /** The settings file is protected from writes; changes last for this session only. */
+  writeProtected?: boolean
 }
 
 export interface SettingsBackend {
@@ -57,6 +59,7 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
       ...confirmed,
       settings: resolveSettings(overrides),
       saveError: transportError ?? confirmed.saveError,
+      writeProtected: transportError === null && confirmed.writeProtected ? true : undefined,
     }
     for (const change of pending) {
       if (change.kind === "draft") next.onboardingDraft = change.draft

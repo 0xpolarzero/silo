@@ -22,6 +22,9 @@ pub struct Snapshot {
     settings: Map<String, Value>,
     onboarding_draft: Value,
     save_error: Option<String>,
+    /// The settings file is protected from writes (newer, invalid or unreadable).
+    /// Changes apply for this session only; Quit and updates still proceed.
+    write_protected: bool,
 }
 
 impl Snapshot {
@@ -55,6 +58,7 @@ impl SettingsStore {
                 settings: Map::new(),
                 onboarding_draft: Value::Null,
                 save_error: None,
+                write_protected: false,
             },
             protected_error: None,
             dirty: false,
@@ -99,6 +103,7 @@ impl SettingsStore {
     fn protect(&mut self, error: &str) {
         self.protected_error = Some(error.to_owned());
         self.snapshot.save_error = self.protected_error.clone();
+        self.snapshot.write_protected = true;
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -148,11 +153,11 @@ impl SettingsStore {
     }
 
     fn save(&mut self) -> Result<(), String> {
-        if let Some(error) = &self.protected_error {
-            return Err(error.clone());
-        }
         if !self.dirty {
             return Ok(());
+        }
+        if let Some(error) = &self.protected_error {
+            return Err(error.clone());
         }
         let mut document = self.document.clone();
         let settings = document.entry("settings").or_insert_with(|| json!({}));
@@ -175,6 +180,18 @@ impl SettingsStore {
             self.dirty = false;
         }
         result
+    }
+
+    /// Persist pending changes before Quit or an update. Write protection blocks
+    /// only the disk write: the session keeps its in-memory settings and continues.
+    fn flush(&mut self) -> Result<(), String> {
+        match self.save() {
+            Err(error) if self.protected_error.as_ref() == Some(&error) => {
+                eprintln!("Silo settings: changes were not saved: {error}");
+                Ok(())
+            }
+            result => result,
+        }
     }
 }
 
@@ -579,10 +596,11 @@ pub fn install(app: &AppHandle) {
 pub(crate) fn current_settings(app: &AppHandle) -> Result<Map<String, Value>, String> {
     let state = app.state::<SettingsState>();
     let snapshot = state.initialize(|| settings_path(app).map_err(|error| error.to_string()))?;
-    match snapshot.save_error {
-        Some(error) => Err(error),
-        None => Ok(snapshot.settings),
+    // A save failure affects persistence only; the in-memory settings are authoritative.
+    if let Some(error) = &snapshot.save_error {
+        eprintln!("Silo settings: using unsaved settings: {error}");
     }
+    Ok(snapshot.settings)
 }
 
 #[tauri::command]
@@ -694,13 +712,16 @@ pub async fn import_legacy_theme(
 #[tauri::command]
 pub async fn flush_settings(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     require_main(window.label())?;
-    let snapshot = change(app, |store| {
+    let flushed = std::sync::Arc::new(std::sync::Mutex::new(Ok(())));
+    let result = flushed.clone();
+    change(app, move |store| {
         store.snapshot.revision += 1;
-        let _ = store.save();
+        *result.lock().map_err(|_| "Settings storage is unavailable.")? = store.flush();
         Ok(store.snapshot())
     })
     .await?;
-    snapshot.save_error.map_or(Ok(()), Err)
+    let result = flushed.lock().map_err(|_| "Settings storage is unavailable.")?.clone();
+    result
 }
 
 fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64>) {
@@ -716,7 +737,7 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64
     let saved = app.state::<SettingsState>().store.lock()
         .map_err(|_| "Settings storage is unavailable.".to_string())
         .and_then(|mut initialized| match initialized.as_mut() {
-            Some(current) => current.store.save(),
+            Some(current) => current.store.flush(),
             None => Ok(()),
         });
     if let Err(error) = saved {
@@ -958,6 +979,40 @@ mod tests {
         assert_eq!(saved["settings"]["launchAtLogin"], false);
         assert_eq!(saved["settings"]["futurePreference"], 42);
         assert_eq!(saved["futureDocumentField"]["keep"], true);
+    }
+
+    #[test]
+    fn write_protected_settings_never_block_quit_or_updates() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let bytes = br#"{"schemaVersion":2,"settings":{"theme":"dark"}}"#;
+        std::fs::write(&path, bytes).unwrap();
+        let mut store = SettingsStore::load(Some(path.clone()));
+        assert!(store.snapshot().write_protected);
+        assert_eq!(store.save(), Ok(()));
+        assert_eq!(store.flush(), Ok(()));
+        store
+            .update(json!({"editor":"Cursor"}).as_object().unwrap().clone())
+            .unwrap();
+        assert!(store.save().is_err());
+        assert_eq!(store.flush(), Ok(()));
+        assert_eq!(store.snapshot().settings["editor"], "Cursor");
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn storage_failures_still_fail_a_flush() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().join("settings.json")));
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        store
+            .update(json!({"editor":"Cursor"}).as_object().unwrap().clone())
+            .unwrap();
+        let flushed = store.flush();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(!store.snapshot().write_protected);
+        assert!(flushed.is_err());
     }
 
     #[test]
@@ -1376,6 +1431,6 @@ mod tests {
 pub(crate) fn flush_for_update(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<SettingsState>();
     let mut initialized = state.store.lock().map_err(|_| "Settings could not be saved before updating.")?;
-    if let Some(current) = initialized.as_mut() { current.store.save()?; }
+    if let Some(current) = initialized.as_mut() { current.store.flush()?; }
     Ok(())
 }

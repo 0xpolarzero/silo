@@ -216,6 +216,18 @@ describe("native settings transport", () => {
     expect(native.invoke).not.toHaveBeenCalledWith("complete_settings_flush")
   })
 
+  it("does not block Quit when the settings file is write-protected", async () => {
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "read_settings") return { ...snapshot(0, {}, "Settings use an unsupported file version; the file was left unchanged."), writeProtected: true }
+    })
+    const settings = store()
+    await settings.initialize()
+    cleanups.push(await connectSettingsLifecycle(settings, true))
+    native.handlers.get("settings:flush-request")?.({ payload: null })
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("complete_settings_flush"))
+    expect(native.invoke).not.toHaveBeenCalledWith("cancel_settings_flush")
+  })
+
   it("includes changes made while the final native flush is running before acknowledging Quit", async () => {
     const flushStarted = deferred<void>()
     const finishFlush = deferred<void>()
