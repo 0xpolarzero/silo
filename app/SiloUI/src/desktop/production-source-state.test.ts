@@ -59,6 +59,27 @@ describe("machine configuration jobs", () => {
       expect(count(mock.invoke, "retry_machine_configuration")).toBe(2)
     } finally { store.dispose() }
   })
+
+  it("keeps an explicit Disable access when setup saves GitHub settings (H-39)", async () => {
+    const dev = source.workspaces[0]
+    const disabled = { ...source, workspaces: [dev], github: { ...source.github, state: "connected" as const, account: "octo", policyRevision: 3, accessEnabled: false } }
+    const saved = { ...disabled.github, policyRevision: 4, workspaceOperations: [{ workspace: dev.machine.name, status: "succeeded", message: "Applied" }] }
+    const mock = bridge(command => {
+      if (command === "read_application_state") return structuredClone(disabled)
+      if (command === "configure_workspace_identities") return null
+      if (command === "save_github_configuration") return structuredClone(saved)
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      await store.submitSetupStep("github", {
+        machineConfiguration: { schemaVersion: 1, machines: [dev.machine] },
+        applications: source.preferences,
+        github: { connectionState: "connected", workspaces: [{ workspace: dev.machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } }] },
+      })
+      expect(mock.invoke).toHaveBeenCalledWith("save_github_configuration", { configuration: expect.objectContaining({ accessEnabled: false }) })
+    } finally { store.dispose() }
+  })
 })
 
 describe("GitHub state from full reads", () => {

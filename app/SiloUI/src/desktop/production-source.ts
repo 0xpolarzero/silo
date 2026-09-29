@@ -908,7 +908,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       await identityJob
       if (request.github.connectionState === "connected") {
         const previous = snapshot.source?.github
-        let github = await githubMutation("save_github_configuration", { configuration: { accessEnabled: true, hostIdentity: snapshot.source?.github.hostIdentity ?? null, workspaces: request.github.workspaces.map((policy) => ({ repositoryMode: "selected", allRepositoriesAllowChanges: false, ...policy })) } })
+        // Connecting enables access; setup must not undo an explicit Disable access.
+        let github = await githubMutation("save_github_configuration", { configuration: { accessEnabled: snapshot.source?.github.accessEnabled ?? true, hostIdentity: snapshot.source?.github.hostIdentity ?? null, workspaces: request.github.workspaces.map((policy) => ({ repositoryMode: "selected", allRepositoriesAllowChanges: false, ...policy })) } })
         if (previous?.policyRevision === github.policyRevision && previous?.workspaceOperations?.some(({ status }) => status === "failed") && github.workspaceOperations?.some(({ status }) => status === "failed")) github = await githubMutation("retry_github_configuration")
         setJobStatus(job, ["githubRun"], "succeeded")
         setJobStatus(job, ["githubVerify"], "running")
