@@ -17,6 +17,10 @@ export interface OperationEntry {
   /** Expected maximum duration in milliseconds, used to flag slow operations.
    * `null` when the operation carried no expectation. */
   expectedMs: number | null
+  /** True for a waiting entry whose turn is held up by internal background maintenance
+   * that is itself hidden from this queue. Lets the UI explain the wait without naming an
+   * operation the user never started. Always false for running entries. */
+  blockedByHidden: boolean
 }
 
 export interface OperationQueue {
@@ -33,6 +37,7 @@ export const operationEntrySchema = z.object({
   sinceMs: z.number().int().nonnegative(),
   cancellable: z.boolean(),
   expectedMs: z.number().int().nonnegative().nullable(),
+  blockedByHidden: z.boolean().default(false),
 })
 
 export const operationQueueSchema = z.object({
@@ -41,6 +46,27 @@ export const operationQueueSchema = z.object({
 })
 
 export const emptyOperationQueue: OperationQueue = { running: [], waiting: [] }
+
+/**
+ * Gate labels for sandbox export and import. These operations already surface as their
+ * own progress toast (see `sandbox-transfer.tsx`), so they are excluded from the general
+ * operation-queue toast to avoid a duplicate notification. Kept in sync with the backend
+ * labels in `src-tauri/src/backup_controller.rs` ("Exporting sandbox", "Importing sandbox").
+ */
+export const TRANSFER_OPERATION_LABELS = ["Exporting sandbox", "Importing sandbox"] as const
+
+/** True when an entry is an export/import operation shown by its own transfer toast. */
+export function isTransferOperation(entry: OperationEntry): boolean {
+  return (TRANSFER_OPERATION_LABELS as readonly string[]).includes(entry.label)
+}
+
+/** The queue with export/import entries removed, since they have a dedicated toast. */
+export function toastableQueue(queue: OperationQueue): OperationQueue {
+  return {
+    running: queue.running.filter((entry) => !isTransferOperation(entry)),
+    waiting: queue.waiting.filter((entry) => !isTransferOperation(entry)),
+  }
+}
 
 /**
  * The runtime gate lets a VM-scoped operation run when nothing computer-wide and
@@ -121,7 +147,11 @@ function joinLabels(labels: string[]): string {
  */
 export function waitingStatusText(queue: OperationQueue, entry: OperationEntry): string {
   const blockers = blockingOperations(queue, entry)
-  if (blockers.length === 0) return "Waiting…"
+  if (blockers.length === 0) {
+    // The blocker may be internal background maintenance the user never started, which is
+    // kept out of the queue; describe it generically rather than leaving a bare "Waiting…".
+    return entry.blockedByHidden ? "Waiting for background maintenance…" : "Waiting…"
+  }
   return `Waiting for ${joinLabels(blockers.map((blocker) => blocker.label))}…`
 }
 

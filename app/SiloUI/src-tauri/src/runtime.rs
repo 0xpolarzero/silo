@@ -1716,7 +1716,7 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
         let paths = runtime_paths(&app)?;
         let mut source = read_application_snapshot(&ProcessRunner, &paths, &|| OPERATIONS.is_idle())?;
         // Opportunistic log cleanup; skip when any operation is active or waiting.
-        if let Ok(_guard) = OPERATIONS.try_computer("Cleaning up expired logs") {
+        if let Ok(_guard) = OPERATIONS.try_computer_hidden("Cleaning up expired logs") {
             for workspace in &mut source.workspaces {
                 if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Stopped)
                     && inspect_workspace(&ProcessRunner, &paths, workspace.machine.name()).is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status))

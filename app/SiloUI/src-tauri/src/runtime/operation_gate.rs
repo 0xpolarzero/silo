@@ -84,6 +84,11 @@ pub struct OperationEntry {
     /// Expected maximum duration in milliseconds, used to flag slow operations.
     /// `None` when the operation carried no expectation.
     pub expected_ms: Option<u64>,
+    /// True for a waiting entry whose turn is currently held up by internal background
+    /// maintenance that is itself hidden from this queue. Lets the UI explain the wait
+    /// without naming an operation the user never started. Always false for running entries.
+    #[serde(default)]
+    pub blocked_by_hidden: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
@@ -112,6 +117,9 @@ struct Entry {
     cancel: Arc<AtomicBool>,
     /// Expected maximum duration, for stuck-operation flagging in the UI.
     expected: Option<Duration>,
+    /// Internal background housekeeping that must not surface in the published queue
+    /// snapshot. It still holds the gate for mutual exclusion; only its visibility differs.
+    hidden: bool,
 }
 
 impl Entry {
@@ -128,6 +136,8 @@ impl Entry {
             // Waiting entries can always be cancelled; running entries only when opted in.
             cancellable: if running { self.cancellable } else { true },
             expected_ms: self.expected.map(|value| value.as_millis() as u64),
+            // Set per waiting entry in `snapshot`, where the full queue is visible.
+            blocked_by_hidden: false,
         }
     }
 }
@@ -165,6 +175,7 @@ impl State {
             cancellable: false,
             cancel: Arc::new(AtomicBool::new(false)),
             expected: None,
+            hidden: false,
         }
     }
 }
@@ -355,6 +366,16 @@ impl OperationGate {
         vm_name: Option<String>,
         label: &str,
     ) -> Result<OperationGuard<'_>, GateError> {
+        self.try_acquire_inner(scope, vm_name, label, false)
+    }
+
+    fn try_acquire_inner(
+        &self,
+        scope: Scope,
+        vm_name: Option<String>,
+        label: &str,
+        hidden: bool,
+    ) -> Result<OperationGuard<'_>, GateError> {
         if HELD.with(Cell::get) > 0 {
             return Err(GateError::Nested);
         }
@@ -362,7 +383,8 @@ impl OperationGate {
         if !state.free(&scope) {
             return Err(GateError::Busy);
         }
-        let entry = state.entry(scope, vm_name, label, None);
+        let mut entry = state.entry(scope, vm_name, label, None);
+        entry.hidden = hidden;
         let id = entry.id;
         let token = entry.cancel.clone();
         state.running.push(entry);
@@ -375,6 +397,18 @@ impl OperationGate {
 
     pub(crate) fn try_computer(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
         self.try_acquire(Scope::Computer, None, label)
+    }
+
+    /// Like `try_computer`, but for internal background housekeeping: the operation still
+    /// holds the gate for mutual exclusion, yet never appears in the published queue
+    /// snapshot, so opportunistic maintenance cannot flash a status in the UI.
+    pub(crate) fn try_computer_hidden(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
+        self.try_acquire_inner(Scope::Computer, None, label, true)
+    }
+
+    /// Like `try_vm`, but hidden from the published queue snapshot (see `try_computer_hidden`).
+    pub(crate) fn try_vm_hidden(&self, id: &str, name: &str, label: &str) -> Result<OperationGuard<'_>, GateError> {
+        self.try_acquire_inner(Scope::Vm { id: id.to_owned() }, Some(name.to_owned()), label, true)
     }
 
     /// Run work for one VM only when nothing conflicting for that VM is running or
@@ -396,12 +430,39 @@ impl OperationGate {
         self.lock().free(&Scope::Vm { id: id.to_owned() })
     }
 
+    /// The queue as the UI sees it. Hidden internal-housekeeping entries are excluded, but
+    /// they still gate real work: a visible waiter held up only by a hidden entry is flagged
+    /// with `blocked_by_hidden` so the UI can explain the wait generically.
     pub(crate) fn snapshot(&self) -> OperationQueue {
         let state = self.lock();
-        OperationQueue {
-            running: state.running.iter().map(|entry| entry.public(true)).collect(),
-            waiting: state.waiting.iter().map(|entry| entry.public(false)).collect(),
-        }
+        let running = state
+            .running
+            .iter()
+            .filter(|entry| !entry.hidden)
+            .map(|entry| entry.public(true))
+            .collect();
+        let waiting = state
+            .waiting
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.hidden)
+            .map(|(index, entry)| {
+                let mut public = entry.public(false);
+                // A hidden running entry, or a hidden earlier waiter, that conflicts with
+                // this waiter is holding up its turn without appearing in the queue.
+                public.blocked_by_hidden = state
+                    .running
+                    .iter()
+                    .any(|other| other.hidden && other.scope.conflicts(&entry.scope))
+                    || state
+                        .waiting
+                        .iter()
+                        .take(index)
+                        .any(|other| other.hidden && other.scope.conflicts(&entry.scope));
+                public
+            })
+            .collect();
+        OperationQueue { running, waiting }
     }
 
     /// Ask to cancel the operation with `id`.
@@ -835,6 +896,50 @@ mod tests {
         assert!(!gate.snapshot().running[0].cancellable);
         assert_eq!(gate.cancel(id).unwrap_err(), GateError::NotCancellable);
         drop(running);
+    }
+
+    #[test]
+    fn hidden_housekeeping_is_excluded_from_the_snapshot_but_still_exclusive() {
+        let gate = leak();
+        // A hidden background reconcile holds the computer gate but never surfaces.
+        let housekeeping = gate.try_computer_hidden("Reconciling SSH access").unwrap();
+        let snapshot = gate.snapshot();
+        assert!(snapshot.running.is_empty(), "hidden entry must not appear in the queue");
+        assert!(snapshot.waiting.is_empty());
+        // It is not idle, though: a conflicting try still finds the gate busy.
+        assert!(!gate.is_idle());
+        assert_eq!(elsewhere(move || gate.try_computer("Reclaim").unwrap_err()), GateError::Busy);
+        drop(housekeeping);
+        assert!(gate.is_idle());
+        assert!(elsewhere(move || gate.try_computer("Reclaim").is_ok()));
+    }
+
+    #[test]
+    fn a_visible_waiter_blocked_only_by_hidden_work_is_flagged() {
+        let gate = leak();
+        // Hidden computer-wide housekeeping is running.
+        let housekeeping = gate.try_computer_hidden("Cleaning up expired logs").unwrap();
+        // A user-initiated per-VM operation arrives and must wait behind it.
+        let waiter = thread::spawn(move || drop(gate.vm("id-a", "a", "Start a").unwrap()));
+        wait_until(gate, |queue| {
+            // The waiter is visible; the hidden blocker is not, so it is flagged instead.
+            queue.waiting.len() == 1 && queue.waiting[0].label == "Start a" && queue.waiting[0].blocked_by_hidden
+        });
+        assert!(gate.snapshot().running.is_empty(), "the hidden blocker stays out of the queue");
+        drop(housekeeping);
+        waiter.join().unwrap();
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn a_waiter_blocked_by_visible_work_is_not_flagged_as_hidden() {
+        let gate = leak();
+        let visible = gate.computer("Updating").unwrap();
+        let waiter = thread::spawn(move || drop(gate.vm("id-a", "a", "Start a").unwrap()));
+        wait_until(gate, |queue| queue.waiting.len() == 1 && queue.waiting[0].label == "Start a");
+        assert!(!gate.snapshot().waiting[0].blocked_by_hidden);
+        drop(visible);
+        waiter.join().unwrap();
     }
 
     #[test]

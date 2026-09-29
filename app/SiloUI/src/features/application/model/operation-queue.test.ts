@@ -8,6 +8,7 @@ import {
   operationMatchesVm,
   operationQueueSchema,
   STUCK_OPERATION_MS,
+  toastableQueue,
   waitingOperationForVm,
   waitingStatusText,
   type OperationEntry,
@@ -16,7 +17,7 @@ import {
 
 function entry(overrides: Partial<OperationEntry> & Pick<OperationEntry, "id">): OperationEntry {
   const vmId = overrides.vmId ?? null
-  return { label: `op-${overrides.id}`, vmId: null, vmName: vmId, sinceMs: 0, cancellable: true, expectedMs: null, ...overrides }
+  return { label: `op-${overrides.id}`, vmId: null, vmName: vmId, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false, ...overrides }
 }
 
 describe("blockingOperations", () => {
@@ -106,12 +107,44 @@ describe("elapsed formatting", () => {
   })
 })
 
+describe("waitingStatusText", () => {
+  it("names a visible blocker", () => {
+    const queue: OperationQueue = {
+      running: [entry({ id: 1, label: "Backing up sandboxes", vmId: null })],
+      waiting: [entry({ id: 2, label: "Restarting dev", vmId: "dev" })],
+    }
+    expect(waitingStatusText(queue, queue.waiting[0])).toBe("Waiting for Backing up sandboxes…")
+  })
+  it("describes a hidden blocker generically when no visible operation is running", () => {
+    const queue: OperationQueue = { running: [], waiting: [entry({ id: 2, label: "Restarting dev", vmId: "dev", blockedByHidden: true })] }
+    expect(waitingStatusText(queue, queue.waiting[0])).toBe("Waiting for background maintenance…")
+  })
+  it("falls back to a bare wait when nothing is known to block it", () => {
+    const queue: OperationQueue = { running: [], waiting: [entry({ id: 2, label: "Restarting dev", vmId: "dev" })] }
+    expect(waitingStatusText(queue, queue.waiting[0])).toBe("Waiting…")
+  })
+})
+
+describe("toastableQueue", () => {
+  it("drops export and import entries, which have their own transfer toast", () => {
+    const queue: OperationQueue = {
+      running: [entry({ id: 1, label: "Exporting sandbox" }), entry({ id: 2, label: "Restarting dev", vmId: "dev" })],
+      waiting: [entry({ id: 3, label: "Importing sandbox" }), entry({ id: 4, label: "Stopping api", vmId: "api" })],
+    }
+    const toastable = toastableQueue(queue)
+    expect(toastable.running.map((e) => e.label)).toEqual(["Restarting dev"])
+    expect(toastable.waiting.map((e) => e.label)).toEqual(["Stopping api"])
+  })
+})
+
 describe("operationQueueSchema", () => {
   it("parses the native camelCase payload", () => {
     const parsed = operationQueueSchema.parse({
-      running: [{ id: 1, label: "Backing up", vmId: null, vmName: null, sinceMs: 1000, cancellable: true, expectedMs: 3_600_000 }],
+      running: [{ id: 1, label: "Backing up", vmId: null, vmName: null, sinceMs: 1000, cancellable: true, expectedMs: 3_600_000, blockedByHidden: false }],
       waiting: [{ id: 2, label: "Restarting dev", vmId: "id-dev", vmName: "dev", sinceMs: 2000, cancellable: true, expectedMs: null }],
     })
+    // blockedByHidden defaults to false when the backend omits it.
+    expect(parsed.waiting[0].blockedByHidden).toBe(false)
     expect(parsed.running[0].vmId).toBeNull()
     expect(parsed.running[0].cancellable).toBe(true)
     expect(parsed.running[0].expectedMs).toBe(3_600_000)

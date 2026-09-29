@@ -610,7 +610,7 @@ fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
                 continue;
             };
             if let Ok(_gate) = runtime::OPERATIONS
-                .try_vm(&vm_id, &workspace, &format!("Reconciling ports on {workspace}"))
+                .try_vm_hidden(&vm_id, &workspace, &format!("Reconciling ports on {workspace}"))
             {
                 let _ = reconcile_forwarding(&paths, &workspace);
             }

@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
-import { OperationQueueIndicator, WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
+import { OperationQueueToast, WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
 import { emptyOperationQueue, waitingOperationForVm, cancelledActionLabel } from "@/features/application/model/operation-queue"
 import type {
   ApplicationActions,
@@ -391,12 +391,14 @@ export function OverviewPage({ active = true, readOnly = false,
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="min-h-0 flex-1">
+        {/* A single toast reflects VM-changing operations for both the list and detail
+            views; it renders nothing inline and never shifts the sandbox list. */}
+        <OperationQueueToast queue={source.operationQueue} onCancel={readOnly ? undefined : actions.cancelOperation} />
         {detailWorkspace ? (
           <SandboxDetailPage workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />
         ) : (
           <>
             {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
-            <OperationQueueIndicator queue={source.operationQueue} reduceMotion={source.preferences.reduceMotion} onCancel={readOnly ? undefined : actions.cancelOperation} />
             {configurationOperation?.status === "failed" && <div className="mb-3 rounded-md border border-destructive/30 p-3">
               <p role="alert" className="text-sm text-destructive">{configurationOperation.error.message}</p>
               <Button variant="outline" size="sm" className="mt-2" disabled={readOnly} onClick={() => actions.dismissMachineConfigurationError()}>Dismiss configuration error</Button>

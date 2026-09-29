@@ -1,18 +1,26 @@
 import { useEffect, useState } from "react"
-import { Clock, Loader2, X } from "lucide-react"
+import { X } from "lucide-react"
+import { toast } from "sonner"
 
-import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 import {
+  emptyOperationQueue,
   formatElapsed,
   isOperationStuck,
   operationElapsedMs,
+  toastableQueue,
   waitingOperationForVm,
   waitingStatusText,
   type OperationEntry,
   type OperationQueue,
 } from "@/features/application/model/operation-queue"
 
-/** Small inline Cancel control for a queued or cancellable running operation. */
+/** Stable id so the queue always updates one toast in place rather than stacking them. */
+const OPERATION_QUEUE_TOAST_ID = "operation-queue"
+/** Quick operations never flash: the toast appears only once an entry has run this long. */
+const TOAST_DEBOUNCE_MS = 500
+
+/** Small inline Cancel control for a queued operation shown near its sandbox row. */
 function CancelOperationButton({ entry, onCancel }: { entry: OperationEntry; onCancel: (id: number) => void }) {
   return (
     <button
@@ -28,8 +36,8 @@ function CancelOperationButton({ entry, onCancel }: { entry: OperationEntry; onC
   )
 }
 
-/** Re-renders on an interval so running operations show a live elapsed time. */
-function useNow(active: boolean, intervalMs = 30000): number {
+/** Re-renders on an interval so a shown toast keeps its elapsed time and stuck flag current. */
+function useNow(active: boolean, intervalMs = 1000): number {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     if (!active) return
@@ -39,55 +47,89 @@ function useNow(active: boolean, intervalMs = 30000): number {
   return now
 }
 
-/**
- * Compact global indicator of VM-changing operations. Running operations show a
- * live elapsed time; waiting operations show what they are waiting for.
- */
-export function OperationQueueIndicator({ queue, reduceMotion = false, onCancel }: { queue?: OperationQueue; reduceMotion?: boolean; onCancel?: (id: number) => void }) {
-  const active = Boolean(queue && (queue.running.length > 0 || queue.waiting.length > 0))
-  const now = useNow(active)
-  if (!queue || !active) return null
-
+/** Body of the operation-queue toast: elapsed time, a stuck warning, and waiting entries. */
+function OperationQueueToastBody({ queue, now }: { queue: OperationQueue; now: number }) {
+  const primary = queue.running[0]
+  const stuck = queue.running.some((entry) => isOperationStuck(entry, now))
+  const shownWaiting = queue.waiting.slice(0, 2)
+  const moreWaiting = queue.waiting.length - shownWaiting.length
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      aria-label="Sandbox operations"
-      className="mb-3 grid gap-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs"
-    >
-      {queue.running.map((entry) => {
-        const stuck = isOperationStuck(entry, now)
-        const elapsed = formatElapsed(operationElapsedMs(entry, now))
-        return (
-          <div key={entry.id} className="flex min-w-0 items-center gap-2">
-            <Loader2 aria-hidden="true" className={cn("size-3 shrink-0 text-muted-foreground", !reduceMotion && "animate-spin motion-reduce:animate-none")} />
-            <span className="min-w-0 flex-1 truncate" title={entry.label}>{entry.label}</span>
-            {stuck && (
-              <span className="shrink-0 font-medium text-amber-700 dark:text-amber-400">Taking longer than expected</span>
-            )}
-            <span
-              className={cn(
-                "shrink-0 tabular-nums",
-                stuck ? "flex items-center gap-1 font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground",
-              )}
-            >
-              {stuck && <Clock aria-hidden="true" className="size-3" />}
-              {elapsed}
-            </span>
-            {onCancel && entry.cancellable && <CancelOperationButton entry={entry} onCancel={onCancel} />}
-          </div>
-        )
-      })}
-      {queue.waiting.map((entry) => (
-        <div key={entry.id} className="flex min-w-0 items-center gap-2 text-muted-foreground">
-          <span aria-hidden="true" className="ml-0.5 size-3 shrink-0" />
-          <span className="min-w-0 flex-1 truncate" title={entry.label}>{entry.label}</span>
-          <span className="shrink-0 truncate">{waitingStatusText(queue, entry)}</span>
-          {onCancel && <CancelOperationButton entry={entry} onCancel={onCancel} />}
+    <div className="grid gap-1 text-xs">
+      {(primary || stuck) && (
+        <div className="flex items-center gap-2">
+          {primary && <span className="tabular-nums text-muted-foreground">{formatElapsed(operationElapsedMs(primary, now))}</span>}
+          {stuck && <span className="font-medium text-amber-700 dark:text-amber-400">Taking longer than expected</span>}
         </div>
+      )}
+      {shownWaiting.map((entry) => (
+        <p key={entry.id} className="truncate text-muted-foreground" title={entry.label}>
+          {entry.label} — {waitingStatusText(queue, entry)}
+        </p>
       ))}
+      {moreWaiting > 0 && <p className="text-muted-foreground">and {moreWaiting} more</p>}
     </div>
   )
+}
+
+/**
+ * Drives a single Sonner toast reflecting the VM-changing operation queue. Renders nothing
+ * itself. Export and import already have their own transfer toast, so their entries are
+ * excluded here. The toast is debounced so operations that finish within {@link
+ * TOAST_DEBOUNCE_MS} never flash, and it is dismissed as soon as the queue empties.
+ */
+export function OperationQueueToast({ queue, onCancel }: { queue?: OperationQueue; onCancel?: (id: number) => void }) {
+  const visibleQueue = queue ? toastableQueue(queue) : emptyOperationQueue
+  const running = visibleQueue.running
+  const waiting = visibleQueue.waiting
+  const active = running.length + waiting.length > 0
+  // The earliest entry decides the debounce: once *something* has been active long enough,
+  // the whole toast may appear. Stable across renders while the same entry stays oldest.
+  const earliest = active ? Math.min(...[...running, ...waiting].map((entry) => entry.sinceMs)) : 0
+  const [debounced, setDebounced] = useState(false)
+  const show = active && debounced
+  const now = useNow(show)
+
+  useEffect(() => {
+    if (!active) {
+      setDebounced(false)
+      return
+    }
+    const remaining = TOAST_DEBOUNCE_MS - (Date.now() - earliest)
+    if (remaining <= 0) {
+      setDebounced(true)
+      return
+    }
+    const timer = window.setTimeout(() => setDebounced(true), remaining)
+    return () => window.clearTimeout(timer)
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, earliest])
+
+  useEffect(() => {
+    if (!show) {
+      toast.dismiss(OPERATION_QUEUE_TOAST_ID)
+      return
+    }
+    const total = running.length + waiting.length
+    const title = running.length === 1
+      ? running[0].label
+      : `${total} ${total === 1 ? "operation" : "operations"} in progress`
+    const cancellable = running.find((entry) => entry.cancellable)
+    const action = onCancel && cancellable
+      ? <Button variant="outline" size="xs" onClick={() => onCancel(cancellable.id)}>Cancel</Button>
+      : undefined
+    toast.loading(title, {
+      id: OPERATION_QUEUE_TOAST_ID,
+      duration: Infinity,
+      description: <OperationQueueToastBody queue={visibleQueue} now={now} />,
+      action,
+    })
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, queue, now, onCancel])
+
+  // Never let the toast outlive the page that drives it.
+  useEffect(() => () => { toast.dismiss(OPERATION_QUEUE_TOAST_ID) }, [])
+
+  return null
 }
 
 /**

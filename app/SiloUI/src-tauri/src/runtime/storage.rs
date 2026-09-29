@@ -314,7 +314,7 @@ pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();
     thread::spawn(move || loop {
         // Periodic background trim skips whenever any operation is active or waiting.
-        if let Ok(_guard) = OPERATIONS.try_computer("Trimming sandbox storage") {
+        if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
             if shutdown::ensure_accepting_operations().is_ok() {
                 if let Ok(paths) = runtime_paths(&app) {
                     let _ = periodic(&ProcessRunner, &paths);

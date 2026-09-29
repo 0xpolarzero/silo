@@ -45,8 +45,8 @@ it("shows what a queued lifecycle action is waiting for until its turn to run", 
   workspace.lifecycleAction = "stop"
   const vmId = workspace.machine.id
   source.operationQueue = {
-    running: [{ id: 1, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null }],
-    waiting: [{ id: 2, label: "Stop dev", vmId, vmName: "dev", sinceMs: 0, cancellable: true, expectedMs: null }],
+    running: [{ id: 1, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }],
+    waiting: [{ id: 2, label: "Stop dev", vmId, vmName: "dev", sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }],
   }
   const actions = { cancelOperation: vi.fn() } as unknown as ApplicationActions
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
@@ -55,7 +55,7 @@ it("shows what a queued lifecycle action is waiting for until its turn to run", 
   expect(row.queryByText("Stopping…")).not.toBeInTheDocument()
   // Once the entry is admitted (running, no longer waiting) the row shows the action.
   source.operationQueue = {
-    running: [{ id: 2, label: "Stop dev", vmId, vmName: "dev", sinceMs: 0, cancellable: false, expectedMs: null }],
+    running: [{ id: 2, label: "Stop dev", vmId, vmName: "dev", sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false }],
     waiting: [],
   }
   view.rerender(<OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} />)

@@ -381,7 +381,7 @@ pub(crate) fn close_all() {
 /// backups, checkpoints, and the write commands) call `reconcile` directly.
 fn reconcile_if_idle(app: &AppHandle) {
     // Background listener reconcile touches shared SSH state; skip when busy.
-    if let Ok(_guard) = runtime::OPERATIONS.try_computer("Reconciling SSH access") {
+    if let Ok(_guard) = runtime::OPERATIONS.try_computer_hidden("Reconciling SSH access") {
         if runtime::shutdown::ensure_accepting_operations().is_ok() {
             if let Ok(paths) = runtime::runtime_paths(app) {
                 reconcile(&paths);
