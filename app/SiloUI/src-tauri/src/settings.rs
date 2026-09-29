@@ -532,7 +532,7 @@ impl SettingsState {
 #[derive(Default)]
 struct ShutdownState(Mutex<ShutdownProgress>);
 #[derive(Default)]
-struct ShutdownProgress { phase: u8, generation: u64 }
+struct ShutdownProgress { phase: u8, generation: u64, restarting: bool }
 
 impl ShutdownState {
     const REQUESTED: u8 = 1;
@@ -580,6 +580,35 @@ impl ShutdownState {
     }
     fn allow_exit(&self) {
         self.0.lock().unwrap_or_else(|error| error.into_inner()).phase = Self::APPROVED;
+    }
+    fn mark_restart(&self) {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).restarting = true;
+    }
+    fn restarting(&self) -> bool {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).restarting
+    }
+}
+
+/// How an `ExitRequested` event is handled.
+#[derive(Debug, PartialEq, Eq)]
+enum ExitRequest {
+    /// `AppHandle::restart` (update installation). Tauri ignores `prevent_exit()`
+    /// here, and the installer already stopped sandboxes and saved settings, so
+    /// the Quit flow (overlay, flush request, VM shutdown) must not start.
+    Restart,
+    /// The graceful Quit path finished; let Tauri exit.
+    Approved,
+    /// Hold the exit until settings are saved and local VMs are stopped.
+    Gated,
+}
+
+fn exit_request(code: Option<i32>, approved: bool) -> ExitRequest {
+    if code == Some(tauri::RESTART_EXIT_CODE) {
+        ExitRequest::Restart
+    } else if approved {
+        ExitRequest::Approved
+    } else {
+        ExitRequest::Gated
     }
 }
 
@@ -763,10 +792,15 @@ fn cancel_exit(app: &AppHandle, message: String) {
     }
 }
 
-pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi) {
+pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi, code: Option<i32>) {
     let state = app.state::<ShutdownState>();
-    if state.approved() {
-        return;
+    match exit_request(code, state.approved()) {
+        ExitRequest::Restart => {
+            state.mark_restart();
+            return;
+        }
+        ExitRequest::Approved => return,
+        ExitRequest::Gated => {}
     }
     api.prevent_exit();
     crate::startup::cancel(app);
@@ -1537,6 +1571,19 @@ mod tests {
         state.allow_exit();
         assert!(state.approved());
         assert!(!state.claim_exit(true));
+    }
+
+    #[test]
+    fn update_restart_does_not_start_the_quit_flow() {
+        assert_eq!(exit_request(Some(tauri::RESTART_EXIT_CODE), false), ExitRequest::Restart);
+        assert_eq!(exit_request(Some(tauri::RESTART_EXIT_CODE), true), ExitRequest::Restart);
+        assert_eq!(exit_request(Some(0), true), ExitRequest::Approved);
+        assert_eq!(exit_request(Some(0), false), ExitRequest::Gated);
+        assert_eq!(exit_request(None, false), ExitRequest::Gated);
+        let state = ShutdownState::default();
+        state.mark_restart();
+        assert!(state.restarting());
+        assert!(!state.active(), "a restart never enters the Quit phases");
     }
 
     #[test]

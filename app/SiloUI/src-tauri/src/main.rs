@@ -260,8 +260,8 @@ fn main() {
                 ssh_access::close_all();
                 remote_network::close_all();
             }
-            if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
-                settings::prevent_exit_until_saved(_app, api);
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = &_event {
+                settings::prevent_exit_until_saved(_app, api, *code);
             }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen {
