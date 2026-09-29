@@ -2149,7 +2149,7 @@ pub async fn workspace_action(
     let started = std::time::Instant::now();
     let notice_action = action.clone();
     let notice_name = name.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(String, ApplicationSource), (Option<String>, LifecycleFailure, String)> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(String, ApplicationSource, bool), (Option<String>, LifecycleFailure, String)> {
         let app = worker_app;
         // Setup failures before the operation runs are genuine faults worth notifying about.
         let paths = runtime_paths(&app).map_err(|error| (None, LifecycleFailure::Failed, error))?;
@@ -2215,11 +2215,12 @@ pub async fn workspace_action(
             }
         };
         let _ = app.emit("silo://application-state-changed", ());
+        let (result, handed_off) = hand_off_duplicate(result);
         let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
         // Classify before the typed error is flattened to a message: a cancellation or a
         // deduplicated request is an expected outcome, not a failure to notify about.
         match result {
-            Ok(state) => Ok((vm_id, state)),
+            Ok(state) => Ok((vm_id, state, handed_off)),
             Err(error) => Err((
                 Some(vm_id),
                 lifecycle_failure(&error),
@@ -2235,8 +2236,12 @@ pub async fn workspace_action(
         }
     };
     match result {
-        Ok((vm_id, state)) => {
-            notify(Some(vm_id), crate::notifications::Outcome::Succeeded);
+        Ok((vm_id, state, handed_off)) => {
+            notify(Some(vm_id), if handed_off {
+                crate::notifications::Outcome::AlreadyQueued
+            } else {
+                crate::notifications::Outcome::Succeeded
+            });
             Ok(state)
         }
         Err((vm_id, failure, message)) => {
@@ -2261,6 +2266,16 @@ impl LifecycleFailure {
             Self::AlreadyQueued => crate::notifications::Outcome::AlreadyQueued,
             Self::Failed => crate::notifications::Outcome::Failed(message),
         }
+    }
+}
+
+/// A request deduplicated into an identical queued action (a double-click, or an
+/// auto-retry finding the same request already waiting) was handed off, not failed:
+/// the caller returns current state without an error row or notification (D-13).
+fn hand_off_duplicate(result: Result<(), RuntimeError>) -> (Result<(), RuntimeError>, bool) {
+    match result {
+        Err(error) if lifecycle_failure(&error) == LifecycleFailure::AlreadyQueued => (Ok(()), true),
+        other => (other, false),
     }
 }
 
@@ -2938,6 +2953,17 @@ fn read_application_state_with(
     application_source_for_workspaces(paths, workspaces)
 }
 
+/// A persisted running checkpoint operation is interrupted only when no operation
+/// currently holds its VM; otherwise it is live and keeps its running stage.
+fn checkpoint_operation_view(mut operation: checkpoints::Operation, live: bool) -> checkpoints::Operation {
+    if operation.status == "running" && !live {
+        operation.status = "failed".into();
+        operation.stage = "Interrupted operation".into();
+        operation.error = Some("Silo closed during this operation. Retry to reconcile its saved checkpoint.".into());
+    }
+    operation
+}
+
 fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<ApplicationWorkspace>) -> Result<ApplicationSource, RuntimeError> {
     let secrets = crate::secrets::snapshot().map_err(RuntimeError::Unavailable)?;
     // Journal read failures are reported as an Activity warning by read() below.
@@ -2948,14 +2974,8 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
             let checkpoint = checkpoints::load(paths, workspace.machine.id())?;
             workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
             workspace.checkpoints = checkpoint.checkpoints;
-            workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|mut operation| {
-                if operation.status == "running" {
-                    operation.status = "failed".into();
-                    operation.stage = "Interrupted operation".into();
-                    operation.error = Some("Silo closed during this operation. Retry to reconcile its saved checkpoint.".into());
-                }
-                operation
-            });
+            let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
+            workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
         }
         workspace.secret_names = secrets.iter().filter(|secret| secret["removing"] != true && secret["workspaces"].as_array().is_some_and(|names| names.iter().any(|name| name.as_str() == Some(workspace.machine.name()))))
             .filter_map(|secret| secret["name"].as_str().map(str::to_owned)).collect();
@@ -5275,6 +5295,26 @@ esac
         fs::write(folder.join("unknown.raw"), b"keep").unwrap();
         assert!(remove_machine_volumes(&paths, &vm()).is_err());
         assert_eq!(fs::read(folder.join("unknown.raw")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn duplicate_lifecycle_request_is_handed_off_not_failed() {
+        let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::from(operation_gate::GateError::AlreadyQueued)));
+        assert!(result.is_ok() && handed_off);
+        let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::Busy));
+        assert!(result.is_err() && !handed_off);
+        let (result, handed_off) = hand_off_duplicate(Ok(()));
+        assert!(result.is_ok() && !handed_off);
+    }
+
+    #[test]
+    fn running_checkpoint_operation_is_interrupted_only_when_its_vm_is_idle() {
+        let running = || checkpoints::Operation { kind: "create".into(), status: "running".into(), stage: "Saving disk".into(), error: None };
+        let live = checkpoint_operation_view(running(), true);
+        assert_eq!((live.status.as_str(), live.stage.as_str(), live.error), ("running", "Saving disk", None));
+        let interrupted = checkpoint_operation_view(running(), false);
+        assert_eq!(interrupted.status, "failed");
+        assert!(interrupted.error.unwrap().contains("Silo closed"));
     }
 
     #[test]
