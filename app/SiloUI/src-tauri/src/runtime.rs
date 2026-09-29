@@ -1393,22 +1393,55 @@ pub async fn verify_workspace_identities(
 ) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        // Verifies Git identity across several VMs' metadata and guests; shared read.
-        let _guard = OPERATIONS
-            .computer("Verifying Git identities")
-            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
-        verify_workspace_identities_with(&ProcessRunner, &paths, &identities)
+        // Each VM is checked in its own lane, one at a time, so other sandboxes keep working.
+        verify_workspace_identities_in(&ProcessRunner, &paths, &identities, &identity_lane)
             .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("Git identity verification worker failed: {error}"))?
 }
 
+/// Holds one VM's lane while its Git identity is checked or written. Returns `None` when
+/// the caller already holds the gate (and in tests).
+type IdentityLane<'a> =
+    &'a dyn Fn(&MachineConfiguration, &str) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError>;
+
+/// Identity work on one VM: its own, cancellable queue entry naming the sandbox.
+fn identity_lane(
+    machine: &MachineConfiguration,
+    label: &str,
+) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError> {
+    let guard = OPERATIONS.vm(machine.id(), machine.name(), label)?;
+    guard.allow_cancel();
+    guard.expect_within(Duration::from_secs(600));
+    Ok(Some(guard))
+}
+
+fn no_identity_lane(
+    _machine: &MachineConfiguration,
+    _label: &str,
+) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError> {
+    Ok(None)
+}
+
+#[cfg(test)]
 fn verify_workspace_identities_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     identities: &[WorkspaceIdentity],
+) -> Result<bool, RuntimeError> {
+    verify_workspace_identities_in(runner, paths, identities, &no_identity_lane)
+}
+
+/// Whether every requested identity is already applied. Verification only decides a
+/// status, so it never boots a VM: a stopped VM's identity is unknown (`false`), and a
+/// running VM is checked in place with `exec --no-start`.
+fn verify_workspace_identities_in(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    identities: &[WorkspaceIdentity],
+    lane: IdentityLane<'_>,
 ) -> Result<bool, RuntimeError> {
     if identities.len() > MAX_MACHINE_COUNT {
         return Ok(false);
@@ -1428,13 +1461,14 @@ fn verify_workspace_identities_with(
         {
             return Ok(false);
         }
-        if !metadata
+        let Some(machine) = metadata
             .machines
             .iter()
-            .any(|machine| machine.name() == identity.workspace && machine.is_vm())
-        {
+            .find(|machine| machine.name() == identity.workspace && machine.is_vm())
+        else {
             return Ok(false);
-        }
+        };
+        let _lane = lane(machine, &format!("Checking Git identity for {}", machine.name()))?;
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
         ensure_managed(&inspected)?;
         if !identity.apply {
@@ -1445,8 +1479,11 @@ fn verify_workspace_identities_with(
         }) {
             return Ok(false);
         }
+        if inspected.status != "Running" {
+            return Ok(false);
+        }
         let user = crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Malformed)?;
-        if !verify_guest_identity(runner, paths, identity, user)? {
+        if !verify_guest_identity(runner, paths, identity, user, GuestBoot::Never)? {
             return Ok(false);
         }
     }
@@ -1462,12 +1499,10 @@ pub async fn configure_workspace_identities(
     let names: Vec<String> = identities.iter().map(|identity| identity.workspace.clone()).collect();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        // Writes Git identity across several VMs' metadata and guests; shared state.
-        let _guard = OPERATIONS
-            .computer("Saving Git identities")
-            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
-        let result = configure_workspace_identities_with(&ProcessRunner, &paths, &identities);
+        // Every request is validated first; then each VM is written in its own lane, one
+        // at a time, cancellable, and named in the queue.
+        let result = configure_workspace_identities_in(&ProcessRunner, &paths, &identities, &identity_lane);
         result.map_err(|error| error.to_string())
     })
     .await
@@ -1492,6 +1527,15 @@ fn configure_workspace_identities_with(
     paths: &RuntimePaths,
     identities: &[WorkspaceIdentity],
 ) -> Result<(), RuntimeError> {
+    configure_workspace_identities_in(runner, paths, identities, &no_identity_lane)
+}
+
+fn configure_workspace_identities_in(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    identities: &[WorkspaceIdentity],
+    lane: IdentityLane<'_>,
+) -> Result<(), RuntimeError> {
     if identities.len() > MAX_MACHINE_COUNT {
         return Err(RuntimeError::Invalid("Too many sandbox identities.".into()));
     }
@@ -1509,22 +1553,23 @@ fn configure_workspace_identities_with(
                 "Each sandbox needs one valid Git name and email address.".into(),
             ));
         }
-        if !metadata
+        let Some(machine) = metadata
             .machines
             .iter()
-            .any(|machine| machine.name() == identity.workspace && machine.is_vm())
-        {
+            .find(|machine| machine.name() == identity.workspace && machine.is_vm())
+        else {
             return Err(RuntimeError::Invalid(format!(
                 "Sandbox '{}' is not a configured local VM. Its Git identity was not changed.",
                 identity.workspace
             )));
-        }
+        };
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
         ensure_managed(&inspected)?;
         let user = crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Malformed)?;
-        changed.push((identity, user));
+        changed.push((identity, user, machine));
     }
-    for (identity, user) in changed {
+    for (identity, user, machine) in changed {
+        let _lane = lane(machine, &format!("Saving Git identity for {}", machine.name()))?;
         // Remove old boot overrides: normal Git/jj configuration must own defaults.
         let mut args = vec!["modify".into(), identity.workspace.clone()];
         for key in [
@@ -1546,8 +1591,8 @@ fn configure_workspace_identities_with(
    jj config set --user -- user.name "$3"
    jj config set --user -- user.email "$4"
  fi"#;
-        run_identity_script(runner, paths, identity, script, user)?;
-        if !verify_guest_identity(runner, paths, identity, user)? {
+        run_identity_script(runner, paths, identity, script, user, GuestBoot::Temporary)?;
+        if !verify_guest_identity(runner, paths, identity, user, GuestBoot::Temporary)? {
             return Err(RuntimeError::Malformed(format!(
                 "Silo could not verify the saved Git identity for '{}'. Setup is not complete.",
                 identity.workspace
@@ -1557,43 +1602,55 @@ fn configure_workspace_identities_with(
     Ok(())
 }
 
+/// Whether a guest identity command may boot a stopped VM for its duration.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GuestBoot {
+    /// `exec` starts a stopped sandbox temporarily and stops it again.
+    Temporary,
+    /// Only a running sandbox is used (`exec --no-start`).
+    Never,
+}
+
 fn run_identity_script(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     identity: &WorkspaceIdentity,
     script: &str,
     user: &str,
+    boot: GuestBoot,
 ) -> Result<CommandOutput, RuntimeError> {
-    // exec starts stopped sandboxes temporarily and preserves already-running VMs.
-    // Values are positional arguments, never interpolated shell source.
-    runner.run(
-        paths,
-        &[
-            "exec".into(),
-            identity.workspace.clone(),
-            "--user".into(), user.into(),
-            "--env".into(), format!("USER={user}"),
-            "--env".into(), format!("LOGNAME={user}"),
-            "--no-tty".into(),
-            "--workdir".into(),
-            "/".into(),
-            "--quiet".into(),
-            "--timeout".into(),
-            "30s".into(),
-            "--".into(),
-            "sh".into(),
-            "-c".into(),
-            script.into(),
-            "silo-git-identity".into(),
-            identity.name.clone(),
-            identity.email.clone(),
-            serde_json::to_string(&identity.name)
-                .map_err(|_| RuntimeError::Invalid("Invalid Git name.".into()))?,
-            serde_json::to_string(&identity.email)
-                .map_err(|_| RuntimeError::Invalid("Invalid Git email.".into()))?,
-        ],
-        MUTATION_TIMEOUT,
-    )
+    // exec starts stopped sandboxes temporarily (unless `--no-start`) and preserves
+    // already-running VMs. Values are positional arguments, never interpolated shell source.
+    let mut args: Vec<String> = vec![
+        "exec".into(),
+        identity.workspace.clone(),
+        "--user".into(), user.into(),
+        "--env".into(), format!("USER={user}"),
+        "--env".into(), format!("LOGNAME={user}"),
+        "--no-tty".into(),
+        "--workdir".into(),
+        "/".into(),
+        "--quiet".into(),
+        "--timeout".into(),
+        "30s".into(),
+    ];
+    if boot == GuestBoot::Never {
+        args.push("--no-start".into());
+    }
+    args.extend([
+        "--".into(),
+        "sh".into(),
+        "-c".into(),
+        script.into(),
+        "silo-git-identity".into(),
+        identity.name.clone(),
+        identity.email.clone(),
+        serde_json::to_string(&identity.name)
+            .map_err(|_| RuntimeError::Invalid("Invalid Git name.".into()))?,
+        serde_json::to_string(&identity.email)
+            .map_err(|_| RuntimeError::Invalid("Invalid Git email.".into()))?,
+    ]);
+    runner.run(paths, &args, MUTATION_TIMEOUT)
 }
 
 fn verify_guest_identity(
@@ -1601,6 +1658,7 @@ fn verify_guest_identity(
     paths: &RuntimePaths,
     identity: &WorkspaceIdentity,
     user: &str,
+    boot: GuestBoot,
 ) -> Result<bool, RuntimeError> {
     let script = r#"set -eu
  if [ "$(git config --global --get user.name)" != "$1" ] ||
@@ -1610,7 +1668,7 @@ fn verify_guest_identity(
    [ "$(jj config get user.email)" = "$2" ] || exit 0
  fi
  printf '%s' silo-identity-verified"#;
-    Ok(run_identity_script(runner, paths, identity, script, user)?
+    Ok(run_identity_script(runner, paths, identity, script, user, boot)?
         .stdout
         .trim()
         == "silo-identity-verified")
@@ -6377,6 +6435,70 @@ esac
         assert!(!calls
             .iter()
             .any(|args| ["restart", "stop", "start"].contains(&args[0].as_str())));
+    }
+
+    #[test]
+    fn identity_verification_never_boots_a_stopped_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        // A stopped VM's identity is unknown without booting it: not verified, no exec.
+        let stopped = StubRunner::new(vec![identity_output(&inspect(&paths, "Stopped").to_string())]);
+        assert!(!verify_workspace_identities_with(&stopped, &paths, &[test_identity()]).unwrap());
+        assert!(stopped.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        // A running VM is checked in place, never through exec's temporary boot.
+        let running = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output("silo-identity-verified"),
+        ]);
+        assert!(verify_workspace_identities_with(&running, &paths, &[test_identity()]).unwrap());
+        let calls = running.calls.lock().unwrap();
+        let options: Vec<&str> = calls[1].iter().take_while(|arg| *arg != "--").map(String::as_str).collect();
+        assert!(options.contains(&"--no-start"), "{options:?}");
+    }
+
+    #[test]
+    fn identity_work_holds_one_named_cancellable_vm_lane_at_a_time() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut other = vm();
+        if let MachineConfiguration::Vm { id, name, .. } = &mut other {
+            *id = "00000000-0000-4000-8000-000000000002".into();
+            *name = "work".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![vm(), other.clone()])).unwrap();
+        let lanes = Mutex::new(Vec::new());
+        let lane = |machine: &MachineConfiguration, label: &str| {
+            let guard = identity_lane(machine, label)?;
+            let queue = OPERATIONS.snapshot();
+            assert!(OPERATIONS.is_computer_idle(), "identity work must not take the whole computer");
+            let entry = queue.running.iter().find(|entry| entry.vm_id.as_deref() == Some(machine.id())).unwrap();
+            assert!(entry.cancellable);
+            lanes.lock().unwrap().push(entry.label.clone());
+            Ok(guard)
+        };
+        let mut work_inspect = inspect(&paths, "Running");
+        work_inspect["name"] = json!("work");
+        let runner = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output("silo-identity-verified"),
+            identity_output(&work_inspect.to_string()),
+            identity_output("silo-identity-verified"),
+        ]);
+        let mut work = test_identity();
+        work.workspace = "work".into();
+        assert!(verify_workspace_identities_in(&runner, &paths, &[test_identity(), work], &lane).unwrap());
+        assert_eq!(*lanes.lock().unwrap(), vec!["Checking Git identity for dev", "Checking Git identity for work"]);
+        assert!(OPERATIONS.is_vm_idle(vm().id()) && OPERATIONS.is_vm_idle(other.id()));
+        lanes.lock().unwrap().clear();
+        let writer = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output("{}"),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+        configure_workspace_identities_in(&writer, &paths, &[test_identity()], &lane).unwrap();
+        assert_eq!(*lanes.lock().unwrap(), vec!["Saving Git identity for dev"]);
     }
 
     #[test]
