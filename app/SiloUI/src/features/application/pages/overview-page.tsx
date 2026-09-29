@@ -3,7 +3,8 @@ import { runCheckpointOperation, syncCheckpointProgress } from "../model/checkpo
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
 import { SshAccessBadges } from "./ssh-access-panel"
 import { StatusFolderPicker } from "@/features/status-bar/status-folder-picker"
-import { workspaceAvailability } from "../model/workspace-availability"
+import { workspaceAvailability, type WorkspaceAvailability } from "../model/workspace-availability"
+import { DisabledReason } from "../components/disabled-reason"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
@@ -203,14 +204,16 @@ function ConfigurationDetail({ view }: { view: ConfigurationRowView }) {
   )
 }
 
-function WorkspaceActions({ machine, target, state, actions, disabled = false }: { target?: string; machine: SetupMachineConfiguration; state: WorkspaceState; actions: ApplicationActions; disabled?: boolean }) {
-  const canStop = state === "running" || state === "starting"
+function WorkspaceActions({ machine, state, availability, readOnly, onStart, onStop }: { machine: SetupMachineConfiguration; state: WorkspaceState; availability?: WorkspaceAvailability; readOnly: boolean; onStart: () => void; onStop: () => void }) {
+  const showStop = state === "running" || state === "starting"
+  const enabled = !readOnly && Boolean(showStop ? availability?.canStop : availability?.canStart)
+  const reason = readOnly ? undefined : showStop ? availability?.reasons.stop : availability?.reasons.start
   return (
-    <>
-      {canStop
-        ? <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={() => actions.stopWorkspace(target ?? machine.name)}><Square /></SandboxAction>
-        : <SandboxAction label={`Start ${machine.name}`} disabled={disabled} onClick={() => actions.startWorkspace(target ?? machine.name)}><Play /></SandboxAction>}
-    </>
+    <DisabledReason reason={enabled ? undefined : reason}>
+      {showStop
+        ? <SandboxAction label={`Stop ${machine.name}`} disabled={!enabled} onClick={onStop}><Square /></SandboxAction>
+        : <SandboxAction label={`Start ${machine.name}`} disabled={!enabled} onClick={onStart}><Play /></SandboxAction>}
+    </DisabledReason>
   )
 }
 
@@ -511,7 +514,6 @@ export function OverviewPage({ active = true, readOnly = false,
   function detailControls(workspace: ApplicationWorkspace): SandboxDetailControls {
     const machine = workspace.machine
     const target = workspaceTarget(workspace)
-    const state = workspace.state
     const stale = workspace.freshness === "stale"
     const isLocal = !workspace.computer
     const workspaceOperationBusy = Boolean(workspace.lifecycleAction) || workspace.checkpointOperation?.status === "running" || Boolean(workspace.computer?.busy)
@@ -520,7 +522,7 @@ export function OverviewPage({ active = true, readOnly = false,
     const lifecycleAction = workspace.lifecycleFailureAction
     const menuActions: MenuAction[] = [
       ...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
-      { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer && stale) || (state !== "running" && state !== "failed"), onSelect: () => guarded.restartWorkspace(target) },
+      { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guarded.restartWorkspace(target) },
       ...(machine.kind === "vm" && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, popover: "fork" }] : []),
       ...(machine.kind === "vm" && isLocal && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
     ]
@@ -551,6 +553,7 @@ export function OverviewPage({ active = true, readOnly = false,
       canOpen: availability.canOpen && !readOnly,
       canStart: availability.canStart && !readOnly,
       canStop: availability.canStop && !readOnly,
+      disabledReasons: readOnly ? {} : availability.reasons,
       menuActions,
       popovers: forkPopovers(workspace),
       onTerminal: () => actions.openTerminal(target),
@@ -655,13 +658,15 @@ export function OverviewPage({ active = true, readOnly = false,
                 // pending-action label, so the user sees what is holding the action up.
                 const waitingForVm = queueVmId !== null ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, queueVmId) : undefined
                 const guarded = guardedLifecycle(workspace)
+                const availability = workspace ? workspaceAvailability(workspace, source) : undefined
+                const openReason = readOnly || availability?.canOpen ? undefined : availability?.reasons.open
                 return {
                   kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
                   badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
                   popovers: forkPopovers(workspace),
                   menuActions: [
                     ...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && stale), onSelect: () => { void actions.openDesktop!(workspace ? workspaceTarget(workspace) : machine.name) } }] : []),
-                    { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && stale) || (state !== "running" && state !== "failed"), onSelect: () => guarded.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name) },
+                    { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability?.canRestart, tooltip: readOnly || availability?.canRestart ? undefined : availability?.reasons.restart, onSelect: () => guarded.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name) },
                     ...(machine.kind === "vm" && workspace ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
                     ...(machine.kind === "vm" && workspace && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, popover: "fork" }] : []),
                     ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationOperation !== null || workspaceOperationBusy, onSelect: () => openSandbox(machine.id, "storage") }] : []),
@@ -690,12 +695,11 @@ export function OverviewPage({ active = true, readOnly = false,
                     </span>
                   ),
                   actions: <>
-                    <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={readOnly || !workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction>
-                    <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={readOnly || !workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => openFolderPicker(machine.id)}><Code /></SandboxAction>
-                    <WorkspaceActions target={workspace && workspaceTarget(workspace)} machine={machine} state={state} actions={{
-                    ...actions,
-                    ...guarded,
-                  }} disabled={configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && stale)} />
+                    <DisabledReason reason={openReason}><SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={readOnly || !availability?.canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction></DisabledReason>
+                    <DisabledReason reason={openReason}><SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={readOnly || !availability?.canOpen} onClick={() => openFolderPicker(machine.id)}><Code /></SandboxAction></DisabledReason>
+                    <WorkspaceActions machine={machine} state={state} availability={availability} readOnly={readOnly}
+                      onStart={() => guarded.startWorkspace(workspace ? workspaceTarget(workspace) : machine.name)}
+                      onStop={() => guarded.stopWorkspace(workspace ? workspaceTarget(workspace) : machine.name)} />
                   </>,
                 }
               }}

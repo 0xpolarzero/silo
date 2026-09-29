@@ -1033,15 +1033,17 @@ describe("application", () => {
   })
 
   it("uses subtle row tones and readable labels for every fixture state", async () => {
-    const cases: Array<{ mode: WorkspaceFixtureMode; state: string; tone: string; labelClass: string; hoverClass: string; stopEnabled: boolean; restartEnabled: boolean }> = [
-      { mode: "running", state: "running", tone: "running", labelClass: "text-emerald-700", hoverClass: "hover:bg-emerald-500/[0.07]", stopEnabled: true, restartEnabled: true },
-      { mode: "starting", state: "starting", tone: "starting", labelClass: "text-amber-700", hoverClass: "hover:bg-amber-500/[0.07]", stopEnabled: true, restartEnabled: false },
-      { mode: "stopped", state: "stopped", tone: "stopped", labelClass: "text-muted-foreground", hoverClass: "hover:bg-muted/35", stopEnabled: false, restartEnabled: false },
-      { mode: "warning", state: "stopped", tone: "warning", labelClass: "text-muted-foreground", hoverClass: "hover:bg-amber-500/[0.08]", stopEnabled: false, restartEnabled: false },
-      { mode: "error", state: "failed", tone: "error", labelClass: "text-destructive", hoverClass: "hover:bg-destructive/[0.07]", stopEnabled: false, restartEnabled: true },
+    // One availability rule (I-12): Stop waits for a start to finish, and a sandbox whose
+    // status could not be refreshed (the error fixture is stale) takes no lifecycle action.
+    const cases: Array<{ mode: WorkspaceFixtureMode; state: string; tone: string; labelClass: string; hoverClass: string; stopShown: boolean; lifecycleEnabled: boolean; restartEnabled: boolean }> = [
+      { mode: "running", state: "running", tone: "running", labelClass: "text-emerald-700", hoverClass: "hover:bg-emerald-500/[0.07]", stopShown: true, lifecycleEnabled: true, restartEnabled: true },
+      { mode: "starting", state: "starting", tone: "starting", labelClass: "text-amber-700", hoverClass: "hover:bg-amber-500/[0.07]", stopShown: true, lifecycleEnabled: false, restartEnabled: false },
+      { mode: "stopped", state: "stopped", tone: "stopped", labelClass: "text-muted-foreground", hoverClass: "hover:bg-muted/35", stopShown: false, lifecycleEnabled: true, restartEnabled: false },
+      { mode: "warning", state: "stopped", tone: "warning", labelClass: "text-muted-foreground", hoverClass: "hover:bg-amber-500/[0.08]", stopShown: false, lifecycleEnabled: true, restartEnabled: false },
+      { mode: "error", state: "failed", tone: "error", labelClass: "text-destructive", hoverClass: "hover:bg-destructive/[0.07]", stopShown: false, lifecycleEnabled: false, restartEnabled: false },
     ]
 
-    for (const { mode, state, tone, labelClass, hoverClass, stopEnabled, restartEnabled } of cases) {
+    for (const { mode, state, tone, labelClass, hoverClass, stopShown, lifecycleEnabled, restartEnabled } of cases) {
       const source = applicationSourceForScenario("running", undefined, mode)
       const application = renderApplication("running", source)
       const overview = within(appPanel("Sandboxes"))
@@ -1055,11 +1057,10 @@ describe("application", () => {
       const devRow = rows.find((row) => row.getAttribute("data-sandbox-name") === "dev") as HTMLElement
       const controls = within(devRow).getByLabelText("Controls for dev")
       const stop = within(controls).queryByRole("button", { name: "Stop dev" })
-      if (stopEnabled) expect(stop).toBeEnabled()
-      else {
-        expect(stop).not.toBeInTheDocument()
-        expect(within(controls).getByRole("button", { name: "Start dev" })).toBeEnabled()
-      }
+      const lifecycle = stopShown ? stop : within(controls).getByRole("button", { name: "Start dev" })
+      if (!stopShown) expect(stop).not.toBeInTheDocument()
+      if (lifecycleEnabled) expect(lifecycle).toBeEnabled()
+      else expect(lifecycle).toBeDisabled()
       await application.user.click(within(controls).getByRole("button", { name: "More actions for dev" }))
       const restart = screen.getByRole("menuitem", { name: "Restart dev" })
       if (restartEnabled) expect(restart).not.toHaveAttribute("data-disabled")

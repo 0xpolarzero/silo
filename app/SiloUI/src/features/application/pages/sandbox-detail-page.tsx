@@ -17,6 +17,7 @@ import { WorkspaceStateLabel } from "@/features/application/components/applicati
 import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
 import { CheckpointPanel } from "@/features/application/components/checkpoint-panel"
 import { WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
+import { DisabledReason } from "@/features/application/components/disabled-reason"
 import { emptyOperationQueue, waitingOperationForVm } from "@/features/application/model/operation-queue"
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
 import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
@@ -56,6 +57,8 @@ export interface SandboxDetailControls {
   canOpen: boolean
   canStart: boolean
   canStop: boolean
+  /** Why Open, Start or Stop is unavailable, shown on the disabled control. */
+  disabledReasons?: { open?: string; start?: string; stop?: string }
   menuActions: MenuAction[]
   /** Popovers opened by `menuActions` entries with a matching `popover` key (e.g. Fork), anchored to the ⋯ button. */
   popovers?: MenuPopovers
@@ -390,7 +393,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const menu = <ActionsMenu label={`More actions for ${machine.name}`} items={menuActions} popovers={menuPopovers} />
   const activeTab = visibleTabs.some(tab => tab.value === controls.activeTab) ? controls.activeTab : "overview"
 
-  const startStopDisabled = controls.readOnly || controls.configurationLocked || controls.workspaceOperationBusy
+  const reasons = controls.disabledReasons ?? {}
 
   return <TooltipProvider delayDuration={150}>
     <div className="flex h-full min-h-0 flex-col">
@@ -402,11 +405,11 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         </nav>}
         subtitle={<span data-slot="sandbox-detail-status"><DetailSubtitle workspace={workspace} source={source} readOnly={controls.readOnly} pendingSecrets={pendingSecrets} sshAccess={access} sshStale={sshStale} onCancel={actions.cancelOperation} /></span>}
         actions={<div className="flex shrink-0 items-center gap-1">
-          <Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={!controls.canOpen} onClick={controls.onTerminal}><Terminal aria-hidden="true" data-icon="inline-start" />Terminal</Button>
-          <Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!controls.canOpen} onClick={controls.onEditor}><Code aria-hidden="true" data-icon="inline-start" />Editor</Button>
+          <DisabledReason reason={controls.canOpen ? undefined : reasons.open}><Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={!controls.canOpen} onClick={controls.onTerminal}><Terminal aria-hidden="true" data-icon="inline-start" />Terminal</Button></DisabledReason>
+          <DisabledReason reason={controls.canOpen ? undefined : reasons.open}><Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!controls.canOpen} onClick={controls.onEditor}><Code aria-hidden="true" data-icon="inline-start" />Editor</Button></DisabledReason>
           {canStop
-            ? <Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={startStopDisabled || !controls.canStop} onClick={controls.onStop}><Square aria-hidden="true" data-icon="inline-start" />Stop</Button>
-            : <Button type="button" variant="outline" size="xs" aria-label={`Start ${machine.name}`} disabled={startStopDisabled || !controls.canStart} onClick={controls.onStart}><Play aria-hidden="true" data-icon="inline-start" />Start</Button>}
+            ? <DisabledReason reason={controls.canStop ? undefined : reasons.stop}><Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={!controls.canStop} onClick={controls.onStop}><Square aria-hidden="true" data-icon="inline-start" />Stop</Button></DisabledReason>
+            : <DisabledReason reason={controls.canStart ? undefined : reasons.start}><Button type="button" variant="outline" size="xs" aria-label={`Start ${machine.name}`} disabled={!controls.canStart} onClick={controls.onStart}><Play aria-hidden="true" data-icon="inline-start" />Start</Button></DisabledReason>}
           {menuActions.length > 0 && menu}
         </div>}
       />
