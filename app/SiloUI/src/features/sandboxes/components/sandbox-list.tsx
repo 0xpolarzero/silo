@@ -87,7 +87,6 @@ export function SandboxListRow({
   return (
     <ListRow
       onOpen={onOpen}
-      openLabel={onOpen ? `Open ${name}` : undefined}
       className={cn(
         "sandbox-row",
         !tone && "hover:bg-muted/35 focus-within:bg-muted/35",
@@ -102,7 +101,9 @@ export function SandboxListRow({
       icon={icon ?? <SandboxIcon kind={kind} state={iconState} remote={remote} />}
       title={
         <>
-          <span className="truncate" title={name}>{name}</span>
+          {onOpen
+            ? <button type="button" aria-label={`Open ${name}`} title={name} onClick={onOpen} className="min-w-0 cursor-pointer truncate rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">{name}</button>
+            : <span className="truncate" title={name}>{name}</span>}
           {kindBadge ?? <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">{kind}</span>}
           {badge}
         </>
