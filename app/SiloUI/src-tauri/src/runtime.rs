@@ -75,6 +75,18 @@ fn github_revision_lock(home: &Path, workspace: &str) -> Result<Arc<Mutex<u64>>,
         .clone())
 }
 
+/// Forget cached GitHub state for a removed sandbox so a new sandbox reusing its
+/// name never starts with the old one's access profile.
+fn forget_github_state(home: &Path, workspace: &str) {
+    let key = (home.to_owned(), workspace.to_owned());
+    if let Ok(mut profiles) = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        profiles.remove(&key);
+    }
+    if let Ok(mut locks) = GITHUB_REVISION_LOCKS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        locks.remove(&key);
+    }
+}
+
 fn accept_github_revision(current: &mut u64, revision: u64) -> Result<(), String> {
     if revision < *current {
         return Err("A newer GitHub access choice has replaced this update.".into());
@@ -3421,6 +3433,27 @@ fn apply_whole_configuration_with_progress(
     let mut applied = previous.clone();
     let mut changed = false;
     let result = (|| {
+        // Removals run first, as the frontend sends them: deleting a sandbox and adding
+        // a new one with the same name in one batch must free its name and storage.
+        for machine in previous
+            .machines
+            .iter()
+            .filter(|machine| !requested_ids.contains(machine.id()))
+        {
+            progress("workspace-removal", machine.name(), 0);
+            remove_machine_runtime(runner, paths, machine)?;
+            changed = true;
+            applied
+                .machines
+                .retain(|existing| existing.id() != machine.id());
+            write_metadata(&paths.metadata, &applied)?;
+            lifecycle_recovery::forget_removed(paths, machine)?;
+            crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
+            forget_github_state(&paths.home, machine.name());
+            remove_machine_volumes(paths, machine)?;
+            checkpoints::forget_removed(paths, machine.id())?;
+            progress("workspace-removal", machine.name(), 1);
+        }
         for machine in &request.machines {
             match previous_by_id.get(machine.id()) {
                 None => {
@@ -3453,24 +3486,6 @@ fn apply_whole_configuration_with_progress(
                 verify_machine_configuration(runner, paths, machine)?;
                 progress("workspace-verification", machine.name(), 1);
             }
-        }
-        for machine in previous
-            .machines
-            .iter()
-            .filter(|machine| !requested_ids.contains(machine.id()))
-        {
-            progress("workspace-removal", machine.name(), 0);
-            remove_machine_runtime(runner, paths, machine)?;
-            changed = true;
-            applied
-                .machines
-                .retain(|existing| existing.id() != machine.id());
-            write_metadata(&paths.metadata, &applied)?;
-            lifecycle_recovery::forget_removed(paths, machine)?;
-            crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
-            remove_machine_volumes(paths, machine)?;
-            checkpoints::forget_removed(paths, machine.id())?;
-            progress("workspace-removal", machine.name(), 1);
         }
         write_metadata(&paths.metadata, &request)?;
         configuration_recovery::finish(paths)
@@ -5295,6 +5310,18 @@ esac
         fs::write(folder.join("unknown.raw"), b"keep").unwrap();
         assert!(remove_machine_volumes(&paths, &vm()).is_err());
         assert_eq!(fs::read(folder.join("unknown.raw")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn removed_sandbox_github_profile_is_not_inherited_by_a_new_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
+            .insert((paths.home.clone(), "dev".into()), r#"{"version":1,"owners":["old"]}"#.into());
+        let args = ["start".to_string(), "dev".to_string()];
+        assert_ne!(github_environment(&paths, &args), DISABLED_GITHUB_PROFILE);
+        forget_github_state(&paths.home, "dev");
+        assert_eq!(github_environment(&paths, &args), DISABLED_GITHUB_PROFILE);
     }
 
     #[test]
