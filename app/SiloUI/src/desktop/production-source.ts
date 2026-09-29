@@ -561,6 +561,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
       unlisten.push(await native.listen("silo://application-state-changed", () => { void refresh() }))
       unlisten.push(await native.listen("desktop:status-opened", () => { void refresh() }))
+      // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
+      // so setup and sandbox configuration must be accepted again.
+      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => { if (event?.payload === false) acceptingSetup = true }))
       unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
         const parsed = siloProgressEventSchema.safeParse(event?.payload)
         if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
@@ -826,6 +829,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     // the configuration already matches what was committed but an earlier attempt did
     // not complete, resume that attempt instead of sending an empty change set.
     const changes = machinesUnchanged ? [] : deriveMachineChanges(committedMachines(), request.machineConfiguration.machines)
+    const replaced = replacesEveryMachine(request)
+    if (replaced) return Promise.reject(replaced)
     const machineJob = machinesUnchanged
       ? Promise.resolve(current)
       : configureMachines(request.machineConfiguration, changes.length > 0 ? { kind: "changes", changes } : { kind: "retry" })
@@ -862,10 +867,22 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return promise
   }
 
+  // Onboarding can mount before the real configuration loads and seed its draft
+  // from defaults. A draft that keeps none of the existing VMs is therefore never
+  // treated as a request to delete them all; single removals remain explicit edits.
+  function replacesEveryMachine(request: OnboardingCompletionRequest) {
+    const committed = committedMachines()
+    if (committed.length === 0) return null
+    const kept = new Set(request.machineConfiguration.machines.map(({ id }) => id))
+    if (committed.some(({ id }) => kept.has(id))) return null
+    return new Error(`Setup does not delete existing VMs (${committed.map(({ name }) => name).join(", ")}). Reopen Silo to load them, or delete them from Silo after setup. No VM changed.`)
+  }
+
   function finishSetup(request: OnboardingCompletionRequest, markComplete: () => Promise<void>) {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
     const preceding = submitSetupStep("github", request)
     void preceding.catch(() => {})
+    if (replacesEveryMachine(request)) return preceding
     return enqueueSetup(["completion"], async () => { await preceding; await markComplete() })
   }
 
