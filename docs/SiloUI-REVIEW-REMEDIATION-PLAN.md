@@ -706,6 +706,7 @@ Paths relative to `app/SiloUI/` unless noted. K-04, K-05, K-10 and K-12 run in P
 - **K-24** · medium · design — Mutex poisoning policy is inconsistent: `operation_gate` recovers with `into_inner`, while `remote.rs:21`, `secrets.rs:15-16`, `github.rs:23,26`, `network.rs:15`, `editor.rs:18` turn one panic into permanent errors, and `try_lock`-based `update_guard`s then block updates forever. **Fix:** one helper (`lock_or_recover`) and a rule for when recovering is safe; owners apply it (B-45, C-25, G-23). **Verify:** `cargo test`.
 - **K-25** · low — Live-test gating is uneven: only GitHub live tests require an explicit confirm variable; `editor.rs:537` writes SSH config into `SILO_EDITOR_USER_HOME` (possibly the real home) and can launch Zed; `github_live_tests.rs:575-590` runs a nested `cargo test` in the same target dir. **Fix:** uniform confirm variable; refuse a home equal to `$HOME`. **Verify:** `cargo test`.
 - **K-26** · low — Test hygiene: `log_retention.rs:118` leaves `$TMPDIR/silo-retention-*` dirs; unexplained `tempdir_in("/tmp")` (`runtime.rs:5768-5868`, `runtime_migration.rs:813`, `backup_controller.rs:2068`); Linux-only tests (`applications/linux.rs` 10, `system_integrations/linux.rs` 6) never run on macOS (covered in CI by A-17). **Fix:** clean up temp dirs; explain or remove `/tmp` pins. **Verify:** `cargo test`.
+- **K-27** · medium · new — `dependencies::tests::checked_in_runtime_patches_match_packaged_build_pins` hard-codes six runtime patches while `runtime-inputs.json` now lists nine (live-public-ports, portable-image-cache, preserve-basic-auth were added), so the full Rust suite fails on `main` independently of the remediation work. `app/SiloUI/src-tauri/src/dependencies.rs:1136-1150`. **Fix:** derive the expected list from `runtime-inputs.json` (or add the three patches). **Verify:** `cargo test`.
 
 ## Counts
 
@@ -715,8 +716,8 @@ Paths relative to `app/SiloUI/` unless noted. K-04, K-05, K-10 and K-12 run in P
 | B GitHub, host push, secrets | 52 | | H Frontend data layer, onboarding | 39 |
 | C Remote, SSH, network | 30 | | I Frontend UI | 44 |
 | D Runtime core, gate, lifecycle | 46 | | J Terminology and copy | 18 |
-| E Checkpoints, storage, export/import | 59 | | K Tests, harness, code health | 26 |
-| F Lifecycle, settings, updates, logs | 30 | | **Total** | **398** |
+| E Checkpoints, storage, export/import | 59 | | K Tests, harness, code health | 27 |
+| F Lifecycle, settings, updates, logs | 30 | | **Total** | **399** |
 
 The 20 reviewer reports contained 413 findings plus 16 from the consolidating
 reviewer; overlapping findings were merged into one entry (marked ×n) and a few
