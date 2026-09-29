@@ -1,5 +1,7 @@
-//! The journal records intent before side effects. Recovery retries copying, never
-//! adopts an unverified output or overwrites a VM merely because its name matches.
+//! The journal records intent before side effects. After a relaunch, recovery
+//! never repeats an export or import: it removes this operation's partial
+//! output and reports what happened. It adopts only a verified export file or
+//! an import whose sandbox was saved under the identity journaled for it.
 use super::*;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -17,7 +19,11 @@ pub(super) struct Journal {
 enum Request {
     Backup {
         names: Vec<String>,
+        /// Unused: older builds stopped sandboxes for an export and listed them
+        /// here to restart them. Kept (empty) so older builds can still read it.
+        #[serde(default)]
         machines: Vec<(String, String)>,
+        #[serde(default)]
         running: Vec<(String, String)>,
         /// Present when the export packages a stored checkpoint rather than the
         /// sandbox's current state. Absent in journals written before this field.
@@ -27,7 +33,12 @@ enum Request {
     Restore {
         name: String,
         source: Option<String>,
+        /// The new sandbox's id, saved before its checkpoint record and settings
+        /// are written. A saved sandbox with this id means the import finished.
         id: Option<String>,
+        /// The native snapshot group the import loaded, saved with `id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
     },
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -74,10 +85,17 @@ impl Journal {
                 name,
                 source,
                 id: None,
+                group: None,
             },
             cancelled: false,
             terminal: None,
         }
+    }
+    /// Whether startup should let this operation's recovery finish before
+    /// other sandbox recovery and automatic starts. Only an import touches
+    /// sandbox records; an export's recovery only checks files it wrote.
+    pub(super) fn blocks_startup(&self) -> bool {
+        matches!(self.request, Request::Restore { .. })
     }
     fn kind(&self) -> &'static str {
         match self.request {
@@ -175,7 +193,12 @@ pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
                 runtime::validate_name(name).map_err(|e| e.to_string())?;
             }
         }
-        Request::Restore { name, source, id } => {
+        Request::Restore {
+            name,
+            source,
+            id,
+            group,
+        } => {
             runtime::validate_name(name).map_err(|e| e.to_string())?;
             if let Some(source) = source {
                 runtime::validate_name(source).map_err(|e| e.to_string())?;
@@ -183,9 +206,25 @@ pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
             if let Some(id) = id {
                 uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
             }
+            if let Some(group) = group {
+                validate_import_group(group)?;
+            }
         }
     }
     Ok(Some(journal))
+}
+/// The exact `silo-import-<32 hex>` form `BackupService::prepare_restore` creates.
+fn validate_import_group(group: &str) -> Result<(), String> {
+    let suffix = group.strip_prefix("silo-import-").unwrap_or_default();
+    if suffix.len() == 32
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err("Invalid saved import snapshot group.".into())
+    }
 }
 pub(super) fn begin(controller: &Controller, journal: Journal) -> Result<(), String> {
     if let Some(error) = &controller
@@ -270,90 +309,44 @@ fn cleanup_archive_partial(journal: &Journal) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn save_sources(
+/// Journal the new sandbox's id and the loaded snapshot group before the
+/// import writes its checkpoint record and settings (E-24).
+pub(super) fn save_restore_identity(
     controller: &Controller,
-    sources: &[backup::BackupSource],
+    identity: &str,
+    import_group: &str,
 ) -> Result<(), String> {
+    uuid::Uuid::parse_str(identity).map_err(|_| "Invalid imported sandbox identity.")?;
+    validate_import_group(import_group)?;
     update(controller, |journal| {
-        if let Request::Backup {
-            machines, running, ..
-        } = &mut journal.request
-        {
-            *machines = sources
-                .iter()
-                .filter_map(|s| {
-                    s.machine_config
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map(|id| (s.name.clone(), id.into()))
-                })
-                .collect();
-            *running = sources
-                .iter()
-                .filter(|s| s.was_running)
-                .filter_map(|s| {
-                    s.machine_config
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map(|id| (s.name.clone(), id.into()))
-                })
-                .collect();
-        }
-    })
-}
-pub(super) fn save_restore_identity(controller: &Controller, identity: &str) -> Result<(), String> {
-    update(controller, |journal| {
-        if let Request::Restore { id, .. } = &mut journal.request {
+        if let Request::Restore { id, group, .. } = &mut journal.request {
             *id = Some(identity.into());
+            *group = Some(import_group.into());
         }
     })
 }
 pub(super) fn clear_restore_identity(controller: &Controller) -> Result<(), String> {
     update(controller, |journal| {
-        if let Request::Restore { id, .. } = &mut journal.request {
+        if let Request::Restore { id, group, .. } = &mut journal.request {
             *id = None;
+            *group = None;
         }
     })
 }
-pub(super) fn claim_disk(directory: &Path, id: &str) -> Result<(), String> {
-    let parent = directory
-        .parent()
-        .ok_or("Missing restored disk directory.")?;
-    if directory.exists() {
-        fs::remove_dir(directory)
-            .map_err(|_| "Restored disk storage is occupied. No files were changed.".to_string())?;
+/// Remove what an import wrote before its settings were saved: the new
+/// sandbox's checkpoint record. The loaded snapshot group stays in the
+/// runtime's store (logged here) until native cleanup removes it (E-23).
+pub(super) fn discard_uncommitted_import(
+    paths: &runtime::RuntimePaths,
+    controller: &Controller,
+    identity: &str,
+    import_group: Option<&str>,
+) -> Result<(), String> {
+    runtime::checkpoints::forget_removed(paths, identity).map_err(|e| e.to_string())?;
+    if let Some(group) = import_group {
+        eprintln!("Retained imported snapshot group {group} after an import that did not finish.");
     }
-    let stage = tempfile::Builder::new()
-        .prefix(&format!(".silo-restore-claim-{id}-"))
-        .tempdir_in(parent)
-        .map_err(|e| e.to_string())?;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(stage.path().join(".silo-restore-owner"))
-        .map_err(|e| e.to_string())?;
-    file.write_all(id.as_bytes())
-        .and_then(|_| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    fs::File::open(stage.path())
-        .and_then(|dir| dir.sync_all())
-        .map_err(|e| e.to_string())?;
-    fs::rename(stage.path(), directory).map_err(|e| e.to_string())?;
-    fs::File::open(parent)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|e| e.to_string())
-}
-
-pub(super) fn remove_disk_marker(directory: &Path) -> Result<(), String> {
-    match fs::remove_file(directory.join(".silo-restore-owner")) {
-        Ok(()) => fs::File::open(directory)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|e| e.to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!(
-            "Could not finish restored disk ownership cleanup: {e}"
-        )),
-    }
+    clear_restore_identity(controller)
 }
 pub(super) fn cancel(controller: &Controller) -> Result<(), String> {
     update(controller, |j| j.cancelled = true)
@@ -470,91 +463,27 @@ pub(super) fn resume(
     let (kind, archive, target) = (journal.kind(), journal.archive.clone(), journal.target());
     let (outer_app, outer_controller) = (app.clone(), controller.clone());
     let work = move || {
-        let result = recover(&app, &controller, &journal, &cancellation);
-        match result {
-            Ok(true) => {
-                let journal = controller
-                    .journal
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone()
-                    .unwrap_or(journal);
-                let operation = Operation::Result {
-                    operation: journal.kind(),
-                    archive: journal.archive.clone(),
-                    target_name: journal.target(),
-                    running_names: vec![],
-                    outcome: if journal.cancelled {
-                        "cancelled"
-                    } else {
-                        "success"
-                    },
-                    title: if journal.cancelled {
-                        "Operation cancelled"
-                    } else {
-                        "Operation complete"
-                    }
-                    .into(),
-                    message: if journal.cancelled {
-                        "The interrupted operation was cancelled safely."
-                    } else {
-                        "Silo verified the completed operation after relaunch."
-                    }
-                    .into(),
-                    detail: None,
-                };
-                let operation = complete(&controller, operation);
-                let _ = set_operation(&controller, operation);
-                finish(&controller);
-                publish(&app, &controller);
-            }
-            Ok(false) => match journal.request {
-                Request::Backup {
-                    names,
-                    checkpoint_id,
-                    ..
-                } => run_backup(
-                    app,
-                    controller,
-                    PathBuf::from(&journal.archive.archive_path),
-                    names,
-                    checkpoint_id,
-                    cancellation,
-                    journal.archive,
-                ),
-                Request::Restore { name, source, .. } => run_restore(
-                    app,
-                    controller,
-                    PathBuf::from(&journal.archive.archive_path),
-                    name,
-                    source,
-                    cancellation,
-                    journal.archive,
+        let operation = match recover(&app, &controller, &journal, &cancellation) {
+            Ok(operation) => complete(&controller, operation),
+            // Retain the journal: never discard ownership after an uncertain
+            // cleanup. The next launch retries; dismissing abandons it (E-43).
+            Err(error) => Operation::Result {
+                operation: journal.kind(),
+                archive: journal.archive.clone(),
+                target_name: journal.target(),
+                running_names: vec![],
+                outcome: "failed",
+                title: "Could not resume the interrupted operation".into(),
+                message: error,
+                detail: Some(
+                    "Saved progress was preserved. Relaunch Silo to retry, or dismiss this to stop retrying. Dismissing keeps any files it left."
+                        .into(),
                 ),
             },
-            Err(error) => {
-                // Retain the pending checkpoint: never discard ownership after an
-                // uncertain cleanup. The next launch may safely retry recovery.
-                let _ = set_operation(
-                    &controller,
-                    Operation::Result {
-                        operation: journal.kind(),
-                        archive: journal.archive.clone(),
-                        target_name: journal.target(),
-                        running_names: vec![],
-                        outcome: "failed",
-                        title: "Could not resume the interrupted operation".into(),
-                        message: error,
-                        detail: Some(
-                            "Saved progress was preserved. Relaunch Silo to retry, or dismiss this to stop retrying. Dismissing keeps any files it left."
-                                .into(),
-                        ),
-                    },
-                );
-                finish(&controller);
-                publish(&app, &controller);
-            }
-        }
+        };
+        let _ = set_operation(&controller, operation);
+        finish(&controller);
+        publish(&app, &controller);
     };
     tauri::async_runtime::spawn_blocking(move || {
         if super::contain_worker_panic(&outer_controller, kind, &archive, target, work) {
@@ -568,153 +497,98 @@ fn recover(
     controller: &Controller,
     journal: &Journal,
     cancellation: &backup::Cancellation,
-) -> Result<bool, String> {
+) -> Result<Operation, String> {
     let paths = runtime::runtime_paths(app)?;
     recover_at_paths(&paths, controller, journal, cancellation)
 }
+/// Settle an operation interrupted by a relaunch without repeating it (E-31):
+/// remove this operation's partial output and return the result to report.
+/// An error means cleanup is uncertain and the journal must be kept.
 pub(super) fn recover_at_paths(
     paths: &runtime::RuntimePaths,
     controller: &Controller,
     journal: &Journal,
     cancellation: &backup::Cancellation,
-) -> Result<bool, String> {
+) -> Result<Operation, String> {
     let _guard = runtime::OPERATIONS
         .computer("Recovering backup")
         .map_err(|_| "Sandbox operations unavailable.")?;
     runtime::prepare_runtime_home(&paths.home, paths.storage_home.as_deref())
         .map_err(|e| e.to_string())?;
+    // A snapshot command from the previous process can outlive it while
+    // writing into the working folder; let it finish before cleaning up.
     let _command = backup::wait_for_interrupted_command(&paths.home, Duration::from_secs(60))
         .map_err(|e| e.to_string())?;
-    // A cleanup `remove` from the previous process uses the general runtime
-    // worker lock. Drain it before inspecting disks, then release before cleanup.
-    drop(
-        runtime::configuration_recovery::command_lock(paths, Duration::from_secs(60))
-            .map_err(|e| e.to_string())?,
-    );
     controller
         .service
         .cleanup_interrupted_staging()
         .map_err(|e| format!("Could not clear interrupted working files: {e}"))?;
     cleanup_archive_partial(journal)?;
-    let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
+    let result = |archive: Archive, outcome: &'static str, title: &str, message: &str, detail: Option<&str>| {
+        Operation::Result {
+            operation: journal.kind(),
+            archive,
+            running_names: vec![],
+            target_name: journal.target(),
+            outcome,
+            title: title.into(),
+            message: message.into(),
+            detail: detail.map(Into::into),
+        }
+    };
     match &journal.request {
-        Request::Backup {
-            machines,
-            running,
-            names,
-            ..
-        } => {
-            for (name, id) in machines {
-                if !metadata
-                    .machines
-                    .iter()
-                    .any(|m| m.name() == name && m.id() == id)
-                {
-                    return Err(format!(
-                        "Sandbox {name} changed since the export started. Its current state was preserved."
-                    ));
-                }
-            }
-            for (name, id) in running {
-                if !metadata
-                    .machines
-                    .iter()
-                    .any(|m| m.name() == name && m.id() == id)
-                {
-                    return Err(format!(
-                        "Sandbox {name} changed since the export started. Its current state was preserved."
-                    ));
-                }
-                let vm = inspect(&paths, name)?;
-                if vm
-                    .config
-                    .pointer("/labels/silo.machine-id")
-                    .and_then(Value::as_str)
-                    != Some(id)
-                {
-                    return Err(format!(
-                        "Sandbox {name} changed ownership. Its current state was preserved."
-                    ));
-                }
-                if vm.status != "Running" {
-                    runtime::run_msb(
-                        &paths,
-                        &["start".into(), name.clone()],
-                        Duration::from_secs(60),
-                    )
-                    .map_err(|e| e.to_string())?;
-                    if inspect(&paths, name)?.status != "Running" {
-                        return Err(format!(
-                            "Sandbox {name} did not restart. Saved export progress was preserved."
-                        ));
-                    }
-                }
-            }
+        Request::Backup { names, .. } => {
             let path = Path::new(&journal.archive.archive_path);
             if path.exists() {
-                let checked = controller
-                    .service
-                    .inspect_archive(path, cancellation)
-                    .map_err(|e| e.to_string())?;
-                if checked.sandboxes != *names {
-                    return Err("The archive at the saved destination contains different sandboxes. It was preserved.".into());
-                }
-                let archive = archive_from(path, &checked);
-                record_archive(controller, &archive)?;
-                update(controller, |j| {
-                    j.archive = archive;
-                    j.cancelled = false;
-                })?;
-                return Ok(true);
+                // The file appears only after it was written and verified;
+                // check it again before reporting it as this export.
+                return Ok(match controller.service.inspect_archive(path, cancellation) {
+                    Ok(checked) if checked.sandboxes == *names => {
+                        let archive = archive_from(path, &checked);
+                        record_archive(controller, &archive)?;
+                        result(archive, "success", "Export complete", "Silo verified this export after relaunching.", None)
+                    }
+                    _ => result(
+                        journal.archive.clone(),
+                        "failed",
+                        "Export interrupted",
+                        "Silo closed before this export finished. The file it left could not be verified and was kept.",
+                        Some("Export the sandbox again."),
+                    ),
+                });
             }
-            Ok(journal.cancelled)
+            Ok(if journal.cancelled {
+                result(journal.archive.clone(), "cancelled", "Export cancelled", "The export was cancelled.", Some("No export file was saved."))
+            } else {
+                result(
+                    journal.archive.clone(),
+                    "failed",
+                    "Export interrupted",
+                    "Silo closed before this export finished.",
+                    Some("No export file was saved. Export the sandbox again."),
+                )
+            })
         }
-        Request::Restore { name, id, .. } => {
+        Request::Restore { id, group, .. } => {
             if let Some(id) = id {
-                if let Some(machine) = metadata.machines.iter().find(|m| m.name() == name) {
-                    if machine.id() != id {
-                        return Err(format!(
-                            "A different sandbox owns {name}. It was preserved."
-                        ));
-                    }
-                    let mut vm = inspect(&paths, name)?;
-                    runtime::ensure_managed(&vm).map_err(|e| e.to_string())?;
-                    if vm
-                        .config
-                        .pointer("/labels/silo.machine-id")
-                        .and_then(Value::as_str)
-                        != Some(id)
-                    {
-                        return Err(
-                            "The restored sandbox changed ownership. It was preserved.".into()
-                        );
-                    }
-                    if !matches!(vm.status.as_str(), "Created" | "Stopped" | "Running") {
-                        return Err(format!(
-                            "The restored sandbox is in state {}. Saved progress was preserved.",
-                            vm.status
-                        ));
-                    }
-                    backup_volumes(machine, &mut vm)?;
-                    remove_disk_marker(&paths.volumes.join(name))?;
-                    update(controller, |j| j.cancelled = false)?;
-                    return Ok(true);
+                let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
+                // Saved settings are the import's commit point.
+                if metadata.machines.iter().any(|machine| machine.id() == id) {
+                    return Ok(result(journal.archive.clone(), "success", "Import complete", "Silo verified this import after relaunching.", None));
                 }
-                let disk = paths.volumes.join(name);
-                if disk.exists() {
-                    let owner = fs::read_to_string(disk.join(".silo-restore-owner"));
-                    if owner.as_deref().ok() == Some(id.as_str()) {
-                        cleanup_restored(&paths, name, id)?;
-                        clear_restore_identity(controller)?;
-                    } else if fs::remove_dir(&disk).is_err() {
-                        return Err(format!(
-                            "Could not verify ownership of incomplete storage for {name}. No files were removed."
-                        ));
-                    }
-                }
+                discard_uncommitted_import(paths, controller, id, group.as_deref())?;
             }
-            clear_restore_identity(controller)?;
-            Ok(journal.cancelled)
+            Ok(if journal.cancelled {
+                result(journal.archive.clone(), "cancelled", "Import cancelled", "The import was cancelled.", Some("No sandbox was added."))
+            } else {
+                result(
+                    journal.archive.clone(),
+                    "failed",
+                    "Import interrupted",
+                    "Silo closed before this import finished.",
+                    Some("No sandbox was added. Import the file again."),
+                )
+            })
         }
     }
 }
@@ -723,6 +597,185 @@ pub(super) fn recover_at_paths(
 mod tests {
     use super::super::tests::{completed_archive, history_controller};
     use super::*;
+
+    /// Runtime paths in a temp dir whose `msb` does not exist: any runtime
+    /// command recovery runs fails the test.
+    fn temp_paths(directory: &Path) -> runtime::RuntimePaths {
+        runtime::RuntimePaths {
+            guest_image: directory.join("guest-image"),
+            executable: directory.join("missing-msb"),
+            home: directory.join("home"),
+            storage_home: None,
+            library: directory.join("library"),
+            metadata: directory.join("machines.json"),
+            volumes: directory.join("volumes"),
+        }
+    }
+
+    fn export_to(directory: &Path) -> Archive {
+        let mut archive = completed_archive();
+        archive.destination = directory.join("exports").to_string_lossy().into_owned();
+        archive.archive_path = directory
+            .join("exports/dev-2026-09-29.silo-backup")
+            .to_string_lossy()
+            .into_owned();
+        fs::create_dir_all(&archive.destination).unwrap();
+        archive
+    }
+
+    fn result_of(operation: &Operation) -> (&'static str, String, String, Option<String>) {
+        match operation {
+            Operation::Result { outcome, title, message, detail, .. } => {
+                (*outcome, title.clone(), message.clone(), detail.clone())
+            }
+            Operation::Running { .. } => panic!("recovery must report a result"),
+        }
+    }
+
+    fn save_machine(paths: &runtime::RuntimePaths, name: &str, id: &str) {
+        let request: runtime::MachineConfigurationRequest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "machines": [{"kind":"vm","id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
+        }))
+        .unwrap();
+        runtime::write_metadata(&paths.metadata, &request).unwrap();
+    }
+
+    const IMPORT_GROUP: &str = "silo-import-0123456789abcdef0123456789abcdef";
+    const IMPORT_MEMBER: &str = "silo-backup-0-1-2";
+
+    #[test]
+    fn relaunch_reports_an_interrupted_export_without_rerunning_it_or_starting_sandboxes() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let mut journal = Journal::backup(export_to(directory.path()), vec!["dev".into()], None);
+        // Journals from older builds list sandboxes that were running when the
+        // export began; relaunch used to start them again.
+        let id = uuid::Uuid::new_v4().to_string();
+        if let Request::Backup { machines, running, .. } = &mut journal.request {
+            *machines = vec![("dev".into(), id.clone())];
+            *running = vec![("dev".into(), id)];
+        }
+        let partial = Path::new(&journal.archive.destination).join(format!(".silo-backup-{}-partial", journal.id));
+        fs::write(&partial, b"incomplete").unwrap();
+        begin(&controller, journal.clone()).unwrap();
+        let recovered =
+            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let (outcome, title, _message, detail) = result_of(&recovered);
+        assert_eq!((outcome, title.as_str()), ("failed", "Export interrupted"));
+        assert!(detail.unwrap().contains("No export file was saved"));
+        assert!(!partial.exists());
+        // The result is final: completing it leaves nothing to resume.
+        complete(&controller, recovered);
+        assert!(!pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn relaunch_reports_a_cancelled_export_and_keeps_an_unverifiable_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let mut journal = Journal::backup(export_to(directory.path()), vec!["dev".into()], None);
+        journal.cancelled = true;
+        let recovered =
+            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        assert_eq!(result_of(&recovered).0, "cancelled");
+
+        fs::write(&journal.archive.archive_path, b"not an export").unwrap();
+        let recovered =
+            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let (outcome, title, message, _) = result_of(&recovered);
+        assert_eq!((outcome, title.as_str()), ("failed", "Export interrupted"));
+        assert!(message.contains("could not be verified"), "{message}");
+        assert_eq!(fs::read(&journal.archive.archive_path).unwrap(), b"not an export");
+    }
+
+    #[test]
+    fn only_an_interrupted_import_holds_back_startup() {
+        assert!(!Journal::backup(completed_archive(), vec!["dev".into()], None).blocks_startup());
+        assert!(Journal::restore(completed_archive(), "copy".into(), None).blocks_startup());
+    }
+
+    #[test]
+    fn relaunch_adopts_an_import_whose_sandbox_was_saved() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let id = uuid::Uuid::new_v4().to_string();
+        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
+        runtime::checkpoints::import_pending_restore(&paths, &id, IMPORT_GROUP, IMPORT_MEMBER).unwrap();
+        save_machine(&paths, "copy", &id);
+        let journal = load(&controller.history_path).unwrap().unwrap();
+        let recovered =
+            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let (outcome, title, ..) = result_of(&recovered);
+        assert_eq!((outcome, title.as_str()), ("success", "Import complete"));
+        assert!(paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
+        complete(&controller, recovered);
+        assert!(!pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn relaunch_forgets_an_import_that_was_never_saved() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let id = uuid::Uuid::new_v4().to_string();
+        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
+        runtime::checkpoints::import_pending_restore(&paths, &id, IMPORT_GROUP, IMPORT_MEMBER).unwrap();
+        // Another sandbox now uses the requested name; it is not this import's.
+        save_machine(&paths, "copy", &uuid::Uuid::new_v4().to_string());
+        let journal = load(&controller.history_path).unwrap().unwrap();
+        let recovered =
+            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let (outcome, title, _message, detail) = result_of(&recovered);
+        assert_eq!((outcome, title.as_str()), ("failed", "Import interrupted"));
+        assert!(detail.unwrap().contains("No sandbox was added"));
+        assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
+        assert_eq!(runtime::read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        complete(&controller, recovered);
+        assert!(!pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn relaunch_reports_an_import_interrupted_before_it_saved_anything() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let journal = Journal::restore(completed_archive(), "copy".into(), Some("dev".into()));
+        let recovered =
+            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        assert_eq!(result_of(&recovered).1, "Import interrupted");
+        let mut cancelled = journal;
+        cancelled.cancelled = true;
+        let recovered =
+            recover_at_paths(&paths, &controller, &cancelled, &backup::Cancellation::default()).unwrap();
+        assert_eq!(result_of(&recovered).0, "cancelled");
+    }
+
+    #[test]
+    fn a_saved_import_identity_and_group_survive_reload_and_are_validated() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let controller = history_controller(path.clone());
+        begin(&controller, Journal::restore(completed_archive(), "copy".into(), None)).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
+        assert!(matches!(
+            load(&path).unwrap().unwrap().request,
+            Request::Restore { id: Some(ref saved), group: Some(ref group), .. } if *saved == id && group == IMPORT_GROUP
+        ));
+        assert!(save_restore_identity(&controller, &id, "../outside").is_err());
+        let mut journal = load(&path).unwrap().unwrap();
+        if let Request::Restore { group, .. } = &mut journal.request {
+            *group = Some("../outside".into());
+        }
+        write(&path, &journal).unwrap();
+        assert!(load(&path).is_err());
+    }
 
     #[test]
     fn an_old_dismissal_cannot_clear_an_identical_later_restore_result() {
@@ -782,7 +835,7 @@ mod tests {
             Journal::restore(completed_archive(), "restored".into(), Some("dev".into())),
         )
         .unwrap();
-        save_restore_identity(&controller, &uuid::Uuid::new_v4().to_string()).unwrap();
+        save_restore_identity(&controller, &uuid::Uuid::new_v4().to_string(), IMPORT_GROUP).unwrap();
         let failure = || Operation::Result {
             operation: "restore",
             archive: completed_archive(),
@@ -894,7 +947,7 @@ mod tests {
         )
         .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
-        save_restore_identity(&controller, &id).unwrap();
+        save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
         cancel(&controller).unwrap();
         let reloaded = load(&path).unwrap().unwrap();
         assert!(reloaded.cancelled);
@@ -1008,18 +1061,5 @@ mod tests {
         write(&path, &journal).unwrap();
         assert!(load(&path).is_err());
         assert!(saved.is_file());
-    }
-
-    #[test]
-    fn restore_marker_cleanup_allows_empty_disk_directory_to_be_deleted() {
-        let directory = tempfile::tempdir().unwrap();
-        let disks = directory.path().join("restored");
-        fs::create_dir(&disks).unwrap();
-        claim_disk(&disks, "operation-id").unwrap();
-        assert!(claim_disk(&disks, "different-operation").is_err());
-        remove_disk_marker(&disks).unwrap();
-        remove_disk_marker(&disks).unwrap();
-        fs::remove_dir(&disks).unwrap();
-        fs::create_dir(&disks).unwrap();
     }
 }

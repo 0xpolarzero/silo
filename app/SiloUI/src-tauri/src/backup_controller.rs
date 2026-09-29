@@ -260,7 +260,10 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Startup runs this in its background worker before other recovery or optional
-/// starts. An interrupted backup may own a stopped guest or a half-created VM.
+/// starts. An interrupted import may still own a checkpoint record for a sandbox
+/// whose settings were never saved; its recovery is short and never repeats the
+/// import. An interrupted export's recovery only checks its own files, so
+/// startup does not wait for it (E-31).
 pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
     let controller = app.state::<Arc<Controller>>();
     let pending = controller
@@ -268,7 +271,7 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
         .lock()
         .map_err(|_| "Saved backup progress is unavailable.")?
         .as_ref()
-        .filter(|journal| journal.is_pending())
+        .filter(|journal| journal.is_pending() && journal.blocks_startup())
         .map(|journal| journal.identity().to_string());
     let Some(identity) = pending else {
         return Ok(());
@@ -1028,7 +1031,6 @@ fn backup_work(
             existing_member,
         });
     }
-    recovery::save_sources(controller, &sources)?;
     let result = controller.service.create_backup_with_token(
         backup::BackupRequest {
             destination: archive_path.to_path_buf(),
@@ -1175,66 +1177,6 @@ fn inspect(paths: &runtime::RuntimePaths, name: &str) -> Result<runtime::Inspect
     .map_err(|error| error.to_string())?;
     serde_json::from_str(&output.stdout)
         .map_err(|_| format!("The bundled runtime returned invalid state for sandbox '{name}'."))
-}
-
-// Recovery uses this only after verifying the per-restore owner marker. Keep
-// the runtime ownership check here so crash cleanup cannot remove a VM that
-// has since been replaced under the same name.
-fn cleanup_restored(paths: &runtime::RuntimePaths, name: &str, expected_id: &str) -> Result<(), String> {
-    let runtime_exists = match inspect(paths, name) {
-        Ok(sandbox)
-            if sandbox
-                .config
-                .pointer("/labels/silo.machine-id")
-                .and_then(Value::as_str)
-                != Some(expected_id) =>
-        {
-            return Err(format!(
-                "A different VM now owns {name}; Silo preserved it and its storage."
-            ));
-        }
-        Ok(_) => true,
-        Err(error)
-            if error.to_ascii_lowercase().contains("not found")
-                || error.to_ascii_lowercase().contains("does not exist") =>
-        {
-            false
-        }
-        Err(error) => {
-            return Err(format!(
-                "Silo could not verify restored VM ownership for cleanup: {error}"
-            ));
-        }
-    };
-    if runtime_exists {
-        match runtime::run_msb(
-            paths,
-            &[
-                "remove".into(),
-                "--force".into(),
-                "--quiet".into(),
-                name.into(),
-            ],
-            Duration::from_secs(45),
-        ) {
-            Ok(_) => {}
-            Err(error)
-                if error.to_string().to_ascii_lowercase().contains("not found")
-                    || error
-                        .to_string()
-                        .to_ascii_lowercase()
-                        .contains("does not exist") => {}
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-    let disk_path = paths.volumes.join(name);
-    match fs::remove_dir_all(&disk_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "Silo could not remove incomplete restored disks: {error}"
-        )),
-    }
 }
 
 #[tauri::command]
@@ -1581,18 +1523,46 @@ fn restore_at_paths(
         return Err("The archive does not contain a local VM configuration.".into());
     }
     progress("Saving stopped workspace");
-    runtime::checkpoints::import_pending_restore(
+    commit_import(
         paths,
+        controller,
+        original,
+        machine,
         &id,
         &prepared.snapshot_group,
         &prepared.snapshot_member,
     )
-    .map_err(|error| error.to_string())?;
+}
+
+/// Saves an imported sandbox. Its id and snapshot group are journaled first,
+/// so a relaunch can tell a finished import (settings saved: the commit point)
+/// from one to clean up (E-24). A failure before the commit removes the
+/// checkpoint record; if that cleanup fails, the journal keeps the identity
+/// and the next launch retries it.
+fn commit_import(
+    paths: &runtime::RuntimePaths,
+    controller: &Controller,
+    original: runtime::MachineConfigurationRequest,
+    machine: runtime::MachineConfiguration,
+    id: &str,
+    group: &str,
+    member: &str,
+) -> Result<(), String> {
+    recovery::save_restore_identity(controller, id, group)?;
+    let discard = |error: String| {
+        let _ = recovery::discard_uncommitted_import(paths, controller, id, Some(group));
+        Err(error)
+    };
+    if let Err(error) = runtime::checkpoints::import_pending_restore(paths, id, group, member) {
+        return discard(error.to_string());
+    }
     let mut updated = original;
     updated.machines.push(machine);
     if let Err(error) = runtime::write_metadata(&paths.metadata, &updated) {
-        let _ = runtime::checkpoints::forget_removed(paths, &id);
-        return Err(error.to_string());
+        // A late failure (after the file was replaced) still saved the sandbox.
+        let saved = runtime::read_metadata(&paths.metadata)
+            .is_ok_and(|metadata| metadata.machines.iter().any(|machine| machine.id() == id));
+        return if saved { Ok(()) } else { discard(error.to_string()) };
     }
     Ok(())
 }
@@ -2311,6 +2281,57 @@ mod tests {
         assert_eq!(recovery::token(&controller).unwrap().as_deref(), Some(claimed.operation_id.as_str()));
     }
 
+    fn import_paths(directory: &Path) -> runtime::RuntimePaths {
+        runtime::RuntimePaths {
+            guest_image: directory.join("guest-image"),
+            executable: directory.join("missing-msb"),
+            home: directory.join("home"),
+            storage_home: None,
+            library: directory.join("library"),
+            metadata: directory.join("runtime/machines.json"),
+            volumes: directory.join("volumes"),
+        }
+    }
+
+    fn imported_machine(id: &str) -> runtime::MachineConfiguration {
+        serde_json::from_value(serde_json::json!({"kind":"vm","id":id,"name":"copy","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1})).unwrap()
+    }
+
+    const GROUP: &str = "silo-import-0123456789abcdef0123456789abcdef";
+    const MEMBER: &str = "silo-backup-0-1-2";
+
+    #[test]
+    fn an_import_journals_its_identity_before_saving_and_commits_with_its_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = import_paths(directory.path());
+        fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let original = runtime::read_metadata(&paths.metadata).unwrap();
+        commit_import(&paths, &controller, original, imported_machine(&id), &id, GROUP, MEMBER).unwrap();
+        assert!(runtime::read_metadata(&paths.metadata).unwrap().machines.iter().any(|machine| machine.id() == id));
+        let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
+        assert!(saved.contains(&id) && saved.contains(GROUP), "{saved}");
+    }
+
+    #[test]
+    fn an_import_that_cannot_save_its_settings_removes_its_record_and_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = import_paths(directory.path());
+        fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let original = runtime::read_metadata(&paths.metadata).unwrap();
+        // Settings cannot be written where a directory occupies the file.
+        fs::create_dir(&paths.metadata).unwrap();
+        assert!(commit_import(&paths, &controller, original, imported_machine(&id), &id, GROUP, MEMBER).is_err());
+        assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
+        let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
+        assert!(!saved.contains(&id), "{saved}");
+    }
+
     #[test]
     fn multi_vm_restore_requires_an_explicit_source() {
         let names = vec!["first".into(), "second".into()];
@@ -2470,47 +2491,21 @@ mod tests {
             ),
         )
         .unwrap();
-        recovery::save_sources(
-            &controller,
-            &[
-                backup::BackupSource {
-                    name: name.into(),
-                    snapshot_group: name.into(),
-                    was_running: true,
-                    runtime_config: inspected.config,
-                    machine_config: serde_json::to_value(&machine).unwrap(),
-                            existing_member: None,
-                },
-                backup::BackupSource {
-                    name: second_name.into(),
-                    snapshot_group: second_name.into(),
-                    was_running: false,
-                    runtime_config: second_inspected.config,
-                    machine_config: serde_json::to_value(&second_machine).unwrap(),
-                            existing_member: None,
-                },
-            ],
-        )
-        .unwrap();
-        // Archive publication succeeded, but app death can precede completion
-        // reporting and restoration of the guest's previous running state.
+        // Archive publication succeeded, but app death preceded the result.
+        // Relaunch verifies the published file and never restarts sandboxes.
         run(&["stop", name]);
         let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &checkpoint,
-                &backup::Cancellation::default()
-            )
-            .unwrap()
-        );
-        assert_eq!(inspect(&paths, name).unwrap().status, "Running");
+        let recovered = recovery::recover_at_paths(
+            &paths,
+            &controller,
+            &checkpoint,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
+        assert!(matches!(recovered, Operation::Result { outcome: "success", .. }));
+        assert_eq!(inspect(&paths, name).unwrap().status, "Stopped");
         assert_eq!(inspect(&paths, second_name).unwrap().status, "Stopped");
-        assert_ne!(
-            load_history(&controller.history_path).unwrap().archives[0].size,
-            "Unknown"
-        );
+        let _ = (inspected, second_inspected, machine, second_machine);
         run(&["remove", "--force", "--quiet", name]);
         run(&["remove", "--force", "--quiet", second_name]);
         fs::remove_dir_all(&paths.home).unwrap();
@@ -2556,48 +2551,24 @@ mod tests {
             ),
         )
         .unwrap();
-        // Emulate process death after the owned disk directory was claimed but
-        // before msb create. Only this operation's partial disk can be removed.
+        // Emulate process death after the import journaled its new sandbox but
+        // before its settings were saved: relaunch forgets it and adds nothing.
         let interrupted_id = uuid::Uuid::new_v4().to_string();
-        recovery::save_restore_identity(&controller, &interrupted_id).unwrap();
-        recovery::claim_disk(&paths.volumes.join(restored_name), &interrupted_id).unwrap();
-        fs::write(
-            runtime::disk_path(&paths, restored_name, "workspace"),
-            b"incomplete disk",
+        recovery::save_restore_identity(
+            &controller,
+            &interrupted_id,
+            "silo-import-0123456789abcdef0123456789abcdef",
         )
         .unwrap();
         let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            !recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &checkpoint,
-                &backup::Cancellation::default()
-            )
-            .unwrap()
-        );
-        assert!(!paths.volumes.join(restored_name).exists());
-        // A durable cancellation cleans owned partial output and does not create
-        // the requested guest when the app reopens.
-        recovery::save_restore_identity(&controller, &interrupted_id).unwrap();
-        recovery::claim_disk(&paths.volumes.join(restored_name), &interrupted_id).unwrap();
-        fs::write(
-            runtime::disk_path(&paths, restored_name, "workspace"),
-            b"cancelled disk",
+        let recovered = recovery::recover_at_paths(
+            &paths,
+            &controller,
+            &checkpoint,
+            &backup::Cancellation::default(),
         )
         .unwrap();
-        recovery::cancel(&controller).unwrap();
-        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &checkpoint,
-                &backup::Cancellation::default()
-            )
-            .unwrap()
-        );
-        assert!(!paths.volumes.join(restored_name).exists());
+        assert!(matches!(recovered, Operation::Result { outcome: "failed", .. }));
         recovery::complete(
             &controller,
             Operation::Result {
@@ -2636,58 +2607,30 @@ mod tests {
             [
                 "Preparing import",
                 "Unpacking export",
-                "Restoring workspace disk",
-                "Creating restored sandbox",
-                "Verifying restored sandbox",
+                "Saving stopped workspace",
             ]
         );
         let restored = inspect(&paths, restored_name).unwrap();
         assert_eq!(restored.status, "Created");
-        // Metadata was committed, but process death could precede marker removal
-        // and delivery of the success event. Relaunch verifies and adopts it.
+        // Settings were saved, but process death preceded the success result.
+        // Relaunch adopts the import under its journaled identity.
         let restored_id = restored.config["labels"]["silo.machine-id"]
             .as_str()
             .unwrap();
-        fs::write(
-            paths
-                .volumes
-                .join(restored_name)
-                .join(".silo-restore-owner"),
-            restored_id,
+        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
+        let recovered = recovery::recover_at_paths(
+            &paths,
+            &controller,
+            &checkpoint,
+            &backup::Cancellation::default(),
         )
         .unwrap();
-        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &checkpoint,
-                &backup::Cancellation::default()
-            )
+        assert!(matches!(recovered, Operation::Result { outcome: "success", .. }));
+        assert!(runtime::read_metadata(&paths.metadata)
             .unwrap()
-        );
-        assert!(
-            !paths
-                .volumes
-                .join(restored_name)
-                .join(".silo-restore-owner")
-                .exists()
-        );
-        recovery::save_restore_identity(&controller, &uuid::Uuid::new_v4().to_string()).unwrap();
-        let foreign = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &foreign,
-                &backup::Cancellation::default()
-            )
-            .unwrap_err()
-            .contains("different sandbox")
-        );
-        assert_eq!(inspect(&paths, restored_name).unwrap().status, "Created");
-        assert!(runtime::disk_path(&paths, restored_name, "workspace").exists());
-        recovery::save_restore_identity(&controller, restored_id).unwrap();
+            .machines
+            .iter()
+            .any(|machine| machine.id() == restored_id));
 
         assert_eq!(
             restored.config.get("pull_policy").and_then(Value::as_str),
