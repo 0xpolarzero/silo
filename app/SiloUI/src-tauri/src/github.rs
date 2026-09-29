@@ -247,10 +247,19 @@ fn observe_credential_read(
     publish(
         result
             .as_ref()
-            .map(|c| c.as_ref().map(|c| c.expires_at))
+            .map(|c| c.as_ref().map(observed_expiry))
             .map_err(Clone::clone),
     );
     result
+}
+/// An expired access token with a refresh token is renewed on next use, so it still
+/// counts as connected; showing it as disconnected would push users to re-authorize.
+fn observed_expiry(c: &Credential) -> u64 {
+    if c.refresh_token.is_some() {
+        u64::MAX
+    } else {
+        c.expires_at
+    }
 }
 fn observed_credential() -> CredentialObservation {
     CREDENTIAL_OBSERVATION
@@ -375,7 +384,7 @@ fn store(c: &Credential) -> Result<(), String> {
     publish_credential_observation(
         result
             .as_ref()
-            .map(|_| Some(c.expires_at))
+            .map(|_| Some(observed_expiry(c)))
             .map_err(Clone::clone),
     );
     result
@@ -2305,6 +2314,13 @@ mod tests {
         assert_eq!(cache.read(|| panic!("Read after write")).unwrap(), Some(2));
     }
     #[test]
+    fn expired_credential_with_refresh_token_stays_connected() {
+        let mut c = super::Credential { access_token: "a".into(), refresh_token: Some("r".into()), expires_at: 1 };
+        assert!(super::observed_expiry(&c) > super::now());
+        c.refresh_token = None;
+        assert_eq!(super::observed_expiry(&c), 1);
+    }
+    #[test]
     fn failed_store_keeps_the_new_value_usable_and_retries_on_flush() {
         let cache = super::SessionSecret::new();
         assert_eq!(cache.read(|| Ok(Some(1))).unwrap(), Some(1));
@@ -3005,7 +3021,8 @@ mod tests {
             |value| observed = Some(value),
         );
         assert!(result.unwrap().is_some());
-        assert_eq!(observed, Some(Ok(Some(expiry))));
+        // A renewable credential is observed as connected, never with its token.
+        assert_eq!(observed, Some(Ok(Some(u64::MAX))));
         observe_credential_read(|| Ok(None), |value| observed = Some(value)).unwrap();
         assert_eq!(observed, Some(Ok(None)));
     }

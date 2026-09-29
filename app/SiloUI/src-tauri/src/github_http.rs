@@ -221,19 +221,29 @@ fn is_rate_limit(status: u16, headers: &HeaderMap, body: &Value) -> bool {
 fn retryable_response(status: u16, headers: &HeaderMap, body: &Value, safe: bool) -> bool {
     is_rate_limit(status, headers, body) || (status >= 500 && safe)
 }
+/// A connection failure means nothing was sent, so even a non-idempotent request
+/// can be retried automatically; only a failure after sending has an unknown outcome.
+fn transport_retryable(safe: bool, sent: bool) -> bool {
+    safe || !sent
+}
 fn response(
     key: &str,
     result: Result<Response, reqwest::Error>,
     safe: bool,
     revoke: bool,
 ) -> Result<Value, String> {
-    let response = result.map_err(|_| {
+    let response = result.map_err(|error| {
+        let sent = !error.is_connect();
         failure(
             key,
-            safe,
+            transport_retryable(safe, sent),
             0,
             false,
-            "Cannot reach GitHub. The request outcome is unknown.",
+            if sent {
+                "Cannot reach GitHub. The request outcome is unknown."
+            } else {
+                "Cannot reach GitHub."
+            },
             safe,
         )
     })?;
@@ -588,6 +598,12 @@ mod tests {
             g.fail("post".into(), 100, true, 0, false, 0, "offline", false);
         }
         assert_eq!(g.requests["post"].until, None);
+    }
+    #[test]
+    fn unsent_requests_are_retryable_but_unknown_outcomes_are_not() {
+        assert!(transport_retryable(false, false));
+        assert!(!transport_retryable(false, true));
+        assert!(transport_retryable(true, true));
     }
     #[test]
     fn transient_reads_back_off_without_delaying_unrelated_keys() {
