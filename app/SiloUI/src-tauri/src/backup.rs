@@ -1194,19 +1194,18 @@ fn read_and_verify_package(
     extract_dir: Option<&Path>,
 ) -> Result<VerifiedPackage, BackupError> {
     check_cancelled(cancellation)?;
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(BackupError::InvalidArchive(
-            "the selected item is not a regular file".into(),
-        ));
-    }
+    let (mut file, metadata) = open_regular_file(path).map_err(|error| match error {
+        OpenRegularError::NotRegular => {
+            BackupError::InvalidArchive("the selected item is not a regular file".into())
+        }
+        OpenRegularError::Io(error) => BackupError::Io(error),
+    })?;
     if metadata.len() > max_archive_bytes {
         return Err(BackupError::InvalidArchive(format!(
             "the archive exceeds the {} byte safety limit",
             max_archive_bytes
         )));
     }
-    let mut file = File::open(path)?;
     let mut magic = [0_u8; MAGIC.len()];
     file.read_exact(&mut magic)
         .map_err(|_| BackupError::InvalidArchive("the file header is incomplete".into()))?;
@@ -2008,23 +2007,54 @@ fn write_immutable_package(
     Ok(size_bytes)
 }
 
+enum OpenRegularError {
+    NotRegular,
+    Io(io::Error),
+}
+
+/// Open without following a final symlink and without blocking on a FIFO,
+/// then check the opened handle itself, so a path swapped after an earlier
+/// check can neither redirect the read nor hang it. The returned metadata
+/// (and its length) belongs to the handle that will be read.
+fn open_regular_file(path: &Path) -> Result<(File, fs::Metadata), OpenRegularError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| {
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                OpenRegularError::NotRegular
+            } else {
+                OpenRegularError::Io(error)
+            }
+        })?;
+    let metadata = file.metadata().map_err(OpenRegularError::Io)?;
+    if !metadata.is_file() {
+        return Err(OpenRegularError::NotRegular);
+    }
+    Ok((file, metadata))
+}
+
 fn hash_regular_file(
     path: &Path,
     max_bytes: u64,
     cancellation: &Cancellation,
 ) -> Result<(u64, String), BackupError> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() == 0 {
-        return Err(BackupError::InvalidArchive(
-            "the runtime did not create a regular snapshot archive".into(),
-        ));
+    let not_regular =
+        || BackupError::InvalidArchive("the runtime did not create a regular snapshot archive".into());
+    let (mut file, metadata) = open_regular_file(path).map_err(|error| match error {
+        OpenRegularError::NotRegular => not_regular(),
+        OpenRegularError::Io(error) => BackupError::Io(error),
+    })?;
+    if metadata.len() == 0 {
+        return Err(not_regular());
     }
     if metadata.len() > max_bytes {
         return Err(BackupError::InvalidArchive(
             "the snapshot archive exceeds the configured safety limit".into(),
         ));
     }
-    let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 128 * 1024];
     loop {
@@ -3043,6 +3073,36 @@ mod tests {
         std::os::unix::fs::symlink(&destination, &link).unwrap();
         assert!(matches!(
             service.inspect_archive(&link, &Cancellation::default()),
+            Err(BackupError::InvalidArchive(_))
+        ));
+    }
+
+    #[test]
+    fn archive_is_checked_on_the_opened_handle_without_blocking_on_a_fifo() {
+        let temp = tempfile::tempdir().unwrap();
+        let fifo = temp.path().join("swapped.silo-backup");
+        let encoded = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: encoded is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(encoded.as_ptr(), 0o600) }, 0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        thread::spawn(move || {
+            let _ = sender.send(matches!(open_regular_file(&path), Err(OpenRegularError::NotRegular)));
+        });
+        assert!(
+            receiver.recv_timeout(Duration::from_secs(5)).expect("opening a FIFO must not block"),
+            "a FIFO is not a regular archive"
+        );
+        let regular = temp.path().join("regular.silo-backup");
+        fs::write(&regular, b"12345").unwrap();
+        let link = temp.path().join("link.silo-backup");
+        std::os::unix::fs::symlink(&regular, &link).unwrap();
+        assert!(matches!(open_regular_file(&link), Err(OpenRegularError::NotRegular)));
+        let (_, metadata) = open_regular_file(&regular).ok().unwrap();
+        assert_eq!(metadata.len(), 5);
+        let service = service(&temp, FakeRunner::default());
+        assert!(matches!(
+            service.inspect_archive(&fifo, &Cancellation::default()),
             Err(BackupError::InvalidArchive(_))
         ));
     }
