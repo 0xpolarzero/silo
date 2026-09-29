@@ -559,8 +559,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     try {
       unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
       unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
-      unlisten.push(await native.listen("silo://application-state-changed", () => { void refresh() }))
-      unlisten.push(await native.listen("desktop:status-opened", () => { void refresh() }))
+      unlisten.push(await native.listen("silo://application-state-changed", refreshFromEvent))
+      unlisten.push(await native.listen("desktop:status-opened", refreshFromEvent))
       // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
       // so setup and sandbox configuration must be accepted again.
       unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => { if (event?.payload === false) acceptingSetup = true }))
@@ -579,14 +579,32 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       throw new Error(error)
     }
     window.addEventListener("focus", onWindowFocus)
+    document.addEventListener("visibilitychange", onVisibilityChange)
     await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
     if (disposed) return
     remoteTimer = setInterval(() => {
-      void refreshComputers()
-      // Repository changes inside a VM do not emit application events. Skip
-      // hidden windows and let slow reads finish before starting another poll.
-      if (document.visibilityState !== "hidden" && activeRefreshes === 0) void refresh()
+      // Repository changes inside a VM do not emit application events. A hidden
+      // window (the closed main window, the unopened status panel) does no polling,
+      // including remote SSH snapshots; slow reads finish before another poll, and
+      // each refresh reads remote computers once when it completes.
+      if (document.visibilityState === "hidden" || activeRefreshes > 0) return
+      void refresh()
     }, 10_000)
+  }
+
+  function onVisibilityChange() {
+    if (document.visibilityState !== "hidden" && activeRefreshes === 0) void refresh()
+  }
+
+  // Native state events arrive in bursts. Run at most one refresh at a time and
+  // one trailing refresh for everything that arrived while it was running.
+  let eventRefresh: Promise<void> | undefined
+  let eventRefreshAgain = false
+  function refreshFromEvent() {
+    if (eventRefresh) { eventRefreshAgain = true; return }
+    eventRefresh = (async () => {
+      do { eventRefreshAgain = false; await refresh() } while (eventRefreshAgain && !disposed)
+    })().finally(() => { eventRefresh = undefined })
   }
 
   // Remote VM ports are opened through the remote bridge; the local command
@@ -1334,7 +1352,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); listeners.clear() },
+    dispose() { pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
   }
 }
 

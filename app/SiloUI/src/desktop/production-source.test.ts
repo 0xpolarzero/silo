@@ -220,6 +220,42 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("polls remote computers once per visible tick, pauses while hidden, and coalesces event bursts", async () => {
+    vi.useFakeTimers()
+    const mock = native()
+    const handlers = new Map<string, () => void>()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "remote_host_list" ? [] : mock.invoke(command, args))
+    const listen = vi.fn(async (name: string, handler: () => void) => { handlers.set(name, handler); return () => { handlers.delete(name) } })
+    const store = createProductionSource({ invoke, listen } as unknown as ProductionBridge)
+    const count = (name: string) => invoke.mock.calls.filter(([command]) => command === name).length
+    try {
+      await store.initialize()
+      await vi.advanceTimersByTimeAsync(0)
+      let hosts = count("remote_host_list")
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(count("remote_host_list")).toBe(hosts + 1)
+      hosts = count("remote_host_list")
+      const reads = count("read_application_state")
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(count("remote_host_list")).toBe(hosts)
+      expect(count("read_application_state")).toBe(reads)
+      visibility.mockRestore()
+      document.dispatchEvent(new Event("visibilitychange"))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(count("read_application_state")).toBe(reads + 1)
+      expect(count("remote_host_list")).toBe(hosts + 1)
+      const beforeBurst = count("read_application_state")
+      for (let index = 0; index < 5; index++) handlers.get("silo://application-state-changed")?.()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(count("read_application_state")).toBe(beforeBurst + 2)
+    } finally {
+      store.dispose()
+      vi.restoreAllMocks()
+      vi.useRealTimers()
+    }
+  })
+
   it("refreshes repository rows while visible without overlapping slow reads and stops on disposal", async () => {
     vi.useFakeTimers()
     const mock = native()
