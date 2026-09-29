@@ -234,6 +234,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const canCheckUpdates = Boolean(updates && !updates.pending && !["checking", "downloading", "installing"].includes(updates.snapshot?.phase ?? ""))
   // The review popover anchors to the sandbox list's Add button, so show the list first.
   const openImport = () => { navigation.selectWorkspaceSection("overview"); navigation.closeSandbox(); void transfer.beginImport() }
+  const createSandbox = () => { navigation.selectWorkspaceSection("overview"); setNewSandboxRequest(++nextSandboxRequest.current) }
   const nativeMenu = useAppMenu({ ready: true, busy: installingUpdate,
     canGoBack: navigation.canGoBack, canGoForward: navigation.canGoForward,
     canCreateSandbox, canImport, canCheckUpdates, sidebarCollapsed,
@@ -246,7 +247,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         if (canCheckUpdates) updates?.check()
         break
       case "new-sandbox":
-        if (canCreateSandbox) { navigation.selectWorkspaceSection("overview"); setNewSandboxRequest(++nextSandboxRequest.current) }
+        if (canCreateSandbox) createSandbox()
         break
       case "import-sandbox":
         if (canImport) openImport()
@@ -323,6 +324,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
             onLogQueryChange={setLogQuery}
             onPushRepository={pushRepository}
             onDismissRepositoryPush={dismissRepositoryPush}
+            onCreateSandbox={canCreateSandbox && !installingUpdate ? createSandbox : undefined}
           />
         )}
       </section>

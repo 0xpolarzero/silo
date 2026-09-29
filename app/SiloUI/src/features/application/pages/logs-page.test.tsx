@@ -93,6 +93,21 @@ describe("retained logs", () => {
     expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ source: undefined, since: undefined, until: undefined }))
     expect(screen.queryByLabelText("Logs from")).not.toBeInTheDocument()
     expect(screen.queryByText(/No logs in this time range/)).not.toBeInTheDocument()
+    expect(screen.getByText("No logs yet").closest('[data-slot="empty-state"]')).not.toBeNull()
+  })
+  it("styles an inverted date range as an inline error with the next step", () => {
+    const { workspace, actions, queryLogs } = fixture()
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" window={{ since: "2026-09-19T00:00:00.000Z", until: "2026-09-18T00:00:00.000Z" }} onQueryChange={vi.fn()} />)
+    const alert = screen.getByRole("alert")
+    expect(alert).toHaveTextContent("The start date is after the end date. Change the date filter to see logs.")
+    expect(alert).toHaveClass("text-xs", "text-destructive")
+    expect(queryLogs).not.toHaveBeenCalled()
+  })
+  it("uses the shared empty state when no sandbox matches", () => {
+    const { actions } = fixture()
+    render(<Logs workspaces={[]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    expect(screen.getByText("No matching sandboxes").closest('[data-slot="empty-state"]')).not.toBeNull()
+    expect(screen.queryByText(/No sandboxes selected/)).not.toBeInTheDocument()
   })
   it("adds, removes and clears optional filters without applying an unfinished date", async () => {
     const { workspace, actions, queryLogs } = fixture()

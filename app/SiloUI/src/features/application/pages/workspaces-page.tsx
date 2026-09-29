@@ -5,9 +5,10 @@ import { FolderActions } from "@/features/application/components/folder-actions"
 import { WorkspaceFileTree } from "@/features/application/components/workspace-file-tree"
 import type { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useMemo, useState } from "react"
-import { Activity, Archive, Box, Check, CircleAlert, Cloud, GitBranch, KeyRound, Loader2, RefreshCw, TriangleAlert, Wrench } from "lucide-react"
+import { Activity, Archive, Box, Boxes, Check, CircleAlert, Cloud, File, GitBranch, KeyRound, Loader2, Plus, RefreshCw, TriangleAlert, Wrench } from "lucide-react"
 
 import { DisclosureHeader } from "@/components/disclosure-header"
+import { EmptyState } from "@/components/empty-state"
 import { FilterCombobox, type FilterOption } from "@/components/filter-combobox"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { StatusBadge } from "@/components/status-badge"
@@ -50,17 +51,6 @@ function WorkspaceFilterBar({
   )
 }
 
-function EmptyState({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-border px-6 text-center">
-      <div>
-        <p className="text-sm font-medium">{title}</p>
-        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-      </div>
-    </div>
-  )
-}
-
 function Files({
   source,
   onRefreshRepositories,
@@ -94,7 +84,7 @@ function Files({
   }
   const [repositoriesOpen, setRepositoriesOpen] = useState(true)
   const [fileTreeOpen, setFileTreeOpen] = useState(true)
-  if (workspaces.length === 0) return <EmptyState title="No sandboxes selected" description="Select at least one sandbox to browse its files and repositories." />
+  if (workspaces.length === 0) return <EmptyState icon={<File />} title="No matching sandboxes" description="Clear the sandbox filter to browse files and repositories in every sandbox." />
   const repositories = workspaces.flatMap((workspace) => workspace.repositories.map((repository) => ({ workspace, repository })))
   const pushOperations = new Map(repositoryPushOperations.map((operation) => [`${operation.workspace}:${operation.repositoryPath}`, operation]))
 
@@ -155,7 +145,7 @@ function Files({
                     )
                   })}
                 </ListCard>
-              ) : <p className="text-xs text-muted-foreground">No repositories checked out.</p>}
+              ) : <EmptyState icon={<GitBranch />} title="No repositories checked out" className="min-h-24" />}
             </div>
           </CollapsibleContent>
         </section>
@@ -224,7 +214,7 @@ function ActivityLog({ workspaces, sourceActivities, filtered, onShowLogs }: { w
     ? allActivities
     : allActivities.filter(({ category }) => selectedCategories.has(category))
 
-  if (workspaces.length === 0 && allActivities.length === 0) return <EmptyState title="No recent activity" description="Sandbox and system activity will appear here." />
+  if (workspaces.length === 0 && allActivities.length === 0) return <EmptyState icon={<Activity />} title="No recent activity" description="Sandbox and system activity will appear here." />
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -335,6 +325,7 @@ export function WorkspacesPage({
   onLogQueryChange,
   onPushRepository,
   onDismissRepositoryPush,
+  onCreateSandbox,
 }: {
   /** The application source, for the same availability rules as the other surfaces. */
   source: ApplicationSource
@@ -357,6 +348,8 @@ export function WorkspacesPage({
   onLogQueryChange: (query: string) => void
   onPushRepository: (workspace: string, repositoryPath: string, commitCount: number) => void
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
+  /** Opens the new-sandbox editor; omitted while a sandbox cannot be created. */
+  onCreateSandbox?: () => void
 }) {
   const [logWindow, setLogWindow] = useState<LogWindow>()
   useRepositoryPushToasts(repositoryPushOperations, {
@@ -371,10 +364,25 @@ export function WorkspacesPage({
     () => selectedWorkspaceIds.size === 0 ? workspaces : workspaces.filter(({ machine }) => selectedWorkspaceIds.has(machine.id)),
     [workspaces, selectedWorkspaceIds],
   )
+  // An empty filter means every sandbox, so an empty list means there are none yet: offer to
+  // create one. Activity still shows system events and those of deleted sandboxes.
+  const hasSandboxes = workspaces.length > 0
+  if (!hasSandboxes && section !== "activity") {
+    return (
+      <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6">
+        <EmptyState
+          icon={<Boxes />}
+          title="No sandboxes yet"
+          description="Create a sandbox to browse its files, logs and network ports here."
+          action={onCreateSandbox && <Button variant="outline" size="xs" onClick={onCreateSandbox}><Plus aria-hidden="true" data-icon="inline-start" />New sandbox</Button>}
+        />
+      </div>
+    )
+  }
 
   return (
-    <div className="mx-auto grid h-full min-h-0 w-full max-w-4xl grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6">
-      <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />
+    <div className={cn("mx-auto grid h-full min-h-0 w-full max-w-4xl gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6", hasSandboxes ? "grid-rows-[auto_minmax(0,1fr)]" : "grid-rows-[minmax(0,1fr)]")}>
+      {hasSandboxes && <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />}
       {section === "files" && <Files source={source} onRefreshRepositories={networkActions.refreshRepositories} editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
       {section === "logs" && <Logs key={JSON.stringify(visibleWorkspaces.map(workspaceTarget))} workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} actions={networkActions} active={active} window={logWindow} onWindowChange={setLogWindow} />}
       {section === "network" && <NetworkPage workspaces={visibleWorkspaces} browser={browser} network={network} error={networkError} actions={networkActions} active={active} />}

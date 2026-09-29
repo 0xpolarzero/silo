@@ -33,7 +33,8 @@ and expanded states. Avoid adding page-specific title or caption sizes.
 Logs, Network, and GitHub repository permissions need aligned table columns.
 The file tree needs hierarchy and indentation. Navigation and disclosure
 headings are single-line controls. Configuration editors are forms. Empty
-states are centered explanations. Inline operation feedback and temporary
+states are centered explanations using `EmptyState` from
+`src/components/empty-state.tsx`. Inline operation feedback and temporary
 repair notices remain compact status messages within their owning surface.
 These do not need a two-line record card.
 

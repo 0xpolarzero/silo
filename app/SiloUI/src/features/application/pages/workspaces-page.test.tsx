@@ -77,6 +77,37 @@ it("disables Push while the sandbox is stale", () => {
   expect(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev" })).toBeDisabled()
 })
 
+it.each(["files", "logs", "network"] as const)("offers to create a sandbox on %s when there are none, instead of asking to select one", async (section) => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  source.workspaces = []
+  const onCreateSandbox = vi.fn()
+  render(<WorkspacesPage
+    source={source} section={section} workspaces={[]} activities={[]} selectedWorkspaceIds={new Set()}
+    networkActions={{} as ApplicationActions} onSectionChange={vi.fn()} editor="Editor" onOpenEditor={vi.fn()}
+    directoryStore={createDirectoryStore()} active logQuery="" repositoryPushOperations={[]} browser="Browser"
+    onWorkspaceFilterChange={vi.fn()} onLogQueryChange={vi.fn()} onPushRepository={vi.fn()} onDismissRepositoryPush={vi.fn()}
+    onCreateSandbox={onCreateSandbox}
+  />)
+  expect(screen.getByText("No sandboxes yet")).toBeVisible()
+  expect(screen.queryByText(/No sandboxes selected|Select at least one sandbox/)).not.toBeInTheDocument()
+  expect(screen.queryByRole("combobox", { name: "Filter sandboxes" })).not.toBeInTheDocument()
+  await userEvent.setup().click(screen.getByRole("button", { name: "New sandbox" }))
+  expect(onCreateSandbox).toHaveBeenCalledOnce()
+})
+
+it("keeps showing activity when every sandbox has been deleted", () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  source.workspaces = []
+  render(<WorkspacesPage
+    source={source} section="activity" workspaces={[]} activities={[activity("deleted", "removed-sandbox")]} selectedWorkspaceIds={new Set()}
+    networkActions={{} as ApplicationActions} onSectionChange={vi.fn()} editor="Editor" onOpenEditor={vi.fn()}
+    directoryStore={createDirectoryStore()} active logQuery="" repositoryPushOperations={[]} browser="Browser"
+    onWorkspaceFilterChange={vi.fn()} onLogQueryChange={vi.fn()} onPushRepository={vi.fn()} onDismissRepositoryPush={vi.fn()}
+  />)
+  expect(within(screen.getByRole("list", { name: "Recent activity" })).getByText("Event deleted")).toBeVisible()
+  expect(screen.queryByText("No sandboxes yet")).not.toBeInTheDocument()
+})
+
 it("names a remote sandbox's Push button by its computer", () => {
   const source = filesSource()
   const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
