@@ -4,9 +4,13 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fs,
-    os::unix::{fs::{FileTypeExt, MetadataExt}, net::UnixStream},
+    os::unix::{
+        fs::{FileTypeExt, MetadataExt},
+        net::UnixStream,
+        process::CommandExt,
+    },
     path::{Path, PathBuf},
-    process::{Child, Stdio},
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -15,20 +19,71 @@ use tauri::{
     WebviewWindowBuilder, Window,
 };
 
+/// Runs the forward in its own process group and ends the whole group (ssh
+/// and its ProxyCommand) when Silo's end of stdin closes: on Drop, and also
+/// when Silo crashes or is force-quit, since the kernel closes it then (G-16).
+/// `kill 0` is safe only because the group is the tunnel's own.
+const WATCHDOG: &str = r#"exec 3<&0 </dev/null
+"$@" 3<&- &
+child=$!
+{ read -r _ <&3; kill -s TERM 0; } &
+exec 3<&-
+wait "$child"
+kill -s TERM 0
+"#;
+
 /// The ssh forward and the private directory holding its Unix socket (G-04).
 struct Tunnel {
+    /// The watchdog shell, leader of the tunnel's process group.
     child: Child,
+    /// Silo's end of the watchdog pipe; closing it ends the tunnel.
+    stdin: Option<ChildStdin>,
+    /// Set once the leader is reaped: its group id may then be reused.
+    exited: bool,
     /// Removed after the child is reaped (fields drop after `drop`).
     _directory: Option<tempfile::TempDir>,
 }
 impl Tunnel {
-    #[cfg(test)]
-    fn new(child: Child) -> Self {
-        Self { child, _directory: None }
+    fn spawn(command: &Command, directory: Option<tempfile::TempDir>) -> std::io::Result<Self> {
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(WATCHDOG)
+            .arg("silo-desktop-tunnel")
+            .arg(command.get_program())
+            .args(command.get_args())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()?;
+        let stdin = child.stdin.take();
+        Ok(Self { child, stdin, exited: false, _directory: directory })
+    }
+    fn running(&mut self) -> bool {
+        if !self.exited && !matches!(self.child.try_wait(), Ok(None)) {
+            self.exited = true;
+        }
+        !self.exited
     }
 }
 impl Drop for Tunnel {
     fn drop(&mut self) {
+        drop(self.stdin.take());
+        if !self.running() {
+            return;
+        }
+        // The unreaped leader keeps the group id reserved, so this reaches only
+        // the tunnel's own processes. ssh and the shell exit on TERM at once.
+        let group = self.child.id() as i32;
+        unsafe { libc::killpg(group, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            if !self.running() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        unsafe { libc::killpg(group, libc::SIGKILL) };
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -54,10 +109,7 @@ impl Viewer {
     }
     fn healthy(&mut self) -> bool {
         self.proxy.is_some()
-            && self
-                .tunnel
-                .as_mut()
-                .is_some_and(|tunnel| matches!(tunnel.child.try_wait(), Ok(None)))
+            && self.tunnel.as_mut().is_some_and(Tunnel::running)
     }
 }
 /// What `desktop_viewer_attach` must do once the registry lock is released.
@@ -197,6 +249,11 @@ fn forward_command(
             "StreamLocalBindUnlink=yes",
             "-o",
             "StreamLocalBindMask=0177",
+            // A dead transport ends the forward instead of holding it (G-16).
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
             "-L",
         ])
         .arg(format!("{socket}:127.0.0.1:{guest_port}"))
@@ -252,20 +309,13 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let home = app.path().home_dir().map_err(|_| "Could not prepare the desktop connection.")?;
     let directory = socket_directory(&home.join(".silo"))?;
     let socket: PathBuf = directory.path().join("desktop.sock");
-    let mut command = forward_command(&config, &alias, &socket, guest)?;
-    let mut tunnel = Tunnel {
-        child: command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| "Could not connect to the desktop.")?,
-        _directory: Some(directory),
-    };
+    let command = forward_command(&config, &alias, &socket, guest)?;
+    let mut tunnel = Tunnel::spawn(&command, Some(directory))
+        .map_err(|_| "Could not connect to the desktop.")?;
     let uid = unsafe { libc::geteuid() };
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        if tunnel.child.try_wait().map_err(|_| "Desktop tunnel failed.")?.is_some() {
+        if !tunnel.running() {
             return Err("Desktop tunnel closed. Check the VM connection.".into());
         }
         if socket_ready(&socket, uid)? {
@@ -670,6 +720,10 @@ mod transport_tests {
             "StreamLocalBindUnlink=yes",
             "-o",
             "StreamLocalBindMask=0177",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
             "-L",
             "/home/user/.silo/desktop-abc/desktop.sock:127.0.0.1:6901",
             "silo-remote-host-vm",
@@ -717,8 +771,7 @@ mod transport_tests {
             assert_eq!(metadata.permissions().mode() & 0o077, 0, "{}", private.display());
             assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
         }
-        let child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-        drop(Tunnel { child, _directory: Some(directory) });
+        drop(Tunnel::spawn(Command::new("sleep").arg("30"), Some(directory)).unwrap());
         assert!(!path.exists());
     }
 
@@ -738,13 +791,87 @@ mod transport_tests {
         assert!(socket_ready(&socket, uid).is_err());
     }
 
+    /// A forward stand-in that records its pid, then runs until it is ended.
+    fn recorded_forward(directory: &Path) -> (Command, PathBuf) {
+        let pid_file = directory.join("forward.pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "echo $$ > \"$1\"; exec sleep 30", "forward"])
+            .arg(&pid_file);
+        (command, pid_file)
+    }
+    fn recorded_pid(file: &Path) -> i32 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(pid) = fs::read_to_string(file).ok().and_then(|text| text.trim().parse().ok()) {
+                return pid;
+            }
+            assert!(Instant::now() < deadline, "the forward never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    /// Ended and reaped (by the watchdog, or by init once it is orphaned).
+    fn ended(pid: i32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if unsafe { libc::kill(pid, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
     #[test]
-    fn closing_viewer_tunnel_reaps_its_ssh_child() {
-        let child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-        let pid = child.id();
-        drop(Tunnel::new(child));
-        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    fn closing_viewer_tunnel_ends_its_ssh_child() {
+        let directory = tempfile::tempdir().unwrap();
+        let (forward, pid_file) = recorded_forward(directory.path());
+        let tunnel = Tunnel::spawn(&forward, None).unwrap();
+        let pid = recorded_pid(&pid_file);
+        drop(tunnel);
+        assert!(ended(pid));
+    }
+
+    #[test]
+    fn a_crashed_silo_leaves_no_tunnel_running() {
+        let directory = tempfile::tempdir().unwrap();
+        let (forward, pid_file) = recorded_forward(directory.path());
+        let mut tunnel = Tunnel::spawn(&forward, None).unwrap();
+        let pid = recorded_pid(&pid_file);
+        // A crash or force-quit closes Silo's end of the pipe without Drop.
+        drop(tunnel.stdin.take());
+        assert!(ended(pid), "the forward outlived Silo");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while tunnel.running() {
+            assert!(Instant::now() < deadline, "the watchdog outlived Silo");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_forward_that_exits_ends_its_watchdog() {
+        let mut tunnel = Tunnel::spawn(Command::new("/bin/sh").args(["-c", "exit 3"]), None).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while tunnel.running() {
+            assert!(Instant::now() < deadline, "a closed forward still looks connected");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_forward_ends_on_a_dead_transport() {
+        let command = forward_command(
+            Path::new("/dev/null"),
+            "silo-test-alias",
+            Path::new("/tmp/silo-test/desktop.sock"),
+            6901,
+        )
+        .unwrap();
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert!(args.windows(2).any(|pair| pair == ["-o", "ServerAliveInterval=15"]));
+        assert!(args.windows(2).any(|pair| pair == ["-o", "ServerAliveCountMax=3"]));
     }
 }
 
@@ -756,7 +883,7 @@ mod registry_tests {
         HashMap::from([("shell".to_string(), Viewer::new("dev".into()))])
     }
     fn live_tunnel() -> Tunnel {
-        Tunnel::new(std::process::Command::new("sleep").arg("30").spawn().unwrap())
+        Tunnel::spawn(Command::new("sleep").arg("30"), None).unwrap()
     }
 
     #[test]
