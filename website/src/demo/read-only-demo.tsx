@@ -8,7 +8,6 @@ import { OverviewPage } from '@/features/application/pages/overview-page';
 import { WorkspacesPage } from '@/features/application/pages/workspaces-page';
 import { GitHubPage } from '@/features/application/pages/github-page';
 import { SecretsPage } from '@/features/application/pages/secrets-page';
-import { BackupPage } from '@/features/application/pages/backup-page';
 import { GeneralPage } from '@/features/application/pages/general-page';
 import { NotificationsPage } from '@/features/application/pages/notifications-page';
 import { RemoteComputersSettings } from '@/features/application/components/remote-computers-settings';
@@ -17,7 +16,7 @@ import { ApplicationCatalogProvider } from '@/features/preferences/application-c
 import { SystemIntegrationProvider } from '@/features/preferences/system-integrations-store';
 import { fixtureApplicationCatalog } from '@/fixtures/application-catalog';
 import { createFixtureSystemIntegrationStore } from '@/fixtures/system-integrations';
-import { demoActions, demoBackup, demoSource, readOnlyOperation } from './data';
+import { demoActions, demoSource, readOnlyOperation } from './data';
 
 function preventInteraction(event: SyntheticEvent) {
   event.preventDefault();
@@ -66,8 +65,6 @@ function DemoPages() {
     page = <GitHubPage source={demoSource} actions={demoActions} />;
   } else if (navigation.tab === 'secrets') {
     page = <SecretsPage source={demoSource} onSaveSecret={readOnlyOperation} onRemoveSecret={readOnlyOperation} />;
-  } else if (navigation.tab === 'backup') {
-    page = <BackupPage source={demoSource} backup={demoBackup} />;
   } else if (navigation.settingsSection === 'computers') {
     page = <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><RemoteComputersSettings source={demoSource} actions={demoActions} /></div>;
   } else if (navigation.settingsSection === 'notifications') {

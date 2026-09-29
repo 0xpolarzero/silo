@@ -2,8 +2,9 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { ApplicationShell } from '@/features/application/components/application-shell';
 import type { ApplicationSource } from '@/features/application/model/application-source';
 import type { BackupArchive, BackupController } from '@/features/application/model/backup-source';
-import { BackupPage } from '@/features/application/pages/backup-page';
+import { OverviewPage } from '@/features/application/pages/overview-page';
 import { SettingsProvider } from '@/features/preferences/settings-store';
+import { actions as applicationActions } from './fixtures';
 import { showcaseSource } from './showcase-fixtures';
 
 const noop = () => undefined;
@@ -36,6 +37,7 @@ const actions: BackupController['actions'] = {
   cancelOperation: noop,
   retryStart: noop,
   dismissOperation: noop,
+  revealArchive: async () => undefined,
 };
 
 function backupAt(frame: number): BackupController {
@@ -77,7 +79,7 @@ export function ReleaseBackup({ frame }: { frame: number }) {
     <SettingsProvider initialSettings={source.preferences}>
       <TooltipProvider>
         <ApplicationShell
-          activeTab="backup"
+          activeTab="workspaces"
           workspaceSection="overview"
           settingsSection="general"
           systemIssueStatus={null}
@@ -91,7 +93,9 @@ export function ReleaseBackup({ frame }: { frame: number }) {
           onGoForward={noop}
           reduceMotion
         >
-          <BackupPage source={source} backup={backupAt(frame)} />
+          {/* Backup moved to per-sandbox Export on the sandbox page's checkpoints tab. */}
+          <OverviewPage readOnly active={false} source={source} actions={applicationActions} backup={backupAt(frame)}
+            onMachinesChange={noop} selectedSandboxId="web" sandboxTab="checkpoints" />
         </ApplicationShell>
       </TooltipProvider>
     </SettingsProvider>

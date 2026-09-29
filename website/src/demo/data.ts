@@ -1,5 +1,4 @@
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace } from '@/features/application/model/application-source';
-import type { BackupController } from '@/features/application/model/backup-source';
 import { fixtureLogPage, logIdentity } from '@/features/application/model/logs';
 import { remoteWorkspaceTarget, workspaceTarget } from '@/features/application/model/remote-computers';
 import { applicationSourceForScenario } from '@/fixtures/application-scenarios';
@@ -76,23 +75,5 @@ export const demoActions: ApplicationActions = {
     });
     if (!workspace) throw new Error('Unknown demo sandbox');
     return fixtureLogPage(workspace, request);
-  },
-};
-
-export const demoBackup: BackupController = {
-  state: {
-    snapshotId: 'website-sample', availability: 'available', availableSpaceGB: 250,
-    destination: fixture.backup.destination, operation: null,
-    archives: [{
-      name: fixture.backup.lastArchive, archivePath: '/sample/backups/development.silo-backup',
-      completedLabel: fixture.backup.completedLabel, size: fixture.backup.compressedSize,
-      destination: fixture.backup.destination, sandboxes: ['dev', 'playgrounds'],
-    }],
-  },
-  actions: {
-    chooseDestination: readOnlyOperation, chooseArchive: readOnlyOperation,
-    inspectArchive: readOnlyOperation, startBackup: readOnlyOperation,
-    startRestore: readOnlyOperation, cancelOperation: readOnlyOperation,
-    retryStart: readOnlyOperation, dismissOperation: readOnlyOperation,
   },
 };

@@ -13,7 +13,6 @@ import { OverviewPage } from "@/features/application/pages/overview-page";
 import { ApplicationShell } from "@/features/application/components/application-shell";
 import { GitHubPage } from "@/features/application/pages/github-page";
 import { SecretsPage } from "@/features/application/pages/secrets-page";
-import { BackupPage } from "@/features/application/pages/backup-page";
 import { StatusBarContent } from "@/features/status-bar/status-bar";
 import { SettingsProvider } from "@/features/preferences/settings-store";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -92,6 +91,7 @@ function backupFor(frame: number): BackupController {
       cancelOperation: noop,
       retryStart: noop,
       dismissOperation: noop,
+      revealArchive: async () => undefined,
     },
   };
 }
@@ -208,7 +208,7 @@ export function Preparation({
       <SettingsProvider initialSettings={source.preferences}>
         <TooltipProvider>
           <ApplicationShell
-            activeTab={page}
+            activeTab={page === "backup" ? "workspaces" : page}
             workspaceSection="overview"
             settingsSection="general"
             systemIssueStatus={null}
@@ -227,7 +227,9 @@ export function Preparation({
             ) : page === "secrets" ? (
               <RecordedSecret key={frame} source={source} frame={frame} />
             ) : (
-              <BackupPage source={source} backup={backupFor(frame)} />
+              // Backup moved to per-sandbox Export on the sandbox page's checkpoints tab.
+              <OverviewPage readOnly active={false} source={source} actions={actions} backup={backupFor(frame)}
+                onMachinesChange={noop} selectedSandboxId="demo" sandboxTab="checkpoints" />
             )}
           </ApplicationShell>
         </TooltipProvider>
