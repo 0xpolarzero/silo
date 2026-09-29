@@ -3,7 +3,8 @@ import { Plus } from "lucide-react"
 import { ListCard } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { AddSecretEditor, SecretRow, useSecretsManager } from "@/features/application/components/secrets-management"
+import { AddSecretEditor, SecretRow } from "@/features/application/components/secrets-management"
+import { useSecretsManager } from "@/features/application/components/secrets-manager"
 import type { ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 
 export function SecretsPage({ source, onSaveSecret, onRemoveSecret, onRetrySecret }: {

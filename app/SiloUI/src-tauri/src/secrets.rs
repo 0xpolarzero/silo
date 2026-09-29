@@ -7,7 +7,8 @@ use std::{
     fs::{self, File},
     io::Read,
     path::PathBuf,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError},
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
@@ -15,7 +16,40 @@ static PATH: OnceLock<PathBuf> = OnceLock::new();
 static OPERATION: Mutex<()> = Mutex::new(());
 static DOCUMENT: Mutex<()> = Mutex::new(());
 type Vault = BTreeMap<String, String>;
-static VAULT: Mutex<Option<Result<Vault, String>>> = Mutex::new(None);
+/// The credential-store result and when it was obtained. A failure is cached only
+/// briefly so a locked or denied store does not fail every later VM start until
+/// the user edits a secret; the store is asked again after `STORE_RETRY_AFTER`.
+type Cached = Option<(Result<Vault, String>, Instant)>;
+static VAULT: Mutex<Cached> = Mutex::new(None);
+const STORE_RETRY_AFTER: Duration = Duration::from_secs(10);
+fn expire_failure(cached: &mut Cached, now: Instant) {
+    if matches!(cached, Some((Err(_), at)) if now.saturating_duration_since(*at) >= STORE_RETRY_AFTER)
+    {
+        *cached = None;
+    }
+}
+/// `OPERATION` and `DOCUMENT` guard no data, so a panic while holding them leaves
+/// nothing inconsistent: recover the guard instead of failing until restart.
+fn lock_unit(mutex: &'static Mutex<()>) -> MutexGuard<'static, ()> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+fn try_lock_unit(mutex: &'static Mutex<()>) -> Option<MutexGuard<'static, ()>> {
+    match mutex.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+/// A panic during a vault access may leave a partial cache; drop it so the next
+/// access reloads from the credential store.
+fn lock_vault() -> MutexGuard<'static, Cached> {
+    VAULT.lock().unwrap_or_else(|poisoned| {
+        let mut cached = poisoned.into_inner();
+        *cached = None;
+        VAULT.clear_poison();
+        cached
+    })
+}
 const STORE_ERROR: &str =
     "Cannot access secrets in the system credential store. Unlock it and retry.";
 #[derive(Clone, Serialize, Deserialize)]
@@ -57,42 +91,71 @@ fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new("org.silo.Silo.secrets", "values").map_err(|_| STORE_ERROR.into())
 }
 fn read_vault() -> Result<Vault, String> {
-    let mut cached = VAULT.lock().map_err(|_| STORE_ERROR)?;
-    cached
-        .get_or_insert_with(|| match entry()?.get_password() {
-            Ok(value) => serde_json::from_str(&value).map_err(|_| STORE_ERROR.into()),
-            Err(keyring::Error::NoEntry) => Ok(Vault::new()),
-            Err(_) => Err(STORE_ERROR.into()),
-        })
+    {
+        let mut cached = lock_vault();
+        expire_failure(&mut cached, Instant::now());
+        if let Some((result, _)) = cached.as_ref() {
+            return result.clone();
+        }
+    }
+    // Ask the store without holding the cache lock: a macOS Keychain prompt can wait
+    // indefinitely, and other readers must not queue behind it.
+    let result = entry().and_then(|entry| match entry.get_password() {
+        Ok(value) => serde_json::from_str(&value).map_err(|_| STORE_ERROR.into()),
+        Err(keyring::Error::NoEntry) => Ok(Vault::new()),
+        Err(_) => Err(STORE_ERROR.into()),
+    });
+    // A write or another read that finished meanwhile is at least as recent; keep it.
+    lock_vault()
+        .get_or_insert_with(|| (result, Instant::now()))
+        .0
         .clone()
 }
 fn write_vault(value: Vault) -> Result<(), String> {
-    let mut cached = VAULT.lock().map_err(|_| STORE_ERROR)?;
-    if let Some(Err(error)) = cached.as_ref() {
+    let mut cached = lock_vault();
+    expire_failure(&mut cached, Instant::now());
+    if let Some((Err(error), _)) = cached.as_ref() {
         return Err(error.clone());
     }
-    if matches!(cached.as_ref(), Some(Ok(old)) if old == &value) {
+    if matches!(cached.as_ref(), Some((Ok(old), _)) if old == &value) {
         return Ok(());
     }
     let encoded = serde_json::to_string(&value).map_err(|_| STORE_ERROR)?;
     let result = entry()?
         .set_password(&encoded)
         .map_err(|_| STORE_ERROR.to_string());
-    *cached = Some(result.clone().map(|_| value));
+    *cached = Some((result.clone().map(|_| value), Instant::now()));
     result
 }
 fn retry_store() {
-    if let Ok(mut cached) = VAULT.lock() {
-        if matches!(cached.as_ref(), Some(Err(_))) {
-            *cached = None;
-        }
+    let mut cached = lock_vault();
+    if matches!(cached.as_ref(), Some((Err(_), _))) {
+        *cached = None;
     }
 }
+#[cfg(test)]
+thread_local! {
+    static TEST_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+/// Tests on this thread use `path` as the secret document instead of the app's.
+/// Values still come from the credential store, so tests must not assign secrets
+/// to a workspace whose runtime material they read.
+#[cfg(test)]
+pub(crate) fn use_test_store(path: Option<PathBuf>) {
+    TEST_PATH.with(|test| *test.borrow_mut() = path);
+}
+fn store_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_PATH.with(|test| test.borrow().clone()) {
+        return Some(path);
+    }
+    PATH.get().cloned()
+}
 fn load() -> Result<Document, String> {
-    let Some(path) = PATH.get() else {
+    let Some(path) = store_path() else {
         return Ok(Document::default());
     };
-    match File::open(path) {
+    match File::open(&path) {
         Ok(file) => serde_json::from_reader(file.take(2 * 1024 * 1024))
             .map_err(|_| "Secret settings could not be read. No settings were overwritten.".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Document::default()),
@@ -100,7 +163,7 @@ fn load() -> Result<Document, String> {
     }
 }
 fn save(document: &Document) -> Result<(), String> {
-    let path = PATH.get().ok_or("Secret storage is not initialized.")?;
+    let path = store_path().ok_or("Secret storage is not initialized.")?;
     let parent = path.parent().ok_or("Secret storage is unavailable.")?;
     fs::create_dir_all(parent).map_err(|_| "Secret settings could not be saved.")?;
     let mut file = tempfile::NamedTempFile::new_in(parent)
@@ -110,12 +173,12 @@ fn save(document: &Document) -> Result<(), String> {
     file.as_file()
         .sync_all()
         .map_err(|_| "Secret settings could not be saved.")?;
-    file.persist(path)
+    file.persist(&path)
         .map_err(|_| "Secret settings could not be saved.")?;
     Ok(())
 }
 fn update(f: impl FnOnce(&mut Document) -> Result<(), String>) -> Result<(), String> {
-    let _guard = DOCUMENT.lock().map_err(|_| "Secret settings are busy.")?;
+    let _guard = lock_unit(&DOCUMENT);
     let mut document = load()?;
     f(&mut document)?;
     save(&document)
@@ -172,7 +235,8 @@ pub(crate) fn runtime_material(
 
 /// Copy assignment references only. Values remain in the host credential store.
 pub(crate) fn fork_assignments(source: &str, target: &str) -> Result<(), String> {
-    let _operation = OPERATION.try_lock().map_err(|_| "Secret settings are busy. Retry the fork.".to_string())?;
+    let _operation = try_lock_unit(&OPERATION)
+        .ok_or_else(|| "Secret settings are busy. Retry the fork.".to_string())?;
     update(|document| { copy_assignment_refs(document, source, target); Ok(()) })
 }
 
@@ -208,15 +272,24 @@ fn revision(document: &Document, workspace: &str) -> String {
 pub(crate) fn workspace_revision(workspace: &str) -> Result<String, String> {
     Ok(revision(&load()?, workspace))
 }
+/// Per workspace, a counter of verified starts and the secret revision they booted.
+static STARTS: Mutex<BTreeMap<String, (u64, String)>> = Mutex::new(BTreeMap::new());
+fn last_start(workspace: &str) -> Option<(u64, String)> {
+    STARTS.lock().unwrap_or_else(PoisonError::into_inner).get(workspace).cloned()
+}
 pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Result<(), String> {
     // Called only after runtime verification. No operation lock: start owns the runtime lock.
-    if PATH.get().is_none() {
+    if store_path().is_none() {
         return Ok(());
     }
     update(|document| {
         if revision(document, workspace) != applied_revision {
             return Ok(());
         }
+        let mut starts = STARTS.lock().unwrap_or_else(PoisonError::into_inner);
+        let start = starts.entry(workspace.into()).or_default();
+        *start = (start.0.wrapping_add(1), applied_revision.into());
+        drop(starts);
         for secret in &mut document.secrets {
             secret.pending_workspaces.retain(|w| w != workspace);
             secret.affected.retain(|w| w != workspace);
@@ -226,7 +299,7 @@ pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Resu
     })
 }
 pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
-    if PATH.get().is_none() {
+    if store_path().is_none() {
         return Ok(());
     }
     update(|document| {
@@ -347,7 +420,31 @@ fn validate(request: &Request, document: &Document) -> Result<(), String> {
     }
     Ok(())
 }
-fn reconcile(app: &AppHandle, id: &str) -> Result<(), String> {
+type Material = Vec<(String, String, Vec<String>)>;
+type OperationGuard = Option<MutexGuard<'static, ()>>;
+fn reconcile(app: &AppHandle, id: &str, operation: &mut OperationGuard) -> Result<(), String> {
+    reconcile_with(
+        id,
+        operation,
+        &runtime_material,
+        &mut |workspace, desired| crate::runtime::apply_secrets(app, workspace, desired),
+        &|| {
+            let _ = app.emit("silo://application-state-changed", ());
+        },
+    )
+}
+/// Applies one secret's desired state to each affected VM. The global secret
+/// operation lock is released while a VM applies, which can wait on that VM's gate
+/// for minutes, so forks, updates and other secret operations are not blocked. It
+/// is re-taken to record each result and before credential-store changes. When the
+/// VM's desired secrets changed while unlocked, the newer state is applied again.
+fn reconcile_with(
+    id: &str,
+    operation: &mut OperationGuard,
+    material: &dyn Fn(&str) -> Result<Material, String>,
+    apply: &mut dyn FnMut(&str, Material) -> Result<Vec<String>, String>,
+    changed: &dyn Fn(),
+) -> Result<(), String> {
     update(|d| {
         let secret = d
             .secrets
@@ -370,8 +467,24 @@ fn reconcile(app: &AppHandle, id: &str) -> Result<(), String> {
         .cloned()
         .collect();
     for workspace in targets {
-        let result = runtime_material(&workspace)
-            .and_then(|desired| crate::runtime::apply_secrets(app, &workspace, desired));
+        let mut attempts = 0;
+        let result = loop {
+            let desired_revision = workspace_revision(&workspace)?;
+            let started_before = last_start(&workspace);
+            let desired = material(&workspace);
+            *operation = None;
+            let result = desired.and_then(|desired| apply(&workspace, desired));
+            *operation = Some(lock_unit(&OPERATION));
+            attempts += 1;
+            if attempts >= 3 || workspace_revision(&workspace)? == desired_revision {
+                // A restart that finished while this apply ran already booted with the
+                // desired secrets, so a deferred result must not ask for another one.
+                let restarted = last_start(&workspace).is_some_and(|start| {
+                    Some(&start) != started_before.as_ref() && start.1 == desired_revision
+                });
+                break result.map(|pending| if restarted { Vec::new() } else { pending });
+            }
+        };
         update(|document| {
             let secret = document
                 .secrets
@@ -394,7 +507,7 @@ fn reconcile(app: &AppHandle, id: &str) -> Result<(), String> {
             }
             Ok(())
         })?;
-        let _ = app.emit("silo://application-state-changed", ());
+        changed();
     }
     let document = load()?;
     let secret = document
@@ -412,7 +525,7 @@ fn reconcile(app: &AppHandle, id: &str) -> Result<(), String> {
                 d.secrets
                     .iter_mut()
                     .find(|s| s.id == id)
-                    .unwrap()
+                    .ok_or("This secret no longer exists.")?
                     .errors
                     .insert("Credential store".into(), error);
                 Ok(())
@@ -460,7 +573,7 @@ pub async fn save_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _operation = OPERATION.lock().map_err(|_| "Secret settings are busy.")?;
+        let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
         let document = load()?;
         validate(&request, &document)?;
@@ -503,7 +616,7 @@ pub async fn save_secret(
             Ok(())
         })?;
         let _ = app.emit("silo://application-state-changed", ());
-        reconcile(&app, &id)?;
+        reconcile(&app, &id, &mut operation)?;
         let _ = prune_values();
         snapshot()
     })
@@ -519,7 +632,7 @@ pub async fn remove_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _operation = OPERATION.lock().map_err(|_| "Secret settings are busy.")?;
+        let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
         update(|d| {
             let secret = d
@@ -531,7 +644,7 @@ pub async fn remove_secret(
             secret.affected.extend(secret.workspaces.clone());
             Ok(())
         })?;
-        reconcile(&app, &id)?;
+        reconcile(&app, &id, &mut operation)?;
         let _ = prune_values();
         snapshot()
     })
@@ -547,9 +660,9 @@ pub async fn retry_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _operation = OPERATION.lock().map_err(|_| "Secret settings are busy.")?;
+        let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
-        reconcile(&app, &id)?;
+        reconcile(&app, &id, &mut operation)?;
         let _ = prune_values();
         snapshot()
     })
@@ -566,13 +679,11 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     .ok();
     let app = app.clone();
     std::thread::spawn(move || {
-        let Ok(_operation) = OPERATION.lock() else {
-            return;
-        };
+        let mut operation = Some(lock_unit(&OPERATION));
         if let Ok(document) = load() {
             for secret in document.secrets {
                 if !secret.affected.is_empty() || secret.removing {
-                    let _ = reconcile(&app, &secret.id);
+                    let _ = reconcile(&app, &secret.id, &mut operation);
                 }
             }
         }
@@ -677,6 +788,42 @@ mod tests {
             assert!(valid_domain(domain));
         }
     }
+    /// Owner decision 4: choosing allowed domains is the user's responsibility.
+    /// Validation only checks syntax; it does not consult the public suffix list.
+    #[test]
+    fn allowed_domain_syntax_intent_matches_owner_decision_four() {
+        for accepted in [
+            "*",                     // explicit opt-in to every domain
+            "*.co.uk",               // public-suffix wildcards are allowed by decision
+            "*.github.io",
+            "*.vercel.app",
+            "localhost",             // single-label hosts are allowed
+            "127.0.0.1",             // IPv4 literals parse as numeric labels
+            "10.0.0.1",
+            "xn--bcher-kva.example", // punycode labels
+            "a-b.example.com",
+        ] {
+            assert!(valid_domain(accepted), "{accepted} should be accepted");
+        }
+        for rejected in [
+            "*.com",           // a wildcard needs at least two labels
+            "*.xn--p1ai",
+            "example.com.",    // trailing dot: use the name without it
+            ".example.com",
+            "API.example.com", // names must be entered in lower case
+            "*.*.example.com", // only one leading wildcard label
+            "a*.example.com",
+            "*example.com",
+            "::1",             // IPv6 literals are not supported
+            "[::1]",
+            "exa mple.com",
+            "b\u{fc}cher.example", // use punycode for internationalized names
+            &format!("{}.com", "a".repeat(64)),
+            &format!("{}.com", ["a"; 127].join(".")),
+        ] {
+            assert!(!valid_domain(rejected), "{rejected} should be rejected");
+        }
+    }
     #[test]
     fn edits_preserve_name_and_do_not_require_value() {
         let mut r = request();
@@ -726,6 +873,115 @@ mod tests {
         assert_eq!(public(&secret)["state"], "active");
     }
     #[test]
+    fn poisoned_locks_recover_instead_of_blocking_secrets_and_updates() {
+        static TEST: Mutex<()> = Mutex::new(());
+        let _ = std::thread::spawn(|| {
+            let _guard = TEST.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        assert!(TEST.is_poisoned());
+        drop(lock_unit(&TEST));
+        let held = try_lock_unit(&TEST).expect("poisoned lock is recoverable");
+        assert!(try_lock_unit(&TEST).is_none());
+        drop(held);
+    }
+    #[test]
+    fn cached_store_failure_expires_so_later_starts_ask_the_store_again() {
+        let failed_at = Instant::now();
+        let mut cached: Cached = Some((Err(STORE_ERROR.into()), failed_at));
+        expire_failure(&mut cached, failed_at + Duration::from_secs(1));
+        assert!(cached.is_some(), "a fresh failure is not retried in a tight loop");
+        expire_failure(&mut cached, failed_at + STORE_RETRY_AFTER);
+        assert!(cached.is_none(), "an old failure no longer blocks VM starts");
+        let mut unlocked: Cached = Some((Ok(Vault::new()), failed_at));
+        expire_failure(&mut unlocked, failed_at + STORE_RETRY_AFTER * 100);
+        assert!(unlocked.is_some(), "successful reads stay cached");
+    }
+    #[test]
+    fn deleting_and_recreating_a_sandbox_leaves_it_no_secret_material() {
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        let mut assigned = secret();
+        assigned.workspaces = vec!["dev".into(), "other".into()];
+        assigned.pending_workspaces = vec!["dev".into()];
+        assigned.errors.insert("dev".into(), "Retry".into());
+        save(&Document { secrets: vec![assigned], activities: Vec::new() }).unwrap();
+        workspace_removed("dev").unwrap();
+        let document = load().unwrap();
+        let kept = &document.secrets[0];
+        assert_eq!(kept.workspaces, ["other"]);
+        assert!(kept.affected.is_empty() && kept.pending_workspaces.is_empty());
+        assert!(kept.errors.is_empty());
+        // A new `dev` selects no secrets, so no credential-store read happens.
+        assert!(runtime_material("dev").unwrap().is_empty());
+        assert_eq!(workspace_revision("dev").unwrap(), revision(&Document::default(), "dev"));
+        use_test_store(None);
+    }
+    #[test]
+    fn reconcile_releases_the_operation_lock_while_a_vm_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        save(&Document { secrets: vec![secret()], activities: Vec::new() }).unwrap();
+        let mut operation = Some(lock_unit(&OPERATION));
+        let mut applied = Vec::new();
+        reconcile_with(
+            "id",
+            &mut operation,
+            &|_| Ok(Vec::new()),
+            &mut |workspace, _| {
+                // A fork or update check can take the lock while this VM applies.
+                assert!(try_lock_unit(&OPERATION).is_some());
+                applied.push(workspace.to_string());
+                if applied.len() == 1 {
+                    // Another save changes this VM's desired secrets meanwhile.
+                    update(|d| {
+                        d.secrets[0].value_id = "rotated-reference".into();
+                        Ok(())
+                    })?;
+                }
+                Ok(Vec::new())
+            },
+            &|| {},
+        )
+        .unwrap();
+        assert!(operation.is_some(), "the lock is held again when reconcile returns");
+        assert!(try_lock_unit(&OPERATION).is_none());
+        drop(operation);
+        assert_eq!(applied, ["dev", "dev"], "the newer desired state is applied again");
+        let document = load().unwrap();
+        assert_eq!(public(&document.secrets[0])["state"], "active");
+        use_test_store(None);
+    }
+    #[test]
+    fn restart_finishing_during_apply_leaves_no_stale_restart_request() {
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        let mut assigned = secret();
+        assigned.workspaces = vec!["restarting".into()];
+        assigned.affected = vec!["restarting".into()];
+        save(&Document { secrets: vec![assigned], activities: Vec::new() }).unwrap();
+        let mut operation = Some(lock_unit(&OPERATION));
+        reconcile_with(
+            "id",
+            &mut operation,
+            &|_| Ok(Vec::new()),
+            &mut |workspace, _| {
+                // The running VM defers the change, but a restart completes with the
+                // desired revision before this result is recorded.
+                workspace_started(workspace, &workspace_revision(workspace)?)?;
+                Ok(vec!["API_KEY".into()])
+            },
+            &|| {},
+        )
+        .unwrap();
+        drop(operation);
+        let document = load().unwrap();
+        assert!(document.secrets[0].pending_workspaces.is_empty());
+        assert_eq!(public(&document.secrets[0])["state"], "active");
+        use_test_store(None);
+    }
+    #[test]
     fn history_is_bounded_and_contains_no_values() {
         let mut d = Document::default();
         for _ in 0..110 {
@@ -741,5 +997,6 @@ mod tests {
 }
 
 pub(crate) fn update_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
-    OPERATION.try_lock().map_err(|_| "Wait for the secret operation to finish before updating.".into())
+    try_lock_unit(&OPERATION)
+        .ok_or_else(|| "Wait for the secret operation to finish before updating.".into())
 }
