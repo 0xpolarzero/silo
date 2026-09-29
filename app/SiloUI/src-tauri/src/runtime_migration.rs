@@ -549,7 +549,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     };
     let needs_conversion = state.status == "scanning";
     app.manage(Arc::new(Controller { app_data, path, state: Mutex::new(state), writable }));
-    if needs_conversion { let _ = retry_runtime_migration(app.clone())?; }
+    if needs_conversion { let _ = retry_runtime_migration_blocking(app.clone())?; }
     Ok(())
 }
 
@@ -592,8 +592,18 @@ pub(crate) fn read_runtime_migration_state(app: AppHandle) -> Result<MigrationSt
     controller.state.lock().map(|state| state.clone()).map_err(|_| "Migration state is unavailable.".into())
 }
 
+/// Runs file writes and fsyncs off the main thread.
+async fn blocking(app: AppHandle, work: fn(AppHandle) -> Result<MigrationState, String>) -> Result<MigrationState, String> {
+    tauri::async_runtime::spawn_blocking(move || work(app)).await
+        .map_err(|_| "Migration state is unavailable.".to_string())?
+}
+
 #[tauri::command]
-pub(crate) fn retry_runtime_migration(app: AppHandle) -> Result<MigrationState, String> {
+pub(crate) async fn retry_runtime_migration(app: AppHandle) -> Result<MigrationState, String> {
+    blocking(app, retry_runtime_migration_blocking).await
+}
+
+fn retry_runtime_migration_blocking(app: AppHandle) -> Result<MigrationState, String> {
     let result = update(&app, |state| {
         if !matches!(state.status.as_str(), "scanning" | "failed") {
             return Err("Migration is already running or complete.".into());
@@ -622,7 +632,11 @@ pub(crate) fn retry_runtime_migration(app: AppHandle) -> Result<MigrationState, 
 }
 
 #[tauri::command]
-pub(crate) fn continue_after_migration_failure(app: AppHandle) -> Result<MigrationState, String> {
+pub(crate) async fn continue_after_migration_failure(app: AppHandle) -> Result<MigrationState, String> {
+    blocking(app, continue_after_migration_failure_blocking).await
+}
+
+fn continue_after_migration_failure_blocking(app: AppHandle) -> Result<MigrationState, String> {
     let controller = app.state::<Arc<Controller>>();
     if !controller.writable { return Err("Saved migration data needs manual repair. The file was preserved.".into()); }
     let current = controller.state.lock().map_err(|_| "Migration state is unavailable.")?.clone();
