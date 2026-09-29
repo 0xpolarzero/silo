@@ -23,7 +23,7 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
-import { OperationQueueToast, WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
+import { WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
 import { emptyOperationQueue, waitingOperationForVm, waitingStatusText, cancelledActionLabel } from "@/features/application/model/operation-queue"
 import type {
   ApplicationActions,
@@ -570,9 +570,6 @@ export function OverviewPage({ active = true, readOnly = false,
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="min-h-0 flex-1">
-        {/* A single toast reflects VM-changing operations for both the list and detail
-            views; it renders nothing inline and never shifts the sandbox list. */}
-        <OperationQueueToast queue={source.operationQueue} onCancel={readOnly ? undefined : actions.cancelOperation} />
         {detailWorkspace ? (
           // Keyed per sandbox so edit drafts, delete confirmations and panel state never carry over.
           <SandboxDetailPage key={workspaceTarget(detailWorkspace)} workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />

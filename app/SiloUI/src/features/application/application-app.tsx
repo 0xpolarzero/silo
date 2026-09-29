@@ -11,6 +11,7 @@ import type { BackupController } from "@/features/application/model/backup-sourc
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { ApplicationShell, type ApplicationNavigationLoading } from "@/features/application/components/application-shell"
 import { ApplicationCommandMenu } from "@/features/application/components/application-command-menu"
+import { OperationQueueToast } from "@/features/application/components/operation-queue-panel"
 import { applicationCommands } from "@/features/application/components/application-commands"
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
@@ -310,6 +311,9 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       reduceMotion={reduceMotion}
       commandMenu={<ApplicationCommandMenu nativeShortcuts={nativeMenu} openRequest={searchRequest} disabled={installingUpdate} commands={[...applicationCommands(applicationSource, actions, navigateCommand, canImport ? openImport : undefined), ...updateCommands(updates, () => navigation.selectSettingsSection("general"))]} />}
     >
+      {/* One toast reflects VM-changing operations wherever the user is, so progress and
+          Cancel never vanish while the work continues. It renders nothing inline. */}
+      <OperationQueueToast queue={source.operationQueue} onCancel={actions.cancelOperation} />
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
           <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} onExportSandbox={transfer.exportSandbox} onImportSandbox={openImport} importPopover={transfer.importPopover} backup={backup} source={applicationSource}
