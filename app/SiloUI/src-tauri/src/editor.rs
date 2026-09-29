@@ -39,9 +39,7 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
         launch.arg(remote_uri(&alias, path, zed)?);
         return run(&mut launch, Duration::from_secs(10));
     }
-    if !Path::new("/usr/bin/ssh").is_file() || !Path::new("/usr/bin/ssh-keygen").is_file() {
-        return Err("OpenSSH is required to open VM folders in your editor. Install your system's OpenSSH client and retry.".into());
-    }
+    require_openssh("open VM folders in your editor")?;
     runtime::validate_name(name).map_err(|error| error.to_string())?;
     let path = path.unwrap_or("/workspace");
     validate_path(path)?;
@@ -104,6 +102,18 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     run(&mut launch, Duration::from_secs(10)).map_err(|_| {
         "The editor could not be opened. Check its installation and Remote SSH support.".to_string()
     })
+}
+
+/// Explains a missing system OpenSSH client instead of a generic failure.
+pub(crate) fn require_openssh(purpose: &str) -> Result<(), String> {
+    require_openssh_at(Path::new("/usr/bin/ssh"), Path::new("/usr/bin/ssh-keygen"), purpose)
+}
+fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), String> {
+    if ssh.is_file() && keygen.is_file() {
+        Ok(())
+    } else {
+        Err(format!("OpenSSH is required to {purpose}. Install your system's OpenSSH client and retry."))
+    }
 }
 
 fn validate_path(path: &str) -> Result<(), String> {
@@ -450,6 +460,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _guard = files_lock();
         private_directory(&dir.path().join("ssh")).unwrap();
+    }
+
+    #[test]
+    fn a_missing_openssh_client_is_explained() {
+        let dir = tempfile::tempdir().unwrap();
+        let ssh = dir.path().join("ssh");
+        let keygen = dir.path().join("ssh-keygen");
+        let error = require_openssh_at(&ssh, &keygen, "view VM desktops").unwrap_err();
+        assert_eq!(error, "OpenSSH is required to view VM desktops. Install your system's OpenSSH client and retry.");
+        fs::write(&ssh, b"").unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        fs::write(&keygen, b"").unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_ok());
     }
 
     #[test]

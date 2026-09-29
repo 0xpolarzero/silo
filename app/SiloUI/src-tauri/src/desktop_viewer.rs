@@ -108,6 +108,25 @@ fn abort_attach(entries: &mut HashMap<String, Viewer>, label: &str, generation: 
         entry.connecting = false;
     }
 }
+enum ViewerClaim {
+    /// A viewer for this workspace exists or is being created.
+    Existing(String),
+    /// The caller reserved this label and must create its window.
+    New(String),
+}
+/// Reserves one viewer per workspace, so a concurrent second open finds the
+/// pending entry instead of creating a duplicate window and tunnel.
+fn claim_viewer(entries: &mut HashMap<String, Viewer>, workspace: &str) -> Result<ViewerClaim, String> {
+    if let Some((label, _)) = entries.iter().find(|(_, v)| v.workspace == workspace) {
+        return Ok(ViewerClaim::Existing(label.clone()));
+    }
+    if entries.len() >= 16 {
+        return Err("Close an unused desktop viewer first.".into());
+    }
+    let label = format!("desktop-shell-{}", uuid::Uuid::new_v4().simple());
+    entries.insert(label.clone(), Viewer::new(workspace.into()));
+    Ok(ViewerClaim::New(label))
+}
 static VIEWERS: OnceLock<Mutex<HashMap<String, Viewer>>> = OnceLock::new();
 fn viewers() -> &'static Mutex<HashMap<String, Viewer>> {
     VIEWERS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -146,6 +165,7 @@ fn forward_command(config: &Path, alias: &str, local_port: u16, guest_port: u16)
 }
 
 fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), String> {
+    editor::require_openssh("view VM desktops")?;
     let remote_target = remote_access::target(workspace)?;
     let connection = if let Some((host, vm)) = &remote_target {
         remote::call_remote(app, host, "desktop.connect", json!({"vmId":vm}))?
@@ -240,27 +260,30 @@ pub(crate) async fn open_desktop(
             }
             workspace.clone()
         };
-        let mut entries = viewers().lock().map_err(|_| "Desktop unavailable.")?;
-        if let Some((label, _)) = entries.iter().find(|(_, v)| v.workspace == workspace) {
-            if let Some(existing) = app.get_window(label) {
-                let _ = existing.show();
-                return existing
-                    .set_focus()
-                    .map_err(|_| "Could not focus desktop.".into());
-            }
-        }
-        if entries.len() >= 16 {
-            return Err("Close an unused desktop viewer first.".into());
-        }
-        let label = format!("desktop-shell-{}", uuid::Uuid::new_v4().simple());
         let mut route = tauri::Url::parse("http://silo.local/index.html").unwrap();
         route
             .query_pairs_mut()
             .append_pair("desktop", &workspace)
             .append_pair("name", &name);
         let route = format!("index.html?{}", route.query().unwrap());
-        entries.insert(label.clone(), Viewer::new(workspace));
-        drop(entries);
+        let claim = {
+            let mut entries = viewers().lock().map_err(|_| "Desktop unavailable.")?;
+            claim_viewer(&mut entries, &workspace)?
+        };
+        // Window calls run on the main thread; never make them under the lock.
+        let label = match claim {
+            ViewerClaim::Existing(label) => {
+                // Without a window yet, another call is still creating it (G-15).
+                let Some(existing) = app.get_window(&label) else {
+                    return Ok(());
+                };
+                let _ = existing.show();
+                return existing
+                    .set_focus()
+                    .map_err(|_| "Could not focus desktop.".into());
+            }
+            ViewerClaim::New(label) => label,
+        };
         let result = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(route.into()))
             .title(format!("{name} — Silo"))
             .inner_size(1200., 820.)
@@ -411,6 +434,8 @@ pub(crate) async fn desktop_viewer_attach(
         .incognito(true)
         .focused(true)
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+        // Guest pages must never write to the host's Downloads folder (G-13).
+        .on_download(|_, _| false)
         .on_navigation(move |url| {
             url.as_str() == "about:blank" || url.origin().ascii_serialization() == permitted
         });
@@ -659,6 +684,25 @@ mod registry_tests {
             Ok(AttachPlan::Connect { stale: (_, Some(_)), .. })
         ));
         assert!(begin_attach(&mut entries, "shell", "other", true).is_err());
+    }
+
+    #[test]
+    fn a_concurrent_second_open_reuses_the_pending_viewer() {
+        let mut entries = HashMap::new();
+        let ViewerClaim::New(first) = claim_viewer(&mut entries, "dev").unwrap() else {
+            panic!("expected a new viewer");
+        };
+        // The first window is not built yet; the second open must not add one.
+        let ViewerClaim::Existing(second) = claim_viewer(&mut entries, "dev").unwrap() else {
+            panic!("expected the pending viewer");
+        };
+        assert_eq!(first, second);
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(claim_viewer(&mut entries, "other"), Ok(ViewerClaim::New(_))));
+        for index in 0..14 {
+            claim_viewer(&mut entries, &format!("vm-{index}")).unwrap();
+        }
+        assert!(claim_viewer(&mut entries, "one-too-many").is_err());
     }
 
     #[test]
