@@ -1,4 +1,4 @@
-import { Bell, CircleAlert, HardDrive, HeartPulse } from "lucide-react"
+import { Bell, CircleAlert, CircleCheck, HeartPulse } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Switch } from "@/components/ui/switch"
@@ -7,9 +7,9 @@ import { useSettings } from "@/features/preferences/settings-store"
 import { useSystemIntegrations } from "@/features/preferences/system-integrations-store"
 
 const categories = [
-  { id: "notifyHealth", label: "Sandbox health", detail: "State changes and failed health checks.", icon: HeartPulse },
-  { id: "notifyActions", label: "Action failures", detail: "Start, stop, restart, push, and maintenance failures.", icon: CircleAlert },
-  { id: "notifyBackup", label: "Export and import failures", detail: "Sandbox exports and imports that fail.", icon: HardDrive },
+  { id: "notifyFailures", label: "Failures", detail: "Actions and background work that fail, such as start, push, export, or import.", icon: CircleAlert },
+  { id: "notifyChanges", label: "Unexpected sandbox changes", detail: "A sandbox stops, fails, or recovers without you asking.", icon: HeartPulse },
+  { id: "notifyCompletions", label: "Long tasks finished", detail: "Work that took more than a few seconds finishes while Silo is in the background.", icon: CircleCheck },
 ] as const
 
 export function NotificationsPage() {
@@ -25,7 +25,7 @@ export function NotificationsPage() {
           className="hover:bg-muted/35 focus-within:bg-muted/35"
           icon={<ListRowIcon aria-hidden="true"><Bell className="size-3.5" /></ListRowIcon>}
           title={<h3>Enable notifications</h3>}
-          detail="Silo can send alerts while its window is closed."
+          detail="Silo sends system notifications while its window is in the background. While you're using Silo, results appear in the app."
           detailClassName="whitespace-normal"
           actions={<Switch checked={enabled} disabled={!integrations.initialized || integrations.notificationsPending || integrations.notifications.state === "error" || integrations.notifications.state === "unavailable"} onCheckedChange={(checked) => { void integrations.setNotificationsEnabled(checked) }} aria-label="Enable notifications" />}
         />

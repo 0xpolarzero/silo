@@ -58,16 +58,18 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     setBusy(true)
     // Ids read `network-port:<target>:…`; a local target is the sandbox name (see `workspaceTarget`).
     const sandbox = id.split(":")[1]
+    const machine = workspaces.find(workspace => workspaceTarget(workspace) === sandbox)?.machine
+    const noticeSandbox = machine ? { id: machine.id, name: machine.name } : undefined
     showOperationProgress(id, { title: copy.loading, step: copy.step ?? `${copy.loading}…`, progress: null, sandbox })
     try {
       await operation()
-      showOperationSuccess(id, copy.success, { sandbox })
+      showOperationSuccess(id, copy.success, { sandbox, noticeSandbox })
       setConfirm(null)
       onSuccess?.()
       return true
     } catch (cause) {
       const message = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated."
-      showOperationFailure(id, copy.failure, { description: message, retry: () => void run(id, copy, operation, onSuccess), sandbox })
+      showOperationFailure(id, copy.failure, { description: message, retry: () => void run(id, copy, operation, onSuccess), sandbox, noticeSandbox })
       return false
     } finally { setBusy(false) }
   }
@@ -76,7 +78,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   async function open(workspace: string, port: number) {
     const attempt = async () => {
       try { await actions.openNetworkPort!(workspace, port) }
-      catch (cause) { showActionFailure(`Could not open port ${port}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt()) }
+      catch (cause) { showActionFailure(`Could not open port ${port}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt(), { noticeSandbox: (() => { const machine = workspaces.find(item => workspaceTarget(item) === workspace)?.machine; return machine ? { id: machine.id, name: machine.name } : undefined })() }) }
     }
     await attempt()
   }

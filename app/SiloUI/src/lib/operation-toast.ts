@@ -1,6 +1,7 @@
 import { createElement, useEffect, useRef, type ReactNode } from "react"
 import { toast } from "sonner"
 
+import { deliverNotice, type Notice, type NoticeSandbox } from "@/desktop/notices"
 import { OperationToastBody, type OperationProgressOptions } from "@/components/operation-toast-body"
 
 export type { OperationCancel, OperationProgressOptions, OperationStep } from "@/components/operation-toast-body"
@@ -39,6 +40,10 @@ export interface OperationToastOptions {
   retry?: () => void
   /** Extra success action, e.g. { label: "Show in Finder", onClick }. */
   successAction?: { label: string; onClick: () => void }
+  /** See `OperationResultOptions.native`. */
+  native?: boolean
+  /** See `OperationResultOptions.noticeSandbox`. */
+  noticeSandbox?: NoticeSandbox
 }
 
 export function errorMessage(error: unknown): string {
@@ -95,6 +100,21 @@ export interface OperationResultOptions {
    * stays when it has an action or the operation showed progress for over 3 s.
    */
   persist?: boolean
+  /**
+   * Mirror this result to the system (default true), which the backend shows only while
+   * Silo is in the background. Failures always mirror; a success mirrors only after a
+   * progress notification shown for over 3 s. Pass false when the backend already sends
+   * the system notification (sandbox lifecycle, export/import, setup), or when the failure
+   * is not the result of background work (a validation message, a cancelled file dialog).
+   */
+  native?: boolean
+  /** The sandbox the system notification is about; it names the sandbox and opens it on click. */
+  noticeSandbox?: NoticeSandbox
+}
+
+function mirror(category: Notice["category"], key: string, title: string, options: Pick<OperationResultOptions, "description" | "native" | "noticeSandbox">) {
+  if (options.native === false) return
+  deliverNotice({ category, key, title, body: typeof options.description === "string" ? options.description : "", sandbox: options.noticeSandbox ?? null })
 }
 
 export function showOperationSuccess(id: string, title: string, options: OperationResultOptions = {}) {
@@ -104,6 +124,7 @@ export function showOperationSuccess(id: string, title: string, options: Operati
   const long = started !== undefined && Date.now() - started > LONG_OPERATION_MS
   const persist = options.persist ?? (Boolean(options.action) || long)
   toast.success(title, { id, description: options.description, duration: persist ? Infinity : QUICK_TOAST_DURATION, closeButton: true, action: options.action, onDismiss: options.onDismiss, onAutoClose: options.onDismiss })
+  if (long) mirror("completions", id, title, options)
 }
 
 export function showOperationFailure(id: string, title: string, options: OperationResultOptions & { retry?: () => void; tone?: "error" | "warning" } = {}) {
@@ -119,6 +140,7 @@ export function showOperationFailure(id: string, title: string, options: Operati
     onDismiss: options.onDismiss,
     onAutoClose: options.onDismiss,
   })
+  mirror("failures", id, title, options)
 }
 
 /** Close a notification (e.g. when the state it reported has gone away). */
@@ -150,7 +172,7 @@ export type OperationProgressState =
   | { status: "idle" }
   | ({ status: "running" } & OperationProgressOptions)
   | ({ status: "success"; title: string } & OperationResultOptions)
-  | { status: "failure"; title: string; description?: ReactNode; retry?: () => void; onDismiss?: () => void; sandbox?: string | string[] }
+  | { status: "failure"; title: string; description?: ReactNode; retry?: () => void; onDismiss?: () => void; sandbox?: string | string[]; native?: boolean; noticeSandbox?: NoticeSandbox }
 
 /**
  * Maps an operation state to progress/success/failure toasts under `id`. A state that is
@@ -168,9 +190,9 @@ export function useOperationProgressToast(id: string, state: OperationProgressSt
     } else if (before === null) {
       return
     } else if (state.status === "success" && before !== "success") {
-      showOperationSuccess(id, state.title, { description: state.description, action: state.action, sandbox: state.sandbox, onDismiss: state.onDismiss, persist: state.persist })
+      showOperationSuccess(id, state.title, { description: state.description, action: state.action, sandbox: state.sandbox, onDismiss: state.onDismiss, persist: state.persist, native: state.native, noticeSandbox: state.noticeSandbox })
     } else if (state.status === "failure" && before !== "failure") {
-      showOperationFailure(id, state.title, { description: state.description, retry: state.retry, sandbox: state.sandbox, onDismiss: state.onDismiss })
+      showOperationFailure(id, state.title, { description: state.description, retry: state.retry, sandbox: state.sandbox, onDismiss: state.onDismiss, native: state.native, noticeSandbox: state.noticeSandbox })
     } else if (state.status === "idle" && before === "running") {
       toast.dismiss(id)
     }
@@ -182,10 +204,10 @@ export async function runWithOperationToast<T>(id: string, copy: OperationToastC
   showOperationProgress(id, { title: copy.loading, step: copy.description, progress: null })
   try {
     const result = await action()
-    showOperationSuccess(id, copy.success, { description: copy.description, action: options.successAction })
+    showOperationSuccess(id, copy.success, { description: copy.description, action: options.successAction, native: options.native, noticeSandbox: options.noticeSandbox })
     return result
   } catch (error) {
-    showOperationFailure(id, copy.failure, { description: errorMessage(error), retry: options.retry })
+    showOperationFailure(id, copy.failure, { description: errorMessage(error), retry: options.retry, native: options.native, noticeSandbox: options.noticeSandbox })
     return undefined
   }
 }
@@ -195,12 +217,21 @@ export function showQuickConfirmation(title: string, description?: string) {
   toast.success(title, { description, duration: QUICK_TOAST_DURATION, closeButton: true })
 }
 
-/** A standalone failure for an instant action that failed (no loading phase). Stays until closed. */
-export function showActionFailure(title: string, error: unknown, retry?: () => void) {
+/**
+ * A standalone failure for an instant action that failed (no loading phase). Stays until
+ * closed. Its key derives from the title, so a repeat replaces the earlier toast and system
+ * notification. Pass `native: false` for a failure that is not the result of background
+ * work (a cancelled file dialog, a validation message).
+ */
+export function showActionFailure(title: string, error: unknown, retry?: () => void, options: { native?: boolean; noticeSandbox?: NoticeSandbox } = {}) {
+  const id = `action-failure:${title}`
+  const description = errorMessage(error)
   toast.error(title, {
-    description: errorMessage(error),
+    id,
+    description,
     duration: Infinity,
     closeButton: true,
     action: retry ? { label: "Retry", onClick: retry } : undefined,
   })
+  mirror("failures", id, title, { description, ...options })
 }

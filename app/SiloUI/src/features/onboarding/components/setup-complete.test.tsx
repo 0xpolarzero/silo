@@ -84,7 +84,7 @@ describe("completed onboarding system controls", () => {
     })
 
     expect(screen.getByRole("switch", { name: "Enable notifications" })).not.toBeChecked()
-    expect(screen.queryByRole("switch", { name: "Sandbox health" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("switch", { name: "Unexpected sandbox changes" })).not.toBeInTheDocument()
     expect(screen.getByText("Blocked in System Settings")).toBeVisible()
   })
 
@@ -98,7 +98,7 @@ describe("completed onboarding system controls", () => {
     expect(screen.getByRole("switch", { name: "Launch Silo at login" })).toBeDisabled()
     expect(screen.getByRole("switch", { name: "Enable notifications" })).toBeDisabled()
     expect(screen.queryByRole("switch", { name: "Start sandboxes at launch" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("switch", { name: "Sandbox health" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("switch", { name: "Unexpected sandbox changes" })).not.toBeInTheDocument()
   })
 
   it("shows the approved flat child controls only for verified enabled states", () => {
@@ -112,7 +112,7 @@ describe("completed onboarding system controls", () => {
     expect(screen.getByRole("switch", { name: "Start sandboxes at launch" })).toBeChecked()
     expect(screen.getByRole("combobox", { name: "Add sandbox at startup" })).toBeVisible()
     expect(screen.getByRole("switch", { name: "Enable notifications" })).toBeChecked()
-    expect(screen.getByRole("switch", { name: "Sandbox health" })).toBeVisible()
+    expect(screen.getByRole("switch", { name: "Unexpected sandbox changes" })).toBeVisible()
     expect(screen.queryByText("State changes and failed health checks.")).not.toBeInTheDocument()
   })
 })

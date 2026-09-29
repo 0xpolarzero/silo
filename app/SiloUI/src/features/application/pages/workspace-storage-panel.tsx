@@ -17,6 +17,8 @@ function formatBytes(bytes: number) {
 
 interface StoragePanelProps {
   workspaceId: string
+  /** Names the sandbox in the system notification. */
+  sandboxName?: string
   running: boolean
   disabled?: boolean
   read: (workspaceId: string) => Promise<WorkspaceStorageState>
@@ -27,7 +29,7 @@ export function WorkspaceStoragePanel(props: StoragePanelProps) {
   return <WorkspaceStorageContent key={`${props.workspaceId}:${props.running}`} {...props} />
 }
 
-function WorkspaceStorageContent({ workspaceId, running, disabled = false, read, reclaim }: StoragePanelProps) {
+function WorkspaceStorageContent({ workspaceId, sandboxName, running, disabled = false, read, reclaim }: StoragePanelProps) {
   const [storage, setStorage] = useState<WorkspaceStorageState | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [reclaiming, setReclaiming] = useState(false)
@@ -40,7 +42,7 @@ function WorkspaceStorageContent({ workspaceId, running, disabled = false, read,
     void readInitial().then(value => {
       if (active.generation === request) setStorage(value)
     }, cause => {
-      if (active.generation === request) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void load(false) })
+      if (active.generation === request) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void load(false), native: false })
     }).finally(() => {
       if (active.generation === request) setBusy(false)
     })
@@ -53,6 +55,7 @@ function WorkspaceStorageContent({ workspaceId, running, disabled = false, read,
     setBusy(true)
     setReclaiming(reclaimSpace)
     const toastId = `storage-reclaim:${workspaceId}`
+    const noticeSandbox = sandboxName ? { id: workspaceId, name: sandboxName } : undefined
     if (reclaimSpace) showOperationProgress(toastId, { title: 'Reclaiming unused space', step: 'Your files stay available' })
     try {
       const value = await (reclaimSpace ? reclaim! : read)(workspaceId)
@@ -60,13 +63,13 @@ function WorkspaceStorageContent({ workspaceId, running, disabled = false, read,
       setStorage(value)
       dismissOperationToast(`storage-read:${workspaceId}`)
       if (reclaimSpace) {
-        if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { description: value.lastError, retry: () => void load(true) })
-        else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: 'Freed on this computer.', persist: true })
+        if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: value.lastError, retry: () => void load(true) })
+        else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: 'Freed on this computer.', persist: true, noticeSandbox })
       }
     } catch (cause) {
       if (requests.current.generation === request) {
-        if (reclaimSpace) showOperationFailure(toastId, 'Reclaim failed', { description: errorMessage(cause), retry: () => void load(true) })
-        else showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void load(false) })
+        if (reclaimSpace) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: errorMessage(cause), retry: () => void load(true) })
+        else showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void load(false), native: false })
         if (reclaimSpace) {
           try {
             const value = await read(workspaceId)

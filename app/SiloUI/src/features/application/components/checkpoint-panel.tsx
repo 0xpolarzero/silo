@@ -46,6 +46,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
   const locked = disabled || busy
   const isLocal = !workspace.computer
   const sandbox = workspace.machine.name
+  const noticeSandbox = { id: workspace.machine.id, name: sandbox }
 
   async function run(spec: Parameters<typeof runCheckpointOperation>[0]) {
     setPending(true)
@@ -61,6 +62,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       kind: "capture",
       target,
       sandbox,
+      noticeSandbox,
       title: `Creating checkpoint “${title}”`,
       run: () => actions.createCheckpoint!(target, title),
       success: { title: "Checkpoint created", description: title },
@@ -75,6 +77,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       kind: "restore",
       target,
       sandbox,
+      noticeSandbox,
       title: `Restoring “${checkpoint.name}”`,
       run: () => actions.restoreCheckpoint!(target, checkpoint.id),
       success: { title: `Restored “${checkpoint.name}”`, description: `${sandbox} is stopped. A recovery checkpoint was saved first.`, action: restoredAction?.(checkpoint) },
@@ -89,6 +92,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       kind: "fork",
       target,
       sandbox: [sandbox, newName],
+      noticeSandbox,
       title: `Creating fork ${newName}`,
       run: () => actions.forkCheckpoint!(target, checkpoint.id, newName),
       success: { title: "Fork created", description: `${newName} is stopped. Start it when you’re ready.`, action: forkedAction?.(newName) },

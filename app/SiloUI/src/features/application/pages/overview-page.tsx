@@ -351,7 +351,7 @@ export function OverviewPage({ active = true, readOnly = false,
   const isMachineRunning = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.state === "running"
 
   function notifyOperationUnavailable() {
-    showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.")
+    showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.", undefined, { native: false })
   }
 
   // A single set of lifecycle handlers, guarded for capacity and unavailable-operation
@@ -398,7 +398,7 @@ export function OverviewPage({ active = true, readOnly = false,
       const guarded = guardedLifecycle(workspace)
       const retry = readOnly ? undefined : () => { if (action === "start") guarded.startWorkspace(target); else if (action === "stop") guarded.stopWorkspace(target); else guarded.restartWorkspace(target) }
       dismissOperationToast(id)
-      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ?? undefined, retry, sandbox: name })
+      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ?? undefined, retry, sandbox: name, native: false })
     }
   })
   useEffect(() => { lifecycleToasts(source.workspaces) }, [source.workspaces])
@@ -444,6 +444,7 @@ export function OverviewPage({ active = true, readOnly = false,
       kind: "fork",
       target,
       sandbox: [workspace.machine.name, name],
+      noticeSandbox: { id: workspace.machine.id, name: workspace.machine.name },
       title: `Creating fork ${name}`,
       run: () => actions.forkCheckpoint!(target, null, name),
       success: { title: "Fork created", description: `${name} is stopped. Start it when you’re ready.`, action: forkOpenAction(name) },

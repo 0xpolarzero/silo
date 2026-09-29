@@ -48,7 +48,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
     try {
       await save({ workspace: access.workspace, enabled: access.enabled, port: access.port, bindAddress: access.bindAddress, keys: access.keys, ...patch })
       return true
-    } catch (cause) { showActionFailure("SSH settings not saved", cause, () => { void change(patch) }); return false }
+    } catch (cause) { showActionFailure("SSH settings not saved", cause, () => { void change(patch) }, { native: false }); return false }
     finally { setBusy(false) }
   }
   async function connect(download: boolean, network: boolean) {
@@ -57,7 +57,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
     try {
       const command = await connection(access.workspace, download, network)
       if (!download && command) { await navigator.clipboard.writeText(command); setCopied(network ? "network" : "local") }
-    } catch (cause) { showActionFailure(download ? "SSH key file not saved" : "SSH command not copied", cause, () => { void connect(download, network) }) }
+    } catch (cause) { showActionFailure(download ? "SSH key file not saved" : "SSH command not copied", cause, () => { void connect(download, network) }, { native: false }) }
     finally { setBusy(false) }
   }
   const networkAddresses = access?.addresses.filter(value => value !== "127.0.0.1") ?? []

@@ -39,7 +39,7 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
           { text: "Copy base URL", action: () => {
             void navigator.clipboard.writeText(`http://${workspace.host}`).then(
               () => showQuickConfirmation("Base URL copied"),
-              (error) => showActionFailure("Couldn't copy base URL", error),
+              (error) => showActionFailure("Couldn't copy base URL", error, undefined, { native: false }),
             )
           } },
         ],
@@ -51,7 +51,7 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
       await menu.popup(new LogicalPosition(bounds.left, bounds.bottom))
     } catch (error) {
       console.error("Silo status menu:", error)
-      showActionFailure("Couldn't open sandbox actions", error, () => { if (buttonRef.current) void open(buttonRef.current) })
+      showActionFailure("Couldn't open sandbox actions", error, () => { if (buttonRef.current) void open(buttonRef.current) }, { native: false })
     } finally {
       opening.current = false
       // On macOS popup resolves after native menu tracking ends.

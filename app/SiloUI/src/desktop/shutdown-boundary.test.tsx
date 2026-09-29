@@ -39,7 +39,7 @@ it("reads active shutdown when a window opens after the event", async () => {
 })
 it("names the running work Quit waits for and cancels only cancellable entries on request", async () => {
   const queue = { running: [
-    { id: 7, label: "Stopping local VMs", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false },
+    { id: 7, label: "Stopping local VMs", kind: "shutdown", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false },
     { id: 8, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false },
   ], waiting: [] }
   native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? queue : name === "read_shutdown_state" ? false : true)

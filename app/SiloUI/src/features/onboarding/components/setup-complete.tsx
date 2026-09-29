@@ -1,5 +1,5 @@
 import { useLayoutEffect } from "react"
-import { Bell, Boxes, Check, CircleAlert, GitFork, HardDrive, HeartPulse, Power } from "lucide-react"
+import { Bell, Boxes, Check, CircleAlert, CircleCheck, GitFork, HeartPulse, Power } from "lucide-react"
 
 import { FilterCombobox } from "@/components/filter-combobox"
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
@@ -10,9 +10,9 @@ import { useSystemIntegrations } from "@/features/preferences/system-integration
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 
 const notificationCategories = [
-  { id: "notifyHealth", label: "Sandbox health", icon: HeartPulse },
-  { id: "notifyActions", label: "Action failures", icon: CircleAlert },
-  { id: "notifyBackup", label: "Export and import failures", icon: HardDrive },
+  { id: "notifyFailures", label: "Failures", icon: CircleAlert },
+  { id: "notifyChanges", label: "Unexpected sandbox changes", icon: HeartPulse },
+  { id: "notifyCompletions", label: "Long tasks finished", icon: CircleCheck },
 ] as const
 
 export function SetupComplete({ machines, githubSummary }: {

@@ -17,9 +17,9 @@ export const settingSchemas = {
   browserUseSystemDefault: z.boolean(),
   reduceMotion: z.boolean(),
   notificationsEnabled: z.boolean(),
-  notifyHealth: z.boolean(),
-  notifyActions: z.boolean(),
-  notifyBackup: z.boolean(),
+  notifyFailures: z.boolean(),
+  notifyChanges: z.boolean(),
+  notifyCompletions: z.boolean(),
   onboardingComplete: z.boolean(),
 } as const
 
@@ -44,9 +44,9 @@ export const defaultSettings: Settings = {
   browserUseSystemDefault: true,
   reduceMotion: false,
   notificationsEnabled: true,
-  notifyHealth: true,
-  notifyActions: true,
-  notifyBackup: true,
+  notifyFailures: true,
+  notifyChanges: true,
+  notifyCompletions: true,
   onboardingComplete: false,
 }
 
@@ -58,6 +58,15 @@ export function readSettingsOverrides(input: Record<string, unknown>): SettingsP
     if (!(key in input)) continue
     const parsed = schema.safeParse(input[key])
     if (parsed.success) result[key] = parsed.data
+  }
+  // Before the notification categories were reworked, three per-area switches existed.
+  // A saved choice to silence an area keeps silencing its successor until the new key is saved.
+  const legacyOn = (key: string) => input[key] !== false
+  if (!("notifyFailures" in result) && !("notifyFailures" in input)) {
+    if ("notifyActions" in input || "notifyBackup" in input) result.notifyFailures = legacyOn("notifyActions") && legacyOn("notifyBackup")
+  }
+  if (!("notifyChanges" in result) && !("notifyChanges" in input)) {
+    if ("notifyHealth" in input) result.notifyChanges = legacyOn("notifyHealth")
   }
   return result as SettingsPatch
 }

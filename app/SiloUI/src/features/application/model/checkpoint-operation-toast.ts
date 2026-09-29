@@ -1,6 +1,7 @@
+import type { NoticeSandbox } from "@/desktop/notices"
 import { errorMessage, showOperationFailure, showOperationProgress, showOperationSuccess, type OperationStep } from "@/lib/operation-toast"
 import { workspaceTarget } from "./remote-computers"
-import { CHECKPOINT_CAPTURE_LABEL, type OperationQueue } from "./operation-queue"
+import type { OperationQueue } from "./operation-queue"
 import type { ApplicationWorkspace } from "./application-source"
 import type { WorkspaceCheckpointOperation } from "./checkpoint-source"
 
@@ -16,6 +17,8 @@ export interface CheckpointOperationSpec {
   target: string
   /** Sandbox name(s) the notification concerns, so it is dismissed if that sandbox is deleted. */
   sandbox?: string | string[]
+  /** The sandbox the system notification names and opens. */
+  noticeSandbox?: NoticeSandbox
   title: string
   run: () => Promise<void>
   success: { title: string; description?: string; action?: { label: string; onClick: () => void } }
@@ -48,7 +51,7 @@ function show(entry: { spec: CheckpointOperationSpec; startedAt: number }, stage
   const { spec, startedAt } = entry
   // The queue toast hides checkpoint capture, so this notification carries its Cancel.
   const capture = spec.kind === "capture" && context?.cancel && context.queue && vmId
-    ? context.queue.running.find(item => item.label === CHECKPOINT_CAPTURE_LABEL && item.cancellable && item.vmId === vmId)
+    ? context.queue.running.find(item => item.kind === "checkpointCapture" && item.cancellable && item.vmId === vmId)
     : undefined
   showOperationProgress(spec.id, {
     title: spec.title,
@@ -67,11 +70,11 @@ export async function runCheckpointOperation(spec: CheckpointOperationSpec): Pro
   try {
     await spec.run()
     active.delete(spec.id)
-    showOperationSuccess(spec.id, spec.success.title, { description: spec.success.description, action: spec.success.action, sandbox: spec.sandbox })
+    showOperationSuccess(spec.id, spec.success.title, { description: spec.success.description, action: spec.success.action, sandbox: spec.sandbox, noticeSandbox: spec.noticeSandbox })
     return true
   } catch (cause) {
     active.delete(spec.id)
-    showOperationFailure(spec.id, spec.failureTitle, { description: errorMessage(cause), retry: () => { void runCheckpointOperation(spec) }, sandbox: spec.sandbox })
+    showOperationFailure(spec.id, spec.failureTitle, { description: errorMessage(cause), retry: () => { void runCheckpointOperation(spec) }, sandbox: spec.sandbox, noticeSandbox: spec.noticeSandbox })
     return false
   }
 }

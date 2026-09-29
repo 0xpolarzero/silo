@@ -21,14 +21,14 @@ export function PersonalTokenConnection({ status, onSave, onRemove }: {
     setToken("")
     setBusy(true)
     try { await onSave(value); setEditing(false) }
-    catch { showActionFailure("Could not connect token", "Check its validity, your connection, and credential-store access.") }
+    catch { showActionFailure("Could not connect token", "Check its validity, your connection, and credential-store access.", undefined, { native: false }) }
     finally { setBusy(false) }
   }
   async function remove() {
     if (!onRemove) return
     setBusy(true)
     try { await onRemove(); setEditing(false); setToken("") }
-    catch { showActionFailure("Could not remove token", "Check credential-store access and try again.", () => void remove()) }
+    catch { showActionFailure("Could not remove token", "Check credential-store access and try again.", () => void remove(), { native: false }) }
     finally { setBusy(false) }
   }
   return <ListCard className="shrink-0">

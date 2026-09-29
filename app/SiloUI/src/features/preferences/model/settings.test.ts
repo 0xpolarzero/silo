@@ -44,7 +44,7 @@ it("preserves explicit false values, empty startup selections, and unavailable a
     terminal: "Unavailable terminal",
     editor: "Unavailable editor",
     notificationsEnabled: false,
-    notifyHealth: false,
+    notifyChanges: false,
   }
   expect(readSettingsOverrides(saved)).toEqual(saved)
   expect(settingsPatchSchema.parse(saved)).toEqual(saved)
@@ -52,10 +52,24 @@ it("preserves explicit false values, empty startup selections, and unavailable a
 
 it.each([
   { theme: "automatic", browser: "Firefox" },
-  { notifyActions: "false" },
+  { notifyFailures: "false" },
   { terminal: "" },
   { startupWorkspaceIds: [""] },
   { futureSetting: true },
 ])("rejects an invalid settings write without accepting a partial edit: %j", (patch) => {
   expect(settingsPatchSchema.safeParse(patch).success).toBe(false)
+})
+
+it.each([
+  [{ notifyActions: false }, { notifyFailures: false }],
+  [{ notifyBackup: false }, { notifyFailures: false }],
+  [{ notifyActions: true, notifyBackup: true }, { notifyFailures: true }],
+  [{ notifyHealth: false }, { notifyChanges: false }],
+  [{ notifyHealth: true }, { notifyChanges: true }],
+  [{ notifyActions: false, notifyBackup: true, notifyHealth: false }, { notifyFailures: false, notifyChanges: false }],
+  [{ notifyActions: false, notifyFailures: true, notifyChanges: true, notifyHealth: false }, { notifyFailures: true, notifyChanges: true }],
+  [{ notifyCompletions: false, notifyBackup: false }, { notifyCompletions: false, notifyFailures: false }],
+  [{}, {}],
+])("derives the new notification categories from legacy keys only when absent: %j", (saved, expected) => {
+  expect(readSettingsOverrides(saved)).toEqual(expected)
 })

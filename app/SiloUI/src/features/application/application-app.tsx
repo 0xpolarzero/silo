@@ -1,4 +1,5 @@
 import { workspaceTarget } from "./model/remote-computers"
+import { useBackendNotices } from "@/features/application/model/use-backend-notices"
 import { useUpdates } from "@/features/updates/update-store"
 import { updateCommands } from "@/features/updates/update-commands"
 import { useAppMenu } from "@/desktop/app-menu"
@@ -84,6 +85,7 @@ export function ApplicationApp(props: ApplicationAppProps) {
 }
 
 function ApplicationContent({ source, actions, backup, initialRoute, routeRequest }: ApplicationAppProps) {
+  useBackendNotices()
   const updates = useUpdates()
   const installingUpdate = updates?.snapshot?.phase === "installing"
     || Boolean(updates?.pending && (updates.snapshot?.phase === "ready" || updates.snapshot?.retryAction === "install"))
