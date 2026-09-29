@@ -23,6 +23,7 @@ const MAX_COMMAND_OUTPUT: usize = 32 * 1024;
 const MAX_STRUCTURED_OUTPUT: usize = 1024 * 1024;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const WORKER_LOCK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const DEFAULT_MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Default)]
@@ -90,7 +91,11 @@ impl MsbRunner for SystemMsbRunner {
         // snapshot data. Such a command can outlive Silo; keep the lock in the
         // child until it exits, even if Silo dies.
         let worker_lock = if arguments.first().is_some_and(|arg| arg == "snapshot") {
-            Some(wait_for_interrupted_command(&command.home, timeout).map_err(BackupError::Io)?)
+            Some(wait_for_worker_lock(
+                &command.home,
+                worker_lock_timeout(timeout),
+                cancellation,
+            )?)
         } else {
             None
         };
@@ -189,6 +194,25 @@ fn inherit_worker_lock(command: &mut Command, lock: &File) {
 /// Also held by a surviving snapshot/create child after the app exits. A bounded
 /// wait prevents recovery from racing that child's writes or hanging forever.
 pub(crate) fn wait_for_interrupted_command(home: &Path, timeout: Duration) -> io::Result<File> {
+    match wait_for_worker_lock(home, timeout, &Cancellation::default()) {
+        Ok(file) => Ok(file),
+        Err(BackupError::Io(error)) => Err(error),
+        Err(error) => Err(io::Error::other(error.to_string())),
+    }
+}
+
+/// Only a surviving child of an earlier Silo process holds the lock (this
+/// process serializes its own export and import work), so waiting for it is
+/// bounded well below the command timeout and stops as soon as the user cancels.
+fn worker_lock_timeout(command_timeout: Duration) -> Duration {
+    command_timeout.min(WORKER_LOCK_TIMEOUT)
+}
+
+fn wait_for_worker_lock(
+    home: &Path,
+    timeout: Duration,
+    cancellation: &Cancellation,
+) -> Result<File, BackupError> {
     fs::create_dir_all(home)?;
     let file = OpenOptions::new()
         .read(true)
@@ -204,13 +228,15 @@ pub(crate) fn wait_for_interrupted_command(home: &Path, timeout: Duration) -> io
         }
         let error = io::Error::last_os_error();
         if error.kind() != io::ErrorKind::WouldBlock {
-            return Err(error);
+            return Err(error.into());
         }
+        check_cancelled(cancellation)?;
         if started.elapsed() >= timeout {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "The previous export or import command is still finishing. Wait a moment and relaunch Silo to resume.",
-            ));
+            )
+            .into());
         }
         thread::sleep(COMMAND_POLL_INTERVAL);
     }
@@ -2165,6 +2191,40 @@ mod tests {
         assert!(ready);
         assert!(lock_result.is_ok(), "a read-only list must not hold the worker lock");
         assert_eq!(worker.join().unwrap().unwrap().stdout, "[]");
+    }
+
+    #[test]
+    fn cancel_stops_waiting_for_an_inherited_worker_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let command = script_command(directory.path(), "#!/bin/sh\nexit 0\n");
+        // A surviving child of an earlier Silo still holds the lock.
+        let held = wait_for_interrupted_command(&command.home, Duration::ZERO).unwrap();
+        let cancellation = Cancellation::default();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_cancellation = cancellation.clone();
+        thread::spawn(move || {
+            let result = SystemMsbRunner.run(
+                &command,
+                &["snapshot".into(), "load".into(), "/tmp/unused.msb".into()],
+                DEFAULT_COMMAND_TIMEOUT,
+                &worker_cancellation,
+            );
+            let _ = sender.send(result);
+        });
+        thread::sleep(Duration::from_millis(100));
+        cancellation.cancel();
+        let result = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Cancel must stop the worker-lock wait");
+        assert!(matches!(result, Err(BackupError::Cancelled)));
+        drop(held);
+    }
+
+    #[test]
+    fn worker_lock_wait_is_shorter_than_the_command_timeout() {
+        assert_eq!(worker_lock_timeout(DEFAULT_COMMAND_TIMEOUT), WORKER_LOCK_TIMEOUT);
+        assert!(WORKER_LOCK_TIMEOUT < DEFAULT_COMMAND_TIMEOUT);
+        assert_eq!(worker_lock_timeout(Duration::from_secs(5)), Duration::from_secs(5));
     }
 
     #[test]
