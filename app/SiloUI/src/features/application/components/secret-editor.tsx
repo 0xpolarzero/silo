@@ -8,16 +8,18 @@ import { Input } from "@/components/ui/input"
 import type { ApplicationSecret, ApplicationSource, SecretConfigurationRequest } from "../model/application-source"
 import { secretConfiguration, type SecretDraft, type SecretValidationErrors } from "../model/secret-configuration"
 
-export function SecretEditor({ secret, source, onSave, onCancel, saving = false, saveError }: {
+export function SecretEditor({ secret, source, onSave, onCancel, saving = false, saveError, initialWorkspaces }: {
   secret?: ApplicationSecret
   source: ApplicationSource
   onSave: (request: SecretConfigurationRequest) => void
   onCancel: () => void
   saving?: boolean
   saveError?: string
+  /** Preselected sandboxes when adding a new secret (e.g. scoped to one sandbox on its page). */
+  initialWorkspaces?: string[]
 }) {
   const [draft, setDraft] = useState<SecretDraft>(() => ({
-    name: secret?.name ?? "", value: "", workspaces: secret?.workspaces ?? [],
+    name: secret?.name ?? "", value: "", workspaces: secret?.workspaces ?? initialWorkspaces ?? [],
     domains: secret?.allowedDomains.join(", ") ?? "", allowAnyDomain: secret?.allowedDomains.includes("*") ?? false,
   }))
   const [errors, setErrors] = useState<SecretValidationErrors>({})

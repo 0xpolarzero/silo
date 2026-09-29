@@ -2,13 +2,25 @@ import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import type { ApplicationActions } from "../model/application-source"
+import type { ApplicationActions, ApplicationSource, ApplicationWorkspace } from "../model/application-source"
+import { workspaceTarget } from "../model/remote-computers"
 import { OverviewPage } from "./overview-page"
 
 function localVmSource() {
   const source = structuredClone(applicationSourceForScenario("complete"))
   source.remoteComputers = []
   return source
+}
+
+function localVm(source: ApplicationSource): ApplicationWorkspace {
+  return source.workspaces.find(item => item.machine.kind === "vm" && !item.computer)!
+}
+
+async function openDetail(source: ApplicationSource, actions: Partial<ApplicationActions> = {}, workspace = localVm(source)) {
+  const user = userEvent.setup()
+  render(<OverviewPage source={source} actions={actions as ApplicationActions} onMachinesChange={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
+  return { user, workspace }
 }
 
 it("opens a sandbox detail page from the row body and returns to the list from the breadcrumb", async () => {
@@ -178,6 +190,106 @@ it("shows the stale-edit conflict review in place when a save is rejected", asyn
 
   await user.click(screen.getByRole("button", { name: "Review changes" }))
   expect(screen.queryByText("This VM changed since you opened it.")).not.toBeInTheDocument()
+})
+
+it("adds a secret from the Overview tab preselected to this sandbox", async () => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  source.secrets = []
+  const saveSecret = vi.fn().mockResolvedValue(undefined)
+  const { user } = await openDetail(source, { saveSecret, removeSecret: vi.fn() })
+
+  await user.click(screen.getByRole("button", { name: "Add secret" }))
+  const form = within(screen.getByRole("form", { name: "Add secret" }))
+  // The sandbox is preselected, so its removal chip is already present.
+  expect(form.getByRole("button", { name: `Remove ${workspace.machine.name}` })).toBeVisible()
+  await user.type(form.getByRole("textbox", { name: "Name" }), "SERVICE_TOKEN")
+  await user.type(form.getByLabelText("Value"), "fixture-token")
+  await user.type(form.getByRole("textbox", { name: "Allowed domains" }), "api.example.test")
+  await user.click(form.getByRole("button", { name: "Save" }))
+
+  expect(saveSecret).toHaveBeenCalledExactlyOnceWith({ operation: "add", name: "SERVICE_TOKEN", value: "fixture-token", workspaces: [workspace.machine.name], allowedDomains: ["api.example.test"] })
+})
+
+it("edits and removes a sandbox's secret from the Overview tab", async () => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  source.secrets = [{ id: "svc", name: "SERVICE_TOKEN", workspaces: [workspace.machine.name], allowedDomains: ["api.example.test"], state: "active" }]
+  const saveSecret = vi.fn().mockResolvedValue(undefined)
+  const removeSecret = vi.fn().mockResolvedValue(undefined)
+  const { user } = await openDetail(source, { saveSecret, removeSecret })
+
+  // Edit routes through the shared inline editor and the edit save path.
+  await user.click(screen.getByRole("button", { name: "Edit SERVICE_TOKEN" }))
+  const form = within(screen.getByRole("form", { name: "Edit SERVICE_TOKEN" }))
+  await user.type(form.getByLabelText("Replacement value"), "rotated")
+  await user.click(form.getByRole("button", { name: "Save" }))
+  expect(saveSecret).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "edit", id: "svc", value: "rotated" }))
+
+  // Remove requires the same inline confirmation as the Secrets page.
+  await user.click(screen.getByRole("button", { name: "Remove SERVICE_TOKEN" }))
+  expect(removeSecret).not.toHaveBeenCalled()
+  await user.click(screen.getByRole("button", { name: "Confirm removal of SERVICE_TOKEN" }))
+  expect(removeSecret).toHaveBeenCalledExactlyOnceWith("svc")
+})
+
+it("keeps a remote computer's secrets read-only on the Overview tab", async () => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  source.secrets = [{ id: "svc", name: "SERVICE_TOKEN", workspaces: [workspace.machine.name], allowedDomains: [], state: "active" }]
+  await openDetail(source, { saveSecret: vi.fn(), removeSecret: vi.fn() }, workspace)
+
+  expect(screen.getByText("SERVICE_TOKEN")).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Add secret" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Edit SERVICE_TOKEN" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Remove SERVICE_TOKEN" })).not.toBeInTheDocument()
+})
+
+function runningVmWithPort(source: ApplicationSource, workspace: ApplicationWorkspace) {
+  workspace.state = "running"
+  workspace.freshness = "fresh"
+  source.network = { workspaces: [{ workspace: workspaceTarget(workspace), error: null, ports: [
+    { port: 3000, hostPort: 43000, scheme: "http", state: "reachable", configured: true },
+  ] }] }
+}
+
+it("reflects live network data and opens a reachable port from the Overview tab", async () => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  runningVmWithPort(source, workspace)
+  const openNetworkPort = vi.fn().mockResolvedValue(undefined)
+  const { user } = await openDetail(source, { openNetworkPort, saveNetworkPort: vi.fn(), removeNetworkPort: vi.fn(), refreshNetwork: vi.fn(async () => {}) })
+
+  expect(screen.getByText("http://127.0.0.1:43000")).toBeVisible()
+  await user.click(screen.getByRole("button", { name: `Open http://127.0.0.1:43000 in ${source.preferences.browser}` }))
+  expect(openNetworkPort).toHaveBeenCalledWith(workspaceTarget(workspace), 3000)
+})
+
+it("adds a port fixed to this sandbox from the Overview tab", async () => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  runningVmWithPort(source, workspace)
+  const saveNetworkPort = vi.fn().mockResolvedValue(undefined)
+  const { user } = await openDetail(source, { saveNetworkPort, removeNetworkPort: vi.fn(), openNetworkPort: vi.fn(), refreshNetwork: vi.fn(async () => {}) })
+
+  await user.click(screen.getByRole("button", { name: "Add port" }))
+  await user.type(screen.getByRole("spinbutton", { name: "VM port" }), "9000")
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  expect(saveNetworkPort).toHaveBeenCalledWith({ workspace: workspaceTarget(workspace), port: 9000, hostPort: null, scheme: "http" })
+})
+
+it("confirms before removing a port from the Overview tab", async () => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  runningVmWithPort(source, workspace)
+  const removeNetworkPort = vi.fn().mockResolvedValue(undefined)
+  const { user } = await openDetail(source, { saveNetworkPort: vi.fn(), removeNetworkPort, openNetworkPort: vi.fn(), refreshNetwork: vi.fn(async () => {}) })
+
+  await user.click(screen.getByRole("button", { name: `Remove port 3000 from ${workspace.machine.name}` }))
+  expect(removeNetworkPort).not.toHaveBeenCalled()
+  await user.click(screen.getByRole("button", { name: "Remove" }))
+  expect(removeNetworkPort).toHaveBeenCalledWith(workspaceTarget(workspace), 3000)
 })
 
 it("confirms a delete in a dialog on the detail page and returns to the list", async () => {

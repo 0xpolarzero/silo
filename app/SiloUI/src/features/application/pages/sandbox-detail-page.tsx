@@ -1,5 +1,5 @@
-import { ChevronRight, Code, CopyPlus, Cpu, GitBranch, Globe, KeyRound, Pencil, Play, Server, Square, Terminal, Trash2 } from "lucide-react"
-import { useState, type FormEvent, type ReactNode } from "react"
+import { ChevronRight, Code, CopyPlus, Cpu, GitBranch, Globe, KeyRound, Pencil, Play, Plus, Server, Square, Terminal, Trash2 } from "lucide-react"
+import { useId, useState, type FormEvent, type MouseEvent, type ReactNode } from "react"
 import { Dialog } from "radix-ui"
 
 import { ActionsMenu, type MenuAction } from "@/components/actions-menu"
@@ -23,6 +23,8 @@ import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { SshAccessRow } from "@/features/application/pages/ssh-access-panel"
 import { WorkspaceStoragePanel } from "@/features/application/pages/workspace-storage-panel"
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
+import { AddSecretEditor, SecretRow, useSecretsManager } from "@/features/application/components/secrets-management"
+import { NetworkPortForm, NetworkPortRowActions, networkAddress, networkPortState, useNetworkPorts } from "@/features/application/components/network-ports"
 import { cn } from "@/lib/utils"
 
 /** Everything the detail page needs to edit or delete this sandbox in place, sharing the
@@ -144,13 +146,132 @@ function ViewAllAction({ label, onClick }: { label: string; onClick: () => void 
   </button>
 }
 
-function OverviewTab({ workspace, source, onEdit, onNavigate }: { workspace: ApplicationWorkspace; source: ApplicationSource; onEdit?: () => void; onNavigate?: (route: ApplicationInitialRoute) => void }) {
+/** A small ghost xs action that fits the section header row, paired with the View all link. */
+function AddAction({ label, disabled, onClick }: { label: string; disabled?: boolean; onClick: (event: MouseEvent<HTMLButtonElement>) => void }) {
+  return <Button type="button" variant="ghost" size="xs" aria-label={label} disabled={disabled} onClick={onClick}>
+    <Plus aria-hidden="true" data-icon="inline-start" />Add
+  </Button>
+}
+
+/** The Secrets section, scoped to this sandbox: assigned secrets with the same row states,
+ * inline editor, and remove confirmation as the Secrets page. Add preselects this sandbox.
+ * Only local VMs support secrets, so remote and SSH sandboxes stay read-only. */
+function SecretsSection({ workspace, source, actions, onNavigate }: { workspace: ApplicationWorkspace; source: ApplicationSource; actions: ApplicationActions; onNavigate?: (route: ApplicationInitialRoute) => void }) {
+  const { machine } = workspace
+  const canManage = machine.kind === "vm" && !workspace.computer
+  const manager = useSecretsManager({ source, onSaveSecret: actions.saveSecret, onRemoveSecret: actions.removeSecret, onRetrySecret: actions.retrySecret })
+  const sandboxSecrets = source.secrets.filter(secret => secret.workspaces.includes(machine.name))
+  const adding = Boolean(manager.editor && !manager.editor.secret)
+
+  const action = <div className="flex items-center gap-2">
+    {canManage && <AddAction label="Add secret" disabled={manager.saving || manager.busy !== null} onClick={(event) => manager.openEditor(event.currentTarget, { initialWorkspaces: [machine.name] })} />}
+    {onNavigate && <ViewAllAction label="View all secrets" onClick={() => onNavigate({ tab: "secrets" })} />}
+  </div>
+
+  return <Section label="Secrets" action={action}>
+    <ListCard>
+      {adding && <div className="border-b border-border"><AddSecretEditor manager={manager} /></div>}
+      {canManage && sandboxSecrets.length > 0
+        ? <ul className="divide-y divide-border" aria-label={`Secrets for ${machine.name}`}>{sandboxSecrets.map(secret => <SecretRow key={secret.id} secret={secret} manager={manager} />)}</ul>
+        : sandboxSecrets.length > 0
+          ? <div className="divide-y divide-border">{sandboxSecrets.map(secret => <ListRow
+              key={secret.id}
+              icon={<ListRowIcon aria-hidden="true"><KeyRound className="size-3.5" /></ListRowIcon>}
+              title={<span className="truncate font-mono" title={secret.name}>{secret.name}</span>}
+              detail={secret.allowedDomains.length ? secret.allowedDomains.join(", ") : "Available in this sandbox"}
+            />)}</div>
+          : !adding && <ListRow
+              icon={<ListRowIcon aria-hidden="true"><KeyRound className="size-3.5" /></ListRowIcon>}
+              title={<span className="font-normal text-muted-foreground">No secrets assigned.</span>}
+              detail=""
+            />}
+    </ListCard>
+  </Section>
+}
+
+const inlinePortFormClassName = "grid grid-cols-2 items-end gap-2 p-3 sm:grid-cols-[6rem_minmax(0,1fr)_8rem_auto] sm:gap-3"
+
+/** The Ports section, scoped to this sandbox and backed by the same live network data as the
+ * Network page. Add/edit/remove/open reuse the Network page's form, confirmation, and actions.
+ * Falls back to the workspace's cached ports only when live network data is absent. */
+function PortsSection({ workspace, source, actions, browser, active, onNavigate }: { workspace: ApplicationWorkspace; source: ApplicationSource; actions: ApplicationActions; browser: string; active: boolean; onNavigate?: (route: ApplicationInitialRoute) => void }) {
+  const { machine } = workspace
+  const target = workspaceTarget(workspace)
+  const fieldID = useId()
+  const useLive = source.network !== undefined
+  const controller = useNetworkPorts({ workspaces: [workspace], network: source.network, error: source.networkError, actions, active })
+  const { draft, rows } = controller
+  const fallbackPorts = workspace.ports ?? []
+  const canAdd = Boolean(actions.saveNetworkPort) && controller.localWorkspaces.length > 0
+  const inlineForm = <NetworkPortForm controller={controller} fieldID={fieldID} hideSandbox className={inlinePortFormClassName} />
+
+  const action = <div className="flex items-center gap-2">
+    {canAdd && <AddAction label="Add port" disabled={controller.busy} onClick={() => controller.add(target)} />}
+    {onNavigate && <ViewAllAction label="View all network for this sandbox" onClick={() => onNavigate({ workspaceSection: "network", workspace: machine.id })} />}
+  </div>
+
+  return <Section label="Ports" action={action}>
+    {(controller.error || controller.errors.length > 0) && <div role="alert" className="mb-2 flex items-center justify-between gap-3 rounded-md border border-destructive/20 px-3 py-2 text-xs text-destructive">
+      <span>{controller.error || controller.errors.join(" · ")}</span>
+      {actions.refreshNetwork && <Button size="sm" variant="ghost" onClick={() => void actions.refreshNetwork?.()}>Retry</Button>}
+    </div>}
+    {controller.operationError && <div role="alert" className="mb-2 text-xs text-destructive">{controller.operationError}</div>}
+    <ListCard>
+      {draft && !draft.editing && <div className="border-b border-border">{inlineForm}</div>}
+      {useLive
+        ? rows.length > 0
+          ? <div className="divide-y divide-border">{rows.map(({ workspace: portWorkspace, port }) => {
+              const key = `${target}:${port.port}`
+              if (draft?.editing && draft.port === String(port.port)) return <div key={key} className="last:*:border-b-0">{inlineForm}</div>
+              const address = networkAddress(port)
+              const stateText = networkPortState(portWorkspace, port, controller.error, controller.errors)
+              return <ListRow
+                key={key}
+                icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
+                title={<span className="truncate font-mono" title={address ?? `VM port ${port.port}`}>{address ?? `VM port ${port.port}`}</span>}
+                detailClassName="whitespace-normal"
+                detail={<span className="inline-flex flex-wrap items-center gap-1.5">
+                  <span className={cn("size-1.5 rounded-full", stateText === "Reachable" ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
+                  <span className={stateText === "Reachable" ? "text-emerald-700 dark:text-emerald-400" : undefined}>{stateText}</span>
+                  {port.message && <span className={port.state === "unknown" ? "text-destructive" : "text-muted-foreground"}>· {port.message}</span>}
+                </span>}
+                actions={<div className="flex shrink-0 items-center gap-0.5 text-muted-foreground">
+                  <NetworkPortRowActions controller={controller} workspace={portWorkspace} port={port} state={stateText} browser={browser} />
+                </div>}
+              />
+            })}</div>
+          : !draft && <ListRow
+              icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
+              title={<span className="font-normal text-muted-foreground">No forwarded ports.</span>}
+              detail=""
+            />
+        : fallbackPorts.length > 0
+          ? <div className="divide-y divide-border">{fallbackPorts.map(port => {
+              const url = `${port.scheme ? `${port.scheme}://` : ""}localhost:${port.hostPort ?? port.port}`
+              return <ListRow
+                key={port.port}
+                icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
+                title={<span className="truncate" title={url}>{url}</span>}
+                detail={<span className="inline-flex items-center gap-1.5">
+                  <span className={cn("size-1.5 rounded-full", port.listening === true ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
+                  {port.listening === true ? "Listening" : port.listening === false ? "Not listening" : "Unknown"}
+                </span>}
+              />
+            })}</div>
+          : <ListRow
+              icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
+              title={<span className="font-normal text-muted-foreground">No forwarded ports.</span>}
+              detail=""
+            />}
+    </ListCard>
+  </Section>
+}
+
+function OverviewTab({ workspace, source, actions, active, onEdit, onNavigate }: { workspace: ApplicationWorkspace; source: ApplicationSource; actions: ApplicationActions; active: boolean; onEdit?: () => void; onNavigate?: (route: ApplicationInitialRoute) => void }) {
   const { machine } = workspace
   const isVm = machine.kind === "vm"
   const repositories = workspace.repositories ?? []
   const extraGithub = (workspace.githubRepositories ?? []).filter(name => !repositories.some(repo => repo.path.endsWith(name)))
-  const secretNames = workspace.secretNames ?? []
-  const ports = workspace.ports ?? []
   const hasRepositories = repositories.length > 0 || extraGithub.length > 0
 
   const resourceTitle = isVm
@@ -192,45 +313,9 @@ function OverviewTab({ workspace, source, onEdit, onNavigate }: { workspace: App
       </ListCard>
     </Section>
 
-    <Section label="Secrets" action={onNavigate ? <ViewAllAction label="View all secrets" onClick={() => onNavigate({ tab: "secrets" })} /> : undefined}>
-      <ListCard divided={secretNames.length > 1}>
-        {secretNames.length > 0 ? secretNames.map(name => {
-          const secret = source.secrets.find(item => item.name === name)
-          const detail = secret?.allowedDomains.length ? secret.allowedDomains.join(", ") : "Available in this sandbox"
-          return <ListRow
-            key={name}
-            icon={<ListRowIcon aria-hidden="true"><KeyRound className="size-3.5" /></ListRowIcon>}
-            title={<span className="truncate font-mono" title={name}>{name}</span>}
-            detail={detail}
-          />
-        }) : <ListRow
-          icon={<ListRowIcon aria-hidden="true"><KeyRound className="size-3.5" /></ListRowIcon>}
-          title={<span className="font-normal text-muted-foreground">No secrets assigned.</span>}
-          detail=""
-        />}
-      </ListCard>
-    </Section>
+    <SecretsSection workspace={workspace} source={source} actions={actions} onNavigate={onNavigate} />
 
-    {(ports.length > 0 || onNavigate) && <Section label="Ports" action={onNavigate ? <ViewAllAction label="View all network for this sandbox" onClick={() => onNavigate({ workspaceSection: "network", workspace: machine.id })} /> : undefined}>
-      <ListCard divided={ports.length > 1}>
-        {ports.length > 0 ? ports.map(port => {
-          const url = `${port.scheme ? `${port.scheme}://` : ""}localhost:${port.hostPort ?? port.port}`
-          return <ListRow
-            key={port.port}
-            icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-            title={<span className="truncate" title={url}>{url}</span>}
-            detail={<span className="inline-flex items-center gap-1.5">
-              <span className={cn("size-1.5 rounded-full", port.listening === true ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
-              {port.listening === true ? "Listening" : port.listening === false ? "Not listening" : "Unknown"}
-            </span>}
-          />
-        }) : <ListRow
-          icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-          title={<span className="font-normal text-muted-foreground">No forwarded ports.</span>}
-          detail=""
-        />}
-      </ListCard>
-    </Section>}
+    <PortsSection workspace={workspace} source={source} actions={actions} browser={source.preferences.browser} active={active} onNavigate={onNavigate} />
   </div>
 }
 
@@ -360,7 +445,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="pt-4">
-            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
+            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview"} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
               <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} onForked={controls.onCheckpointForked} onRestored={controls.onCheckpointRestored} />
             </TabsContent>}
