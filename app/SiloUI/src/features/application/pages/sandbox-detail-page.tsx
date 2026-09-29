@@ -226,7 +226,7 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
               return <ListRow
                 key={key}
                 icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-                title={<span className="truncate font-mono" title={address ?? `VM port ${port.port}`}>{address ?? `VM port ${port.port}`}</span>}
+                title={<span className="truncate font-mono" title={address ? `${port.port} → ${address}` : `VM port ${port.port}`}>{address ? `${port.port} → ${address}` : `VM port ${port.port}`}</span>}
                 detailClassName="whitespace-normal"
                 detail={<span className="inline-flex flex-wrap items-center gap-1.5">
                   <span className={cn("size-1.5 rounded-full", stateText === "Reachable" ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />

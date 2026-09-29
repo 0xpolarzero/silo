@@ -203,7 +203,7 @@ export function GitHubPage({
       if (operation.status !== "applying") userInitiated.current.delete(name)
       const id = `github-apply:${name}`
       if (operation.status === "applying") showOperationProgress(id, { title: operation.message, step: name, sandbox: name })
-      else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name, sandbox: name })
+      else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name, sandbox: name, persist: true })
       else {
         const failure = githubFailure(operation.message)
         showOperationFailure(id, failure.message, {

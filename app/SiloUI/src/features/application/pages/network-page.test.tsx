@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { toast } from "sonner"
@@ -66,13 +66,15 @@ describe("Network", () => {
     await user.click(screen.getByRole("button", {name: "Add"}))
     expect(actions.saveNetworkPort).toHaveBeenCalledWith({workspace: "dev", port: 9000, hostPort: null, scheme: "http"})
   })
-  it("requires inline removal confirmation with Cancel and Escape", async () => {
+  it("requires popover removal confirmation and Cancel closes it", async () => {
     const {user,actions} = setup()
     await user.click(screen.getByRole("button",{name:"Remove port 3000 from dev"}))
+    expect(screen.getByText("Remove port 3000?")).toBeVisible()
+    expect(screen.getByText(/It stops forwarding to this (Mac|computer)\./)).toBeVisible()
     expect(screen.getByRole("button",{name:"Cancel"})).toBeVisible()
     expect(actions.removeNetworkPort).not.toHaveBeenCalled()
-    await user.keyboard("{Escape}")
-    expect(screen.queryByRole("button",{name:"Cancel"})).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button",{name:"Cancel"}))
+    await waitFor(() => expect(screen.queryByText("Remove port 3000?")).not.toBeInTheDocument())
     await user.click(screen.getByRole("button",{name:"Remove port 3000 from dev"}))
     await user.click(screen.getByRole("button",{name:"Remove"}))
     expect(actions.removeNetworkPort).toHaveBeenCalledWith("dev",3000)
@@ -151,11 +153,11 @@ it("adds inside the table and replaces the edited row", async () => {
   await user.click(screen.getByRole("button",{name:"Cancel"}))
   expect(screen.getByText("http://127.0.0.1:43000")).toBeVisible()
 })
-it("uses icons for removal confirmation and dismisses on outside click", async () => {
+it("labels the removal confirmation in words and dismisses on outside click", async () => {
   const {user,actions} = setup()
   await user.click(screen.getByRole("button",{name:"Remove port 3000 from dev"}))
-  expect(screen.getByRole("button",{name:"Cancel"}).textContent).toBe("")
-  expect(screen.getByRole("button",{name:"Remove"}).textContent).toBe("")
+  expect(screen.getByRole("button",{name:"Cancel"}).textContent).toBe("Cancel")
+  expect(screen.getByRole("button",{name:"Remove"}).textContent).toBe("Remove")
   await user.click(screen.getByText("127.0.0.1:45432"))
   expect(screen.queryByRole("button",{name:"Remove"})).not.toBeInTheDocument()
   expect(actions.removeNetworkPort).not.toHaveBeenCalled()

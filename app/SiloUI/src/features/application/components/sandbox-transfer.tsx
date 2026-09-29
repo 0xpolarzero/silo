@@ -93,6 +93,8 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
   const retryRef = useRef<(() => void) | undefined>(undefined)
   const reviewDraftRef = useRef<Extract<ImportReview, { kind: "review" }> | null>(null)
   const [review, setReview] = useState<ImportReview | null>(null)
+  // A result already present when the app loads is from a previous session: never toast it.
+  const seenOperation = useRef(false)
 
   async function exportSandbox(sandboxName: string, checkpoint?: { id: string; name: string }) {
     const controller = backupRef.current
@@ -129,8 +131,17 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
   useEffect(() => {
     const controller = backupRef.current
     const operation = controller.state.operation
+    const firstLoad = !seenOperation.current
+    seenOperation.current = true
     if (!operation) { dismissOperationToast(TRANSFER_TOAST_ID); return }
     const isExport = operation.operation === "backup"
+
+    if (firstLoad && operation.kind !== "running") {
+      // Stale result: stay silent, and clear it when the imported sandbox has since been deleted.
+      const target = operation.operation === "restore" && operation.outcome === "success" ? operation.targetName : undefined
+      if (target && !optionsRef.current.source.workspaces.some(({ machine, computer }) => !computer && machine.name === target)) backupRef.current.actions.dismissOperation()
+      return
+    }
 
     if (operation.kind === "running") {
       const title = isExport
@@ -165,7 +176,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
             const open = optionsRef.current.openSandbox
             return match && open ? { label: "Open", onClick: () => open(match.machine.id) } : undefined
           })()
-      showOperationSuccess(TRANSFER_TOAST_ID, title, { description: isExport ? `${archive.name} · ${archive.size}` : "Stopped and verified.", action, sandbox: isExport ? undefined : operation.targetName ?? archive.sandboxes[0], onDismiss: dismiss })
+      showOperationSuccess(TRANSFER_TOAST_ID, title, { description: isExport ? `${archive.name} · ${archive.size}` : "Stopped and verified.", action, persist: true, sandbox: isExport ? undefined : operation.targetName ?? archive.sandboxes[0], onDismiss: dismiss })
       return
     }
 

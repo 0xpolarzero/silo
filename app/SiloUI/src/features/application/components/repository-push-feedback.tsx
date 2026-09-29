@@ -36,7 +36,7 @@ export function useRepositoryPushToasts(
         showOperationProgress(id, { title: `Pushing ${commitLabel(operation.commitCount)}`, step: operation.message ? `${name} · ${operation.message}` : name, sandbox: operation.workspace })
       } else if (operation.status === "succeeded") {
         // Nothing stays inline for a finished push, so clear it; only announce one that finished while watching.
-        if (!initial) showOperationSuccess(id, `Pushed ${commitLabel(operation.commitCount)} · ${name}`, { sandbox: operation.workspace })
+        if (!initial) showOperationSuccess(id, `Pushed ${commitLabel(operation.commitCount)} · ${name}`, { sandbox: operation.workspace, persist: true })
         callbacks.current.onDismiss(operation.workspace, operation.repositoryPath)
       } else if (initial) {
         continue

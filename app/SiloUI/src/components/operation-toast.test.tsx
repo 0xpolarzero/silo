@@ -178,3 +178,57 @@ describe("toast actions", () => {
     expect(screen.getByText("Imported kept")).toBeInTheDocument()
   })
 })
+
+describe("notification persistence", () => {
+  const settle = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+
+  it("auto-dismisses a quick success without an action after 4 s", async () => {
+    render(<Host />)
+    act(() => showOperationProgress("quick", { title: "Adding port", progress: null }))
+    await tick()
+    act(() => showOperationSuccess("quick", "Port 8000 added"))
+    await tick()
+    expect(screen.getByText("Port 8000 added")).toBeInTheDocument()
+    await settle(3000)
+    expect(screen.getByText("Port 8000 added")).toBeInTheDocument()
+    await settle(2500)
+    expect(screen.queryByText("Port 8000 added")).not.toBeInTheDocument()
+  })
+
+  it("keeps a success with an action until closed", async () => {
+    render(<Host />)
+    act(() => showOperationSuccess("act", "Exported", { action: { label: "Show in Finder", onClick: vi.fn() } }))
+    await tick()
+    await settle(15_000)
+    expect(screen.getByText("Exported")).toBeInTheDocument()
+  })
+
+  it("keeps the success of a long operation until closed", async () => {
+    render(<Host />)
+    act(() => showOperationProgress("long", { title: "Creating checkpoint", progress: null }))
+    await tick()
+    await settle(3500)
+    act(() => showOperationSuccess("long", "Checkpoint created"))
+    await tick()
+    await settle(15_000)
+    expect(screen.getByText("Checkpoint created")).toBeInTheDocument()
+  })
+
+  it("honours an explicit persist override", async () => {
+    render(<Host />)
+    act(() => showOperationSuccess("forced", "Pushed 1 commit", { persist: true }))
+    await tick()
+    await settle(15_000)
+    expect(screen.getByText("Pushed 1 commit")).toBeInTheDocument()
+  })
+
+  it("keeps a failure until closed", async () => {
+    render(<Host />)
+    act(() => showOperationProgress("fail", { title: "Adding port", progress: null }))
+    await tick()
+    act(() => showOperationFailure("fail", "Could not add port 8000"))
+    await tick()
+    await settle(15_000)
+    expect(screen.getByText("Could not add port 8000")).toBeInTheDocument()
+  })
+})

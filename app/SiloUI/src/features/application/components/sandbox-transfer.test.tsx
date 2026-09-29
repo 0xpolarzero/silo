@@ -58,7 +58,8 @@ describe("export notifications", () => {
   it("keeps a success toast with Show in Finder that reveals the archive", async () => {
     const success: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "success", title: "Export ready", message: "done" }
     const backup = controller({ operation: success })
-    render(<Harness backup={backup} />)
+    const { rerender } = render(<Harness backup={controller()} />)
+    rerender(<Harness backup={backup} />)
     expect(await screen.findByText("Exported")).toBeInTheDocument()
     expect(screen.getByText("dev.silo-backup · 2 GB")).toBeInTheDocument()
     fireEvent.click(await screen.findByRole("button", { name: /Show in (Finder|folder)/ }))
@@ -68,7 +69,8 @@ describe("export notifications", () => {
   it("dismissing a result toast clears the backend operation", async () => {
     const success: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "success", title: "Export ready", message: "done" }
     const backup = controller({ operation: success })
-    render(<Harness backup={backup} />)
+    const { rerender } = render(<Harness backup={controller()} />)
+    rerender(<Harness backup={backup} />)
     fireEvent.click(await screen.findByRole("button", { name: /close|dismiss/i }))
     await act(async () => { await Promise.resolve() })
     expect(backup.actions.dismissOperation).toHaveBeenCalled()
@@ -85,6 +87,26 @@ describe("export notifications", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
     await act(async () => { await Promise.resolve() })
     expect(backup.actions.chooseDestination).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("results present at load", () => {
+  it("does not toast a finished result from a previous session", async () => {
+    const success: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: localVm.machine.name, outcome: "success", title: "ready", message: "ok" }
+    const backup = controller({ operation: success })
+    render(<Harness backup={backup} />)
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByText(`Imported ${localVm.machine.name}`)).not.toBeInTheDocument()
+    expect(backup.actions.dismissOperation).not.toHaveBeenCalled()
+  })
+
+  it("dismisses a stale import result whose sandbox no longer exists", async () => {
+    const success: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: "gone-sandbox", outcome: "success", title: "ready", message: "ok" }
+    const backup = controller({ operation: success })
+    render(<Harness backup={backup} />)
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByText("Imported gone-sandbox")).not.toBeInTheDocument()
+    expect(backup.actions.dismissOperation).toHaveBeenCalled()
   })
 })
 
@@ -126,7 +148,8 @@ describe("import notifications and popover", () => {
   it("shows an Open action on import success that navigates to the new sandbox", async () => {
     const openSandbox = vi.fn()
     const success: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: localVm.machine.name, outcome: "success", title: `${localVm.machine.name} is ready`, message: "ok" }
-    render(<Harness backup={controller({ operation: success })} openSandbox={openSandbox} />)
+    const { rerender } = render(<Harness backup={controller()} openSandbox={openSandbox} />)
+    rerender(<Harness backup={controller({ operation: success })} openSandbox={openSandbox} />)
     expect(await screen.findByText(`Imported ${localVm.machine.name}`)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open" }))
     expect(openSandbox).toHaveBeenCalledWith(localVm.machine.id)

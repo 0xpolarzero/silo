@@ -12,7 +12,8 @@ export type { OperationCancel, OperationProgressOptions, OperationStep } from "@
  * Dialogs are reserved for the ⌘K palette and the quit overlay.
  *
  *   showOperationProgress(id, { title, step, steps, progress, startedAt, cancel })
- *   showOperationSuccess(id, title, { action })   // stays until closed
+ *   showOperationSuccess(id, title, { action })   // stays until closed when it has an action or
+ *                                                 // followed a progress toast shown > 3 s; else 4 s
  *   showOperationFailure(id, title, { retry })    // stays, with Retry
  *   useOperationProgressToast(id, state)          // for backend-driven operation state
  *
@@ -73,6 +74,14 @@ export function dismissSandboxToasts(name: string) {
   for (const id of ids) toast.dismiss(id)
 }
 
+/** Auto-dismiss delay of a quick confirmation (nothing to act on, finished fast). */
+export const QUICK_TOAST_DURATION = 4000
+/** A progress notification visible at least this long makes its success notification persistent. */
+export const LONG_OPERATION_MS = 3000
+
+/** When each in-flight operation's first progress notification was shown, by id. */
+const progressStarts = new Map<string, number>()
+
 /** Options shared by every finished-state notification. */
 export interface OperationResultOptions {
   description?: ReactNode
@@ -81,15 +90,25 @@ export interface OperationResultOptions {
   sandbox?: string | string[]
   /** Called when the user closes the notification or it closes by itself. */
   onDismiss?: () => void
+  /**
+   * Success only. Stays until closed (true) or auto-dismisses after 4 s (false). Default:
+   * stays when it has an action or the operation showed progress for over 3 s.
+   */
+  persist?: boolean
 }
 
 export function showOperationSuccess(id: string, title: string, options: OperationResultOptions = {}) {
   tagSandbox(id, options.sandbox)
-  toast.success(title, { id, description: options.description, duration: Infinity, closeButton: true, action: options.action, onDismiss: options.onDismiss, onAutoClose: options.onDismiss })
+  const started = progressStarts.get(id)
+  progressStarts.delete(id)
+  const long = started !== undefined && Date.now() - started > LONG_OPERATION_MS
+  const persist = options.persist ?? (Boolean(options.action) || long)
+  toast.success(title, { id, description: options.description, duration: persist ? Infinity : QUICK_TOAST_DURATION, closeButton: true, action: options.action, onDismiss: options.onDismiss, onAutoClose: options.onDismiss })
 }
 
 export function showOperationFailure(id: string, title: string, options: OperationResultOptions & { retry?: () => void; tone?: "error" | "warning" } = {}) {
   tagSandbox(id, options.sandbox)
+  progressStarts.delete(id)
   const notify = options.tone === "warning" ? toast.warning : toast.error
   notify(title, {
     id,
@@ -104,6 +123,7 @@ export function showOperationFailure(id: string, title: string, options: Operati
 
 /** Close a notification (e.g. when the state it reported has gone away). */
 export function dismissOperationToast(id: string) {
+  progressStarts.delete(id)
   toast.dismiss(id)
 }
 
@@ -121,6 +141,7 @@ export function showOperationNotice(id: string, title: string, options: { descri
 export function showOperationProgress(id: string, options: OperationProgressOptions) {
   const { title, sandbox, ...body } = options
   tagSandbox(id, sandbox)
+  if (!progressStarts.has(id)) progressStarts.set(id, options.startedAt ?? Date.now())
   toast.loading(title, { id, duration: Infinity, description: createElement(OperationToastBody, { ...body, title }) })
 }
 
@@ -147,7 +168,7 @@ export function useOperationProgressToast(id: string, state: OperationProgressSt
     } else if (before === null) {
       return
     } else if (state.status === "success" && before !== "success") {
-      showOperationSuccess(id, state.title, { description: state.description, action: state.action, sandbox: state.sandbox, onDismiss: state.onDismiss })
+      showOperationSuccess(id, state.title, { description: state.description, action: state.action, sandbox: state.sandbox, onDismiss: state.onDismiss, persist: state.persist })
     } else if (state.status === "failure" && before !== "failure") {
       showOperationFailure(id, state.title, { description: state.description, retry: state.retry, sandbox: state.sandbox, onDismiss: state.onDismiss })
     } else if (state.status === "idle" && before === "running") {
@@ -169,9 +190,9 @@ export async function runWithOperationToast<T>(id: string, copy: OperationToastC
   }
 }
 
-/** A short confirmation for instant actions (copy, open). Auto-dismisses. */
+/** A short confirmation for instant actions (copy, open). Auto-dismisses after 4 s. */
 export function showQuickConfirmation(title: string, description?: string) {
-  toast.success(title, { description, duration: 3000 })
+  toast.success(title, { description, duration: QUICK_TOAST_DURATION, closeButton: true })
 }
 
 /** A standalone failure for an instant action that failed (no loading phase). Stays until closed. */

@@ -261,7 +261,7 @@ it("reflects live network data and opens a reachable port from the Overview tab"
   const openNetworkPort = vi.fn().mockResolvedValue(undefined)
   const { user } = await openDetail(source, { openNetworkPort, saveNetworkPort: vi.fn(), removeNetworkPort: vi.fn(), refreshNetwork: vi.fn(async () => {}) })
 
-  expect(screen.getByText("http://127.0.0.1:43000")).toBeVisible()
+  expect(screen.getByText("3000 → http://127.0.0.1:43000")).toBeVisible()
   await user.click(screen.getByRole("button", { name: `Open http://127.0.0.1:43000 in ${source.preferences.browser}` }))
   expect(openNetworkPort).toHaveBeenCalledWith(workspaceTarget(workspace), 3000)
 })

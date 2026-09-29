@@ -61,7 +61,7 @@ function WorkspaceStorageContent({ workspaceId, running, disabled = false, read,
       dismissOperationToast(`storage-read:${workspaceId}`)
       if (reclaimSpace) {
         if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { description: value.lastError, retry: () => void load(true) })
-        else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: 'Freed on this computer.' })
+        else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: 'Freed on this computer.', persist: true })
       }
     } catch (cause) {
       if (requests.current.generation === request) {
