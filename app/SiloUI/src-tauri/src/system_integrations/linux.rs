@@ -271,21 +271,41 @@ pub fn request_notifications() -> Result<IntegrationStatus, String> {
     Ok(notifications())
 }
 
-pub fn deliver_notification(title: &str, body: &str) -> Result<(), String> {
-    use gio::glib::variant::ToVariant;
-    let proxy = gio::DBusProxy::for_bus_sync(
+const NOTIFICATIONS_BUS: &str = "org.freedesktop.Notifications";
+
+/// Server-assigned id per notice key. Sending the previous id as `replaces_id` makes a
+/// newer notice replace the older one, and lets deletion close it.
+static SERVER_IDS: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> =
+    std::sync::Mutex::new(None);
+
+fn notifications_proxy() -> Result<gio::DBusProxy, gio::glib::Error> {
+    gio::DBusProxy::for_bus_sync(
         gio::BusType::Session,
         gio::DBusProxyFlags::DO_NOT_AUTO_START,
         None,
-        "org.freedesktop.Notifications",
+        NOTIFICATIONS_BUS,
         "/org/freedesktop/Notifications",
-        "org.freedesktop.Notifications",
+        NOTIFICATIONS_BUS,
         None::<&gio::Cancellable>,
     )
-    .map_err(|_| "The desktop notification service is unavailable")?;
+}
+
+// Click routing is not implemented on Linux: it needs a GLib main loop to receive the
+// `ActionInvoked` signal, and desktops differ in whether they show a default action.
+// Notices still replace by key and are closed when their sandbox is deleted.
+pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(), String> {
+    use gio::glib::variant::ToVariant;
+    let proxy =
+        notifications_proxy().map_err(|_| "The desktop notification service is unavailable")?;
     if proxy.name_owner().is_none() {
         return Ok(());
     }
+    let replaces = SERVER_IDS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .and_then(|ids| ids.get(&notice.key).copied())
+        .unwrap_or(0);
     // The standard has no permission prompt. The desktop controls suppression/DND.
     let hints = std::collections::HashMap::from([
         ("desktop-entry", "org.silo.preview".to_variant()),
@@ -293,16 +313,16 @@ pub fn deliver_notification(title: &str, body: &str) -> Result<(), String> {
     ]);
     let parameters = (
         "Silo",
-        0u32,
+        replaces,
         "org.silo.preview",
-        title,
-        body,
+        notice.title.as_str(),
+        notice.body.as_str(),
         Vec::<String>::new(),
         hints,
         -1i32,
     )
         .to_variant();
-    proxy
+    let reply = proxy
         .call_sync(
             "Notify",
             Some(&parameters),
@@ -311,7 +331,36 @@ pub fn deliver_notification(title: &str, body: &str) -> Result<(), String> {
             None::<&gio::Cancellable>,
         )
         .map_err(|_| "The desktop could not deliver the notification")?;
+    if let Some((id,)) = reply.get::<(u32,)>() {
+        SERVER_IDS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(Default::default)
+            .insert(notice.key.clone(), id);
+    }
     Ok(())
+}
+
+pub fn clear_notifications(keys: &[String]) {
+    use gio::glib::variant::ToVariant;
+    let ids: Vec<u32> = {
+        let mut guard = SERVER_IDS.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(map) = guard.as_mut() else { return };
+        keys.iter().filter_map(|key| map.remove(key)).collect()
+    };
+    let Ok(proxy) = notifications_proxy() else { return };
+    if proxy.name_owner().is_none() {
+        return;
+    }
+    for id in ids {
+        let _ = proxy.call_sync(
+            "CloseNotification",
+            Some(&(id,).to_variant()),
+            gio::DBusCallFlags::NO_AUTO_START,
+            5000,
+            None::<&gio::Cancellable>,
+        );
+    }
 }
 
 pub fn open_settings(_integration: &str) -> Result<(), String> {

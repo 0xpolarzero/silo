@@ -552,8 +552,13 @@ pub async fn remote_workspace_action(
     host_id: String,
     vm_id: String,
     action: String,
+    name: Option<String>,
 ) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    // Elapsed time counts from the command, like a local action.
+    let started = std::time::Instant::now();
+    let notice_app = app.clone();
+    let (notice_id, notice_action) = (vm_id.clone(), action.clone());
+    let result = tauri::async_runtime::spawn_blocking(move || {
         call_remote(
             &app,
             &host_id,
@@ -562,7 +567,37 @@ pub async fn remote_workspace_action(
         )
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    // The owning computer reports only a state snapshot; the caller's name (or the
+    // snapshot) names the sandbox. Without either, the notice says "this sandbox".
+    let name = name
+        .or_else(|| result.as_ref().ok().and_then(|state| sandbox_name(state, &notice_id)))
+        .unwrap_or_else(|| "this sandbox".into());
+    let sandbox = crate::notifications::NoticeSandbox { id: notice_id, name: name.clone() };
+    let outcome = match &result {
+        Ok(_) => crate::notifications::Outcome::Succeeded,
+        Err(message) => crate::notifications::Outcome::Failed(message),
+    };
+    if let Some(notice) = crate::notifications::lifecycle_notice(
+        &notice_action,
+        &name,
+        Some(sandbox),
+        started.elapsed(),
+        outcome,
+    ) {
+        crate::notifications::notify_native(&notice_app, notice);
+    }
+    result
+}
+
+/// Display name of one sandbox in a remote application snapshot.
+fn sandbox_name(state: &Value, vm_id: &str) -> Option<String> {
+    state["workspaces"]
+        .as_array()?
+        .iter()
+        .find(|workspace| workspace["machine"]["id"] == vm_id)
+        .and_then(|workspace| workspace["machine"]["name"].as_str())
+        .map(str::to_owned)
 }
 #[tauri::command]
 pub async fn remote_upsert_machine(
@@ -589,7 +624,9 @@ pub async fn remote_delete_machine(
     vm_id: String,
     expected: crate::runtime::MachineConfiguration,
 ) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let notice_app = app.clone();
+    let deleted = vm_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         call_remote(
             &app,
             &host_id,
@@ -598,7 +635,12 @@ pub async fn remote_delete_machine(
         )
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if result.is_ok() {
+        // A deleted sandbox has nothing left to open: withdraw its delivered notices.
+        crate::notifications::clear_sandbox(&notice_app, &deleted);
+    }
+    result
 }
 /// Called before constructing Tauri. A bridge never launches the GUI or runtime.
 pub(crate) fn run_bridge() -> Result<(), String> {
@@ -819,6 +861,13 @@ fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sandbox_name_is_read_from_a_remote_snapshot() {
+        let state = json!({"workspaces":[{"machine":{"id":"a","name":"one"}},{"machine":{"id":"b","name":"two"}}]});
+        assert_eq!(sandbox_name(&state, "b").as_deref(), Some("two"));
+        assert_eq!(sandbox_name(&state, "c"), None);
+        assert_eq!(sandbox_name(&json!({}), "a"), None);
+    }
     #[test]
     fn checkpoint_actions_build_owner_routed_requests_with_vm_identity() {
         let vm = "11111111-1111-4111-8111-111111111111";

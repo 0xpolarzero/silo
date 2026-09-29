@@ -96,6 +96,13 @@ fn start_selected(
     failures
 }
 
+fn startup_failure_title(count: usize) -> String {
+    match count {
+        1 => "A sandbox couldn\u{2019}t start at launch".into(),
+        n => format!("{n} sandboxes couldn\u{2019}t start at launch"),
+    }
+}
+
 // Called once by native app setup, never by a webview mount, refresh or reopen.
 pub(crate) fn install(app: &AppHandle) {
     app.manage(StartupState::default());
@@ -114,7 +121,8 @@ pub(crate) fn install(app: &AppHandle) {
         }
         if state.cancelled.load(Ordering::SeqCst) { return; }
         if let Err(message) = crate::runtime::configuration_recovery::recover(&app) {
-            crate::notifications::action_failed(&app, "Sandbox setup could not resume");
+            crate::notifications::notify(&app, crate::notifications::failure(
+                "startup:setup", "Sandbox setup couldn\u{2019}t resume", &message, None));
             if let Some(window) = app.get_webview_window("main") {
                 let _ = crate::system_integrations::show_integration_error(app.clone(), window,
                     format!("{message}\n\nSaved setup progress was preserved. Relaunch Silo to retry."));
@@ -124,7 +132,8 @@ pub(crate) fn install(app: &AppHandle) {
         let recovered_stops = match crate::runtime::lifecycle_recovery::recover(&app) {
             Ok(stopped) => stopped,
             Err(message) => {
-                crate::notifications::action_failed(&app, "Sandbox actions could not resume");
+                crate::notifications::notify(&app, crate::notifications::failure(
+                    "startup:actions", "Sandbox actions couldn\u{2019}t resume", &message, None));
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = crate::system_integrations::show_integration_error(app.clone(), window, message);
                 }
@@ -147,7 +156,8 @@ pub(crate) fn install(app: &AppHandle) {
         });
         let failures = result.unwrap_or_else(|error| vec![error]);
         if !failures.is_empty() && !state.cancelled.load(Ordering::SeqCst) {
-            crate::notifications::action_failed(&app, "Sandbox startup failed");
+            crate::notifications::notify(&app, crate::notifications::failure(
+                "startup:launch", &startup_failure_title(failures.len()), &failures.join(" "), None));
             if let Some(window) = app.get_webview_window("main") {
                 let message = format!("Some sandboxes could not start automatically:\n\n{}\n\nOther selected sandboxes may have started. Check their status and use Start to retry. Update the startup selection in Settings if needed.", failures.join("\n"));
                 let _ = crate::system_integrations::show_integration_error(

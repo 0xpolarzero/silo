@@ -23,7 +23,7 @@ has been exercised.
 | Logs | [Retained history, search and export](SiloUI-LOGS.md), [sandbox failure reporting](SiloUI-FAILURE-REPORTING.md) |
 | Storage | [Workspace reclamation policy and verification](SiloUI-STORAGE-RECLAMATION.md), [disk discard regression](SiloUI-STORAGE-DISCARD-RESEARCH.md) |
 | Desktop | [Detached desktop implementation plan](SiloUI-DETACHED-DESKTOP-IMPLEMENTATION-PLAN.md): current Selkies-backed rollout; it supersedes the older Kasm rollout plan for this work. Existing Kasm guests remain supported until explicit update. [Viewer direction](SiloUI-DESKTOP-VIEWER-DIRECTION.md) and [experience research](SiloUI-DESKTOP-EXPERIENCE-RESEARCH.md) record rationale and limits. |
-| Desktop behavior | [Settings](SiloUI-SETTINGS.md), [native menus](SiloUI-NATIVE-MENUS.md), [status panel](SiloUI-STATUS-PANEL.md) |
+| Desktop behavior | [Settings](SiloUI-SETTINGS.md), [native menus](SiloUI-NATIVE-MENUS.md), [status panel](SiloUI-STATUS-PANEL.md), [notifications](SiloUI-NOTIFICATIONS.md) |
 
 ## Research and design evidence
 

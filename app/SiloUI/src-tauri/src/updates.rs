@@ -151,9 +151,14 @@ pub(crate) fn recovery_failed(app: &AppHandle, message: String) {
     let _ = fail(
         app,
         "Some sandboxes could not resume after updating. Relaunch Silo to retry.",
-        message,
+        &message,
     );
-    crate::notifications::action_failed(app, "Sandboxes could not resume after updating");
+    crate::notifications::notify(app, crate::notifications::failure(
+        "update:resume",
+        "Sandboxes couldn\u{2019}t resume after updating",
+        &message,
+        None,
+    ));
 }
 fn busy(phase: &str) -> bool {
     matches!(phase, "checking" | "downloading" | "installing")
