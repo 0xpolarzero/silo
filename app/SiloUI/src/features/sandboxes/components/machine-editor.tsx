@@ -49,7 +49,7 @@ function SelectField({ label, value, values, suffix, error, readOnly = false, cu
         {values.map((option) => <option key={option} value={option}>{option} {suffix}</option>)}
         {custom && <option value="custom">Custom…</option>}
       </select>
-      {isCustom && <Input
+      {isCustom && <Input technical
         type="number" disabled={readOnly} min={1} max={label.includes("storage") ? 4_194_303 : 4_294_967_295} step={1}
         aria-label={`${label} custom (${suffix === "CPU" ? "CPUs" : "GiB"})`}
         aria-invalid={Boolean(error)}
@@ -76,7 +76,7 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   return (
     <label className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
       {label}
-      <Input ref={firstField ? inputRef : undefined} aria-label={label} aria-invalid={Boolean(error)} value={value} {...props} />
+      <Input technical ref={firstField ? inputRef : undefined} aria-label={label} aria-invalid={Boolean(error)} value={value} {...props} />
       {error && <span className="text-destructive">{error}</span>}
     </label>
   )
@@ -192,7 +192,7 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
           <TextField label="SSH user" value={draft.user} error={errors.user} autoComplete="username" placeholder="developer" onChange={(event) => update({ user: event.target.value })} />
           <label className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
             SSH port
-            <Input
+            <Input technical
               aria-label="SSH port"
               aria-invalid={Boolean(errors.port)}
               type="number"

@@ -40,7 +40,7 @@ export function PersonalTokenConnection({ status, onSave, onRemove }: {
         {status?.saved && <Button size="xs" variant="ghost" disabled={busy || !onRemove} onClick={() => void remove()}>Remove token</Button>}
       </div>} />
     {editing && <form className="flex flex-wrap gap-2 border-t p-3" onSubmit={event => { event.preventDefault(); void save() }}>
-      <Input className="min-w-40 flex-1" type="password" aria-label="GitHub personal access token" autoComplete="off" spellCheck={false}
+      <Input technical className="min-w-40 flex-1" type="password" aria-label="GitHub personal access token" autoComplete="off" spellCheck={false}
         value={token} disabled={busy} onChange={event => setToken(event.target.value)} placeholder="Paste your personal access token" />
       <Button size="sm" type="submit" disabled={busy || !token.trim()}>Connect token</Button>
       <Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => { setEditing(false); setToken("") }}>Cancel</Button>

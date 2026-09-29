@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -36,8 +36,8 @@ it("keeps the existing VM list and shows remote ownership through a focusable ba
   view.rerender(<OverviewPage source={{ ...source }} actions={actions} onMachinesChange={onMachinesChange} />)
   await user.click(row.getByRole("button", { name: `More actions for ${remote.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${remote.machine.name} on Office Mac` }))
-  expect(screen.getByText("Confirm deletion on Office Mac")).toBeVisible()
-  await user.click(screen.getByRole("menuitem", { name: `Confirm deletion of ${remote.machine.name} on Office Mac` }))
+  expect(await screen.findByText(`Delete ${remote.machine.name} on Office Mac?`)).toBeVisible()
+  await user.click(within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete" }))
   expect(actions.deleteRemoteMachine).toHaveBeenCalledWith("office", remote.machine)
 })
 
@@ -84,8 +84,8 @@ it("removes the last VM from a remote computer and can create from an empty list
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={onMachinesChange} />)
   await user.click(screen.getByRole("button", { name: `More actions for ${remote.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${remote.machine.name} on Office Mac` }))
-  await user.click(screen.getByRole("menuitem", { name: `Confirm deletion of ${remote.machine.name} on Office Mac` }))
-  expect(actions.deleteRemoteMachine).toHaveBeenCalledWith("office", remote.machine)
+  await user.click(within((await screen.findByText(`Delete ${remote.machine.name} on Office Mac?`)).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete" }))
+  await waitFor(() => expect(actions.deleteRemoteMachine).toHaveBeenCalledWith("office", remote.machine))
   view.rerender(<OverviewPage source={{ ...source, workspaces: [] }} actions={actions} onMachinesChange={onMachinesChange} />)
   expect(screen.getByText("0 sandboxes · 0 on this computer · 0 remote")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Add" }))
@@ -106,7 +106,7 @@ it("permits removing the last local VM without affecting connected computers", a
   render(<OverviewPage source={source} actions={actions} onMachinesChange={onMachinesChange} />)
   await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${machine.name}` }))
-  await user.click(screen.getByRole("menuitem", { name: `Confirm deletion of ${machine.name}` }))
-  expect(onMachinesChange).toHaveBeenCalledWith([], [machine])
+  await user.click(within((await screen.findByText(`Delete ${machine.name}?`)).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete" }))
+  await waitFor(() => expect(onMachinesChange).toHaveBeenCalledWith([], [machine]))
   expect(actions.deleteRemoteMachine).not.toHaveBeenCalled()
 })

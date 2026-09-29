@@ -55,16 +55,59 @@ export const emptyOperationQueue: OperationQueue = { running: [], waiting: [] }
  */
 export const TRANSFER_OPERATION_LABELS = ["Exporting sandbox", "Importing sandbox"] as const
 
+/**
+ * Exact gate labels for operations that already show their own progress or result
+ * notification (checkpoints, storage reclaim, host-wide lifecycle start). Kept in sync with the
+ * backend labels in `src-tauri/src/runtime/checkpoints.rs` and `runtime/storage.rs`.
+ */
+export const CHECKPOINT_CAPTURE_LABEL = "Creating checkpoint"
+
+export const SELF_NOTIFIED_OPERATION_LABELS = [
+  CHECKPOINT_CAPTURE_LABEL,
+  "Restoring checkpoint",
+  "Forking checkpoint",
+  "Reclaiming sandbox storage",
+  "Starting sandbox",
+] as const
+
+/**
+ * Gate label prefixes (labels embed the sandbox name) for operations with their own toast:
+ * lifecycle start/stop/restart (`lifecycle_label` in `runtime.rs`), GitHub apply, host pushes
+ * (`host_push.rs`), and port publish/remove (`network.rs`).
+ */
+export const SELF_NOTIFIED_OPERATION_PREFIXES = [
+  "Starting ",
+  "Stopping ",
+  "Restarting ",
+  "Dismissing error for ",
+  "Applying GitHub access to ",
+  "Pushing from ",
+  "Publishing a port on ",
+  "Removing a port on ",
+] as const
+
+/** Labels that look like a lifecycle prefix but are internal and must stay visible to the queue UI. */
+const ALWAYS_LISTED_LABELS = ["Stopping local VMs"] as const
+
+/** True when an entry already has its own notification and needs no queue toast. */
+export function hasOwnNotification(entry: OperationEntry): boolean {
+  const label = entry.label
+  if ((ALWAYS_LISTED_LABELS as readonly string[]).includes(label)) return false
+  return (TRANSFER_OPERATION_LABELS as readonly string[]).includes(label)
+    || (SELF_NOTIFIED_OPERATION_LABELS as readonly string[]).includes(label)
+    || SELF_NOTIFIED_OPERATION_PREFIXES.some((prefix) => label.startsWith(prefix))
+}
+
 /** True when an entry is an export/import operation shown by its own transfer toast. */
 export function isTransferOperation(entry: OperationEntry): boolean {
   return (TRANSFER_OPERATION_LABELS as readonly string[]).includes(entry.label)
 }
 
-/** The queue with export/import entries removed, since they have a dedicated toast. */
+/** The queue with entries that have their own notification removed. */
 export function toastableQueue(queue: OperationQueue): OperationQueue {
   return {
-    running: queue.running.filter((entry) => !isTransferOperation(entry)),
-    waiting: queue.waiting.filter((entry) => !isTransferOperation(entry)),
+    running: queue.running.filter((entry) => !hasOwnNotification(entry)),
+    waiting: queue.waiting.filter((entry) => !hasOwnNotification(entry)),
   }
 }
 

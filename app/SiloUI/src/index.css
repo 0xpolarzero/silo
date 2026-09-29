@@ -265,6 +265,41 @@ html.native-status body {
   animation: none !important;
 }
 
+/* Indeterminate progress: a segment sliding across the track, so it never reads as a fixed
+   percentage. With reduced motion there is no fill at all, only a subtle full-width track. */
+@keyframes silo-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+.silo-progress-indeterminate {
+  animation: silo-progress-slide 1.3s ease-in-out infinite;
+}
+
+.silo-toaster[data-reduce-motion="true"] .silo-progress-indeterminate {
+  animation: none !important;
+  display: none;
+}
+
+/* Toast layout: the leading icon sits on the title line, and the body may never widen the toast. */
+.silo-toaster [data-sonner-toast][data-styled="true"] {
+  align-items: flex-start;
+}
+
+.silo-toaster [data-sonner-toast][data-styled="true"] [data-icon] {
+  margin-top: 2px;
+}
+
+.silo-toaster [data-sonner-toast][data-styled="true"] [data-content] {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.silo-toaster [data-sonner-toast][data-styled="true"] [data-description] {
+  width: 100%;
+  min-width: 0;
+}
+
 /* Sonner hangs its close button off the toast's top-left corner as a tiny circle. Place a
    normal ghost-style icon button inside the top-right corner for every toast, and reserve room
    so the title, description and actions never run under it. */
@@ -305,6 +340,11 @@ html.native-status body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .silo-progress-indeterminate {
+    animation: none;
+    display: none;
+  }
+
   .silo-window,
   .silo-window * {
     transition-duration: 0s !important;

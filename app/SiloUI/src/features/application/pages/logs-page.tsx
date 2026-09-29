@@ -54,7 +54,7 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
   if (!workspaces.length) return <p>No sandboxes selected. Select at least one sandbox to see its logs.</p>
   return <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
     <div className="flex shrink-0 flex-wrap items-center gap-2">
-      <div className="relative min-w-40 flex-1"><Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" /><Input aria-label="Search logs" placeholder="Search logs" value={query} onChange={event => onQueryChange(event.target.value)} className="h-7 pl-8" /></div>
+      <div className="relative min-w-40 flex-1"><Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" /><Input technical aria-label="Search logs" placeholder="Search logs" value={query} onChange={event => onQueryChange(event.target.value)} className="h-7 pl-8" /></div>
       <Button size="icon-xs" variant="outline" aria-label="Refresh logs" title="Refresh logs" disabled={busy || invalidRange || query !== searchQuery} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className={busy && ready && !loadingOlder ? "motion-safe:animate-spin" : undefined} /></Button>
       <Button size="xs" variant="outline" aria-pressed={following} onClick={() => setFollowing(value => !value)}>{following ? "Pause" : "Follow"}</Button>
       <CopyButton variant="outline" size="xs" title="Copy the logs in this list" value={copiedLogs} disabled={!rows.length || invalidRange} labels={{ idle: "Copy logs", copied: "Logs copied", failed: "Copy logs failed" }} text={{ idle: "Copy", copied: "Copied", failed: "Copy failed" }} />

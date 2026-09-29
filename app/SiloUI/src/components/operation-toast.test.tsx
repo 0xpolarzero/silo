@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Toaster } from "@/components/ui/sonner"
 import { SettingsProvider } from "@/features/preferences/settings-store"
 import { formatElapsed } from "@/lib/format-elapsed"
-import { showOperationFailure, showOperationProgress, showOperationSuccess, useOperationProgressToast, type OperationProgressState } from "@/lib/operation-toast"
+import { dismissSandboxToasts, showOperationFailure, showOperationProgress, showOperationSuccess, useOperationProgressToast, type OperationProgressState } from "@/lib/operation-toast"
 
 function Host() { return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster /></SettingsProvider> }
 const tick = () => act(async () => { await Promise.resolve(); await vi.advanceTimersByTimeAsync(50) })
@@ -104,4 +104,77 @@ it("formats elapsed time", () => {
   expect(formatElapsed(5000)).toBe("5s")
   expect(formatElapsed(72_000)).toBe("1m 12s")
   expect(formatElapsed(3_720_000)).toBe("1h 2m")
+})
+
+describe("progress notification polish", () => {
+  it("hides a step that only repeats the title", async () => {
+    render(<Host />)
+    act(() => showOperationProgress("dup", { title: "Creating checkpoint “X”", step: "Creating checkpoint…", progress: null }))
+    await tick()
+    expect(screen.queryByText("Creating checkpoint…")).not.toBeInTheDocument()
+    act(() => showOperationProgress("dup", { title: "Creating checkpoint “X”", step: "Saving disk copies", progress: null }))
+    await tick()
+    expect(screen.getByText("Saving disk copies")).toBeInTheDocument()
+  })
+
+  it("renders the indeterminate bar as a sliding segment, not a static half bar", async () => {
+    render(<Host />)
+    act(() => showOperationProgress("slide", { title: "Working", progress: null }))
+    await tick()
+    const indicator = document.querySelector("[data-slot=progress-indicator]")!
+    expect(indicator.className).toContain("silo-progress-indeterminate")
+    expect(indicator.className).not.toContain("w-1/2")
+    expect(document.querySelector("[data-slot=progress]")!.className).toContain("w-full")
+  })
+
+  it("keeps the body within the toast width and truncates long steps", async () => {
+    render(<Host />)
+    act(() => showOperationProgress("wide", { title: "Exporting", step: "x".repeat(300), progress: 0.5 }))
+    await tick()
+    const step = screen.getByText("x".repeat(300))
+    expect(step.className).toContain("truncate")
+    expect(step.closest("div.grid")!.className).toContain("min-w-0")
+    expect(step.closest("div.grid")!.className).toContain("w-full")
+  })
+
+  it("puts Cancel in a small outline button", async () => {
+    render(<Host />)
+    act(() => showOperationProgress("cancel-style", { title: "Working", cancel: { onCancel: vi.fn() } }))
+    await tick()
+    const button = screen.getByRole("button", { name: "Cancel" })
+    expect(button).toHaveAttribute("data-size", "xs")
+    expect(button).toHaveAttribute("data-variant", "outline")
+  })
+})
+
+describe("toast actions", () => {
+  it("renders every action through the same Sonner action button", async () => {
+    render(<Host />)
+    act(() => {
+      showOperationSuccess("a", "Fork created", { action: { label: "Open", onClick: vi.fn() } })
+      showOperationSuccess("b", "Exported", { action: { label: "Show in Finder", onClick: vi.fn() } })
+      showOperationFailure("c", "Failed", { retry: vi.fn() })
+    })
+    await tick()
+    for (const name of ["Open", "Show in Finder", "Retry"]) {
+      const button = screen.getByRole("button", { name })
+      expect(button).toHaveAttribute("data-button", "true")
+      expect(button.getAttribute("data-slot")).toBeNull()
+    }
+  })
+
+  it("dismisses notifications tagged with a deleted sandbox", async () => {
+    render(<Host />)
+    act(() => {
+      showOperationSuccess("tagged", "Imported gone", { sandbox: "gone", action: { label: "Open", onClick: vi.fn() } })
+      showOperationSuccess("other", "Imported kept", { sandbox: "kept" })
+    })
+    await tick()
+    expect(screen.getByText("Imported gone")).toBeInTheDocument()
+    act(() => dismissSandboxToasts("gone"))
+    await tick()
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(screen.queryByText("Imported gone")).not.toBeInTheDocument()
+    expect(screen.getByText("Imported kept")).toBeInTheDocument()
+  })
 })

@@ -85,8 +85,8 @@ export function LogFilters({ source, since, until, onChange }: LogFilterValues &
         <p className="text-xs font-medium">Custom range <span className="font-normal text-muted-foreground">· local time</span></p>
         {fields.map(field => <fieldset key={field.label} className="grid grid-cols-[minmax(0,1fr)_5.5rem] gap-2">
           <legend className="mb-1 text-xs text-muted-foreground">{field.label}</legend>
-          <Input aria-label={`${field.label} date`} placeholder="YYYY-MM-DD" value={field.date} autoComplete="off" spellCheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={event => { field.setDate(event.target.value); setError("") }} className="h-8 font-mono text-xs" />
-          <Input aria-label={`${field.label} time`} placeholder="HH:mm" value={field.time} autoComplete="off" spellCheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={event => { field.setTime(event.target.value); setError("") }} className="h-8 font-mono text-xs" />
+          <Input technical aria-label={`${field.label} date`} placeholder="YYYY-MM-DD" value={field.date} autoComplete="off" spellCheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={event => { field.setDate(event.target.value); setError("") }} className="h-8 font-mono text-xs" />
+          <Input technical aria-label={`${field.label} time`} placeholder="HH:mm" value={field.time} autoComplete="off" spellCheck={false} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} onChange={event => { field.setTime(event.target.value); setError("") }} className="h-8 font-mono text-xs" />
         </fieldset>)}
         <p className="text-[11px] leading-relaxed text-muted-foreground">Either date can be left blank. Leave times blank to include the full day.</p>
         {error && <p id={errorId} role="alert" className="text-xs text-destructive">{error}</p>}
@@ -116,6 +116,6 @@ function boundary(date: string, time: string, end: boolean): string {
   return value.toISOString()
 }
 function rangeLabel(since: string, until: string): string {
-  const format = (value: string) => new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+  const format = (value: string) => new Date(value).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
   return since && until ? `${format(since)} → ${format(until)}` : since ? `Since ${format(since)}` : `Until ${format(until)}`
 }

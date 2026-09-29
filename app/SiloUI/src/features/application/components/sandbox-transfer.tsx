@@ -52,7 +52,7 @@ function ImportPopover({ source, review, anchor, onReview, onImport, onClose, on
     : <div className="grid gap-2">
         <p className="text-muted-foreground">{review.archive.size} · {review.archive.sandboxes.length === 1 ? review.archive.sandboxes[0] : `${review.archive.sandboxes.length} sandboxes`}. Imported as a new stopped sandbox; existing sandboxes and the export file stay unchanged.</p>
         {review.archive.sandboxes.length > 1 && <label className="grid gap-1">Sandbox to import<Select value={review.sourceName} onValueChange={(sourceName) => onReview({ ...review, sourceName, newName: review.newName === `${review.sourceName}-imported` ? `${sourceName}-imported` : review.newName })}><SelectTrigger className="h-7 text-[11px]" aria-label="Sandbox to import"><SelectValue /></SelectTrigger><SelectContent>{review.archive.sandboxes.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></label>}
-        <label className="grid gap-1">New sandbox name<Input value={review.newName} aria-invalid={Boolean(nameError) || nameConflict} aria-describedby={nameError ? nameErrorID : undefined} onChange={(event) => onReview({ ...review, newName: event.target.value })} />{nameError && <span id={nameErrorID} className="text-destructive">{nameError}</span>}{!nameError && nameConflict && <span className="text-destructive">A sandbox named {review.newName} already exists.</span>}</label>
+        <label className="grid gap-1">New sandbox name<Input technical value={review.newName} aria-invalid={Boolean(nameError) || nameConflict} aria-describedby={nameError ? nameErrorID : undefined} onChange={(event) => onReview({ ...review, newName: event.target.value })} />{nameError && <span id={nameErrorID} className="text-destructive">{nameError}</span>}{!nameError && nameConflict && <span className="text-destructive">A sandbox named {review.newName} already exists.</span>}</label>
       </div>
   return <FormPopover
     open={review !== null}
@@ -156,16 +156,16 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
       const archive = operation.archive
       const title = isExport ? (checkpointRef.current ? "Checkpoint exported" : "Exported") : `Imported ${operation.targetName ?? archive.sandboxes[0] ?? "sandbox"}`
       const action = isExport
-        ? <Button variant="outline" size="xs" onClick={() => {
+        ? { label: revealLabel(), onClick: () => {
             backupRef.current.actions.revealArchive(archive).catch((error) => showActionFailure("Could not reveal the export", errorText(error)))
-          }}>{revealLabel()}</Button>
+          } }
         : (() => {
             const name = operation.targetName
             const match = name ? optionsRef.current.source.workspaces.find(({ machine, computer }) => !computer && machine.name === name) : undefined
             const open = optionsRef.current.openSandbox
-            return match && open ? <Button variant="outline" size="xs" onClick={() => open(match.machine.id)}>Open</Button> : undefined
+            return match && open ? { label: "Open", onClick: () => open(match.machine.id) } : undefined
           })()
-      showOperationSuccess(TRANSFER_TOAST_ID, title, { description: isExport ? `${archive.name} · ${archive.size}` : "Stopped and verified.", action, onDismiss: dismiss })
+      showOperationSuccess(TRANSFER_TOAST_ID, title, { description: isExport ? `${archive.name} · ${archive.size}` : "Stopped and verified.", action, sandbox: isExport ? undefined : operation.targetName ?? archive.sandboxes[0], onDismiss: dismiss })
       return
     }
 
@@ -177,9 +177,9 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
     // failed or restart-required: persistent, actionable.
     const description = <div className="grid gap-1"><p>{operation.message}</p>{operation.detail && <p className="text-muted-foreground">{operation.detail}</p>}</div>
     const retry = operation.outcome === "restart-required"
-      ? <Button variant="outline" size="xs" onClick={() => backupRef.current.actions.retryStart(operation.runningNames[0])}>Retry start</Button>
+      ? { label: "Retry start", onClick: () => backupRef.current.actions.retryStart(operation.runningNames[0]) }
       : retryRef.current
-      ? <Button variant="outline" size="xs" onClick={() => retryRef.current?.()}>Retry</Button>
+      ? { label: "Retry", onClick: () => retryRef.current?.() }
       : undefined
     showOperationFailure(TRANSFER_TOAST_ID, operation.title, { description, action: retry, onDismiss: dismiss, tone: operation.outcome === "restart-required" ? "warning" : "error" })
     // oxlint-disable-next-line react-hooks/exhaustive-deps

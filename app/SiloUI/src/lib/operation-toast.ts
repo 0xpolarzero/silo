@@ -44,22 +44,52 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** A result-toast action: a label + handler, or a ready-made element such as a `<Button>`. */
-export type OperationAction = { label: string; onClick: () => void } | ReactNode
+/**
+ * A result-toast action. Always a label + handler so every notification renders the same
+ * Sonner action button (never a hand-made `<Button>`, which would look different).
+ */
+export type OperationAction = { label: string; onClick: () => void }
+
+/**
+ * Notifications about a specific sandbox, so they can be dismissed when it is deleted (their
+ * actions would point at a sandbox that no longer exists). Keyed by sandbox name.
+ */
+const sandboxToasts = new Map<string, Set<string>>()
+
+function tagSandbox(id: string, sandbox: string | string[] | undefined) {
+  if (!sandbox) return
+  for (const name of Array.isArray(sandbox) ? sandbox : [sandbox]) {
+    const ids = sandboxToasts.get(name) ?? new Set<string>()
+    ids.add(id)
+    sandboxToasts.set(name, ids)
+  }
+}
+
+/** Dismiss every notification tagged with this sandbox name. Call when the sandbox is deleted. */
+export function dismissSandboxToasts(name: string) {
+  const ids = sandboxToasts.get(name)
+  if (!ids) return
+  sandboxToasts.delete(name)
+  for (const id of ids) toast.dismiss(id)
+}
 
 /** Options shared by every finished-state notification. */
 export interface OperationResultOptions {
   description?: ReactNode
   action?: OperationAction
+  /** Sandbox(es) this notification is about; see `dismissSandboxToasts`. */
+  sandbox?: string | string[]
   /** Called when the user closes the notification or it closes by itself. */
   onDismiss?: () => void
 }
 
 export function showOperationSuccess(id: string, title: string, options: OperationResultOptions = {}) {
+  tagSandbox(id, options.sandbox)
   toast.success(title, { id, description: options.description, duration: Infinity, closeButton: true, action: options.action, onDismiss: options.onDismiss, onAutoClose: options.onDismiss })
 }
 
-export function showOperationFailure(id: string, title: string, options: Omit<OperationResultOptions, "action"> & { retry?: () => void; action?: OperationAction; tone?: "error" | "warning" } = {}) {
+export function showOperationFailure(id: string, title: string, options: OperationResultOptions & { retry?: () => void; tone?: "error" | "warning" } = {}) {
+  tagSandbox(id, options.sandbox)
   const notify = options.tone === "warning" ? toast.warning : toast.error
   notify(title, {
     id,
@@ -78,7 +108,8 @@ export function dismissOperationToast(id: string) {
 }
 
 /** A neutral, short-lived notice for an outcome that is neither success nor failure (e.g. cancelled). */
-export function showOperationNotice(id: string, title: string, options: { description?: ReactNode; onDismiss?: () => void; duration?: number } = {}) {
+export function showOperationNotice(id: string, title: string, options: { description?: ReactNode; onDismiss?: () => void; duration?: number; sandbox?: string | string[] } = {}) {
+  tagSandbox(id, options.sandbox)
   toast(title, { id, description: options.description, duration: options.duration ?? 4000, closeButton: true, onDismiss: options.onDismiss, onAutoClose: options.onDismiss })
 }
 
@@ -88,8 +119,9 @@ export function showOperationNotice(id: string, title: string, options: { descri
  * Call again with the same id to update in place.
  */
 export function showOperationProgress(id: string, options: OperationProgressOptions) {
-  const { title, ...body } = options
-  toast.loading(title, { id, duration: Infinity, description: createElement(OperationToastBody, body) })
+  const { title, sandbox, ...body } = options
+  tagSandbox(id, sandbox)
+  toast.loading(title, { id, duration: Infinity, description: createElement(OperationToastBody, { ...body, title }) })
 }
 
 /** Backend-driven operation state understood by `useOperationProgressToast`. */
@@ -97,7 +129,7 @@ export type OperationProgressState =
   | { status: "idle" }
   | ({ status: "running" } & OperationProgressOptions)
   | ({ status: "success"; title: string } & OperationResultOptions)
-  | { status: "failure"; title: string; description?: ReactNode; retry?: () => void; onDismiss?: () => void }
+  | { status: "failure"; title: string; description?: ReactNode; retry?: () => void; onDismiss?: () => void; sandbox?: string | string[] }
 
 /**
  * Maps an operation state to progress/success/failure toasts under `id`. A state that is
@@ -115,9 +147,9 @@ export function useOperationProgressToast(id: string, state: OperationProgressSt
     } else if (before === null) {
       return
     } else if (state.status === "success" && before !== "success") {
-      showOperationSuccess(id, state.title, { description: state.description, action: state.action, onDismiss: state.onDismiss })
+      showOperationSuccess(id, state.title, { description: state.description, action: state.action, sandbox: state.sandbox, onDismiss: state.onDismiss })
     } else if (state.status === "failure" && before !== "failure") {
-      showOperationFailure(id, state.title, { description: state.description, retry: state.retry, onDismiss: state.onDismiss })
+      showOperationFailure(id, state.title, { description: state.description, retry: state.retry, sandbox: state.sandbox, onDismiss: state.onDismiss })
     } else if (state.status === "idle" && before === "running") {
       toast.dismiss(id)
     }

@@ -1,7 +1,8 @@
-import { ActionsMenu, type MenuAction } from "@/components/actions-menu"
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactElement, type ReactNode } from "react"
+import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
 import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Trash2, X } from "lucide-react"
 
+import { ConfirmBody } from "@/components/confirm-popover"
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { Button } from "@/components/ui/button"
@@ -17,8 +18,8 @@ import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-
 export interface MachineRowPresentation {
   expandedContent?: ReactNode
   menuActions?: MenuAction[]
-  /** Wraps the ⋯ menu, e.g. in a popover anchored to its button. */
-  wrapMenu?: (menu: ReactElement) => ReactElement
+  /** Popovers opened by `menuActions` entries with a matching `popover` key, anchored to the ⋯ button. */
+  popovers?: MenuPopovers
   kindBadge?: ReactNode
   badge?: ReactNode
   detail?: ReactNode
@@ -73,7 +74,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     pendingDelete, setPendingDelete,
     baselineRef,
     captureBaseline, beginOperation, dispatchChange,
-    startEdit, startAdd, startDuplicate, save, remove, reviewConflict,
+    startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteWithNotice,
   } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp })
 
   const [addOpen, setAddOpen] = useState(false)
@@ -264,7 +265,17 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       >
                         <GripVertical className="size-4" aria-hidden="true" />
                       </span>}
-                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && (presentation.wrapMenu ?? ((menu: ReactElement) => menu))(<ActionsMenu label={`More actions for ${machine.name}`} disabled={rowInteractionsDisabled} onClose={() => setPendingDelete(null)} items={[
+                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu label={`More actions for ${machine.name}`} disabled={rowInteractionsDisabled} popovers={{
+                        ...presentation.popovers,
+                        delete: close => <ConfirmBody
+                          tone="destructive"
+                          title={`Delete ${deletionName}?`}
+                          description={`Removing ${machine.name} from Silo. Persistent volumes are kept.`}
+                          confirmLabel="Delete"
+                          onClose={close}
+                          onConfirm={() => deleteWithNotice(machine).then(() => undefined)}
+                        />,
+                      }} items={[
                         ...presentation.menuActions,
                         { label: "Edit", separatorBefore: presentation.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled, onSelect: () => startEdit(machine) },
                         { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: interactionDisabled, onSelect: () => startDuplicate(machine) },
@@ -273,9 +284,8 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                           captureBaseline()
                           void save({ ...machine, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
                         } }] : []),
-                        ...(deleteArmed ? [{ label: "Cancel deletion", icon: X, accessibleLabel: `Cancel deletion of ${machine.name}`, onSelect: () => setPendingDelete(null) }] : []),
-                        { icon: deleteArmed ? Check : Trash2, label: deleteArmed ? `Confirm deletion${computerName ? ` on ${computerName}` : ""}` : "Delete", accessibleLabel: deleteArmed ? `Confirm deletion of ${deletionName}` : `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled || runningVM, tooltip: deleteTooltip, keepOpen: true, onSelect: () => { void remove(machine) } },
-                      ]} />)}</> : undefined}
+                        { icon: Trash2, label: "Delete", accessibleLabel: `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled || runningVM, tooltip: deleteTooltip, popover: "delete" },
+                      ]} />}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
                         <SandboxAction label={`Edit ${machine.name}`} disabled={interactionDisabled} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>

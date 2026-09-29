@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -315,4 +315,74 @@ it("confirms a delete in a popover on the detail page and returns to the list", 
 
   expect(onMachinesChange).toHaveBeenCalled()
   expect(await screen.findByRole("list", { name: "Configured sandboxes" })).toBeVisible()
+})
+
+it("shows a destructive Delete confirmation from the detail ⋯ menu and Fork still opens its own popover", async () => {
+  const source = localVmSource()
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  workspace.state = "stopped"
+  const user = userEvent.setup()
+  render(<OverviewPage source={source} actions={{ forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
+
+  await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
+  await user.click(screen.getByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
+  expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
+  const remove = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete" })
+  expect(remove.className).toContain("destructive")
+  await user.keyboard("{Escape}")
+  await waitFor(() => expect(screen.queryByText(`Delete ${workspace.machine.name}?`)).not.toBeInTheDocument())
+
+  await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
+  await user.click(await screen.findByRole("menuitem", { name: `Fork ${workspace.machine.name}` }))
+  expect(await screen.findByText(`Fork ${workspace.machine.name}`)).toBeVisible()
+  expect(screen.queryByText(`Delete ${workspace.machine.name}?`)).not.toBeInTheDocument()
+})
+
+it("does not bring a closed fork popover back when returning to the list", async () => {
+  const source = localVmSource()
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const user = userEvent.setup()
+  render(<OverviewPage source={source} actions={{ forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
+  await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
+  await user.click(await screen.findByRole("menuitem", { name: `Fork ${workspace.machine.name}` }))
+  expect(await screen.findByText(`Fork ${workspace.machine.name}`)).toBeVisible()
+  await user.keyboard("{Escape}")
+  await waitFor(() => expect(screen.queryByText(`Fork ${workspace.machine.name}`)).not.toBeInTheDocument())
+
+  await user.click(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("button", { name: "Sandboxes" }))
+  expect(screen.getByRole("list", { name: "Configured sandboxes" })).toBeVisible()
+  expect(screen.queryByText(`Fork ${workspace.machine.name}`)).not.toBeInTheDocument()
+  expect(document.querySelector("[data-slot=popover-content]")).toBeNull()
+})
+
+it("does not carry an open fork popover from the detail page to the list", async () => {
+  const source = localVmSource()
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const user = userEvent.setup()
+  render(<OverviewPage source={source} actions={{ forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
+  await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
+  await user.click(await screen.findByRole("menuitem", { name: `Fork ${workspace.machine.name}` }))
+  expect(await screen.findByText(`Fork ${workspace.machine.name}`)).toBeVisible()
+  await user.click(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("button", { name: "Sandboxes" }))
+  expect(screen.queryByText(`Fork ${workspace.machine.name}`)).not.toBeInTheDocument()
+})
+
+it("confirms a delete from the list row ⋯ menu with the same popover as the detail page", async () => {
+  const source = localVmSource()
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  workspace.state = "stopped"
+  const onMachinesChange = vi.fn()
+  const user = userEvent.setup()
+  render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={onMachinesChange} />)
+  await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
+  await user.click(await screen.findByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
+  expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
+  const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
+  expect(popover.getByText(`Removing ${workspace.machine.name} from Silo. Persistent volumes are kept.`)).toBeVisible()
+  expect(screen.queryByRole("menuitem", { name: /Confirm deletion/ })).not.toBeInTheDocument()
+  await user.click(popover.getByRole("button", { name: "Delete" }))
+  await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
 })

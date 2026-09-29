@@ -73,7 +73,7 @@ export function FilterCombobox<Value extends string>({
         <PopoverAnchor asChild>
           <div className={cn("relative shrink-0", compact ? "w-36" : "w-48")}>
             <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
+            <Input technical
               role="combobox"
               aria-label={inputLabel}
               aria-invalid={inputInvalid}

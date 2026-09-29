@@ -27,7 +27,7 @@ it("closes the fork popover at once and continues current-state fork progress in
   // The popover closed immediately; progress lives in one notification.
   expect(screen.queryByRole("textbox", { name: "New sandbox name" })).toBeNull()
   expect(await screen.findByText("Creating fork experiment")).toBeVisible()
-  expect(screen.getByRole("progressbar", { name: "Starting…" })).toBeVisible()
+  expect(screen.getByRole("progressbar", { name: "Copying from the checkpoint" })).toBeVisible()
 
   const progressing = structuredClone(source)
   const progressingWorkspace = progressing.workspaces.find(item => item.machine.id === workspace.machine.id)!
@@ -110,4 +110,45 @@ it("opens the Checkpoints tab from the Overview menu and drives fork, restore, a
   // Create progress and completion are notifications, not inline blocks that push the list.
   expect(await screen.findByText("Checkpoint created")).toBeVisible()
   expect(screen.queryByRole("progressbar", { name: "Checkpoint operation progress" })).not.toBeInTheDocument()
+})
+
+it("dismisses a sandbox's notifications when it is deleted and announces the deletion", async () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  source.remoteComputers = []
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.computer)!
+  workspace.state = "stopped"
+  const { showOperationSuccess } = await import("@/lib/operation-toast")
+  const actions = { forkCheckpoint: vi.fn() } as unknown as ApplicationActions
+  const user = userEvent.setup()
+  const onMachinesChange = vi.fn().mockResolvedValue(undefined)
+  const view = render(<><OverviewPage source={source} actions={actions} onMachinesChange={onMachinesChange} /><Toaster /></>)
+  act(() => showOperationSuccess("import-result", `Imported ${workspace.machine.name}`, { sandbox: workspace.machine.name, action: { label: "Open", onClick: vi.fn() } }))
+  expect(await screen.findByText(`Imported ${workspace.machine.name}`)).toBeVisible()
+
+  await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
+  await user.click(await screen.findByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
+  await user.click(confirmButton("Delete"))
+  expect(await screen.findByText(`Deleted ${workspace.machine.name}`)).toBeVisible()
+
+  const remaining = { ...source, workspaces: source.workspaces.filter(item => item.machine.id !== workspace.machine.id) }
+  view.rerender(<><OverviewPage source={remaining} actions={actions} onMachinesChange={onMachinesChange} /><Toaster /></>)
+  await waitFor(() => expect(screen.queryByText(`Imported ${workspace.machine.name}`)).not.toBeInTheDocument())
+  expect(screen.getByText(`Deleted ${workspace.machine.name}`)).toBeVisible()
+})
+
+it("moves Cancel for a running checkpoint capture into its progress notification", async () => {
+  const { runCheckpointOperation, syncCheckpointProgress } = await import("../model/checkpoint-operation-toast")
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.computer)!
+  const cancel = vi.fn()
+  render(<Toaster />)
+  let finish!: () => void
+  void runCheckpointOperation({ id: "checkpoint:dev:capture", kind: "capture", target: workspace.machine.name, sandbox: workspace.machine.name, title: "Creating checkpoint “A”", run: () => new Promise<void>(resolve => { finish = resolve }), success: { title: "Checkpoint created" }, failureTitle: "Could not create checkpoint" })
+  workspace.checkpointOperation = { kind: "capture", status: "running", stage: "Saving disk copies" }
+  const queue = { running: [{ id: 42, label: "Creating checkpoint", vmId: workspace.machine.id, vmName: workspace.machine.name, sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  act(() => syncCheckpointProgress(source.workspaces, { queue, cancel }))
+  const button = await screen.findByRole("button", { name: "Cancel" })
+  await userEvent.setup().click(button)
+  expect(cancel).toHaveBeenCalledWith(42)
+  await act(async () => { finish() })
 })

@@ -1,12 +1,11 @@
 import { ChevronRight, Code, CopyPlus, Cpu, GitBranch, Globe, KeyRound, Pencil, Play, Plus, Server, Square, Terminal, Trash2 } from "lucide-react"
-import { useId, useState, type MouseEvent, type ReactElement, type ReactNode } from "react"
+import { useId, type MouseEvent, type ReactNode } from "react"
 
-import { ActionsMenu, type MenuAction } from "@/components/actions-menu"
-import { ConfirmPopover } from "@/components/confirm-popover"
+import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
+import { ConfirmBody } from "@/components/confirm-popover"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
-import { showActionFailure } from "@/lib/operation-toast"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -53,8 +52,8 @@ export interface SandboxDetailControls {
   canStart: boolean
   canStop: boolean
   menuActions: MenuAction[]
-  /** Wraps the ⋯ menu, e.g. in a popover anchored to its button. */
-  wrapMenu?: (menu: ReactElement) => ReactElement
+  /** Popovers opened by `menuActions` entries with a matching `popover` key (e.g. Fork), anchored to the ⋯ button. */
+  popovers?: MenuPopovers
   onTerminal: () => void
   onEditor: () => void
   onStart: () => void
@@ -341,7 +340,6 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     isMachineRunning: editingContext?.isMachineRunning,
     interactionDisabled: controls.configurationLocked,
   })
-  const [deleting, setDeleting] = useState(false)
   const canEdit = Boolean(editingContext) && !controls.configurationLocked
   const isEditing = Boolean(editing.editor)
   const editComputerMachines = editingContext?.getComputerId
@@ -351,7 +349,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const editMenuActions: MenuAction[] = editingContext ? [
     { label: "Edit", separatorBefore: controls.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: controls.configurationLocked, onSelect: () => editing.startEdit(machine) },
     { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: controls.configurationLocked || !controls.onDuplicate, onSelect: () => controls.onDuplicate?.() },
-    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), opensPopover: true, onSelect: () => setDeleting(true) },
+    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), popover: "delete" },
   ] : []
   const menuActions = [...controls.menuActions, ...editMenuActions]
 
@@ -372,8 +370,21 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     { value: "access", label: "SSH", visible: showAccess },
   ]
   const visibleTabs = tabs.filter(tab => tab.visible)
-  const menu = <ActionsMenu label={`More actions for ${machine.name}`} items={menuActions} />
-  const menuWithFork = controls.wrapMenu ? controls.wrapMenu(menu) : menu
+  const deleteTitle = `Delete ${workspace.computer ? `${machine.name} on ${workspace.computer.name}` : machine.name}?`
+  const menuPopovers: MenuPopovers = {
+    ...controls.popovers,
+    delete: close => <ConfirmBody
+      tone="destructive"
+      title={deleteTitle}
+      description={`Removing ${machine.name} from Silo. Persistent volumes are kept.`}
+      confirmLabel="Delete"
+      onClose={close}
+      onConfirm={async () => {
+        if (await editing.deleteWithNotice(machine)) controls.onBack()
+      }}
+    />,
+  }
+  const menu = <ActionsMenu label={`More actions for ${machine.name}`} items={menuActions} popovers={menuPopovers} />
   const activeTab = visibleTabs.some(tab => tab.value === controls.activeTab) ? controls.activeTab : "overview"
 
   const startStopDisabled = controls.readOnly || controls.configurationLocked || controls.workspaceOperationBusy
@@ -393,26 +404,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           {canStop
             ? <Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={startStopDisabled || !controls.canStop} onClick={controls.onStop}><Square aria-hidden="true" data-icon="inline-start" />Stop</Button>
             : <Button type="button" variant="outline" size="xs" aria-label={`Start ${machine.name}`} disabled={startStopDisabled || !controls.canStart} onClick={controls.onStart}><Play aria-hidden="true" data-icon="inline-start" />Start</Button>}
-          {menuActions.length > 0 && (editingContext ?
-            <ConfirmPopover
-              open={deleting}
-              onOpenChange={setDeleting}
-              anchor={menuWithFork}
-              align="end"
-              tone="destructive"
-              title={`Delete ${workspace.computer ? `${machine.name} on ${workspace.computer.name}` : machine.name}?`}
-              description={`Removing ${machine.name} from Silo. Persistent volumes are kept.`}
-              confirmLabel="Delete"
-              onConfirm={async () => {
-                try {
-                  await editing.deleteMachineNow(machine)
-                  controls.onBack()
-                } catch (cause) {
-                  showActionFailure(`Couldn't delete ${machine.name}`, cause)
-                }
-              }}
-            />
-            : menuWithFork)}
+          {menuActions.length > 0 && menu}
         </div>}
       />
 

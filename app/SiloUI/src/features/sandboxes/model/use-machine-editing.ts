@@ -1,6 +1,6 @@
 import { useRef, useState } from "react"
 
-import { showActionFailure } from "@/lib/operation-toast"
+import { showActionFailure, showOperationNotice } from "@/lib/operation-toast"
 
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import {
@@ -205,6 +205,23 @@ export function useMachineEditing({
     if (outcome) await outcome
   }
 
+  /** Confirmed deletion (from the shared delete popover): deletes, then reports the outcome in a notification. */
+  async function deleteWithNotice(machine: SetupMachineConfiguration): Promise<boolean> {
+    // The popover may have been opened while the sandbox was stopped; never delete a running VM.
+    if (machine.kind === "vm" && isMachineRunning?.(machine)) {
+      showActionFailure(`Couldn't delete ${machine.name}`, "Stop the sandbox before deleting it.")
+      return false
+    }
+    try {
+      await deleteMachineNow(machine)
+      showOperationNotice(`sandbox-deleted:${machine.id}`, `Deleted ${machine.name}`)
+      return true
+    } catch (cause) {
+      showActionFailure(`Couldn't delete ${machine.name}`, cause)
+      return false
+    }
+  }
+
   return {
     computerId, setComputerId,
     committing,
@@ -215,6 +232,6 @@ export function useMachineEditing({
     pendingDelete, setPendingDelete,
     baselineRef,
     captureBaseline, beginOperation, scopedBaseline, dispatchChange,
-    startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteMachineNow,
+    startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteMachineNow, deleteWithNotice,
   }
 }

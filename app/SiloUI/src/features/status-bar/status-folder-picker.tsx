@@ -73,7 +73,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
         <FolderBreadcrumbs segments={segments} onNavigate={navigate} />
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          <Input ref={search} aria-label="Filter folders" className="pl-8" placeholder="Filter folders…" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <Input technical ref={search} aria-label="Filter folders" className="pl-8" placeholder="Filter folders…" value={query} onChange={(event) => setQuery(event.target.value)} />
         </div>
         <ListCard className="max-h-60 overflow-y-auto" aria-busy={available && snapshot.loading || undefined}>
           {!available ? <p role="status" className="px-3 py-6 text-center text-xs text-muted-foreground">{unavailable}</p> : <>

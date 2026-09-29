@@ -126,14 +126,24 @@ describe("waitingStatusText", () => {
 })
 
 describe("toastableQueue", () => {
-  it("drops export and import entries, which have their own transfer toast", () => {
+  it("drops export/import and lifecycle entries, which have their own notifications", () => {
     const queue: OperationQueue = {
       running: [entry({ id: 1, label: "Exporting sandbox" }), entry({ id: 2, label: "Restarting dev", vmId: "dev" })],
       waiting: [entry({ id: 3, label: "Importing sandbox" }), entry({ id: 4, label: "Stopping api", vmId: "api" })],
     }
     const toastable = toastableQueue(queue)
-    expect(toastable.running.map((e) => e.label)).toEqual(["Restarting dev"])
-    expect(toastable.waiting.map((e) => e.label)).toEqual(["Stopping api"])
+    expect(toastable.running.map((e) => e.label)).toEqual([])
+    expect(toastable.waiting.map((e) => e.label)).toEqual([])
+  })
+
+  it("keeps operations that have no notification of their own", () => {
+    const queue: OperationQueue = {
+      running: [entry({ id: 1, label: "Creating checkpoint", vmId: "dev" }), entry({ id: 2, label: "Applying the sandbox configuration" })],
+      waiting: [entry({ id: 3, label: "Saving Git identities" }), entry({ id: 4, label: "Stopping local VMs" })],
+    }
+    const toastable = toastableQueue(queue)
+    expect(toastable.running.map((e) => e.label)).toEqual(["Applying the sandbox configuration"])
+    expect(toastable.waiting.map((e) => e.label)).toEqual(["Saving Git identities", "Stopping local VMs"])
   })
 })
 

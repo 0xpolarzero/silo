@@ -1,24 +1,56 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
-import { ForkPopover } from "./fork-popover"
+import { ActionsMenu } from "@/components/actions-menu"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { ForkBody } from "./fork-popover"
+
+function setup(onFork = vi.fn(), disabled = false) {
+  render(<TooltipProvider><ActionsMenu label="More actions for dev" items={[{ label: "Fork…", accessibleLabel: "Fork dev", popover: "fork" }]} popovers={{ fork: close => <ForkBody sandboxName="dev" disabled={disabled} onFork={onFork} onClose={close} /> }} /></TooltipProvider>)
+  return onFork
+}
+
+async function openFork(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+  await user.click(await screen.findByRole("menuitem", { name: "Fork dev" }))
+}
 
 it("closes at once on submit and hands the trimmed name to the caller", async () => {
-  const onFork = vi.fn()
-  const onOpenChange = vi.fn()
-  render(<ForkPopover open onOpenChange={onOpenChange} anchor={<button type="button" aria-label="More actions for dev">⋯</button>} sandboxName="dev" onFork={onFork} />)
-
-  expect(screen.getByText("Fork dev")).toBeVisible()
+  const user = userEvent.setup()
+  const onFork = setup()
+  await openFork(user)
+  expect(await screen.findByText("Fork dev")).toBeVisible()
   expect(screen.getByRole("button", { name: "Fork" })).toBeDisabled()
-  fireEvent.change(screen.getByRole("textbox", { name: "New sandbox name" }), { target: { value: " experiment " } })
-  fireEvent.click(screen.getByRole("button", { name: "Fork" }))
-
-  expect(onOpenChange).toHaveBeenCalledWith(false)
-  await vi.waitFor(() => expect(onFork).toHaveBeenCalledWith("experiment"))
+  await user.type(screen.getByRole("textbox", { name: "New sandbox name" }), " experiment ")
+  await user.click(screen.getByRole("button", { name: "Fork" }))
+  expect(screen.queryByText("Fork dev")).not.toBeInTheDocument()
+  await waitFor(() => expect(onFork).toHaveBeenCalledWith("experiment"))
 })
 
-it("does not submit while disabled", () => {
-  const onFork = vi.fn()
-  render(<ForkPopover open onOpenChange={vi.fn()} anchor={<button type="button">⋯</button>} sandboxName="dev" disabled onFork={onFork} />)
-  fireEvent.change(screen.getByRole("textbox", { name: "New sandbox name" }), { target: { value: "experiment" } })
+it("does not submit while disabled", async () => {
+  const user = userEvent.setup()
+  setup(vi.fn(), true)
+  await openFork(user)
+  await user.type(await screen.findByRole("textbox", { name: "New sandbox name" }), "experiment")
   expect(screen.getByRole("button", { name: "Fork" })).toBeDisabled()
+})
+
+it("turns off auto-capitalization and autocorrect on the name field", async () => {
+  const user = userEvent.setup()
+  setup()
+  await openFork(user)
+  const input = await screen.findByRole("textbox", { name: "New sandbox name" })
+  expect(input).toHaveAttribute("autocapitalize", "off")
+  expect(input).toHaveAttribute("autocorrect", "off")
+  expect(input).toHaveAttribute("spellcheck", "false")
+  expect(input).toHaveAttribute("autocomplete", "off")
+})
+
+it("Escape closes the popover and it stays closed", async () => {
+  const user = userEvent.setup()
+  setup()
+  await openFork(user)
+  await screen.findByText("Fork dev")
+  await user.keyboard("{Escape}")
+  await waitFor(() => expect(screen.queryByText("Fork dev")).not.toBeInTheDocument())
 })

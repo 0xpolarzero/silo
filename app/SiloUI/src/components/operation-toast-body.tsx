@@ -26,6 +26,8 @@ export interface OperationProgressOptions {
   /** Epoch ms the operation began; drives the elapsed timer. Defaults to when the toast first rendered. */
   startedAt?: number
   cancel?: OperationCancel
+  /** Sandbox this notification is about (see `dismissSandboxToasts`). */
+  sandbox?: string | string[]
 }
 
 function useElapsed(startedAt: number | undefined) {
@@ -47,7 +49,19 @@ const stepIcon: Record<OperationStepState, React.ReactNode> = {
 }
 
 /** Body of a progress toast (rendered as the Sonner description). Use `showOperationProgress`. */
-export function OperationToastBody({ step, steps, progress, startedAt, cancel }: Omit<OperationProgressOptions, "title">) {
+/**
+ * True when a step line only repeats the title ("Creating checkpoint…" under "Creating
+ * checkpoint “X”"). Compared case-insensitively, ignoring quotes and ellipses.
+ */
+export function isRedundantStep(title: string | undefined, step: string | undefined): boolean {
+  if (!step) return true
+  if (!title) return false
+  const normalize = (text: string) => text.toLowerCase().replace(/[“”‘’"'`]/g, "").replace(/(\.{3}|…)/g, "").replace(/\s+/g, " ").trim()
+  const normalizedStep = normalize(step)
+  return normalizedStep.length === 0 || normalize(title).startsWith(normalizedStep)
+}
+
+export function OperationToastBody({ title, step, steps, progress, startedAt, cancel }: Omit<OperationProgressOptions, "title"> & { title?: string }) {
   const elapsed = useElapsed(startedAt)
   const [confirming, setConfirming] = useState(false)
   const value = progress == null ? null : Math.min(100, Math.max(0, progress * 100))
@@ -63,17 +77,18 @@ export function OperationToastBody({ step, steps, progress, startedAt, cancel }:
     </div>
   }
 
-  return <div className="grid gap-1.5 text-xs">
-    <Progress value={value} aria-label={step ?? "Progress"} />
-    <div className="flex items-center justify-between gap-2 text-muted-foreground">
-      <span className="min-w-0 truncate">{step}</span>
+  const showStep = !isRedundantStep(title, step)
+  return <div className="grid w-full min-w-0 gap-1.5 text-xs">
+    <Progress className="w-full" value={value} aria-label={step ?? title ?? "Progress"} />
+    <div className="flex min-w-0 items-center justify-between gap-2 text-muted-foreground">
+      <span className="min-w-0 flex-1 truncate" title={showStep ? step : undefined}>{showStep ? step : null}</span>
       <span className="shrink-0 tabular-nums" data-slot="operation-elapsed">{elapsed}</span>
     </div>
     {steps && steps.length > 0 && <ul className="grid gap-0.5" aria-label="Steps">
       {steps.map((entry) => <li key={entry.label} data-state={entry.state} className={`flex items-center gap-1.5 ${entry.state === "pending" ? "text-muted-foreground/70" : entry.state === "failed" ? "text-destructive" : ""}`}>
-        {stepIcon[entry.state]}<span>{entry.label}</span>
+        {stepIcon[entry.state]}<span className="min-w-0 truncate">{entry.label}</span>
       </li>)}
     </ul>}
-    {cancel && <div><Button type="button" variant="ghost" size="sm" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}
+    {cancel && <div className="flex justify-end"><Button type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}
   </div>
 }

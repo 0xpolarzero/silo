@@ -8,12 +8,13 @@ import { Input } from "@/components/ui/input"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/relative-time"
 import { runCheckpointOperation } from "@/features/application/model/checkpoint-operation-toast"
-import { ForkPopover } from "./fork-popover"
+import { ForkBody } from "./fork-popover"
 import type { ApplicationActions, ApplicationWorkspace } from "@/features/application/model/application-source"
 import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 
 function suggestedName(now = new Date()) {
-  return `Checkpoint ${now.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+  // Always English: the UI copy is English, so the system locale must not leak month names.
+  return `Checkpoint ${now.toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}`
 }
 
 function checkpointTag(checkpoint: WorkspaceCheckpoint) {
@@ -35,7 +36,6 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
 }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [name, setName] = useState(suggestedName)
-  const [forkCheckpoint, setForkCheckpoint] = useState<WorkspaceCheckpoint | null>(null)
   const [pending, setPending] = useState(false)
   /** True once the user started an operation here, so its outcome is reported by a notification rather than an inline label. */
   const [started, setStarted] = useState(false)
@@ -60,6 +60,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       id: `checkpoint:${target}:capture`,
       kind: "capture",
       target,
+      sandbox,
       title: `Creating checkpoint “${title}”`,
       run: () => actions.createCheckpoint!(target, title),
       success: { title: "Checkpoint created", description: title },
@@ -73,6 +74,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       id: `checkpoint:${target}:restore`,
       kind: "restore",
       target,
+      sandbox,
       title: `Restoring “${checkpoint.name}”`,
       run: () => actions.restoreCheckpoint!(target, checkpoint.id),
       success: { title: `Restored “${checkpoint.name}”`, description: `${sandbox} is stopped. A recovery checkpoint was saved first.`, action: restoredAction?.(checkpoint) },
@@ -86,6 +88,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       id: `checkpoint:${target}:fork`,
       kind: "fork",
       target,
+      sandbox: [sandbox, newName],
       title: `Creating fork ${newName}`,
       run: () => actions.forkCheckpoint!(target, checkpoint.id, newName),
       success: { title: "Fork created", description: `${newName} is stopped. Start it when you’re ready.`, action: forkedAction?.(newName) },
@@ -148,22 +151,15 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                 >
                   <Button size="xs" variant="outline" disabled={locked || !actions.restoreCheckpoint}>Restore</Button>
                 </ConfirmPopover>
-                {(() => {
-                  const menu = <ActionsMenu label={`Checkpoint actions for ${checkpoint.name}`} disabled={locked} items={[
-                    ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, opensPopover: true, onSelect: () => setForkCheckpoint(checkpoint) }] : []),
+                <ActionsMenu
+                  label={`Checkpoint actions for ${checkpoint.name}`}
+                  disabled={locked}
+                  popovers={{ fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox from this checkpoint. Select Start when ready." disabled={locked} onFork={newName => fork(checkpoint, newName)} onClose={close} /> }}
+                  items={[
+                    ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
                     ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),
-                  ]} />
-                  return actions.forkCheckpoint ? <ForkPopover
-                    open={forkCheckpoint?.id === checkpoint.id}
-                    onOpenChange={open => { if (!open) setForkCheckpoint(null) }}
-                    anchor={menu}
-                    sandboxName={sandbox}
-                    title={`Fork from “${checkpoint.name}”`}
-                    description="Creates a new stopped sandbox from this checkpoint. Select Start when ready."
-                    disabled={locked}
-                    onFork={newName => fork(checkpoint, newName)}
-                  /> : menu
-                })()}
+                  ]}
+                />
               </div>}
             />
           })}

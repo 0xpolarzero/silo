@@ -46,12 +46,12 @@ function useNow(active: boolean, intervalMs = 1000): number {
 }
 
 /** Step line for the operation-queue toast: a stuck warning, else a summary of waiting entries. */
-function queueStep(queue: OperationQueue, now: number): string | undefined {
+function queueStep(queue: OperationQueue, now: number, full: OperationQueue = queue): string | undefined {
   if (queue.running.some((entry) => isOperationStuck(entry, now))) return "Taking longer than expected"
   const first = queue.waiting[0]
   if (!first) return undefined
   const more = queue.waiting.length - 1
-  return `${first.label} — ${waitingStatusText(queue, first)}${more > 0 ? ` (and ${more} more)` : ""}`
+  return `${first.label} — ${waitingStatusText(full, first)}${more > 0 ? ` (and ${more} more)` : ""}`
 }
 
 /**
@@ -100,7 +100,7 @@ export function OperationQueueToast({ queue, onCancel }: { queue?: OperationQueu
     const primary = running[0]
     showOperationProgress(OPERATION_QUEUE_TOAST_ID, {
       title,
-      step: queueStep(visibleQueue, now),
+      step: queueStep(visibleQueue, now, queue),
       startedAt: primary?.sinceMs ?? earliest,
       cancel: onCancel && cancellable ? { onCancel: () => onCancel(cancellable.id) } : undefined,
     })

@@ -68,23 +68,66 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
   </Popover>
 }
 
+interface BodyProps {
+  title: string
+  description?: ReactNode
+  confirmLabel: string
+  cancelLabel?: string
+  tone?: "default" | "destructive"
+  /** Closes the popover (cancel, and after confirm). */
+  onClose: () => void
+}
+
+/** Popover content for a yes/no confirmation. Render inside a popover, or use `ConfirmPopover`. */
+export function ConfirmBody({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onConfirm, onClose }: BodyProps & { onConfirm: () => void | Promise<void> }) {
+  function confirm() {
+    onClose()
+    void Promise.resolve().then(onConfirm)
+  }
+  return <div className="grid gap-2" onKeyDown={(event) => { if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) { event.preventDefault(); confirm() } }}>
+    <p className="font-medium">{title}</p>
+    {description && <div className="text-muted-foreground">{description}</div>}
+    <div className="flex justify-end gap-2">
+      <Button type="button" variant="ghost" size="sm" onClick={onClose}>{cancelLabel}</Button>
+      <Button type="button" size="sm" variant={tone === "destructive" ? "destructive" : "default"} autoFocus onClick={confirm}>{confirmLabel}</Button>
+    </div>
+  </div>
+}
+
+/** Popover content for a small form. Focuses its first field on mount. */
+export function FormBody({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onSubmit, canSubmit = true, fields, onClose }: BodyProps & {
+  fields: ReactNode
+  canSubmit?: boolean
+  onSubmit: () => void | Promise<void>
+}) {
+  const form = useRef<HTMLFormElement>(null)
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => form.current?.querySelector<HTMLElement>("input, textarea, select, [tabindex]:not([tabindex='-1'])")?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [])
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!canSubmit) return
+    onClose()
+    void Promise.resolve().then(onSubmit)
+  }
+  return <form ref={form} className="grid gap-2" onSubmit={submit}>
+    <p className="font-medium">{title}</p>
+    {description && <div className="text-muted-foreground">{description}</div>}
+    {fields}
+    <div className="flex justify-end gap-2">
+      <Button type="button" variant="ghost" size="sm" onClick={onClose}>{cancelLabel}</Button>
+      <Button type="submit" size="sm" variant={tone === "destructive" ? "destructive" : "default"} disabled={!canSubmit}>{confirmLabel}</Button>
+    </div>
+  </form>
+}
+
 export function ConfirmPopover({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onConfirm, open, onOpenChange, align = "start", side = "bottom", children, anchor, ref }: PopoverShellProps & {
   onConfirm: () => void | Promise<void>
 }) {
   const [isOpen, setOpen] = useOpen(open, onOpenChange)
-  function confirm() {
-    setOpen(false)
-    void Promise.resolve().then(onConfirm)
-  }
   return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} align={align} side={side} content={
-    <div className="grid gap-2" onKeyDown={(event) => { if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) { event.preventDefault(); confirm() } }}>
-      <p className="font-medium">{title}</p>
-      {description && <div className="text-muted-foreground">{description}</div>}
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>{cancelLabel}</Button>
-        <Button type="button" size="sm" variant={tone === "destructive" ? "destructive" : "default"} autoFocus onClick={confirm}>{confirmLabel}</Button>
-      </div>
-    </div>
+    <ConfirmBody title={title} description={description} confirmLabel={confirmLabel} cancelLabel={cancelLabel} tone={tone} onConfirm={onConfirm} onClose={() => setOpen(false)} />
   }>{children}</Shell>
 }
 
@@ -95,27 +138,7 @@ export function FormPopover({ title, description, confirmLabel, cancelLabel = "C
   onSubmit: () => void | Promise<void>
 }) {
   const [isOpen, setOpen] = useOpen(open, onOpenChange)
-  const form = useRef<HTMLFormElement>(null)
-  useEffect(() => {
-    if (!isOpen) return
-    const frame = requestAnimationFrame(() => form.current?.querySelector<HTMLElement>("input, textarea, select, [tabindex]:not([tabindex='-1'])")?.focus())
-    return () => cancelAnimationFrame(frame)
-  }, [isOpen])
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    if (!canSubmit) return
-    setOpen(false)
-    void Promise.resolve().then(onSubmit)
-  }
   return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} align={align} side={side} content={
-    <form ref={form} className="grid gap-2" onSubmit={submit}>
-      <p className="font-medium">{title}</p>
-      {description && <div className="text-muted-foreground">{description}</div>}
-      {fields}
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>{cancelLabel}</Button>
-        <Button type="submit" size="sm" variant={tone === "destructive" ? "destructive" : "default"} disabled={!canSubmit}>{confirmLabel}</Button>
-      </div>
-    </form>
+    <FormBody title={title} description={description} confirmLabel={confirmLabel} cancelLabel={cancelLabel} tone={tone} fields={fields} canSubmit={canSubmit} onSubmit={onSubmit} onClose={() => setOpen(false)} />
   }>{children}</Shell>
 }

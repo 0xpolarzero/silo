@@ -36,3 +36,15 @@ it("keeps row controls mounted and in place across a busy transition", () => {
   expect(reorder).not.toHaveAttribute("aria-disabled")
   expect(reorder).toHaveAttribute("tabindex", "0")
 })
+
+it("keeps the sandbox name field free of auto-capitalization and autocorrect", async () => {
+  const { default: userEvent } = await import("@testing-library/user-event")
+  const user = userEvent.setup()
+  render(<TooltipProvider><MachineList machines={[]} onMachinesChange={vi.fn()} /></TooltipProvider>)
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+  const name = await screen.findByRole("textbox", { name: "Machine name" })
+  expect(name).toHaveAttribute("autocapitalize", "off")
+  expect(name).toHaveAttribute("autocorrect", "off")
+  expect(name).toHaveAttribute("spellcheck", "false")
+})

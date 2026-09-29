@@ -21,7 +21,7 @@ export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: {
     setError("")
     await attempt(async () => { await connect(address.trim()); onClose() })
   }}>
-    <label className="grid gap-1 text-xs">Computer address<Input autoFocus aria-label="Computer address" placeholder="user@computer or SSH alias" value={address} disabled={busy} onChange={event => setAddress(event.target.value)} /></label>
+    <label className="grid gap-1 text-xs">Computer address<Input technical autoFocus aria-label="Computer address" placeholder="user@computer or SSH alias" value={address} disabled={busy} onChange={event => setAddress(event.target.value)} /></label>
     <p className="text-xs text-muted-foreground">Open Silo on that computer and enable remote management. Uses your existing SSH keys and configuration.</p>
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     {error && authorize && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => authorize(address.trim())) }}>Authorize SSH in Terminal…</Button><p className="text-xs text-muted-foreground">Confirm the computer’s fingerprint and unlock your SSH key, then connect again.</p></div>}

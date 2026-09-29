@@ -78,8 +78,8 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
             }
             void change({ port: value, ...(address !== null ? { bindAddress: address } : {}) }).then(ok => { if (ok) { setPort(null); setAddress(null) } })
           }}>
-            {port !== null && <label className="grid gap-1">Port<Input autoFocus aria-label="SSH port" type="number" min={1} max={65535} value={port} onChange={event => setPort(event.target.value)} className="w-24" disabled={blocked} /></label>}
-            {address !== null && <label className="grid gap-1">Network address<Input autoFocus={port === null} aria-label="LAN or VPN address" list={`${id}-addresses`} value={address} onChange={event => setAddress(event.target.value)} disabled={blocked} /><datalist id={`${id}-addresses`}>{networkAddresses.map(value => <option key={value} value={value} />)}</datalist></label>}
+            {port !== null && <label className="grid gap-1">Port<Input technical autoFocus aria-label="SSH port" type="number" min={1} max={65535} value={port} onChange={event => setPort(event.target.value)} className="w-24" disabled={blocked} /></label>}
+            {address !== null && <label className="grid gap-1">Network address<Input technical autoFocus={port === null} aria-label="LAN or VPN address" list={`${id}-addresses`} value={address} onChange={event => setAddress(event.target.value)} disabled={blocked} /><datalist id={`${id}-addresses`}>{networkAddresses.map(value => <option key={value} value={value} />)}</datalist></label>}
             <Button type="submit" size="xs" variant="outline" disabled={blocked}>Save</Button><Button type="button" size="xs" variant="ghost" disabled={busy} onClick={() => { setPort(null); setAddress(null); setError(null) }}>Cancel</Button>
           </form>)
 

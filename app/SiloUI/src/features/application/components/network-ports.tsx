@@ -56,16 +56,18 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   /** Runs a port operation with the shared loading → success/failure notifications. Failures offer Retry. */
   async function run(id: string, copy: { loading: string; step?: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
     setBusy(true)
-    showOperationProgress(id, { title: copy.loading, step: copy.step ?? `${copy.loading}…`, progress: null })
+    // Ids read `network-port:<target>:…`; a local target is the sandbox name (see `workspaceTarget`).
+    const sandbox = id.split(":")[1]
+    showOperationProgress(id, { title: copy.loading, step: copy.step ?? `${copy.loading}…`, progress: null, sandbox })
     try {
       await operation()
-      showOperationSuccess(id, copy.success)
+      showOperationSuccess(id, copy.success, { sandbox })
       setConfirm(null)
       onSuccess?.()
       return true
     } catch (cause) {
       const message = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated."
-      showOperationFailure(id, copy.failure, { description: message, retry: () => void run(id, copy, operation, onSuccess) })
+      showOperationFailure(id, copy.failure, { description: message, retry: () => void run(id, copy, operation, onSuccess), sandbox })
       return false
     } finally { setBusy(false) }
   }
@@ -138,8 +140,8 @@ export function NetworkPortForm({ controller, fieldID, hideSandbox = false, clas
         : { loading: `Adding port ${request.port}`, step: `Publishing port ${request.port} on ${draft.workspace}`, success: `Port ${request.port} added`, failure: `Could not add port ${request.port}` }, () => actions.saveNetworkPort!(request), () => setDraft(null))
     }
   }}>
-    <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">VM port<Input aria-label="VM port" aria-invalid={Boolean(fieldErrors.port)} aria-describedby={fieldErrors.port ? `${fieldID}-port-error` : undefined} className="h-8 w-full" type="number" min={1} max={65535} required autoFocus={!draft.editing} disabled={busy || draft.editing} value={draft.port} onChange={e => { setDraft({ ...draft, port: e.target.value }); setFieldErrors(current => ({ ...current, port: undefined })) }} />{fieldErrors.port && <span id={`${fieldID}-port-error`} className="text-destructive">{fieldErrors.port}</span>}</label></div>
-    <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Local port<Input aria-label="Local port" aria-invalid={Boolean(fieldErrors.hostPort)} aria-describedby={fieldErrors.hostPort ? `${fieldID}-hostPort-error` : undefined} className="h-8 w-32 max-w-full" type="number" min={1} max={65535} placeholder="Automatic" autoFocus={draft.editing} disabled={busy} value={draft.hostPort} onChange={e => { setDraft({ ...draft, hostPort: e.target.value }); setFieldErrors(current => ({ ...current, hostPort: undefined })) }} />{fieldErrors.hostPort && <span id={`${fieldID}-hostPort-error`} className="text-destructive">{fieldErrors.hostPort}</span>}</label></div>
+    <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">VM port<Input technical aria-label="VM port" aria-invalid={Boolean(fieldErrors.port)} aria-describedby={fieldErrors.port ? `${fieldID}-port-error` : undefined} className="h-8 w-full" type="number" min={1} max={65535} required autoFocus={!draft.editing} disabled={busy || draft.editing} value={draft.port} onChange={e => { setDraft({ ...draft, port: e.target.value }); setFieldErrors(current => ({ ...current, port: undefined })) }} />{fieldErrors.port && <span id={`${fieldID}-port-error`} className="text-destructive">{fieldErrors.port}</span>}</label></div>
+    <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Local port<Input technical aria-label="Local port" aria-invalid={Boolean(fieldErrors.hostPort)} aria-describedby={fieldErrors.hostPort ? `${fieldID}-hostPort-error` : undefined} className="h-8 w-32 max-w-full" type="number" min={1} max={65535} placeholder="Automatic" autoFocus={draft.editing} disabled={busy} value={draft.hostPort} onChange={e => { setDraft({ ...draft, hostPort: e.target.value }); setFieldErrors(current => ({ ...current, hostPort: undefined })) }} />{fieldErrors.hostPort && <span id={`${fieldID}-hostPort-error`} className="text-destructive">{fieldErrors.hostPort}</span>}</label></div>
     <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Protocol<select aria-label="Protocol" className="h-8 rounded-md border border-input bg-background px-2 text-foreground" disabled={busy} value={draft.scheme} onChange={e => setDraft({ ...draft, scheme: e.target.value })}><option value="http">HTTP</option><option value="https">HTTPS</option><option value="tcp">TCP</option></select></label></div>
     {hideSandbox
       ? <input type="hidden" value={draft.workspace} readOnly />

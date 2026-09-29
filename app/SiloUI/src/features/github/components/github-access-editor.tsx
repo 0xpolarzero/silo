@@ -102,7 +102,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
       <PopoverAnchor asChild>
         <div className="relative">
           <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
+          <Input technical
             role="combobox"
             aria-label={`Add repository to ${workspace}`}
             aria-autocomplete="list"
@@ -326,7 +326,7 @@ export function GitHubAccessEditor({
                           <TooltipContent>Name and email used for Git commits in this VM.</TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
-                      <Input
+                      <Input technical
                         aria-label={`Git name for ${name}`}
                         autoComplete="off"
                         className="h-7 min-w-0 flex-[0.8] rounded-md px-2 text-[11px] md:text-[11px]"
@@ -339,7 +339,7 @@ export function GitHubAccessEditor({
                           if (event.key === "Enter") event.currentTarget.blur()
                         }}
                       />
-                      <Input
+                      <Input technical
                         aria-label={`Git email for ${name}`}
                         autoComplete="off"
                         className="h-7 min-w-0 flex-[1.2] rounded-md px-2 text-[11px] md:text-[11px]"

@@ -8,7 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/comp
 function Tip({ text, children }: { text: string; children: ReactElement }) {
   return <Tooltip><TooltipTrigger asChild>{children}</TooltipTrigger><TooltipContent className="max-w-64">{text}</TooltipContent></Tooltip>
 }
-function date(at: number) { return new Date(at * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
+function date(at: number) { return new Date(at * 1000).toLocaleString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) }
 function trigger(value: string) { return ({ manual: 'Manual', scheduled: 'Scheduled', beforeStop: 'Before stop', afterStart: 'After start', legacy: 'Previous reclaim' } as Record<string, string>)[value] ?? 'Automatic' }
 function formatBytes(bytes: number) {
   if (bytes === 0) return "0 B"
