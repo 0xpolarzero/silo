@@ -7,6 +7,9 @@ import { createProductionSource, type ProductionBridge } from "./production-sour
 // State-handling behaviour of the production source: request deduplication,
 // refresh ordering, polling and merges of partial native responses.
 
+const toasts = vi.hoisted(() => ({ showOperationFailure: vi.fn() }))
+vi.mock("@/lib/operation-toast", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/operation-toast")>(), showOperationFailure: toasts.showOperationFailure }))
+
 const source = applicationSourceForScenario("running")
 const backup: BackupState = {
   snapshotId: "one",
@@ -77,7 +80,7 @@ describe("GitHub state from full reads", () => {
     } finally { store.dispose() }
   })
 
-  it("still ignores an older policy revision than the one shown", async () => {
+  it("still ignores an older policy revision than the one shown (H-20)", async () => {
     let revision = 4
     const mock = bridge(command => command === "read_application_state" ? { ...structuredClone(source), github: { ...source.github, policyRevision: revision, accessEnabled: revision === 4 } } : undefined)
     const store = createProductionSource(mock.native)
@@ -86,6 +89,19 @@ describe("GitHub state from full reads", () => {
       revision = 3
       await store.refresh()
       expect(store.getSnapshot().source?.github).toMatchObject({ policyRevision: 4, accessEnabled: true })
+    } finally { store.dispose() }
+  })
+})
+
+describe("status actions", () => {
+  it("reports a failed Quit request instead of dropping it (H-25)", async () => {
+    toasts.showOperationFailure.mockClear()
+    const mock = bridge(command => { if (command === "quit_app") throw new Error("settings could not be saved") })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      store.statusActions.quit()
+      await vi.waitFor(() => expect(toasts.showOperationFailure).toHaveBeenCalledWith("quit", "Could not quit Silo", { description: "settings could not be saved" }))
     } finally { store.dispose() }
   })
 })

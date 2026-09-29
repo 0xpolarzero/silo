@@ -1341,7 +1341,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     openTerminal: applicationActions.openTerminal,
     pushRepository: applicationActions.pushRepository,
     openSilo: (route?: StatusBarRoute) => { void native.invoke("open_main", { route: route ?? null }).catch((cause) => console.error("Silo main window:", errorMessage(cause))) },
-    quit: () => { void native.invoke("quit_app") },
+    quit: () => { void native.invoke("quit_app").catch((cause: unknown) => reportActionFailure("quit", "Could not quit Silo", errorMessage(cause))) },
     refresh: () => { void refresh() },
     openEditor: (name, path) => workspaceAction("open-editor", name, { path }),
     openSite: (workspace, port) => { void Promise.resolve().then(() => openNetworkPort(workspace, port)).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
