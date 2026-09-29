@@ -10,7 +10,7 @@ import { useDependencyStore, type DependencyStore } from "@/desktop/dependencies
 import { ProductionOnboarding } from "@/desktop/production-onboarding"
 import { useProductionSource, type ProductionSource } from "@/desktop/production-source"
 import { StatusPanel } from "@/desktop/status-panel"
-import { ApplicationLoading } from "@/desktop/application-loading"
+import { ApplicationLoading, StatusPanelUnavailable } from "@/desktop/application-loading"
 import { ApplicationApp } from "@/features/application/application-app"
 import { useSettings } from "@/features/preferences/settings-store"
 
@@ -78,6 +78,7 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   if (!current.source) {
     if (current.loading && !current.error && !failures.length) return <ApplicationLoading machines={current.savedMachines ?? []} statusPanel={statusPanel} />
     const message = current.error ?? "The native application state is unavailable. No sandbox state changed."
+    if (statusPanel) return <StatusPanelUnavailable message={message} retry={current.loading ? undefined : retryChecks} />
     return <Unavailable message={message} checks={failures} checking={checking} retry={current.loading ? undefined : retryChecks} />
   }
   const remoteOnly = Boolean(current.source.remoteComputers?.length)

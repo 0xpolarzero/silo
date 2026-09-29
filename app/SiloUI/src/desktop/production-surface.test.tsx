@@ -5,6 +5,8 @@ import type { ProductionSource } from "./production-source"
 import type { DependencyStore } from "./dependencies"
 import { ProductionSurface } from "./production-surface"
 
+const native = vi.hoisted(() => ({ invoke: vi.fn(async (_command: string, _args?: unknown): Promise<unknown> => undefined) }))
+vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => false }))
 vi.mock("./shutdown-boundary", () => ({ ShutdownBoundary: ({ children, pendingWork }: { children: import("react").ReactNode; pendingWork?: string }) => <>{pendingWork && <p>Quit overlay: {pendingWork}</p>}{children}</> }))
 vi.mock("./runtime-migration-boundary", () => ({ RuntimeMigrationBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
 const state = vi.hoisted(() => ({ source: {} as object | null, loading: false, error: null as string | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn(), setupDrain: undefined as string | undefined }))
@@ -81,6 +83,37 @@ describe("production completion routing", () => {
   })
 })
 
+
+describe("status panel without application state", () => {
+  it("shows a panel-sized error with Retry, Open Silo and Quit instead of the full window", async () => {
+    state.source = null
+    state.error = "Runtime inspection failed."
+    render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={null} statusPanel /></SettingsProvider>)
+    const panel = screen.getByRole("dialog", { name: "Silo" })
+    expect(panel).toHaveClass("w-[380px]")
+    expect(screen.queryByRole("region", { name: "Silo unavailable" })).not.toBeInTheDocument()
+    expect(screen.getByRole("alert")).toHaveTextContent("Runtime inspection failed.")
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(source.initialize).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole("button", { name: "Open Silo…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Quit Silo" }))
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("quit_app"))
+    expect(native.invoke).toHaveBeenCalledWith("open_main")
+  })
+})
+
+describe("status panel while application state loads", () => {
+  it("keeps Open Silo and Quit usable in the tray skeleton", async () => {
+    state.source = null
+    state.loading = true
+    render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={null} statusPanel /></SettingsProvider>)
+    expect(screen.getByText("Loading sandbox state")).toHaveClass("sr-only")
+    expect(screen.getByText("saved-machine")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Open Silo…" })).toBeEnabled()
+    fireEvent.click(screen.getByRole("button", { name: "Quit Silo" }))
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("quit_app"))
+  })
+})
 
 describe("production dependency recovery", () => {
   const failure = { id: "runtime-microsandbox", title: "MicroSandbox runtime", status: "unavailable", detail: "Bundled runtime is missing.", remediation: "Reinstall Silo. Keep your VMs and settings." }
