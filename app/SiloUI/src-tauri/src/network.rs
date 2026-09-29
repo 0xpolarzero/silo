@@ -243,7 +243,16 @@ fn socket_path(paths: &RuntimePaths, workspace: &str) -> std::path::PathBuf {
         .join(&digest[..24])
         .join("control.sock")
 }
-fn configured_vm(paths: &RuntimePaths, name: &str) -> Result<runtime::InspectedSandbox, String> {
+/// Observe one workspace's saved forwards with a single enabled mapping for `port`.
+#[cfg(test)]
+pub(crate) fn observe_saved_port_for_test(paths: &RuntimePaths, workspace: &str, port: u16) -> (Option<String>, Vec<(&'static str, Option<String>)>) {
+    let config = Configuration { mappings: vec![Mapping { workspace: workspace.into(), port, host_port: None, scheme: Some("http".into()), enabled: true }] };
+    let observed = observe(paths, workspace, &config, &BTreeMap::new());
+    (observed.error, observed.ports.into_iter().map(|port| (port.state, port.message)).collect())
+}
+
+/// A Silo VM's runtime state, or `None` when it is stopped with no runtime sandbox yet.
+fn configured_vm(paths: &RuntimePaths, name: &str) -> Result<Option<runtime::InspectedSandbox>, String> {
     let metadata = runtime::read_metadata(&paths.metadata)
         .map_err(|_| "Could not read sandbox configuration.")?;
     if !metadata
@@ -253,10 +262,15 @@ fn configured_vm(paths: &RuntimePaths, name: &str) -> Result<runtime::InspectedS
     {
         return Err("Choose a local Silo VM.".into());
     }
-    let inspected = runtime::inspect_workspace(&ProcessRunner, paths, name)
-        .map_err(|_| "Could not inspect this VM.")?;
+    let inspected = match runtime::observe_vm(&ProcessRunner, paths, name)
+        .map_err(|error| format!("Could not inspect this VM: {error}"))?
+    {
+        runtime::VmRuntime::Present(inspected) => inspected,
+        // Not created yet (waiting for a checkpoint restore on Start): it is stopped.
+        runtime::VmRuntime::Absent => return Ok(None),
+    };
     runtime::ensure_managed(&inspected).map_err(|_| "This VM is not managed by Silo.")?;
-    Ok(inspected)
+    Ok(Some(inspected))
 }
 fn pending(mapping: &Mapping, message: Option<String>, state: &'static str) -> Port {
     Port {
@@ -291,7 +305,15 @@ fn observe(
         error: None,
     };
     let state = match configured_vm(paths, workspace) {
-        Ok(state) => state,
+        Ok(Some(state)) => state,
+        Ok(None) => {
+            result.ports = desired
+                .iter()
+                .filter(|m| m.enabled)
+                .map(|m| pending(m, None, "waiting"))
+                .collect();
+            return result;
+        }
         Err(e) => {
             result.ports = desired
                 .iter()
@@ -1007,8 +1029,8 @@ mod tests {
 pub(crate) fn desktop_endpoint(paths: &RuntimePaths, workspace: &str, guest_port: u16) -> Result<u16, String> {
     if guest_port == 0 { return Err("Invalid desktop port.".into()); }
     let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
-    let inspected = configured_vm(paths, workspace)?;
-    if inspected.status != "Running" { return Err("Start this sandbox before opening its desktop.".into()); }
+    let running = configured_vm(paths, workspace)?.is_some_and(|inspected| inspected.status == "Running");
+    if !running { return Err(format!("Start {workspace} first.")); }
     desktop_port(&socket_path(paths, workspace), guest_port)
 }
 

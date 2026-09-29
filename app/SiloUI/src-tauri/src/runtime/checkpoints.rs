@@ -2243,6 +2243,10 @@ mod tests {
         assert!(is_pending_restore(&paths, "dev"));
         assert_eq!(crate::terminal::running_vm_with(&pending, &paths, "dev").err().unwrap(), "Start dev first.");
         assert_eq!(*pending.calls.lock().unwrap(), 0);
+        // Network reads its saved ports as stopped: no error, no raw inspect failure.
+        let (error, ports) = crate::network::observe_saved_port_for_test(&paths, "dev", 3000);
+        assert_eq!(error, None);
+        assert_eq!(ports, vec![("waiting", None)]);
 
         // Other runtime failures still surface.
         struct Broken;
