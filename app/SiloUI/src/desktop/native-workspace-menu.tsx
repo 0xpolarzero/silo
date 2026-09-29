@@ -1,8 +1,9 @@
-import { useRef, useState } from "react"
+import { useRef } from "react"
 import { Menu, type MenuOptions } from "@tauri-apps/api/menu"
 import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { MoreHorizontal } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { showActionFailure, showQuickConfirmation } from "@/lib/operation-toast"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import type { WorkspaceMenuProps } from "@/features/status-bar/status-bar"
 
@@ -10,13 +11,12 @@ import type { WorkspaceMenuProps } from "@/features/status-bar/status-bar"
 // popup and its submenus, including screen-edge placement and keyboard tracking.
 export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: WorkspaceMenuProps) {
   const opening = useRef(false)
-  const [feedback, setFeedback] = useState("")
+  const buttonRef = useRef<HTMLButtonElement>(null)
   const { machine } = workspace
 
   async function open(button: HTMLButtonElement) {
     if (opening.current) return
     opening.current = true
-    setFeedback("")
     const bounds = button.getBoundingClientRect()
     const { canOpen, canStart, canStop, canRestart } = workspaceAvailability(workspace, source)
     const sites = workspace.ports.filter(({ listening }) => listening === true).sort((a, b) => a.port - b.port)
@@ -38,8 +38,8 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
           { item: "Separator" },
           { text: "Copy base URL", action: () => {
             void navigator.clipboard.writeText(`http://${workspace.host}`).then(
-              () => setFeedback("Base URL copied"),
-              () => setFeedback("Couldn't copy base URL"),
+              () => showQuickConfirmation("Base URL copied"),
+              (error) => showActionFailure("Couldn't copy base URL", error),
             )
           } },
         ],
@@ -51,7 +51,7 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
       await menu.popup(new LogicalPosition(bounds.left, bounds.bottom))
     } catch (error) {
       console.error("Silo status menu:", error)
-      setFeedback("Couldn't open sandbox actions. Try again.")
+      showActionFailure("Couldn't open sandbox actions", error, () => { if (buttonRef.current) void open(buttonRef.current) })
     } finally {
       opening.current = false
       // On macOS popup resolves after native menu tracking ends.
@@ -60,8 +60,7 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
   }
 
   return <>
-    <Button variant="ghost" size="icon-xs" aria-label={`Actions for ${machine.name}`} aria-haspopup="menu"
+    <Button ref={buttonRef} variant="ghost" size="icon-xs" aria-label={`Actions for ${machine.name}`} aria-haspopup="menu"
       onClick={(event) => { void open(event.currentTarget) }}><MoreHorizontal /></Button>
-    {feedback && <span role="status" className="text-xs text-muted-foreground">{feedback}</span>}
   </>
 }

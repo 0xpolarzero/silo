@@ -14,14 +14,15 @@ export function NetworkPage({ workspaces, browser, network, error, actions, acti
 }) {
   const fieldID = useId()
   const controller = useNetworkPorts({ workspaces, network, error, actions, active })
-  const { draft, rows, errors, localWorkspaces, operationError, busy } = controller
+  const { draft, rows, errors, addDisabledReason, runningLocalWorkspaces, busy } = controller
   const draftRow = <NetworkPortForm controller={controller} fieldID={fieldID} />
 
   return <TooltipProvider delayDuration={150}><div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
-    <div className="flex h-7 items-center justify-end"><Button variant="outline" size="xs" disabled={!actions.saveNetworkPort || !localWorkspaces.length || busy} onClick={() => controller.add()}><Plus />Add port</Button></div>
+    <div className="flex h-7 items-center justify-end">{addDisabledReason
+      ? <Tooltip><TooltipTrigger asChild><span tabIndex={0}><Button variant="outline" size="xs" disabled><Plus />Add port</Button></span></TooltipTrigger><TooltipContent>{addDisabledReason}</TooltipContent></Tooltip>
+      : <Button variant="outline" size="xs" disabled={!actions.saveNetworkPort || !runningLocalWorkspaces.length || busy} onClick={() => controller.add()}><Plus />Add port</Button>}</div>
 
     {(error || errors.length > 0) && <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/20 px-3 py-2 text-xs text-destructive"><span>{error || errors.join(" · ")}</span><Button size="sm" variant="ghost" onClick={() => void actions.refreshNetwork?.()}>Retry</Button></div>}
-    {operationError && <div role="alert" className="text-xs text-destructive">{operationError}</div>}
     {!network && !error && actions.refreshNetwork && !draft ? <div role="status" aria-label="Loading network" className="space-y-2 rounded-lg border border-border p-3">{[0, 1, 2].map(i => <div key={i} className="h-7 animate-pulse rounded bg-muted motion-reduce:animate-none" />)}</div>
       : rows.length === 0 && !draft ? error || errors.length > 0 ? null : <div className="rounded-lg border border-border px-4 py-8 text-center text-sm text-muted-foreground">{workspaces.length === 0 ? "No sandboxes selected" : "No configured ports"}</div>
       : <div className="flex max-h-full min-h-0 self-start w-full flex-col overflow-hidden rounded-lg border border-border"><div role="table" aria-label="Network" className="flex min-h-0 flex-col text-xs">
@@ -36,7 +37,7 @@ export function NetworkPage({ workspaces, browser, network, error, actions, acti
             <span role="cell" className={state === "Reachable" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}>{state}</span>
             <span role="cell"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></span>
             <span role="cell" className="flex justify-end gap-1"><NetworkPortRowActions controller={controller} workspace={workspace} port={port} state={state} browser={browser} /></span>
-            {port.message && <span role="cell" className={`col-span-full text-xs ${port.state === "unknown" ? "text-destructive" : "text-muted-foreground"}`}>{port.message}</span>}
+            {port.message && workspace.state === "running" && <span role="cell" className={`col-span-full text-xs ${port.state === "unknown" ? "text-destructive" : "text-muted-foreground"}`}>{port.message}</span>}
           </div>
         })}</div>
       </div></div>}

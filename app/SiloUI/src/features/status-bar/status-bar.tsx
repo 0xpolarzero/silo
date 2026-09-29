@@ -121,6 +121,7 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
             repositoryPath={repository.path}
             onRetry={() => actions.pushRepository(workspaceTarget(workspace), repository.path)}
             onDismiss={actions.dismissRepositoryPush}
+            showSuccess
           /> : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${workspace.machine.name}`} onClick={() => { if (canPush) actions.pushRepository(workspaceTarget(workspace), repository.path) }}>
             Push {commitLabel(repository.ahead)}
           </Button>}

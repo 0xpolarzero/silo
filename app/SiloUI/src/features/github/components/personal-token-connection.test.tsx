@@ -1,7 +1,11 @@
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { expect, it, vi } from "vitest"
+import { afterEach, expect, it, vi } from "vitest"
+import { toast } from "sonner"
+import { Toaster } from "@/components/ui/sonner"
 import { PersonalTokenConnection } from "./personal-token-connection"
+
+afterEach(() => { toast.dismiss() })
 
 it("submits a token once and clears it immediately while native validation runs", async () => {
   const user = userEvent.setup()
@@ -22,12 +26,13 @@ it("submits a token once and clears it immediately while native validation runs"
 
 it("never renders a credential-bearing native error", async () => {
   const user = userEvent.setup()
-  render(<PersonalTokenConnection onSave={vi.fn().mockRejectedValue(new Error("github_pat_private"))} />)
+  render(<><Toaster /><PersonalTokenConnection onSave={vi.fn().mockRejectedValue(new Error("github_pat_private"))} /></>)
   await user.click(screen.getByRole("button", { name: "Add token" }))
   await user.type(screen.getByLabelText("GitHub personal access token"), "github_pat_private")
   await user.click(screen.getByRole("button", { name: "Connect token" }))
-  expect(await screen.findByRole("alert")).toHaveTextContent("Could not connect this token")
-  expect(screen.getByRole("alert")).not.toHaveTextContent("github_pat_private")
+  expect(await screen.findByText("Could not connect token")).toBeInTheDocument()
+  expect(screen.getByText(/Check its validity/)).toBeInTheDocument()
+  expect(document.body).not.toHaveTextContent("github_pat_private")
   expect(screen.getByLabelText("GitHub personal access token")).toHaveValue("")
 })
 

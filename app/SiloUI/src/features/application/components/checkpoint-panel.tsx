@@ -1,6 +1,6 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Dialog } from "radix-ui"
-import { History, Loader2, ShieldCheck } from "lucide-react"
+import { History, ShieldCheck } from "lucide-react"
 import { ActionsMenu } from "@/components/actions-menu"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Progress } from "@/components/ui/progress"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { errorMessage, showOperationFailure, showOperationLoading, showOperationSuccess } from "@/lib/operation-toast"
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/relative-time"
 import { ForkStateDialog } from "./fork-state-dialog"
 import type { ApplicationActions, ApplicationWorkspace } from "@/features/application/model/application-source"
@@ -40,6 +41,10 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
   const [restoreCheckpoint, setRestoreCheckpoint] = useState<WorkspaceCheckpoint | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const creatingTitle = useRef("")
+  const [creating, setCreating] = useState(false)
+  /** True once the user started an operation here, so its outcome is reported by a notification rather than an inline label. */
+  const [started, setStarted] = useState(false)
   const checkpoints = [...(workspace.checkpoints ?? [])].sort((left, right) => right.createdAt.localeCompare(left.createdAt))
   const operation = workspace.checkpointOperation
   const running = operation?.status === "running"
@@ -47,19 +52,37 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
   const locked = disabled || busy
   const isLocal = !workspace.computer
 
-  async function create() {
+  const createToastId = `checkpoint:${target}:create`
+  const stage = operation?.status === "running" && operation.kind === "capture" ? operation.stage : undefined
+  // Backend progress refines the loading notification for a checkpoint this session started.
+  useEffect(() => {
+    if (creating && stage) showOperationLoading(createToastId, `Creating checkpoint “${creatingTitle.current}”`, stage)
+  }, [creating, stage, createToastId])
+
+  function create() {
     const title = name.trim()
     if (locked || !title || !actions.createCheckpoint) return
+    setCreateOpen(false)
+    void runCreate(title)
+  }
+
+  async function runCreate(title: string) {
+    if (!actions.createCheckpoint) return
     setPending(true)
+    setCreating(true)
+    setStarted(true)
     setError(null)
+    creatingTitle.current = title
+    showOperationLoading(createToastId, `Creating checkpoint “${title}”`)
     try {
       await actions.createCheckpoint(target, title)
-      setCreateOpen(false)
+      showOperationSuccess(createToastId, "Checkpoint created", { description: title })
       setName(suggestedName())
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      showOperationFailure(createToastId, `Could not create checkpoint “${title}”`, { description: errorMessage(cause), retry: () => void runCreate(title) })
     } finally {
       setPending(false)
+      setCreating(false)
     }
   }
 
@@ -67,6 +90,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
     const checkpoint = restoreCheckpoint
     if (locked || !checkpoint || !actions.restoreCheckpoint) return
     setPending(true)
+    setStarted(true)
     setError(null)
     try {
       await actions.restoreCheckpoint(target, checkpoint.id)
@@ -79,7 +103,8 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
     }
   }
 
-  const operationError = operation?.status === "failed" ? operation.error ?? operation.stage : null
+  // A failure that predates this session is only noted quietly; failures of operations started here are notified.
+  const staleFailure = operation?.status === "failed" && !started ? operation.error ?? operation.stage : null
 
   return <TooltipProvider delayDuration={250}>
     <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="grid gap-1.5 text-xs">
@@ -90,7 +115,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
             <Button size="xs" variant="outline" className="shrink-0" disabled={locked}>New checkpoint</Button>
           </PopoverTrigger>
           <PopoverContent align="end" aria-label="New checkpoint" className="w-72 p-3 text-xs">
-            <form className="grid gap-2" onSubmit={event => { event.preventDefault(); void create() }}>
+            <form className="grid gap-2" onSubmit={event => { event.preventDefault(); create() }}>
               <p className="font-medium">New checkpoint</p>
               <Input aria-label="Checkpoint name" className="h-7 text-xs" maxLength={80} autoFocus value={name} disabled={locked} placeholder="Checkpoint name" onChange={event => setName(event.target.value)} />
               <div className="flex justify-end gap-1">
@@ -102,12 +127,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
         </Popover>}
       </div>
 
-      {running && operation && <div role="status" aria-live="polite" aria-atomic="true" className="grid gap-1.5">
-        <p className="flex items-center gap-1.5 text-muted-foreground"><Loader2 className="size-3 animate-spin" aria-hidden="true" />{operation.stage}</p>
-        <Progress value={null} aria-label="Checkpoint operation progress" />
-      </div>}
-      {error && <p role="alert" className="text-destructive">{error}</p>}
-      {operationError && !pending && operationError !== error && <p role="alert" className="text-destructive">{operationError}</p>}
+      {staleFailure && <p className="text-muted-foreground">Last checkpoint operation failed: <span className="text-destructive">{staleFailure}</span></p>}
 
       {checkpoints.length === 0 ? (
         <ListCard>
@@ -152,7 +172,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
         description="Creates a new stopped sandbox from this checkpoint. Select Start when ready."
         disabled={disabled || running}
         progressStage={running ? operation?.stage : undefined}
-        fork={async newName => { await actions.forkCheckpoint!(target, forkCheckpoint.id, newName); onForked?.(newName) }}
+        fork={async newName => { setStarted(true); await actions.forkCheckpoint!(target, forkCheckpoint.id, newName); onForked?.(newName) }}
         onClose={() => setForkCheckpoint(null)}
       />}
 

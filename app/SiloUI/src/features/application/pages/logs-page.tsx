@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input"
 import type { ApplicationActions, ApplicationWorkspace } from "../model/application-source"
 import { formatLog } from "../model/logs"
 import { useLogHistory } from "../model/use-log-history"
+import { errorMessage, showActionFailure, showOperationFailure, showOperationLoading, showOperationSuccess } from "@/lib/operation-toast"
+import { toast } from "sonner"
 
 export interface LogWindow { since: string; until: string }
 export function Logs({ workspaces, query, onQueryChange, actions, active, window: initialWindow, onWindowChange }: {
@@ -18,7 +20,7 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
   const [since, setSince] = useState(initialWindow?.since ?? "")
   const [until, setUntil] = useState(initialWindow?.until ?? "")
   const [following, setFollowing] = useState(false)
-  const [exportState, setExportState] = useState("")
+  const [exporting, setExporting] = useState(false)
   const loader = actions.queryLogs
   const [searchQuery, setSearchQuery] = useState(query)
   useEffect(() => {
@@ -35,9 +37,15 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
   }, [following, active, busy, invalidRange, error, refresh])
   async function exportMatches() {
     if (!actions.exportLogs) return
-    setExportState("Exporting…")
-    try { setExportState(await actions.exportLogs(results.map(result => result.request)) ? "Logs saved" : "") }
-    catch (cause) { setExportState(`Export failed: ${String(cause)}`) }
+    const id = "logs-export"
+    setExporting(true)
+    showOperationLoading(id, "Exporting logs…")
+    try {
+      if (await actions.exportLogs(results.map(result => result.request))) showOperationSuccess(id, "Logs saved")
+      else toast.dismiss(id)
+    } catch (cause) {
+      showOperationFailure(id, "Export failed", { description: errorMessage(cause), retry: () => void exportMatches() })
+    } finally { setExporting(false) }
   }
   const total = results.reduce((sum, result) => sum + result.page.totalMatches, 0)
   const copiedLogs = useMemo(() => rows.map(({ entry }) => formatLog(entry)).join("\n"), [rows])
@@ -48,8 +56,8 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
       <Button size="icon-xs" variant="outline" aria-label="Refresh logs" title="Refresh logs" disabled={busy || invalidRange || query !== searchQuery} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className={busy && ready && !loadingOlder ? "motion-safe:animate-spin" : undefined} /></Button>
       <Button size="xs" variant="outline" aria-pressed={following} onClick={() => setFollowing(value => !value)}>{following ? "Pause" : "Follow"}</Button>
       <CopyButton variant="outline" size="xs" title="Copy the logs in this list" value={copiedLogs} disabled={!rows.length || invalidRange} labels={{ idle: "Copy logs", copied: "Logs copied", failed: "Copy logs failed" }} text={{ idle: "Copy", copied: "Copied", failed: "Copy failed" }} />
-      {actions.exportLogs && <Button size="xs" variant="outline" title="Save all logs matching your search and filters to a file" disabled={busy || invalidRange || Boolean(error) || query !== searchQuery || !results.length || exportState === "Exporting…"} onClick={() => void exportMatches()}>Export…</Button>}
-      {exportState === "Exporting…" && actions.cancelLogExport && <Button size="xs" variant="outline" onClick={() => void actions.cancelLogExport?.().catch(cause => setExportState(`Cancellation failed: ${String(cause)}`))}>Cancel export</Button>}
+      {actions.exportLogs && <Button size="xs" variant="outline" title="Save all logs matching your search and filters to a file" disabled={busy || invalidRange || Boolean(error) || query !== searchQuery || !results.length || exporting} onClick={() => void exportMatches()}>Export…</Button>}
+      {exporting && actions.cancelLogExport && <Button size="xs" variant="outline" onClick={() => void actions.cancelLogExport?.().catch(cause => showActionFailure("Cancellation failed", cause))}>Cancel export</Button>}
     </div>
     <LogFilters source={source} since={since} until={until} onChange={filters => {
       setSource(filters.source); setSince(filters.since); setUntil(filters.until)
@@ -58,7 +66,7 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
     {invalidRange && <p role="alert">The start must precede the end.</p>}
     {error && <div role="alert" className="text-xs text-destructive">Logs unavailable: {error} <Button size="xs" variant="outline" disabled={busy} onClick={() => void retry()}>Retry</Button></div>}
     {unsupportedNotice && <p role="status" className="text-xs text-muted-foreground">{unsupportedNotice}</p>}
-    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 ? `Showing ${rows.length} of ${total} matching records.` : ""} {exportState}</p>}
+    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 ? `Showing ${rows.length} of ${total} matching records.` : ""}</p>}
     {!invalidRange && (rows.length > 0 || !ready && !error) ? <LogsTable
       rows={rows}
       loading={!ready}

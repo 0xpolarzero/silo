@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
+import { Toaster } from "@/components/ui/sonner"
 import { LinuxMenuButton } from "./linux-menu-button"
 
 const native = vi.hoisted(() => ({ desktop: true, invoke: vi.fn(async () => {}) }))
@@ -25,11 +26,14 @@ it("leaves macOS menus and browser previews unchanged", () => {
 })
 it("blocks menu opening during installation and reports native failures", async () => {
   vi.spyOn(navigator, "platform", "get").mockReturnValue("Linux aarch64")
-  const { rerender } = render(<LinuxMenuButton disabled />)
+  const { rerender } = render(<><Toaster /><LinuxMenuButton disabled /></>)
   fireEvent.click(screen.getByRole("button", { name: "Menu" }))
   expect(native.invoke).not.toHaveBeenCalled()
-  rerender(<LinuxMenuButton />)
+  rerender(<><Toaster /><LinuxMenuButton /></>)
   native.invoke.mockRejectedValueOnce(new Error("native details"))
   fireEvent.click(screen.getByRole("button", { name: "Menu" }))
-  expect(await screen.findByRole("alert")).toHaveTextContent("Could not open the menu. Try again.")
+  expect(await screen.findByText("Could not open the menu")).toBeInTheDocument()
+  expect(screen.getByText("native details")).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+  await waitFor(() => expect(native.invoke).toHaveBeenCalledTimes(2))
 })

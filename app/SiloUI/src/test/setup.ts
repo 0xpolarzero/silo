@@ -1,6 +1,10 @@
 import "@testing-library/jest-dom/vitest"
 
-import { vi } from "vitest"
+import { afterEach, vi } from "vitest"
+import { toast } from "sonner"
+
+// Sonner keeps its toast store at module scope; clear it so notifications never leak between tests.
+afterEach(() => { toast.dismiss() })
 
 Object.defineProperty(navigator, "clipboard", {
   configurable: true,

@@ -15,10 +15,11 @@ import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { RepositoryPushFeedback } from "@/features/application/components/repository-push-feedback"
+import { RepositoryPushFeedback, useRepositoryPushToasts } from "@/features/application/components/repository-push-feedback"
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
 import type { ApplicationActions, ApplicationSource, ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, WorkspaceDetailSection } from "@/features/application/model/application-source"
 import { commitLabel } from "@/features/application/model/repository-push"
+import { showActionFailure } from "@/lib/operation-toast"
 import { cn } from "@/lib/utils"
 
 function WorkspaceFilterBar({
@@ -81,13 +82,11 @@ function Files({
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
 }) {
   const [refreshing, setRefreshing] = useState(false)
-  const [refreshError, setRefreshError] = useState<string>()
   const refreshRepositories = async () => {
     if (!onRefreshRepositories || refreshing) return
     setRefreshing(true)
-    setRefreshError(undefined)
     try { await onRefreshRepositories() }
-    catch { setRefreshError("Could not refresh repositories. Try again.") }
+    catch (error) { showActionFailure("Could not refresh repositories", error, () => void refreshRepositories()) }
     finally { setRefreshing(false) }
   }
   const [repositoriesOpen, setRepositoriesOpen] = useState(true)
@@ -122,7 +121,6 @@ function Files({
           />
           <CollapsibleContent className="file-pane-content-motion min-h-0 flex-1" data-files-pane-content="repositories">
             <div className="h-full overflow-y-auto overscroll-contain px-2 pt-2" data-files-pane-scroll="repositories">
-              {refreshError && <p role="alert" className="text-xs text-destructive">{refreshError}</p>}
               {repositories.length > 0 ? (
                 <ListCard divided role="list" aria-label="Repositories">
                   {repositories.map(({ workspace, repository }) => {
@@ -349,6 +347,7 @@ export function WorkspacesPage({
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
 }) {
   const [logWindow, setLogWindow] = useState<LogWindow>()
+  useRepositoryPushToasts(repositoryPushOperations, { onPush: onPushRepository, onDismiss: onDismissRepositoryPush })
   const visibleWorkspaces = useMemo(
     () => selectedWorkspaceIds.size === 0 ? workspaces : workspaces.filter(({ machine }) => selectedWorkspaceIds.has(machine.id)),
     [workspaces, selectedWorkspaceIds],

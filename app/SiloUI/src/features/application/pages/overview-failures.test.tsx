@@ -1,41 +1,52 @@
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
+import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
 import { OverviewPage } from "./overview-page"
 
-it("shows a stopped sandbox's failure immediately and keeps Start available for retry", async () => {
+const page = (source: ReturnType<typeof applicationSourceForScenario>, actions: ApplicationActions) =>
+  <><Toaster /><OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} /></>
+
+it("toasts a new lifecycle failure without inserting it in the row, and keeps Start available", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.name === "dev")!
   workspace.state = "stopped"
   workspace.stateDetail = "Stopped"
-  workspace.lifecycleFailure = "Start failed: libkrunfw could not load\nThe library signature was rejected."
   const actions = { startWorkspace: vi.fn() } as unknown as ApplicationActions
-  const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const view = render(page(source, actions))
+  workspace.lifecycleFailure = "Start failed: libkrunfw could not load\nThe library signature was rejected."
+  workspace.lifecycleFailureAction = "start"
+  view.rerender(page(source, actions))
   const row = within(screen.getByText("dev").closest("li")!)
-  expect(row.getByRole("alert")).toHaveTextContent("The library signature was rejected.")
-  expect(row.getByText("Stopped")).toBeVisible()
-  expect(row.getByRole("button", { name: "Start dev" })).toBeEnabled()
-  await userEvent.setup().click(row.getByRole("button", { name: "Start dev" }))
-  expect(actions.startWorkspace).toHaveBeenCalledWith("dev")
-  view.rerender(<OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} />)
-  expect(row.getByRole("alert")).toHaveTextContent("libkrunfw could not load")
-  delete workspace.lifecycleFailure
-  workspace.state = "running"
-  view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(await screen.findByText("Couldn't start dev")).toBeVisible()
+  expect(screen.getByText(/The library signature was rejected/)).toBeVisible()
   expect(row.queryByRole("alert")).not.toBeInTheDocument()
+  expect(row.getByRole("button", { name: "Start dev" })).toBeEnabled()
+  await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
+  expect(actions.startWorkspace).toHaveBeenCalledWith("dev")
+})
+
+it("does not toast a lifecycle failure already present at first load", () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(item => item.machine.name === "dev")!
+  workspace.lifecycleFailure = "Start failed: earlier"
+  workspace.lifecycleFailureAction = "start"
+  render(page(source, {} as ApplicationActions))
+  expect(screen.queryByText("Couldn't start dev")).not.toBeInTheDocument()
 })
 
 it("offers a Retry action on a failed restart that re-submits the same intent", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.name === "dev")!
+  const actions = { restartWorkspace: vi.fn() } as unknown as ApplicationActions
+  const view = render(page(source, actions))
   workspace.lifecycleFailure = "Restart failed: Starting dev was cancelled."
   workspace.lifecycleFailureAction = "restart"
-  const actions = { restartWorkspace: vi.fn() } as unknown as ApplicationActions
-  render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
-  const row = within(screen.getByText("dev").closest("li")!)
-  await userEvent.setup().click(row.getByRole("button", { name: "Retry" }))
+  view.rerender(page(source, actions))
+  expect(await screen.findByText("Couldn't restart dev")).toBeVisible()
+  await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
   expect(actions.restartWorkspace).toHaveBeenCalledWith("dev")
 })
 
@@ -49,7 +60,7 @@ it("shows what a queued lifecycle action is waiting for until its turn to run", 
     waiting: [{ id: 2, label: "Stop dev", vmId, vmName: "dev", sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }],
   }
   const actions = { cancelOperation: vi.fn() } as unknown as ApplicationActions
-  const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const view = render(<><Toaster /><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /></>)
   const row = within(screen.getByText("dev").closest("li")!)
   expect(row.getByRole("status")).toHaveTextContent("Waiting for Backing up sandboxes…")
   expect(row.queryByText("Stopping…")).not.toBeInTheDocument()
@@ -58,25 +69,24 @@ it("shows what a queued lifecycle action is waiting for until its turn to run", 
     running: [{ id: 2, label: "Stop dev", vmId, vmName: "dev", sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false }],
     waiting: [],
   }
-  view.rerender(<OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} />)
+  view.rerender(<><Toaster /><OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} /></>)
   expect(row.getByRole("status")).toHaveTextContent("Stopping…")
   expect(row.queryByText(/Waiting for/)).not.toBeInTheDocument()
 })
 
-it("shows a cancelled lifecycle action as a neutral, retryable state, not an error", async () => {
+it("reports a cancelled lifecycle action as a neutral toast, not an error", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.name === "dev")!
   workspace.state = "running"
+  const actions = {} as ApplicationActions
+  const view = render(page(source, actions))
   workspace.lifecycleFailure = "The operation was cancelled."
   workspace.lifecycleFailureAction = "stop"
   workspace.lifecycleFailureCancelled = true
-  const actions = { stopWorkspace: vi.fn() } as unknown as ApplicationActions
-  render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
-  const row = within(screen.getByText("dev").closest("li")!)
-  expect(row.queryByRole("alert")).not.toBeInTheDocument()
-  expect(row.getByText("Stop cancelled")).toBeVisible()
-  await userEvent.setup().click(row.getByRole("button", { name: "Retry" }))
-  expect(actions.stopWorkspace).toHaveBeenCalledWith("dev")
+  view.rerender(page(source, actions))
+  expect(await screen.findByText("Stop cancelled")).toBeVisible()
+  expect(screen.queryByText("Couldn't stop dev")).not.toBeInTheDocument()
+  expect(within(screen.getByText("dev").closest("li")!).queryByRole("alert")).not.toBeInTheDocument()
 })
 
 it("keeps a known lifecycle action visible while its remote computer refreshes status", () => {
@@ -86,12 +96,12 @@ it("keeps a known lifecycle action visible while its remote computer refreshes s
   workspace.freshness = "stale"
   workspace.lifecycleAction = "start"
   const actions = {} as ApplicationActions
-  const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const view = render(<><Toaster /><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /></>)
   const row = within(screen.getByText("dev").closest("li")!)
   expect(row.getByRole("status")).toHaveTextContent("Starting…")
 
   delete workspace.lifecycleAction
-  view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  view.rerender(<><Toaster /><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /></>)
   expect(row.getByRole("status")).toHaveTextContent("Refreshing status…")
   expect(row.queryByText(/Applying VM changes/)).not.toBeInTheDocument()
 })

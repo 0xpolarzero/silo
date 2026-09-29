@@ -11,6 +11,7 @@ import type { ApplicationInitialRoute } from "@/features/application/model/use-a
 import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState } from "react"
 import { toast } from "sonner"
+import { showActionFailure, showOperationFailure } from "@/lib/operation-toast"
 
 import type { MenuAction } from "@/components/actions-menu"
 import type { BackupController } from "../model/backup-source"
@@ -252,7 +253,6 @@ export function OverviewPage({ active = true, readOnly = false,
   const [forkStateWorkspaceId, setForkStateWorkspaceId] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [pendingStart, setPendingStart] = useState<string | null>(null)
-  const [operationUnavailable, setOperationUnavailable] = useState(false)
   // Sandbox detail selection: controlled by the app's navigation when the callbacks are
   // supplied, otherwise kept locally so the page still opens details on its own.
   const controlledNav = onOpenSandbox !== undefined
@@ -323,7 +323,7 @@ export function OverviewPage({ active = true, readOnly = false,
     }
   } : undefined
   const changeMachines = (next: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => {
-    if (source.vmOperationsUnavailable) { setOperationUnavailable(true); return }
+    if (source.vmOperationsUnavailable) { notifyOperationUnavailable(); return }
     return onMachinesChange(localOnly(next), baseline ? localOnly(baseline) : undefined)
   }
   const validateMachineOperation = (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => {
@@ -337,20 +337,58 @@ export function OverviewPage({ active = true, readOnly = false,
   const isMachineCreated = (machine: SetupMachineConfiguration) => committedWorkspaces.has(machine.id)
   const isMachineRunning = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.state === "running"
 
+  function notifyOperationUnavailable() {
+    showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.")
+  }
+
   // A single set of lifecycle handlers, guarded for capacity and unavailable-operation
   // notices, shared by the row controls and the detail page so both behave identically.
   function guardedLifecycle(workspace?: ApplicationWorkspace): Pick<ApplicationActions, "startWorkspace" | "stopWorkspace" | "restartWorkspace"> {
     const isLocal = !workspace?.computer
     return {
       startWorkspace: (name) => {
-        if (isLocal && source.vmOperationsUnavailable) setOperationUnavailable(true)
+        if (isLocal && source.vmOperationsUnavailable) notifyOperationUnavailable()
         else if (source.resourceNotice?.kind === "start-memory" && source.resourceNotice.sandbox === name) setPendingStart(name)
         else actions.startWorkspace(name)
       },
-      stopWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.stopWorkspace(name),
-      restartWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? setOperationUnavailable(true) : actions.restartWorkspace(name),
+      stopWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? notifyOperationUnavailable() : actions.stopWorkspace(name),
+      restartWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? notifyOperationUnavailable() : actions.restartWorkspace(name),
     }
   }
+
+  // Lifecycle failures and cancellations arrive from the backend as workspace state. Toast each
+  // new one (both the list and the detail page render from here); failures already present at
+  // first load keep only their row state label.
+  const seenLifecycleFailures = useRef<Map<string, string> | null>(null)
+  const lifecycleToasts = useEffectEvent((all: ApplicationWorkspace[]) => {
+    const current = new Map<string, string>()
+    for (const workspace of all) {
+      if (workspace.lifecycleFailure) current.set(`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, `${workspace.lifecycleFailureAction ?? ""}|${workspace.lifecycleFailure}`)
+    }
+    const previous = seenLifecycleFailures.current
+    seenLifecycleFailures.current = current
+    if (!previous) return
+    for (const workspace of all) {
+      const key = `${workspace.computer?.id ?? ""}:${workspace.machine.id}`
+      const signature = current.get(key)
+      if (!signature || previous.get(key) === signature) continue
+      const action = workspace.lifecycleFailureAction ?? "start"
+      const name = workspace.machine.name
+      const id = `lifecycle:${key}`
+      if (workspace.lifecycleFailureCancelled) {
+        toast(cancelledActionLabel(action), { id, duration: 4000 })
+        continue
+      }
+      if (action === "dismiss-error") continue
+      const verb = action === "restart" ? "restart" : action === "stop" ? "stop" : "start"
+      const target = workspaceTarget(workspace)
+      const guarded = guardedLifecycle(workspace)
+      const retry = readOnly ? undefined : () => { if (action === "start") guarded.startWorkspace(target); else if (action === "stop") guarded.stopWorkspace(target); else guarded.restartWorkspace(target) }
+      toast.dismiss(id)
+      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ?? undefined, retry })
+    }
+  })
+  useEffect(() => { lifecycleToasts(source.workspaces) }, [source.workspaces])
 
   // A finished fork is otherwise silent: the new sandbox is stopped and easy to miss. Auto-dismiss
   // is fine since it also appears in the list; Open jumps to it, resolved fresh at click time.
@@ -537,31 +575,6 @@ export function OverviewPage({ active = true, readOnly = false,
                     ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationOperation !== null || workspaceOperationBusy, onSelect: () => openSandbox(machine.id, "storage") }] : []),
                     ...(machine.kind === "vm" && workspace && !workspace.computer && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
                   ],
-                  expandedContent: workspace?.lifecycleFailure ? <>
-                    {(() => {
-                      const retry = workspace.lifecycleFailureAction && workspace.lifecycleFailureAction !== "dismiss-error" && !readOnly
-                        ? <div className="mt-2 flex justify-end">
-                            <Button size="xs" variant="outline" disabled={workspaceOperationBusy} onClick={() => {
-                              const target = workspaceTarget(workspace)
-                              if (workspace.lifecycleFailureAction === "start") guarded.startWorkspace(target)
-                              else if (workspace.lifecycleFailureAction === "stop") guarded.stopWorkspace(target)
-                              else if (workspace.lifecycleFailureAction === "restart") guarded.restartWorkspace(target)
-                            }}>Retry</Button>
-                          </div>
-                        : null
-                      // A cancellation is the user's own choice, not a failure: show it as a
-                      // neutral, muted status with the same Retry, never the destructive alert.
-                      return workspace.lifecycleFailureCancelled
-                        ? <div role="status" className="mx-3 mb-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                            {cancelledActionLabel(workspace.lifecycleFailureAction ?? "start")}
-                            {retry}
-                          </div>
-                        : <div role="alert" className="mx-3 mb-2 max-h-48 overflow-auto rounded-md border border-destructive/20 bg-destructive/[.06] px-3 py-2 text-xs whitespace-pre-wrap break-words text-destructive">
-                            {workspace.lifecycleFailure}
-                            {retry}
-                          </div>
-                    })()}
-                  </> : undefined,
                   busy: workspaceOperationBusy || Boolean(workspace?.computer?.busy),
                   suppressInteractions: workspaceOperationBusy || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
                   icon: workspaceOperationBusy ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
@@ -610,7 +623,6 @@ export function OverviewPage({ active = true, readOnly = false,
         <div className="flex gap-2"><TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600" aria-hidden="true" /><div><p className="text-xs font-medium">Starting {pendingStart} may slow this computer</p><p className="mt-1 text-[11px] text-muted-foreground">Silo found high memory pressure now. This VM can use up to {source.resourceNotice.memoryGiB} GB. Close memory-heavy apps, or start anyway.</p></div></div>
         <div className="mt-2 flex justify-end gap-1"><Button type="button" variant="ghost" size="xs" onClick={() => setPendingStart(null)}>Cancel</Button><Button type="button" variant="outline" size="xs" onClick={() => { actions.startWorkspace(pendingStart); setPendingStart(null) }}>Start anyway</Button></div>
       </div>}
-      {operationUnavailable && source.vmOperationsUnavailable && <div className="mt-3 rounded-lg border border-destructive/20 bg-destructive/[.06] p-3" role="alert"><div className="flex gap-2"><CircleAlert className="mt-0.5 size-3.5 shrink-0 text-destructive" aria-hidden="true" /><div className="min-w-0 flex-1"><p className="text-xs font-medium">VM operation unavailable</p><p className="mt-1 text-[11px] text-muted-foreground">{source.vmOperationsUnavailable}</p></div></div><div className="mt-2 flex justify-end"><Button variant="ghost" size="xs" onClick={() => setOperationUnavailable(false)}>Dismiss</Button></div></div>}
     </div>
   )
 }

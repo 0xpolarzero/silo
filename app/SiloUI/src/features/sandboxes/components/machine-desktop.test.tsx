@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { Toaster } from "@/components/ui/sonner"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import type { SetupVirtualMachineConfiguration } from "@/contracts/silo"
 import { setupMachineConfigurationRequestSchema } from "@/contracts/silo"
@@ -30,14 +31,14 @@ describe("optional Linux desktop", () => {
   it("routes menu installation to the owning computer and surfaces failures", async () => {
     const save = vi.fn().mockRejectedValue(new Error("Computer disconnected"))
     const localSave = vi.fn()
-    render(<TooltipProvider><MachineList machines={[machine]} onMachinesChange={localSave}
+    render(<TooltipProvider><Toaster /><MachineList machines={[machine]} onMachinesChange={localSave}
       onCommitMachine={save} getComputerId={() => "remote-computer"}
       isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
     await user.click(screen.getByRole("menuitem", { name: "Add Linux desktop" }))
     expect(save).toHaveBeenCalledWith({ ...machine, desktop: { startWithSandbox: true } }, machine, "remote-computer", [machine])
-    expect(await screen.findByRole("alert")).toHaveTextContent("Computer disconnected")
+    expect(await screen.findByText("Computer disconnected")).toBeVisible()
     expect(localSave).not.toHaveBeenCalled()
   })
   it("does not offer installation when the desktop is already configured", async () => {
@@ -57,14 +58,14 @@ describe("optional Linux desktop", () => {
   it("checks operation eligibility before installing", async () => {
     const save = vi.fn()
     const validate = vi.fn().mockReturnValue("This computer is unavailable.")
-    render(<TooltipProvider><MachineList machines={[machine]} onMachinesChange={save}
+    render(<TooltipProvider><Toaster /><MachineList machines={[machine]} onMachinesChange={save}
       validateOperation={validate} isMachineCreated={() => true}
       getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
     await user.click(screen.getByRole("menuitem", { name: "Add Linux desktop" }))
     expect(validate).toHaveBeenCalledWith({ ...machine, desktop: { startWithSandbox: true } }, false, "")
-    expect(screen.getByRole("alert")).toHaveTextContent("This computer is unavailable.")
+    expect(await screen.findByText("This computer is unavailable.")).toBeVisible()
     expect(save).not.toHaveBeenCalled()
   })
   it("keeps legacy configurations desktop-free and retains an explicit startup policy", () => {

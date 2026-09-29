@@ -1,6 +1,9 @@
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { expect, it, vi } from "vitest"
+import { afterEach, expect, it, vi } from "vitest"
+import { toast } from "sonner"
+import { Toaster } from "@/components/ui/sonner"
+import { SettingsProvider } from "@/features/preferences/settings-store"
 import type { ApplicationActions, ApplicationWorkspace } from "@/features/application/model/application-source"
 import { CheckpointPanel } from "./checkpoint-panel"
 
@@ -12,6 +15,9 @@ const workspace = {
     { id: "point-3", name: "Before restore", createdAt: "2026-09-23T10:00:00Z", scope: "full", reason: "before-restore" },
   ],
 } as ApplicationWorkspace
+
+afterEach(() => { toast.dismiss() })
+function withToaster(node: React.ReactNode) { return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster />{node}</SettingsProvider> }
 
 function deferred() {
   let resolve!: () => void
@@ -102,36 +108,42 @@ it("shows a calm empty state with the New checkpoint button", () => {
   expect(screen.getByRole("button", { name: "New checkpoint" })).toBeVisible()
 })
 
-it("shows inline operation progress and marks the region busy", () => {
-  const running = { ...workspace, checkpointOperation: { kind: "capture", status: "running", stage: "Capturing VM state" } } as ApplicationWorkspace
-  render(<CheckpointPanel workspace={running} target="dev" actions={{ createCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} />)
-  expect(screen.getByRole("region", { name: "Checkpoints for dev" })).toHaveAttribute("aria-busy", "true")
-  expect(screen.getByRole("status")).toHaveTextContent("Capturing VM state")
-  expect(screen.getByRole("progressbar", { name: "Checkpoint operation progress" })).toBeVisible()
+it("notes a failed operation from before this session inline without a notification", () => {
+  const failed = { ...workspace, checkpointOperation: { kind: "capture", status: "failed", stage: "Capture failed", error: "Disk is full" } } as ApplicationWorkspace
+  render(withToaster(<CheckpointPanel workspace={failed} target="dev" actions={{ createCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} />))
+  expect(screen.getByText("Disk is full")).toBeVisible()
+  expect(document.querySelector("[data-sonner-toast]")).toBeNull()
 })
 
-it("shows action errors after an operation fails", async () => {
-  const createCheckpoint = vi.fn().mockRejectedValue(new Error("Disk is full"))
+it("notifies about a failed create with Retry instead of inserting an error", async () => {
+  const createCheckpoint = vi.fn().mockRejectedValueOnce(new Error("Disk is full")).mockResolvedValue(undefined)
   const user = userEvent.setup()
-  render(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint } as unknown as ApplicationActions} disabled={false} />)
+  render(withToaster(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint } as unknown as ApplicationActions} disabled={false} />))
   await user.click(screen.getByRole("button", { name: "New checkpoint" }))
   await user.clear(screen.getByRole("textbox", { name: "Checkpoint name" }))
   await user.type(screen.getByRole("textbox", { name: "Checkpoint name" }), "before deploy")
   await user.click(screen.getByRole("button", { name: "Create" }))
-  expect(await screen.findByRole("alert")).toHaveTextContent("Disk is full")
+  expect(await screen.findByText("Disk is full")).toBeInTheDocument()
+  expect(screen.getByText("Could not create checkpoint “before deploy”")).toBeInTheDocument()
+  expect(screen.queryByRole("alert")).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(await screen.findByText("Checkpoint created")).toBeInTheDocument()
+  expect(createCheckpoint).toHaveBeenCalledTimes(2)
 })
 
-it("keeps the create button disabled while a create is pending", async () => {
+it("shows a loading notification while a create is pending and marks the region busy", async () => {
   const task = deferred()
   const createCheckpoint = vi.fn(() => task.promise)
   const user = userEvent.setup()
-  render(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint } as unknown as ApplicationActions} disabled={false} />)
+  render(withToaster(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint } as unknown as ApplicationActions} disabled={false} />))
   await user.click(screen.getByRole("button", { name: "New checkpoint" }))
   await user.clear(screen.getByRole("textbox", { name: "Checkpoint name" }))
   await user.type(screen.getByRole("textbox", { name: "Checkpoint name" }), "before deploy")
   await user.click(screen.getByRole("button", { name: "Create" }))
+  expect(await screen.findByText("Creating checkpoint “before deploy”")).toBeInTheDocument()
   expect(screen.getByRole("region", { name: "Checkpoints for dev" })).toHaveAttribute("aria-busy", "true")
-  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "New checkpoint" })).toBeDisabled()
   task.resolve()
+  expect(await screen.findByText("Checkpoint created")).toBeInTheDocument()
   await waitFor(() => expect(screen.getByRole("region", { name: "Checkpoints for dev" })).not.toHaveAttribute("aria-busy"))
 })

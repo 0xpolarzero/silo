@@ -6,9 +6,10 @@ import { ActionsMenu, type MenuAction } from "@/components/actions-menu"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
+import { showActionFailure } from "@/lib/operation-toast"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { TooltipProvider } from "@/components/ui/tooltip"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
@@ -16,7 +17,7 @@ import type { ApplicationInitialRoute } from "@/features/application/model/use-a
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { CheckpointPanel } from "@/features/application/components/checkpoint-panel"
 import { WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
-import { emptyOperationQueue, waitingOperationForVm, cancelledActionLabel } from "@/features/application/model/operation-queue"
+import { emptyOperationQueue, waitingOperationForVm } from "@/features/application/model/operation-queue"
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
 import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
@@ -201,7 +202,9 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
   const inlineForm = <NetworkPortForm controller={controller} fieldID={fieldID} hideSandbox className={inlinePortFormClassName} />
 
   const action = <div className="flex items-center gap-2">
-    {canAdd && <AddAction label="Add port" disabled={controller.busy} onClick={() => controller.add(target)} />}
+    {canAdd && (controller.addDisabledReason
+      ? <Tooltip><TooltipTrigger asChild><span tabIndex={0}><AddAction label="Add port" disabled onClick={() => undefined} /></span></TooltipTrigger><TooltipContent>{controller.addDisabledReason}</TooltipContent></Tooltip>
+      : <AddAction label="Add port" disabled={controller.busy} onClick={() => controller.add(target)} />)}
     {onNavigate && <ViewAllAction label="View all network for this sandbox" onClick={() => onNavigate({ workspaceSection: "network", workspace: machine.id })} />}
   </div>
 
@@ -210,7 +213,6 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
       <span>{controller.error || controller.errors.join(" · ")}</span>
       {actions.refreshNetwork && <Button size="sm" variant="ghost" onClick={() => void actions.refreshNetwork?.()}>Retry</Button>}
     </div>}
-    {controller.operationError && <div role="alert" className="mb-2 text-xs text-destructive">{controller.operationError}</div>}
     <ListCard>
       {draft && !draft.editing && <div className="border-b border-border">{inlineForm}</div>}
       {useLive
@@ -370,19 +372,6 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const visibleTabs = tabs.filter(tab => tab.visible)
   const activeTab = visibleTabs.some(tab => tab.value === controls.activeTab) ? controls.activeTab : "overview"
 
-  const cancelled = workspace.lifecycleFailureCancelled
-  const lifecycleNotice = workspace.lifecycleFailure
-    ? cancelled
-      ? <div role="status" className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-          <span>{cancelledActionLabel(workspace.lifecycleFailureAction ?? "start")}</span>
-          {controls.onRetryLifecycle && <Button size="xs" variant="outline" disabled={controls.workspaceOperationBusy} onClick={controls.onRetryLifecycle}>Retry</Button>}
-        </div>
-      : <div role="alert" className="grid gap-2 rounded-md border border-destructive/20 bg-destructive/[.06] px-3 py-2 text-xs text-destructive">
-          <p className="max-h-40 overflow-auto break-words whitespace-pre-wrap">{workspace.lifecycleFailure}</p>
-          {controls.onRetryLifecycle && <div className="flex justify-end"><Button size="xs" variant="outline" disabled={controls.workspaceOperationBusy} onClick={controls.onRetryLifecycle}>Retry</Button></div>}
-        </div>
-    : null
-
   const startStopDisabled = controls.readOnly || controls.configurationLocked || controls.workspaceOperationBusy
 
   return <TooltipProvider delayDuration={150}>
@@ -403,8 +392,6 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           {menuActions.length > 0 && <ActionsMenu label={`More actions for ${machine.name}`} items={menuActions} />}
         </div>}
       />
-
-      {lifecycleNotice && <div className="mb-3">{lifecycleNotice}</div>}
 
       {isEditing && editing.editor ? (
         <ScrollArea className="min-h-0 flex-1">
@@ -428,7 +415,6 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
                 onDiscard={() => editing.setEditor(null)}
               />
             </div>
-            {editing.operationError && <p className="text-xs text-destructive" role="alert">{editing.operationError}</p>}
           </Section>
         </ScrollArea>
       ) : (
@@ -473,19 +459,17 @@ function SandboxDeleteDialog({ name, computerName, confirm, onDeleted, onClose }
   onClose: () => void
 }) {
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const label = computerName ? `${name} on ${computerName}` : name
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (busy) return
     setBusy(true)
-    setError(null)
     try {
       await confirm()
       onDeleted()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      showActionFailure(`Couldn't delete ${name}`, cause)
       setBusy(false)
     }
   }
@@ -497,7 +481,6 @@ function SandboxDeleteDialog({ name, computerName, confirm, onDeleted, onClose }
         <Dialog.Title className="text-sm font-medium">Delete {label}?</Dialog.Title>
         <Dialog.Description className="mt-1 text-xs text-muted-foreground">Removing {name} from Silo. Persistent volumes will be retained.</Dialog.Description>
         <form className="mt-3 grid gap-2" onSubmit={submit}>
-          {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={onClose}>Cancel</Button>
             <Button type="submit" variant="destructive" size="sm" disabled={busy}>{busy ? "Deleting…" : `Delete ${name}`}</Button>

@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event"
 import { NativeWorkspaceMenu } from "./native-workspace-menu"
 import { useStatusPanelSize } from "./use-status-panel-size"
 import { desktopCommand } from "./commands"
+import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { StatusBarContent } from "@/features/status-bar/status-bar"
@@ -53,5 +54,6 @@ export function StatusPanel({ source: input, actions }: { source: ApplicationSou
       }}>
       <ShutdownBoundary compact><StatusBarContent workspaceMenu={NativeWorkspaceMenu} key={opening} source={source} actions={nativeActions} focusContent={() => content.current?.focus()} /></ShutdownBoundary>
     </div>
+    <Toaster position="bottom-center" offset={8} mobileOffset={8} visibleToasts={2} reduceMotion={source.preferences.reduceMotion} toastOptions={{ classNames: { toast: "cn-toast !w-[calc(100vw-16px)] max-w-[364px]" } }} />
   </TooltipProvider>
 }

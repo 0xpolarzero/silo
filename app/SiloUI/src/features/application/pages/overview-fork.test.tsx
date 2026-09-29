@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
+import { Toaster } from "@/components/ui/sonner"
 import { OverviewPage } from "./overview-page"
 import type { ApplicationWorkspace } from "../model/application-source"
 
@@ -77,7 +78,7 @@ it("opens the Checkpoints tab from the Overview menu and drives fork, restore, a
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
   workspace.checkpoints = [{ id: "checkpoint-1", name: "Before deploy", createdAt: "2026-09-25T10:00:00.000Z", scope: "full", reason: "manual" }] satisfies NonNullable<ApplicationWorkspace["checkpoints"]>
   const user = userEvent.setup()
-  const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  render(<><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /><Toaster /></>)
 
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Checkpoints for ${workspace.machine.name}` }))
@@ -102,9 +103,7 @@ it("opens the Checkpoints tab from the Overview menu and drives fork, restore, a
   await user.click(screen.getByRole("button", { name: "Create" }))
   await waitFor(() => expect(createCheckpoint).toHaveBeenCalledWith(workspace.machine.name, "After deploy"))
 
-  const progressing = structuredClone(source)
-  progressing.workspaces.find(item => item.machine.id === workspace.machine.id)!.checkpointOperation = { kind: "capture", status: "running", stage: "Creating checkpoint" }
-  view.rerender(<OverviewPage source={progressing} actions={actions} onMachinesChange={vi.fn()} />)
-  expect(screen.getByRole("progressbar", { name: "Checkpoint operation progress" })).toBeVisible()
-  expect(screen.getByRole("status")).toHaveTextContent("Creating checkpoint")
+  // Create progress and completion are notifications, not inline blocks that push the list.
+  expect(await screen.findByText("Checkpoint created")).toBeVisible()
+  expect(screen.queryByRole("progressbar", { name: "Checkpoint operation progress" })).not.toBeInTheDocument()
 })

@@ -1,9 +1,13 @@
 import { act, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { toast } from "sonner"
+import { Toaster } from "@/components/ui/sonner"
+import { SettingsProvider } from "@/features/preferences/settings-store"
 import { NetworkPage } from "./network-page"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions, NetworkState } from "../model/application-source"
+afterEach(() => { toast.dismiss() })
 const workspaces = [applicationSourceForScenario("complete").workspaces[0]]
 const network: NetworkState = {workspaces:[{workspace:"dev",error:null,ports:[
   {port:3000,hostPort:43000,scheme:"http",state:"reachable",configured:true},
@@ -12,7 +16,7 @@ const network: NetworkState = {workspaces:[{workspace:"dev",error:null,ports:[
 ]}]}
 function setup(overrides: Partial<ApplicationActions> = {}, state: NetworkState | undefined = network) {
   const actions = { refreshNetwork: vi.fn(async () => {}), saveNetworkPort: vi.fn(async () => {}), removeNetworkPort: vi.fn(async () => {}), openNetworkPort: vi.fn(async () => {}), ...overrides } as unknown as ApplicationActions
-  return {actions,user:userEvent.setup(),...render(<NetworkPage workspaces={workspaces} browser="Firefox" network={state} actions={actions} active />)}
+  return {actions,user:userEvent.setup(),...render(<SettingsProvider initialSettings={{theme:"light"}}><Toaster /><NetworkPage workspaces={workspaces} browser="Firefox" network={state} actions={actions} active /></SettingsProvider>)}
 }
 describe("Network", () => {
   it("uses actual forwarded addresses and opens only reachable web services", async () => {
@@ -32,9 +36,12 @@ describe("Network", () => {
     await user.selectOptions(screen.getByRole("combobox",{name:"Protocol"}),"tcp")
     await user.click(screen.getByRole("button",{name:"Add"}))
     expect(save).toHaveBeenCalledWith({workspace:"dev",port:9000,hostPort:null,scheme:null})
-    expect(screen.getByRole("alert")).toHaveTextContent("Local port is already in use.")
+    expect(await screen.findByText("Local port is already in use.")).toBeVisible()
+    expect(screen.getByText("Could not add port 9000")).toBeVisible()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.getByRole("spinbutton",{name:"VM port"})).toHaveValue(9000)
-    await user.click(screen.getByRole("button",{name:"Add"}))
+    await user.click(screen.getByRole("button",{name:"Retry"}))
+    expect(await screen.findByText("Port 9000 added")).toBeInTheDocument()
     expect(screen.queryByRole("spinbutton",{name:"VM port"})).not.toBeInTheDocument()
   })
 
@@ -101,9 +108,10 @@ describe("Network", () => {
   })
 })
 
-it("connects a detected port immediately without a form", async () => {
+it("forwards a detected port immediately without a form", async () => {
   const {user,actions} = setup()
-  await user.click(screen.getByRole("button",{name:"Connect port 8080 to this computer"}))
+  await user.click(screen.getByRole("button",{name:/^Forward port 8080 to this (Mac|computer)$/}))
+  expect(await screen.findByText("Port 8080 forwarded")).toBeVisible()
   expect(actions.saveNetworkPort).toHaveBeenCalledWith({workspace:"dev",port:8080,hostPort:null,scheme:"http"})
   expect(screen.queryByRole("spinbutton",{name:"VM port"})).not.toBeInTheDocument()
 })
@@ -162,4 +170,14 @@ describe("Network stopped sandboxes", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.getByText("VM stopped")).toBeVisible()
   })
+})
+
+it("disables adding ports with a tooltip while the sandbox is stopped", async () => {
+  const stopped = [{...workspaces[0], state:"stopped" as const}]
+  const actions = {refreshNetwork:vi.fn(async () => {}),saveNetworkPort:vi.fn(async () => {})} as unknown as ApplicationActions
+  const user = userEvent.setup()
+  render(<NetworkPage workspaces={stopped} browser="Firefox" network={network} actions={actions} active />)
+  expect(screen.getByRole("button",{name:"Add port"})).toBeDisabled()
+  await user.hover(screen.getByRole("button",{name:"Add port"}).parentElement!)
+  expect(await screen.findAllByText(`Start ${stopped[0].machine.name} to add ports`)).not.toHaveLength(0)
 })

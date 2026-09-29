@@ -1,5 +1,7 @@
 import { useRef, useState } from "react"
 
+import { showActionFailure } from "@/lib/operation-toast"
+
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import {
   configurationRequest,
@@ -47,7 +49,6 @@ export function useMachineEditing({
   const [editorFocusRequest, setEditorFocusRequest] = useState(0)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
-  const [operationError, setOperationError] = useState("")
   // The saved configuration captured when the current operation began. Every local
   // save/delete/reorder carries it as the change's `expected` baseline, so a queued edit
   // applies to fresh state — or is rejected — instead of overwriting concurrent work.
@@ -69,7 +70,6 @@ export function useMachineEditing({
 
   function beginOperation() {
     setPendingDelete(null)
-    setOperationError("")
     setEditor(null)
   }
 
@@ -121,7 +121,7 @@ export function useMachineEditing({
     if (outcome && typeof (outcome as Promise<void>).then === "function") {
       void (outcome as Promise<void>).catch((cause) => {
         if (editor?.originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
-        else setOperationError(cause instanceof Error ? cause.message : String(cause))
+        else showActionFailure("Couldn't save changes", cause)
       })
     }
   }
@@ -129,7 +129,7 @@ export function useMachineEditing({
   async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetComputerId = computerId) {
     if (disabled) return
     const blocked = validateOperation?.(machine, !originalID, targetComputerId)
-    if (blocked) { setOperationError(blocked); return }
+    if (blocked) { showActionFailure(`Couldn't save ${machine.name}`, blocked); return }
     const baseline = baselineRef.current ?? undefined
     if (onCommitMachine) {
       setCommitting(true)
@@ -140,7 +140,7 @@ export function useMachineEditing({
         // A stale-baseline rejection keeps the editor open with the user's edits so they
         // can review the latest values or discard; other failures surface as before.
         if (originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
-        else setOperationError(cause instanceof Error ? cause.message : String(cause))
+        else showActionFailure(`Couldn't save ${machine.name}`, cause)
       }
       finally { setCommitting(false) }
       return
@@ -181,7 +181,7 @@ export function useMachineEditing({
     if (onDeleteMachine) {
       setCommitting(true)
       try { await onDeleteMachine(machine, baseline); setPendingDelete(null) }
-      catch (cause) { setOperationError(cause instanceof Error ? cause.message : String(cause)) }
+      catch (cause) { showActionFailure(`Couldn't delete ${machine.name}`, cause) }
       finally { setCommitting(false) }
       return
     }
@@ -213,7 +213,6 @@ export function useMachineEditing({
     editorBaseline, editorConflict, editorResetToken,
     editorFocusRequest, setEditorFocusRequest,
     pendingDelete, setPendingDelete,
-    operationError, setOperationError,
     baselineRef,
     captureBaseline, beginOperation, scopedBaseline, dispatchChange,
     startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteMachineNow,

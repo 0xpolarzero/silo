@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { CopyButton } from "@/components/copy-button"
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { errorMessage, showActionFailure, showOperationFailure, showOperationLoading, showOperationSuccess } from "@/lib/operation-toast"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import type { ApplicationActions, ApplicationWorkspace, NetworkPort, NetworkPortRequest, NetworkState } from "@/features/application/model/application-source"
 
@@ -20,6 +21,9 @@ export function networkPortState(workspace: ApplicationWorkspace, port: NetworkP
   if (workspace.freshness === "stale" || error || errors.some(e => e.startsWith(`${workspace.machine.name}:`))) return "Unknown"
   return ({ reachable: "Reachable", waiting: "Waiting for service", unpublished: "VM only", unknown: "Unknown" })[port.state]
 }
+
+/** "this Mac" on macOS, otherwise "this computer". */
+const thisComputer = typeof navigator !== "undefined" && /Mac/.test(navigator.platform) ? "this Mac" : "this computer"
 
 interface PortDraft { workspace: string; port: string; hostPort: string; scheme: string; editing: boolean }
 
@@ -36,7 +40,6 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   const [fieldErrors, setFieldErrors] = useState<{ port?: string; hostPort?: string }>({})
   const [connecting, setConnecting] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [operationError, setOperationError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<string | null>(null)
   const refreshNetwork = actions.refreshNetwork
 
@@ -50,11 +53,30 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     return () => { clearInterval(timer); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh) }
   }, [active, refreshNetwork])
 
-  async function run(operation: () => Promise<void>) {
-    setBusy(true); setOperationError(null)
-    try { await operation(); setConfirm(null); return true }
-    catch (cause) { setOperationError(typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated."); return false }
-    finally { setBusy(false) }
+  /** Runs a port operation with the shared loading → success/failure notifications. Failures offer Retry. */
+  async function run(id: string, copy: { loading: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
+    setBusy(true)
+    showOperationLoading(id, copy.loading)
+    try {
+      await operation()
+      showOperationSuccess(id, copy.success)
+      setConfirm(null)
+      onSuccess?.()
+      return true
+    } catch (cause) {
+      const message = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated."
+      showOperationFailure(id, copy.failure, { description: message, retry: () => void run(id, copy, operation, onSuccess) })
+      return false
+    } finally { setBusy(false) }
+  }
+
+  /** Opening is instant, so it has no loading phase: a failure stays until closed, with Retry. */
+  async function open(workspace: string, port: number) {
+    const attempt = async () => {
+      try { await actions.openNetworkPort!(workspace, port) }
+      catch (cause) { showActionFailure(`Could not open port ${port}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt()) }
+    }
+    await attempt()
   }
 
   const localWorkspaces = workspaces.filter(workspace => workspace.machine.kind === "vm")
@@ -66,18 +88,26 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     return item?.error && workspace.state !== "stopped" ? [`${workspace.machine.name}: ${item.error}`] : []
   })
 
-  function add(workspace = localWorkspaces[0] ? workspaceTarget(localWorkspaces[0]) : "", port = "") {
-    setOperationError(null); setFieldErrors({}); setDraft({ workspace, port, hostPort: "", scheme: "http", editing: false })
+  const runningLocalWorkspaces = localWorkspaces.filter(workspace => workspace.state === "running")
+  /** Why "Add port" is unavailable, or null when it can be used. */
+  const addDisabledReason = runningLocalWorkspaces.length > 0 ? null
+    : localWorkspaces.length === 1 ? `Start ${localWorkspaces[0].machine.name} to add ports`
+    : localWorkspaces.length > 1 ? "Start a sandbox to add ports" : null
+
+  function add(workspace = runningLocalWorkspaces[0] ? workspaceTarget(runningLocalWorkspaces[0]) : "", port = "") {
+    setFieldErrors({}); setDraft({ workspace, port, hostPort: "", scheme: "http", editing: false })
   }
   function startEdit(workspace: ApplicationWorkspace, port: NetworkPort) {
-    setOperationError(null); setFieldErrors({})
+    setFieldErrors({})
     setDraft({ workspace: workspaceTarget(workspace), port: String(port.port), hostPort: port.configuredHostPort == null ? "" : String(port.configuredHostPort), scheme: port.scheme ?? "tcp", editing: true })
   }
-  function cancelDraft() { setDraft(null); setOperationError(null) }
+  function cancelDraft() { setDraft(null) }
 
   return {
-    error, draft, setDraft, fieldErrors, setFieldErrors, connecting, setConnecting, busy, operationError, confirm, setConfirm,
-    run, add, startEdit, cancelDraft, localWorkspaces, rows, errors, actions,
+    error, draft, setDraft, fieldErrors, setFieldErrors, connecting, setConnecting, busy,
+    /** Always null: operation failures are shown as notifications, not rendered inline. */
+    confirm, setConfirm,
+    run, open, add, startEdit, cancelDraft, localWorkspaces, runningLocalWorkspaces, addDisabledReason, rows, errors, actions,
   }
 }
 
@@ -101,14 +131,19 @@ export function NetworkPortForm({ controller, fieldID, hideSandbox = false, clas
     const errors = { port: validPort(request.port) ? undefined : "Enter a port from 1 to 65535.", hostPort: request.hostPort === null || validPort(request.hostPort) ? undefined : "Enter a port from 1 to 65535." }
     setFieldErrors(errors)
     if (errors.port || errors.hostPort) return
-    if (actions.saveNetworkPort) void run(() => actions.saveNetworkPort!(request)).then(success => { if (success) setDraft(null) })
+    if (actions.saveNetworkPort) {
+      const verb = draft.editing ? "edit" : "add"
+      void run(`network-port:${draft.workspace}:${request.port}:${verb}`, draft.editing
+        ? { loading: `Saving port ${request.port}`, success: `Port ${request.port} saved`, failure: `Could not save port ${request.port}` }
+        : { loading: `Adding port ${request.port}`, success: `Port ${request.port} added`, failure: `Could not add port ${request.port}` }, () => actions.saveNetworkPort!(request), () => setDraft(null))
+    }
   }}>
     <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">VM port<Input aria-label="VM port" aria-invalid={Boolean(fieldErrors.port)} aria-describedby={fieldErrors.port ? `${fieldID}-port-error` : undefined} className="h-8 w-full" type="number" min={1} max={65535} required autoFocus={!draft.editing} disabled={busy || draft.editing} value={draft.port} onChange={e => { setDraft({ ...draft, port: e.target.value }); setFieldErrors(current => ({ ...current, port: undefined })) }} />{fieldErrors.port && <span id={`${fieldID}-port-error`} className="text-destructive">{fieldErrors.port}</span>}</label></div>
     <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Local port<Input aria-label="Local port" aria-invalid={Boolean(fieldErrors.hostPort)} aria-describedby={fieldErrors.hostPort ? `${fieldID}-hostPort-error` : undefined} className="h-8 w-32 max-w-full" type="number" min={1} max={65535} placeholder="Automatic" autoFocus={draft.editing} disabled={busy} value={draft.hostPort} onChange={e => { setDraft({ ...draft, hostPort: e.target.value }); setFieldErrors(current => ({ ...current, hostPort: undefined })) }} />{fieldErrors.hostPort && <span id={`${fieldID}-hostPort-error`} className="text-destructive">{fieldErrors.hostPort}</span>}</label></div>
     <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Protocol<select aria-label="Protocol" className="h-8 rounded-md border border-input bg-background px-2 text-foreground" disabled={busy} value={draft.scheme} onChange={e => setDraft({ ...draft, scheme: e.target.value })}><option value="http">HTTP</option><option value="https">HTTPS</option><option value="tcp">TCP</option></select></label></div>
     {hideSandbox
       ? <input type="hidden" value={draft.workspace} readOnly />
-      : <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Sandbox<select aria-label="Sandbox" className="h-8 min-w-24 rounded-md border border-input bg-background px-2 text-foreground" value={draft.workspace} disabled={busy || draft.editing} onChange={e => setDraft({ ...draft, workspace: e.target.value })}>{localWorkspaces.map(w => <option key={w.machine.id} value={workspaceTarget(w)}>{w.machine.name}</option>)}</select></label></div>}
+      : <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Sandbox<select aria-label="Sandbox" className="h-8 min-w-24 rounded-md border border-input bg-background px-2 text-foreground" value={draft.workspace} disabled={busy || draft.editing} onChange={e => setDraft({ ...draft, workspace: e.target.value })}>{localWorkspaces.filter(w => w.state === "running" || workspaceTarget(w) === draft.workspace).map(w => <option key={w.machine.id} value={workspaceTarget(w)}>{w.machine.name}{w.state === "running" ? "" : " (stopped)"}</option>)}</select></label></div>}
     <div role="cell" className="flex justify-end gap-1"><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-xs" aria-label="Cancel" disabled={busy} onClick={() => controller.cancelDraft()}><X /></Button></TooltipTrigger><TooltipContent>Cancel</TooltipContent></Tooltip><Tooltip><TooltipTrigger asChild><Button type="submit" variant="ghost" size="icon-xs" aria-label={draft.editing ? "Save" : "Add"} disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : <Check />}</Button></TooltipTrigger><TooltipContent>{draft.editing ? "Save" : "Add"}</TooltipContent></Tooltip></div>
   </form>
 }
@@ -122,15 +157,15 @@ export function NetworkPortRowActions({ controller, workspace, port, state, brow
   state: string
   browser: string
 }) {
-  const { actions, busy, confirm, setConfirm, setDraft, connecting, setConnecting, run } = controller
+  const { actions, busy, confirm, setConfirm, setDraft, connecting, setConnecting, run, open } = controller
   const key = `${workspaceTarget(workspace)}:${port.port}`
   const address = networkAddress(port)
   return <InlineConfirmation active={confirm === key} onDismiss={() => setConfirm(null)}>
-    {confirm === key ? <><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label="Cancel" disabled={busy} onClick={() => setConfirm(null)}><X /></Button></TooltipTrigger><TooltipContent>Cancel</TooltipContent></Tooltip><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" className="text-destructive" aria-label="Remove" disabled={busy} onClick={() => void run(() => actions.removeNetworkPort!(workspaceTarget(workspace), port.port))}>{busy ? <LoaderCircle className="animate-spin" /> : <Check />}</Button></TooltipTrigger><TooltipContent>Confirm removal</TooltipContent></Tooltip></> : <>
-      {address && port.scheme && state === "Reachable" && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Open ${address} in ${browser}`} onClick={() => void run(() => actions.openNetworkPort!(workspaceTarget(workspace), port.port))} disabled={!actions.openNetworkPort}><ExternalLink /></Button></TooltipTrigger><TooltipContent>Open in {browser}</TooltipContent></Tooltip>}
+    {confirm === key ? <><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label="Cancel" disabled={busy} onClick={() => setConfirm(null)}><X /></Button></TooltipTrigger><TooltipContent>Cancel</TooltipContent></Tooltip><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" className="text-destructive" aria-label="Remove" disabled={busy} onClick={() => void run(`network-port:${key}:remove`, { loading: `Removing port ${port.port}`, success: `Port ${port.port} removed`, failure: `Could not remove port ${port.port}` }, () => actions.removeNetworkPort!(workspaceTarget(workspace), port.port))}>{busy ? <LoaderCircle className="animate-spin" /> : <Check />}</Button></TooltipTrigger><TooltipContent>Confirm removal</TooltipContent></Tooltip></> : <>
+      {address && port.scheme && state === "Reachable" && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Open ${address} in ${browser}`} onClick={() => void open(workspaceTarget(workspace), port.port)} disabled={!actions.openNetworkPort}><ExternalLink /></Button></TooltipTrigger><TooltipContent>Open in {browser}</TooltipContent></Tooltip>}
       {address && <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" value={address} labels={{ idle: `Copy ${address}`, copied: "Address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy address</TooltipContent></Tooltip>}
       {port.configured && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Edit port ${port.port} from ${workspace.machine.name}`} disabled={busy || !actions.saveNetworkPort} onClick={() => controller.startEdit(workspace, port)}><Pencil /></Button></TooltipTrigger><TooltipContent>Edit port</TooltipContent></Tooltip>}
-      {port.configured ? <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Remove port ${port.port} from ${workspace.machine.name}`} disabled={busy || !actions.removeNetworkPort} onClick={() => { setConfirm(key); setDraft(null) }}><Trash2 /></Button></TooltipTrigger><TooltipContent>Remove port</TooltipContent></Tooltip> : <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Connect port ${port.port} to this computer`} disabled={busy || !actions.saveNetworkPort} onClick={() => { setConnecting(key); void run(() => actions.saveNetworkPort!({ workspace: workspaceTarget(workspace), port: port.port, hostPort: null, scheme: "http" })).finally(() => setConnecting(null)) }}>{connecting === key ? <LoaderCircle className="animate-spin" /> : <Plus />}</Button></TooltipTrigger><TooltipContent>Connect to this computer</TooltipContent></Tooltip>}
+      {port.configured ? <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Remove port ${port.port} from ${workspace.machine.name}`} disabled={busy || !actions.removeNetworkPort} onClick={() => { setConfirm(key); setDraft(null) }}><Trash2 /></Button></TooltipTrigger><TooltipContent>Remove port</TooltipContent></Tooltip> : <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Forward port ${port.port} to ${thisComputer}`} disabled={busy || !actions.saveNetworkPort} onClick={() => { setConnecting(key); void run(`network-port:${key}:add`, { loading: `Forwarding port ${port.port}`, success: `Port ${port.port} forwarded`, failure: `Could not forward port ${port.port}` }, () => actions.saveNetworkPort!({ workspace: workspaceTarget(workspace), port: port.port, hostPort: null, scheme: "http" })).finally(() => setConnecting(null)) }}>{connecting === key ? <LoaderCircle className="animate-spin" /> : <Plus />}</Button></TooltipTrigger><TooltipContent><span className="block font-medium">Forward to {thisComputer}</span><span className="block">Make this port reachable from this computer</span></TooltipContent></Tooltip>}
     </>}
   </InlineConfirmation>
 }

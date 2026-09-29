@@ -67,7 +67,6 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     editorBaseline, editorConflict, editorResetToken,
     editorFocusRequest, setEditorFocusRequest,
     pendingDelete, setPendingDelete,
-    operationError,
     baselineRef,
     captureBaseline, beginOperation, dispatchChange,
     startEdit, startAdd, startDuplicate, save, remove, reviewConflict,
@@ -300,7 +299,6 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
             })}
         </SandboxList>
         {footer && <div className="mt-3 shrink-0">{footer}</div>}
-        {operationError && <p className="mt-2 text-xs text-destructive" role="alert">{operationError}</p>}
         <p className="sr-only" aria-live="polite">{announcement}</p>
       </div>
     </>

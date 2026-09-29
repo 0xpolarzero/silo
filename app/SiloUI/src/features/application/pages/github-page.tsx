@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Check, Loader2, TriangleAlert } from "lucide-react"
+import { TriangleAlert } from "lucide-react"
 
 import { PersonalTokenConnection } from "@/features/github/components/personal-token-connection"
 import { CopyButton } from "@/components/copy-button"
@@ -7,6 +7,8 @@ import { githubFailure } from "./github-failure"
 
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Button } from "@/components/ui/button"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { showOperationFailure, showOperationLoading, showOperationSuccess } from "@/lib/operation-toast"
 import type {
   ApplicationActions,
   ApplicationGitHubConfiguration,
@@ -89,50 +91,28 @@ function sameIdentity(left: GitHubIdentity | undefined, right: GitHubIdentity) {
   return left?.name === right.name && left.email === right.email && left.apply === right.apply
 }
 
-function WorkspaceSyncFeedback({
-  operation,
-  onRetry,
-}: {
-  operation: GitHubWorkspaceOperation
-  onRetry: () => void
-}) {
-  const [detailsOpen, setDetailsOpen] = useState(false)
+/** Small persistent label in the sandbox header; the transient progress and results live in toasts. */
+function WorkspaceSyncStatus({ operation }: { operation: GitHubWorkspaceOperation }) {
+  if (operation.status !== "failed") return null
+  const failure = githubFailure(operation.message)
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-destructive hover:text-destructive" aria-label={`GitHub settings not applied for ${operation.workspace}. View details`}>
+          <TriangleAlert className="size-3" aria-hidden="true" />Not applied
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 space-y-2 p-3 text-[11px]">
+        <p className="font-medium">{failure.message}</p>
+        <p className="whitespace-pre-wrap leading-5">{failure.details}</p>
+        <CopyButton variant="ghost" size="xs" value={failure.details} labels={{ idle: "Copy details", copied: "Details copied", failed: "Copy failed" }} text={{ idle: "Copy details", copied: "Copied", failed: "Copy failed" }} />
+      </PopoverContent>
+    </Popover>
+  )
+}
 
-  if (operation.status === "applying") {
-    return (
-      <div className="flex min-h-8 items-center gap-2 rounded-md border border-border bg-muted/25 px-2.5 py-1.5 text-[11px]" role="status" aria-live="polite">
-        <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
-        <span>{operation.message}</span>
-      </div>
-    )
-  }
-
-  if (operation.status === "succeeded") {
-    return (
-      <div className="flex min-h-8 items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/[0.07] px-2.5 py-1.5 text-[11px] text-emerald-700 dark:text-emerald-400" role="status" aria-live="polite">
-        <Check className="size-3.5 shrink-0" aria-hidden="true" />
-        <span>{operation.message}</span>
-      </div>
-    )
-  }
-
-  if (operation.status === "failed") {
-    const failure = githubFailure(operation.message)
-    return (
-      <div className="grid min-h-8 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-md border border-destructive/25 bg-destructive/[0.07] px-2.5 py-1.5 text-[11px]" role="alert">
-        <TriangleAlert className="size-3.5 shrink-0 text-destructive" aria-hidden="true" />
-        <span className="text-destructive">{failure.message}</span>
-        <div className="flex items-center gap-1">
-          <Button type="button" variant="ghost" size="xs" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(!detailsOpen)}>{detailsOpen ? "Hide details" : "View details"}</Button>
-          {failure.canRetry && <Button type="button" variant="outline" size="xs" onClick={onRetry}>Retry</Button>}
-        </div>
-        {detailsOpen && <div className="col-span-3 border-t border-destructive/15 pt-2 text-foreground">
-          <p className="whitespace-pre-wrap text-[11px] leading-5">{failure.details}</p>
-          <CopyButton variant="ghost" size="xs" value={failure.details} labels={{ idle: "Copy details", copied: "Details copied", failed: "Copy failed" }} text={{ idle: "Copy details", copied: "Copied", failed: "Copy failed" }} />
-        </div>}
-      </div>
-    )
-  }
+function firstLine(text: string) {
+  return text.split("\n")[0]?.trim() ?? ""
 }
 
 export function GitHubPage({
@@ -206,18 +186,27 @@ export function GitHubPage({
     setWorkspaceOperations(operationsFromSource(source.github.workspaceOperations))
   }, [source.github.policyRevision, source.github.workspaceOperations])
 
+  const retryRef = useRef(retryWorkspace)
+  retryRef.current = retryWorkspace
+  const announced = useRef(new Map<string, string>(Object.entries(workspaceOperations).map(([name, operation]) => [name, `${operation.status}|${operation.message}`])))
+
   useEffect(() => {
-    const timers = Object.values(workspaceOperations)
-      .filter((operation) => operation.status === "succeeded")
-      .map((operation) => window.setTimeout(() => {
-        setWorkspaceOperations((current) => {
-          if (current[operation.workspace] !== operation) return current
-          const next = { ...current }
-          delete next[operation.workspace]
-          return next
+    for (const [name, operation] of Object.entries(workspaceOperations)) {
+      const key = `${operation.status}|${operation.message}`
+      if (announced.current.get(name) === key) continue
+      announced.current.set(name, key)
+      const id = `github-apply:${name}`
+      if (operation.status === "applying") showOperationLoading(id, operation.message, name)
+      else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name })
+      else {
+        const failure = githubFailure(operation.message)
+        showOperationFailure(id, failure.message, {
+          description: `${name}: ${firstLine(failure.details)}`,
+          retry: failure.canRetry ? () => retryRef.current(name) : undefined,
         })
-      }, 4_000))
-    return () => timers.forEach((timer) => window.clearTimeout(timer))
+      }
+    }
+    for (const name of [...announced.current.keys()]) if (!workspaceOperations[name]) announced.current.delete(name)
   }, [workspaceOperations])
 
   function applyWorkspaceDraft(workspace: string, nextDraft: GitHubDraft, message: string) {
@@ -366,11 +355,9 @@ export function GitHubPage({
           : "Repository access is disabled."}
         connectedActions={connectedActions}
         notice={catalogNotice}
-        renderWorkspaceNotice={({ name }) => {
+        renderWorkspaceActions={({ name }) => {
           const operation = workspaceOperations[name]
-          return operation
-            ? <WorkspaceSyncFeedback operation={operation} onRetry={() => retryWorkspace(name)} />
-            : undefined
+          return operation ? <WorkspaceSyncStatus operation={operation} /> : undefined
         }}
         repositoryControlsAvailable={catalogAvailable && accessEnabled}
         confirmRepositoryClear

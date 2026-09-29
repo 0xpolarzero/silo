@@ -886,24 +886,28 @@ describe("application", () => {
     expect(within(panel.getByRole("list", { name: "Recent activity" })).getAllByText("Backup completed")).toHaveLength(1)
   })
 
-  it.each([
-    ["pushing", "Pushing 2 commits…", true],
-    ["succeeded", "Pushed 2 commits.", false],
-  ] as const)("shows repository push %s feedback inside its row", async (mode, message, busy) => {
-    const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, mode)
+  it("shows repository push progress inside its row", async () => {
+    const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "pushing")
     const application = renderApplication("running", source)
     const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
 
     await application.user.click(sandboxSections.getByRole("button", { name: "Files" }))
     const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
     expect(within(row).getByRole("status")).toHaveClass("h-6")
-    expect(within(row).getByRole("status")).toHaveTextContent(message)
-    if (busy) expect(row).toHaveAttribute("aria-busy", "true")
-    else {
-      expect(row).not.toHaveAttribute("aria-busy")
-      expect(row).toHaveTextContent("main · 0 ahead, 0 behind")
-    }
+    expect(within(row).getByRole("status")).toHaveTextContent("Pushing 2 commits…")
+    expect(row).toHaveAttribute("aria-busy", "true")
     expect(within(row).queryByRole("button", { name: /^Push / })).not.toBeInTheDocument()
+  })
+
+  it("clears a push that already succeeded without an inline line", async () => {
+    const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "succeeded")
+    const application = renderApplication("running", source)
+    const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+
+    await application.user.click(sandboxSections.getByRole("button", { name: "Files" }))
+    const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
+    expect(within(row).queryByRole("status")).not.toBeInTheDocument()
+    expect(row).toHaveTextContent("main · 0 ahead, 0 behind")
   })
 
   it("sends unknown-result acknowledgement to the host before showing push again", async () => {
@@ -918,45 +922,22 @@ describe("application", () => {
     expect(screen.getByRole("button", { name: "I’ve checked GitHub" })).toBeVisible()
   })
 
-  it("shows a repository push error with details and immediate retry", async () => {
+  it("keeps a failed push as a small in-row label with details and retry", async () => {
     const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "failed")
     const application = renderApplication("running", source)
     const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
 
     await application.user.click(sandboxSections.getByRole("button", { name: "Files" }))
     const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
-    expect(within(row).getByRole("alert")).toHaveTextContent("Push failed because the remote branch changed.")
     expect(within(row).queryByText(/no longer matches/)).not.toBeInTheDocument()
 
-    await application.user.click(within(row).getByRole("button", { name: "Toggle push error details for acme/silo" }))
-    expect(within(row).getByText(/no longer matches/)).toBeVisible()
+    await application.user.click(within(row).getByRole("button", { name: "Push failed for acme/silo. Show details" }))
+    const details = within(screen.getByRole("dialog"))
+    expect(details.getByText("Push failed because the remote branch changed.")).toBeVisible()
+    expect(details.getByText(/no longer matches/)).toBeVisible()
 
-    await application.user.click(within(row).getByRole("button", { name: "Retry push for acme/silo" }))
+    await application.user.click(details.getByRole("button", { name: "Retry push for acme/silo" }))
     expect(application.actions.pushRepository).toHaveBeenCalledWith("dev", "acme/silo")
-    expect(row).toHaveAttribute("aria-busy", "true")
-    expect(within(row).getByRole("status")).toHaveTextContent("Pushing 2 commits…")
-  })
-
-  it("clears repository push success after four seconds", () => {
-    vi.useFakeTimers()
-    const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "succeeded")
-    const application = renderApplication("running", source)
-
-    try {
-      const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
-      fireEvent.click(sandboxSections.getByRole("button", { name: "Files" }))
-      const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
-      expect(within(row).getByRole("status")).toHaveTextContent("Pushed 2 commits.")
-
-      act(() => vi.advanceTimersByTime(4_000))
-
-      expect(within(row).queryByRole("status")).not.toBeInTheDocument()
-      expect(row).toHaveTextContent("main · 0 ahead, 0 behind")
-      expect(within(row).queryByRole("button", { name: /^Push / })).not.toBeInTheDocument()
-    } finally {
-      application.unmount()
-      vi.useRealTimers()
-    }
   })
 
   it.each([
@@ -1570,13 +1551,13 @@ describe("application", () => {
     await application.user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
     const github = within(appPanel("GitHub"))
     await application.user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
-    expect(github.getByRole("status")).toHaveTextContent("Applying repository access…")
+    expect(await screen.findByText("Applying repository access…")).toBeVisible()
     const completed = structuredClone(source)
     completed.github.policyRevision = 11
     completed.github.workspaces = vi.mocked(application.actions.saveGitHubConfiguration!).mock.calls[0][0].workspaces
     application.rerender(<ApplicationPreview source={completed} actions={application.actions} />)
-    expect(github.queryByText("Applying repository access…")).not.toBeInTheDocument()
-    expect(github.getByRole("status")).toHaveTextContent("GitHub access verified.")
+    expect(await screen.findByText("GitHub settings applied")).toBeVisible()
+    expect(screen.queryByText("Applying repository access…")).not.toBeInTheDocument()
     expect(github.getByRole("button", { name: "Disable access" })).toBeEnabled()
   })
 
@@ -1586,8 +1567,9 @@ describe("application", () => {
     await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
     const github = within(appPanel("GitHub"))
     await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
-    expect(await github.findByRole("alert")).toHaveTextContent("Invalid Git identity settings.")
-    expect(github.queryByText("Applying repository access…")).not.toBeInTheDocument()
+    expect(await screen.findByText(/Invalid Git identity settings\./)).toBeVisible()
+    expect(screen.queryByText("Applying repository access…")).not.toBeInTheDocument()
+    expect(github.getByRole("button", { name: /GitHub settings not applied for dev/ })).toBeVisible()
     expect(github.getByRole("button", { name: "Disable access" })).toBeEnabled()
   })
 
@@ -1600,8 +1582,9 @@ describe("application", () => {
     await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
     await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
     await act(async () => rejectFirst(new Error("Older request failed")))
-    expect(github.queryByRole("alert")).not.toBeInTheDocument()
-    expect(github.getByRole("status")).toHaveTextContent("Applying repository access…")
+    expect(screen.queryByText(/Older request failed/)).not.toBeInTheDocument()
+    expect(github.queryByRole("button", { name: /GitHub settings not applied/ })).not.toBeInTheDocument()
+    expect(screen.getByText("Applying repository access…")).toBeVisible()
   })
 
   it("settles all pending sandbox edits when the latest complete save fails, and retries that draft", async () => {
@@ -1613,9 +1596,9 @@ describe("application", () => {
     const github = within(appPanel("GitHub"))
     await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
     await user.click(github.getByRole("checkbox", { name: "All repositories for playgrounds" }))
-    expect(await github.findAllByRole("alert")).toHaveLength(2)
-    expect(github.queryByText("Applying repository access…")).not.toBeInTheDocument()
-    await user.click(github.getAllByRole("button", { name: "Retry" })[0])
+    expect(await github.findAllByRole("button", { name: /GitHub settings not applied/ })).toHaveLength(2)
+    expect(screen.queryByText("Applying repository access…")).not.toBeInTheDocument()
+    await user.click((await screen.findAllByRole("button", { name: "Retry" }))[0])
     expect(actions.saveGitHubConfiguration).toHaveBeenCalledTimes(3)
     expect(actions.retryGitHubConfiguration).not.toHaveBeenCalled()
     expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -1637,7 +1620,7 @@ describe("application", () => {
     expect(actions.saveGitHubConfiguration).not.toHaveBeenCalled()
     await user.tab()
     expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
-    expect(github.getByRole("status")).toHaveTextContent("Applying Git identity…")
+    expect(await screen.findByText("Applying Git identity…")).toBeVisible()
     expect(within(appNavigation()).getByRole("button", { name: "GitHub" })).toHaveAttribute("aria-busy", "true")
 
     const picker = github.getByRole("combobox", { name: "Add repository to playgrounds" })
@@ -1762,31 +1745,33 @@ describe("application", () => {
     expect(disabled.actions.setGitHubAccessEnabled).toHaveBeenCalledWith(true)
   })
 
-  it("shows per-sandbox GitHub apply progress, success, and actionable failure fixtures", async () => {
-    const states = [
-      { mode: "applying" as const, role: "status" as const, message: "Applying repository access…", buttons: [] },
-      { mode: "succeeded" as const, role: "status" as const, message: "Repository access applied.", buttons: [] },
-      { mode: "failed" as const, role: "alert" as const, message: "GitHub settings couldn’t be applied.", buttons: ["Retry"] },
-    ]
+  it("shows per-sandbox GitHub apply progress, success, and actionable failure through notifications", async () => {
+    const source = applicationSourceForScenario("running", "connected")
+    const application = renderApplication("running", source)
+    await application.user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    expect(github.queryByRole("button", { name: /not applied/i })).not.toBeInTheDocument()
 
-    for (const state of states) {
-      const source = applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, state.mode)
-      const application = renderApplication("running", source)
-      await application.user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
-      const github = within(appPanel("GitHub"))
-      const feedback = github.getByRole(state.role)
-      expect(feedback).toHaveTextContent(state.message)
-      for (const name of state.buttons) expect(github.getByRole("button", { name })).toBeVisible()
-
-      if (state.mode === "applying") {
-        expect(github.getByRole("region", { name: "Sandbox Git identity and repository access" })).toHaveAttribute("aria-busy", "true")
-      }
-      if (state.mode === "failed") {
-        await application.user.click(github.getByRole("button", { name: "Retry" }))
-        expect(application.actions.retryGitHubConfiguration).toHaveBeenCalledWith("dev")
-      }
-      application.unmount()
+    const next = (mode: "applying" | "succeeded" | "failed", revision: number) => {
+      const fixture = applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, mode)
+      fixture.github.policyRevision = revision
+      application.rerender(<ApplicationPreview source={fixture} actions={application.actions} />)
     }
+
+    next("applying", 1)
+    expect(await screen.findByText("Applying repository access…")).toBeVisible()
+    expect(github.getByRole("region", { name: "Sandbox Git identity and repository access" })).toHaveAttribute("aria-busy", "true")
+
+    next("succeeded", 2)
+    expect(await screen.findByText("GitHub settings applied")).toBeVisible()
+    expect(screen.queryByText("Applying repository access…")).not.toBeInTheDocument()
+
+    next("failed", 3)
+    expect(await screen.findByText(/GitHub settings couldn’t be applied\./)).toBeVisible()
+    expect(screen.queryByText("GitHub settings applied")).not.toBeInTheDocument()
+    expect(github.getByRole("button", { name: /GitHub settings not applied for dev/ })).toHaveTextContent("Not applied")
+    await application.user.click(screen.getByRole("button", { name: "Retry" }))
+    expect(application.actions.retryGitHubConfiguration).toHaveBeenCalledWith("dev")
   })
 
   it("keeps obsolete sandbox errors compact and copies only safe explanations", async () => {
@@ -1797,33 +1782,38 @@ describe("application", () => {
     }]
     const application = renderApplication("running", source)
     await application.user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
-    const feedback = within(within(appPanel("GitHub")).getByRole("alert"))
-    expect(feedback.getByText("This sandbox needs a new setup for GitHub access.")).toBeVisible()
-    expect(feedback.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
-    expect(feedback.queryByText(/GitHub access: this sandbox/)).not.toBeInTheDocument()
-    await application.user.click(feedback.getByRole("button", { name: "View details" }))
-    expect(feedback.getByText(/A restart alone does not resolve/)).toBeVisible()
+    const label = within(appPanel("GitHub")).getByRole("button", { name: /GitHub settings not applied for dev/ })
+    expect(label).toHaveTextContent("Not applied")
+    await application.user.click(label)
+    const details = within(await screen.findByRole("dialog"))
+    expect(details.getByText("This sandbox needs a new setup for GitHub access.")).toBeVisible()
+    expect(details.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+    expect(details.getByText(/A restart alone does not resolve/)).toBeVisible()
+    expect(details.queryByText(/private@example|secret runtime|GIT_AUTHOR_EMAIL/)).not.toBeInTheDocument()
     const copy = vi.spyOn(navigator.clipboard, "writeText")
-    await application.user.click(feedback.getByRole("button", { name: "Copy details" }))
+    await application.user.click(details.getByRole("button", { name: "Copy details" }))
     expect(copy).toHaveBeenCalledWith(expect.stringContaining("Git identity:"))
     expect(copy.mock.calls.at(-1)?.[0]).not.toMatch(/private@example|secret runtime|GIT_AUTHOR_EMAIL/)
-    await application.user.click(feedback.getByRole("button", { name: "Hide details" }))
-    expect(feedback.queryByText(/GitHub access: this sandbox/)).not.toBeInTheDocument()
   })
 
-  it("clears successful GitHub apply feedback after four seconds", () => {
+  it("keeps a successful GitHub apply notification until it is closed", async () => {
     vi.useFakeTimers()
-    const source = applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "succeeded")
-    const application = renderApplication("running", source)
+    const application = renderApplication("running", applicationSourceForScenario("running", "connected"))
 
     try {
       fireEvent.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
-      const github = within(appPanel("GitHub"))
-      expect(github.getByRole("status")).toHaveTextContent("Repository access applied.")
+      const succeeded = applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "succeeded")
+      succeeded.github.policyRevision = 5
+      application.rerender(<ApplicationPreview source={succeeded} actions={application.actions} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+      expect(screen.getByText("GitHub settings applied")).toBeVisible()
 
-      act(() => vi.advanceTimersByTime(4_000))
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+      expect(screen.getByText("GitHub settings applied")).toBeVisible()
 
-      expect(github.queryByRole("status")).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Close toast" }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+      expect(screen.queryByText("GitHub settings applied")).not.toBeInTheDocument()
     } finally {
       application.unmount()
       vi.useRealTimers()

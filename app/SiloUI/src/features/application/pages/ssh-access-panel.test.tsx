@@ -1,6 +1,8 @@
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { toast } from "sonner"
+import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { SshAccessPanel } from "./ssh-access-panel"
 import type { ApplicationActions, ApplicationWorkspace, SshAccessWorkspace } from "../model/application-source"
@@ -10,9 +12,10 @@ const base: SshAccessWorkspace = { workspace: "dev", enabled: true, port: 2222, 
 function setup(patch: Partial<SshAccessWorkspace> = {}, save = vi.fn().mockResolvedValue(undefined), error?: string, displayedWorkspace: ApplicationWorkspace = workspace) {
   const access = { ...base, ...patch }
   const actions = { sshConnection: vi.fn().mockImplementation((_workspace: string, download: boolean) => Promise.resolve(download ? null : "ssh -i '/managed/client_key' -p 2222 root@127.0.0.1")), saveSshAccess: save, refreshSshAccess: vi.fn().mockResolvedValue(undefined) } as unknown as ApplicationActions
-  const view = render(<SshAccessPanel workspaces={[displayedWorkspace]} state={{ workspaces: [access] }} error={error} actions={actions} active />)
+  const view = render(<><Toaster /><SshAccessPanel workspaces={[displayedWorkspace]} state={{ workspaces: [access] }} error={error} actions={actions} active /></>)
   return { user: userEvent.setup(), access, save, actions, ...view }
 }
+afterEach(() => { toast.dismiss() })
 async function expand(user: ReturnType<typeof userEvent.setup>) { await user.click(screen.getByRole("button", { name: "SSH controls for dev" })) }
 async function selectAction(user: ReturnType<typeof userEvent.setup>, name: string) {
   await user.click(screen.getByRole("button", { name: name.includes("network") ? "More network SSH actions" : "More local SSH actions" }))
@@ -162,7 +165,9 @@ describe("managed SSH access", () => {
     await expand(user)
     await selectAction(user, "Edit connection")
     await user.click(screen.getByRole("button", { name: "Save" }))
-    expect(screen.getByRole("alert")).toHaveTextContent("Port is in use")
+    expect(await screen.findByText("Port is in use.")).toBeInTheDocument()
+    expect(screen.getByText("SSH settings not saved")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument()
     expect(screen.getByRole("spinbutton")).toBeVisible()
   })
   it("reports connection preparation failures without copying an unusable command", async () => {
@@ -170,7 +175,7 @@ describe("managed SSH access", () => {
     vi.mocked(actions.sshConnection!).mockRejectedValue(new Error("Enable access from other computers first."))
     await expand(user)
     await selectAction(user, "Copy local SSH command")
-    expect(screen.getByRole("alert")).toHaveTextContent("Enable access from other computers first")
+    expect(await screen.findByText("Enable access from other computers first.")).toBeInTheDocument()
     expect(await navigator.clipboard.readText()).toBe("")
   })
   it("prevents concurrent changes while preparing the connection", async () => {
@@ -189,7 +194,7 @@ describe("managed SSH access", () => {
     vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new Error("Clipboard unavailable."))
     await expand(user)
     await selectAction(user, "Copy local SSH command")
-    expect(screen.getByRole("alert")).toHaveTextContent("Clipboard unavailable")
+    expect(await screen.findByText("Clipboard unavailable.")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Local SSH command copied" })).not.toBeInTheDocument()
   })
   it("routes connection preparation and changes to the remote owner", async () => {

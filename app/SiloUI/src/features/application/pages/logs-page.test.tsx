@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
 import { fixtureLogPage, type LogPage, type LogQuery } from "../model/logs"
+import { Toaster } from "@/components/ui/sonner"
 import { Logs } from "./logs-page"
 
 function fixture() {
@@ -149,7 +150,7 @@ describe("retained logs", () => {
   it("loads older pages with bounded DOM rows, and exports the query rather than the page", async () => {
     const { workspace, actions, queryLogs } = fixture()
     actions.exportLogs = vi.fn(async () => true)
-    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    render(<><Toaster /><Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} /></>)
     await screen.findByText(/Showing 200 of 100001/)
     scrollNearEnd()
     await screen.findByText(/Showing 400 of 100001/)
@@ -157,7 +158,20 @@ describe("retained logs", () => {
     expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "200" }))
     fireEvent.click(screen.getByRole("button", { name: "Export…" }))
     expect(actions.exportLogs).toHaveBeenCalledWith([expect.not.objectContaining({ cursor: expect.any(String) })])
-    await screen.findByText(/Logs saved/)
+    expect(await within(document.body).findByText("Logs saved")).toBeInTheDocument()
+    expect(screen.getByText(/Showing 400 of 100001/).textContent).not.toMatch(/saved/)
+  })
+  it("reports a failed export with Retry that runs it again", async () => {
+    const { workspace, actions } = fixture()
+    actions.exportLogs = vi.fn().mockRejectedValueOnce(new Error("Disk full")).mockResolvedValue(true)
+    render(<><Toaster /><Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} /></>)
+    await screen.findByText(/Showing 200 of 100001/)
+    fireEvent.click(screen.getByRole("button", { name: "Export…" }))
+    expect(await within(document.body).findByText("Export failed")).toBeInTheDocument()
+    expect(within(document.body).getByText("Disk full")).toBeInTheDocument()
+    fireEvent.click(within(document.body).getByRole("button", { name: "Retry" }))
+    expect(await within(document.body).findByText("Logs saved")).toBeInTheDocument()
+    expect(actions.exportLogs).toHaveBeenCalledTimes(2)
   })
   it("ignores an old response after switching sandboxes and preserves explicit errors", async () => {
     const { workspace, actions } = fixture()
