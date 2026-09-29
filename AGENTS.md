@@ -50,7 +50,7 @@ cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -- --test-th
 npm --prefix app/SiloUI run test:release
 ```
 
-Frontend tests use Vitest. Use test file arguments to focus a frontend run and a Cargo test filter to focus backend behavior. Rust tests live beside the code in `app/SiloUI/src-tauri/src/` and share process-wide state, so the suite passes only with `--test-threads=1`. `.github/workflows/ci.yml` runs these checks on every push to `main` and every pull request. Keep opt-in live tests separate from ordinary unit tests. Release-tooling changes also need the relevant script tests and workflow checks.
+Frontend tests use Vitest. Use test file arguments to focus a frontend run and a Cargo test filter to focus backend behavior. Rust tests live beside the code in `app/SiloUI/src-tauri/src/` and share process-wide state, so the suite passes only with `--test-threads=1`. `.github/workflows/ci.yml` runs these checks, and a relative-link check of the Markdown documentation, on every push to `main` and every pull request; `.github/workflows/linux-packaging.yml` builds and installs the Linux packages when packaging inputs change and nightly. Keep opt-in live tests separate from ordinary unit tests. Release-tooling changes also need the relevant script tests and workflow checks.
 
 For a local macOS debug bundle:
 

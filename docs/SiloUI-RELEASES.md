@@ -259,9 +259,27 @@ Run the checks relevant to the change from the repository root:
 npm --prefix app/SiloUI run typecheck
 npm --prefix app/SiloUI run lint
 npm --prefix app/SiloUI test
-cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -- --test-threads=1
 npm --prefix app/SiloUI run test:release
+python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*.py'
 ```
+
+Continuous integration runs the same checks. `.github/workflows/ci.yml` runs on
+every push to `main` and every pull request: frontend, script, website and demo
+checks; the Rust suite with synthetic GitHub configuration; and a relative-link
+check of the Markdown documentation with [lychee](https://github.com/lycheeverse/lychee)
+in offline mode. To run that check locally, install lychee and run from the
+repository root:
+
+```sh
+lychee --offline --no-progress README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' \
+  'app/SiloUI/tests/**/*.md' 'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
+```
+
+`.github/workflows/linux-packaging.yml` builds the Debian package and AppImage
+like a release (without signing), adds the maintainer scripts, installs and
+removes the package on the runner, and checks the AppImage layout. It runs only
+when packaging inputs change, and nightly; its packages are never uploaded.
 
 Native tests require the configuration described above. Frontend fixtures and
 unit tests do not prove installed-app behavior, live VM health, or two-computer

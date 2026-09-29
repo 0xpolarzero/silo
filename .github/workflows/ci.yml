@@ -60,6 +60,32 @@ jobs:
           npm ci
           npm run typecheck
 
+  docs:
+    name: Documentation links
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # lychee checks links; offline mode checks only local files, so web links
+      # never make CI flaky. The download is pinned to the release asset digest.
+      - name: Install lychee
+        env:
+          LYCHEE_RELEASE: lychee-v0.24.2
+          LYCHEE_SHA256: 1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/lychee.tar.gz" "https://github.com/lycheeverse/lychee/releases/download/$LYCHEE_RELEASE/lychee-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$LYCHEE_SHA256  $RUNNER_TEMP/lychee.tar.gz" | sha256sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/lychee"
+          tar -xzf "$RUNNER_TEMP/lychee.tar.gz" -C "$RUNNER_TEMP/lychee"
+          lychee=$(find "$RUNNER_TEMP/lychee" -type f -name lychee | head -n 1)
+          test -x "$lychee"
+          echo "LYCHEE=$lychee" >> "$GITHUB_ENV"
+      - name: Check relative links in Markdown documentation
+        run: >-
+          "$LYCHEE" --offline --no-progress
+          README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' 'app/SiloUI/tests/**/*.md'
+          'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
+
   rust:
     name: Rust tests
     runs-on: ubuntu-24.04
