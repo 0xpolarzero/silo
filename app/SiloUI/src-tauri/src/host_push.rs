@@ -368,9 +368,10 @@ impl HostGit {
             .join(" ");
         match outcome {
             Ok(status) if !status.success() => {
-                return Err(format!("Git {stage} failed ({status}). {diagnostic}"))
+                // The first line is the summary; the rest becomes diagnostic details.
+                return Err(format!("Git {stage} failed ({status}).\n{diagnostic}"))
             }
-            Err(message) => return Err(format!("{message} {diagnostic}")),
+            Err(message) => return Err(format!("{message}\n{diagnostic}")),
             _ => {}
         }
         if overflow {
@@ -802,22 +803,7 @@ pub(crate) async fn push_repository(
         .map_err(|_| "Remote repository request failed.".to_string())?;
     }
     let key = format!("{workspace}\0{repository_path}");
-    let planned_count = runtime::runtime_paths(&app)
-        .ok()
-        .and_then(|paths| {
-            DISCOVERIES
-                .get()?
-                .lock()
-                .ok()?
-                .get(&format!("{}:{workspace}", paths.home.display()))?
-                .1
-                .as_ref()
-                .ok()?
-                .iter()
-                .find(|repo| repo["path"] == repository_path)?["ahead"]
-                .as_u64()
-        })
-        .unwrap_or(0);
+    let planned_count = planned_count(&app, &workspace, &repository_path);
     {
         let mut r = results().lock().map_err(|_| "Push state unavailable.")?;
         if r.get(&key).is_some_and(|(v, _)| v["status"] == "pushing") {
@@ -846,6 +832,26 @@ pub(crate) async fn push_repository(
     let _ = app.emit("silo://application-state-changed", ());
     Ok(value)
 }
+/// The commit count last shown for this repository, so an active push reports
+/// the planned number instead of zero.
+pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_path: &str) -> u64 {
+    runtime::runtime_paths(app)
+        .ok()
+        .and_then(|paths| {
+            DISCOVERIES
+                .get()?
+                .lock()
+                .ok()?
+                .get(&format!("{}:{workspace}", paths.home.display()))?
+                .1
+                .as_ref()
+                .ok()?
+                .iter()
+                .find(|repo| repo["path"] == repository_path)?["ahead"]
+                .as_u64()
+        })
+        .unwrap_or(0)
+}
 fn finished_result(workspace: &str, repository_path: &str, outcome: Result<u64, String>) -> Value {
     match outcome {
         Ok(count) => json!({
@@ -854,13 +860,23 @@ fn finished_result(workspace: &str, repository_path: &str, outcome: Result<u64, 
             "commitCount": count,
             "status": "succeeded",
         }),
-        Err(message) => json!({
-            "workspace": workspace,
-            "repositoryPath": repository_path,
-            "commitCount": 0,
-            "status": "failed",
-            "message": message,
-        }),
+        Err(message) => {
+            let mut value = json!({
+                "workspace": workspace,
+                "repositoryPath": repository_path,
+                "commitCount": 0,
+                "status": "failed",
+            });
+            // Keep the visible message short; Git output goes to the Details disclosure.
+            match message.split_once('\n') {
+                Some((summary, details)) if !details.trim().is_empty() => {
+                    value["message"] = json!(summary.trim());
+                    value["diagnosticDetails"] = json!(details.trim());
+                }
+                _ => value["message"] = json!(message.trim()),
+            }
+            value
+        }
     }
 }
 #[cfg(test)]
@@ -1031,6 +1047,19 @@ mod tests {
         };
         assert!(git.run(&[], None, "").is_err());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn failed_results_separate_summary_from_git_diagnostics() {
+        let value = super::finished_result(
+            "dev",
+            "/workspace/repo",
+            Err("Git push failed (exit status: 1).\nremote: rejected\nmore".into()),
+        );
+        assert_eq!(value["message"], "Git push failed (exit status: 1).");
+        assert_eq!(value["diagnosticDetails"], "remote: rejected\nmore");
+        let plain = super::finished_result("dev", "/workspace/repo", Err("Start the sandbox.".into()));
+        assert_eq!(plain["message"], "Start the sandbox.");
+        assert!(plain.get("diagnosticDetails").is_none());
     }
     #[test]
     fn linux_prefers_the_system_certificate_store() {

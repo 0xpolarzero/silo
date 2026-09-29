@@ -168,9 +168,14 @@ pub(crate) fn start(
         .join("repository-push-operations.json");
     let _guard = LOCK.lock().map_err(|_| "Push state unavailable.")?;
     let mut jobs = read(&journal)?;
-    let (value, created) = claim(&mut jobs, &id, &workspace, &path)?;
+    let (mut value, created) = claim(&mut jobs, &id, &workspace, &path)?;
     if !created {
         return Ok(value);
+    }
+    let planned = host_push::planned_count(app, &workspace, &path);
+    value["commitCount"] = json!(planned);
+    if let Some(job) = jobs.get_mut(&id) {
+        job.operation["commitCount"] = json!(planned);
     }
     // Persist before acknowledging or starting: retrying a lost reply never starts a second job.
     write(&journal, &jobs)?;
