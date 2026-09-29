@@ -7,7 +7,7 @@ use std::{
     fs::{self, File},
     io::Read,
     path::PathBuf,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
@@ -16,6 +16,28 @@ static OPERATION: Mutex<()> = Mutex::new(());
 static DOCUMENT: Mutex<()> = Mutex::new(());
 type Vault = BTreeMap<String, String>;
 static VAULT: Mutex<Option<Result<Vault, String>>> = Mutex::new(None);
+/// `OPERATION` and `DOCUMENT` guard no data, so a panic while holding them leaves
+/// nothing inconsistent: recover the guard instead of failing until restart.
+fn lock_unit(mutex: &'static Mutex<()>) -> MutexGuard<'static, ()> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+fn try_lock_unit(mutex: &'static Mutex<()>) -> Option<MutexGuard<'static, ()>> {
+    match mutex.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+/// A panic during a vault access may leave a partial cache; drop it so the next
+/// access reloads from the credential store.
+fn lock_vault() -> MutexGuard<'static, Option<Result<Vault, String>>> {
+    VAULT.lock().unwrap_or_else(|poisoned| {
+        let mut cached = poisoned.into_inner();
+        *cached = None;
+        VAULT.clear_poison();
+        cached
+    })
+}
 const STORE_ERROR: &str =
     "Cannot access secrets in the system credential store. Unlock it and retry.";
 #[derive(Clone, Serialize, Deserialize)]
@@ -57,7 +79,7 @@ fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new("org.silo.Silo.secrets", "values").map_err(|_| STORE_ERROR.into())
 }
 fn read_vault() -> Result<Vault, String> {
-    let mut cached = VAULT.lock().map_err(|_| STORE_ERROR)?;
+    let mut cached = lock_vault();
     cached
         .get_or_insert_with(|| match entry()?.get_password() {
             Ok(value) => serde_json::from_str(&value).map_err(|_| STORE_ERROR.into()),
@@ -67,7 +89,7 @@ fn read_vault() -> Result<Vault, String> {
         .clone()
 }
 fn write_vault(value: Vault) -> Result<(), String> {
-    let mut cached = VAULT.lock().map_err(|_| STORE_ERROR)?;
+    let mut cached = lock_vault();
     if let Some(Err(error)) = cached.as_ref() {
         return Err(error.clone());
     }
@@ -82,10 +104,9 @@ fn write_vault(value: Vault) -> Result<(), String> {
     result
 }
 fn retry_store() {
-    if let Ok(mut cached) = VAULT.lock() {
-        if matches!(cached.as_ref(), Some(Err(_))) {
-            *cached = None;
-        }
+    let mut cached = lock_vault();
+    if matches!(cached.as_ref(), Some(Err(_))) {
+        *cached = None;
     }
 }
 fn load() -> Result<Document, String> {
@@ -115,7 +136,7 @@ fn save(document: &Document) -> Result<(), String> {
     Ok(())
 }
 fn update(f: impl FnOnce(&mut Document) -> Result<(), String>) -> Result<(), String> {
-    let _guard = DOCUMENT.lock().map_err(|_| "Secret settings are busy.")?;
+    let _guard = lock_unit(&DOCUMENT);
     let mut document = load()?;
     f(&mut document)?;
     save(&document)
@@ -172,7 +193,8 @@ pub(crate) fn runtime_material(
 
 /// Copy assignment references only. Values remain in the host credential store.
 pub(crate) fn fork_assignments(source: &str, target: &str) -> Result<(), String> {
-    let _operation = OPERATION.try_lock().map_err(|_| "Secret settings are busy. Retry the fork.".to_string())?;
+    let _operation = try_lock_unit(&OPERATION)
+        .ok_or_else(|| "Secret settings are busy. Retry the fork.".to_string())?;
     update(|document| { copy_assignment_refs(document, source, target); Ok(()) })
 }
 
@@ -412,7 +434,7 @@ fn reconcile(app: &AppHandle, id: &str) -> Result<(), String> {
                 d.secrets
                     .iter_mut()
                     .find(|s| s.id == id)
-                    .unwrap()
+                    .ok_or("This secret no longer exists.")?
                     .errors
                     .insert("Credential store".into(), error);
                 Ok(())
@@ -460,7 +482,7 @@ pub async fn save_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _operation = OPERATION.lock().map_err(|_| "Secret settings are busy.")?;
+        let _operation = lock_unit(&OPERATION);
         retry_store();
         let document = load()?;
         validate(&request, &document)?;
@@ -519,7 +541,7 @@ pub async fn remove_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _operation = OPERATION.lock().map_err(|_| "Secret settings are busy.")?;
+        let _operation = lock_unit(&OPERATION);
         retry_store();
         update(|d| {
             let secret = d
@@ -547,7 +569,7 @@ pub async fn retry_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _operation = OPERATION.lock().map_err(|_| "Secret settings are busy.")?;
+        let _operation = lock_unit(&OPERATION);
         retry_store();
         reconcile(&app, &id)?;
         let _ = prune_values();
@@ -566,9 +588,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     .ok();
     let app = app.clone();
     std::thread::spawn(move || {
-        let Ok(_operation) = OPERATION.lock() else {
-            return;
-        };
+        let _operation = lock_unit(&OPERATION);
         if let Ok(document) = load() {
             for secret in document.secrets {
                 if !secret.affected.is_empty() || secret.removing {
@@ -677,6 +697,42 @@ mod tests {
             assert!(valid_domain(domain));
         }
     }
+    /// Owner decision 4: choosing allowed domains is the user's responsibility.
+    /// Validation only checks syntax; it does not consult the public suffix list.
+    #[test]
+    fn allowed_domain_syntax_intent_matches_owner_decision_four() {
+        for accepted in [
+            "*",                     // explicit opt-in to every domain
+            "*.co.uk",               // public-suffix wildcards are allowed by decision
+            "*.github.io",
+            "*.vercel.app",
+            "localhost",             // single-label hosts are allowed
+            "127.0.0.1",             // IPv4 literals parse as numeric labels
+            "10.0.0.1",
+            "xn--bcher-kva.example", // punycode labels
+            "a-b.example.com",
+        ] {
+            assert!(valid_domain(accepted), "{accepted} should be accepted");
+        }
+        for rejected in [
+            "*.com",           // a wildcard needs at least two labels
+            "*.xn--p1ai",
+            "example.com.",    // trailing dot: use the name without it
+            ".example.com",
+            "API.example.com", // names must be entered in lower case
+            "*.*.example.com", // only one leading wildcard label
+            "a*.example.com",
+            "*example.com",
+            "::1",             // IPv6 literals are not supported
+            "[::1]",
+            "exa mple.com",
+            "b\u{fc}cher.example", // use punycode for internationalized names
+            &format!("{}.com", "a".repeat(64)),
+            &format!("{}.com", ["a"; 127].join(".")),
+        ] {
+            assert!(!valid_domain(rejected), "{rejected} should be rejected");
+        }
+    }
     #[test]
     fn edits_preserve_name_and_do_not_require_value() {
         let mut r = request();
@@ -726,6 +782,20 @@ mod tests {
         assert_eq!(public(&secret)["state"], "active");
     }
     #[test]
+    fn poisoned_locks_recover_instead_of_blocking_secrets_and_updates() {
+        static TEST: Mutex<()> = Mutex::new(());
+        let _ = std::thread::spawn(|| {
+            let _guard = TEST.lock().unwrap();
+            panic!("poison");
+        })
+        .join();
+        assert!(TEST.is_poisoned());
+        drop(lock_unit(&TEST));
+        let held = try_lock_unit(&TEST).expect("poisoned lock is recoverable");
+        assert!(try_lock_unit(&TEST).is_none());
+        drop(held);
+    }
+    #[test]
     fn history_is_bounded_and_contains_no_values() {
         let mut d = Document::default();
         for _ in 0..110 {
@@ -741,5 +811,6 @@ mod tests {
 }
 
 pub(crate) fn update_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
-    OPERATION.try_lock().map_err(|_| "Wait for the secret operation to finish before updating.".into())
+    try_lock_unit(&OPERATION)
+        .ok_or_else(|| "Wait for the secret operation to finish before updating.".into())
 }
