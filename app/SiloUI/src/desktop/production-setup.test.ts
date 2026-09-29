@@ -33,7 +33,7 @@ async function setup(savedActivity: SiloProgressEvent[] = [], currentApplication
   const bridge = { invoke, listen: async (name: string, handler: (event?: { payload: unknown }) => void) => { events.set(name, handler); return () => events.delete(name) } } as ProductionBridge
   const store = createProductionSource(bridge)
   await store.initialize()
-  return { store, machines, identities, github, invoke, emit: (payload: unknown) => events.get("silo://machine-configuration-progress")?.({ payload }) }
+  return { store, machines, identities, github, invoke, events, emit: (payload: unknown) => events.get("silo://machine-configuration-progress")?.({ payload }) }
 }
 
 describe("production setup queue", () => {
@@ -328,6 +328,27 @@ describe("production setup queue", () => {
     await Promise.all([finished, drain])
     expect(drained).toBe(true)
     expect(store.getSnapshot().setupQueue.every(({ status }) => status === "succeeded")).toBe(true)
+    store.dispose()
+  })
+
+  it("accepts setup again after a Quit request is cancelled", async () => {
+    const { store, machines, events } = await setup()
+    await store.drainSetup()
+    await expect(store.submitSetupStep("workspaces", request)).rejects.toThrow("quitting")
+    events.get("silo://shutdown-state-changed")?.({ payload: false })
+    await store.submitSetupStep("workspaces", request)
+    expect(machines).toHaveBeenCalledOnce()
+    store.dispose()
+  })
+
+  it("never deletes existing VMs from onboarding", async () => {
+    const { store, invoke } = await setup()
+    const existing = application.workspaces.map(({ machine }) => machine)
+    const replacement = { ...existing[0], id: "7f3c2a10-4b5d-4e6f-8a9b-0c1d2e3f4a5b", name: "fresh-default" }
+    const defaults: OnboardingCompletionRequest = { ...request, machineConfiguration: { schemaVersion: 1, machines: [replacement] } }
+    await expect(store.submitSetupStep("workspaces", defaults)).rejects.toThrow(/does not delete/)
+    await expect(store.finishSetup(defaults, vi.fn().mockResolvedValue(undefined))).rejects.toThrow(/does not delete/)
+    expect(invoke).not.toHaveBeenCalledWith("change_machine_configuration", expect.anything())
     store.dispose()
   })
 

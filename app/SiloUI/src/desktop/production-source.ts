@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { useSyncExternalStore } from "react"
 import { z } from "zod"
+import { showOperationFailure } from "@/lib/operation-toast"
 
 import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
@@ -178,6 +179,11 @@ export interface ProductionSnapshot {
   error: string | null
 }
 
+/** The runtime's "configuration is updating" sentinel, bare or wrapped by a remote bridge. */
+export function isUpdateInProgress(cause: unknown) {
+  return errorMessage(cause).includes("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+}
+
 export function createProductionSource(native: ProductionBridge = bridge) {
   let snapshot: ProductionSnapshot = {
     setupQueue: ["workspaceRun", "workspaceVerify", "identityRun", "identityVerify", "githubRun", "githubVerify", "completion"].map((id) => ({ id: id as SetupQueueItemID, status: "idle" })),
@@ -215,9 +221,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let network: NetworkState | undefined
   let networkError: string | null = null
   let networkRequest: Promise<void> | undefined
+  let networkDirty = false
   let networkRevision = 0
   let operationQueue: OperationQueue | undefined
   let operationQueueRequest: Promise<void> | undefined
+  let operationQueueDirty = false
   let disposed = false
   let activeRefreshes = 0
   let refreshSequence = 0
@@ -276,7 +284,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const current = remoteComputers.find(item => item.id === computer.id)
         if (!current) return []
         if (result.status === "fulfilled" && current.connected) return result.value.workspaces
-        const unsupported = current.connected && result.status === "rejected" && errorMessage(result.reason).includes("does not support that remote operation")
+        const unsupported = current.connected && result.status === "rejected" && isUnsupportedRemote(result.reason)
         const message = unsupported
           ? `Update Silo on ${computer.name} to manage SSH access. That version does not support remote SSH management.`
           : `SSH status on ${computer.name} is unavailable. Reconnect and refresh before changing access.`
@@ -287,10 +295,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return sshRequest
   }
 
+  // An event that arrives during a read marks it dirty so one re-read follows
+  // instead of the change being lost behind the in-flight result.
   function refreshNetwork(): Promise<void> {
-    if (networkRequest) return networkRequest
-    const revision = networkRevision
-    networkRequest = (async () => {
+    if (networkRequest) { networkDirty = true; return networkRequest }
+    networkRequest = (async () => { do {
+      networkDirty = false
+      const revision = networkRevision
       try {
         const local = networkStateShape.parse(await native.invoke("read_network_state"))
         const remotes = await Promise.all(remoteComputers.map(async computer => {
@@ -302,19 +313,20 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           }
         }))
         const result = { workspaces: [...local.workspaces, ...remotes.flat()] }
-        if (revision !== networkRevision || disposed) return
+        if (revision !== networkRevision || disposed) continue
         network = result; networkError = null
       } catch {
-        if (revision !== networkRevision || disposed) return
+        if (revision !== networkRevision || disposed) continue
         networkError = "Could not check network services."
       }
       publish({ ...snapshot })
-    })().finally(() => { networkRequest = undefined })
+    } while (networkDirty && !disposed) })().finally(() => { networkRequest = undefined })
     return networkRequest
   }
   function refreshOperationQueue(): Promise<void> {
-    if (operationQueueRequest) return operationQueueRequest
-    operationQueueRequest = (async () => {
+    if (operationQueueRequest) { operationQueueDirty = true; return operationQueueRequest }
+    operationQueueRequest = (async () => { do {
+      operationQueueDirty = false
       try {
         const next = operationQueueSchema.parse(await native.invoke("read_operation_queue"))
         if (disposed) return
@@ -323,7 +335,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       } catch {
         // A read failure leaves the last queue in place; a later event refetches.
       }
-    })().finally(() => { operationQueueRequest = undefined })
+    } while (operationQueueDirty && !disposed) })().finally(() => { operationQueueRequest = undefined })
     return operationQueueRequest
   }
 
@@ -470,7 +482,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
             if (revision === remotePushRevisions.get(computer.id)) remoteSnapshots.set(computer.id, source)
             return { ...computer, connected: true, lastSeen: Date.now() }
           } catch (cause) {
-            if (errorMessage(cause).includes("SILO_SANDBOX_UPDATE_IN_PROGRESS")) return { ...computer, connected: true, busy: true, lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
+            if (isUpdateInProgress(cause)) return { ...computer, connected: true, busy: true, lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
             return { ...computer, connected: false, error: errorMessage(cause), lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
           }
         }))
@@ -489,8 +501,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function unavailableLocalSource(message: string): Promise<ApplicationSource | null> {
-    if (remoteComputers.length === 0) return null
+    // A transient read failure never replaces a loaded application with the
+    // full-screen error: keep the previous source, marked stale with the error.
     if (!snapshot.source) {
+      if (remoteComputers.length === 0) return null
       if (!remoteComputers.some(computer => computer.connected && remoteSnapshots.has(computer.id))) return null
       try { return parseApplicationSource(await native.invoke("read_application_shell", { error: message })) }
       catch { return null }
@@ -526,7 +540,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         source = await unavailableLocalSource(error)
       }
     } else {
-      configurationUpdating = errorMessage(applicationResult.reason) === "SILO_SANDBOX_UPDATE_IN_PROGRESS"
+      configurationUpdating = isUpdateInProgress(applicationResult.reason)
       if (!configurationUpdating) {
         error = `Silo could not read application state: ${errorMessage(applicationResult.reason)}`
         source = await unavailableLocalSource(error)
@@ -559,8 +573,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     try {
       unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
       unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
-      unlisten.push(await native.listen("silo://application-state-changed", () => { void refresh() }))
-      unlisten.push(await native.listen("desktop:status-opened", () => { void refresh() }))
+      unlisten.push(await native.listen("silo://application-state-changed", refreshFromEvent))
+      unlisten.push(await native.listen("desktop:status-opened", refreshFromEvent))
+      // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
+      // so setup and sandbox configuration must be accepted again.
+      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => { if (event?.payload === false) acceptingSetup = true }))
       unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
         const parsed = siloProgressEventSchema.safeParse(event?.payload)
         if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
@@ -576,14 +593,47 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       throw new Error(error)
     }
     window.addEventListener("focus", onWindowFocus)
+    document.addEventListener("visibilitychange", onVisibilityChange)
     await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
     if (disposed) return
     remoteTimer = setInterval(() => {
-      void refreshComputers()
-      // Repository changes inside a VM do not emit application events. Skip
-      // hidden windows and let slow reads finish before starting another poll.
-      if (document.visibilityState !== "hidden" && activeRefreshes === 0) void refresh()
+      // Repository changes inside a VM do not emit application events. A hidden
+      // window (the closed main window, the unopened status panel) does no polling,
+      // including remote SSH snapshots; slow reads finish before another poll, and
+      // each refresh reads remote computers once when it completes.
+      if (document.visibilityState === "hidden" || activeRefreshes > 0) return
+      void refresh()
     }, 10_000)
+  }
+
+  function onVisibilityChange() {
+    if (document.visibilityState !== "hidden" && activeRefreshes === 0) void refresh()
+  }
+
+  // Native state events arrive in bursts. Run at most one refresh at a time and
+  // one trailing refresh for everything that arrived while it was running.
+  let eventRefresh: Promise<void> | undefined
+  let eventRefreshAgain = false
+  function refreshFromEvent() {
+    if (eventRefresh) { eventRefreshAgain = true; return }
+    eventRefresh = (async () => {
+      do { eventRefreshAgain = false; await refresh() } while (eventRefreshAgain && !disposed)
+    })().finally(() => { eventRefresh = undefined })
+  }
+
+  // Remote VM ports are opened through the remote bridge; the local command
+  // never handles `silo-remote:` targets.
+  function openNetworkPort(workspace: string, port: number) {
+    const remote = parseRemoteWorkspaceTarget(workspace)
+    return native.invoke<void>(remote ? "remote_open_network_port" : "open_network_port", remote ? { ...remote, port } : { workspace, port })
+  }
+
+  // Once the application has loaded, `snapshot.error` is no longer rendered, so an
+  // action failure becomes a keyed failure notice (a repeat replaces the earlier one,
+  // and it is mirrored to the system while Silo is in the background).
+  function reportActionFailure(key: string, title: string, message: string) {
+    if (!snapshot.source) { publish({ ...snapshot, error: message }); return }
+    showOperationFailure(key, title, { description: message })
   }
 
   function reportUnavailable(message: string) {
@@ -652,9 +702,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       })
       .catch((cause) => {
         if (!remote) { setWorkspaceFailure(action, name, cause); return }
-        const message = errorMessage(cause)
-        if (lifecycle) remoteComputers = remoteComputers.map(computer => computer.id === remote.hostId ? { ...computer, connected: false, error: message } : computer)
-        publish({ ...snapshot, error: message })
+        // One VM's failure (e.g. insufficient memory) belongs on that VM's row. Whether
+        // the computer itself is reachable is decided by the next transport check.
+        if (lifecycle) { setWorkspaceFailure(action, name, cause); void refreshComputers(); return }
+        reportActionFailure(key, `Could not ${action.replace(/-/g, " ")}`, errorMessage(cause))
       })
       .finally(() => {
         pendingWorkspaceActions.delete(key)
@@ -826,6 +877,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     // the configuration already matches what was committed but an earlier attempt did
     // not complete, resume that attempt instead of sending an empty change set.
     const changes = machinesUnchanged ? [] : deriveMachineChanges(committedMachines(), request.machineConfiguration.machines)
+    const replaced = replacesEveryMachine(request)
+    if (replaced) return Promise.reject(replaced)
     const machineJob = machinesUnchanged
       ? Promise.resolve(current)
       : configureMachines(request.machineConfiguration, changes.length > 0 ? { kind: "changes", changes } : { kind: "retry" })
@@ -862,10 +915,22 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return promise
   }
 
+  // Onboarding can mount before the real configuration loads and seed its draft
+  // from defaults. A draft that keeps none of the existing VMs is therefore never
+  // treated as a request to delete them all; single removals remain explicit edits.
+  function replacesEveryMachine(request: OnboardingCompletionRequest) {
+    const committed = committedMachines()
+    if (committed.length === 0) return null
+    const kept = new Set(request.machineConfiguration.machines.map(({ id }) => id))
+    if (committed.some(({ id }) => kept.has(id))) return null
+    return new Error(`Setup does not delete existing VMs (${committed.map(({ name }) => name).join(", ")}). Reopen Silo to load them, or delete them from Silo after setup. No VM changed.`)
+  }
+
   function finishSetup(request: OnboardingCompletionRequest, markComplete: () => Promise<void>) {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
     const preceding = submitSetupStep("github", request)
     void preceding.catch(() => {})
+    if (replacesEveryMachine(request)) return preceding
     return enqueueSetup(["completion"], async () => { await preceding; await markComplete() })
   }
 
@@ -1067,10 +1132,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     refreshNetwork,
     saveNetworkPort: request => changeNetwork("save_network_port", { ...request }),
     removeNetworkPort: (workspace, port) => changeNetwork("remove_network_port", { workspace, port }),
-    openNetworkPort: (workspace, port) => {
-      const remote = parseRemoteWorkspaceTarget(workspace)
-      return native.invoke<void>(remote ? "remote_open_network_port" : "open_network_port", remote ? { ...remote, port } : { workspace, port })
-    },
+    openNetworkPort,
     authorizeComputer: address => native.invoke<void>("remote_authorize_ssh", { address }),
     setupComputerKey: address => native.invoke<void>("remote_setup_ssh_key", { address }),
     listWorkspaceDirectory: async (workspace, path, offset, snapshotId) => directoryPageShape.parse(await native.invoke("list_workspace_directory", { workspace, path, offset, snapshotId: snapshotId ?? null })),
@@ -1162,7 +1224,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     dismissWorkspaceError: (name) => workspaceAction("dismiss-error", name),
     openDesktop: async (workspace) => {
       try { await native.invoke("open_desktop", { workspace }) }
-      catch (cause) { publish({ ...snapshot, error: errorMessage(cause) }) }
+      catch (cause) { reportActionFailure(`open-desktop:${workspace}`, "Could not open the desktop", errorMessage(cause)) }
     },
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
@@ -1173,14 +1235,14 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     reopenGitHubAuthorization: () => {
       const sequence = githubMutationSequence
       void native.invoke("reopen_github_authorization").catch((cause: unknown) => {
-        if (sequence === githubMutationSequence) publish({ ...snapshot, error: `Could not reopen GitHub authorization: ${errorMessage(cause)}` })
+        if (sequence === githubMutationSequence) reportActionFailure("github-reopen-authorization", "Could not reopen GitHub authorization", errorMessage(cause))
       })
     },
     manageGitHubRepositories: () => {
       refreshRepositoriesOnReturn = true
       void native.invoke("manage_github_repositories").catch((cause: unknown) => {
         refreshRepositoriesOnReturn = false
-        publish({ ...snapshot, error: `Could not open GitHub repository access: ${errorMessage(cause)}` })
+        reportActionFailure("github-manage-repositories", "Could not open GitHub repository access", errorMessage(cause))
       })
     },
     disconnectGitHub: () => { void githubMutation("disconnect_github").catch(() => {}) },
@@ -1276,7 +1338,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     quit: () => { void native.invoke("quit_app") },
     refresh: () => { void refresh() },
     openEditor: (name, path) => workspaceAction("open-editor", name, { path }),
-    openSite: (workspace, port) => { void native.invoke("open_network_port", { workspace, port }).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
+    openSite: (workspace, port) => { void Promise.resolve().then(() => openNetworkPort(workspace, port)).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
     dismissRepositoryPush: (workspace, repositoryPath) => {
       void native.invoke("dismiss_repository_push", { workspace, repositoryPath }).then(() => {
         ++refreshSequence
@@ -1312,7 +1374,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); listeners.clear() },
+    dispose() { pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
   }
 }
 

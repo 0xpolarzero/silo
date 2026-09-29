@@ -5,8 +5,11 @@ import { describe, expect, it, vi } from "vitest"
 
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { BackupState } from "@/features/application/model/backup-source"
-import { createProductionSource, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
+import { createProductionSource, isUpdateInProgress, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
 import { siloProgressEventSchema } from "@/contracts/silo"
+
+const toasts = vi.hoisted(() => ({ showOperationFailure: vi.fn() }))
+vi.mock("@/lib/operation-toast", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/operation-toast")>(), showOperationFailure: toasts.showOperationFailure }))
 
 const source = applicationSourceForScenario("running")
 const backup: BackupState = {
@@ -188,6 +191,25 @@ describe("production application bridge", () => {
     } finally { store.dispose() }
   })
 
+  it("records a failed remote lifecycle action on the VM without marking its computer offline", async () => {
+    const mock = native()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+      if (command === "remote_host_snapshot") return structuredClone(source)
+      if (command === "remote_workspace_action") throw new Error("insufficient memory")
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    const target = `silo-remote:office:${source.workspaces[0].machine.id}`
+    try {
+      await store.initialize()
+      store.applicationActions.startWorkspace!(target)
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.lifecycleFailure).toContain("insufficient memory"))
+      const row = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
+      expect(row).toMatchObject({ lifecycleFailureAction: "start", computer: { connected: true } })
+    } finally { store.dispose() }
+  })
+
   it("routes checkpoint actions through the owning remote computer", async () => {
     const mock = native()
     const store = createProductionSource(mock.bridge)
@@ -199,6 +221,77 @@ describe("production application bridge", () => {
     expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "restore", checkpointId: "point-id" })
     expect(mock.invoke.mock.calls.some(([command]) => ["create_checkpoint", "fork_checkpoint", "restore_checkpoint"].includes(command as string))).toBe(false)
     store.dispose()
+  })
+
+  it("recognizes the updating sentinel whether bare or wrapped by a remote bridge", () => {
+    expect(isUpdateInProgress(new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS"))).toBe(true)
+    expect(isUpdateInProgress("remote request failed: SILO_SANDBOX_UPDATE_IN_PROGRESS")).toBe(true)
+    expect(isUpdateInProgress(new Error("runtime unavailable"))).toBe(false)
+  })
+
+  it("re-reads the operation queue once when it changes during a read", async () => {
+    const mock = native()
+    const handlers = new Map<string, () => void>()
+    let finishRead: ((value: unknown) => void) | undefined
+    let queueReads = 0
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "read_operation_queue") {
+        queueReads++
+        if (queueReads === 2) return new Promise(resolve => { finishRead = resolve })
+        return { running: [], waiting: [] }
+      }
+      return mock.invoke(command, args)
+    })
+    const listen = vi.fn(async (name: string, handler: () => void) => { handlers.set(name, handler); return () => { handlers.delete(name) } })
+    const store = createProductionSource({ invoke, listen } as unknown as ProductionBridge)
+    try {
+      await store.initialize()
+      const reads = queueReads
+      handlers.get("silo://operation-queue-changed")?.()
+      handlers.get("silo://operation-queue-changed")?.()
+      handlers.get("silo://operation-queue-changed")?.()
+      await vi.waitFor(() => expect(finishRead).toBeDefined())
+      finishRead!({ running: [], waiting: [] })
+      await vi.waitFor(() => expect(queueReads).toBe(reads + 2))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(queueReads).toBe(reads + 2)
+    } finally { store.dispose() }
+  })
+
+  it("polls remote computers once per visible tick, pauses while hidden, and coalesces event bursts", async () => {
+    vi.useFakeTimers()
+    const mock = native()
+    const handlers = new Map<string, () => void>()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "remote_host_list" ? [] : mock.invoke(command, args))
+    const listen = vi.fn(async (name: string, handler: () => void) => { handlers.set(name, handler); return () => { handlers.delete(name) } })
+    const store = createProductionSource({ invoke, listen } as unknown as ProductionBridge)
+    const count = (name: string) => invoke.mock.calls.filter(([command]) => command === name).length
+    try {
+      await store.initialize()
+      await vi.advanceTimersByTimeAsync(0)
+      let hosts = count("remote_host_list")
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(count("remote_host_list")).toBe(hosts + 1)
+      hosts = count("remote_host_list")
+      const reads = count("read_application_state")
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(count("remote_host_list")).toBe(hosts)
+      expect(count("read_application_state")).toBe(reads)
+      visibility.mockRestore()
+      document.dispatchEvent(new Event("visibilitychange"))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(count("read_application_state")).toBe(reads + 1)
+      expect(count("remote_host_list")).toBe(hosts + 1)
+      const beforeBurst = count("read_application_state")
+      for (let index = 0; index < 5; index++) handlers.get("silo://application-state-changed")?.()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(count("read_application_state")).toBe(beforeBurst + 2)
+    } finally {
+      store.dispose()
+      vi.restoreAllMocks()
+      vi.useRealTimers()
+    }
   })
 
   it("refreshes repository rows while visible without overlapping slow reads and stops on disposal", async () => {
@@ -278,8 +371,10 @@ describe("production application bridge", () => {
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
     await store.initialize()
     const before = store.getSnapshot().source?.workspaces
+    toasts.showOperationFailure.mockClear()
     await store.applicationActions.openDesktop!("dev")
-    expect(store.getSnapshot().error).toContain("Owning computer unavailable")
+    expect(toasts.showOperationFailure).toHaveBeenCalledWith("open-desktop:dev", "Could not open the desktop", { description: expect.stringContaining("Owning computer unavailable") })
+    expect(store.getSnapshot().error).toBeNull()
     expect(store.getSnapshot().source?.workspaces).toEqual(before)
     store.dispose()
   })
@@ -360,7 +455,9 @@ describe("production application bridge", () => {
     await store.applicationActions.saveNetworkPort?.({workspace:"dev",port:3000,hostPort:null,scheme:"http"})
     expect(invoke).toHaveBeenCalledWith("save_network_port",{workspace:"dev",port:3000,hostPort:null,scheme:"http"})
     store.statusActions.openSite("dev",3000)
-    expect(invoke).toHaveBeenCalledWith("open_network_port",{workspace:"dev",port:3000})
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("open_network_port",{workspace:"dev",port:3000}))
+    store.statusActions.openSite("silo-remote:office:vm-1",3000)
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_open_network_port",{hostId:"office",vmId:"vm-1",port:3000}))
     store.dispose()
   })
 
@@ -1073,7 +1170,7 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("clears stale application state when an authoritative refresh fails", async () => {
+  it("keeps the loaded application, marked stale, when an authoritative refresh fails", async () => {
     const mock = native()
     const store = createProductionSource(mock.bridge)
     await store.initialize()
@@ -1084,8 +1181,10 @@ describe("production application bridge", () => {
       return undefined
     })
     await store.refresh()
-    expect(store.getSnapshot().source).toBeNull()
-    expect(store.getSnapshot().error).toBe("Silo could not read application state: runtime state unavailable")
+    const message = "Silo could not read application state: runtime state unavailable"
+    expect(store.getSnapshot().source?.vmOperationsUnavailable).toBe(message)
+    expect(store.getSnapshot().source?.workspaces.every(({ freshness, attention }) => freshness === "stale" && attention?.message === message)).toBe(true)
+    expect(store.getSnapshot().error).toBe(message)
     store.dispose()
   })
 
