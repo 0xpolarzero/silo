@@ -261,6 +261,23 @@ fn snapshot_ready(
     checkpoint_id: &str,
     scope: &str,
 ) -> Result<(), RuntimeError> {
+    if snapshot_available(runner, paths, source, checkpoint_id, scope)? {
+        Ok(())
+    } else {
+        Err(error(
+            "The checkpoint is absent or incomplete in the runtime. No workspace state was changed.",
+        ))
+    }
+}
+
+/// Whether the runtime lists the member as ready. Errors mean the list itself failed.
+fn snapshot_available(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    source: &str,
+    checkpoint_id: &str,
+    scope: &str,
+) -> Result<bool, RuntimeError> {
     let output = runner.run(
         paths,
         &[
@@ -276,18 +293,12 @@ fn snapshot_ready(
     // A full snapshot contains the disks too, so it also satisfies a disk-only restore
     // (for example an imported checkpoint export, which always restores disks only).
     let scope_matches = |entry: &Value| entry["scope"] == scope || (scope == "disk" && entry["scope"] == "full");
-    if entries.iter().any(|entry| {
+    Ok(entries.iter().any(|entry| {
         entry["group"] == source
             && entry["name"] == checkpoint_id
             && scope_matches(entry)
             && entry["availability"] == "ready"
-    }) {
-        Ok(())
-    } else {
-        Err(error(
-            "The checkpoint is absent or incomplete in the runtime. No workspace state was changed.",
-        ))
-    }
+    }))
 }
 
 fn verify_snapshot(
@@ -537,15 +548,15 @@ fn capture_with(
     let snapshot_group = ensure_snapshot_group(paths, id, machine.name())?;
     record.snapshot_group = Some(snapshot_group.clone());
     if let Some(interrupted) = record.inflight_checkpoint.clone() {
-        if snapshot_ready(
+        // Keep the interrupted entry while the runtime cannot answer; drop it only when
+        // the list succeeds and the member is absent or incomplete.
+        if snapshot_available(
             runner,
             paths,
             &snapshot_group,
             &interrupted.id,
             &interrupted.scope,
-        )
-        .is_ok()
-        {
+        )? {
             record.checkpoints.insert(0, interrupted);
         }
         record.inflight_checkpoint = None;
@@ -594,8 +605,7 @@ fn capture_with(
                     stage: "Verification failed".into(),
                     error: Some(failure.to_string()),
                 });
-                save(paths, id, &record)?;
-                return Err(failure);
+                return Err(save_failure(paths, id, &record, failure));
             }
             record.checkpoints.insert(0, new_checkpoint);
             record.inflight_checkpoint = None;
@@ -609,8 +619,7 @@ fn capture_with(
                 stage: "Checkpoint failed".into(),
                 error: Some(failure.to_string()),
             });
-            save(paths, id, &record)?;
-            Err(failure)
+            Err(save_failure(paths, id, &record, failure))
         }
     }
 }
@@ -1092,8 +1101,7 @@ pub(super) fn start_pending(
                 stage: "Start failed".into(),
                 error: Some(failure.to_string()),
             });
-            save(paths, machine.id(), &record)?;
-            Err(failure)
+            Err(save_failure(paths, machine.id(), &record, failure))
         }
     }
 }
@@ -1306,7 +1314,88 @@ pub async fn fork_checkpoint(
     .map_err(|_| "Checkpoint fork worker failed.".to_string())?
 }
 
+/// Persist a failure record without letting a save failure replace the real error.
+fn save_failure(
+    paths: &RuntimePaths,
+    id: &str,
+    record: &Record,
+    failure: RuntimeError,
+) -> RuntimeError {
+    if save(paths, id, record).is_ok() {
+        return failure;
+    }
+    let context = " Checkpoint history could not be updated.";
+    match failure {
+        RuntimeError::Invalid(message) => RuntimeError::Invalid(format!("{message}{context}")),
+        RuntimeError::Unavailable(message) => {
+            RuntimeError::Unavailable(format!("{message}{context}"))
+        }
+        RuntimeError::Malformed(message) => RuntimeError::Malformed(format!("{message}{context}")),
+        other => other,
+    }
+}
+
+/// Leave the `capturing` phase after a failure that happened before the recovery
+/// checkpoint existed. The original VM is untouched, so the journal is cleared unless
+/// the VM stays paused (a retry then continues from the paused VM).
+fn abandon_capture(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    record: &mut Record,
+    vm_name: &str,
+    assume_paused: bool,
+    failure: RuntimeError,
+) -> RuntimeError {
+    let paused = inspect_workspace(runner, paths, vm_name)
+        .map(|inspected| inspected.status == "Paused")
+        .unwrap_or(assume_paused);
+    if !paused
+        || runner
+            .run(paths, &["resume".into(), vm_name.into()], MUTATION_TIMEOUT)
+            .is_ok()
+    {
+        record.restore_journal = None;
+    }
+    record.checkpoint_operation = Some(Operation {
+        kind: "restore".into(),
+        status: "failed".into(),
+        stage: "Recovery checkpoint failed".into(),
+        error: Some(failure.to_string()),
+    });
+    save_failure(paths, workspace_id, record, failure)
+}
+
 fn restore_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    checkpoint_id: &str,
+) -> Result<(), RuntimeError> {
+    restore_steps(runner, paths, workspace_id, checkpoint_id).map_err(|failure| {
+        // Every error after the journal save must leave a failed status with the
+        // real cause, not a "running" operation later read as an interrupted one.
+        let Ok(mut record) = load(paths, workspace_id) else {
+            return failure;
+        };
+        let Some(operation) = record
+            .checkpoint_operation
+            .as_ref()
+            .filter(|operation| operation.kind == "restore" && operation.status == "running")
+        else {
+            return failure;
+        };
+        record.checkpoint_operation = Some(Operation {
+            kind: "restore".into(),
+            status: "failed".into(),
+            stage: operation.stage.clone(),
+            error: Some(failure.to_string()),
+        });
+        save_failure(paths, workspace_id, &record, failure)
+    })
+}
+
+fn restore_steps(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     workspace_id: &str,
@@ -1413,7 +1502,12 @@ fn restore_with(
         .clone();
     current_network_args(&inspected.config)?;
     let prior_running = inspected.status == "Running";
-    if !prior_running && !matches!(inspected.status.as_str(), "Paused" | "Stopped" | "Created") {
+    // A retry of an unfinished Restore also accepts a crashed VM: its disks are intact.
+    let retrying = record.restore_journal.is_some();
+    if !prior_running
+        && !matches!(inspected.status.as_str(), "Paused" | "Stopped" | "Created")
+        && !(retrying && inspected.status == "Crashed")
+    {
         return Err(RuntimeError::Invalid(
             "Wait until the VM is running or stopped before Restore.".into(),
         ));
@@ -1450,8 +1544,18 @@ fn restore_with(
     }
     let mut journal = record.restore_journal.clone().unwrap();
     if journal.phase == "capturing" {
+        if journal.prior_running
+            && matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed")
+        {
+            // The VM stopped before its memory was captured (for example Silo or the
+            // host closed mid-capture). Only its disks remain, so secure those instead.
+            journal.prior_running = false;
+            journal.recovery_checkpoint.scope = "disk".into();
+            record.restore_journal = Some(journal.clone());
+            save(paths, workspace_id, &record)?;
+        }
         if journal.prior_running && inspected.status == "Running" {
-            runner.run(
+            if let Err(failure) = runner.run(
                 paths,
                 &[
                     "pause".into(),
@@ -1460,13 +1564,29 @@ fn restore_with(
                     "required".into(),
                 ],
                 MUTATION_TIMEOUT,
-            )?;
+            ) {
+                return Err(abandon_capture(
+                    runner,
+                    paths,
+                    workspace_id,
+                    &mut record,
+                    machine.name(),
+                    false,
+                    failure,
+                ));
+            }
         }
         if journal.prior_running
             && inspect_workspace(runner, paths, machine.name())?.status != "Paused"
         {
-            return Err(error(
-                "The VM did not remain paused. No replacement was made.",
+            return Err(abandon_capture(
+                runner,
+                paths,
+                workspace_id,
+                &mut record,
+                machine.name(),
+                false,
+                error("The VM did not remain paused. No replacement was made."),
             ));
         }
         let mut args = vec![
@@ -1488,28 +1608,15 @@ fn restore_with(
                 verify_snapshot(runner, paths, &lineage_group, &journal.recovery_checkpoint)
             });
         if let Err(failure) = capture {
-            if journal.prior_running {
-                if runner
-                    .run(
-                        paths,
-                        &["resume".into(), machine.name().into()],
-                        MUTATION_TIMEOUT,
-                    )
-                    .is_ok()
-                {
-                    record.restore_journal = None;
-                }
-            } else {
-                record.restore_journal = None;
-            }
-            record.checkpoint_operation = Some(Operation {
-                kind: "restore".into(),
-                status: "failed".into(),
-                stage: "Recovery checkpoint failed".into(),
-                error: Some(failure.to_string()),
-            });
-            save(paths, workspace_id, &record)?;
-            return Err(failure);
+            return Err(abandon_capture(
+                runner,
+                paths,
+                workspace_id,
+                &mut record,
+                machine.name(),
+                journal.prior_running,
+                failure,
+            ));
         }
         if !record
             .checkpoints
@@ -2725,5 +2832,245 @@ mod tests {
         let calls = runner.calls.lock().unwrap();
         let remove = calls.iter().position(|args| args[0] == "remove").unwrap();
         assert!(calls[remove + 1..].iter().all(|args| args[0] == "list"));
+    }
+
+    struct JournalRunner {
+        state: Mutex<&'static str>,
+        fail: &'static str,
+        listed: bool,
+        recovery: Mutex<Option<String>>,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+    impl RuntimeRunner for JournalRunner {
+        fn run(
+            &self,
+            _paths: &RuntimePaths,
+            args: &[String],
+            _timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            let command = if args[0] == "snapshot" { args[1].as_str() } else { args[0].as_str() };
+            if command == self.fail {
+                return Err(RuntimeError::Unavailable(format!("{} failed on this host.", self.fail)));
+            }
+            let stdout = match command {
+                "inspect" => serde_json::json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{
+                    "labels":{"silo.managed":"true","silo.machine-id":ID},
+                    "mounts":[{"guest":"/workspace","type":"Owned","storage":{"kind":"disk","capacity_mib":1024}}],
+                    "network":{"policy":{"default_egress":"deny","default_ingress":"allow","rules":[]}}
+                }}).to_string(),
+                "list" if args[0] == "snapshot" => {
+                    let full = self.calls.lock().unwrap().iter().any(|call| call.iter().any(|arg| arg == "--full"));
+                    let mut entries = vec![serde_json::json!({"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"})];
+                    if let Some(id) = self.recovery.lock().unwrap().as_ref() {
+                        let scope = if full { "full" } else { "disk" };
+                        entries.push(serde_json::json!({"group":"dev","name":id,"scope":scope,"availability":"ready"}));
+                    }
+                    serde_json::to_string(&entries).unwrap()
+                }
+                "create" => {
+                    *self.recovery.lock().unwrap() = Some(args[2].clone());
+                    String::new()
+                }
+                "pause" => {
+                    *self.state.lock().unwrap() = "Paused";
+                    String::new()
+                }
+                "resume" => {
+                    *self.state.lock().unwrap() = "Running";
+                    String::new()
+                }
+                "stop" => {
+                    *self.state.lock().unwrap() = "Stopped";
+                    String::new()
+                }
+                "remove" => {
+                    *self.state.lock().unwrap() = "Removed";
+                    String::new()
+                }
+                "list" if self.listed => r#"[{"name":"dev"}]"#.into(),
+                "list" => "[]".into(),
+                _ => String::new(),
+            };
+            Ok(CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    fn journal_runner(state: &'static str, fail: &'static str) -> JournalRunner {
+        JournalRunner {
+            state: Mutex::new(state),
+            fail,
+            listed: false,
+            recovery: Mutex::new(None),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn restore_fixture(directory: &tempfile::TempDir, journal: Option<(&str, bool)>) -> RuntimePaths {
+        let paths = paths(directory);
+        write_metadata(
+            &paths.metadata,
+            &MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine()],
+            },
+        )
+        .unwrap();
+        let mut record = Record::default();
+        record.checkpoints.push(Checkpoint {
+            id: "c000000000000000000000000000000".into(),
+            native_id: None,
+            name: "Selected".into(),
+            created_at: 1,
+            scope: "full".into(),
+            reason: "manual".into(),
+        });
+        if let Some((phase, prior_running)) = journal {
+            record.restore_journal = Some(RestoreJournal {
+                target_checkpoint_id: "c000000000000000000000000000000".into(),
+                recovery_checkpoint: Checkpoint {
+                    id: "c111111111111111111111111111111".into(),
+                    native_id: None,
+                    name: "Before restore".into(),
+                    created_at: 2,
+                    scope: if prior_running { "full" } else { "disk" }.into(),
+                    reason: "before-restore".into(),
+                },
+                prior_running,
+                phase: phase.into(),
+            });
+            record.checkpoint_operation = Some(Operation {
+                kind: "restore".into(),
+                status: "running".into(),
+                stage: "Creating recovery checkpoint".into(),
+                error: None,
+            });
+        }
+        save(&paths, ID, &record).unwrap();
+        paths
+    }
+
+    #[test]
+    fn capturing_journal_for_a_stopped_vm_secures_a_disk_recovery_and_finishes() {
+        for status in ["Stopped", "Created", "Crashed"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = restore_fixture(&directory, Some(("capturing", true)));
+            let runner = journal_runner(status, "");
+            restore_with(&runner, &paths, ID, "c000000000000000000000000000000").unwrap();
+            let calls = runner.calls.lock().unwrap();
+            let create = calls
+                .iter()
+                .find(|call| call[0] == "snapshot" && call[1] == "create")
+                .unwrap();
+            assert!(!create.iter().any(|arg| arg == "--full"), "{status}: {create:?}");
+            assert!(!calls.iter().any(|call| call[0] == "pause"));
+            let stored = load(&paths, ID).unwrap();
+            assert!(stored.restore_journal.is_none());
+            assert!(stored.pending_checkpoint_restore.is_some());
+            let recovery = stored
+                .checkpoints
+                .iter()
+                .find(|checkpoint| checkpoint.reason == "before-restore")
+                .unwrap();
+            assert_eq!(recovery.scope, "disk");
+        }
+    }
+
+    #[test]
+    fn failed_pause_clears_the_capturing_journal_and_records_the_real_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let runner = journal_runner("Running", "pause");
+        let failure = restore_with(&runner, &paths, ID, "c000000000000000000000000000000")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(failure, "pause failed on this host.");
+        let stored = load(&paths, ID).unwrap();
+        assert!(stored.restore_journal.is_none());
+        let operation = stored.checkpoint_operation.unwrap();
+        assert_eq!(operation.status, "failed");
+        assert_eq!(operation.error.as_deref(), Some("pause failed on this host."));
+        assert!(!needs_explicit_start(&paths, ID).unwrap());
+    }
+
+    #[test]
+    fn failed_capture_of_a_stopped_vm_leaves_no_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("capturing", true)));
+        let runner = journal_runner("Stopped", "create");
+        restore_with(&runner, &paths, ID, "c000000000000000000000000000000").unwrap_err();
+        let stored = load(&paths, ID).unwrap();
+        assert!(stored.restore_journal.is_none());
+        assert_eq!(stored.checkpoint_operation.unwrap().status, "failed");
+    }
+
+    #[test]
+    fn secured_restore_errors_persist_a_failed_status_with_the_real_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("secured", true)));
+        let mut runner = journal_runner("Running", "");
+        runner.listed = true;
+        let failure = restore_with(&runner, &paths, ID, "c000000000000000000000000000000")
+            .unwrap_err()
+            .to_string();
+        assert!(failure.contains("resumed after its recovery checkpoint"), "{failure}");
+        let operation = load(&paths, ID).unwrap().checkpoint_operation.unwrap();
+        assert_eq!(operation.status, "failed");
+        assert_eq!(operation.error.as_deref(), Some(failure.as_str()));
+    }
+
+    #[test]
+    fn crashed_vm_can_retry_a_secured_restore() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("secured", true)));
+        let mut runner = journal_runner("Crashed", "");
+        runner.listed = true;
+        restore_with(&runner, &paths, ID, "c000000000000000000000000000000").unwrap();
+        let stored = load(&paths, ID).unwrap();
+        assert!(stored.restore_journal.is_none());
+        assert!(stored.pending_checkpoint_restore.is_some());
+    }
+
+    #[test]
+    fn interrupted_checkpoint_is_kept_when_the_snapshot_list_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let mut record = load(&paths, ID).unwrap();
+        record.snapshot_group = Some("dev".into());
+        record.inflight_checkpoint = Some(Checkpoint {
+            id: "c222222222222222222222222222222".into(),
+            native_id: None,
+            name: "Interrupted".into(),
+            created_at: 3,
+            scope: "full".into(),
+            reason: "manual".into(),
+        });
+        save(&paths, ID, &record).unwrap();
+        let runner = journal_runner("Running", "list");
+        capture_with(&runner, &paths, ID, "Next", "manual").unwrap_err();
+        let stored = load(&paths, ID).unwrap();
+        assert_eq!(
+            stored.inflight_checkpoint.map(|checkpoint| checkpoint.id).as_deref(),
+            Some("c222222222222222222222222222222")
+        );
+    }
+
+    #[test]
+    fn failure_record_save_errors_keep_the_original_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::write(directory.path().join("checkpoints"), b"not a directory").unwrap();
+        let failure = save_failure(
+            &paths,
+            ID,
+            &Record::default(),
+            RuntimeError::Unavailable("No space left on device.".into()),
+        )
+        .to_string();
+        assert!(failure.starts_with("No space left on device."), "{failure}");
+        assert!(failure.contains("could not be updated"));
     }
 }
