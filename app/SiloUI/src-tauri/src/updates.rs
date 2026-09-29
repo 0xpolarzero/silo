@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Mutex, RwLock, RwLockReadGuard},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex, RwLock, RwLockReadGuard,
+    },
     time::{Duration, SystemTime},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -16,11 +19,21 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 // prevents an update from overtaking a queued write, and rejects new writes while
 // installation owns the process. Readers never wait behind the installer.
 static ADMISSION: RwLock<()> = RwLock::new(());
-pub(crate) fn operation_guard() -> Result<RwLockReadGuard<'static, ()>, String> {
+/// Admitted operations, so readiness can be probed without taking any lock.
+static ADMITTED: AtomicUsize = AtomicUsize::new(0);
+pub(crate) struct AdmissionGuard(#[allow(dead_code)] RwLockReadGuard<'static, ()>);
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        ADMITTED.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+pub(crate) fn operation_guard() -> Result<AdmissionGuard, String> {
     crate::runtime::shutdown::ensure_accepting_operations()?;
-    ADMISSION
+    let guard = ADMISSION
         .try_read()
-        .map_err(|_| "Silo is installing an update. Try again after it restarts.".into())
+        .map_err(|_| "Silo is installing an update. Try again after it restarts.")?;
+    ADMITTED.fetch_add(1, Ordering::SeqCst);
+    Ok(AdmissionGuard(guard))
 }
 const RELEASE_URL: &str = "https://github.com/0xpolarzero/silo/releases/latest";
 const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -164,18 +177,24 @@ fn busy(phase: &str) -> bool {
     matches!(phase, "checking" | "downloading" | "installing")
 }
 fn ready(app: &AppHandle) -> Result<(), String> {
-    let _admission = ADMISSION
-        .try_write()
-        .map_err(|_| "Wait for active operations to finish before updating.")?;
-    crate::backup_controller::update_ready(app)?;
-    let _github = crate::github::update_guard()?;
-    let _secrets = crate::secrets::update_guard()?;
-    // Fast readiness check only: refuse if any sandbox operation is active or queued.
-    if !crate::runtime::OPERATIONS.is_idle() {
-        return Err("Wait for sandbox operations to finish before updating.".into());
+    readiness(|| {
+        crate::backup_controller::update_ready(app)?;
+        // Fast readiness check only: refuse if any sandbox operation is active or queued.
+        if !crate::runtime::OPERATIONS.is_idle() {
+            return Err("Wait for sandbox operations to finish before updating.".into());
+        }
+        crate::runtime::shutdown::ensure_accepting_operations()
+    })
+}
+/// Read-only probe for the settings card, polled every few seconds. Taking the
+/// admission write lock or the GitHub/secret operation locks here, even briefly,
+/// made concurrent operations fail as busy. Installation still takes every guard
+/// and reports the exact blocker.
+fn readiness(checks: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    if ADMITTED.load(Ordering::SeqCst) > 0 {
+        return Err("Wait for active operations to finish before updating.".into());
     }
-    crate::runtime::shutdown::ensure_accepting_operations()?;
-    Ok(())
+    checks()
 }
 pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     let path = app
@@ -241,7 +260,16 @@ pub(crate) fn focused(app: &AppHandle) {
 #[tauri::command]
 pub(crate) async fn get_update_state(app: AppHandle) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let readiness = ready(&app);
+        let installing = app
+            .state::<Controller>()
+            .state
+            .lock()
+            .map_or(true, |state| state.snapshot.phase == "installing");
+        let readiness = if installing {
+            Err("An update operation is already running.".to_string())
+        } else {
+            ready(&app)
+        };
         // Do not compete with an active runtime mutation just to refresh a settings card.
         let running = readiness.and_then(|_| {
             crate::runtime::update_recovery::running_names(&app).map_err(|_| {
@@ -628,6 +656,22 @@ mod tests {
             check_error_message(&invalid.into()),
             "The update service returned invalid release information. Try again later."
         );
+    }
+    #[test]
+    fn readiness_probe_never_rejects_concurrent_operations() {
+        // The settings card polls readiness every few seconds while an update is ready.
+        // Operations admitted during a probe must not fail as if an update were installing.
+        readiness(|| {
+            let _admitted = operation_guard().expect("a readiness probe must not block admission");
+            Ok(())
+        })
+        .unwrap();
+        let active = operation_guard().unwrap();
+        assert!(readiness(|| Ok(()))
+            .unwrap_err()
+            .contains("active operations"));
+        drop(active);
+        readiness(|| Ok(())).unwrap();
     }
     #[test]
     fn missing_preferences_enable_checks_but_corrupt_preferences_do_not() {
