@@ -10,6 +10,9 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name('package-debian-release.py')
 TOOLS = ('msb', 'git', 'git-lfs', 'git-remote-http', 'git-remote-https')
+LIBRARY = 'libkrunfw.so.5.6.1'
+TOOLS_DIR = 'usr/libexec/silo/tools'
+PREINST = Path(__file__).with_name('debian') / 'preinst'
 
 
 class DebianReleaseTests(unittest.TestCase):
@@ -26,8 +29,13 @@ class DebianReleaseTests(unittest.TestCase):
         (self.fixture / 'DEBIAN').mkdir()
         (self.fixture / 'DEBIAN/md5sums').write_text('obsolete paths')
         (self.fixture / 'DEBIAN/control').write_text('Package: silo\nVersion: 1.0.0\nArchitecture: amd64\n')
-        for name in ('silo-ui', *TOOLS):
-            path = self.fixture / 'usr/bin' / name
+        # Tauri installs the managed tools under /usr/libexec/silo/tools through
+        # tauri.linux.package.conf.json; only the app itself lands in /usr/bin.
+        (self.fixture / 'usr/bin/silo-ui').write_text('private silo-ui')
+        (self.fixture / 'usr/bin/silo-ui').chmod(0o755)
+        (self.fixture / TOOLS_DIR).mkdir(parents=True)
+        for name in (*TOOLS, LIBRARY):
+            path = self.fixture / TOOLS_DIR / name
             path.write_text(f'private {name}')
             path.chmod(0o755)
         self.built = False
@@ -42,8 +50,9 @@ class DebianReleaseTests(unittest.TestCase):
             self.assertEqual(command[1:3], ['--root-owner-group', '--build'])
             tree = Path(command[3])
             self.assertEqual({path.name for path in (tree / 'usr/bin').iterdir()}, {'silo-ui'})
-            for name in TOOLS:
-                path = tree / 'usr/lib/Silo/bin' / name
+            self.assertFalse((tree / 'usr/lib/Silo/bin').exists())
+            for name in (*TOOLS, LIBRARY):
+                path = tree / TOOLS_DIR / name
                 self.assertEqual(path.read_text(), f'private {name}')
                 self.assertEqual(path.stat().st_mode & 0o777, 0o755)
             for dependency in ('debconf', 'python3', 'pkexec'):
@@ -79,12 +88,29 @@ class DebianReleaseTests(unittest.TestCase):
         self.assertFalse(self.package.with_suffix('.rebuilt').exists())
 
     def test_missing_private_tool_leaves_original_package_and_signature_unchanged(self):
-        (self.fixture / 'usr/bin/msb').unlink()
+        (self.fixture / TOOLS_DIR / 'msb').unlink()
         with self.assertRaisesRegex(RuntimeError, 'Expected bundled executable msb'):
             self.run_package()
         self.assertFalse(self.built)
         self.assertEqual(self.package.read_bytes(), b'original package')
         self.assertEqual(self.signature.read_text(), 'original signature')
+
+    def test_missing_runtime_library_leaves_original_package_unchanged(self):
+        (self.fixture / TOOLS_DIR / LIBRARY).unlink()
+        with self.assertRaisesRegex(RuntimeError, 'libkrunfw'):
+            self.run_package()
+        self.assertFalse(self.built)
+        self.assertEqual(self.package.read_bytes(), b'original package')
+        self.assertTrue(self.signature.exists())
+
+    def test_preinst_guards_the_packaged_runtime_path(self):
+        namespace = runpy.run_path(str(SCRIPT), run_name='package_debian_release')
+        self.assertEqual(namespace['TOOLS_DIR'], TOOLS_DIR)
+        guard = PREINST.read_text()
+        runtime = '/' + TOOLS_DIR + '/msb'
+        self.assertIn(runtime + '|', guard)
+        self.assertIn(f"'{runtime} (deleted)'", guard)
+        self.assertNotIn('/usr/lib/Silo/bin', guard)
 
     def test_unrelated_global_command_is_rejected_without_replacing_package(self):
         (self.fixture / 'usr/bin/unrelated').write_text('must not ship')
