@@ -179,6 +179,11 @@ export interface ProductionSnapshot {
   error: string | null
 }
 
+type RemoteHost = z.infer<typeof remoteComputerSchema>
+
+/** How long a caller waits for one computer's snapshot before showing its last known state as stale. */
+const REMOTE_READ_WAIT_MS = 15_000
+
 /** The runtime's "configuration is updating" sentinel, bare or wrapped by a remote bridge. */
 export function isUpdateInProgress(cause: unknown) {
   return errorMessage(cause).includes("SILO_SANDBOX_UPDATE_IN_PROGRESS")
@@ -210,8 +215,16 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let remoteComputers: RemoteComputer[] = []
   let remoteManagement: RemoteManagement | undefined
   let remoteManagementError: string | undefined
+  let remoteComputersError: string | undefined
   const remoteSnapshots = new Map<string, ApplicationSource>()
-  let remoteRefresh: Promise<void> | undefined
+  let remoteHosts: RemoteHost[] = []
+  let remoteListRevision = 0
+  let remoteListRead: Promise<boolean> | undefined
+  let remotePasses = 0
+  const remoteRevisions = new Map<string, number>()
+  const remoteReads = new Map<string, { repositories: boolean; promise: Promise<void> }>()
+  const remoteRepositoryReads = new Set<string>()
+  const slowComputers = new Set<string>()
   let remoteTimer: ReturnType<typeof setInterval> | undefined
   let sshAccess: SshAccessState | undefined
   let sshAccessError: string | null = null
@@ -239,7 +252,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const checkpointOperationBases = new Map<string, WorkspaceCheckpointOperation | null | undefined>()
   const pushPollTimers = new Set<ReturnType<typeof setTimeout>>()
   const pendingRepositoryPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
-  const remotePushRevisions = new Map<string, number>()
   const pendingLifecycle = new Map<string, "start" | "stop" | "restart" | "dismiss-error">()
   const workspaceFailures = new Map<string, { machineId: string; action: string; message: string; cancelled: boolean }>()
   let pendingBackupOperation = false
@@ -305,11 +317,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       try {
         const local = networkStateShape.parse(await native.invoke("read_network_state"))
         const remotes = await Promise.all(remoteComputers.map(async computer => {
+          const unavailable = (error: string) => (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
+          // An offline computer would only cost a connection timeout on every poll.
+          if (!computer.connected) return unavailable(`${computer.name} is unavailable. Reconnect to see network services.`)
           try { return networkStateShape.parse(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
           catch (cause) {
-            const message = errorMessage(cause)
-            const error = isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : message
-            return (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
+            return unavailable(isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : errorMessage(cause))
           }
         }))
         const result = { workspaces: [...local.workspaces, ...remotes.flat()] }
@@ -369,7 +382,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
     if (operation?.kind === "result") requestedOperation = null
     next = { ...next, backup: { ...next.backup, operation } }
-    if (next.source) next = { ...next, source: { ...next.source, remoteComputers, remoteManagement, remoteManagementError, network, networkError, sshAccess, sshAccessError, operationQueue,
+    if (next.source) next = { ...next, source: { ...next.source, remoteComputers, remoteManagement, remoteManagementError, remoteComputersError, network, networkError, sshAccess, sshAccessError, operationQueue,
       workspaces: next.source.workspaces.filter(workspace => !workspace.computer).map(workspace => {
         const target = workspaceTarget(workspace)
         const pending = pendingCheckpointOperations.get(target)
@@ -390,8 +403,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           machine: { ...workspace.machine, id: target },
           computer: { ...computer, vmId: workspace.machine.id },
           ports: (network?.workspaces.find(item => item.workspace === target)?.ports ?? []).map(port => ({ port: port.port, listening: computer.connected && !networkError && !network?.workspaces.find(item => item.workspace === target)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })),
-          freshness: computer.connected && !computer.busy ? workspace.freshness : "stale" as const,
-          stateDetail: computer.busy ? "Refreshing status" : computer.connected ? workspace.stateDetail : "Computer unavailable",
+          freshness: computer.connected && !computer.busy && !slowComputers.has(computer.id) ? workspace.freshness : "stale" as const,
+          stateDetail: computer.busy || (computer.connected && slowComputers.has(computer.id)) ? "Refreshing status" : computer.connected ? workspace.stateDetail : "Computer unavailable",
         }
       })),
     ],
@@ -466,38 +479,121 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
-  async function refreshComputers(refreshRepositories = false) {
-    if (remoteRefresh) {
-      if (!refreshRepositories) return remoteRefresh
-      await remoteRefresh
-    }
-    remoteRefresh = (async () => {
-      try {
-        const computers = z.array(remoteComputerSchema).parse(await native.invoke("remote_host_list"))
-        const next = await Promise.all(computers.map(async computer => {
-          try {
-            // A push result delivered during this read is newer than this snapshot.
-            const revision = remotePushRevisions.get(computer.id)
-            const source = parseApplicationSource(await native.invoke("remote_host_snapshot", { hostId: computer.id, ...(refreshRepositories && { refreshRepositories: true }) }))
-            if (revision === remotePushRevisions.get(computer.id)) remoteSnapshots.set(computer.id, source)
-            return { ...computer, connected: true, lastSeen: Date.now() }
-          } catch (cause) {
-            if (isUpdateInProgress(cause)) return { ...computer, connected: true, busy: true, lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
-            return { ...computer, connected: false, error: errorMessage(cause), lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
-          }
-        }))
-        remoteComputers = next
-        for (const id of remoteSnapshots.keys()) if (!next.some(computer => computer.id === id)) remoteSnapshots.delete(id)
-        remoteManagement = remoteManagementSchema.parse(await native.invoke("remote_management_status"))
-        remoteManagementError = undefined
-      } catch (cause) { remoteManagementError = errorMessage(cause) }
-      if (!snapshot.source && snapshot.error) {
-        const source = await unavailableLocalSource(snapshot.error)
-        if (!snapshot.source && source) publish({ ...snapshot, source })
+  // Remote computers refresh independently: a remote snapshot can take minutes, so
+  // each computer has at most one read in flight, publishes as soon as it settles,
+  // and never holds back another computer's status. Callers wait for a computer at
+  // most REMOTE_READ_WAIT_MS; after that it shows its last known state as stale.
+  function remoteRevision(hostId: string) { return remoteRevisions.get(hostId) ?? 0 }
+  /** Every remote mutation bumps its computer's revision: a read that started earlier is dropped and read again. */
+  function bumpRemote(hostId: string) { remoteRevisions.set(hostId, remoteRevision(hostId) + 1) }
+
+  function setComputer(computer: RemoteComputer) {
+    const order = remoteHosts.map(host => host.id)
+    remoteComputers = [...remoteComputers.filter(item => item.id !== computer.id), computer]
+      .sort((left, right) => order.indexOf(left.id) - order.indexOf(right.id))
+  }
+
+  function readComputer(hostId: string, refreshRepositories: boolean): Promise<void> {
+    const inFlight = remoteReads.get(hostId)
+    // A read already fetching repositories answers this request too; otherwise one
+    // follow-up read with repositories is chained after it.
+    if (inFlight) { if (refreshRepositories && !inFlight.repositories) remoteRepositoryReads.add(hostId); return inFlight.promise }
+    const entry = { repositories: refreshRepositories, promise: Promise.resolve() }
+    entry.promise = (async () => {
+      for (;;) {
+        remoteRepositoryReads.delete(hostId)
+        const revision = remoteRevision(hostId)
+        let outcome: { source: ApplicationSource } | { cause: unknown }
+        try { outcome = { source: parseApplicationSource(await native.invoke("remote_host_snapshot", { hostId, ...(entry.repositories && { refreshRepositories: true }) })) } }
+        catch (cause) { outcome = { cause } }
+        const host = remoteHosts.find(item => item.id === hostId)
+        if (disposed || !host) return
+        // A mutation during the read makes this result older than what is shown.
+        if (revision === remoteRevision(hostId)) {
+          const lastSeen = remoteComputers.find(item => item.id === hostId)?.lastSeen
+          slowComputers.delete(hostId)
+          if ("source" in outcome) {
+            remoteSnapshots.set(hostId, outcome.source)
+            setComputer({ ...host, connected: true, lastSeen: Date.now() })
+          } else if (isUpdateInProgress(outcome.cause)) setComputer({ ...host, connected: true, busy: true, lastSeen })
+          else setComputer({ ...host, connected: false, error: errorMessage(outcome.cause), lastSeen })
+          publish({ ...snapshot })
+          if (!remoteRepositoryReads.has(hostId)) return
+          entry.repositories = true
+        }
       }
-      publish({ ...snapshot })
-    })().finally(() => { remoteRefresh = undefined })
-    return remoteRefresh
+    })().finally(() => { if (remoteReads.get(hostId) === entry) remoteReads.delete(hostId) })
+    remoteReads.set(hostId, entry)
+    return entry.promise
+  }
+
+  function waitForComputer(hostId: string, read: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const slow = new Promise<void>(resolve => {
+      timer = setTimeout(() => {
+        const host = remoteHosts.find(item => item.id === hostId)
+        if (!disposed && host && remoteReads.get(hostId)?.promise === read && !slowComputers.has(hostId)) {
+          slowComputers.add(hostId)
+          const known = remoteComputers.find(item => item.id === hostId)
+          setComputer({ ...host, connected: known?.connected ?? false, lastSeen: known?.lastSeen, error: `${host.name} is not responding. Showing its last known state.` })
+          publish({ ...snapshot })
+        }
+        resolve()
+      }, REMOTE_READ_WAIT_MS)
+    })
+    return Promise.race([read, slow]).finally(() => clearTimeout(timer))
+  }
+
+  /** The computer list; a list read that overlapped a connect or removal is read again. */
+  function readHostList(): Promise<boolean> {
+    remoteListRead ??= (async () => {
+      for (;;) {
+        const revision = remoteListRevision
+        let hosts: RemoteHost[]
+        try { hosts = z.array(remoteComputerSchema).parse(await native.invoke("remote_host_list")) }
+        catch (cause) {
+          if (disposed) return false
+          // The known computers stay listed; the failure is about the list itself.
+          remoteComputersError = `Silo could not read its list of computers: ${errorMessage(cause)}`
+          publish({ ...snapshot })
+          return false
+        }
+        if (disposed) return false
+        if (revision !== remoteListRevision) continue
+        remoteComputersError = undefined
+        remoteHosts = hosts
+        remoteComputers = hosts.flatMap(host => {
+          const known = remoteComputers.find(item => item.id === host.id)
+          return known ? [{ ...known, name: host.name, address: host.address }] : []
+        })
+        for (const id of remoteSnapshots.keys()) if (!hosts.some(host => host.id === id)) remoteSnapshots.delete(id)
+        for (const id of slowComputers) if (!hosts.some(host => host.id === id)) slowComputers.delete(id)
+        publish({ ...snapshot })
+        return true
+      }
+    })().finally(() => { remoteListRead = undefined })
+    return remoteListRead
+  }
+
+  async function readRemoteManagement() {
+    try {
+      const management = remoteManagementSchema.parse(await native.invoke("remote_management_status"))
+      if (disposed) return
+      remoteManagement = management
+      remoteManagementError = undefined
+    } catch (cause) { remoteManagementError = errorMessage(cause) }
+  }
+
+  async function refreshComputers(refreshRepositories = false) {
+    remotePasses++
+    const [listed] = await Promise.all([readHostList(), readRemoteManagement()])
+    if (disposed) return
+    if (listed) await Promise.all(remoteHosts.map(host => waitForComputer(host.id, readComputer(host.id, refreshRepositories))))
+    if (!snapshot.source && snapshot.error) {
+      const source = await unavailableLocalSource(snapshot.error)
+      if (!snapshot.source && source) publish({ ...snapshot, source })
+    }
+    publish({ ...snapshot })
   }
 
   async function unavailableLocalSource(message: string): Promise<ApplicationSource | null> {
@@ -524,6 +620,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   async function readSnapshots(refreshRepositories: boolean) {
     const sequence = ++refreshSequence
+    const remotePassesAtStart = remotePasses
     const [applicationResult, backupResult] = await Promise.allSettled([
       refreshRepositories ? native.invoke<unknown>("read_application_state", { refreshRepositories: true }) : native.invoke<unknown>("read_application_state"),
       native.invoke<unknown>("read_backup_state"),
@@ -560,7 +657,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
     publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error })
     void refreshNetwork()
-    void refreshComputers()
+    // One remote read per refresh; one that started during this refresh is recent enough.
+    if (remotePasses === remotePassesAtStart) void refreshComputers()
   }
 
   async function onWindowFocus() {
@@ -597,8 +695,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
     window.addEventListener("focus", onWindowFocus)
     document.addEventListener("visibilitychange", onVisibilityChange)
-    await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
-    if (disposed) return
+    // Polling starts before the first loads finish, so a slow computer cannot hold it back.
     remoteTimer = setInterval(() => {
       // Repository changes inside a VM do not emit application events. A hidden
       // window (the closed main window, the unopened status panel) does no polling,
@@ -607,6 +704,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (document.visibilityState === "hidden" || activeRefreshes > 0) return
       void refresh()
     }, 10_000)
+    await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
   }
 
   function onVisibilityChange() {
@@ -690,18 +788,22 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       publish({ ...snapshot, source: cleared })
     }
     void native.invoke<unknown>(remote && lifecycle ? "remote_workspace_action" : "workspace_action", remote && lifecycle ? { ...remote, action, name: remoteDisplayName(name), ...extras } : { action, name, ...extras })
+      // The follow-up refresh is not awaited: the action is finished, so a repeat must
+      // not be ignored while a slow remote snapshot settles.
       .then((result) => {
-        if (remote && !lifecycle) return refreshComputers()
+        if (remote && !lifecycle) { void refreshComputers(); return }
         const source = parseMutationSource(result, remote ? remoteSnapshots.get(remote.hostId) ?? null : snapshot.source)
         if (lifecycle || workspaceFailures.get(name)?.action === action) workspaceFailures.delete(name)
         if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
         if (remote) {
+          bumpRemote(remote.hostId)
           remoteSnapshots.set(remote.hostId, source)
           publish({ ...snapshot, error: null })
-          return refreshComputers()
+          void refreshComputers()
+          return
         }
         publish({ ...snapshot, source, error: null })
-        return refresh()
+        void refresh()
       })
       .catch((cause) => {
         if (!remote) { setWorkspaceFailure(action, name, cause); return }
@@ -1030,8 +1132,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       try {
         await native.invoke("remote_checkpoint_action", { hostId: remote.hostId, vmId: remote.vmId, action, ...arguments_ })
         checkpointOperationBases.set(checkpointTarget, undefined)
+        bumpRemote(remote.hostId)
         await refreshComputers(true)
       } catch (cause) {
+        bumpRemote(remote.hostId)
         void refreshComputers()
         throw cause
       } finally {
@@ -1069,8 +1173,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     forkCheckpoint: (workspace, checkpointId, newName) => checkpointAction("fork_checkpoint", workspace, { checkpointId, newName }),
     restoreCheckpoint: (workspace, checkpointId) => checkpointAction("restore_checkpoint", workspace, { checkpointId }),
     refreshRepositories: async () => {
-      await refresh(true)
-      await refreshComputers(true)
+      await Promise.all([refresh(true), refreshComputers(true)])
       if (snapshot.error) throw new Error(snapshot.error)
     },
     queryLogs: async request => logPageSchema.parse(await native.invoke("query_sandbox_logs", { request })),
@@ -1083,12 +1186,19 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     },
     connectComputer: async address => {
       remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address }))
+      // A list read that started before the connection is read again, so the new
+      // computer is listed when this resolves.
+      remoteListRevision++
       await refreshComputers()
     },
     removeComputer: async hostId => {
       await native.invoke("remove_remote_host", { hostId })
+      remoteListRevision++
+      bumpRemote(hostId)
+      remoteHosts = remoteHosts.filter(host => host.id !== hostId)
       remoteComputers = remoteComputers.filter(computer => computer.id !== hostId)
       remoteSnapshots.delete(hostId)
+      slowComputers.delete(hostId)
       publish({ ...snapshot })
     },
     saveRemoteMachine: async (hostId, machine, expected) => {
@@ -1097,6 +1207,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         hostId, machine: { ...machine, id: target?.vmId ?? machine.id },
         expected: expected ? { ...expected, id: parseRemoteWorkspaceTarget(expected.id)?.vmId ?? expected.id } : null,
       }))
+      bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)
       publish({ ...snapshot })
       void refreshComputers()
@@ -1105,6 +1216,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const vmId = parseRemoteWorkspaceTarget(machine.id)?.vmId
       if (!vmId) throw new Error("The remote VM identity is missing.")
       const source = parseApplicationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }))
+      bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)
       publish({ ...snapshot })
       void refreshComputers()
@@ -1165,7 +1277,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         pendingRepositoryPushes.delete(key)
         ++refreshSequence
         const remote = parseRemoteWorkspaceTarget(workspace)
-        if (remote) remotePushRevisions.set(remote.hostId, (remotePushRevisions.get(remote.hostId) ?? 0) + 1)
+        if (remote) bumpRemote(remote.hostId)
         const owner = remote && remoteSnapshots.get(remote.hostId)
         if (operation && remote && owner) {
           const name = owner.workspaces.find(workspace => workspace.machine.id === remote.vmId)?.machine.name
@@ -1350,7 +1462,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       void native.invoke("dismiss_repository_push", { workspace, repositoryPath }).then(() => {
         ++refreshSequence
         const remote = parseRemoteWorkspaceTarget(workspace)
-        if (remote) remotePushRevisions.set(remote.hostId, (remotePushRevisions.get(remote.hostId) ?? 0) + 1)
+        if (remote) bumpRemote(remote.hostId)
         const owner = remote && remoteSnapshots.get(remote.hostId)
         if (remote && owner) {
           const name = owner.workspaces.find(workspace => workspace.machine.id === remote.vmId)?.machine.name

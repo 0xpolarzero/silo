@@ -230,6 +230,8 @@ export interface ApplicationSource {
   remoteComputers?: RemoteComputer[]
   remoteManagement?: RemoteManagement
   remoteManagementError?: string
+  /** Silo could not read its list of connected computers; the listed ones are the last known. */
+  remoteComputersError?: string
   sshAccess?: SshAccessState
   sshAccessError?: string | null
   network?: NetworkState

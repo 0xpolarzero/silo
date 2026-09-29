@@ -82,6 +82,234 @@ describe("machine configuration jobs", () => {
   })
 })
 
+const office = { id: "office", name: "Office Mac", address: "user@office" }
+const studio = { id: "studio", name: "Studio", address: "user@studio" }
+const remoteTarget = (hostId: string) => `silo-remote:${hostId}:${source.workspaces[0].machine.id}`
+function remoteSource(patch: Partial<(typeof source)["workspaces"][number]> = {}) {
+  const remote = structuredClone(source)
+  remote.workspaces = [{ ...remote.workspaces[0], ...patch }]
+  return remote
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+describe("remote computer refresh", () => {
+  it("refreshes each computer independently and keeps polling while one is slow (H-05)", async () => {
+    vi.useFakeTimers()
+    let studioState: "running" | "stopped" = "running"
+    const mock = bridge((command, args) => {
+      if (command === "remote_host_list") return [office, studio]
+      if (command === "remote_host_snapshot") return args?.hostId === "office" ? new Promise(() => {}) : remoteSource({ state: studioState })
+    })
+    const store = createProductionSource(mock.native)
+    const row = (hostId: string) => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget(hostId))
+    try {
+      let initialized = false
+      const started = store.initialize().then(() => { initialized = true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(row("studio")?.state).toBe("running")
+      studioState = "stopped"
+      // Polling runs before the first loads finish, and the slow computer does not hold it back.
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(initialized).toBe(false)
+      expect(row("studio")?.state).toBe("stopped")
+      await vi.advanceTimersByTimeAsync(5_000)
+      await started
+      expect(store.getSnapshot().source?.remoteComputers?.find(computer => computer.id === "office")?.error).toContain("not responding")
+      await vi.advanceTimersByTimeAsync(20_000)
+      // The slow computer keeps one read in flight instead of piling up SSH requests.
+      expect(mock.invoke.mock.calls.filter(([command, args]) => command === "remote_host_snapshot" && args?.hostId === "office")).toHaveLength(1)
+    } finally {
+      store.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it("marks a slow computer's rows stale and clears that once it answers (H-05)", async () => {
+    vi.useFakeTimers()
+    const answer = deferred<unknown>()
+    let reads = 0
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return ++reads === 1 ? remoteSource() : answer.promise
+    })
+    const store = createProductionSource(mock.native)
+    const row = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))
+    try {
+      await store.initialize()
+      expect(row()?.freshness).toBe("fresh")
+      const refreshing = store.applicationActions.refreshRepositories!()
+      await vi.advanceTimersByTimeAsync(15_000)
+      await refreshing
+      expect(row()).toMatchObject({ freshness: "stale", stateDetail: "Refreshing status" })
+      answer.resolve(remoteSource({ stateDetail: "Answered" }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(row()).toMatchObject({ freshness: "fresh", stateDetail: "Answered" })
+      expect(store.getSnapshot().source?.remoteComputers?.[0].error).toBeUndefined()
+    } finally {
+      store.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it("skips network reads for an offline computer (H-05)", async () => {
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") throw new Error("Connection timed out")
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      expect(store.getSnapshot().source?.remoteComputers?.[0].connected).toBe(false)
+      mock.invoke.mockClear()
+      await store.applicationActions.refreshNetwork!()
+      expect(count(mock.invoke, "read_network_state")).toBe(1)
+      expect(count(mock.invoke, "remote_network_state")).toBe(0)
+    } finally { store.dispose() }
+  })
+
+  it("accepts a repeated remote action while the follow-up refresh is still running (H-05)", async () => {
+    let reads = 0
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return ++reads === 1 ? remoteSource() : new Promise(() => {})
+      if (command === "remote_workspace_action") return remoteSource()
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      store.applicationActions.stopWorkspace(remoteTarget("office"))
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))?.lifecycleAction).toBeUndefined())
+      await vi.waitFor(() => expect(reads).toBe(2))
+      store.applicationActions.stopWorkspace(remoteTarget("office"))
+      expect(count(mock.invoke, "remote_workspace_action")).toBe(2)
+    } finally { store.dispose() }
+  })
+
+  it("does not let a read that started before a remote edit revert it (H-06)", async () => {
+    const stale = deferred<unknown>()
+    let reads = 0
+    let current = remoteSource({ purpose: "Before" })
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return ++reads === 2 ? stale.promise : structuredClone(current)
+      if (command === "remote_upsert_machine") { current = remoteSource({ purpose: "Edited" }); return structuredClone(current) }
+    })
+    const store = createProductionSource(mock.native)
+    const purpose = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))?.purpose
+    try {
+      await store.initialize()
+      void store.refresh()
+      await vi.waitFor(() => expect(reads).toBe(2))
+      const machine = { ...source.workspaces[0].machine, id: remoteTarget("office") }
+      await store.applicationActions.saveRemoteMachine!("office", machine, machine)
+      expect(purpose()).toBe("Edited")
+      const shown: Array<string | undefined> = []
+      const unsubscribe = store.subscribe(() => shown.push(purpose()))
+      stale.resolve(remoteSource({ purpose: "Before" }))
+      // The overlapping read is dropped and the computer is read again.
+      await vi.waitFor(() => expect(reads).toBeGreaterThanOrEqual(3))
+      await new Promise(resolve => setTimeout(resolve, 10))
+      unsubscribe()
+      expect(shown).not.toContain("Before")
+      expect(purpose()).toBe("Edited")
+    } finally { store.dispose() }
+  })
+
+  it("does not bring back a computer removed while the list was being read (H-06)", async () => {
+    const list = deferred<unknown>()
+    let lists = 0
+    let hosts = [office]
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return ++lists === 2 ? list.promise : structuredClone(hosts)
+      if (command === "remote_host_snapshot") return remoteSource()
+      if (command === "remove_remote_host") { hosts = []; return null }
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const refreshing = store.refresh()
+      await vi.waitFor(() => expect(lists).toBe(2))
+      await store.applicationActions.removeComputer!("office")
+      list.resolve([office])
+      await refreshing
+      await vi.waitFor(() => expect(lists).toBe(3))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(store.getSnapshot().source?.remoteComputers).toEqual([])
+      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer)).toBe(false)
+    } finally { store.dispose() }
+  })
+
+  it("lists a newly connected computer when connecting resolves, even during a refresh (H-06)", async () => {
+    const list = deferred<unknown>()
+    let lists = 0
+    let hosts: typeof office[] = []
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return ++lists === 2 ? list.promise : structuredClone(hosts)
+      if (command === "remote_host_snapshot") return remoteSource()
+      if (command === "connect_remote_host") { hosts = [office]; return office }
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      void store.refresh()
+      await vi.waitFor(() => expect(lists).toBe(2))
+      const connecting = store.applicationActions.connectComputer!("user@office")
+      list.resolve([])
+      await connecting
+      expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
+      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.machine.id === remoteTarget("office"))).toBe(true)
+    } finally { store.dispose() }
+  })
+
+  it("reports a failed computer list separately from remote management (H-22)", async () => {
+    let failList = false
+    const mock = bridge(command => {
+      if (command === "remote_host_list") { if (failList) throw new Error("hosts file unreadable"); return [office] }
+      if (command === "remote_host_snapshot") return remoteSource()
+      if (command === "remote_management_status") return { enabled: true, hostId: "local", name: "Laptop", address: "user@laptop" }
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      failList = true
+      await store.refresh()
+      await vi.waitFor(() => expect(store.getSnapshot().source?.remoteComputersError).toContain("hosts file unreadable"))
+      expect(store.getSnapshot().source?.remoteManagementError).toBeUndefined()
+      expect(store.getSnapshot().source?.remoteManagement?.enabled).toBe(true)
+      expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
+      failList = false
+      await store.refresh()
+      await vi.waitFor(() => expect(store.getSnapshot().source?.remoteComputersError).toBeUndefined())
+    } finally { store.dispose() }
+  })
+
+  it("chains one repository refresh for concurrent requests behind a plain read (H-23)", async () => {
+    const plain = deferred<unknown>()
+    let reads = 0
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return ++reads === 2 ? plain.promise : remoteSource()
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      void store.refresh()
+      await vi.waitFor(() => expect(reads).toBe(2))
+      const first = store.applicationActions.refreshRepositories!()
+      const second = store.applicationActions.refreshRepositories!()
+      plain.resolve(remoteSource())
+      await Promise.all([first, second])
+      const repositoryReads = mock.invoke.mock.calls.filter(([command, args]) => command === "remote_host_snapshot" && args?.refreshRepositories === true)
+      expect(repositoryReads).toHaveLength(1)
+      expect(reads).toBe(3)
+    } finally { store.dispose() }
+  })
+})
+
 describe("GitHub state from full reads", () => {
   it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
     let failed = false
