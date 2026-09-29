@@ -1662,11 +1662,25 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         // Reconnecting creates a new account authorization. Never reuse old
         // grants, even if the account name and repository choices are identical.
         let prefix = format!("{}:", path(app)?.display());
-        for w in d.workspaces.iter().filter(|w| !personal_token::selected(w)) {
-            if let Some(name) = w["workspace"].as_str() {
-                crate::runtime::apply_github_policy(app, name, d.revision + 1, &profile(&[]))?;
-            }
-        }
+        // Best effort per VM: a stale policy (removed VM, VM needing recreation) must not
+        // drop the new credential. Failing VMs get a per-workspace error and are re-applied
+        // with the new grants by the worker, which replaces the old profile.
+        let mut detach_errors = NarrowErrors::default();
+        each_workspace(
+            d.workspaces
+                .iter()
+                .filter(|w| !personal_token::selected(w))
+                .filter_map(|w| w["workspace"].as_str())
+                .map(|name| (name, ())),
+            &mut detach_errors,
+            |name, ()| {
+                detach_result(
+                    app,
+                    name,
+                    crate::runtime::apply_github_policy(app, name, d.revision + 1, &profile(&[])),
+                )
+            },
+        );
         active()
             .lock()
             .map_err(|_| "GitHub state is unavailable.")?
@@ -1677,6 +1691,9 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             .retain(|key, _| !key.starts_with(&prefix));
         store(&c)?;
         record_connection(&mut d, account, repos);
+        for (name, error) in detach_errors.workspaces {
+            d.access_errors.insert(name, error);
+        }
         save(app, &d)?;
     }
     schedule(Duration::from_millis(500));
