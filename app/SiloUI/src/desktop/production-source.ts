@@ -589,6 +589,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }, 10_000)
   }
 
+  // Remote VM ports are opened through the remote bridge; the local command
+  // never handles `silo-remote:` targets.
+  function openNetworkPort(workspace: string, port: number) {
+    const remote = parseRemoteWorkspaceTarget(workspace)
+    return native.invoke<void>(remote ? "remote_open_network_port" : "open_network_port", remote ? { ...remote, port } : { workspace, port })
+  }
+
   function reportUnavailable(message: string) {
     void native.invoke("show_integration_error", { message }).catch((cause) => {
       console.error("Silo request failure:", message, errorMessage(cause))
@@ -1084,10 +1091,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     refreshNetwork,
     saveNetworkPort: request => changeNetwork("save_network_port", { ...request }),
     removeNetworkPort: (workspace, port) => changeNetwork("remove_network_port", { workspace, port }),
-    openNetworkPort: (workspace, port) => {
-      const remote = parseRemoteWorkspaceTarget(workspace)
-      return native.invoke<void>(remote ? "remote_open_network_port" : "open_network_port", remote ? { ...remote, port } : { workspace, port })
-    },
+    openNetworkPort,
     authorizeComputer: address => native.invoke<void>("remote_authorize_ssh", { address }),
     setupComputerKey: address => native.invoke<void>("remote_setup_ssh_key", { address }),
     listWorkspaceDirectory: async (workspace, path, offset, snapshotId) => directoryPageShape.parse(await native.invoke("list_workspace_directory", { workspace, path, offset, snapshotId: snapshotId ?? null })),
@@ -1293,7 +1297,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     quit: () => { void native.invoke("quit_app") },
     refresh: () => { void refresh() },
     openEditor: (name, path) => workspaceAction("open-editor", name, { path }),
-    openSite: (workspace, port) => { void native.invoke("open_network_port", { workspace, port }).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
+    openSite: (workspace, port) => { void Promise.resolve().then(() => openNetworkPort(workspace, port)).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
     dismissRepositoryPush: (workspace, repositoryPath) => {
       void native.invoke("dismiss_repository_push", { workspace, repositoryPath }).then(() => {
         ++refreshSequence

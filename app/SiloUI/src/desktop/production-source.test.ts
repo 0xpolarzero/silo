@@ -360,7 +360,9 @@ describe("production application bridge", () => {
     await store.applicationActions.saveNetworkPort?.({workspace:"dev",port:3000,hostPort:null,scheme:"http"})
     expect(invoke).toHaveBeenCalledWith("save_network_port",{workspace:"dev",port:3000,hostPort:null,scheme:"http"})
     store.statusActions.openSite("dev",3000)
-    expect(invoke).toHaveBeenCalledWith("open_network_port",{workspace:"dev",port:3000})
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("open_network_port",{workspace:"dev",port:3000}))
+    store.statusActions.openSite("silo-remote:office:vm-1",3000)
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_open_network_port",{hostId:"office",vmId:"vm-1",port:3000}))
     store.dispose()
   })
 
