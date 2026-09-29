@@ -162,6 +162,8 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
           This VM was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.join(", ")}.` : ""}
         </p>
       ) : null}
+      {/* Lock every field while saving so edits typed after Save aren't silently discarded. */}
+      <fieldset disabled={saving} className="m-0 grid min-w-0 gap-3 border-0 p-0">
       <TextField
         firstField
         inputRef={firstField}
@@ -219,6 +221,7 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
           <span>Linux desktop<span className="mt-1 block text-[11px] text-muted-foreground">Run graphical applications. Starts with the sandbox.</span></span>
         </label>}
       </section>}
+      </fieldset>
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>

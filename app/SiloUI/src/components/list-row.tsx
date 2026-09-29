@@ -19,7 +19,6 @@ export function ListRow({
   actions,
   detailClassName,
   onOpen,
-  openLabel,
   className,
   ...props
 }: {
@@ -29,9 +28,8 @@ export function ListRow({
   leading?: ReactNode
   actions?: ReactNode
   detailClassName?: string
-  /** Makes the row body (title and detail) a button that opens the row's own view. */
+  /** Opens the row's own view when the row body is clicked. Put a real button in `title` for keyboard access. */
   onOpen?: () => void
-  openLabel?: string
 } & Omit<ComponentProps<"div">, "title" | "children">) {
   const content = (
     <>
@@ -44,14 +42,12 @@ export function ListRow({
       {leading}
       {icon}
       {onOpen ? (
+        // Pointer convenience only: the title provides the real button, and
+        // controls inside the row keep their own clicks and keys.
         <div
           data-slot="list-row-content"
-          role="button"
-          tabIndex={0}
-          aria-label={openLabel}
-          className="min-w-0 flex-1 cursor-pointer text-left outline-none rounded-sm focus-visible:ring-2 focus-visible:ring-ring/50"
-          onClick={onOpen}
-          onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen() } }}
+          className="min-w-0 flex-1 cursor-pointer text-left"
+          onClick={(event) => { if (!isInteractiveTarget(event.target, event.currentTarget)) onOpen() }}
         >
           {content}
         </div>
@@ -61,6 +57,13 @@ export function ListRow({
       {actions}
     </div>
   )
+}
+
+const interactiveSelector = "a, button, input, select, textarea, label, [role='button'], [role='link'], [role='note'], [tabindex]"
+
+function isInteractiveTarget(target: EventTarget, container: Element) {
+  const element = target instanceof Element ? target.closest(interactiveSelector) : null
+  return Boolean(element && element !== container && container.contains(element))
 }
 
 export function ListRowIcon({ className, ...props }: ComponentProps<"span">) {

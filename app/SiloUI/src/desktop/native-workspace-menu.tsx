@@ -5,6 +5,7 @@ import { MoreHorizontal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { showActionFailure, showQuickConfirmation } from "@/lib/operation-toast"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
+import { workspaceTarget } from "@/features/application/model/remote-computers"
 import type { WorkspaceMenuProps } from "@/features/status-bar/status-bar"
 
 // HTML portals cannot draw outside the status webview. Let the OS own the
@@ -13,27 +14,28 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
   const opening = useRef(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const { machine } = workspace
+  const target = workspaceTarget(workspace)
 
   async function open(button: HTMLButtonElement) {
     if (opening.current) return
     opening.current = true
     const bounds = button.getBoundingClientRect()
     const { canOpen, canStart, canStop, canRestart } = workspaceAvailability(workspace, source)
-    const sites = workspace.ports.filter(({ listening }) => listening === true).sort((a, b) => a.port - b.port)
+    const sites = workspace.ports.filter(({ listening, configured, scheme, hostPort }) => listening === true && configured === true && scheme != null && hostPort != null).sort((a, b) => a.port - b.port)
     const items: MenuOptions["items"] = [
       ...(workspace.state === "stopped"
-        ? [{ text: "Start", enabled: canStart, action: () => actions.startWorkspace(machine.name) }]
+        ? [{ text: "Start", enabled: canStart, action: () => actions.startWorkspace(target) }]
         : [
           { text: "Stop…", enabled: canStop, action: () => onConfirm("stop") },
           { text: "Restart…", enabled: canRestart, action: () => onConfirm("restart") },
         ]),
       { item: "Separator" },
-      { text: `Open in ${source.preferences.terminal}`, enabled: canOpen, action: () => actions.openTerminal(machine.name) },
+      { text: `Open in ${source.preferences.terminal}`, enabled: canOpen, action: () => actions.openTerminal(target) },
       { text: `Open in ${source.preferences.editor}…`, enabled: canOpen, action: onFolders },
       {
         text: "Open site", enabled: canOpen && Boolean(workspace.host), items: [
           ...(sites.length
-            ? sites.map(({ port }) => ({ text: `Port ${port}`, action: () => actions.openSite(machine.name, port) }))
+            ? sites.map(({ port }) => ({ text: `Port ${port}`, action: () => actions.openSite(target, port) }))
             : [{ text: "No active sites", enabled: false }]),
           { item: "Separator" },
           { text: "Copy base URL", action: () => {

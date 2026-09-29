@@ -132,7 +132,10 @@ export function useMachineEditing({
     if (onCommitMachine) {
       setCommitting(true)
       try {
-        await onCommitMachine(machine, machines.find(item => item.id === originalID), targetComputerId, baseline)
+        // The expected state is what the editor opened with, so a concurrent change is
+        // rejected as stale instead of silently overwritten.
+        const original = baseline?.find(item => item.id === originalID) ?? machines.find(item => item.id === originalID)
+        await onCommitMachine(machine, original, targetComputerId, baseline)
         setEditor(null)
       } catch (cause) {
         // A stale-baseline rejection keeps the editor open with the user's edits so they
@@ -174,7 +177,7 @@ export function useMachineEditing({
     const baseline = baselineRef.current ?? undefined
     if (onDeleteMachine) {
       setCommitting(true)
-      try { await onDeleteMachine(machine, baseline) }
+      try { await onDeleteMachine(baseline?.find(item => item.id === machine.id) ?? machine, baseline) }
       catch (cause) { showActionFailure(`Couldn't delete ${machine.name}`, cause, undefined, { native: false }) }
       finally { setCommitting(false) }
       return
