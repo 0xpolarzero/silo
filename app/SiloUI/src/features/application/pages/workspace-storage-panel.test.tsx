@@ -146,6 +146,12 @@ it("keeps real history collapsed, reveals results and refreshes failures from th
   expect(screen.getByRole("button", { name: /Reclaim history, 19/ })).toHaveAttribute("aria-expanded", "true")
 })
 
+it("shows a disk Silo could not find as unknown instead of 0 B", async () => {
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, workspaceHostBytes: null, runtimeHostBytes: null })} />)
+  expect(await screen.findAllByText("Unknown")).toHaveLength(2)
+  expect(screen.queryByText("0 B")).not.toBeInTheDocument()
+})
+
 it("explains each measurement and the automatic reclaim policy in visible text", async () => {
   render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue(storage)} reclaim={vi.fn()} />)
   expect(await screen.findByText("36.00 GiB")).toBeVisible()

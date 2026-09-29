@@ -88,9 +88,11 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
 
   const loading = !storage && busy
   const guest = (value: number | null | undefined) => running && value != null ? formatBytes(value) : 'Unavailable'
+  // A disk Silo could not find is unknown, never a misleading 0 B.
+  const host = (value: number | null | undefined) => !storage ? '—' : value == null ? 'Unknown' : formatBytes(value)
   const metrics: StorageMetricProps[] = [
-    { icon: HardDrive, label: 'Workspace on disk', value: storage ? formatBytes(storage.workspaceHostBytes) : '—', help: `Space the workspace disk takes ${where}. Deleted files keep using this space until it is reclaimed.` },
-    { icon: Database, label: 'Runtime on disk', value: storage ? formatBytes(storage.runtimeHostBytes) : '—', help: 'The sandbox’s operating system and runtime files. Reclaiming space does not shrink it.' },
+    { icon: HardDrive, label: 'Workspace on disk', value: host(storage?.workspaceHostBytes), help: `Space the workspace disk takes ${where}. Deleted files keep using this space until it is reclaimed.` },
+    { icon: Database, label: 'Runtime on disk', value: host(storage?.runtimeHostBytes), help: 'The sandbox’s operating system and runtime files. Reclaiming space does not shrink it.' },
     { icon: Folder, label: 'Workspace files', value: guest(storage?.workspaceUsedBytes), help: 'Used inside the sandbox, including filesystem overhead.' },
     { icon: Gauge, label: 'Workspace capacity', value: guest(storage?.workspaceCapacityBytes), help: `The most the workspace can hold. This is a limit, not space used ${where}.` },
   ]
