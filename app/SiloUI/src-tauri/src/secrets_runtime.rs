@@ -187,50 +187,29 @@ fn modify(
     }
     // Runtime output can contain upstream diagnostics; never capture secret
     // update output in logs or temp files. Report a fixed actionable error.
-    let mut child = Command::new(&paths.executable)
-        .args(&args)
-        .envs(material.iter().map(|(name, value, _)| (name, value)))
-        .env("MSB_HOME", &paths.home)
-        .env("MSB_PATH", &paths.executable)
-        .env("MSB_LIBKRUNFW_PATH", &paths.library)
-        .env("SILO_GITHUB", github_environment(paths, &args))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "Could not update sandbox secrets.".to_string())?;
-    await_modify_child(child)
+    let result = spawn_runtime(paths, RuntimeLaunch {
+        args: &args,
+        timeout: MUTATION_TIMEOUT,
+        material,
+        github_profile: &github_environment(paths, &args),
+        capture: false,
+        report: &ignore_progress,
+    });
+    result.map(|_| ()).map_err(modify_error)
 }
 
-/// Polls a spawned `modify` child until it exits, the mutation timeout elapses, or the
-/// current operation is cancelled. On cancel or timeout the child is killed and reaped.
-/// A cancel returns a non-transient `Cancelled` so the retry boundary does not re-run it.
-fn await_modify_child(mut child: std::process::Child) -> Result<(), Attempt> {
-    let deadline = Instant::now() + MUTATION_TIMEOUT;
-    loop {
-        // A cancellable secret update asked to stop: kill the child like the timeout path
-        // and report a non-transient cancellation so auto-retry does not re-run it.
-        if operation_gate::cancel_requested() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Attempt::Cancelled("Saving secrets was cancelled.".into()));
+/// Classifies a failed secret `modify`. A cancel is non-transient so the retry
+/// boundary does not re-run it; a timed-out or unobservable command is worth retrying.
+fn modify_error(error: RuntimeError) -> Attempt {
+    match error {
+        RuntimeError::Cancelled { .. } => Attempt::Cancelled("Saving secrets was cancelled.".into()),
+        RuntimeError::Failed { detail, .. } if detail.starts_with("exit code") => {
+            "The sandbox rejected the secret update. Retry after checking its state.".into()
         }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(_)) => {
-                return Err(
-                    "The sandbox rejected the secret update. Retry after checking its state."
-                        .into(),
-                )
-            }
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                // A timed-out or unverifiable runtime command is worth retrying.
-                return Err(Attempt::Transient("Updating sandbox secrets timed out or could not be verified. Retry after checking its state.".into()));
-            }
-        }
+        RuntimeError::TimedOut { .. } | RuntimeError::Failed { .. } => Attempt::Transient(
+            "Updating sandbox secrets timed out or could not be verified. Retry after checking its state.".into(),
+        ),
+        _ => "Could not update sandbox secrets.".into(),
     }
 }
 
@@ -394,20 +373,35 @@ mod tests {
         // A long-running stand-in child models a `modify` runtime command; cancelling the
         // owning operation must kill it and return a non-transient `Cancelled` so the retry
         // boundary does not re-run the update.
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test").unwrap();
+        fs::write(&paths.executable, "#!/bin/sh\necho $$ > \"$MSB_HOME/modify.pid\"\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         let gate: &'static operation_gate::OperationGate =
             Box::leak(Box::new(operation_gate::OperationGate::new()));
         let guard = gate.vm("secret-cancel-id", "secret-cancel", "Saving secrets").unwrap();
         guard.allow_cancel();
         let id = gate.snapshot().running[0].id;
-        let child = Command::new("sleep").arg("30").spawn().unwrap();
-        let pid = child.id() as i32;
-        // Request cancel first; the guard was acquired on this thread, so its current-operation
-        // token flips and `await_modify_child` observes it on the next poll.
-        gate.cancel(id).unwrap();
-        let result = await_modify_child(child);
-        assert!(matches!(result, Err(Attempt::Cancelled(_))));
+        let token = guard.cancel_token();
+        let pid_file = paths.home.join("modify.pid");
+        // Cancel once the runtime child is running; the guard was acquired on this thread,
+        // so the shared launcher observes the current-operation token on its next poll.
+        let canceller = thread::spawn(move || {
+            while !pid_file.exists() { thread::sleep(Duration::from_millis(10)); }
+            token.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let result = modify(&paths, "secret-cancel", &["--secret-rm".into(), "OLD".into()], &Vec::new(), false);
+        canceller.join().unwrap();
+        assert!(matches!(result, Err(Attempt::Cancelled(_))), "{result:?}");
+        assert!(started.elapsed() < Duration::from_secs(20));
         // The child was killed and reaped, so its pid no longer names a live process.
+        let pid: i32 = fs::read_to_string(paths.home.join("modify.pid")).unwrap().trim().parse().unwrap();
         assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
+        let _ = id;
         drop(guard);
     }
 

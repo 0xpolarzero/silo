@@ -62,17 +62,57 @@ pub fn cancel_operation(id: u64) -> Result<(), String> {
 }
 const DISABLED_GITHUB_PROFILE: &str = r#"{"version":1,"owners":[]}"#;
 static GITHUB_PROFILES: OnceLock<Mutex<HashMap<(PathBuf, String), String>>> = OnceLock::new();
-type GithubRevisionLocks = HashMap<(PathBuf, String), Arc<Mutex<u64>>>;
-static GITHUB_REVISION_LOCKS: OnceLock<Mutex<GithubRevisionLocks>> = OnceLock::new();
+const GITHUB_UPDATE_REPLACED: &str = "A newer GitHub access choice has replaced this update.";
 
-fn github_revision_lock(home: &Path, workspace: &str) -> Result<Arc<Mutex<u64>>, String> {
-    Ok(GITHUB_REVISION_LOCKS
+/// Per-VM coordination of the GitHub profile and secret material a VM boots with.
+#[derive(Default)]
+struct VmAccessState {
+    /// Highest accepted GitHub access revision. Held only to compare or record it
+    /// (together with the cached profile), never while a runtime command runs.
+    revision: Mutex<u64>,
+    /// Excludes a boot (start, restart or exec's temporary boot) from a secret or
+    /// GitHub update of the same VM, so a VM never boots with material an update is
+    /// replacing. Held across one runtime step and always acquired with a bound
+    /// (`lock_vm_runtime`); the operation gate already orders these steps, so it is
+    /// normally uncontended.
+    runtime: Mutex<()>,
+}
+type VmAccessStates = HashMap<(PathBuf, String), Arc<VmAccessState>>;
+static VM_ACCESS_STATES: OnceLock<Mutex<VmAccessStates>> = OnceLock::new();
+
+fn vm_access_state(home: &Path, workspace: &str) -> Result<Arc<VmAccessState>, String> {
+    Ok(VM_ACCESS_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|_| "GitHub runtime state is unavailable.")?
         .entry((home.to_owned(), workspace.into()))
-        .or_insert_with(|| Arc::new(Mutex::new(0)))
+        .or_default()
         .clone())
+}
+
+/// Wait at most `timeout` for exclusive runtime access to one VM's secret and GitHub
+/// material. A cancel of the current operation ends the wait.
+fn lock_vm_runtime<'a>(
+    state: &'a VmAccessState,
+    timeout: Duration,
+    operation: &str,
+) -> Result<std::sync::MutexGuard<'a, ()>, RuntimeError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match state.runtime.try_lock() {
+            Ok(guard) => return Ok(guard),
+            // The lock guards no data: a panic of a previous holder leaves nothing to repair.
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if runtime_cancel_requested() {
+            return Err(RuntimeError::Cancelled { operation: operation.into() });
+        }
+        if Instant::now() >= deadline {
+            return Err(RuntimeError::Busy);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Forget cached GitHub state for a removed sandbox so a new sandbox reusing its
@@ -82,14 +122,14 @@ fn forget_github_state(home: &Path, workspace: &str) {
     if let Ok(mut profiles) = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
         profiles.remove(&key);
     }
-    if let Ok(mut locks) = GITHUB_REVISION_LOCKS.get_or_init(|| Mutex::new(HashMap::new())).lock() {
-        locks.remove(&key);
+    if let Ok(mut states) = VM_ACCESS_STATES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        states.remove(&key);
     }
 }
 
 fn accept_github_revision(current: &mut u64, revision: u64) -> Result<(), String> {
     if revision < *current {
-        return Err("A newer GitHub access choice has replaced this update.".into());
+        return Err(GITHUB_UPDATE_REPLACED.into());
     }
     *current = revision;
     Ok(())
@@ -841,7 +881,7 @@ fn run_msb_with_progress(
             )
     }) {
         // `--no-start` never boots the VM, so it must not wait behind a live access
-        // change holding the revision lock (read paths such as repository discovery).
+        // change (read paths such as repository discovery).
         if args[0] == "exec"
             && args
                 .iter()
@@ -850,11 +890,9 @@ fn run_msb_with_progress(
         {
             return run_msb_process(paths, args, timeout, report);
         }
-        let lock =
-            github_revision_lock(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
-        let guard = lock.lock().map_err(|_| {
-            RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
-        })?;
+        let access = vm_access_state(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
+        let boot_wait = if args[0] == "exec" { MUTATION_TIMEOUT } else { timeout };
+        let guard = lock_vm_runtime(&access, boot_wait, &operation_name(args))?;
         if args[0] != "exec" {
             let result = run_msb_process(paths, args, timeout, report);
             drop(guard);
@@ -895,17 +933,17 @@ fn run_msb_with_progress(
         }
         let result = run_msb_process(paths, args, timeout, report);
         if temporary_boot {
-            // Preserve msb exec's temporary-boot behavior even on guest failure.
-            let _guard = lock.lock().map_err(|_| {
-                RuntimeError::Unavailable("GitHub runtime state is unavailable.".into())
-            })?;
-            let stopped = without_cancellation(|| run_msb_process(
-                paths,
-                &["stop".into(), workspace.clone()],
-                STOP_TIMEOUT,
-                &|_| {},
-            ));
-            drop(_guard);
+            // Preserve msb exec's temporary-boot behavior even on guest failure. The
+            // stop runs even if a concurrent access update keeps the lock busy.
+            let stopped = without_cancellation(|| {
+                let _guard = lock_vm_runtime(&access, STOP_TIMEOUT, "Stopping the sandbox").ok();
+                run_msb_process(
+                    paths,
+                    &["stop".into(), workspace.clone()],
+                    STOP_TIMEOUT,
+                    &|_| {},
+                )
+            });
             crate::ssh_access::reconcile(paths);
             return match (result, stopped) {
                 (Ok(output), Ok(_)) => Ok(output),
@@ -956,17 +994,7 @@ fn run_msb_process(
             crate::ssh_access::close_workspace(workspace);
         }
     }
-    for (description, path) in [
-        ("bundled MicroSandbox executable", &paths.executable),
-        ("bundled MicroSandbox library", &paths.library),
-    ] {
-        if !path.is_file() {
-            return Err(RuntimeError::Unavailable(format!(
-                "The {description} is unavailable in this Silo installation."
-            )));
-        }
-    }
-    prepare_runtime_home(&paths.home, paths.storage_home.as_deref())?;
+    ensure_runtime_files(paths)?;
     let mut secret_revision = None;
     let general_secrets = if let Some(workspace) = github_command_workspace(args) {
         secret_revision = Some(crate::secrets::workspace_revision(workspace).map_err(RuntimeError::Unavailable)?);
@@ -987,13 +1015,77 @@ fn run_msb_process(
         }
         material
     } else { Vec::new() };
-    let stdout_file = tempfile::NamedTempFile::new().map_err(|error| {
-        RuntimeError::Unavailable(format!("Silo could not capture runtime output: {error}"))
+    let output = spawn_runtime(paths, RuntimeLaunch {
+        args,
+        timeout,
+        material: &general_secrets,
+        github_profile: &github_environment(paths, args),
+        capture: true,
+        report,
     })?;
-    let stderr_file = tempfile::NamedTempFile::new().map_err(|error| {
-        RuntimeError::Unavailable(format!("Silo could not capture runtime errors: {error}"))
-    })?;
-    let mut worker_lock = if args.first().is_some_and(|command| matches!(command.as_str(), "create" | "modify" | "remove" | "stop" | "restore" | "adopt-disk")) {
+    if let Some(workspace) = github_command_workspace(args).filter(|_| matches!(args[0].as_str(), "start" | "restart")) {
+        let inspected = inspect_workspace(&ProcessRunner, paths, workspace)?;
+        if inspected.status == "Running" {
+            crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default()).map_err(RuntimeError::Unavailable)?;
+        }
+    }
+    Ok(output)
+}
+
+fn ensure_runtime_files(paths: &RuntimePaths) -> Result<(), RuntimeError> {
+    for (description, path) in [
+        ("bundled MicroSandbox executable", &paths.executable),
+        ("bundled MicroSandbox library", &paths.library),
+    ] {
+        if !path.is_file() {
+            return Err(RuntimeError::Unavailable(format!(
+                "The {description} is unavailable in this Silo installation."
+            )));
+        }
+    }
+    prepare_runtime_home(&paths.home, paths.storage_home.as_deref())
+}
+
+/// One runtime child. Every `msb` launch goes through `spawn_runtime`, so the
+/// executable checks, runtime-home preparation, the worker lock for mutating
+/// commands, secret and GitHub transport, cancellation, timeouts and output limits are
+/// the same for lifecycle commands, secret updates and GitHub access updates.
+struct RuntimeLaunch<'a> {
+    args: &'a [String],
+    timeout: Duration,
+    /// Secret values the runtime resolves by source name. Only names reach argv.
+    material: &'a secrets_runtime::Material,
+    /// The GitHub access profile the runtime resolves for `SILO_GITHUB`.
+    github_profile: &'a str,
+    /// False discards stdout and stderr: updates that carry secret material never
+    /// keep runtime output, not even in temporary files.
+    capture: bool,
+    report: &'a dyn Fn(Value),
+}
+
+fn ignore_progress(_: Value) {}
+
+/// Commands that change runtime state hold the worker lock for the child's lifetime,
+/// so they never overlap another Silo process's runtime mutation.
+fn takes_worker_lock(args: &[String]) -> bool {
+    args.first().is_some_and(|command| matches!(command.as_str(), "create" | "modify" | "remove" | "stop" | "restore" | "adopt-disk"))
+}
+
+fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<CommandOutput, RuntimeError> {
+    let RuntimeLaunch { args, timeout, material, github_profile, capture, report } = launch;
+    ensure_runtime_files(paths)?;
+    let captures = if capture {
+        let stdout = tempfile::NamedTempFile::new().map_err(|error| {
+            RuntimeError::Unavailable(format!("Silo could not capture runtime output: {error}"))
+        })?;
+        let stderr = tempfile::NamedTempFile::new().map_err(|error| {
+            RuntimeError::Unavailable(format!("Silo could not capture runtime errors: {error}"))
+        })?;
+        Some((stdout, stderr))
+    } else {
+        None
+    };
+    let mut worker_lock = if takes_worker_lock(args) {
         Some(configuration_recovery::command_lock(paths, timeout)?)
     } else { None };
     let mut command = Command::new(&paths.executable);
@@ -1006,32 +1098,38 @@ fn run_msb_process(
             Ok(())
         }); }
     }
-    let mut child = command.args(args)
-        .envs(general_secrets.iter().map(|(name,value,_)| (name,value)))
+    command.args(args)
+        .envs(material.iter().map(|(name,value,_)| (name,value)))
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)
         .env("MSB_LIBKRUNFW_PATH", &paths.library)
-        .env("SILO_GITHUB", github_environment(paths, args))
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout_file.as_file().try_clone().map_err(
-            |error| {
+        .env("SILO_GITHUB", github_profile)
+        .stdin(Stdio::null());
+    if let Some((stdout, stderr)) = &captures {
+        command
+            .stdout(Stdio::from(stdout.as_file().try_clone().map_err(|error| {
                 RuntimeError::Unavailable(format!("Silo could not capture runtime output: {error}"))
-            },
-        )?))
-        .stderr(Stdio::from(stderr_file.as_file().try_clone().map_err(
-            |error| {
+            })?))
+            .stderr(Stdio::from(stderr.as_file().try_clone().map_err(|error| {
                 RuntimeError::Unavailable(format!("Silo could not capture runtime errors: {error}"))
-            },
-        )?))
-        .spawn()
-        .map_err(|error| {
-            RuntimeError::Unavailable(format!("Silo could not start its bundled runtime: {error}"))
-        })?;
+            })?));
+    } else {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    let mut child = command.spawn().map_err(|error| {
+        RuntimeError::Unavailable(format!("Silo could not start its bundled runtime: {error}"))
+    })?;
     // Spawn succeeded with pre_exec clearing close-on-exec for this lock only.
     // A surviving child must keep the flock if Silo exits before it does.
     if let Some(lock) = worker_lock.as_mut() {
         lock.mark_inherited_by_child();
     }
+    let mut stop_child = |child: &mut std::process::Child| {
+        let _ = child.kill();
+        if child.wait().is_ok() {
+            if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
+        }
+    };
     let deadline = Instant::now() + timeout;
     let mut progress_offset = 0;
     let mut progress_pending = String::new();
@@ -1040,77 +1138,64 @@ fn run_msb_process(
     let mut last_phase = serde_json::json!({"phase": "runtime-waiting"});
     let mut exited = None;
     let status = loop {
-        if args.iter().any(|arg| arg == "--progress-json") && Instant::now() >= next_progress {
-            next_progress = Instant::now() + Duration::from_secs(1);
-            if let Ok(mut capture) = stderr_file.reopen() {
-                let _ = capture.seek(SeekFrom::Start(progress_offset));
-                let mut bytes = Vec::new();
-                if capture
-                    .take(MAX_OUTPUT_BYTES)
-                    .read_to_end(&mut bytes)
-                    .is_ok()
-                {
-                    progress_offset += bytes.len() as u64;
-                    progress_pending.push_str(&String::from_utf8_lossy(&bytes));
-                    let mut latest = None;
-                    while let Some(end) = progress_pending.find('\n') {
-                        let line: String = progress_pending.drain(..=end).collect();
-                        if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                            if value.get("type").and_then(Value::as_str) == Some("silo-progress") {
-                                // Keep phase boundaries; collapse repeated chunk updates within this poll.
-                                if latest.as_ref().is_some_and(|old: &Value| {
-                                    old.get("phase") != value.get("phase")
-                                        || old.get("layerIndex") != value.get("layerIndex")
-                                }) {
-                                    report(latest.take().unwrap());
+        if let Some((stdout_file, stderr_file)) = &captures {
+            if args.iter().any(|arg| arg == "--progress-json") && Instant::now() >= next_progress {
+                next_progress = Instant::now() + Duration::from_secs(1);
+                if let Ok(mut capture) = stderr_file.reopen() {
+                    let _ = capture.seek(SeekFrom::Start(progress_offset));
+                    let mut bytes = Vec::new();
+                    if capture
+                        .take(MAX_OUTPUT_BYTES)
+                        .read_to_end(&mut bytes)
+                        .is_ok()
+                    {
+                        progress_offset += bytes.len() as u64;
+                        progress_pending.push_str(&String::from_utf8_lossy(&bytes));
+                        let mut latest = None;
+                        while let Some(end) = progress_pending.find('\n') {
+                            let line: String = progress_pending.drain(..=end).collect();
+                            if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                                if value.get("type").and_then(Value::as_str) == Some("silo-progress") {
+                                    // Keep phase boundaries; collapse repeated chunk updates within this poll.
+                                    if latest.as_ref().is_some_and(|old: &Value| {
+                                        old.get("phase") != value.get("phase")
+                                            || old.get("layerIndex") != value.get("layerIndex")
+                                    }) {
+                                        report(latest.take().unwrap());
+                                    }
+                                    latest = Some(value);
                                 }
-                                latest = Some(value);
                             }
                         }
-                    }
-                    if let Some(value) = latest {
-                        last_phase = value.clone();
-                        report(value);
-                        last_progress = Instant::now();
+                        if let Some(value) = latest {
+                            last_phase = value.clone();
+                            report(value);
+                            last_progress = Instant::now();
+                        }
                     }
                 }
+                if last_progress.elapsed() >= Duration::from_secs(5) {
+                    report(last_phase.clone());
+                    last_progress = Instant::now();
+                }
             }
-            if last_progress.elapsed() >= Duration::from_secs(5) {
-                report(last_phase.clone());
-                last_progress = Instant::now();
+            let too_large = |file: &tempfile::NamedTempFile| {
+                file.as_file().metadata().map(|value| value.len()).unwrap_or(0) > MAX_OUTPUT_BYTES
+            };
+            if too_large(stdout_file) || too_large(stderr_file) {
+                stop_child(&mut child);
+                return Err(RuntimeError::Failed {
+                    operation: operation_name(args),
+                    detail: "the runtime returned too much output".into(),
+                });
             }
-        }
-        if stdout_file
-            .as_file()
-            .metadata()
-            .map(|value| value.len())
-            .unwrap_or(0)
-            > MAX_OUTPUT_BYTES
-            || stderr_file
-                .as_file()
-                .metadata()
-                .map(|value| value.len())
-                .unwrap_or(0)
-                > MAX_OUTPUT_BYTES
-        {
-            let _ = child.kill();
-            if child.wait().is_ok() {
-                if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
-            }
-            return Err(RuntimeError::Failed {
-                operation: operation_name(args),
-                detail: "the runtime returned too much output".into(),
-            });
         }
         if let Some(status) = exited.take() {
             break status;
         }
         // A cancellable operation asked to stop: kill the child like the timeout path.
         if runtime_cancel_requested() {
-            let _ = child.kill();
-            if child.wait().is_ok() {
-                if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
-            }
+            stop_child(&mut child);
             return Err(RuntimeError::Cancelled {
                 operation: operation_name(args),
             });
@@ -1122,19 +1207,13 @@ fn run_msb_process(
             }
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
             Ok(None) => {
-                let _ = child.kill();
-                if child.wait().is_ok() {
-                    if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
-                }
+                stop_child(&mut child);
                 return Err(RuntimeError::TimedOut {
                     operation: operation_name(args),
                 });
             }
             Err(error) => {
-                let _ = child.kill();
-                if child.wait().is_ok() {
-                    if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
-                }
+                stop_child(&mut child);
                 return Err(RuntimeError::Failed {
                     operation: operation_name(args),
                     detail: format!("the process could not be observed: {error}"),
@@ -1143,8 +1222,10 @@ fn run_msb_process(
         }
     };
     if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
-    let stdout = read_capture(stdout_file.into_file())?;
-    let stderr = read_capture(stderr_file.into_file())?;
+    let (stdout, stderr) = match captures {
+        Some((stdout_file, stderr_file)) => (read_capture(stdout_file.into_file())?, read_capture(stderr_file.into_file())?),
+        None => (String::new(), String::new()),
+    };
     if !status.success() {
         let stderr_detail = runtime_error_text(&stderr);
         let stdout_detail = runtime_error_text(&stdout);
@@ -1161,12 +1242,6 @@ fn run_msb_process(
                 clean_detail(raw_detail, &paths.home)
             ),
         });
-    }
-    if let Some(workspace) = github_command_workspace(args).filter(|_| matches!(args[0].as_str(), "start" | "restart")) {
-        let inspected = inspect_workspace(&ProcessRunner, paths, workspace)?;
-        if inspected.status == "Running" {
-            crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default()).map_err(RuntimeError::Unavailable)?;
-        }
     }
     Ok(CommandOutput { stdout, stderr })
 }
@@ -1771,34 +1846,94 @@ pub(crate) fn apply_github_policy(
     revision: u64,
     profiles: &Value,
 ) -> Result<(), String> {
+    let paths = runtime_paths(app)?;
+    apply_github_policy_with(&paths, workspace, revision, profiles, MUTATION_TIMEOUT)
+}
+
+/// Apply one VM's GitHub access profile with `msb modify`.
+///
+/// The revision is accepted (or rejected as older) and the cached boot profile is
+/// discarded at once, without waiting for any runtime command, so a failed or
+/// superseded update never leaves a stale credential for the next start. The update
+/// then waits its turn on the VM's operation gate, like every other change to that VM,
+/// and runs through the shared runtime launcher (worker lock, runtime-home checks,
+/// bounded wait). A newer accepted revision abandons an older update that is still
+/// waiting, and the applied profile is cached only if no newer revision arrived.
+fn apply_github_policy_with(
+    paths: &RuntimePaths,
+    workspace: &str,
+    revision: u64,
+    profiles: &Value,
+    timeout: Duration,
+) -> Result<(), String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
     if !matches!(profiles["version"].as_u64(), Some(1 | 2)) || !profiles["owners"].is_array() {
         return Err("Invalid GitHub access profile.".into());
     }
-    let paths = runtime_paths(app)?;
-    // GitHub policy updates must not wait for VM lifecycle or network operations.
-    // Serialize only this VM's local updates and reject delayed older revisions.
-    let revision_lock = github_revision_lock(&paths.home, workspace)?;
-    let mut current_revision = revision_lock
-        .lock()
-        .map_err(|_| "GitHub runtime state is unavailable.")?;
-    accept_github_revision(&mut current_revision, revision)?;
-    // Even a failed runtime update must not leave a stale credential available
-    // for the next start. Active-connection acknowledgement is checked below.
+    let token_protocol = profiles["version"] == 2;
+    let profile =
+        serde_json::to_string(profiles).map_err(|_| "Cannot prepare GitHub access.".to_string())?;
+    if profile.len() > 128 * 1024 {
+        return Err("GitHub access profile is too large.".into());
+    }
+    let vm_id = resolve_vm_id(paths, workspace).map_err(|error| error.to_string())?;
+    let access = vm_access_state(&paths.home, workspace)?;
+    let profile_key = (paths.home.clone(), workspace.to_owned());
     let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
-    cache
-        .lock()
-        .map_err(|_| "GitHub runtime state is unavailable.")?
-        .remove(&(paths.home.clone(), workspace.into()));
-    let capability =
-        run_msb(&paths, &[if profiles["version"] == 2 { "--silo-github-token-protocol".into() } else { "--silo-github-protocol".into() }], READ_TIMEOUT).map_err(|_| {
-            "This Silo runtime must be updated before GitHub access can be enabled.".to_string()
-        })?;
+    {
+        let mut current = access
+            .revision
+            .lock()
+            .map_err(|_| "GitHub runtime state is unavailable.")?;
+        accept_github_revision(&mut current, revision)?;
+        cache
+            .lock()
+            .map_err(|_| "GitHub runtime state is unavailable.")?
+            .remove(&profile_key);
+    }
+    let superseded = || access.revision.lock().map_or(true, |current| *current > revision);
+    let deadline = Instant::now() + timeout;
+    let _guard = match OPERATIONS
+        .kind(operation_gate::OperationKind::GithubApply)
+        .acquire_while(
+            operation_gate::Scope::Vm { id: vm_id },
+            Some(workspace.to_owned()),
+            &format!("Applying GitHub access to {workspace}"),
+            &|| !superseded() && Instant::now() < deadline,
+        ) {
+        Ok(guard) => {
+            guard.expect_within(timeout);
+            Some(guard)
+        }
+        // A caller that already runs an operation keeps its own ordering.
+        Err(operation_gate::GateError::Nested) => None,
+        Err(operation_gate::GateError::Abandoned) if superseded() => {
+            return Err(GITHUB_UPDATE_REPLACED.into())
+        }
+        Err(operation_gate::GateError::Abandoned) => {
+            return Err(format!(
+                "Another operation on {workspace} is still running. Silo applies its GitHub access again shortly."
+            ))
+        }
+        Err(operation_gate::GateError::Cancelled) => {
+            return Err("Applying GitHub access was cancelled.".into())
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    if superseded() {
+        return Err(GITHUB_UPDATE_REPLACED.into());
+    }
+    let capability = run_msb(
+        paths,
+        &[if token_protocol { "--silo-github-token-protocol".into() } else { "--silo-github-protocol".into() }],
+        READ_TIMEOUT,
+    )
+    .map_err(|_| "This Silo runtime must be updated before GitHub access can be enabled.".to_string())?;
     if capability.stdout.trim() != "1" {
         return Err("This runtime does not support Silo GitHub permissions.".into());
     }
     let inspected =
-        inspect_workspace(&ProcessRunner, &paths, workspace).map_err(|error| error.to_string())?;
+        inspect_workspace(&ProcessRunner, paths, workspace).map_err(|error| error.to_string())?;
     ensure_managed(&inspected).map_err(|error| error.to_string())?;
     if inspected
         .config
@@ -1810,65 +1945,65 @@ pub(crate) fn apply_github_policy(
             "Recreate this development sandbox to enable the new GitHub integration.".into(),
         );
     }
-    let profile =
-        serde_json::to_string(profiles).map_err(|_| "Cannot prepare GitHub access.".to_string())?;
-    if profile.len() > 128 * 1024 {
-        return Err("GitHub access profile is too large.".into());
-    }
-    // Discard any previous boot credential before attempting an update. A failed
-    // update must never restore stale credentials on a subsequent VM start.
-    let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
-    cache
-        .lock()
-        .map_err(|_| "GitHub runtime state is unavailable.".to_string())?
-        .remove(&(paths.home.clone(), workspace.into()));
     let general_secrets = crate::secrets::runtime_material(workspace)?;
     secrets_runtime::validate_material(&general_secrets)?;
-    let mut child = Command::new(&paths.executable)
-        .envs(general_secrets.iter().map(|(name,value,_)| (name,value)))
-        .args([
-            "modify",
-            workspace,
-            "--secret",
-            secrets_runtime::SILO_GITHUB_SECRET_SPEC,
-            "--format",
-            "json",
-        ])
-        .env("MSB_HOME", &paths.home)
-        .env("MSB_PATH", &paths.executable)
-        .env("MSB_LIBKRUNFW_PATH", &paths.library)
-        .env("SILO_GITHUB", &profile)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "Could not apply GitHub access to the sandbox.".to_string())?;
-    let deadline = Instant::now() + MUTATION_TIMEOUT;
-    loop {
-        if operation_gate::cancel_requested() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("Applying GitHub access was cancelled.".into());
+    let args: Vec<String> = [
+        "modify",
+        workspace,
+        "--secret",
+        secrets_runtime::SILO_GITHUB_SECRET_SPEC,
+        "--format",
+        "json",
+    ]
+    .map(String::from)
+    .into();
+    let applied = {
+        let _runtime = lock_vm_runtime(&access, timeout, "Applying GitHub access")
+            .map_err(|error| github_update_error(error, token_protocol))?;
+        if superseded() {
+            return Err(GITHUB_UPDATE_REPLACED.into());
         }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) => return Err(
-                if profiles["version"] == 2 { "The sandbox rejected the token update. If Silo was updated while this VM was running, restart the VM and retry.".into() } else { "The sandbox rejected the GitHub access update. Retry after checking its state.".into() },
-            ),
-            Err(_) => return Err("Could not verify the GitHub access update.".into()),
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("Applying GitHub access timed out; it was not marked complete.".into());
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(25)),
-        }
+        spawn_runtime(paths, RuntimeLaunch {
+            args: &args,
+            timeout,
+            material: &general_secrets,
+            github_profile: &profile,
+            capture: false,
+            report: &ignore_progress,
+        })
+    };
+    applied.map_err(|error| github_update_error(error, token_protocol))?;
+    let current = access
+        .revision
+        .lock()
+        .map_err(|_| "GitHub runtime state is unavailable.".to_string())?;
+    if *current > revision {
+        return Err(GITHUB_UPDATE_REPLACED.into());
     }
     cache
         .lock()
         .map_err(|_| "GitHub runtime state is unavailable.".to_string())?
-        .insert((paths.home.clone(), workspace.into()), profile);
+        .insert(profile_key, profile);
     Ok(())
+}
+
+/// Fixed, actionable text for a failed GitHub access update. Runtime output is
+/// discarded for these updates, so no detail can carry credential material.
+fn github_update_error(error: RuntimeError, token_protocol: bool) -> String {
+    match error {
+        RuntimeError::Cancelled { .. } => "Applying GitHub access was cancelled.".into(),
+        RuntimeError::TimedOut { .. } => {
+            "Applying GitHub access timed out; it was not marked complete.".into()
+        }
+        RuntimeError::Busy => {
+            "Another change to this sandbox is still running. Silo applies its GitHub access again shortly.".into()
+        }
+        RuntimeError::Failed { .. } if token_protocol => "The sandbox rejected the token update. If Silo was updated while this VM was running, restart the VM and retry.".into(),
+        RuntimeError::Failed { .. } => {
+            "The sandbox rejected the GitHub access update. Retry after checking its state.".into()
+        }
+        _ => "Could not apply GitHub access to the sandbox.".into(),
+    }
 }
 
 pub(crate) fn apply_github_identity(
@@ -5281,8 +5416,8 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_lifecycle_msb(&paths, "never");
-        let lock = github_revision_lock(&paths.home, "cleanup").unwrap();
-        let _held = lock.lock().unwrap();
+        let access = vm_access_state(&paths.home, "cleanup").unwrap();
+        let _held = access.runtime.lock().unwrap();
         let worker_paths = paths.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         thread::spawn(move || {
@@ -5440,15 +5575,199 @@ esac
     }
 
     #[test]
-    fn github_updates_are_independent_of_other_vms_and_lifecycle_operations() {
+    fn vm_access_is_per_vm_and_revisions_never_wait_for_runtime_work() {
         let home = tempfile::tempdir().unwrap();
-        let a = github_revision_lock(home.path(), "a").unwrap();
-        let same = github_revision_lock(home.path(), "a").unwrap();
-        let b = github_revision_lock(home.path(), "b").unwrap();
-        let _first = a.lock().unwrap();
-        let _lifecycle = OPERATIONS.computer("Lifecycle").unwrap();
-        assert!(same.try_lock().is_err());
-        assert!(b.try_lock().is_ok());
+        let a = vm_access_state(home.path(), "a").unwrap();
+        let same = vm_access_state(home.path(), "a").unwrap();
+        let b = vm_access_state(home.path(), "b").unwrap();
+        // A boot or access update of `a` is running.
+        let _running = a.runtime.lock().unwrap();
+        // Recording a newer revision does not wait for it.
+        accept_github_revision(&mut same.revision.try_lock().unwrap(), 7).unwrap();
+        assert!(same.runtime.try_lock().is_err());
+        assert!(b.runtime.try_lock().is_ok());
+        // Waiting for runtime access is bounded instead of blocking a thread forever.
+        let started = Instant::now();
+        assert!(matches!(lock_vm_runtime(&same, Duration::from_millis(60), "Test"), Err(RuntimeError::Busy)));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A fake runtime for GitHub access updates. `modify` records its arguments, the
+    /// GitHub profile and one general secret it received, then blocks while
+    /// `modify-block` exists and fails when `modify-fail` exists.
+    fn fake_github_msb(paths: &RuntimePaths) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test").unwrap();
+        fs::write(&paths.executable, r#"#!/bin/sh
+case "$1" in
+  --silo-github-protocol|--silo-github-token-protocol) echo 1 ;;
+  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
+  modify)
+    printf '%s\n' "$*" >> "$MSB_HOME/modify-args"
+    printf '%s' "$SILO_GITHUB" > "$MSB_HOME/modify-profile"
+    printf '%s' "${API_TOKEN-unset}" > "$MSB_HOME/modify-secret"
+    echo $$ > "$MSB_HOME/modify.pid"
+    while [ -f "$MSB_HOME/modify-block" ]; do sleep 0.05; done
+    if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $SILO_GITHUB" >&2; exit 3; fi ;;
+esac
+"#).unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+    }
+
+    fn github_profile(token: &str) -> Value {
+        json!({"version":1,"owners":[{"login":"octo","repositoryIds":[1],"readToken":token,"writeToken":null,"expiresAt":1}]})
+    }
+
+    fn cached_github_profile(paths: &RuntimePaths) -> Option<String> {
+        GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
+            .get(&(paths.home.clone(), "dev".into())).cloned()
+    }
+
+    fn wait_for(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            assert!(Instant::now() < deadline, "{} never appeared", path.display());
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn process_alive(pid_file: &Path) -> bool {
+        let pid: i32 = fs::read_to_string(pid_file).unwrap().trim().parse().unwrap();
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn github_update_passes_profile_and_secrets_only_through_the_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[{"id":"s1","name":"API_TOKEN","valueId":"v1","workspaces":["dev"],"allowedDomains":["api.example.com"]}]}"#).unwrap();
+        crate::secrets::use_test_store(Some(store));
+        crate::secrets::use_test_vault(Some([("v1".to_string(), "secret-value".to_string())].into()));
+        let profile = github_profile("ghs_scoped");
+        let result = apply_github_policy_with(&paths, "dev", 1, &profile, Duration::from_secs(10));
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        result.unwrap();
+        let args = fs::read_to_string(paths.home.join("modify-args")).unwrap();
+        assert_eq!(args.trim(), format!("modify dev --secret {} --format json", secrets_runtime::SILO_GITHUB_SECRET_SPEC));
+        assert!(!args.contains("ghs_scoped") && !args.contains("secret-value"));
+        assert_eq!(fs::read_to_string(paths.home.join("modify-profile")).unwrap(), profile.to_string());
+        assert_eq!(fs::read_to_string(paths.home.join("modify-secret")).unwrap(), "secret-value");
+        assert_eq!(cached_github_profile(&paths), Some(profile.to_string()));
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_clears_the_boot_profile_first_and_rejects_older_revisions() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
+            .insert((paths.home.clone(), "dev".into()), github_profile("ghs_old").to_string());
+        fs::write(paths.home.join("modify-block"), "").unwrap();
+        let (older, newer) = (github_profile("ghs_four"), github_profile("ghs_five"));
+        let worker_paths = paths.clone();
+        let first = thread::spawn(move || apply_github_policy_with(&worker_paths, "dev", 4, &older, Duration::from_secs(20)));
+        wait_for(&paths.home.join("modify.pid"));
+        // While the update runs, a boot of this VM can only get the disabled profile.
+        assert_eq!(github_environment(&paths, &["start".into(), "dev".into()]), DISABLED_GITHUB_PROFILE);
+        // An older revision is rejected at once, without waiting for the running update.
+        let started = Instant::now();
+        assert_eq!(apply_github_policy_with(&paths, "dev", 3, &github_profile("ghs_three"), Duration::from_secs(20)).unwrap_err(), GITHUB_UPDATE_REPLACED);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // A newer revision is accepted at once and applies after the running update.
+        let worker_paths = paths.clone();
+        let expected = newer.clone();
+        let second = thread::spawn(move || apply_github_policy_with(&worker_paths, "dev", 5, &newer, Duration::from_secs(20)));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !OPERATIONS.snapshot().waiting.iter().any(|entry| entry.kind == operation_gate::OperationKind::GithubApply) {
+            assert!(Instant::now() < deadline, "the newer update never queued");
+            thread::sleep(Duration::from_millis(10));
+        }
+        fs::remove_file(paths.home.join("modify-block")).unwrap();
+        // The superseded update finished, but its profile is not recorded as applied.
+        assert_eq!(first.join().unwrap().unwrap_err(), GITHUB_UPDATE_REPLACED);
+        second.join().unwrap().unwrap();
+        assert_eq!(cached_github_profile(&paths), Some(expected.to_string()));
+        assert_eq!(fs::read_to_string(paths.home.join("modify-args")).unwrap().lines().count(), 2);
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn failed_github_update_keeps_no_profile_and_reports_fixed_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
+            .insert((paths.home.clone(), "dev".into()), github_profile("ghs_old").to_string());
+        fs::write(paths.home.join("modify-fail"), "").unwrap();
+        let error = apply_github_policy_with(&paths, "dev", 1, &github_profile("ghs_new"), Duration::from_secs(10)).unwrap_err();
+        assert!(error.contains("rejected the GitHub access update"), "{error}");
+        assert!(!error.contains("ghs_"));
+        assert_eq!(cached_github_profile(&paths), None);
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_timeout_and_cancel_kill_the_runtime_child() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        fs::write(paths.home.join("modify-block"), "").unwrap();
+        let started = Instant::now();
+        let error = apply_github_policy_with(&paths, "dev", 1, &github_profile("ghs_slow"), Duration::from_secs(2)).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(15));
+        assert!(!process_alive(&paths.home.join("modify.pid")));
+        assert_eq!(cached_github_profile(&paths), None);
+        fs::remove_file(paths.home.join("modify.pid")).unwrap();
+        // Inside a cancellable operation (for example a caller already holding the gate),
+        // a cancel kills the runtime child as well.
+        let outer = OPERATIONS.vm("github-cancel-outer", "outer", "Outer operation").unwrap();
+        outer.allow_cancel();
+        let token = outer.cancel_token();
+        let pid_file = paths.home.join("modify.pid");
+        let canceller = thread::spawn(move || { wait_for(&pid_file); token.store(true, Ordering::SeqCst); });
+        let error = apply_github_policy_with(&paths, "dev", 2, &github_profile("ghs_cancel"), Duration::from_secs(20)).unwrap_err();
+        canceller.join().unwrap();
+        drop(outer);
+        assert_eq!(error, "Applying GitHub access was cancelled.");
+        assert!(!process_alive(&paths.home.join("modify.pid")));
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_waits_for_the_vms_operations_and_the_worker_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (held, holding) = std::sync::mpsc::channel();
+        let holder = thread::spawn(move || {
+            let _guard = OPERATIONS.vm("00000000-0000-4000-8000-000000000001", "dev", "Creating checkpoint").unwrap();
+            held.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        holding.recv().unwrap();
+        let worker_paths = paths.clone();
+        let update = thread::spawn(move || apply_github_policy_with(&worker_paths, "dev", 1, &github_profile("ghs_wait"), Duration::from_secs(20)));
+        thread::sleep(Duration::from_millis(300));
+        assert!(!paths.home.join("modify-args").exists(), "the update ran during another operation on its VM");
+        assert!(OPERATIONS.snapshot().waiting.iter().any(|entry| entry.kind == operation_gate::OperationKind::GithubApply && entry.vm_name.as_deref() == Some("dev")));
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        update.join().unwrap().unwrap();
+        // Another runtime mutation holds the worker lock: the update never overlaps it.
+        let lock = configuration_recovery::command_lock(&paths, Duration::from_secs(1)).unwrap();
+        fs::remove_file(paths.home.join("modify-args")).unwrap();
+        assert!(apply_github_policy_with(&paths, "dev", 2, &github_profile("ghs_locked"), Duration::from_secs(1)).is_err());
+        assert!(!paths.home.join("modify-args").exists());
+        drop(lock);
+        forget_github_state(&paths.home, "dev");
     }
 
     #[test]
@@ -8100,10 +8419,12 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(Stri
     };
     let work = || -> Result<Vec<String>, secrets_runtime::Attempt> {
         shutdown::ensure_accepting_operations().map_err(secrets_runtime::Attempt::Final)?;
-        let lock = github_revision_lock(&paths.home, workspace).map_err(secrets_runtime::Attempt::Final)?;
-        let _guard = lock
-            .lock()
-            .map_err(|_| secrets_runtime::Attempt::Final("Sandbox access state is unavailable.".to_string()))?;
+        let access = vm_access_state(&paths.home, workspace).map_err(secrets_runtime::Attempt::Final)?;
+        let _guard = lock_vm_runtime(&access, MUTATION_TIMEOUT, "Saving secrets").map_err(|error| match error {
+            RuntimeError::Cancelled { .. } => secrets_runtime::Attempt::Cancelled("Saving secrets was cancelled.".into()),
+            // Another change to this VM is still finishing; a later attempt may proceed.
+            _ => secrets_runtime::Attempt::Transient("Another change to this sandbox is still running. Retry after it finishes.".into()),
+        })?;
         secrets_runtime::apply(&paths, workspace, &desired, false)
     };
     // Re-applying the same desired secrets is idempotent, so a timed-out runtime command

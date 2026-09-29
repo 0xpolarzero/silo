@@ -91,6 +91,10 @@ fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new("org.silo.Silo.secrets", "values").map_err(|_| STORE_ERROR.into())
 }
 fn read_vault() -> Result<Vault, String> {
+    #[cfg(test)]
+    if let Some(values) = TEST_VAULT.with(|vault| vault.borrow().clone()) {
+        return Ok(values);
+    }
     {
         let mut cached = lock_vault();
         expire_failure(&mut cached, Instant::now());
@@ -112,6 +116,11 @@ fn read_vault() -> Result<Vault, String> {
         .clone()
 }
 fn write_vault(value: Vault) -> Result<(), String> {
+    #[cfg(test)]
+    if TEST_VAULT.with(|vault| vault.borrow().is_some()) {
+        TEST_VAULT.with(|vault| *vault.borrow_mut() = Some(value));
+        return Ok(());
+    }
     let mut cached = lock_vault();
     expire_failure(&mut cached, Instant::now());
     if let Some((Err(error), _)) = cached.as_ref() {
@@ -136,6 +145,13 @@ fn retry_store() {
 #[cfg(test)]
 thread_local! {
     static TEST_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static TEST_VAULT: std::cell::RefCell<Option<Vault>> = const { std::cell::RefCell::new(None) };
+}
+/// Tests on this thread read and write `values` instead of the system credential
+/// store, so they can assign secrets without touching the real Keychain.
+#[cfg(test)]
+pub(crate) fn use_test_vault(values: Option<BTreeMap<String, String>>) {
+    TEST_VAULT.with(|vault| *vault.borrow_mut() = values);
 }
 /// Tests on this thread use `path` as the secret document instead of the app's.
 /// Values still come from the credential store, so tests must not assign secrets
