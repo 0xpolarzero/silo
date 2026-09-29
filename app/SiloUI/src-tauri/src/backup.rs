@@ -25,6 +25,7 @@ const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const WORKER_LOCK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const TERMINATE_GRACE: Duration = Duration::from_secs(10);
 const DEFAULT_MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Default)]
@@ -83,98 +84,126 @@ impl MsbRunner for SystemMsbRunner {
         timeout: Duration,
         cancellation: &Cancellation,
     ) -> Result<CommandOutput, BackupError> {
+        run_msb_process(command, arguments, timeout, cancellation, TERMINATE_GRACE)
+    }
+}
+
+/// Ask a cancelled or timed-out command to stop with SIGTERM so it can clean
+/// up, and SIGKILL it only if it is still running after `grace`.
+fn stop_child(child: &mut std::process::Child, grace: Duration) {
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: the child has not been reaped (no successful wait yet), so
+        // its PID still names this process's own child.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+        let deadline = Instant::now() + grace;
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => thread::sleep(COMMAND_POLL_INTERVAL),
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn run_msb_process(
+    command: &MsbCommand,
+    arguments: &[String],
+    timeout: Duration,
+    cancellation: &Cancellation,
+    grace: Duration,
+) -> Result<CommandOutput, BackupError> {
+    if cancellation.cancelled() {
+        return Err(BackupError::Cancelled);
+    }
+    crate::runtime::prepare_runtime_home(&command.home, command.storage_home.as_deref())
+        .map_err(|error| BackupError::InvalidRequest(error.to_string()))?;
+    // Export and import only run `snapshot` commands that write native
+    // snapshot data. Such a command can outlive Silo; keep the lock in the
+    // child until it exits, even if Silo dies.
+    let worker_lock = if arguments.first().is_some_and(|arg| arg == "snapshot") {
+        Some(wait_for_worker_lock(
+            &command.home,
+            worker_lock_timeout(timeout),
+            cancellation,
+        )?)
+    } else {
+        None
+    };
+    let mut process = Command::new(&command.executable);
+    if let Some(lock) = &worker_lock {
+        inherit_worker_lock(&mut process, lock);
+    }
+    let mut child = process
+        .args(arguments)
+        .env("MSB_HOME", &command.home)
+        .env("MSB_PATH", &command.executable)
+        .env("MSB_LIBKRUNFW_PATH", &command.library)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(BackupError::Io)?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    // JSON is parsed, so keep it whole from the start (like the runtime
+    // runner) and fail on truncation. Other output is only diagnostics,
+    // where the tail matters most.
+    let structured = arguments
+        .windows(2)
+        .any(|pair| pair[0] == "--format" && pair[1] == "json");
+    let stdout_reader = thread::spawn(move || {
+        read_output(
+            stdout,
+            if structured { MAX_STRUCTURED_OUTPUT } else { MAX_COMMAND_OUTPUT },
+            !structured,
+        )
+    });
+    let stderr_reader = thread::spawn(move || read_output(stderr, MAX_COMMAND_OUTPUT, true));
+    let started = Instant::now();
+    loop {
         if cancellation.cancelled() {
+            stop_child(&mut child, grace);
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
             return Err(BackupError::Cancelled);
         }
-        crate::runtime::prepare_runtime_home(&command.home, command.storage_home.as_deref())
-            .map_err(|error| BackupError::InvalidRequest(error.to_string()))?;
-        // Export and import only run `snapshot` commands that write native
-        // snapshot data. Such a command can outlive Silo; keep the lock in the
-        // child until it exits, even if Silo dies.
-        let worker_lock = if arguments.first().is_some_and(|arg| arg == "snapshot") {
-            Some(wait_for_worker_lock(
-                &command.home,
-                worker_lock_timeout(timeout),
-                cancellation,
-            )?)
-        } else {
-            None
-        };
-        let mut process = Command::new(&command.executable);
-        if let Some(lock) = &worker_lock {
-            inherit_worker_lock(&mut process, lock);
+        if started.elapsed() >= timeout {
+            stop_child(&mut child, grace);
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(BackupError::CommandTimeout);
         }
-        let mut child = process
-            .args(arguments)
-            .env("MSB_HOME", &command.home)
-            .env("MSB_PATH", &command.executable)
-            .env("MSB_LIBKRUNFW_PATH", &command.library)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(BackupError::Io)?;
-        let stdout = child.stdout.take().expect("piped stdout");
-        let stderr = child.stderr.take().expect("piped stderr");
-        // JSON is parsed, so keep it whole from the start (like the runtime
-        // runner) and fail on truncation. Other output is only diagnostics,
-        // where the tail matters most.
-        let structured = arguments
-            .windows(2)
-            .any(|pair| pair[0] == "--format" && pair[1] == "json");
-        let stdout_reader = thread::spawn(move || {
-            read_output(
-                stdout,
-                if structured { MAX_STRUCTURED_OUTPUT } else { MAX_COMMAND_OUTPUT },
-                !structured,
-            )
-        });
-        let stderr_reader = thread::spawn(move || read_output(stderr, MAX_COMMAND_OUTPUT, true));
-        let started = Instant::now();
-        loop {
-            if cancellation.cancelled() {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(BackupError::Cancelled);
+        if let Some(status) = child.try_wait().map_err(BackupError::Io)? {
+            let (stdout, stdout_truncated) = stdout_reader
+                .join()
+                .map_err(|_| BackupError::Io(io::Error::other("stdout reader failed")))??;
+            let (stderr, _) = stderr_reader
+                .join()
+                .map_err(|_| BackupError::Io(io::Error::other("stderr reader failed")))??;
+            if structured && stdout_truncated {
+                let what = if arguments.first().is_some_and(|arg| arg == "snapshot") {
+                    "checkpoint index"
+                } else {
+                    "sandbox list"
+                };
+                return Err(BackupError::InvalidRequest(format!(
+                    "The runtime {what} exceeds Silo's 1 MiB size safety limit."
+                )));
             }
-            if started.elapsed() >= timeout {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(BackupError::CommandTimeout);
-            }
-            if let Some(status) = child.try_wait().map_err(BackupError::Io)? {
-                let (stdout, stdout_truncated) = stdout_reader
-                    .join()
-                    .map_err(|_| BackupError::Io(io::Error::other("stdout reader failed")))??;
-                let (stderr, _) = stderr_reader
-                    .join()
-                    .map_err(|_| BackupError::Io(io::Error::other("stderr reader failed")))??;
-                if structured && stdout_truncated {
-                    let what = if arguments.first().is_some_and(|arg| arg == "snapshot") {
-                        "checkpoint index"
-                    } else {
-                        "sandbox list"
-                    };
-                    return Err(BackupError::InvalidRequest(format!(
-                        "The runtime {what} exceeds Silo's 1 MiB size safety limit."
-                    )));
-                }
-                return Ok(CommandOutput {
-                    status,
-                    stdout: if structured {
-                        String::from_utf8_lossy(&stdout).trim().to_owned()
-                    } else {
-                        bounded_output(&stdout)
-                    },
-                    stderr: bounded_output(&stderr),
-                });
-            }
-            thread::sleep(COMMAND_POLL_INTERVAL);
+            return Ok(CommandOutput {
+                status,
+                stdout: if structured {
+                    String::from_utf8_lossy(&stdout).trim().to_owned()
+                } else {
+                    bounded_output(&stdout)
+                },
+                stderr: bounded_output(&stderr),
+            });
         }
+        thread::sleep(COMMAND_POLL_INTERVAL);
     }
 }
 
@@ -2441,6 +2470,65 @@ mod tests {
         assert!(ready);
         assert!(lock_result.is_ok(), "a read-only list must not hold the worker lock");
         assert_eq!(worker.join().unwrap().unwrap().stdout, "[]");
+    }
+
+    const TRAPS_TERM: &str = "#!/bin/sh\ntrap 'printf term > \"$MSB_HOME/term\"; exit 0' TERM\nprintf ready > \"$MSB_HOME/ready\"\nwhile :; do sleep 0.02; done\n";
+
+    #[test]
+    fn cancel_asks_the_runtime_to_stop_before_killing_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let command = script_command(directory.path(), TRAPS_TERM);
+        let home = command.home.clone();
+        let cancellation = Cancellation::default();
+        let worker_cancellation = cancellation.clone();
+        let worker = thread::spawn(move || {
+            run_msb_process(
+                &command,
+                &["snapshot".into(), "load".into(), "/tmp/unused.msb".into()],
+                Duration::from_secs(30),
+                &worker_cancellation,
+                Duration::from_secs(10),
+            )
+        });
+        assert!(wait_for_file(&home.join("ready")));
+        let started = Instant::now();
+        cancellation.cancel();
+        assert!(matches!(worker.join().unwrap(), Err(BackupError::Cancelled)));
+        assert!(home.join("term").exists(), "msb must receive SIGTERM first");
+        assert!(started.elapsed() < Duration::from_secs(5), "graceful exit must not wait the grace out");
+        // The child released the worker lock when it exited.
+        assert!(wait_for_interrupted_command(&home, Duration::ZERO).is_ok());
+    }
+
+    #[test]
+    fn timeout_also_stops_gracefully_and_ignored_term_is_killed_after_the_grace() {
+        let directory = tempfile::tempdir().unwrap();
+        let command = script_command(directory.path(), TRAPS_TERM);
+        let result = run_msb_process(
+            &command,
+            &["snapshot".into(), "save".into(), "x".into(), "y".into()],
+            Duration::from_millis(300),
+            &Cancellation::default(),
+            Duration::from_secs(10),
+        );
+        assert!(matches!(result, Err(BackupError::CommandTimeout)));
+        assert!(command.home.join("term").exists());
+
+        let stubborn = tempfile::tempdir().unwrap();
+        let command = script_command(
+            stubborn.path(),
+            "#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 0.02; done\n",
+        );
+        let started = Instant::now();
+        let result = run_msb_process(
+            &command,
+            &["snapshot".into(), "save".into(), "x".into(), "y".into()],
+            Duration::from_millis(200),
+            &Cancellation::default(),
+            Duration::from_millis(300),
+        );
+        assert!(matches!(result, Err(BackupError::CommandTimeout)));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
