@@ -367,6 +367,25 @@ impl MachineConfigurationChange {
         }
     }
 
+    /// Ids of the sandboxes this change removes.
+    fn deleted_ids(&self) -> Vec<String> {
+        match self {
+            Self::Delete { vm_id, .. } => vec![vm_id.clone()],
+            Self::Batch { changes } => changes.iter().flat_map(Self::deleted_ids).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Notification title naming the sandbox this change is about, when there is one.
+    fn failure_title(&self) -> String {
+        match self {
+            Self::Upsert { machine, .. } => format!("Couldn\u{2019}t save changes to {}", machine.name()),
+            Self::Delete { expected, .. } => format!("Couldn\u{2019}t delete {}", expected.name()),
+            Self::Batch { changes } if changes.len() == 1 => changes[0].failure_title(),
+            _ => "Couldn\u{2019}t save sandbox settings".into(),
+        }
+    }
+
     fn apply(&self, machines: &mut Vec<MachineConfiguration>) -> Result<(), String> {
         if let Self::Batch { changes } = self {
             // Apply to a draft so a later rejection leaves the inventory untouched.
@@ -1370,6 +1389,7 @@ pub async fn configure_workspace_identities(
     identities: Vec<WorkspaceIdentity>,
 ) -> Result<(), String> {
     let notify_app = app.clone();
+    let names: Vec<String> = identities.iter().map(|identity| identity.workspace.clone()).collect();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         // Writes Git identity across several VMs' metadata and guests; shared state.
@@ -1383,10 +1403,18 @@ pub async fn configure_workspace_identities(
     .await
     .map_err(|error| format!("Git identity worker failed: {error}"))
     .and_then(|result| result);
-    if result.is_err() {
-        crate::notifications::action_failed(&notify_app, "Git identity setup failed");
+    if let Err(message) = &result {
+        crate::notifications::notify_native(&notify_app, git_identity_notice(&names, message));
     }
     result
+}
+
+fn git_identity_notice(names: &[String], message: &str) -> crate::notifications::Notice {
+    let title = match names {
+        [only] => format!("Couldn\u{2019}t save the Git identity for {only}"),
+        _ => "Couldn\u{2019}t save Git identities".to_string(),
+    };
+    crate::notifications::failure("git-identity", &title, message, None)
 }
 
 fn configure_workspace_identities_with(
@@ -2083,15 +2111,20 @@ pub async fn workspace_action(
         .map_err(|_| "The application launcher failed.".to_string())?;
     }
     let worker_app = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<ApplicationSource, (bool, String)> {
+    // Elapsed time counts from the command, including any wait for the operation gate: it
+    // is what the user experienced, and decides whether a success is worth a notice.
+    let started = std::time::Instant::now();
+    let notice_action = action.clone();
+    let notice_name = name.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(String, ApplicationSource), (Option<String>, LifecycleFailure, String)> {
         let app = worker_app;
         // Setup failures before the operation runs are genuine faults worth notifying about.
-        let paths = runtime_paths(&app).map_err(|error| (true, error))?;
+        let paths = runtime_paths(&app).map_err(|error| (None, LifecycleFailure::Failed, error))?;
         // Start/stop/restart change only this VM's runtime; resource admission is
         // against host totals, not other VMs, so per-VM ordering is sufficient. The
         // key collapses double-clicked lifecycle requests into one queued action.
         // Resolve the stable id before acquiring so ordering survives a rename.
-        let vm_id = resolve_vm_id(&paths, &name).map_err(|error| (true, error.to_string()))?;
+        let vm_id = resolve_vm_id(&paths, &name).map_err(|error| (None, LifecycleFailure::Failed, error.to_string()))?;
         let base_label = lifecycle_label(&action, &name);
         let key = format!("vm:{vm_id}:{action}");
         // Start/restart may be cancelled while running; stop may not. Expected durations
@@ -2150,30 +2183,66 @@ pub async fn workspace_action(
         };
         let _ = app.emit("silo://application-state-changed", ());
         let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
-        // Decide whether to notify before the typed error is flattened to a message: a
-        // user-cancelled action is an expected outcome, not a failure to notify about.
-        result.map_err(|error| {
-            (
-                should_notify_action_failure(&error),
+        // Classify before the typed error is flattened to a message: a cancellation or a
+        // deduplicated request is an expected outcome, not a failure to notify about.
+        match result {
+            Ok(state) => Ok((vm_id, state)),
+            Err(error) => Err((
+                Some(vm_id),
+                lifecycle_failure(&error),
                 runtime_activity::failure_message(&error),
-            )
-        })
+            )),
+        }
     }).await.map_err(|_| "Sandbox action worker failed.".to_string())?;
+    let elapsed = started.elapsed();
+    let notify = |vm_id: Option<String>, outcome: crate::notifications::Outcome<'_>| {
+        let sandbox = vm_id.map(|id| crate::notifications::NoticeSandbox { id, name: notice_name.clone() });
+        if let Some(notice) = crate::notifications::lifecycle_notice(&notice_action, &notice_name, sandbox, elapsed, outcome) {
+            crate::notifications::notify_native(&app, notice);
+        }
+    };
     match result {
-        Ok(state) => Ok(state),
-        Err((notify, message)) => {
-            if notify {
-                crate::notifications::action_failed(&app, "Sandbox action failed");
-            }
+        Ok((vm_id, state)) => {
+            notify(Some(vm_id), crate::notifications::Outcome::Succeeded);
+            Ok(state)
+        }
+        Err((vm_id, failure, message)) => {
+            notify(vm_id, failure.outcome(&message));
             Err(message)
         }
     }
 }
 
-/// A failed sandbox lifecycle action warrants a failure notification unless the user
-/// cancelled it: a cancellation is an expected outcome, not something to alert about.
-fn should_notify_action_failure(error: &RuntimeError) -> bool {
-    !matches!(error, RuntimeError::Cancelled { .. })
+/// How a failed lifecycle action reads to the notification router.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LifecycleFailure {
+    Cancelled,
+    AlreadyQueued,
+    Failed,
+}
+
+impl LifecycleFailure {
+    fn outcome(self, message: &str) -> crate::notifications::Outcome<'_> {
+        match self {
+            Self::Cancelled => crate::notifications::Outcome::Cancelled,
+            Self::AlreadyQueued => crate::notifications::Outcome::AlreadyQueued,
+            Self::Failed => crate::notifications::Outcome::Failed(message),
+        }
+    }
+}
+
+/// A user cancellation is an expected outcome and a duplicate request handed to the one
+/// already queued is not a failure (D-13); neither warrants an alert.
+fn lifecycle_failure(error: &RuntimeError) -> LifecycleFailure {
+    match error {
+        RuntimeError::Cancelled { .. } => LifecycleFailure::Cancelled,
+        RuntimeError::Unavailable(message)
+            if *message == operation_gate::GateError::AlreadyQueued.to_string() =>
+        {
+            LifecycleFailure::AlreadyQueued
+        }
+        _ => LifecycleFailure::Failed,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2698,6 +2767,9 @@ pub async fn retry_machine_configuration(
     crate::runtime_migration::ensure_ready(&app)?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
+    let failure_title = retry_workspace
+        .as_deref()
+        .map_or_else(|| "Couldn\u{2019}t finish sandbox setup".to_string(), |name| format!("Couldn\u{2019}t finish setting up {name}"));
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         // Changes the shared VM inventory/metadata; computer-wide.
@@ -2715,10 +2787,22 @@ pub async fn retry_machine_configuration(
     })
     .await
     .map_err(|error| format!("Sandbox configuration worker failed: {error}")).and_then(|result| result);
-    if result.is_err() {
-        crate::notifications::action_failed(&notify_app, "Sandbox setup failed");
+    if let Err(message) = &result {
+        notify_configuration_failure(&notify_app, &failure_title, message);
     }
     result
+}
+
+/// The setup UI shows the failure in place; the system notice matters when Silo is in the
+/// background. A rejected stale edit is shown inline by the editor and is not a failure.
+fn notify_configuration_failure(app: &AppHandle, title: &str, message: &str) {
+    if message.contains("changed while your edit was waiting") {
+        return;
+    }
+    crate::notifications::notify_native(
+        app,
+        crate::notifications::failure("sandbox-setup", title, message, None),
+    );
 }
 
 /// Apply one targeted change (create, edit, delete or reorder) against the current
@@ -2735,6 +2819,8 @@ pub async fn change_machine_configuration(
     crate::runtime_migration::ensure_ready(&app)?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
+    let failure_title = change.failure_title();
+    let deleted = change.deleted_ids();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         // Changes the shared VM inventory/metadata; computer-wide.
@@ -2750,8 +2836,10 @@ pub async fn change_machine_configuration(
     })
     .await
     .map_err(|error| format!("Sandbox configuration worker failed: {error}")).and_then(|result| result);
-    if result.is_err() {
-        crate::notifications::action_failed(&notify_app, "Sandbox setup failed");
+    match &result {
+        Err(message) => notify_configuration_failure(&notify_app, &failure_title, message),
+        // A deleted sandbox has nothing left to open: withdraw its delivered notices.
+        Ok(_) => deleted.iter().for_each(|id| crate::notifications::clear_sandbox(&notify_app, id)),
     }
     result
 }
@@ -4096,18 +4184,26 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_actions_are_not_notified_but_other_failures_are() {
-        assert!(!should_notify_action_failure(&RuntimeError::Cancelled {
+    fn cancelled_and_deduplicated_actions_are_not_notified_but_other_failures_are() {
+        assert_eq!(lifecycle_failure(&RuntimeError::Cancelled {
             operation: "Starting dev".into(),
-        }));
-        assert!(should_notify_action_failure(&RuntimeError::Failed {
+        }), LifecycleFailure::Cancelled);
+        assert_eq!(
+            lifecycle_failure(&RuntimeError::from(operation_gate::GateError::AlreadyQueued)),
+            LifecycleFailure::AlreadyQueued
+        );
+        assert_eq!(lifecycle_failure(&RuntimeError::Failed {
             operation: "Starting dev".into(),
             detail: "boot failed".into(),
-        }));
-        assert!(should_notify_action_failure(&RuntimeError::TimedOut {
+        }), LifecycleFailure::Failed);
+        assert_eq!(lifecycle_failure(&RuntimeError::TimedOut {
             operation: "Starting dev".into(),
-        }));
-        assert!(should_notify_action_failure(&RuntimeError::Busy));
+        }), LifecycleFailure::Failed);
+        assert_eq!(lifecycle_failure(&RuntimeError::Busy), LifecycleFailure::Failed);
+        assert_eq!(
+            lifecycle_failure(&RuntimeError::from(operation_gate::GateError::Nested)),
+            LifecycleFailure::Failed
+        );
     }
 
     #[test]

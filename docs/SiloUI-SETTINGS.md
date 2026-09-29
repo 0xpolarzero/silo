@@ -74,7 +74,8 @@ preference only when the session owns the `org.freedesktop.Notifications` D-Bus
 service. The [Desktop Notifications Specification](https://specifications.freedesktop.org/notification/latest-single/)
 defines the service protocol, not a user authorization API; service availability
 does not guarantee that a desktop will display every notification. Producing
-real sandbox notification events remains outside this change. Category choices
+real sandbox notification events is described in
+[SiloUI-NOTIFICATIONS.md](SiloUI-NOTIFICATIONS.md). Category choices
 remain saved and hidden or disabled while the parent preference lacks verified
 authorization.
 
@@ -245,9 +246,13 @@ exists.
 | `browser` | Browser | Safari |
 | `reduceMotion` | Reduce motion | Off |
 | `notificationsEnabled` | Silo notification preference | On; effective only with current OS/service authorization |
-| `notifyHealth` | Sandbox health | On |
-| `notifyActions` | Action failures | On |
-| `notifyBackup` | Backup failures | On |
+| `notifyFailures` | Failures: something you started, or background work, failed | On |
+| `notifyChanges` | Changes: a sandbox changed state without a Silo operation causing it | On |
+| `notifyCompletions` | Completions: work that took 3 seconds or longer finished | On |
+
+The legacy `notifyHealth` (read as Changes) and `notifyActions` / `notifyBackup`
+(both must be on for Failures) are read only as a fallback until the new keys are
+saved. See [SiloUI-NOTIFICATIONS.md](SiloUI-NOTIFICATIONS.md).
 
 Defaults are applied in TypeScript and are not written on mount. The startup
 default follows the current sandbox list until the user enables startup or saves

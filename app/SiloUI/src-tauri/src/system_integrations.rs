@@ -116,14 +116,22 @@ pub fn show_integration_error(
     Ok(())
 }
 
-pub(crate) fn install_notifications() {
+pub(crate) fn install_notifications(app: &AppHandle) {
     #[cfg(target_os = "macos")]
-    platform::install_notifications();
+    platform::install_notifications(app);
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
-/// Delivery never requests authorization or opens a permission prompt.
-pub(crate) fn deliver_notification(title: &str, body: &str) -> Result<(), String> {
-    platform::deliver_notification(title, body)
+/// Delivery never requests authorization or opens a permission prompt. A newer notice
+/// with the same key replaces the older one.
+pub(crate) fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(), String> {
+    platform::deliver_notification(notice)
+}
+
+/// Withdraw delivered notifications by key. Best effort.
+pub(crate) fn clear_notifications(keys: &[String]) {
+    platform::clear_notifications(keys);
 }
 
 fn notification_authorized(state: &str) -> bool {

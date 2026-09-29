@@ -628,19 +628,17 @@ pub(crate) async fn start_backup(
     checkpoint_id: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
-    let result = start_backup_inner(
-        app.clone(),
+    // A rejection before the export starts is returned to the caller, which shows it
+    // in place; only the background outcome (see `notify_transfer`) reaches the system.
+    start_backup_inner(
+        app,
         window,
         controller,
         destination,
         sandboxes,
         checkpoint_id,
     )
-    .await;
-    if result.is_err() {
-        crate::notifications::backup_result(&app, "backup", "failed");
-    }
-    result
+    .await
 }
 
 async fn start_backup_inner(
@@ -774,6 +772,7 @@ fn run_backup(
     cancellation: backup::Cancellation,
     pending_archive: Archive,
 ) {
+    let started = std::time::Instant::now();
     let result = backup_work(
         &app,
         &controller,
@@ -850,14 +849,7 @@ fn run_backup(
         }
     }
     let operation = recovery::complete(&controller, operation);
-    if let Operation::Result {
-        operation: kind,
-        outcome,
-        ..
-    } = &operation
-    {
-        crate::notifications::backup_result(&app, kind, outcome);
-    }
+    notify_transfer(&app, &operation, started.elapsed());
     let _ = set_operation(&controller, operation);
     finish(&controller);
     publish(&app, &controller);
@@ -1176,19 +1168,66 @@ pub(crate) async fn start_restore(
     source_name: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
-    let result = start_restore_inner(
-        app.clone(),
+    // A rejection before the import starts is returned to the caller, which shows it
+    // in place; only the background outcome (see `notify_transfer`) reaches the system.
+    start_restore_inner(
+        app,
         window,
         controller,
         archive_path,
         new_name,
         source_name,
     )
-    .await;
-    if result.is_err() {
-        crate::notifications::backup_result(&app, "restore", "failed");
+    .await
+}
+
+/// Tell the system about a finished export or import. The Backup screen shows the result
+/// itself, so this only adds a system notice (failures, and successes long enough that
+/// the user likely looked away).
+fn notify_transfer(app: &AppHandle, operation: &Operation, elapsed: std::time::Duration) {
+    let Operation::Result {
+        operation: kind,
+        archive,
+        target_name,
+        outcome,
+        message,
+        ..
+    } = operation
+    else {
+        return;
+    };
+    let names: Vec<&str> = match target_name {
+        Some(name) => vec![name.as_str()],
+        None => archive.sandboxes.iter().map(String::as_str).collect(),
+    };
+    let sandbox = match names.as_slice() {
+        [only] => sandbox_identity(app, only),
+        _ => None,
+    };
+    let label = match names.as_slice() {
+        [only] => (*only).to_string(),
+        [] => "sandboxes".to_string(),
+        many => format!("{} sandboxes", many.len()),
+    };
+    if let Some(notice) =
+        crate::notifications::transfer_notice(kind, &label, sandbox, elapsed, outcome, message)
+    {
+        crate::notifications::notify_native(app, notice);
     }
-    result
+}
+
+/// Best-effort stable id for a sandbox name, so the notice can route and be cleared.
+fn sandbox_identity(app: &AppHandle, name: &str) -> Option<crate::notifications::NoticeSandbox> {
+    let paths = runtime::runtime_paths(app).ok()?;
+    let metadata = runtime::read_metadata(&paths.metadata).ok()?;
+    metadata
+        .machines
+        .iter()
+        .find(|machine| machine.is_vm() && machine.name() == name)
+        .map(|machine| crate::notifications::NoticeSandbox {
+            id: machine.id().to_string(),
+            name: name.to_string(),
+        })
 }
 
 async fn start_restore_inner(
@@ -1277,6 +1316,7 @@ fn run_restore(
     cancellation: backup::Cancellation,
     archive: Archive,
 ) {
+    let started = std::time::Instant::now();
     let mut archive = archive;
     let result = (|| {
         let inspection = controller
@@ -1334,14 +1374,7 @@ fn run_restore(
         },
     };
     let operation = recovery::complete(&controller, operation);
-    if let Operation::Result {
-        operation: kind,
-        outcome,
-        ..
-    } = &operation
-    {
-        crate::notifications::backup_result(&app, kind, outcome);
-    }
+    notify_transfer(&app, &operation, started.elapsed());
     let _ = set_operation(&controller, operation);
     finish(&controller);
     publish(&app, &controller);

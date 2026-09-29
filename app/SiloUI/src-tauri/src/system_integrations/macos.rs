@@ -182,12 +182,29 @@ pub fn request_notifications() -> Result<IntegrationStatus, String> {
 }
 
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send};
-use objc2_foundation::{NSObject, NSObjectProtocol};
+use objc2_foundation::{NSDictionary, NSObject, NSObjectProtocol};
 use objc2_user_notifications::{
-    UNNotification, UNNotificationPresentationOptions, UNUserNotificationCenterDelegate,
+    UNNotification, UNNotificationPresentationOptions, UNNotificationResponse,
+    UNUserNotificationCenterDelegate,
 };
+
+const ROUTE_KEY: &str = "route";
+static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// Open the main window at the route a clicked notification carries.
+fn open_route(route: &str) {
+    let (Some(app), Ok(route)) = (APP.get(), serde_json::from_str::<serde_json::Value>(route))
+    else {
+        return;
+    };
+    let handle = app.clone();
+    // The callback arrives on an arbitrary thread; window work belongs on the main thread.
+    let _ = app.run_on_main_thread(move || {
+        let _ = crate::status_panel::open_main(handle, Some(route));
+    });
+}
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements; this delegate has no mutable state.
@@ -203,16 +220,36 @@ define_class!(
             _notification: &UNNotification,
             completion: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
         ) {
-            // The app targets macOS 13+. The OS still applies user settings and Focus.
-            completion
-                .call((UNNotificationPresentationOptions::Banner
-                    | UNNotificationPresentationOptions::List,));
+            // The router already suppresses notices while the main window is focused, so
+            // a notice that races a focus change goes quietly to Notification Center
+            // instead of interrupting with a banner.
+            completion.call((UNNotificationPresentationOptions::List,));
+        }
+
+        #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
+        fn did_receive_response(
+            &self,
+            _center: &UNUserNotificationCenter,
+            response: &UNNotificationResponse,
+            completion: &block2::DynBlock<dyn Fn()>,
+        ) {
+            let info = response.notification().request().content().userInfo();
+            let key = NSString::from_str(ROUTE_KEY);
+            let route = info
+                .objectForKey(&key)
+                .and_then(|value| value.downcast::<NSString>().ok())
+                .map(|value| value.to_string());
+            if let Some(route) = route {
+                open_route(&route);
+            }
+            completion.call(());
         }
     }
 );
 
 thread_local! { static NOTIFICATION_DELEGATE: std::cell::RefCell<Option<Retained<NotificationDelegate>>> = const { std::cell::RefCell::new(None) }; }
-pub fn install_notifications() {
+pub fn install_notifications(app: &tauri::AppHandle) {
+    let _ = APP.set(app.clone());
     if !notifications_supported() {
         return;
     }
@@ -226,16 +263,24 @@ pub fn install_notifications() {
     NOTIFICATION_DELEGATE.with(|slot| *slot.borrow_mut() = Some(delegate));
 }
 
-pub fn deliver_notification(title: &str, body: &str) -> Result<(), String> {
+pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(), String> {
     if !super::notification_authorized(&notification_status().state) {
         return Ok(());
     }
     use objc2_user_notifications::{UNMutableNotificationContent, UNNotificationRequest};
     let content = UNMutableNotificationContent::new();
-    content.setTitle(&NSString::from_str(title));
-    content.setBody(&NSString::from_str(body));
+    content.setTitle(&NSString::from_str(&notice.title));
+    content.setBody(&NSString::from_str(&notice.body));
+    content.setThreadIdentifier(&NSString::from_str(notice.thread()));
+    let route = NSString::from_str(&notice.route().to_string());
+    let info = NSDictionary::from_retained_objects(&[&*NSString::from_str(ROUTE_KEY)], &[route]);
+    // SAFETY: The dictionary holds only NSString keys and values, which are property-list types.
+    unsafe {
+        content.setUserInfo(&Retained::cast_unchecked::<NSDictionary<AnyObject, AnyObject>>(info))
+    };
+    // The key is the identifier: a newer notice with the same key replaces the older one.
     let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-        &NSString::from_str(&uuid::Uuid::new_v4().to_string()),
+        &NSString::from_str(&notice.key),
         &content,
         None,
     );
@@ -249,6 +294,18 @@ pub fn deliver_notification(title: &str, body: &str) -> Result<(), String> {
         Ok(true) => Ok(()),
         _ => Err("macOS could not schedule the notification".into()),
     }
+}
+
+pub fn clear_notifications(keys: &[String]) {
+    if keys.is_empty() || !notifications_supported() {
+        return;
+    }
+    let identifiers: Vec<Retained<NSString>> =
+        keys.iter().map(|key| NSString::from_str(key)).collect();
+    let identifiers = objc2_foundation::NSArray::from_retained_slice(&identifiers);
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    center.removeDeliveredNotificationsWithIdentifiers(&identifiers);
+    center.removePendingNotificationRequestsWithIdentifiers(&identifiers);
 }
 
 pub fn open_settings(integration: &str) -> Result<(), String> {
