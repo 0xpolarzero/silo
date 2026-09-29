@@ -217,8 +217,18 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   }, [actions])
 
   function resolveSandboxId(value: string) {
-    return source.workspaces.find(({ machine }) => machine.id === value || machine.name === value)?.machine.id ?? value
+    return source.workspaces.find((workspace) => workspace.machine.id === value || workspace.machine.name === value || workspaceTarget(workspace) === value)?.machine.id ?? value
   }
+
+  // History never keeps a page for a sandbox that no longer exists (deleted, or gone after a
+  // refresh): its entries become the Sandboxes list in place, so Back cannot land on it.
+  const { forgetSandboxes } = navigation
+  useEffect(() => {
+    const known = new Set<string>()
+    for (const workspace of source.workspaces) known.add(workspace.machine.id).add(workspace.machine.name).add(workspaceTarget(workspace))
+    for (const machine of sandboxConfigurationOperation?.candidate.machines ?? []) known.add(machine.id).add(machine.name)
+    forgetSandboxes((workspace) => known.has(workspace))
+  }, [source.workspaces, sandboxConfigurationOperation, forgetSandboxes])
 
   function navigateCommand(route: ApplicationInitialRoute) {
     const wantsSection = Boolean(route.workspaceSection && route.workspaceSection !== "overview")

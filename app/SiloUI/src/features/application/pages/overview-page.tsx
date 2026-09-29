@@ -304,9 +304,12 @@ export function OverviewPage({ active = true, readOnly = false,
   const localOnly = (list: readonly SetupMachineConfiguration[]) => list.filter(machine => !workspaces.get(machine.id)?.computer)
 
   // Return to the list if the open sandbox disappeared (deleted, or removed by a refresh).
+  // Controlled navigation replaces its history entries in place (the app forgets missing
+  // sandboxes), so only the standalone page closes its own selection here: pushing a new
+  // entry would leave Back pointing at the missing sandbox.
   const detailWorkspace = selectedId ? workspaces.get(selectedId) : undefined
   const detailMissing = Boolean(selectedId) && !detailWorkspace
-  const returnToList = useEffectEvent(() => closeSandbox())
+  const returnToList = useEffectEvent(() => { if (!controlledNav) closeSandbox() })
   // oxlint-disable-next-line react/set-state-in-effect
   useEffect(() => { if (detailMissing) returnToList() }, [detailMissing])
 
