@@ -30,7 +30,11 @@ export interface MachineRowPresentation {
   actionsClassName?: string
   tone?: SandboxRowTone
   busy?: boolean
+  /** Disables the row's mutating controls (reorder, ⋯ menu) while work runs. Opening the
+   * sandbox's page stays available so its progress and errors remain reachable. */
   suppressInteractions?: boolean
+  /** False when the row has no page to open yet (a sandbox that is still being created). */
+  openable?: boolean
 }
 
 interface MachineListProps {
@@ -234,7 +238,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                     <SandboxListRow
                       name={machine.name}
                       kind={machine.kind}
-                      onOpen={onOpenMachine && !presentation?.suppressInteractions ? () => onOpenMachine(machine) : undefined}
+                      onOpen={onOpenMachine && presentation?.openable !== false ? () => onOpenMachine(machine) : undefined}
                       remote={Boolean(getComputerId?.(machine)) || machine.kind === "ssh"}
                       kindBadge={presentation?.kindBadge}
                       badge={presentation?.badge}
