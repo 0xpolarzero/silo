@@ -90,7 +90,7 @@ fn applied() -> &'static Mutex<HashMap<String, String>> {
 }
 
 pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result<(), String> {
-    let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+    let _state = serialize(&STATE);
     let d = load(app)?;
     if d.revision != revision {
         return Err("GitHub access changed. Applying your latest choices.".into());
@@ -188,7 +188,7 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
     }
 }
 fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String> {
-    let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+    let _state = serialize(&STATE);
     let mut d = load(app)?;
     if let Some(removing) = removing {
         d.personal_token_removing = removing;
@@ -217,7 +217,7 @@ fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String>
 
 /// Called by the existing serialized worker. Snapshot reads never touch secure storage.
 pub(super) fn check(app: &tauri::AppHandle) {
-    let Ok(_operation) = TOKEN_OPERATION.try_lock() else {
+    let Some(_operation) = try_serialize(&TOKEN_OPERATION) else {
         return;
     };
     if now() < CHECK_AT.load(Ordering::SeqCst) {
@@ -243,7 +243,7 @@ pub(super) fn check(app: &tauri::AppHandle) {
     if publish(next) {
         if let Err(message) = changed(app, None) {
             // Keep the failed detachment visible and retry it through the normal worker.
-            let _state = STATE.lock().ok();
+            let _state = serialize(&STATE);
             if let Ok(mut d) = load(app) {
                 for name in d
                     .workspaces
@@ -268,9 +268,7 @@ pub async fn save_github_personal_token(
     require_main(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _network = TOKEN_OPERATION
-            .lock()
-            .map_err(|_| "GitHub operation failed.")?;
+        let _network = serialize(&TOKEN_OPERATION);
         // Saving a token is an explicit retry; never leave validation blocked by earlier failures.
         crate::github_http::reset_retries();
         let token = validated(token.trim())?;
@@ -298,9 +296,7 @@ pub async fn remove_github_personal_token(
     require_main(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _network = TOKEN_OPERATION
-            .lock()
-            .map_err(|_| "GitHub operation failed.")?;
+        let _network = serialize(&TOKEN_OPERATION);
         // Detach before deletion so a storage failure cannot leave guest access silently enabled.
         publish(json!({"state":"disconnected","saved":true,"message":"Removing personal token."}));
         changed(&app, Some(true))?;

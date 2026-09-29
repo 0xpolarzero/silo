@@ -14,7 +14,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Condvar, Mutex, OnceLock,
+        Condvar, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -24,6 +24,19 @@ static OPERATION: Mutex<()> = Mutex::new(());
 // Never hold this lock during a GitHub request. It orders desired saves
 // and local profile attachment so an older network result cannot restore access.
 static STATE: Mutex<()> = Mutex::new(());
+// Mutex poison policy (K-24): these serialization locks guard no data, and GitHub
+// state is re-read from disk after taking them, so one panic must not disable GitHub,
+// or block app updates through `update_guard`, until restart.
+fn serialize(lock: &'static Mutex<()>) -> MutexGuard<'static, ()> {
+    lock.lock().unwrap_or_else(PoisonError::into_inner)
+}
+fn try_serialize(lock: &'static Mutex<()>) -> Option<MutexGuard<'static, ()>> {
+    match lock.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
 static ACTIVE: OnceLock<Mutex<std::collections::HashMap<String, Vec<RuntimeGrant>>>> =
     OnceLock::new();
 #[derive(Clone)]
@@ -140,24 +153,13 @@ struct IntentTicket<'a> {
     number: Option<u64>,
 }
 impl<'a> IntentTicket<'a> {
+    // The queue position is plain data that stays valid after a panic elsewhere (K-24).
     fn wait(mut self) -> Result<IntentTurn<'a>, String> {
         let queue = self.queue;
         let ticket = self.number.take().ok_or("GitHub settings queue is unavailable.")?;
-        let mut turn = match queue.turn.lock() {
-            Ok(turn) => turn,
-            Err(_) => {
-                self.number = Some(ticket);
-                return Err("GitHub settings queue is unavailable.".into());
-            }
-        };
+        let mut turn = queue.turn.lock().unwrap_or_else(PoisonError::into_inner);
         while turn.next != ticket {
-            turn = match queue.ready.wait(turn) {
-                Ok(turn) => turn,
-                Err(_) => {
-                    self.number = Some(ticket);
-                    return Err("GitHub settings queue is unavailable.".into());
-                }
-            };
+            turn = queue.ready.wait(turn).unwrap_or_else(PoisonError::into_inner);
         }
         Ok(IntentTurn(queue))
     }
@@ -165,21 +167,19 @@ impl<'a> IntentTicket<'a> {
 impl Drop for IntentTicket<'_> {
     fn drop(&mut self) {
         let Some(ticket) = self.number else { return };
-        if let Ok(mut turn) = self.queue.turn.lock() {
-            if turn.next == ticket {
-                self.queue.advance(&mut turn);
-            } else if turn.next < ticket {
-                turn.abandoned.insert(ticket);
-            }
+        let mut turn = self.queue.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        if turn.next == ticket {
+            self.queue.advance(&mut turn);
+        } else if turn.next < ticket {
+            turn.abandoned.insert(ticket);
         }
     }
 }
 struct IntentTurn<'a>(&'a IntentQueue);
 impl Drop for IntentTurn<'_> {
     fn drop(&mut self) {
-        if let Ok(mut turn) = self.0.turn.lock() {
-            self.0.advance(&mut turn);
-        }
+        let mut turn = self.0.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        self.0.advance(&mut turn);
     }
 }
 static INTENTS: IntentQueue = IntentQueue::new();
@@ -347,7 +347,7 @@ struct Document {
 /// Copy the source's current GitHub assignment for a stopped checkpoint fork.
 /// The child obtains its own runtime identity and resolves credentials at Start.
 pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str) -> Result<(), String> {
-    let _state = STATE.try_lock().map_err(|_| "GitHub settings are busy. Retry the fork.".to_string())?;
+    let _state = try_serialize(&STATE).ok_or("GitHub settings are busy. Retry the fork.")?;
     let mut document = load(app)?;
     if let Some(mut assignment) = document.workspaces.iter()
         .find(|value| value["workspace"].as_str() == Some(source)).cloned() {
@@ -367,7 +367,7 @@ pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str
 }
 
 pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Result<(), String> {
-    let _state = STATE.try_lock().map_err(|_| "GitHub settings are busy.".to_string())?;
+    let _state = try_serialize(&STATE).ok_or("GitHub settings are busy.")?;
     let mut document = load(app)?;
     document.workspaces.retain(|value| value["workspace"].as_str() != Some(target));
     document.access_pending.retain(|name| name != target);
@@ -734,7 +734,7 @@ fn remember_token(app: &tauri::AppHandle, workspace: &str, token: &str) -> Resul
         tokens.push(token.into());
     }
     LEDGER_SECRET.write(ledger.clone(), || save_ledger(&entry, &ledger))?;
-    let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+    let _state = serialize(&STATE);
     let mut document = load(app)?;
     document.grants_issued = true;
     save(app, &document)
@@ -849,11 +849,11 @@ fn apply(
     apply_identity: bool,
 ) -> Result<(), String> {
     let d = {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         load(app)?
     };
     let narrowing_error = {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         if load(app)?.revision != d.revision { schedule(Duration::ZERO); return Ok(()); }
         narrow_each(app, &d)
     };
@@ -870,7 +870,7 @@ fn apply(
         // A sandbox pending checkpoint restore has no runtime yet. Its saved choices stay
         // pending and apply when it starts (`workspace_restored`); this is not a failure.
         if is_pending_restore(app, name) {
-            let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+            let _state = serialize(&STATE);
             let mut current = load(app)?;
             if current.revision == d.revision && current.operations.iter().any(|op| op["workspace"].as_str() == Some(name)) {
                 current.operations.retain(|op| op["workspace"].as_str() != Some(name));
@@ -881,7 +881,7 @@ fn apply(
         // Identity changes are independent of token issuance, including offline edits.
         let identity_requested = apply_identity || d.identity_pending.iter().any(|n| n == name);
         if identity_requested {
-            let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+            let _state = serialize(&STATE);
             if load(app)?.revision != d.revision {
                 schedule(Duration::from_millis(500));
                 return Ok(());
@@ -916,7 +916,7 @@ fn apply(
             let result = if let Some(error) = narrowing_error.for_workspace(name) { Err(error.clone()) } else if personal_token::selected(w) {
                 personal_token::apply(app, name, d.revision)
             } else { runtime_grants_for(app, &d, w, &previous).and_then(|grants| {
-                let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+                let _state = serialize(&STATE);
                 if load(app)?.revision != d.revision {
                     return Err("GitHub access changed. Applying your latest choices.".into());
                 }
@@ -945,7 +945,7 @@ fn apply(
                 .get(name)
                 .map_or(Ok(()), |message| Err(message.clone()))
         };
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut current = load(app)?;
         if current.revision != d.revision {
             schedule(Duration::from_millis(500));
@@ -1677,7 +1677,7 @@ fn open_authorization_browser(generation: u64, url: &str) -> Result<(), String> 
 
 fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
         CONNECTING.store(true, Ordering::SeqCst);
     }
@@ -1788,7 +1788,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         return Err("GitHub connection cancelled.".into());
     }
     {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         if CANCELLATION.load(Ordering::SeqCst) != generation {
             return Err("GitHub connection cancelled.".into());
         }
@@ -1870,9 +1870,9 @@ pub fn install(app: &tauri::AppHandle) {
         let pending_due = pending_deadline.is_some_and(|time| Instant::now() >= time);
         personal_token::check(&app);
         flush_account_credential();
-        if let Ok(_network) = OPERATION.try_lock() {
+        if let Some(_network) = try_serialize(&OPERATION) {
             let observed = {
-                let _state = STATE.lock().ok();
+                let _state = serialize(&STATE);
                 load(&app)
             };
             if let Ok(mut d) = observed {
@@ -1890,7 +1890,7 @@ pub fn install(app: &tauri::AppHandle) {
                             .is_ok_and(|c| c.is_some_and(|c| c.expires_at <= now() + 120))
                     {
                         if let Err(message) = active_credential() {
-                            if let Ok(_state) = STATE.lock() {
+                            { let _state = serialize(&STATE);
                                 if let Ok(mut current) = load(&app) {
                                     current.catalog_error = Some(message);
                                     let _ = save(&app, &current);
@@ -1900,7 +1900,7 @@ pub fn install(app: &tauri::AppHandle) {
                     }
                     if catalog_refresh_due(&d, now()) && credential().is_ok_and(|c| c.is_some()) {
                         let result = active_credential().and_then(|c| catalog(&c));
-                        if let Ok(_state) = STATE.lock() {
+                        { let _state = serialize(&STATE);
                             if let Ok(mut current) = load(&app) {
                                 match result {
                                     Ok(repos) => {
@@ -1942,7 +1942,7 @@ pub fn install(app: &tauri::AppHandle) {
                                 .map(|_| ())
                             })
                         });
-                        if let Ok(_state) = STATE.lock() {
+                        { let _state = serialize(&STATE);
                             if let Ok(mut current) = load(&app) {
                                 match result {
                                     Ok(()) => match delete_account_credential() {
@@ -1979,7 +1979,7 @@ pub fn install(app: &tauri::AppHandle) {
                         }
                     }
                     let account_credential = credential();
-                    if let Ok(_state) = STATE.lock() {
+                    { let _state = serialize(&STATE);
                         if let Ok(mut current) = load(&app) {
                             current.session = session().into();
                             if current.workspaces.is_empty() {
@@ -2025,7 +2025,7 @@ async fn run(
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+        let _guard = serialize(&OPERATION);
         f(&app)
     })
     .await
@@ -2047,7 +2047,7 @@ pub async fn connect_github(
     let generation = CANCELLATION.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+        let _guard = serialize(&OPERATION);
         connect(&app, generation)
     }).await.map_err(|_| "GitHub operation failed.")?
 }
@@ -2056,7 +2056,7 @@ pub async fn cancel_github_connection(app: tauri::AppHandle, window: tauri::Webv
     require_main(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         // Serialize with credential publication, not with the browser/network wait.
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut pending = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?;
         CANCELLATION.fetch_add(1, Ordering::SeqCst);
         pending.0 = None;
@@ -2099,7 +2099,7 @@ pub async fn refresh_github_repositories(
     crate::github_http::reset_retries();
     run(app, |app| {
         let result = active_credential().and_then(|c| catalog(&c));
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(app)?;
         match result {
             Ok(repos) => {
@@ -2135,7 +2135,7 @@ pub async fn disconnect_github(
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(&app)?;
         d.access_enabled = false;
         d.disconnect_pending = true;
@@ -2164,7 +2164,7 @@ pub async fn set_github_access_enabled(
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(&app)?;
         if d.access_enabled == enabled {
             return snapshot(&app);
@@ -2246,7 +2246,7 @@ pub async fn save_github_configuration(
             .ok_or("Missing GitHub access choice.")?;
         let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(&app)?;
         if d.workspaces == *ws && d.access_enabled == enabled {
             return snapshot(&app);
@@ -2320,7 +2320,7 @@ pub async fn retry_github_configuration(
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(&app)?;
         for w in &d.workspaces {
             if let Some(name) = w["workspace"].as_str() {
@@ -2546,6 +2546,35 @@ mod tests {
                 "second applied"
             );
         });
+    }
+    #[test]
+    fn a_panic_under_a_github_lock_does_not_disable_github_or_block_updates() {
+        for lock in [&OPERATION, &STATE] {
+            let _ = std::thread::spawn(move || {
+                let _guard = lock.lock().unwrap();
+                panic!("test panic while holding a GitHub lock");
+            })
+            .join();
+            assert!(lock.is_poisoned());
+        }
+        drop(update_guard().expect("a poisoned operation lock blocked app updates"));
+        drop(try_serialize(&STATE).expect("a poisoned state lock reported busy"));
+        drop(serialize(&STATE));
+        let queue = IntentQueue::new();
+        let ticket = queue.ticket();
+        std::thread::scope(|scope| {
+            let _ = scope
+                .spawn(|| {
+                    let _turn = queue.turn.lock().unwrap();
+                    panic!("test panic while holding the intent queue");
+                })
+                .join();
+        });
+        drop(ticket.wait().expect("a poisoned intent queue stopped settings changes"));
+        let next = queue.ticket();
+        drop(next.wait().unwrap());
+        OPERATION.clear_poison();
+        STATE.clear_poison();
     }
     #[test]
     fn an_abandoned_intent_never_blocks_later_intents() {
@@ -3169,5 +3198,5 @@ mod tests {
 }
 
 pub(crate) fn update_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
-    OPERATION.try_lock().map_err(|_| "Wait for the GitHub operation to finish before updating.".into())
+    try_serialize(&OPERATION).ok_or_else(|| "Wait for the GitHub operation to finish before updating.".into())
 }
