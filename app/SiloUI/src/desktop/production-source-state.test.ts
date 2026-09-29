@@ -398,6 +398,46 @@ describe("repository push status", () => {
   })
 })
 
+describe("derived view", () => {
+  it("hides a reported failure while its retry waits, across refreshes (H-30)", async () => {
+    const failed = structuredClone(source)
+    failed.workspaces[0] = { ...failed.workspaces[0], state: "stopped", lifecycleFailure: "Start failed: not enough memory" }
+    const action = deferred<unknown>()
+    const mock = bridge(command => {
+      if (command === "read_application_state") return structuredClone(failed)
+      if (command === "workspace_action") return action.promise
+    })
+    const store = createProductionSource(mock.native)
+    const dev = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.name === "dev")
+    try {
+      await store.initialize()
+      expect(dev()?.lifecycleFailure).toContain("not enough memory")
+      store.applicationActions.startWorkspace("dev")
+      expect(dev()).toMatchObject({ lifecycleAction: "start", lifecycleFailure: undefined })
+      // The queued action has not begun, so the runtime still reports the old failure.
+      await store.refresh()
+      expect(dev()).toMatchObject({ lifecycleAction: "start", lifecycleFailure: undefined })
+      action.resolve(structuredClone(source))
+      await vi.waitFor(() => expect(dev()?.lifecycleAction).toBeUndefined())
+    } finally { store.dispose() }
+  })
+
+  it("derives remote rows from their computer without writing them back (H-30)", async () => {
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return remoteSource()
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      for (let index = 0; index < 3; index++) await store.refresh()
+      const remote = store.getSnapshot().source?.workspaces.filter(workspace => workspace.computer) ?? []
+      expect(remote.map(workspace => workspace.machine.id)).toEqual([remoteTarget("office")])
+      expect(store.getSnapshot().source?.activities.filter(activity => activity.id.startsWith("silo-remote-activity:")).length).toBe(source.activities.length)
+    } finally { store.dispose() }
+  })
+})
+
 describe("GitHub state from full reads", () => {
   it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
     let failed = false

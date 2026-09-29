@@ -101,7 +101,7 @@ describe("production application bridge", () => {
       complete!(updated)
       await retry
       expect(store.getSnapshot().source?.workspaces[0].checkpoints?.[0].id).toBe("point-1")
-      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toBeNull()
+      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation ?? null).toBeNull()
       await store.refresh()
       expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toMatchObject({ status: "running", stage: "Capturing VM state" })
       runningSource.workspaces[0].checkpointOperation = { kind: "capture", status: "failed", stage: "Verification failed", error: "Checkpoint could not be verified." }
