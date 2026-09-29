@@ -5,10 +5,10 @@ import type { ProductionSource } from "./production-source"
 import type { DependencyStore } from "./dependencies"
 import { ProductionSurface } from "./production-surface"
 
-vi.mock("./shutdown-boundary", () => ({ ShutdownBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
+vi.mock("./shutdown-boundary", () => ({ ShutdownBoundary: ({ children, pendingWork }: { children: import("react").ReactNode; pendingWork?: string }) => <>{pendingWork && <p>Quit overlay: {pendingWork}</p>}{children}</> }))
 vi.mock("./runtime-migration-boundary", () => ({ RuntimeMigrationBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
-const state = vi.hoisted(() => ({ source: {} as object | null, loading: false, error: null as string | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn() }))
-vi.mock("./production-source", () => ({ useProductionSource: () => ({ source: state.source, backup: {}, loading: state.loading, error: state.error, savedMachines: [{ id: "saved", name: "saved-machine", kind: "ssh", host: "host", user: "user", port: 22 }] }) }))
+const state = vi.hoisted(() => ({ source: {} as object | null, loading: false, error: null as string | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn(), setupDrain: undefined as string | undefined }))
+vi.mock("./production-source", () => ({ useProductionSource: () => ({ source: state.source, backup: {}, loading: state.loading, error: state.error, setupDrain: state.setupDrain, savedMachines: [{ id: "saved", name: "saved-machine", kind: "ssh", host: "host", user: "user", port: 22 }] }) }))
 vi.mock("./dependencies", () => ({ useDependencyStore: () => ({ checks: state.checks, retry: state.retry }) }))
 vi.mock("./production-onboarding", () => ({ ProductionOnboarding: ({ onOpenApp }: { onOpenApp: () => void }) => <button onClick={onOpenApp}>Open Silo</button> }))
 vi.mock("@/features/application/application-app", () => ({ ApplicationApp: ({ source, actions }: { source: { runtimeRepair?: { reason: string; recovery: string; checking: boolean } }; actions: { retryRuntimeChecks: () => void } }) => <div>Main app{source.runtimeRepair && <div role="alert">{source.runtimeRepair.reason}{source.runtimeRepair.recovery}<button disabled={source.runtimeRepair.checking} onClick={actions.retryRuntimeChecks}>Retry checks</button></div>}</div> }))
@@ -17,7 +17,7 @@ vi.mock("./status-panel", () => ({ StatusPanel: () => <div>Status panel</div> })
 const source = { applicationActions: {}, statusActions: {}, refresh: vi.fn(), initialize: vi.fn(() => Promise.resolve()) } as unknown as ProductionSource
 const dependencyStore = {} as DependencyStore
 
-beforeEach(() => { state.source = {}; state.loading = false; state.error = null; state.checks = []; vi.clearAllMocks() })
+beforeEach(() => { state.source = {}; state.loading = false; state.error = null; state.checks = []; state.setupDrain = undefined; vi.clearAllMocks() })
 
 describe("production completion routing", () => {
   it("shows the actual shell and saved rows while live state loads, then replaces skeletons", () => {
@@ -65,6 +65,12 @@ describe("production completion routing", () => {
     render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
     expect(screen.getByText("Main app")).toBeVisible()
     expect(screen.queryByRole("button", { name: "Open Silo" })).not.toBeInTheDocument()
+  })
+
+  it("names the setup work Quit is draining in the main window's shutdown overlay", () => {
+    state.setupDrain = "Finishing setup (verifying GitHub access)…"
+    render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
+    expect(screen.getByText("Quit overlay: Finishing setup (verifying GitHub access)…")).toBeVisible()
   })
 
   it("keeps the status window outside onboarding", () => {

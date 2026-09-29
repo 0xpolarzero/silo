@@ -35,7 +35,12 @@ export function Unavailable({ message, retry, checks = [], checking = false }: {
 
 type ProductionSurfaceProps = { source: ProductionSource; dependencyStore: DependencyStore | null; statusPanel?: boolean }
 export function ProductionSurface(props: ProductionSurfaceProps) {
-  return props.statusPanel ? <ProductionContent {...props} /> : <ShutdownBoundary><RuntimeMigrationBoundary><ProductionContent {...props} /></RuntimeMigrationBoundary></ShutdownBoundary>
+  return props.statusPanel ? <ProductionContent {...props} /> : <MainSurface {...props} />
+}
+function MainSurface(props: ProductionSurfaceProps) {
+  // Quit drains accepted setup first; name that work while the overlay waits for it.
+  const { setupDrain } = useProductionSource(props.source)
+  return <ShutdownBoundary pendingWork={setupDrain}><RuntimeMigrationBoundary><ProductionContent {...props} /></RuntimeMigrationBoundary></ShutdownBoundary>
 }
 function ProductionContent({ source, dependencyStore, statusPanel = false }: ProductionSurfaceProps) {
   const current = useProductionSource(source)

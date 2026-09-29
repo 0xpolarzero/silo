@@ -27,6 +27,83 @@ function bridge(options: { failListen?: (name: string) => boolean; invoke?: (com
   return { bridge: { invoke, listen } as unknown as ProductionBridge, invoke, listen, handlers, count }
 }
 
+describe("production setup drain", () => {
+  it("stops waiting for GitHub access when Quit drains setup and names the work meanwhile", async () => {
+    const workspace = source.workspaces[0].machine.name
+    const applying = { ...source.github, policyRevision: 3, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }
+    let resolveIdentity!: () => void
+    const identity = new Promise<void>((resolve) => { resolveIdentity = resolve })
+    const mock = bridge({ invoke: (command) => {
+      if (command === "save_github_configuration" || command === "read_github_state") return Promise.resolve(structuredClone(applying))
+      if (command === "configure_workspace_identities") return identity.then(() => null)
+      if (command === "verify_workspace_identities") return Promise.resolve(false)
+      if (command === "read_setup_activity") return Promise.resolve([])
+      return undefined
+    } })
+    const store = createProductionSource(mock.bridge)
+    try {
+      await store.initialize()
+      const request = {
+        machineConfiguration: { schemaVersion: 1 as const, machines: source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine) },
+        applications: source.preferences,
+        github: { connectionState: "connected" as const, workspaces: source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => ({ workspace: machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
+      }
+      const finished = store.finishSetup(request, vi.fn(async () => {}))
+      void finished.catch(() => {})
+      await vi.waitFor(() => expect(mock.count("configure_workspace_identities")).toBe(1))
+      let drained = false
+      const drain = store.drainSetup().then(() => { drained = true })
+      expect(store.getSnapshot().setupDrain).toBe("Finishing setup (applying Git identities, verifying GitHub access, saving setup)…")
+      resolveIdentity()
+      await vi.waitFor(() => expect(mock.count("save_github_configuration")).toBe(1))
+      // The verification loop ends at once instead of polling for up to five minutes.
+      await vi.waitFor(() => expect(drained).toBe(true), { timeout: 2000 })
+      await drain
+      await expect(finished).rejects.toThrow(/Silo is quitting/)
+      expect(mock.count("read_github_state")).toBe(0)
+      expect(store.getSnapshot().setupDrain).toBeUndefined()
+    } finally {
+      store.dispose()
+    }
+  })
+
+  it("wakes a GitHub access poll that is already waiting", async () => {
+    vi.useFakeTimers()
+    const workspace = source.workspaces[0].machine.name
+    const applying = { ...source.github, policyRevision: 3, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }
+    const mock = bridge({ invoke: (command) => {
+      if (command === "save_github_configuration" || command === "read_github_state") return Promise.resolve(structuredClone(applying))
+      if (command === "configure_workspace_identities") return Promise.resolve(null)
+      if (command === "verify_workspace_identities") return Promise.resolve(false)
+      if (command === "read_setup_activity") return Promise.resolve([])
+      return undefined
+    } })
+    const store = createProductionSource(mock.bridge)
+    try {
+      await store.initialize()
+      const machines = source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine)
+      const step = store.submitSetupStep("github", {
+        machineConfiguration: { schemaVersion: 1, machines },
+        applications: source.preferences,
+        github: { connectionState: "connected", workspaces: machines.map((machine) => ({ workspace: machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
+      })
+      const outcome = expect(step).rejects.toThrow(/Silo is quitting/)
+      await vi.advanceTimersByTimeAsync(1_200)
+      const polls = mock.count("read_github_state")
+      expect(polls).toBeGreaterThan(0)
+      let drained = false
+      void store.drainSetup().then(() => { drained = true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(drained).toBe(true)
+      await outcome
+      expect(mock.count("read_github_state")).toBe(polls)
+    } finally {
+      store.dispose()
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe("production source start-up", () => {
   it("subscribes, polls and refreshes on focus when Retry initializes again after a failed subscription", async () => {
     vi.useFakeTimers()

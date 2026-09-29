@@ -15,8 +15,11 @@ import {
   type OperationQueue,
 } from "@/features/application/model/operation-queue"
 
-/** Keep the existing screen visible while the native owner finishes Quit. */
-export function ShutdownBoundary({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
+/**
+ * Keep the existing screen visible while the native owner finishes Quit.
+ * `pendingWork` names frontend setup work Quit waits for (it is not in the queue).
+ */
+export function ShutdownBoundary({ children, compact = false, pendingWork }: { children: ReactNode; compact?: boolean; pendingWork?: string }) {
   const [quitting, setQuitting] = useState(false)
   const [queue, setQueue] = useState<OperationQueue>(emptyOperationQueue)
   const previousFocus = useRef<HTMLElement | null>(null)
@@ -77,7 +80,7 @@ export function ShutdownBoundary({ children, compact = false }: { children: Reac
           <Dialog.Title className="sr-only">Quitting Silo</Dialog.Title>
           <div role="status" className="flex max-w-sm flex-col items-center gap-3 px-6 text-center">
             <LoaderCircle aria-hidden="true" strokeWidth={1.5} className={cn("size-6 text-muted-foreground", !settings.reduceMotion && "animate-spin motion-reduce:animate-none")} />
-            <Dialog.Description className="text-[13px] font-medium text-foreground">{waitingLabel ?? "Stopping local sandboxes…"}</Dialog.Description>
+            <Dialog.Description className="text-[13px] font-medium text-foreground">{waitingLabel ?? pendingWork ?? "Stopping local sandboxes…"}</Dialog.Description>
             {waitingLabel && (cancellable.length > 0
               ? <Button type="button" size="sm" variant="outline" onClick={cancelAndQuit}>Cancel and quit</Button>
               : <p className="text-xs text-muted-foreground">Quit will finish once this work completes.</p>)}

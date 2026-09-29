@@ -73,6 +73,16 @@ it("does not let an older snapshot replace a newer shutdown event", async () => 
   await act(async () => resolve(false))
   expect(screen.getByRole("status")).toBeVisible()
 })
+it("names pending setup work Quit waits for when no queued operation runs", async () => {
+  native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? { running: [], waiting: [] } : false)
+  const view = render(<ShutdownBoundary pendingWork="Finishing setup (verifying GitHub access)…"><button>Create VM</button></ShutdownBoundary>)
+  await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
+  act(() => native.receive({ payload: true }))
+  expect(screen.getByRole("status")).toHaveTextContent("Finishing setup (verifying GitHub access)…")
+  view.rerender(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+  expect(screen.getByRole("status")).toHaveTextContent("Stopping local sandboxes…")
+})
+
 it("keeps the newest queue read when an earlier one answers last", async () => {
   const entry = (id: number, label: string) => ({ id, label, vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false })
   const reads: Array<(value: unknown) => void> = []

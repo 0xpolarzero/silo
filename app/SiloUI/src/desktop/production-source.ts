@@ -173,6 +173,8 @@ export interface ProductionSnapshot {
   setupActivity?: SiloProgressEvent[]
   setupActivityError?: string
   setupCandidate?: SetupMachineConfigurationRequest
+  /** The setup work Quit is waiting for while it drains setup. */
+  setupDrain?: string
   source: ApplicationSource | null
   backup: BackupState
   loading: boolean
@@ -588,7 +590,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       unlisten.push(await native.listen("desktop:status-opened", refreshFromEvent))
       // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
       // so setup and sandbox configuration must be accepted again.
-      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => { if (event?.payload === false) acceptingSetup = true }))
+      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => {
+        if (event?.payload !== false) return
+        acceptingSetup = true
+        if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
+      }))
       unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
         const parsed = siloProgressEventSchema.safeParse(event?.payload)
         if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
@@ -947,9 +953,36 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return enqueueSetup(["completion"], async () => { await preceding; await markComplete() })
   }
 
+  // Setup waits (GitHub access polling) end early when Quit drains setup.
+  const setupWaits = new Set<() => void>()
+  function setupDelay(ms: number) {
+    return new Promise<void>((resolve) => {
+      const done = () => { window.clearTimeout(timer); setupWaits.delete(done); resolve() }
+      const timer = window.setTimeout(done, ms)
+      setupWaits.add(done)
+    })
+  }
+
+  /** What Quit is waiting for while setup drains, for the shutdown overlay. */
+  function pendingSetupWork(): string | undefined {
+    const pending = new Set(setupJobs.flatMap((job) => job.items.filter(({ status }) => status === "running" || status === "queued").map(({ id }) => id)))
+    const steps = [
+      (pending.has("workspaceRun") || pending.has("workspaceVerify")) && "creating sandboxes",
+      (pending.has("identityRun") || pending.has("identityVerify")) && "applying Git identities",
+      (pending.has("githubRun") || pending.has("githubVerify")) && "verifying GitHub access",
+      pending.has("completion") && "saving setup",
+    ].filter((step): step is string => Boolean(step))
+    return steps.length ? `Finishing setup (${steps.join(", ")})…` : undefined
+  }
+
   async function drainSetup() {
     acceptingSetup = false
-    await setupTail
+    // Accepted setup finishes, but nothing waits minutes for GitHub to confirm access.
+    ;[...setupWaits].forEach((wake) => wake())
+    const pending = pendingSetupWork()
+    if (pending) publish({ ...snapshot, setupDrain: pending })
+    try { await setupTail }
+    finally { if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined }) }
   }
 
   function saveMachineConfiguration(request: SetupMachineConfigurationRequest, baseline?: SetupMachineConfiguration[]): Promise<void> {
@@ -968,15 +1001,18 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     let github = initial
     const revision = initial.policyRevision
     const deadline = Date.now() + 300_000
+    const quitting = () => new Error("Silo is quitting. GitHub access was not verified; Continue after reopening Silo to check again.")
     while (true) {
       if (disposed) throw new Error("Silo closed before GitHub access was verified.")
+      if (!acceptingSetup) throw quitting()
       if (revision !== undefined && (github.policyRevision !== revision || (snapshot.source?.github.policyRevision ?? revision) > revision)) throw new Error("GitHub settings changed during setup. Continue again to verify the latest settings.")
       const operations = workspaces.map((workspace) => github.workspaceOperations?.find((operation) => operation.workspace === workspace))
       const failure = operations.find((operation) => operation?.status === "failed")
       if (failure) throw new Error(failure.message)
       if (operations.every((operation) => operation?.status === "succeeded")) return
       if (Date.now() >= deadline) throw new Error("GitHub access has not been verified in every sandbox. Retry to check again.")
-      await new Promise((resolve) => window.setTimeout(resolve, 500))
+      await setupDelay(500)
+      if (!acceptingSetup) throw quitting()
       github = githubStateShape.parse(await native.invoke("read_github_state"))
       if (!githubMutationPending && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github } })
     }
