@@ -200,6 +200,12 @@ fn advance(
         };
         let started_here = command == "start" && result.is_ok();
         if !reached {
+            // The timed-out stop was already followed by the full state wait;
+            // report it as final rather than a transient error that is retried
+            // with another full stop timeout and wait.
+            if command == "stop" && matches!(result, Err(RuntimeError::TimedOut { .. })) {
+                return Err(error(format!("{} did not stop in time. Check its status and retry.", intent.name)));
+            }
             result?;
             return Err(error(format!(
                 "{} did not reach the {} state. Retry to continue the saved action.",
@@ -413,6 +419,7 @@ mod tests {
         calls: Mutex<Vec<String>>,
         fail_start: bool,
         cancel_start: bool,
+        stop_times_out: bool,
         start_wins: bool,
         replaced: bool,
     }
@@ -423,6 +430,7 @@ mod tests {
                 calls: Mutex::new(vec![]),
                 fail_start: false,
                 cancel_start: false,
+                stop_times_out: false,
                 start_wins: false,
                 replaced: false,
             }
@@ -456,6 +464,9 @@ mod tests {
                 if self.fail_start {
                     return Err(error("Synthetic start interruption."));
                 }
+            }
+            if action == "stop" && self.stop_times_out {
+                return Err(RuntimeError::TimedOut { operation: "Stopping dev".into() });
             }
             if action == "stop" {
                 *self.state.lock().unwrap() = "Stopped".into();
@@ -620,6 +631,15 @@ mod tests {
         assert_eq!(runner.mutations(), vec!["stop"]);
         assert!(!path(&paths, ID).exists());
         assert!(directory(&paths).join("broken.json").exists());
+    }
+    #[test]
+    fn timed_out_stop_that_never_settles_is_not_retried_as_transient() {
+        let (_dir, paths, _) = setup();
+        let mut runner = Fake::new("Running");
+        runner.stop_times_out = true;
+        let failure = perform(&runner, &paths, &host(), "stop", "dev").unwrap_err();
+        assert!(!crate::runtime::transient_runtime_error(&failure));
+        assert_eq!(runner.mutations(), vec!["stop"]);
     }
     #[test]
     fn surviving_detached_start_can_win_without_being_restarted() {
