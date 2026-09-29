@@ -266,6 +266,11 @@ fn revision(document: &Document, workspace: &str) -> String {
 pub(crate) fn workspace_revision(workspace: &str) -> Result<String, String> {
     Ok(revision(&load()?, workspace))
 }
+/// Per workspace, a counter of verified starts and the secret revision they booted.
+static STARTS: Mutex<BTreeMap<String, (u64, String)>> = Mutex::new(BTreeMap::new());
+fn last_start(workspace: &str) -> Option<(u64, String)> {
+    STARTS.lock().unwrap_or_else(PoisonError::into_inner).get(workspace).cloned()
+}
 pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Result<(), String> {
     // Called only after runtime verification. No operation lock: start owns the runtime lock.
     if store_path().is_none() {
@@ -275,6 +280,10 @@ pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Resu
         if revision(document, workspace) != applied_revision {
             return Ok(());
         }
+        let mut starts = STARTS.lock().unwrap_or_else(PoisonError::into_inner);
+        let start = starts.entry(workspace.into()).or_default();
+        *start = (start.0.wrapping_add(1), applied_revision.into());
+        drop(starts);
         for secret in &mut document.secrets {
             secret.pending_workspaces.retain(|w| w != workspace);
             secret.affected.retain(|w| w != workspace);
@@ -455,13 +464,19 @@ fn reconcile_with(
         let mut attempts = 0;
         let result = loop {
             let desired_revision = workspace_revision(&workspace)?;
+            let started_before = last_start(&workspace);
             let desired = material(&workspace);
             *operation = None;
             let result = desired.and_then(|desired| apply(&workspace, desired));
             *operation = Some(lock_unit(&OPERATION));
             attempts += 1;
             if attempts >= 3 || workspace_revision(&workspace)? == desired_revision {
-                break result;
+                // A restart that finished while this apply ran already booted with the
+                // desired secrets, so a deferred result must not ask for another one.
+                let restarted = last_start(&workspace).is_some_and(|start| {
+                    Some(&start) != started_before.as_ref() && start.1 == desired_revision
+                });
+                break result.map(|pending| if restarted { Vec::new() } else { pending });
             }
         };
         update(|document| {
@@ -929,6 +944,34 @@ mod tests {
         drop(operation);
         assert_eq!(applied, ["dev", "dev"], "the newer desired state is applied again");
         let document = load().unwrap();
+        assert_eq!(public(&document.secrets[0])["state"], "active");
+        use_test_store(None);
+    }
+    #[test]
+    fn restart_finishing_during_apply_leaves_no_stale_restart_request() {
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        let mut assigned = secret();
+        assigned.workspaces = vec!["restarting".into()];
+        assigned.affected = vec!["restarting".into()];
+        save(&Document { secrets: vec![assigned], activities: Vec::new() }).unwrap();
+        let mut operation = Some(lock_unit(&OPERATION));
+        reconcile_with(
+            "id",
+            &mut operation,
+            &|_| Ok(Vec::new()),
+            &mut |workspace, _| {
+                // The running VM defers the change, but a restart completes with the
+                // desired revision before this result is recorded.
+                workspace_started(workspace, &workspace_revision(workspace)?)?;
+                Ok(vec!["API_KEY".into()])
+            },
+            &|| {},
+        )
+        .unwrap();
+        drop(operation);
+        let document = load().unwrap();
+        assert!(document.secrets[0].pending_workspaces.is_empty());
         assert_eq!(public(&document.secrets[0])["state"], "active");
         use_test_store(None);
     }
