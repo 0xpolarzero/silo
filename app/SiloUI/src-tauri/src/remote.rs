@@ -16,6 +16,9 @@ use std::{
 };
 use tauri::AppHandle;
 const INSTALL_PUBLIC_KEY: &str = r#"umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && key=$(cat) && { grep -qxF -- "$key" ~/.ssh/authorized_keys || printf '\n%s\n' "$key" >> ~/.ssh/authorized_keys; }"#;
+/// Silo's key may only run the bridge and open `-N` tunnels to loopback ports on the owner.
+const AUTHORIZED_KEY_OPTIONS: &str = r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge""#;
+const SILO_KEY_COMMENT: &str = "Silo remote management";
 const VERSION: u32 = 1;
 const LIMIT: usize = 4 * 1024 * 1024;
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
@@ -335,9 +338,10 @@ pub fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(), Strin
     }
     let public = fs::read_to_string(key.with_extension("pub"))
         .map_err(|_| "Could not read Silo’s public SSH key.")?;
-    if !public.starts_with("ssh-ed25519 ") || public.len() > 1024 {
+    if public.len() > 1024 {
         return Err("Invalid Silo SSH public key.".into());
     }
+    let line = authorized_key_line(&public)?;
 
     let args = [
         "/usr/bin/ssh",
@@ -353,7 +357,7 @@ pub fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(), Strin
     ];
     let command = format!(
         "printf '%s\n' {} | {}",
-        crate::terminal::quote(public.trim()),
+        crate::terminal::quote(&line),
         args.iter()
             .map(|arg| crate::terminal::quote(arg))
             .collect::<Vec<_>>()
@@ -361,6 +365,89 @@ pub fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(), Strin
     );
     let application = crate::applications::selected_terminal(&app)?;
     crate::applications::open_terminal(&app, &application, &command)
+}
+fn silo_key_blob(public: &str) -> Result<&str, String> {
+    let mut parts = public.split_whitespace();
+    match (parts.next(), parts.next()) {
+        (Some("ssh-ed25519"), Some(blob))
+            if !blob.is_empty()
+                && blob.len() <= 512
+                && blob
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')) =>
+        {
+            Ok(blob)
+        }
+        _ => Err("Invalid Silo SSH public key.".into()),
+    }
+}
+/// The `authorized_keys` line Silo installs for its remote-management key.
+fn authorized_key_line(public: &str) -> Result<String, String> {
+    let blob = silo_key_blob(public)?;
+    Ok(format!("{AUTHORIZED_KEY_OPTIONS} ssh-ed25519 {blob} {SILO_KEY_COMMENT}"))
+}
+/// Rewrites the unrestricted line earlier Silo versions installed; other lines are untouched.
+fn restrict_authorized_keys(contents: &str, blob: &str) -> Option<String> {
+    let unrestricted = format!("ssh-ed25519 {blob} {SILO_KEY_COMMENT}");
+    let mut changed = false;
+    let rewritten = contents
+        .split_inclusive('\n')
+        .map(|line| {
+            if line.trim() == unrestricted {
+                changed = true;
+                let ending = if line.ends_with('\n') { "\n" } else { "" };
+                format!("{AUTHORIZED_KEY_OPTIONS} {unrestricted}{ending}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<String>();
+    changed.then_some(rewritten)
+}
+fn restrict_authorized_keys_file(path: &std::path::Path, public: &str) -> Result<bool, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let blob = silo_key_blob(public)?;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    // Leave symlinked or otherwise managed files to their owner.
+    if !metadata.file_type().is_file() {
+        return Ok(false);
+    }
+    let contents = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let Some(rewritten) = restrict_authorized_keys(&contents, blob) else {
+        return Ok(false);
+    };
+    let temporary = path.with_file_name(".authorized_keys.silo-restrict");
+    let _ = fs::remove_file(&temporary);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(metadata.permissions().mode() & 0o7777)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&temporary)
+        .map_err(|e| e.to_string())?;
+    let written = file
+        .write_all(rewritten.as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| fs::rename(&temporary, path));
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    Ok(true)
+}
+/// Owner side: restrict the calling controller's previously installed Silo key.
+fn restrict_installed_key(public: &str) -> Result<bool, String> {
+    let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
+    restrict_authorized_keys_file(&PathBuf::from(home).join(".ssh/authorized_keys"), public)
+}
+fn silo_public_key() -> Option<String> {
+    let public = fs::read_to_string(directory().ok()?.join("id_ed25519.pub")).ok()?;
+    silo_key_blob(&public).ok()?;
+    Some(public.trim().to_owned())
 }
 fn request_timeout(request: &Value) -> Duration {
     if (request["method"] == "runtime.upsert" && request.pointer("/params/machine/desktop").is_some_and(|v| !v.is_null()))
@@ -492,7 +579,7 @@ pub async fn connect_remote_host(address: String) -> Result<RemoteHost, String> 
             &address,
             json!({
                 "version": VERSION, "requestId": uuid::Uuid::new_v4().to_string(),
-                "method": "handshake", "params": {}
+                "method": "handshake", "params": {"sshKey": silo_public_key()}
             }),
         )?;
         if result["version"].as_u64() != Some(VERSION as u64) {
@@ -822,6 +909,12 @@ fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
     let config = authorize(&request)?;
     let method = request["method"].as_str().ok_or("Missing remote method.")?;
     if method == "handshake" {
+        // Earlier versions installed Silo's key without restrictions; tighten it over this session.
+        if let Some(public) = request["params"]["sshKey"].as_str() {
+            if let Err(error) = restrict_installed_key(public) {
+                eprintln!("Could not restrict Silo's SSH key: {error}");
+            }
+        }
         return Ok(json!({"hostId":config.host_id,"name":name(),"version":VERSION}));
     }
     if request["hostId"].as_str() != Some(&config.host_id) {
@@ -1289,6 +1382,74 @@ mod setup_tests {
             fs::read_to_string(authorized).unwrap(),
             format!("existing-key-without-final-newline\n{public}\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod authorized_key_tests {
+    use super::*;
+    const BLOB: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIHk8t0ahm+m4Qf9wTQ2xV1Vv2Qb2QeQ3bE8m0l2a6y5Z";
+
+    #[test]
+    fn installed_line_only_allows_the_bridge_and_loopback_tunnels() {
+        let line = authorized_key_line(&format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}\n")).unwrap();
+        assert_eq!(
+            line,
+            format!(r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge" ssh-ed25519 {BLOB} Silo remote management"#)
+        );
+        for invalid in [
+            "",
+            "ssh-rsa AAAA Silo remote management",
+            "ssh-ed25519",
+            "ssh-ed25519 AAAA\"x",
+            "ssh-ed25519 $(touch) Silo",
+            "command=\"sh\" ssh-ed25519 AAAA",
+        ] {
+            assert!(authorized_key_line(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn rewrites_only_silos_own_unrestricted_line() {
+        let own = format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}");
+        let contents = format!(
+            "ssh-ed25519 AAAAother user@laptop\n{own}\nfrom=\"10.0.0.1\" {own}\nssh-ed25519 {BLOB} personal\n{own}"
+        );
+        let rewritten = restrict_authorized_keys(&contents, BLOB).unwrap();
+        let restricted = format!("{AUTHORIZED_KEY_OPTIONS} {own}");
+        assert_eq!(
+            rewritten,
+            format!(
+                "ssh-ed25519 AAAAother user@laptop\n{restricted}\nfrom=\"10.0.0.1\" {own}\nssh-ed25519 {BLOB} personal\n{restricted}"
+            )
+        );
+        assert_eq!(restrict_authorized_keys(&rewritten, BLOB), None);
+        assert_eq!(restrict_authorized_keys(&contents, "AAAAother"), None);
+    }
+
+    #[test]
+    fn rewrite_preserves_file_mode_and_skips_symlinks() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("authorized_keys");
+        let public = format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}");
+        fs::write(&path, format!("ssh-ed25519 AAAAother user\n{public}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(restrict_authorized_keys_file(&path, &public).unwrap());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("ssh-ed25519 AAAAother user\n{AUTHORIZED_KEY_OPTIONS} {public}\n")
+        );
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(!restrict_authorized_keys_file(&path, &public).unwrap());
+        assert!(!home.path().join(".authorized_keys.silo-restrict").exists());
+
+        let target = home.path().join("managed");
+        fs::write(&target, format!("{public}\n")).unwrap();
+        let link = home.path().join("linked");
+        symlink(&target, &link).unwrap();
+        assert!(!restrict_authorized_keys_file(&link, &public).unwrap());
+        assert_eq!(fs::read_to_string(&target).unwrap(), format!("{public}\n"));
+        assert!(!restrict_authorized_keys_file(&home.path().join("missing"), &public).unwrap());
     }
 }
 
