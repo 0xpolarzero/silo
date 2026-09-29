@@ -1604,16 +1604,19 @@ pub(crate) fn dismiss_backup_operation(
     controller: State<'_, Arc<Controller>>,
     expected_operation: Value,
     expected_operation_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     require_main(&window)?;
-    if dismiss_finished_operation(
+    // Report whether the result was actually dismissed so the caller does not
+    // hide a result the backend still holds (E-49).
+    let dismissed = dismiss_finished_operation(
         &controller,
         Some(&expected_operation),
         expected_operation_id.as_deref(),
-    )? {
+    )?;
+    if dismissed {
         publish(&app, &controller);
     }
-    Ok(())
+    Ok(dismissed)
 }
 
 fn dismiss_finished_operation(
