@@ -1,0 +1,619 @@
+# SiloUI review remediation: design notes
+
+Decision records for the items marked **design** in Phase 0 of the
+[review remediation plan](SiloUI-REVIEW-REMEDIATION-PLAN.md). Owner decisions
+come from [the 2026-09-29 review](research/codebase-review-2026-09-29.md).
+Written 2026-09-29 against `main` at `edd30ae`. Every item follows
+`AGENTS.md` "Reuse established tools".
+
+**Evidence labels.** *Verified* means read in this repository or fetched from a
+primary source on 2026-09-29. *Assumed* means taken from memory or an
+inference that still needs a test. Where a source was read through a
+summarising fetch rather than line by line, the note says so.
+
+Sources checked:
+
+- MicroSandbox pin: `app/SiloUI/runtime-inputs.json` (0.7.2, commit `60d4dc8`)
+  and the single Silo patch `app/SiloUI/patches/microsandbox-silo-network-0.7.2.patch`,
+  which does not touch snapshot or archive code (verified with grep).
+- MicroSandbox v0.7.2 `docs/sandboxes/snapshots.mdx` and
+  `sdk/rust/lib/backend/local/snapshot/archive.rs` (both read through a summarising fetch).
+- tao `dev` `src/platform_impl/macos/app_delegate.rs` (summarising fetch);
+  the locked version is tao 0.35.3 (`Cargo.lock`).
+- Tauri single-instance plugin guide, <https://v2.tauri.app/plugin/single-instance/>,
+  and plugin source `plugins-workspace/v2/plugins/single-instance`
+  (`Cargo.toml`, `src/platform_impl/macos.rs`; summarising fetch).
+- GitHub REST docs, "Create an installation access token for an app".
+- `Cargo.lock`: `zbus` 5.19 and 4.4, `parking_lot` 0.12.5, and `thiserror` 2 are
+  already in the dependency graph, so none of them adds a new supply-chain root.
+
+---
+
+## D-02: per-VM snapshot reads instead of the computer-wide idle check
+
+**Problem.** `read_application_snapshot_once` rejects the whole read with
+UPDATING whenever `OPERATIONS.is_idle()` is false. That includes hidden
+housekeeping and work on unrelated VMs. As a result, one checkpoint or slow
+boot freezes every row, and the first read at launch fails
+(`runtime.rs:1748,1851`, `operation_gate.rs:579`). Related: H-37 and the F
+update-readiness check.
+
+**Options.**
+
+1. Keep the global check and exclude hidden entries.
+2. Settle each VM separately: read everything, then keep a VM's fresh fields
+   only if `is_vm_idle(id)` holds and its generation is unchanged. Otherwise
+   return that VM's previous value marked `settling`.
+3. Use a versioned store with a revision per VM (for example `arc-swap`).
+
+`is_vm_idle` and `generation(id)` already exist (`runtime.rs:1939` uses the
+same pattern). Option 3 adds a subsystem this problem does not need.
+
+**Decision.** Option 2, plus option 1 for computer-scoped fields. Hidden
+entries never make a read stale. A computer-scoped visible operation marks only
+the computer-level fields as settling.
+
+**Outline.**
+
+1. `operation_gate.rs`: add `is_idle_visible()` and a `snapshot_epoch(id)` that
+   returns the generation together with the idle state.
+2. `runtime.rs`:
+   - Replace the `&|| OPERATIONS.is_idle()` predicate with a per-VM filter.
+   - Remove the `Err(UPDATING)` return for partial overlap.
+   - Add `settling: bool` per VM to the contract.
+3. H (`production-source.ts`): never replace a fresher VM reading with a
+   settling one (H-37).
+4. `updates.rs:169`: use `is_idle_visible()`.
+
+**Tests.**
+
+- A running op on VM A leaves B's reading fresh.
+- A hidden log cleanup never yields UPDATING.
+- The launch read succeeds while `start_at_launch` runs.
+
+**Open question.** Should settling rows show a spinner, or silently keep the
+last value?
+
+---
+
+## E-03: checkpoint deletion with fork dependencies and native snapshot cleanup
+
+**Problem.** Silo never removes native snapshots. Restore, Fork and failed
+captures or imports accumulate full-size members. Deleted sandboxes leave
+orphans, and the 1 MiB index eventually breaks export and import (E-03, E-23,
+owner decision 9).
+
+**What 0.7.2 supports** (verified in the v0.7.2 snapshot guide, read through a
+summarising fetch):
+
+- The subcommands are `create`, `list|ls`, `inspect`, `remove|rm`, `save`,
+  `load`, `verify`, `head` and `reindex`.
+- `remove` refuses the current group head while other members remain; the user
+  must select another head first. `--force` does not bypass this guard.
+- `remove` also refuses a snapshot that has indexed children. `--force` exists
+  for that case, but its exact semantics are unverified.
+- The guide says loaded snapshots and restored children own their required
+  files, so removing a base does not break them.
+
+Silo's patch does not change any of this.
+
+**Options.**
+
+1. Call `msb snapshot remove` per member. Silo keeps the dependency policy and
+   MicroSandbox keeps storage integrity.
+2. Delete snapshot directories directly and run `reindex`. This bypasses the
+   upstream guards, so it is rejected.
+3. Add a MicroSandbox prune/GC upstream. This is the long-term option, but no
+   such command exists in 0.7.2.
+
+**Decision.** Option 1. Never pass `--force`.
+
+- A checkpoint is **pinned** when another Silo checkpoint or a pending
+  restore/import journal references it. Pinned checkpoints show "Used by
+  {fork}" and cannot be deleted.
+- MicroSandbox's children guard is a second line of defence. Silo still
+  reports the block in its own words.
+
+**Outline.**
+
+1. `runtime/checkpoints.rs`: add `delete_checkpoint(id, member)` under the VM
+   gate:
+   - Check pins and head.
+   - Move the head with `snapshot head` first if needed.
+   - Call `snapshot remove`, then drop the record.
+2. `forget_removed` (line 698): remove every member of the group (head last).
+3. On capture or import failure, remove the partial member or `silo-import-*`
+   group (shared with E-23 and E-24 journaling).
+4. Add a startup sweep of unowned `silo-import-*` and `silo-backup-*` groups
+   that are older than 24 h.
+5. UI: `checkpoint-panel.tsx` Delete action (decision 8, inline two-step);
+   add checkpoint storage to the Storage tab.
+
+**Tests.** Unit tests with the existing fake `msb` runner:
+
+- pinned refusal
+- head move before removal
+- failed-capture cleanup
+- sweep ignores owned groups
+
+Also a `mac` live run for storage reclamation.
+
+**Open questions.**
+
+- Should deleting a sandbox also delete its forks' pinned base? The guide
+  suggests forks own their files, so yes, but this needs a live check.
+- Should "Before restore" and "Fork point" members be auto-collected after N
+  days?
+
+---
+
+## F-02 + F-20: graceful quit on macOS Dock/logout and on Linux logout/shutdown
+
+**Problem.**
+
+- macOS: Dock Quit, logout and any Apple-event quit call `terminate:`. tao has
+  no `applicationShouldTerminate:`, so `ExitRequested`, `stop_local_vms` and
+  the frontend flush are skipped (F-02).
+- Linux: there is no SIGTERM handler and no logind inhibitor (F-20).
+- Owner decision 7: confirm on user Quit; never prompt on logout or shutdown,
+  but still stop gracefully.
+
+**Upstream status.** The `app_delegate.rs` summary lists `applicationDidFinishLaunching:`,
+`applicationWillTerminate:`, `application:openURLs:`, the user-activity pair,
+`applicationShouldHandleReopen:hasVisibleWindows:` and
+`applicationSupportsSecureRestorableState:`. It does **not** list
+`applicationShouldTerminate:` (tao `dev`). An unauthenticated GitHub PR search
+for the selector in tao returned no results. That search may be incomplete.
+
+Tauri tracks the gap in these issues (from a GitHub issue search):
+
+- tauri-apps/tauri#9198: "`ExitRequested` not fired on macOS" (open)
+- #12978: a feature request for `applicationShouldTerminate(_:)`, closed as a
+  duplicate
+- #14558: OS-shutdown graceful-exit docs (open)
+
+Upstream has not shipped a fix.
+
+**Options (macOS).**
+
+1. Fork or vendor tao. This is heavy, and tao is pulled transitively through
+   tauri-runtime-wry.
+2. Local runtime patch: in `setup`, add `applicationShouldTerminate:` to the
+   class of `NSApp.delegate()` with `objc2::ffi::class_addMethod`. The delegate
+   returns `NSTerminateLater` and routes into the F-03 quit path, which later
+   calls `replyToApplicationShouldTerminate:`. Silo already depends on `objc2`.
+3. Upstream a tao PR that maps the selector to an `ExitRequested`-style event
+   with a deferred reply.
+
+**Decision.** Implement option 2 now and file option 3 in parallel. Remove the
+local method once a tao release that Tauri uses carries it.
+
+- Distinguish logout or shutdown from a user Quit through the current Apple
+  event's `kAEQuitReason` (`kAELogOut`, `kAEReallyLogOut`, `kAEShowRestartDialog`,
+  `kAEShutDown`, …). This is *assumed* from Apple's API; verify it live.
+- Logout path: no prompt, bounded `stop_local_vms` (≤ 20 s), then reply YES.
+  Reply NO only if the user cancels a Quit.
+- Fallback: a bounded `stop_local_vms` on `RunEvent::Exit`.
+
+**Options (Linux).**
+
+- logind `Inhibit("shutdown:sleep", "Silo", "Stopping sandboxes", "delay")`
+  over `zbus` (already locked), listening for `PrepareForShutdown(true)`. The
+  delay is capped by logind `InhibitDelayMaxSec`, 5 s by default (assumed from
+  logind docs).
+- SIGTERM via `tokio::signal::unix` routed into the same graceful exit, since
+  session logout sends SIGTERM to the app scope.
+
+**Decision.** Use both.
+
+- Take the delay lock at startup and release it after `stop_local_vms`.
+- Stop VMs in parallel so the stop fits the 5 s cap.
+- Beyond the cap, rely on msb's own VM teardown. This is assumed and needs a
+  `linux` test.
+
+**Outline.**
+
+1. New `src-tauri/src/system_shutdown/{macos,linux}.rs` with a
+   `ShutdownReason { UserQuit, Logout, Shutdown }` into the F-03 quit request.
+2. Unit-test the quit-reason routing.
+3. Live checks: `mac` Dock Quit, logout cancel/allow and `osascript quit`;
+   `linux` GNOME logout and `systemctl reboot`.
+
+**Open questions.**
+
+- Should Silo raise `InhibitDelayMaxSec` through a packaged logind drop-in
+  (Debian package only)?
+- Is losing VM state acceptable if logout exceeds the cap?
+
+---
+
+## F-09: single instance
+
+**Problem.** A second launch runs `runtime_migration::install`, fails
+`remote::start` (C-05) and panics at `.expect("failed to build Silo")`. On
+Linux, clicking the launcher while Silo is hidden in the tray does nothing
+(`main.rs:214,252-253`).
+
+**Options.**
+
+1. `tauri-plugin-single-instance`: the official plugin.
+   - Verified in the plugin guide: it supports Windows, Linux and macOS.
+   - On Linux it uses D-Bus (`org.{id}.SingleInstance`).
+   - It "must be the first one to be registered".
+   - The callback receives `(app, argv, cwd)`.
+   - Snap and Flatpak need manifest D-Bus permissions. Silo ships deb and
+     AppImage only.
+2. A custom lock file or socket in `~/.silo`. Rejected under `AGENTS.md`.
+
+**Decision.** Option 1.
+
+- Register it first on the builder.
+- The callback shows, unminimizes and focuses the main window (tray-hidden case
+  included).
+- Move all migration and `remote::start` work so it runs only after the plugin
+  has decided this is the primary instance, inside `setup` after plugin init.
+  Nothing mutating runs before `Builder::build`.
+
+**Outline.**
+
+1. `Cargo.toml`: add `tauri-plugin-single-instance = "2"`.
+2. `main.rs`:
+   - Reorder startup.
+   - Replace `.expect` with a logged error dialog.
+3. Linux: confirm that the D-Bus session bus exists under AppImage.
+
+**Tests.** Unit-test the startup ordering (migration not called before primary
+check). Run `linux` and `mac` double launches.
+
+**Open questions.**
+
+- Debug and release builds use separate identifiers, so both can run at once
+  and share `~/.silo`. Should they share one lock? The plugin keys by
+  identifier (assumed).
+- On macOS the plugin listens on `/tmp/{identifier}_si.sock`. This was
+  verified in the plugin source through a summarising fetch.
+  - The directory is shared and world-writable.
+  - If the socket path is stale or refuses connections, the plugin removes it
+    and claims the singleton.
+  - Another local user who binds that path first could make Silo exit at
+    launch and receive its argv and cwd.
+  - Given the single-user Mac target, is this acceptable, or should the macOS
+    side be upstreamed or patched to use `$TMPDIR`, which is per user?
+    LaunchServices already de-duplicates `open` launches on macOS.
+
+---
+
+## C-02: remote request locking
+
+**Problem.** One process-wide `REQUEST_LOCK` (`remote.rs:22,852`) is held
+across every mutating remote request, including gate waits, retry backoff,
+desktop setup (up to 2,100 s) and SSH saves. Queued requests outlive the
+controller's 600 s deadline, and retries get fresh request IDs, so both the
+stale request and the retry execute (C-02; relates to C-27 replay records).
+
+**Options.**
+
+1. Keep the global lock and add a timeout.
+2. Use the existing `operation_gate` per-VM/computer scopes for exclusion. Keep
+   a short lock only for the replay-record acceptance step.
+3. An external job queue or broker. This is overkill for one host process.
+
+**Decision.** Option 2, plus idempotent operation IDs and an execution
+deadline.
+
+- The controller sends `operationId`, which stays stable across auto-retries,
+  and `startWithinMs`.
+- The bridge records `(operationId → accepted | running | done(result))` under
+  the short lock, then releases it.
+- If the connection has closed or `startWithinMs` has elapsed by the time the
+  gate is acquired, the bridge drops the work and records `expired`.
+- A retry with a known `operationId` attaches to the existing status instead of
+  executing again.
+
+**Outline.**
+
+1. `remote.rs`:
+   - Split `dispatch` into accept, which records under the lock, and execute,
+     which runs outside it.
+   - Add a per-connection liveness flag (bridge stdin EOF).
+2. `runtime/remote_ops.rs`: acquire the VM or computer scope with a
+   deadline-aware wait.
+3. Controller: reuse `operationId` on retry. Bump the protocol `VERSION`
+   (C-18/K-23).
+
+**Tests.**
+
+- Two VMs run concurrently.
+- Same VM serialises.
+- An expired queued request never executes.
+- A retry after timeout returns the first result.
+- `2pc` concurrent operations.
+
+**Open question.** How long should completed `operationId` results be kept?
+The proposal is 1 h in memory, which is lost on app restart.
+
+---
+
+## C-24: per-sandbox loopback host for published ports
+
+**Problem.** Published ports open at `http://127.0.0.1:PORT`. Cookies are not
+port-isolated, so a guest page can read or overwrite non-HttpOnly cookies of
+other local services and CSRF them (`network.rs`, `remote_network.rs:254`).
+
+**Options.**
+
+1. Distinct loopback IPs (127.x.y.z).
+   - Linux routes all of 127/8 to `lo` (assumed standard).
+   - Stock macOS configures only 127.0.0.1, and adding aliases needs root.
+     This Mac has extra aliases 127.0.0.10–12 from some other tool, which
+     shows they are not a default.
+2. `http://<sandbox>-<shortid>.localhost:PORT` while still binding 127.0.0.1.
+   - `*.localhost` resolves to loopback per RFC 6761. Modern Chrome and Firefox
+     hard-code this (assumed; Safari unverified).
+   - Cookies set by the guest are host-only to that name, so they are isolated
+     from `127.0.0.1` and `localhost` services.
+3. Document the risk only.
+
+**Decision.** Option 2 by default, plus the documentation from option 3.
+
+- CSRF to other loopback services is **not** fixed by any option. Browsers
+  treat all these origins as the same local address space. Document this in
+  help.
+- Keep a "Copy 127.0.0.1 address" fallback for dev servers that reject
+  unknown `Host` headers. Some dev servers do; Vite `allowedHosts` behaviour
+  for `.localhost` is unverified.
+
+**Outline.**
+
+1. `network.rs` `open_network_port` and `remote_network.rs` build the URL from
+   a sanitised DNS label (≤ 63 chars).
+2. Frontend shows the same URL.
+3. Help text.
+4. Unit-test the label sanitising. Run a `mac` check in Safari, Chrome and
+   Firefox.
+
+**Open question.** Is Safari support required? If `*.localhost` fails there,
+fall back to 127.0.0.1 automatically, or not?
+
+---
+
+## G-04: Unix-socket desktop tunnel
+
+**Problem.** `desktop_viewer.rs:85-118` reserves a TCP port, releases it and
+hands it to `ssh -L`. A local process can bind the port first and receive
+`Authorization: Basic silo:<password>`. The listener also exposes guest port
+6901 to every local user.
+
+**Options.**
+
+1. `ssh -L <0700 dir>/desktop.sock:127.0.0.1:6901` with
+   `-o StreamLocalBindUnlink=yes`. The existing `Proxy` then connects with
+   `UnixStream`. OpenSSH has supported Unix-socket local forwards since 6.7
+   (assumed from OpenSSH release notes).
+2. `ssh -W 127.0.0.1:6901` per proxied connection. This means one SSH session
+   per HTTP/WebSocket connection, so latency and ControlMaster complexity grow.
+3. Keep TCP and verify the peer. Not possible for loopback TCP.
+
+**Decision.** Option 1.
+
+- Put the socket in the existing per-workspace `ssh/desktop-viewer/<ws>`
+  directory, which `prepare_private_transport` already creates private (check
+  that the mode is 0700).
+- Readiness waits for the socket path to exist and accept a connection, and it
+  checks that the socket owner is the current uid.
+
+**Outline.**
+
+1. `forward_command` takes a socket path.
+2. `Proxy::start` takes a connector trait (TCP for tests, Unix in production).
+3. Remove the socket on drop.
+4. Remote computers need the same forward on the controller side only; nothing
+   changes in the guest.
+
+**Tests.** Unit-test that the proxy forwards over a `UnixListener` fixture and
+that a pre-existing foreign socket is refused. Run a `mac` and `linux` desktop
+session.
+
+**Open question.** Is any supported controller running an OpenSSH older than
+6.7? Unlikely on Ubuntu 24.04 or macOS 14+.
+
+---
+
+## E-19 / E-20: import safety versus msb extraction guarantees
+
+**Problem.**
+
+- The manifest `runtime_config` is validated but not tied to the config inside
+  the snapshot. `msb restore` could therefore apply crafted mounts, patches,
+  env, image or init (E-19).
+- The untrusted `.tar.zst` goes straight to `msb snapshot load`. Its SHA-256 is
+  self-declared, decompressed size is unbounded, and the UI says "Verified
+  archive" (E-20).
+
+**What msb 0.7.2 guarantees** (from `archive.rs`, read through a summarising
+fetch; confirm line by line before relying on it):
+
+| Check | Status |
+|---|---|
+| Absolute and `..` paths | Rejected ("archive contains unsafe path") |
+| Entry types | Checked by `validate_archive_entry_type`. The unpack code carries the comment "Regular / Continuous — the only other types validation lets through", which suggests that symlinks, hardlinks, devices and FIFOs are rejected. The function body was not read. |
+| Per-entry blake3 hashes | Checked against the archive's own inventory. The inventory is **self-declared**, with no signature. |
+| Aggregate decompressed size or entry count | No limit found |
+| Boot overrides | Scope-validated |
+| Embedded mounts, env and patches | No validation found |
+| `--with-image` OCI layers | No verification found |
+
+**Options.**
+
+1. Trust msb. Rejected, because of the gaps in the table.
+2. Pre-scan in Silo with a streaming `tar` + `zstd` reader before `load`, using
+   the `tar`/`zstd` crates (assumed not yet direct dependencies). The scan:
+   - caps total size (a disk-space-derived limit)
+   - caps entry count
+   - rejects links, devices and non-regular files. If msb is confirmed to
+     reject these already, Silo's check is defence in depth only.
+3. Load into an isolated `MSB_HOME` or staging group, inspect the loaded config,
+   then promote or discard.
+4. Contribute the missing checks upstream: size caps, link rejection, config
+   policy hooks.
+
+**Decision.**
+
+- E-20: option 2 now, and option 4 filed upstream. Rename the label to
+  "Intact archive".
+- E-19: after `snapshot load`, run `snapshot inspect` on the loaded head and
+  compare the full restorable config with the validated manifest. Refuse any
+  extra mounts, patches, env, image or init.
+- Pass every restorable setting explicitly to `msb restore`.
+- Add option 3 only if `inspect` does not expose the full config. The v0.7.2
+  guide does not document `inspect`'s output fields, so check them against a
+  real `msb snapshot inspect` first.
+
+**Outline.**
+
+1. `backup.rs`: add `prescan_archive(path, limits)` before line 601; add an
+   inspect-compare after load; clean up the group on refusal (E-23).
+2. Rename the label in `backup_controller.rs:329`.
+
+**Tests.** Crafted fixtures:
+
+- symlink entry
+- `..` entry
+- 10 GB zero-bomb with a small compressed size
+- manifest/config mismatch with an added mount
+- extra env
+
+**Open questions.**
+
+- Should imports from other people be allowed at all, or should the UI warn
+  "only import files you created"?
+- Should the image be re-pulled by digest instead of trusting `--with-image`?
+
+---
+
+## B-05: GitHub permission allowlists for sandbox and host-push tokens
+
+**Problem.** Write mode copies every installation permission, including
+`administration`, `secrets`, `workflows`, `repository_hooks`, `actions` and
+`environments`. Read mode includes secret-bearing scopes
+(`github_tokens.rs:199-221`). Owner decision 1 requires host push to use
+`contents: write` only.
+
+**Options.**
+
+1. Denylist.
+2. An explicit allowlist, down-scoped per token. Verified in the GitHub REST
+   docs for "Create an installation access token for an app":
+   - The `permissions` body parameter only down-scopes. A token "cannot be
+     granted permissions that the app was not granted".
+   - `repositories` and `repository_ids` restrict the token to named
+     repositories.
+
+**Decision.** Option 2, using three constant allowlists in `github_tokens.rs`,
+each intersected with what the installation grants:
+
+| Token | Permissions |
+|---|---|
+| Sandbox read | `metadata:read`, `contents:read`, `issues:read`, `pull_requests:read`, `statuses:read`, `checks:read` |
+| Sandbox write | read set plus `contents`, `issues`, `pull_requests` and `statuses` at `write` |
+| Host push | `contents:write` and `metadata:read` only. Restrict it with `repositories` to the single bound repository, then revoke it after the push (decision 1). The revoke endpoint `DELETE /installation/token` is assumed; it was not re-fetched. |
+
+Never grant `administration`, `secrets`, `dependabot_secrets`,
+`codespaces_secrets`, `environments`, `repository_hooks`,
+`secret_scanning_alerts`, `security_events` or `actions:write`.
+
+**Outline.**
+
+1. Replace the copy loop with `allowlist.intersect(installation)`.
+2. Keep the existing unsupported-permission refusal.
+3. Unit-test that each mode never contains a denied scope, and run a `gh` live
+   push.
+
+**Open questions.**
+
+- Should sandbox write include `workflows:write`? Without it, agents cannot
+  push `.github/workflows` changes.
+- Should sandbox read include `actions:read` (CI logs)?
+
+---
+
+## K-23: typed error codes across the native bridge
+
+**Problem.** Errors cross the Tauri bridge as English strings that both sides
+match by text (D-17, E-42, H-31, C-18, `production-source.ts:279,469,525`).
+Copy changes (decision 10) will break these matches.
+
+**Options.**
+
+1. Tauri's documented pattern: commands return any `Serialize` error, for
+   example a `thiserror` enum (already in the dependency graph). This is
+   assumed from the Tauri docs.
+2. `tauri-specta` for generated TS bindings. It is still RC; adopting it now is
+   a large migration.
+3. A string prefix convention. Fragile.
+
+**Decision.** Option 1 with a minimal shape:
+
+```rust
+struct BridgeError {
+    code: ErrorCode,
+    message: String,
+}
+```
+
+- `ErrorCode` is a closed `snake_case` enum: `update_in_progress`,
+  `unsupported_remote_operation`, `cancelled`, `already_queued`, `busy`,
+  `not_found`, `internal`.
+- Keep `From<String>` mapping to `internal` so packages can migrate one at a
+  time.
+- The remote protocol carries the same `code` field.
+- The TS side gets a hand-written union type plus a test that it matches the
+  Rust enum.
+- Revisit specta after 1.0 of tauri-specta.
+
+**Outline.**
+
+1. `src-tauri/src/bridge_error.rs`.
+2. `contracts/bridge-error.ts`.
+3. Migrate the five matched sites first.
+4. Tests: serialisation round-trip, and a test that fails if a TS code is
+   missing from Rust.
+
+**Open question.** None blocking.
+
+---
+
+## K-24: mutex poison policy
+
+**Problem.** `operation_gate` recovers from poisoning with `into_inner`, but
+`remote.rs` `CONFIG_LOCK`/`REQUEST_LOCK`, `secrets.rs:15-16`, `github.rs:23,26`,
+`network.rs:15` and `editor.rs:18` turn one panic into permanent errors, and
+`try_lock` `update_guard`s then block updates forever (B-45, C-25, G-23).
+
+**Options.**
+
+1. `parking_lot::Mutex`, which has no poisoning and is already locked at
+   0.12.5. It hides the signal entirely.
+2. A std helper `lock_or_recover(&m, name)` that logs once and returns
+   `into_inner()`.
+3. Leave it per-site. This is the current inconsistency.
+
+**Decision.** Option 2 with a rule:
+
+- **Recover** for `Mutex<()>` serialisation locks and for caches rebuilt from
+  disk.
+- **Recover and reload** for guards of state persisted to disk (secrets, GitHub
+  state, config): after recovery, re-read the file before use.
+- Never keep an in-memory invariant across a panic.
+- `update_guard` must use `lock_or_recover` semantics instead of treating
+  `WouldBlock` from a poisoned lock as busy.
+- Replace panicking `unwrap`s under locks (`secrets.rs:415`).
+
+**Outline.**
+
+1. `src-tauri/src/sync.rs` helper, applied by the owning packages.
+2. Tests: poison a lock in a test thread and assert that the next call
+   succeeds and reloads.
+
+**Open question.** Is parking_lot acceptable instead? It is simpler, but it
+loses the log line that a panic happened under a lock.
