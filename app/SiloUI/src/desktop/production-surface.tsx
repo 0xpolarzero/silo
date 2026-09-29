@@ -62,7 +62,9 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   }, [checks])
   const checking = checks?.some(({ status }) => status === "pending") ?? false
   const failures = checking ? previousFailures : checks?.filter(({ status }) => ["failed", "unavailable", "timeout"].includes(status)) ?? []
-  const retryChecks = () => { dependencies?.retry(); void source.refresh() }
+  // Initialize again rather than refresh: after a failed start it also restores live
+  // events, polling and refresh-on-focus; once live it only refreshes.
+  const retryChecks = () => { dependencies?.retry(); void source.initialize().catch((error: unknown) => console.error("Silo live updates:", error)) }
   // Finish persists completion; keep this session on its preferences screen until Open Silo.
   const [onboardingActive, setOnboardingActive] = useState(() => !currentSettings.onboardingComplete)
   if (!statusPanel && onboardingActive && dependencies) {

@@ -569,7 +569,18 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
-  async function initialize() {
+  // Idempotent: Retry after a failed start calls it again. It subscribes only while
+  // not yet subscribed and installs focus, visibility and polling once; later calls
+  // just refresh.
+  let live = false
+  let initialization: Promise<void> | undefined
+  function initialize(): Promise<void> {
+    initialization ??= (live ? refresh() : startLiveUpdates()).finally(() => { initialization = undefined })
+    return initialization
+  }
+
+  async function startLiveUpdates() {
+    if (disposed) return
     try {
       unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
       unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
@@ -592,11 +603,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       publish({ ...snapshot, loading: false, error })
       throw new Error(error)
     }
+    if (disposed) { unlisten.splice(0).forEach((stop) => stop()); return }
+    live = true
     window.addEventListener("focus", onWindowFocus)
     document.addEventListener("visibilitychange", onVisibilityChange)
-    await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
-    if (disposed) return
-    remoteTimer = setInterval(() => {
+    // Poll even if a first load fails; a poll never overlaps a slow read.
+    remoteTimer ??= setInterval(() => {
       // Repository changes inside a VM do not emit application events. A hidden
       // window (the closed main window, the unopened status panel) does no polling,
       // including remote SSH snapshots; slow reads finish before another poll, and
@@ -604,6 +616,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (document.visibilityState === "hidden" || activeRefreshes > 0) return
       void refresh()
     }, 10_000)
+    await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
   }
 
   function onVisibilityChange() {

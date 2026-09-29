@@ -14,7 +14,7 @@ vi.mock("./production-onboarding", () => ({ ProductionOnboarding: ({ onOpenApp }
 vi.mock("@/features/application/application-app", () => ({ ApplicationApp: ({ source, actions }: { source: { runtimeRepair?: { reason: string; recovery: string; checking: boolean } }; actions: { retryRuntimeChecks: () => void } }) => <div>Main app{source.runtimeRepair && <div role="alert">{source.runtimeRepair.reason}{source.runtimeRepair.recovery}<button disabled={source.runtimeRepair.checking} onClick={actions.retryRuntimeChecks}>Retry checks</button></div>}</div> }))
 vi.mock("./status-panel", () => ({ StatusPanel: () => <div>Status panel</div> }))
 
-const source = { applicationActions: {}, statusActions: {}, refresh: vi.fn() } as unknown as ProductionSource
+const source = { applicationActions: {}, statusActions: {}, refresh: vi.fn(), initialize: vi.fn(() => Promise.resolve()) } as unknown as ProductionSource
 const dependencyStore = {} as DependencyStore
 
 beforeEach(() => { state.source = {}; state.loading = false; state.error = null; state.checks = []; vi.clearAllMocks() })
@@ -85,7 +85,8 @@ describe("production dependency recovery", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(failure.remediation)
     fireEvent.click(screen.getByRole("button", { name: "Retry checks" }))
     expect(state.retry).toHaveBeenCalledOnce()
-    expect(source.refresh).toHaveBeenCalledOnce()
+    // Retry starts live updates again (a failed subscription is retried), not just one read.
+    expect(source.initialize).toHaveBeenCalledOnce()
     expect(screen.queryByRole("button", { name: /repair/i })).not.toBeInTheDocument()
   })
   it("does not block remote-only use when this computer lacks virtualization", () => {
