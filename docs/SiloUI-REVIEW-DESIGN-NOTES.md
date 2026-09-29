@@ -281,6 +281,34 @@ check). Run `linux` and `mac` double launches.
     side be upstreamed or patched to use `$TMPDIR`, which is per user?
     LaunchServices already de-duplicates `open` launches on macOS.
 
+**Implementation record (F-09).**
+
+- Pinned `tauri-plugin-single-instance = "~2.4.5"` (Apache-2.0 OR MIT,
+  maintained in `tauri-apps/plugins-workspace`). 2.5.x requires Tauri 2.12;
+  Silo pins Tauri 2.11. 2.4.3 moved the macOS listener to a Tokio socket, so
+  2.4.5 is the oldest acceptable release. Its dependencies (`zbus` 5, `tokio`,
+  `tracing`, `thiserror` 2) were already in `Cargo.lock`.
+- Verified in the 2.4.5 source: macOS uses `/tmp/{identifier}_si.sock` and
+  exits the second process with `std::process::exit(0)` from the plugin's
+  setup; Linux owns `{identifier}.SingleInstance` on the session bus and exits
+  the same way. Plugins initialize inside `Builder::build`, before any window
+  exists and before Silo's setup hook, so a second launch never reaches
+  migration, remote management or VM work.
+- Every Silo build (debug, release, deb, AppImage) uses the identifier
+  `org.silo.preview`, which answers the first open question: all builds share
+  one claim, as the owner requires.
+- The plugin sends the second launch's `argv` and `cwd`. The running Silo
+  resolves `argv[0]` and compares executable bytes (an AppImage mounts at a new
+  path on every launch). A different build shows "Silo is already running.
+  Quit it first." in the running Silo, which also comes forward; the plugin
+  gives the second process no hook to show it itself.
+- The Debian update restart replaces the process with `exec`, which skips the
+  plugin's exit cleanup, so Silo releases the D-Bus name first.
+- Remaining gaps: the macOS socket stays in the shared `/tmp` (no per-user
+  path option in the plugin); another local user can still pre-bind it.
+  Upstream a configurable socket directory before relying on it for more than
+  a single-user Mac.
+
 ---
 
 ## C-02: remote request locking

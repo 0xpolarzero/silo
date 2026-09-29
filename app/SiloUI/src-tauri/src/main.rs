@@ -44,6 +44,7 @@ mod secrets;
 mod ssh_access;
 mod ssh_connection;
 mod settings;
+mod single_instance;
 mod startup;
 mod status_panel;
 mod system_integrations;
@@ -75,7 +76,11 @@ fn main() {
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
         return;
     }
+    // Plugins initialize while the app is built, in registration order, and the
+    // setup hook runs only after that. A second launch therefore exits inside
+    // the single-instance plugin before any migration, remote-management or VM work.
     tauri::Builder::default()
+        .plugin(single_instance::plugin())
         .on_page_load(|webview, _| {
             #[cfg(target_os = "macos")]
             if webview.label() == "main" {
@@ -209,6 +214,8 @@ fn main() {
             runtime::change_machine_configuration
         ])
         .setup(|app| {
+            // Tauri panics on a setup error. Explain the failure and exit instead.
+            let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             settings::install(app.handle());
             let queue_app = app.handle().clone();
             runtime::OPERATIONS.set_listener(move || {
@@ -252,9 +259,17 @@ fn main() {
             runtime::storage::start_monitor(app.handle());
             startup::install(app.handle());
             Ok(())
+            })();
+            if let Err(error) = result {
+                startup_failed(app.handle(), &error.to_string());
+            }
+            Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("failed to build Silo")
+        .unwrap_or_else(|error| {
+            eprintln!("Silo could not start: {error}");
+            std::process::exit(1);
+        })
         .run(|_app, _event| {
             if let tauri::RunEvent::Exit = &_event {
                 ssh_access::close_all();
@@ -272,4 +287,23 @@ fn main() {
                 status_panel::report(status_panel::open_main(_app.clone(), None));
             }
         });
+}
+
+/// Setup stopped part-way, so some native state the UI relies on is missing. Stop
+/// the UI from using it, explain the failure, and exit without the Quit path: it
+/// would stop VMs that this process never managed.
+fn startup_failed(app: &tauri::AppHandle, error: &str) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    eprintln!("Silo could not start: {error}");
+    settings::exit_without_shutdown(app);
+    if let Ok(blank) = "about:blank".parse::<tauri::Url>() {
+        for window in app.webview_windows().values() {
+            let _ = window.navigate(blank.clone());
+        }
+    }
+    app.dialog()
+        .message(format!("Silo could not start.\n\n{error}"))
+        .title("Silo")
+        .kind(MessageDialogKind::Error)
+        .show(|_| std::process::exit(1));
 }

@@ -819,6 +819,14 @@ pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi, co
     });
 }
 
+/// Startup failed before this process took ownership of local VMs: any later exit
+/// request (tray, menu, dialog) exits directly instead of stopping them.
+pub(crate) fn exit_without_shutdown(app: &AppHandle) {
+    if let Some(state) = app.try_state::<ShutdownState>() {
+        state.allow_exit();
+    }
+}
+
 #[tauri::command]
 pub fn read_shutdown_state(app: AppHandle) -> bool {
     app.state::<ShutdownState>().active()

@@ -578,6 +578,9 @@ pub(crate) async fn install_update(
         crate::runtime::shutdown::begin();
         drop((_admission, _backup, _github, _secrets, _runtime));
         if is_debian {
+            // exec skips RunEvent::Exit: release the single-instance claim so the
+            // replacement process does not find it and exit.
+            crate::single_instance::release(&worker);
             let result = debian::restart();
             crate::runtime::shutdown::cancel();
             result?;
