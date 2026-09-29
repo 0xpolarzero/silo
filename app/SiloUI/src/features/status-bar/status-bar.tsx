@@ -1,6 +1,6 @@
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
-import { useRef, useState, type ComponentType, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
 import { ChevronRight, CircleAlert, Code, ExternalLink, GitBranch, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
@@ -22,6 +22,7 @@ import { statusBarHealth } from "./status-bar-model"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import type { StatusBarActions } from "./status-bar-types"
 import { StatusFolderPicker } from "./status-folder-picker"
+import { QuitConfirmation, sandboxesStoppedByQuit } from "./quit-confirmation"
 
 const menuClass = "silo-window z-50 min-w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
 const menuItemClass = "flex min-h-8 select-none items-center gap-2 rounded-sm px-2 text-xs outline-none data-[highlighted]:bg-accent data-[disabled]:pointer-events-none data-[disabled]:opacity-40 [&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
@@ -131,7 +132,23 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
   )
 }
 
-export function StatusBarContent({ source, actions, focusContent, workspaceMenu: WorkspaceActions = WorkspaceMenu }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void; workspaceMenu?: ComponentType<WorkspaceMenuProps> }) {
+/**
+ * `quitRequest` lets a host-side quit request (menu, ⌘Q, backend event) open the same
+ * confirmation as the power button: bump it to a new number for each request.
+ */
+export function StatusBarContent({ source, actions, focusContent, workspaceMenu: WorkspaceActions = WorkspaceMenu, quitRequest }: { source: ApplicationSource; actions: StatusBarActions; focusContent: () => void; workspaceMenu?: ComponentType<WorkspaceMenuProps>; quitRequest?: number }) {
+  const [quitPending, setQuitPending] = useState(false)
+  const stoppedByQuit = sandboxesStoppedByQuit(source.workspaces)
+  function requestQuit() {
+    if (stoppedByQuit.length) setQuitPending(true)
+    else actions.quit()
+  }
+  const lastQuitRequest = useRef(quitRequest)
+  useEffect(() => {
+    if (quitRequest === lastQuitRequest.current) return
+    lastQuitRequest.current = quitRequest
+    if (quitRequest !== undefined) requestQuit()
+  })
   const [hasNavigated, setHasNavigated] = useState(false)
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<{ workspace: string; action: "stop" | "restart" } | null>(null)
@@ -246,8 +263,12 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
         </div>}
       </div>
       <footer className="flex shrink-0 items-center justify-between border-t px-2 py-2">
-        <Button variant="ghost" size="sm" className="gap-2" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
-        <SandboxAction label="Quit Silo" onClick={actions.quit}><Power /></SandboxAction>
+        {quitPending && stoppedByQuit.length
+          ? <QuitConfirmation names={stoppedByQuit} onCancel={() => { setQuitPending(false); focusContent() }} onQuit={() => { setQuitPending(false); actions.quit() }} />
+          : <>
+            <Button variant="ghost" size="sm" className="gap-2" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
+            <SandboxAction label="Quit Silo" onClick={requestQuit}><Power /></SandboxAction>
+          </>}
       </footer>
     </div>
   )
