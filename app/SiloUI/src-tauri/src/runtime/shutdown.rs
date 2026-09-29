@@ -33,6 +33,10 @@ pub(crate) fn ensure_accepting_operations() -> Result<(), String> {
 }
 
 pub(crate) fn stop_local_vms(app: &AppHandle) -> Result<(), String> {
+    // Admission is already refused, so any waiter would only be rejected when its turn
+    // came. Cancel every waiting entry up front so Quit is not queued behind work that
+    // can no longer start, and so the quit overlay reflects only the running blockers.
+    OPERATIONS.cancel_all_waiting();
     let _guard = OPERATIONS.computer("Stopping local VMs").map_err(|_| {
         "A sandbox operation failed unexpectedly. Check local VM status before retrying Quit."
             .to_string()

@@ -5,7 +5,10 @@ import { ShutdownBoundary } from "./shutdown-boundary"
 
 const native = vi.hoisted(() => ({ receive: vi.fn<(event: { payload: boolean }) => void>(), invoke: vi.fn(), stop: vi.fn() }))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }))
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async (_: string, receive: typeof native.receive) => { native.receive = receive; return native.stop }) }))
+// Bind `native.receive` to the shutdown-state listener specifically: the boundary also
+// subscribes to the operation queue while quitting, and that second listener must not
+// steal the handle the tests use to toggle shutdown.
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async (event: string, receive: typeof native.receive) => { if (event === "silo://shutdown-state-changed") native.receive = receive; return native.stop }) }))
 beforeEach(() => { vi.clearAllMocks(); native.invoke.mockResolvedValue(false) })
 
 it("shows shutdown progress and disables the existing screen until native failure cancels Quit", async () => {
@@ -30,7 +33,32 @@ it("reads active shutdown when a window opens after the event", async () => {
   const view = render(<ShutdownBoundary compact><button>Quit Silo</button></ShutdownBoundary>)
   expect(await screen.findByRole("status")).toHaveTextContent("Stopping local sandboxes…")
   view.unmount()
-  expect(native.stop).toHaveBeenCalledOnce()
+  // While quitting the boundary holds two subscriptions: shutdown state and the
+  // operation queue it reads for the overlay. Both are released on unmount.
+  expect(native.stop).toHaveBeenCalledTimes(2)
+})
+it("names the running work Quit waits for and cancels only cancellable entries on request", async () => {
+  const queue = { running: [
+    { id: 7, label: "Stopping local VMs", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null },
+    { id: 8, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null },
+  ], waiting: [] }
+  native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? queue : name === "read_shutdown_state" ? false : true)
+  render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+  await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
+  act(() => native.receive({ payload: true }))
+  expect(await screen.findByText("Waiting for Backing up sandboxes…")).toBeVisible()
+  await userEvent.setup().click(screen.getByRole("button", { name: "Cancel and quit" }))
+  expect(native.invoke).toHaveBeenCalledWith("cancel_operation", { id: 8 })
+  expect(native.invoke).not.toHaveBeenCalledWith("cancel_operation", { id: 7 })
+})
+it("waits for non-cancellable running work and offers no cancel control", async () => {
+  const queue = { running: [{ id: 9, label: "Installing update", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null }], waiting: [] }
+  native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? queue : name === "read_shutdown_state" ? false : true)
+  render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+  await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
+  act(() => native.receive({ payload: true }))
+  expect(await screen.findByText("Waiting for Installing update…")).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Cancel and quit" })).not.toBeInTheDocument()
 })
 it("does not let an older snapshot replace a newer shutdown event", async () => {
   let resolve!: (value: boolean) => void

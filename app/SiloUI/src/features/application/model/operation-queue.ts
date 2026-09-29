@@ -79,6 +79,35 @@ export function hasPendingOperationForVm(queue: OperationQueue, vmId: string): b
   return [...queue.running, ...queue.waiting].some((entry) => operationMatchesVm(entry, vmId))
 }
 
+/**
+ * True when a runtime error message reports a user-requested cancellation rather
+ * than a genuine failure. The backend renders both cancellation paths with the
+ * stable suffix "was cancelled." — `RuntimeError::Cancelled` (`"<operation> was
+ * cancelled."`) and `GateError::Cancelled` (`"The operation was cancelled."`).
+ * Matching that suffix keeps cancellations out of the error-styled failure UI.
+ */
+export function isCancelledError(message: string): boolean {
+  return /was cancelled\.?\s*$/i.test(message.trim())
+}
+
+/** Human-readable neutral label for a cancelled lifecycle action, e.g. "Stop cancelled". */
+export function cancelledActionLabel(action: "start" | "stop" | "restart" | "dismiss-error"): string {
+  const verb = action === "restart" ? "Restart" : action === "stop" ? "Stop" : action === "dismiss-error" ? "Dismiss" : "Start"
+  return `${verb} cancelled`
+}
+
+/** Running operations that a quitting overlay is waiting on, joined for display. */
+export function shutdownWaitingLabel(queue: OperationQueue): string | undefined {
+  const running = queue.running.filter((entry) => entry.label !== "Stopping local VMs")
+  if (running.length === 0) return undefined
+  return `Waiting for ${joinLabels(running.map((entry) => entry.label))}…`
+}
+
+/** The running operations a quitting overlay could offer to cancel (opted-in cancellable). */
+export function cancellableRunning(queue: OperationQueue): OperationEntry[] {
+  return queue.running.filter((entry) => entry.cancellable && entry.label !== "Stopping local VMs")
+}
+
 function joinLabels(labels: string[]): string {
   if (labels.length === 0) return ""
   if (labels.length === 1) return labels[0]

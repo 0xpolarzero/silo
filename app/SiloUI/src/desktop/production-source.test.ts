@@ -460,6 +460,34 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("records a cancelled lifecycle action as neutral and clears it when retried", async () => {
+    let reject!: (error: unknown) => void
+    const command = new Promise((_, r) => { reject = r })
+    const mock = native()
+    let attempts = 0
+    const invoke = vi.fn(async (name: string, args?: Record<string, unknown>) => {
+      if (name !== "workspace_action") return mock.invoke(name, args)
+      attempts += 1
+      return attempts === 1 ? command : new Promise(() => {})
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    await store.initialize()
+    store.applicationActions.stopWorkspace("dev")
+    expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBe("stop")
+    reject(new Error("Stopping dev was cancelled."))
+    await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].lifecycleFailureCancelled).toBe(true))
+    const cancelled = store.getSnapshot().source?.workspaces[0]
+    expect(cancelled?.lifecycleFailureAction).toBe("stop")
+    expect(cancelled?.lifecycleAction).toBeUndefined()
+    // Retrying clears the cancelled banner the instant the new action is submitted.
+    store.applicationActions.stopWorkspace("dev")
+    const retried = store.getSnapshot().source?.workspaces[0]
+    expect(retried?.lifecycleFailure).toBeUndefined()
+    expect(retried?.lifecycleFailureCancelled).toBeUndefined()
+    expect(retried?.lifecycleAction).toBe("stop")
+    store.dispose()
+  })
+
   it("shows restart immediately, keeps it through refresh, and blocks conflicting actions", async () => {
     let finish!: (value: unknown) => void
     const command = new Promise((resolve) => { finish = resolve })

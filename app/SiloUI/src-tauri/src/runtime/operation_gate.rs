@@ -431,6 +431,22 @@ impl OperationGate {
         Ok(())
     }
 
+    /// Signal every waiting entry to leave the queue with `GateError::Cancelled`.
+    /// Running work is left untouched. Used by Quit: once admission is refused a
+    /// waiter would only be rejected when its turn came, so it is cancelled at once.
+    pub(crate) fn cancel_all_waiting(&self) {
+        let mut state = self.lock();
+        if state.waiting.is_empty() {
+            return;
+        }
+        for entry in state.waiting.iter() {
+            entry.cancel.store(true, Ordering::SeqCst);
+        }
+        drop(state);
+        // Wake every waiter so it observes the flag and leaves the queue.
+        self.notify();
+    }
+
     /// Longest-running operation and its age, for stuck-operation reporting.
     pub(crate) fn oldest_running(&self) -> Option<(String, std::time::Duration)> {
         let state = self.lock();
@@ -755,6 +771,26 @@ mod tests {
         gate.cancel(waiting_id).unwrap();
         assert_eq!(waiter.join().unwrap(), GateError::Cancelled);
         assert!(gate.snapshot().waiting.is_empty());
+        drop(running);
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn cancel_all_waiting_cancels_every_waiter_and_leaves_running_work() {
+        let gate = leak();
+        // One running entry that must be left untouched.
+        let running = gate.computer("Backing up sandboxes").unwrap();
+        let first = thread::spawn(move || gate.vm("id-a", "a", "Stop a").unwrap_err());
+        wait_until(gate, |queue| queue.waiting.len() == 1);
+        let second = thread::spawn(move || gate.vm("id-b", "b", "Stop b").unwrap_err());
+        wait_until(gate, |queue| queue.waiting.len() == 2);
+        gate.cancel_all_waiting();
+        assert_eq!(first.join().unwrap(), GateError::Cancelled);
+        assert_eq!(second.join().unwrap(), GateError::Cancelled);
+        let queue = gate.snapshot();
+        assert!(queue.waiting.is_empty());
+        assert_eq!(queue.running.len(), 1);
+        assert_eq!(queue.running[0].label, "Backing up sandboxes");
         drop(running);
         assert!(gate.is_idle());
     }

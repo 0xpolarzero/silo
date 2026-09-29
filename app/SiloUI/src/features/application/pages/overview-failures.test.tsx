@@ -39,6 +39,46 @@ it("offers a Retry action on a failed restart that re-submits the same intent", 
   expect(actions.restartWorkspace).toHaveBeenCalledWith("dev")
 })
 
+it("shows what a queued lifecycle action is waiting for until its turn to run", () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(item => item.machine.name === "dev")!
+  workspace.lifecycleAction = "stop"
+  const vmId = workspace.machine.id
+  source.operationQueue = {
+    running: [{ id: 1, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null }],
+    waiting: [{ id: 2, label: "Stop dev", vmId, vmName: "dev", sinceMs: 0, cancellable: true, expectedMs: null }],
+  }
+  const actions = { cancelOperation: vi.fn() } as unknown as ApplicationActions
+  const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const row = within(screen.getByText("dev").closest("li")!)
+  expect(row.getByRole("status")).toHaveTextContent("Waiting for Backing up sandboxes…")
+  expect(row.queryByText("Stopping…")).not.toBeInTheDocument()
+  // Once the entry is admitted (running, no longer waiting) the row shows the action.
+  source.operationQueue = {
+    running: [{ id: 2, label: "Stop dev", vmId, vmName: "dev", sinceMs: 0, cancellable: false, expectedMs: null }],
+    waiting: [],
+  }
+  view.rerender(<OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(row.getByRole("status")).toHaveTextContent("Stopping…")
+  expect(row.queryByText(/Waiting for/)).not.toBeInTheDocument()
+})
+
+it("shows a cancelled lifecycle action as a neutral, retryable state, not an error", async () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(item => item.machine.name === "dev")!
+  workspace.state = "running"
+  workspace.lifecycleFailure = "The operation was cancelled."
+  workspace.lifecycleFailureAction = "stop"
+  workspace.lifecycleFailureCancelled = true
+  const actions = { stopWorkspace: vi.fn() } as unknown as ApplicationActions
+  render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const row = within(screen.getByText("dev").closest("li")!)
+  expect(row.queryByRole("alert")).not.toBeInTheDocument()
+  expect(row.getByText("Stop cancelled")).toBeVisible()
+  await userEvent.setup().click(row.getByRole("button", { name: "Retry" }))
+  expect(actions.stopWorkspace).toHaveBeenCalledWith("dev")
+})
+
 it("keeps a known lifecycle action visible while its remote computer refreshes status", () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.name === "dev")!

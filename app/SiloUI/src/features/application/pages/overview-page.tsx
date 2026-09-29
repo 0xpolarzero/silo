@@ -17,7 +17,7 @@ import { Progress } from "@/components/ui/progress"
 import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { OperationQueueIndicator, WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
-import { emptyOperationQueue, waitingOperationForVm } from "@/features/application/model/operation-queue"
+import { emptyOperationQueue, waitingOperationForVm, cancelledActionLabel } from "@/features/application/model/operation-queue"
 import type {
   ApplicationActions,
   ApplicationSource,
@@ -350,6 +350,10 @@ export function OverviewPage({ active = true, readOnly = false,
             const checkpointOperation = workspace?.checkpointOperation?.status === "running" ? workspace.checkpointOperation : undefined
             const lifecycleLabel = lifecycle === "dismiss-error" ? "Dismissing…" : lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
             const workspaceOperationBusy = Boolean(lifecycle) || Boolean(checkpointOperation)
+            // A pending lifecycle action can still be waiting its turn in the gate. Until
+            // its queue entry runs, the row reads "Waiting for <blocker>…" rather than the
+            // pending-action label, so the user sees what is holding the action up.
+            const waitingForVm = queueVmId !== null ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, queueVmId) : undefined
             return {
               kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
               badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
@@ -358,34 +362,48 @@ export function OverviewPage({ active = true, readOnly = false,
                 else actions.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name)
               } }, ...(machine.kind === "vm" && workspace ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || workspace.freshness === "stale", onSelect: () => setExpandedCheckpoints(previous => { const next = new Set(previous); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next }) }] : []), ...(machine.kind === "vm" && workspace && actions.forkCheckpoint ? [{ label: "Fork", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || workspace.freshness === "stale", onSelect: () => setForkStateWorkspaceId(machine.id) }] : []), ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationOperation !== null || workspaceOperationBusy, onSelect: () => setExpandedStorage(previous => { const next = new Set(previous); if (next.has(machine.id)) next.delete(machine.id); else next.add(machine.id); return next }) }] : [])],
               expandedContent: workspace?.lifecycleFailure || (sshAvailable && expanded) || storageExpanded || checkpointsExpanded ? <>
-                {workspace?.lifecycleFailure && <div role="alert" className="mx-3 mb-2 max-h-48 overflow-auto rounded-md border border-destructive/20 bg-destructive/[.06] px-3 py-2 text-xs whitespace-pre-wrap break-words text-destructive">
-                  {workspace.lifecycleFailure}
-                  {workspace.lifecycleFailureAction && workspace.lifecycleFailureAction !== "dismiss-error" && !readOnly && (
-                    <div className="mt-2 flex justify-end">
-                      <Button size="xs" variant="outline" disabled={workspaceOperationBusy} onClick={() => {
-                        const target = workspaceTarget(workspace)
-                        if (workspace.lifecycleFailureAction === "start") actions.startWorkspace(target)
-                        else if (workspace.lifecycleFailureAction === "stop") actions.stopWorkspace(target)
-                        else if (workspace.lifecycleFailureAction === "restart") actions.restartWorkspace(target)
-                      }}>Retry</Button>
-                    </div>
-                  )}
-                </div>}
+                {workspace?.lifecycleFailure && (() => {
+                  const retry = workspace.lifecycleFailureAction && workspace.lifecycleFailureAction !== "dismiss-error" && !readOnly
+                    ? <div className="mt-2 flex justify-end">
+                        <Button size="xs" variant="outline" disabled={workspaceOperationBusy} onClick={() => {
+                          const target = workspaceTarget(workspace)
+                          if (workspace.lifecycleFailureAction === "start") actions.startWorkspace(target)
+                          else if (workspace.lifecycleFailureAction === "stop") actions.stopWorkspace(target)
+                          else if (workspace.lifecycleFailureAction === "restart") actions.restartWorkspace(target)
+                        }}>Retry</Button>
+                      </div>
+                    : null
+                  // A cancellation is the user's own choice, not a failure: show it as a
+                  // neutral, muted status with the same Retry, never the destructive alert.
+                  return workspace.lifecycleFailureCancelled
+                    ? <div role="status" className="mx-3 mb-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                        {cancelledActionLabel(workspace.lifecycleFailureAction ?? "start")}
+                        {retry}
+                      </div>
+                    : <div role="alert" className="mx-3 mb-2 max-h-48 overflow-auto rounded-md border border-destructive/20 bg-destructive/[.06] px-3 py-2 text-xs whitespace-pre-wrap break-words text-destructive">
+                        {workspace.lifecycleFailure}
+                        {retry}
+                      </div>
+                })()}
                 {sshAvailable && expanded && <div id={`ssh-${machine.id}`}><SshAccessRow readOnly={readOnly || workspaceOperationBusy} embedded workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} /></div>}{machine.kind === "vm" && workspace && !workspace.computer && expandedStorage.has(machine.id) && actions.readWorkspaceStorage && <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={configurationLocked || workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />}{checkpointsExpanded && workspace && <CheckpointPanel workspace={workspace} target={workspaceTarget(workspace)} actions={actions} disabled={configurationLocked || Boolean(lifecycle) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} />}</> : undefined,
               busy: workspaceOperationBusy || Boolean(workspace?.computer?.busy),
               suppressInteractions: workspaceOperationBusy || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
               icon: workspaceOperationBusy ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
-              iconState: workspace?.lifecycleFailure ? "error" as const : visualState,
-              tone: workspaceOperationBusy ? "starting" as const : workspace?.lifecycleFailure ? "error" as const : workspaceRowTone(workspace),
+              iconState: workspace?.lifecycleFailure && !workspace.lifecycleFailureCancelled ? "error" as const : visualState,
+              tone: workspaceOperationBusy ? "starting" as const : workspace?.lifecycleFailure && !workspace.lifecycleFailureCancelled ? "error" as const : workspaceRowTone(workspace),
               detail: checkpointOperation ? <div role="status" aria-live="polite" aria-atomic="true" className="grid gap-1.5 py-0.5">
                 <p className="truncate text-xs" title={checkpointOperation.stage}>{checkpointOperation.stage}</p>
                 <Progress value={null} aria-label="Checkpoint operation progress" />
               </div> : (
                 <span className="inline-flex max-w-full items-center gap-1 align-middle">
                   <span className="truncate" title={workspace?.attention?.message}>
-                    {lifecycle ? <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span> : workspace?.computer?.busy ? <span role="status">Refreshing status…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : <WorkspaceStateLabel state={state} />}
+                    {lifecycle
+                      ? (waitingForVm && queueVmId !== null
+                          ? <WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={readOnly ? undefined : actions.cancelOperation} />
+                          : <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span>)
+                      : workspace?.computer?.busy ? <span role="status">Refreshing status…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : <WorkspaceStateLabel state={state} />}
                     {workspace?.attention && <> · {workspace.attention.message}</>}
-                    {!lifecycle && !workspaceOperationBusy && queueVmId !== null && waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, queueVmId) && <> · <WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={readOnly ? undefined : actions.cancelOperation} /></>}
+                    {!lifecycle && !workspaceOperationBusy && queueVmId !== null && waitingForVm && <> · <WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={readOnly ? undefined : actions.cancelOperation} /></>}
                   </span>
                   {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || workspaceOperationBusy || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}
                 </span>

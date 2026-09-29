@@ -8,7 +8,7 @@ import { z } from "zod"
 import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
 import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
-import { operationQueueSchema, type OperationQueue } from "@/features/application/model/operation-queue"
+import { operationQueueSchema, isCancelledError, type OperationQueue } from "@/features/application/model/operation-queue"
 import { deriveMachineChanges, isStaleConfigurationError, type MachineConfigurationChange } from "@/features/application/model/machine-change"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
 import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
@@ -233,7 +233,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const pendingRepositoryPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
   const remotePushRevisions = new Map<string, number>()
   const pendingLifecycle = new Map<string, "start" | "stop" | "restart" | "dismiss-error">()
-  const workspaceFailures = new Map<string, { machineId: string; action: string; message: string }>()
+  const workspaceFailures = new Map<string, { machineId: string; action: string; message: string; cancelled: boolean }>()
   let pendingBackupOperation = false
   let localBackupOperation: BackupOperation | null = null
   const dismissedBackupResults = new Set<string>()
@@ -412,7 +412,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const target = workspaceTarget(workspace)
       const failure = workspaceFailures.get(target)
       return { ...workspace,
-        ...(failure?.machineId === workspace.machine.id && { lifecycleFailure: failure.message, lifecycleFailureAction: failure.action as "start" | "stop" | "restart" | "dismiss-error" }),
+        ...(failure?.machineId === workspace.machine.id && { lifecycleFailure: failure.message, lifecycleFailureAction: failure.action as "start" | "stop" | "restart" | "dismiss-error", lifecycleFailureCancelled: failure.cancelled }),
         ...(pendingLifecycle.has(target) && { lifecycleAction: pendingLifecycle.get(target) }),
       }
     }) } } : next
@@ -591,8 +591,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function setWorkspaceFailure(action: string, name: string, cause: unknown) {
     const workspace = snapshot.source?.workspaces.find(workspace => workspaceTarget(workspace) === name)
     if (!workspace) return
+    const message = errorMessage(cause)
+    // A user-requested cancellation is not a failure: record it as a neutral,
+    // retryable state so the row shows "<Action> cancelled", not a red error.
+    const cancelled = isCancelledError(message)
     const label = `${action[0].toUpperCase()}${action.slice(1)}`
-    workspaceFailures.set(name, { machineId: workspace.machine.id, action, message: `${label} failed: ${errorMessage(cause)}` })
+    workspaceFailures.set(name, { machineId: workspace.machine.id, action, message: cancelled ? message : `${label} failed: ${message}`, cancelled })
     publish({ ...snapshot, source: snapshot.source ? { ...snapshot.source,
       workspaces: snapshot.source.workspaces.map(item => workspaceTarget(item) === name ? { ...item, freshness: "stale" } : item),
     } : null })
@@ -608,7 +612,21 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (pendingWorkspaceActions.has(key) || pendingLifecycle.has(name)) return
     pendingWorkspaceActions.add(key)
     const lifecycle = action === "start" || action === "stop" || action === "restart" || action === "dismiss-error"
-    if (lifecycle) { pendingLifecycle.set(name, action); publish({ ...snapshot }) }
+    // Submitting a lifecycle action supersedes any prior failure or cancellation for
+    // this VM: clear the tracked failure and the fields already baked into the current
+    // source so a Retry does not leave the old message showing while the resubmitted
+    // action waits or runs. publish recomputes lifecycleAction but preserves the baked
+    // failure fields, so they must be cleared on the source here.
+    if (lifecycle) {
+      workspaceFailures.delete(name)
+      pendingLifecycle.set(name, action)
+      const cleared = snapshot.source
+        ? { ...snapshot.source, workspaces: snapshot.source.workspaces.map(item => workspaceTarget(item) === name
+            ? { ...item, lifecycleFailure: undefined, lifecycleFailureAction: undefined, lifecycleFailureCancelled: undefined }
+            : item) }
+        : snapshot.source
+      publish({ ...snapshot, source: cleared })
+    }
     void native.invoke<unknown>(remote && lifecycle ? "remote_workspace_action" : "workspace_action", remote && lifecycle ? { ...remote, action, ...extras } : { action, name, ...extras })
       .then((result) => {
         if (remote && !lifecycle) return refreshComputers()

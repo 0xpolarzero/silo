@@ -141,6 +141,9 @@ export interface ApplicationWorkspace {
   /** The lifecycle action that failed, so the UI can offer a matching Retry that
    * re-submits the same intent (re-reading fresh state server-side). */
   lifecycleFailureAction?: "start" | "stop" | "restart" | "dismiss-error"
+  /** True when the last lifecycle attempt was cancelled by the user rather than
+   * failing. Rendered as a neutral, retryable state instead of an error. */
+  lifecycleFailureCancelled?: boolean
   lifecycleAction?: "start" | "stop" | "restart" | "dismiss-error"
   attention?: {
     level: "warning" | "error"
