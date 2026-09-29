@@ -336,8 +336,7 @@ describe("production setup queue", () => {
     await store.drainSetup()
     await expect(store.submitSetupStep("workspaces", request)).rejects.toThrow("quitting")
     events.get("silo://shutdown-state-changed")?.({ payload: false })
-    const changed: OnboardingCompletionRequest = { ...request, machineConfiguration: { schemaVersion: 1, machines: [{ ...request.machineConfiguration.machines[0], cpus: request.machineConfiguration.machines[0].cpus + 1 }] } }
-    await store.submitSetupStep("workspaces", changed)
+    await store.submitSetupStep("workspaces", request)
     expect(machines).toHaveBeenCalledOnce()
     store.dispose()
   })
