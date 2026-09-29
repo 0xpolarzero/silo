@@ -560,7 +560,8 @@ export function OverviewPage({ active = true, readOnly = false,
             views; it renders nothing inline and never shifts the sandbox list. */}
         <OperationQueueToast queue={source.operationQueue} onCancel={readOnly ? undefined : actions.cancelOperation} />
         {detailWorkspace ? (
-          <SandboxDetailPage workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />
+          // Keyed per sandbox so edit drafts, delete confirmations and panel state never carry over.
+          <SandboxDetailPage key={workspaceTarget(detailWorkspace)} workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />
         ) : (
           <>
             {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}

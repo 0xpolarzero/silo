@@ -393,3 +393,19 @@ it("confirms a delete from the list row ⋯ menu with the same popover as the de
   await user.click(popover.getByRole("button", { name: "Delete" }))
   await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
 })
+
+it("resets per-sandbox edit state when the page switches to another sandbox", async () => {
+  const source = localVmSource()
+  const [first, second] = source.workspaces.filter(item => item.machine.kind === "vm" && !item.computer)
+  const user = userEvent.setup()
+  const props = { source, actions: {} as ApplicationActions, onMachinesChange: vi.fn(), onOpenSandbox: vi.fn(), onCloseSandbox: vi.fn() }
+  const { rerender } = render(<OverviewPage {...props} selectedSandboxId={first.machine.id} />)
+
+  await user.click(screen.getByRole("button", { name: `More actions for ${first.machine.name}` }))
+  await user.click(await screen.findByRole("menuitem", { name: `Edit ${first.machine.name}` }))
+  expect(screen.getByRole("heading", { name: `Edit ${first.machine.name}` })).toBeVisible()
+
+  rerender(<OverviewPage {...props} selectedSandboxId={second.machine.id} />)
+  expect(screen.queryByRole("heading", { name: `Edit ${second.machine.name}` })).not.toBeInTheDocument()
+  expect(screen.queryByRole("heading", { name: `Edit ${first.machine.name}` })).not.toBeInTheDocument()
+})
