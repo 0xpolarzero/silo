@@ -273,10 +273,13 @@ fn snapshot_ready(
     )?;
     let entries: Vec<Value> = serde_json::from_str(&output.stdout)
         .map_err(|_| error("The runtime returned an invalid checkpoint list."))?;
+    // A full snapshot contains the disks too, so it also satisfies a disk-only restore
+    // (for example an imported checkpoint export, which always restores disks only).
+    let scope_matches = |entry: &Value| entry["scope"] == scope || (scope == "disk" && entry["scope"] == "full");
     if entries.iter().any(|entry| {
         entry["group"] == source
             && entry["name"] == checkpoint_id
-            && entry["scope"] == scope
+            && scope_matches(entry)
             && entry["availability"] == "ready"
     }) {
         Ok(())
@@ -1600,6 +1603,27 @@ mod tests {
     use super::*;
 
     const ID: &str = "00000000-0000-4000-8000-000000000001";
+
+    #[test]
+    fn full_snapshot_satisfies_a_disk_only_restore_but_not_the_reverse() {
+        struct Listing(&'static str);
+        impl RuntimeRunner for Listing {
+            fn run(&self, _: &RuntimePaths, _: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+                Ok(CommandOutput {
+                    stdout: format!("[{{\"group\":\"g\",\"name\":\"c\",\"scope\":\"{}\",\"availability\":\"ready\"}}]", self.0),
+                    stderr: String::new(),
+                })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        // An imported checkpoint export: a full snapshot restored disk-only.
+        assert!(snapshot_ready(&Listing("full"), &paths, "g", "c", "disk").is_ok());
+        assert!(snapshot_ready(&Listing("full"), &paths, "g", "c", "full").is_ok());
+        assert!(snapshot_ready(&Listing("disk"), &paths, "g", "c", "disk").is_ok());
+        // A disk-only snapshot has no memory, so it can't satisfy a full restore.
+        assert!(snapshot_ready(&Listing("disk"), &paths, "g", "c", "full").is_err());
+    }
     #[test]
     fn imported_snapshot_intent_accepts_native_selectors_but_rejects_paths() {
         let directory = tempfile::tempdir().unwrap();
