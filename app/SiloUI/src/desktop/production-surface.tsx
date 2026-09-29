@@ -14,7 +14,13 @@ import { ApplicationLoading, StatusPanelUnavailable } from "@/desktop/applicatio
 import { ApplicationApp } from "@/features/application/application-app"
 import { useSettings } from "@/features/preferences/settings-store"
 
-export function Unavailable({ message, retry, checks = [], checking = false }: { message: string; retry?: () => void; checks?: SiloPreflightCheck[]; checking?: boolean }) {
+/** Painted before any native call at startup, so the window Rust has shown is never blank. */
+export function StartupLoading({ statusPanel = false }: { statusPanel?: boolean }) {
+  if (statusPanel) return <ApplicationLoading machines={[]} statusPanel />
+  return <SiloWindow title="Silo" label="Silo"><span role="status" className="sr-only">Opening Silo…</span></SiloWindow>
+}
+
+export function Unavailable({ message, retry, retryLabel = "Retry checks", checks = [], checking = false }: { message: string; retry?: () => void; retryLabel?: string; checks?: SiloPreflightCheck[]; checking?: boolean }) {
   return (
     <SiloWindow title="Silo" label="Silo unavailable">
       <div className="grid flex-1 place-items-center p-6">
@@ -26,7 +32,7 @@ export function Unavailable({ message, retry, checks = [], checking = false }: {
               <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{check.remediation}</p>
             </div>
           )) : <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{message}</p>}
-          {retry && <button type="button" disabled={checking} className="mt-3 rounded-md border px-3 py-1.5 text-xs disabled:opacity-50" onClick={retry}>{checking ? "Checking…" : "Retry checks"}</button>}
+          {retry && <button type="button" disabled={checking} className="mt-3 rounded-md border px-3 py-1.5 text-xs disabled:opacity-50" onClick={retry}>{checking ? "Checking…" : retryLabel}</button>}
         </div>
       </div>
     </SiloWindow>

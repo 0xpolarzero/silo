@@ -104,6 +104,24 @@ describe("production setup drain", () => {
   })
 })
 
+describe("saved sandbox list for the loading skeleton", () => {
+  const machine = source.workspaces[0].machine
+  it.each([
+    ["an unreadable list", () => Promise.reject(new Error("configuration locked")), []],
+    ["an over-long list", () => Promise.resolve({ schemaVersion: 1, machines: Array.from({ length: 65 }, () => machine) }), Array.from({ length: 65 }, () => machine)],
+    ["a newer schema with an unknown entry", () => Promise.resolve({ schemaVersion: 2, machines: [machine, { id: "x", kind: "future" }] }), [machine]],
+  ] as const)("never fails startup on %s", async (_case, read, expected) => {
+    const mock = bridge({ invoke: (command) => command === "read_machine_configuration" ? read() : undefined })
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+    const store = createProductionSource(mock.bridge)
+    try {
+      await expect(store.loadConfiguration()).resolves.toBeUndefined()
+      expect(store.getSnapshot().savedMachines).toEqual(expected)
+      if (expected.length === 0) expect(logged).toHaveBeenCalledWith("Silo saved sandboxes:", "configuration locked")
+    } finally { store.dispose() }
+  })
+})
+
 describe("production source start-up", () => {
   it("subscribes, polls and refreshes on focus when Retry initializes again after a failed subscription", async () => {
     vi.useFakeTimers()

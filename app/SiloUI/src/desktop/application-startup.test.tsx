@@ -8,7 +8,11 @@ vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: "st
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }))
 vi.mock("react-dom/client", async () => {
   const { render } = await import("@testing-library/react")
-  return { createRoot: () => ({ render }) }
+  // One root, as in production: later renders replace the startup shell.
+  return { createRoot: () => {
+    let view: ReturnType<typeof render> | undefined
+    return { render: (node: React.ReactNode) => { if (view) view.rerender(node); else view = render(node) }, unmount: () => view?.unmount() }
+  } }
 })
 vi.mock("./dependencies", () => ({ createNativeDependencyStore: vi.fn() }))
 vi.mock("./production-source", () => ({ createProductionSource: () => ({
@@ -25,6 +29,7 @@ vi.mock("./production-surface", async () => {
   const { useSettings } = await import("@/features/preferences/settings-store")
   return {
     Unavailable: ({ message }: { message: string }) => <div>{message}</div>,
+    StartupLoading: () => <p>Opening Silo…</p>,
     ProductionSurface: () => {
       const { settings } = useSettings()
       return <output>{JSON.stringify(settings)}</output>

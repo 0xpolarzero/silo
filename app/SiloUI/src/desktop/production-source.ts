@@ -1410,9 +1410,20 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener) },
     initialize,
+    // The saved list only draws loading rows before live state arrives, so it never
+    // blocks or fails startup: an unreadable or unexpected list shows no rows.
     async loadConfiguration() {
-      const configuration = z.object({ schemaVersion: z.literal(1), machines: z.array(setupMachineConfigurationSchema).max(64) }).parse(await native.invoke("read_machine_configuration"))
-      publish({ ...snapshot, savedMachines: configuration.machines })
+      try {
+        const configuration = z.object({ machines: z.array(z.unknown()) }).parse(await native.invoke("read_machine_configuration"))
+        const machines = configuration.machines.flatMap((machine) => {
+          const parsed = setupMachineConfigurationSchema.safeParse(machine)
+          return parsed.success ? [parsed.data] : []
+        })
+        if (!disposed) publish({ ...snapshot, savedMachines: machines })
+      } catch (cause) {
+        console.error("Silo saved sandboxes:", errorMessage(cause))
+        if (!disposed) publish({ ...snapshot, savedMachines: [] })
+      }
     },
     refresh,
     configureMachines,
