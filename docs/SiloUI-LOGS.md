@@ -84,7 +84,7 @@ that arbitrary secrets are removed. Review exports before sharing them.
   files, search, pagination, surrounding records and remote owner routing.
 - [Retention policy](../app/SiloUI/src-tauri/src/log_retention.rs): segment age,
   shared byte budget and stopped-sandbox cleanup.
-- [Runtime patch](../app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch):
+- [Runtime patch](https://github.com/0xpolarzero/silo/blob/d3481b294342784bbf1047e6d94587381eee2479/app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch):
   execution, runtime and kernel writers.
 - [Logs view](../app/SiloUI/src/features/application/pages/logs-page.tsx):
   search, filters, refresh and follow controls.

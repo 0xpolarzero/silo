@@ -55,7 +55,7 @@ at 12:05:37.939Z. The pause RPC returned `Internal` with the same sync error;
 the SDK exposed only `500: Error pausing sandbox`. The catalog has snapshot
 row `2f097f02-c9b8-4ebd-b397-853c34529a8d` and failed build
 `d47bcdef-89a9-4839-8b87-a9d7c07cca07`. The build reason contains the sync
-error and EIO. The [ignored after-inspection receipt](../../app/SiloUI/src-tauri/target/verification/e2b-local/deployments/diagnostic-d1/evidence/d2-source-fault/5ca23681b9ae451da8c713b8e5ea9837-after.json)
+error and EIO. The ignored after-inspection receipt (untracked local evidence: `app/SiloUI/src-tauri/target/verification/e2b-local/deployments/diagnostic-d1/evidence/d2-source-fault/5ca23681b9ae451da8c713b8e5ea9837-after.json`)
 records exact log-line numbers, timestamps, SHA-256 values, catalog rows,
 process state and file inventory.
 
@@ -65,7 +65,7 @@ error, the checked local build, local template and canonical template paths
 contained no files for the failed build. One exact
 SDK `Sandbox.connect` returned `SandboxNotFoundException`; creating from the
 failed snapshot ID `1a1r05qb5e6nj6i70071:default` returned 404. The
-[ignored SDK receipt](../../app/SiloUI/src-tauri/target/verification/e2b-local/deployments/diagnostic-d1/evidence/d2-source-fault/5ca23681b9ae451da8c713b8e5ea9837-sdk-recovery.json)
+ignored SDK receipt (untracked local evidence: `app/SiloUI/src-tauri/target/verification/e2b-local/deployments/diagnostic-d1/evidence/d2-source-fault/5ca23681b9ae451da8c713b8e5ea9837-sdk-recovery.json`)
 records both responses. These tested SDK paths could not recover the original
 or the failed snapshot. The file inventory was taken after the error;
 it does not establish that no other copy of the bytes exists.

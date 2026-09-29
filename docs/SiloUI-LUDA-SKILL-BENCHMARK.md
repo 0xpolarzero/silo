@@ -98,8 +98,8 @@ Use a never-used trial name. The last command builds a grading packet; it does n
 
 ## Local deliverables
 
-- [Compact handoff: skill, upstream patch, runnable benchmark, grades, and screenshots](../app/SiloUI/src-tauri/target/verification/luda-skill-benchmark-handoff.zip). Raw MCP/live event streams are omitted from this smaller archive.
-- [Full evidence archive including raw MCP/live events](../app/SiloUI/src-tauri/target/verification/luda-skill-benchmark-accepted.zip).
-- [Exact tested skill](../app/SiloUI/src-tauri/target/verification/luda-skill-eval/candidate/benchmark-r6/luda/SKILL.md).
+- Compact handoff: skill, upstream patch, runnable benchmark, grades, and screenshots (untracked local evidence: `app/SiloUI/src-tauri/target/verification/luda-skill-benchmark-handoff.zip`). Raw MCP/live event streams are omitted from this smaller archive.
+- Full evidence archive including raw MCP/live events (untracked local evidence: `app/SiloUI/src-tauri/target/verification/luda-skill-benchmark-accepted.zip`).
+- Exact tested skill (untracked local evidence: `app/SiloUI/src-tauri/target/verification/luda-skill-eval/candidate/benchmark-r6/luda/SKILL.md`).
 
 Both archives passed ZIP integrity and per-file hash verification. Their extracted portable benchmark passed all 30 simulator tests. Applying the upstream patch reproduced the tested skill byte-for-byte. Skill metadata validation passed.

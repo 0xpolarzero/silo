@@ -208,7 +208,7 @@ Silo then adds its own patch and inherits that maintenance burden.
 - **MicroSandbox is not maintenance-free or universally qualified.** Its
   [pinned README](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/README.md)
   identifies beta software. Silo's
-  [patch](../../app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch)
+  [patch](https://github.com/0xpolarzero/silo/blob/d3481b294342784bbf1047e6d94587381eee2479/app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch)
   spans creation, image integrity, secret/network policy, SSH, publication and
   logs. That is a reason to reduce patches and upstream fixes, not to call the
   incumbent finished.
