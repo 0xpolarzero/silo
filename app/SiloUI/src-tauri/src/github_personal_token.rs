@@ -95,6 +95,10 @@ pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result
     if d.revision != revision {
         return Err("GitHub access changed. Applying your latest choices.".into());
     }
+    // Narrowing has already detached the token; never attach it while access is disabled.
+    if !d.access_enabled {
+        return Ok(());
+    }
     let token = value()?;
     let profile = json!({"version":2,"owners":[],"personalToken":token});
     if crate::runtime::github_policy_is_cached(app, name, &profile)?
@@ -118,6 +122,14 @@ pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result
     Ok(())
 }
 
+/// Disable access is a global kill switch: no VM keeps the personal token while it is off.
+fn keeps_token(d: &Document, name: &str, current: Option<&String>, attached: &String) -> bool {
+    d.access_enabled
+        && d.workspaces
+            .iter()
+            .any(|w| w["workspace"] == name && selected(w))
+        && current == Some(attached)
+}
 /// Remove token authority before a method switch, removal, failed validation or replacement.
 /// OAuth reconciliation never substitutes its own credential for a disconnected personal token.
 /// Every VM is detached even when another fails; failures are reported per workspace.
@@ -148,12 +160,7 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
         .filter(|(key, _)| key.starts_with(&prefix))
         .filter_map(|(key, attached)| {
             let name = &key[prefix.len()..];
-            let keep = d
-                .workspaces
-                .iter()
-                .any(|w| w["workspace"] == name && selected(w))
-                && current.as_ref() == Some(attached);
-            (!keep).then(|| (name.to_owned(), key.clone()))
+            (!keeps_token(d, name, current.as_ref(), attached)).then(|| (name.to_owned(), key.clone()))
         })
         .collect();
     each_workspace(stale.iter().map(|(name, key)| (name.as_str(), key.as_str())), errors, |name, key| detach(name, key));
@@ -344,6 +351,18 @@ mod tests {
         // Existing unavailable choices are preserved during unrelated identity edits.
         assert!(validate_method_change(Some(&token), &token, false, false).is_ok());
         assert!(validate_method_change(None, &oauth, false, false).is_ok());
+    }
+    #[test]
+    fn disable_access_detaches_personal_token_vms() {
+        let fingerprint = "attached".to_string();
+        let mut d = Document {
+            access_enabled: true,
+            workspaces: vec![json!({"workspace":"dev","authenticationMethod":"token"})],
+            ..Document::default()
+        };
+        assert!(keeps_token(&d, "dev", Some(&fingerprint), &fingerprint));
+        d.access_enabled = false;
+        assert!(!keeps_token(&d, "dev", Some(&fingerprint), &fingerprint));
     }
     #[test]
     fn legacy_policies_stay_oauth_and_token_policy_has_no_oauth_scopes() {
