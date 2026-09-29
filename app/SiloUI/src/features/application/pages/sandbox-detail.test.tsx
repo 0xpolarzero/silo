@@ -240,14 +240,15 @@ it("edits and removes a sandbox's secret from the Overview tab", async () => {
   expect(removeSecret).toHaveBeenCalledExactlyOnceWith("svc")
 })
 
-it("keeps a remote computer's secrets read-only on the Overview tab", async () => {
+it("never lists a same-named local sandbox's secrets on a remote sandbox page", async () => {
   const source = localVmSource()
   const workspace = localVm(source)
   workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   source.secrets = [{ id: "svc", name: "SERVICE_TOKEN", workspaces: [workspace.machine.name], allowedDomains: [], state: "active" }]
   await openDetail(source, { saveSecret: vi.fn(), removeSecret: vi.fn() }, workspace)
 
-  expect(screen.getByText("SERVICE_TOKEN")).toBeVisible()
+  expect(screen.getByText("Secrets are available only for sandboxes on this computer.")).toBeVisible()
+  expect(screen.queryByText("SERVICE_TOKEN")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Add secret" })).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Edit SERVICE_TOKEN" })).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Remove SERVICE_TOKEN" })).not.toBeInTheDocument()
@@ -317,7 +318,7 @@ it("confirms a delete in a popover on the detail page and returns to the list", 
   expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
   expect(screen.queryByRole("dialog", { hidden: true })?.getAttribute("aria-modal")).not.toBe("true")
   const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
-  expect(popover.getByText(/Persistent volumes are kept/)).toBeVisible()
+  expect(popover.getByText(/will be deleted. This can't be undone./)).toBeVisible()
   await user.click(popover.getByRole("button", { name: "Delete" }))
 
   expect(onMachinesChange).toHaveBeenCalled()
@@ -388,8 +389,24 @@ it("confirms a delete from the list row ⋯ menu with the same popover as the de
   await user.click(await screen.findByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
   expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
   const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
-  expect(popover.getByText(`Removing ${workspace.machine.name} from Silo. Persistent volumes are kept.`)).toBeVisible()
+  expect(popover.getByText("Its files and checkpoints will be deleted. This can't be undone.")).toBeVisible()
   expect(screen.queryByRole("menuitem", { name: /Confirm deletion/ })).not.toBeInTheDocument()
   await user.click(popover.getByRole("button", { name: "Delete" }))
   await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
+})
+
+it("resets per-sandbox edit state when the page switches to another sandbox", async () => {
+  const source = localVmSource()
+  const [first, second] = source.workspaces.filter(item => item.machine.kind === "vm" && !item.computer)
+  const user = userEvent.setup()
+  const props = { source, actions: {} as ApplicationActions, onMachinesChange: vi.fn(), onOpenSandbox: vi.fn(), onCloseSandbox: vi.fn() }
+  const { rerender } = render(<OverviewPage {...props} selectedSandboxId={first.machine.id} />)
+
+  await user.click(screen.getByRole("button", { name: `More actions for ${first.machine.name}` }))
+  await user.click(await screen.findByRole("menuitem", { name: `Edit ${first.machine.name}` }))
+  expect(screen.getByRole("heading", { name: `Edit ${first.machine.name}` })).toBeVisible()
+
+  rerender(<OverviewPage {...props} selectedSandboxId={second.machine.id} />)
+  expect(screen.queryByRole("heading", { name: `Edit ${second.machine.name}` })).not.toBeInTheDocument()
+  expect(screen.queryByRole("heading", { name: `Edit ${first.machine.name}` })).not.toBeInTheDocument()
 })

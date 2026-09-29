@@ -127,7 +127,7 @@ function configurationRowView(
   if (removed) {
     return {
       status: "running",
-      message: "Removing sandbox from Silo. Persistent volumes will be retained.",
+      message: "Deleting the sandbox’s files and checkpoints.",
       retryable: false,
     }
   }
@@ -427,11 +427,12 @@ export function OverviewPage({ active = true, readOnly = false,
     knownSandboxes.current = current
   }, [source.workspaces])
 
-  function forkOpenAction(name: string) {
+  /** Open the fork `name`, created on the same computer as its source sandbox. */
+  function forkOpenAction(name: string, computerId = "") {
     return {
       label: "Open",
       onClick: () => {
-        const match = workspacesRef.current.find(({ machine, computer }) => !computer && machine.name === name)
+        const match = workspacesRef.current.find(({ machine, computer }) => (computer?.id ?? "") === computerId && machine.name === name)
         if (match) openSandbox(match.machine.id)
       },
     }
@@ -447,7 +448,7 @@ export function OverviewPage({ active = true, readOnly = false,
       noticeSandbox: { id: workspace.machine.id, name: workspace.machine.name },
       title: `Creating fork ${name}`,
       run: () => actions.forkCheckpoint!(target, null, name),
-      success: { title: "Fork created", description: `${name} is stopped. Start it when you’re ready.`, action: forkOpenAction(name) },
+      success: { title: "Fork created", description: `${name} is stopped. Start it when you’re ready.`, action: forkOpenAction(name, workspace.computer?.id) },
       failureTitle: `Could not create fork ${name}`,
     })
   }
@@ -548,7 +549,7 @@ export function OverviewPage({ active = true, readOnly = false,
         : undefined,
       onCheckpointExport: exportSandbox ? (checkpoint: WorkspaceCheckpoint) => exportSandbox(machine.name, { id: checkpoint.id, name: checkpoint.name }) : undefined,
       checkpointExportDisabled: transferBusy || backup?.state.availability === "unavailable",
-      onCheckpointForkedAction: forkOpenAction,
+      onCheckpointForkedAction: (name: string) => forkOpenAction(name, workspace.computer?.id),
       onCheckpointRestoredAction: () => ({ label: "Start", onClick: () => guarded.startWorkspace(target) }),
     }
   }
@@ -560,7 +561,8 @@ export function OverviewPage({ active = true, readOnly = false,
             views; it renders nothing inline and never shifts the sandbox list. */}
         <OperationQueueToast queue={source.operationQueue} onCancel={readOnly ? undefined : actions.cancelOperation} />
         {detailWorkspace ? (
-          <SandboxDetailPage workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />
+          // Keyed per sandbox so edit drafts, delete confirmations and panel state never carry over.
+          <SandboxDetailPage key={workspaceTarget(detailWorkspace)} workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />
         ) : (
           <>
             {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}

@@ -1100,7 +1100,7 @@ describe("application", () => {
 
     expect(row).toHaveAttribute("aria-busy", "true")
     expect(within(row).getByRole("status")).toHaveTextContent("Removing")
-    expect(within(row).getByRole("status")).toHaveTextContent("Persistent volumes will be retained")
+    expect(within(row).getByRole("status")).toHaveTextContent("Deleting the sandbox’s files and checkpoints.")
     expect(within(row).queryByRole("progressbar")).not.toBeInTheDocument()
     expect(within(row).queryByLabelText("Controls for playgrounds")).not.toBeInTheDocument()
     expect(within(row).queryByLabelText("Manage playgrounds")).not.toBeInTheDocument()
@@ -1234,7 +1234,7 @@ describe("application", () => {
     const row = overview.getByText("playgrounds").closest("li") as HTMLElement
     expect(row).toHaveAttribute("aria-busy", "true")
     expect(within(row).getByRole("status")).toHaveTextContent("Removing")
-    expect(within(row).getByRole("status")).toHaveTextContent("Persistent volumes will be retained")
+    expect(within(row).getByRole("status")).toHaveTextContent("Deleting the sandbox’s files and checkpoints.")
     expect(actions.saveMachineConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
       machines: expect.not.arrayContaining([expect.objectContaining({ name: "playgrounds" })]),
     }), expect.anything())

@@ -2,6 +2,7 @@ import { Activity, Bell, Boxes, CircleAlert, Code, File, GitFork, KeyRound, Moni
 
 import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
+import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 
 export interface ApplicationCommand {
@@ -42,18 +43,23 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
   }
 
   for (const workspace of source.workspaces) {
-    const { id, name } = workspace.machine
+    const { id } = workspace.machine
+    // Remote sandboxes are addressed by their computer target and named with their computer,
+    // so a remote "dev" never resolves to (or reads like) a local "dev".
+    const target = workspaceTarget(workspace)
+    const name = workspace.computer ? `${workspace.machine.name} on ${workspace.computer.name}` : workspace.machine.name
+    const sandboxKeywords = workspace.computer ? [workspace.machine.name, workspace.computer.name] : [name]
     const availability = workspaceAvailability(workspace, source)
     for (const { section, label, icon, keywords } of workspaceSections) {
       commands.push({
         id: `${id}:${section}`, label: `Open ${name} ${label.toLowerCase()}`, icon, group: "Sandboxes",
-        keywords: [name, ...keywords], run: () => navigate({ workspace: id, workspaceSection: section }),
+        keywords: [...sandboxKeywords, ...keywords], run: () => navigate({ workspace: id, workspaceSection: section }),
       })
     }
     if (availability.canOpen) {
       commands.push(
-        { id: `${id}:terminal`, label: `Open ${name} in ${source.preferences.terminal}`, icon: Terminal, group: "Actions", keywords: [name, "terminal", "shell"], run: () => actions.openTerminal(name) },
-        { id: `${id}:editor`, label: `Open ${name} in ${source.preferences.editor}`, icon: Code, group: "Actions", keywords: [name, "editor", "code"], run: () => actions.openEditor(name) },
+        { id: `${id}:terminal`, label: `Open ${name} in ${source.preferences.terminal}`, icon: Terminal, group: "Actions", keywords: [...sandboxKeywords, "terminal", "shell"], run: () => actions.openTerminal(target) },
+        { id: `${id}:editor`, label: `Open ${name} in ${source.preferences.editor}`, icon: Code, group: "Actions", keywords: [...sandboxKeywords, "editor", "code"], run: () => actions.openEditor(target) },
       )
     }
     const lifecycle = [
@@ -63,8 +69,8 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
     ]
     for (const { label, icon, available, run } of lifecycle) {
       if (available) commands.push({
-        id: `${id}:${label}`, label: `${label} ${name}`, icon, group: "Actions", keywords: ["sandbox", name],
-        run: () => { navigate({ workspaceSection: "overview" }); run(name) },
+        id: `${id}:${label}`, label: `${label} ${name}`, icon, group: "Actions", keywords: ["sandbox", ...sandboxKeywords],
+        run: () => { navigate({ workspaceSection: "overview" }); run(target) },
       })
     }
   }

@@ -14,6 +14,7 @@ import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
+import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
 import { CheckpointPanel } from "@/features/application/components/checkpoint-panel"
 import { WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
 import { emptyOperationQueue, waitingOperationForVm } from "@/features/application/model/operation-queue"
@@ -159,27 +160,25 @@ function SecretsSection({ workspace, source, actions, onNavigate }: { workspace:
   const { machine } = workspace
   const canManage = machine.kind === "vm" && !workspace.computer
   const manager = useSecretsManager({ source, onSaveSecret: actions.saveSecret, onRemoveSecret: actions.removeSecret, onRetrySecret: actions.retrySecret })
-  const sandboxSecrets = source.secrets.filter(secret => secret.workspaces.includes(machine.name))
+  // Secret assignments name local sandboxes, so a remote or SSH sandbox never lists them.
+  const sandboxSecrets = canManage ? source.secrets.filter(secret => secret.workspaces.includes(machine.name)) : []
   const adding = Boolean(manager.editor && !manager.editor.secret)
 
+  if (!canManage) return <Section label="Secrets">
+    <p className="text-xs text-muted-foreground">Secrets are available only for sandboxes on this computer.</p>
+  </Section>
+
   const action = <div className="flex items-center gap-2">
-    {canManage && <AddAction label="Add secret" disabled={manager.saving || manager.busy !== null} onClick={(event) => manager.openEditor(event.currentTarget, { initialWorkspaces: [machine.name] })} />}
+    <AddAction label="Add secret" disabled={manager.saving || manager.busy !== null} onClick={(event) => manager.openEditor(event.currentTarget, { initialWorkspaces: [machine.name] })} />
     {onNavigate && <ViewAllAction label="View all secrets" onClick={() => onNavigate({ tab: "secrets" })} />}
   </div>
 
   return <Section label="Secrets" action={action}>
     <ListCard>
       {adding && <div className="border-b border-border"><AddSecretEditor manager={manager} /></div>}
-      {canManage && sandboxSecrets.length > 0
+      {sandboxSecrets.length > 0
         ? <ul className="divide-y divide-border" aria-label={`Secrets for ${machine.name}`}>{sandboxSecrets.map(secret => <SecretRow key={secret.id} secret={secret} manager={manager} />)}</ul>
-        : sandboxSecrets.length > 0
-          ? <div className="divide-y divide-border">{sandboxSecrets.map(secret => <ListRow
-              key={secret.id}
-              icon={<ListRowIcon aria-hidden="true"><KeyRound className="size-3.5" /></ListRowIcon>}
-              title={<span className="truncate font-mono" title={secret.name}>{secret.name}</span>}
-              detail={secret.allowedDomains.length ? secret.allowedDomains.join(", ") : "Available in this sandbox"}
-            />)}</div>
-          : !adding && <ListRow
+        : !adding && <ListRow
               icon={<ListRowIcon aria-hidden="true"><KeyRound className="size-3.5" /></ListRowIcon>}
               title={<span className="font-normal text-muted-foreground">No secrets assigned.</span>}
               detail=""
@@ -351,7 +350,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const editMenuActions: MenuAction[] = editingContext ? [
     { label: "Edit", separatorBefore: controls.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: controls.configurationLocked, onSelect: () => editing.startEdit(machine) },
     { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: controls.configurationLocked || !controls.onDuplicate, onSelect: () => controls.onDuplicate?.() },
-    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), popover: "delete" },
+    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), tooltip: machine.kind === "vm" && state === "running" ? "Stop the sandbox before deleting it." : undefined, popover: "delete" },
   ] : []
   const menuActions = [...controls.menuActions, ...editMenuActions]
 
@@ -378,7 +377,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     delete: close => <ConfirmBody
       tone="destructive"
       title={deleteTitle}
-      description={`Removing ${machine.name} from Silo. Persistent volumes are kept.`}
+      description={deleteSandboxDescription(machine.kind, workspace.checkpoints?.length)}
       confirmLabel="Delete"
       onClose={close}
       onConfirm={async () => {
