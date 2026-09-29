@@ -169,24 +169,51 @@ struct Credential {
 }
 // One serialized Keychain read per entry per app session. Cache denials too:
 // background reconciliation must never reopen a dismissed permission dialog.
-struct SessionSecret<T>(Mutex<Option<Result<T, String>>>);
+// A failed write keeps the new value in memory (a rotated credential must stay
+// usable) and marks it unsaved; the store is retried by `flush`, never by `write`.
+struct SessionSecret<T>(Mutex<SecretSlot<T>>);
+struct SecretSlot<T> {
+    value: Option<Result<T, String>>,
+    unsaved: Option<String>,
+    blocked: bool,
+}
 impl<T: Clone + PartialEq> SessionSecret<T> {
-    const fn new() -> Self { Self(Mutex::new(None)) }
+    const fn new() -> Self { Self(Mutex::new(SecretSlot { value: None, unsaved: None, blocked: false })) }
     fn read(&self, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
-        state.get_or_insert_with(read).clone()
+        state.value.get_or_insert_with(read).clone()
     }
     fn write(&self, value: T, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
         let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
-        if let Some(Err(error)) = state.as_ref() { return Err(error.clone()); }
-        if matches!(state.as_ref(), Some(Ok(current)) if current == &value) { return Ok(()); }
+        if let Some(Err(error)) = state.value.as_ref() { return Err(error.clone()); }
+        if state.blocked {
+            if let Some(error) = state.unsaved.clone() {
+                // Keep the newest value usable in memory; `flush` stores it later.
+                state.value = Some(Ok(value));
+                return Err(error);
+            }
+        }
+        if state.unsaved.is_none() && matches!(state.value.as_ref(), Some(Ok(current)) if current == &value) { return Ok(()); }
         let result = write();
-        *state = Some(result.clone().map(|_| value));
+        state.value = Some(Ok(value));
+        state.unsaved = result.clone().err();
+        state.blocked = state.unsaved.is_some();
+        result
+    }
+    /// Store an in-memory value whose earlier write failed. Returns whether storage is current.
+    fn flush(&self, write: impl FnOnce(&T) -> Result<(), String>) -> Result<(), String> {
+        let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
+        if state.unsaved.is_none() { return Ok(()); }
+        let Some(Ok(value)) = state.value.clone() else { return Ok(()); };
+        let result = write(&value);
+        state.unsaved = result.clone().err();
+        state.blocked = state.unsaved.is_some();
         result
     }
     fn retry(&self) {
         if let Ok(mut state) = self.0.lock() {
-            if matches!(state.as_ref(), Some(Err(_))) { *state = None; }
+            if matches!(state.value.as_ref(), Some(Err(_))) { state.value = None; }
+            state.blocked = false;
         }
     }
 }
@@ -220,10 +247,19 @@ fn observe_credential_read(
     publish(
         result
             .as_ref()
-            .map(|c| c.as_ref().map(|c| c.expires_at))
+            .map(|c| c.as_ref().map(observed_expiry))
             .map_err(Clone::clone),
     );
     result
+}
+/// An expired access token with a refresh token is renewed on next use, so it still
+/// counts as connected; showing it as disconnected would push users to re-authorize.
+fn observed_expiry(c: &Credential) -> u64 {
+    if c.refresh_token.is_some() {
+        u64::MAX
+    } else {
+        c.expires_at
+    }
 }
 fn observed_credential() -> CredentialObservation {
     CREDENTIAL_OBSERVATION
@@ -348,10 +384,27 @@ fn store(c: &Credential) -> Result<(), String> {
     publish_credential_observation(
         result
             .as_ref()
-            .map(|_| Some(c.expires_at))
+            .map(|_| Some(observed_expiry(c)))
             .map_err(Clone::clone),
     );
     result
+}
+/// Retry storing a credential whose earlier write failed (for example a renewed
+/// credential after a refresh), at most every 15 minutes so a denied Keychain prompt
+/// is not reopened in a loop. Until then the renewed credential is used in memory.
+fn flush_account_credential() {
+    static FLUSH_AT: AtomicU64 = AtomicU64::new(0);
+    if now() < FLUSH_AT.load(Ordering::SeqCst) {
+        return;
+    }
+    FLUSH_AT.store(now() + 900, Ordering::SeqCst);
+    let _ = ACCOUNT_SECRET.flush(|credential| match credential {
+        Some(c) => entry().and_then(|entry| store_entry(&entry, c)),
+        None => match entry()?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err("Cannot remove GitHub credentials from the system credential store.".into()),
+        },
+    });
 }
 fn store_entry(entry: &keyring::Entry, c: &Credential) -> Result<(), String> {
     entry
@@ -495,12 +548,15 @@ fn refresh_credential_with(
         .as_deref()
         .ok_or("GitHub access expired. Reconnect GitHub.")?;
     let renewed = renew(token)?;
-    *pending = Some(PendingRefresh {
-        previous_access: current.access_token,
-        renewed,
-    });
-    persist(&pending.as_ref().unwrap().renewed)?;
-    Ok(pending.take().unwrap().renewed)
+    // GitHub consumed the old refresh token. Use the renewed credential even when
+    // secure storage fails; `pending` keeps it so storage is retried later.
+    if persist(&renewed).is_err() {
+        *pending = Some(PendingRefresh {
+            previous_access: current.access_token,
+            renewed: renewed.clone(),
+        });
+    }
+    Ok(renewed)
 }
 
 fn github(token: &str, path: &str) -> Result<Value, String> {
@@ -760,7 +816,7 @@ fn apply(
     let narrowing_error = {
         let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
         if load(app)?.revision != d.revision { schedule(Duration::ZERO); return Ok(()); }
-        narrow_now(app, &mut d.clone()).err()
+        narrow_each(app, &d)
     };
     let mut refresh_at = if now() < d.refresh_at {
         d.refresh_at
@@ -818,7 +874,7 @@ fn apply(
             }
         }
         let result = if access_requested {
-            let result = if let Some(error) = &narrowing_error { Err(error.clone()) } else if personal_token::selected(w) {
+            let result = if let Some(error) = narrowing_error.for_workspace(name) { Err(error.clone()) } else if personal_token::selected(w) {
                 personal_token::apply(app, name, d.revision)
             } else { runtime_grants_for(app, &d, w, &previous).and_then(|grants| {
                 let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
@@ -1251,31 +1307,111 @@ fn narrow(grants: &[RuntimeGrant], desired: &[GrantScope]) -> Vec<RuntimeGrant> 
         })
         .collect()
 }
+/// Per-workspace narrowing failures. One VM's failure never leaves other VMs with
+/// authority, and never blocks grants for the other VMs.
+#[derive(Default, Debug)]
+pub(super) struct NarrowErrors {
+    workspaces: std::collections::BTreeMap<String, String>,
+    all: Option<String>,
+}
+impl NarrowErrors {
+    pub(super) fn record(&mut self, workspace: &str, error: String) {
+        self.workspaces.entry(workspace.into()).or_insert(error);
+    }
+    /// A failure that is not specific to one workspace.
+    pub(super) fn record_all(&mut self, error: String) {
+        self.all.get_or_insert(error);
+    }
+    fn for_workspace(&self, workspace: &str) -> Option<&String> {
+        self.workspaces.get(workspace).or(self.all.as_ref())
+    }
+    pub(super) fn into_result(self) -> Result<(), String> {
+        match self.all.or_else(|| self.workspaces.into_values().next()) {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+/// Run `detach` for every workspace, recording each failure under its own workspace.
+pub(super) fn each_workspace<'a, T: 'a>(
+    items: impl IntoIterator<Item = (&'a str, T)>,
+    errors: &mut NarrowErrors,
+    mut detach: impl FnMut(&str, T) -> Result<(), String>,
+) {
+    for (name, item) in items {
+        if let Err(error) = detach(name, item) {
+            errors.record(name, error);
+        }
+    }
+}
+/// A removed VM has no authority left to detach. Its cache entry is dropped instead of
+/// failing every later narrowing until the app restarts.
+fn vm_removed(app: &tauri::AppHandle, name: &str) -> bool {
+    crate::runtime::runtime_paths(app).is_ok_and(|paths| {
+        matches!(
+            crate::runtime::resolve_vm_id(&paths, name),
+            Err(crate::runtime::RuntimeError::Invalid(_))
+        )
+    })
+}
+pub(super) fn detach_result(
+    app: &tauri::AppHandle,
+    name: &str,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    match result {
+        Err(_) if vm_removed(app, name) => Ok(()),
+        other => other,
+    }
+}
 fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
-    personal_token::narrow(app, d)?;
-    let prefix = format!("{}:", path(app)?.display());
-    let mut failure = None;
+    narrow_each(app, d).into_result()
+}
+fn narrow_each(app: &tauri::AppHandle, d: &Document) -> NarrowErrors {
+    let mut errors = NarrowErrors::default();
+    // Token VMs and OAuth VMs are narrowed independently; neither blocks the other.
+    personal_token::narrow(app, d, &mut errors);
+    let prefix = match path(app) {
+        Ok(path) => format!("{}:", path.display()),
+        Err(error) => {
+            errors.record_all(error);
+            return errors;
+        }
+    };
     if d.session != session() && d.grants_issued {
         for w in &d.workspaces {
             if let Some(name) = w["workspace"].as_str() {
-                if !is_pending_restore(app, name) && !active()
-                    .lock()
-                    .map_err(|_| "GitHub state is unavailable.")?
-                    .contains_key(&active_key(app, name)?)
-                {
-                    if let Err(error) =
-                        crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[]))
-                    {
-                        failure.get_or_insert(error);
+                let attached = match active_key(app, name).and_then(|key| {
+                    Ok(active()
+                        .lock()
+                        .map_err(|_| "GitHub state is unavailable.")?
+                        .contains_key(&key))
+                }) {
+                    Ok(attached) => attached,
+                    Err(error) => {
+                        errors.record(name, error);
+                        continue;
+                    }
+                };
+                if !is_pending_restore(app, name) && !attached {
+                    if let Err(error) = detach_result(
+                        app,
+                        name,
+                        crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[])),
+                    ) {
+                        errors.record(name, error);
                     }
                 }
             }
         }
     }
-    let cached = active()
-        .lock()
-        .map_err(|_| "GitHub state is unavailable.")?
-        .clone();
+    let cached = match active().lock() {
+        Ok(cached) => cached.clone(),
+        Err(_) => {
+            errors.record_all("GitHub state is unavailable.".into());
+            return errors;
+        }
+    };
     for (key, previous) in cached.iter().filter(|(key, _)| key.starts_with(&prefix)) {
         let name = &key[prefix.len()..];
         let desired = d
@@ -1289,22 +1425,30 @@ fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
         // that the user just removed. Detach first, retain the validation error.
         let (retained, validation_error) = narrow_checked(previous, desired);
         if let Some(error) = validation_error {
-            failure.get_or_insert(error);
+            errors.record(name, error);
         }
         if retained != *previous {
-            if let Err(error) =
-                crate::runtime::apply_github_policy(app, name, d.revision, &profile(&retained))
-            {
-                failure.get_or_insert(error);
+            let result =
+                crate::runtime::apply_github_policy(app, name, d.revision, &profile(&retained));
+            if result.is_err() && vm_removed(app, name) {
+                if let Ok(mut active) = active().lock() {
+                    active.remove(key);
+                }
                 continue;
             }
-            active()
-                .lock()
-                .map_err(|_| "GitHub state is unavailable.")?
-                .insert(key.clone(), retained);
+            if let Err(error) = result {
+                errors.record(name, error);
+                continue;
+            }
+            match active().lock() {
+                Ok(mut active) => {
+                    active.insert(key.clone(), retained);
+                }
+                Err(_) => errors.record(name, "GitHub state is unavailable.".into()),
+            }
         }
     }
-    failure.map_or(Ok(()), Err)
+    errors
 }
 
 fn narrow_checked(
@@ -1612,11 +1756,25 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         // Reconnecting creates a new account authorization. Never reuse old
         // grants, even if the account name and repository choices are identical.
         let prefix = format!("{}:", path(app)?.display());
-        for w in d.workspaces.iter().filter(|w| !personal_token::selected(w)) {
-            if let Some(name) = w["workspace"].as_str() {
-                crate::runtime::apply_github_policy(app, name, d.revision + 1, &profile(&[]))?;
-            }
-        }
+        // Best effort per VM: a stale policy (removed VM, VM needing recreation) must not
+        // drop the new credential. Failing VMs get a per-workspace error and are re-applied
+        // with the new grants by the worker, which replaces the old profile.
+        let mut detach_errors = NarrowErrors::default();
+        each_workspace(
+            d.workspaces
+                .iter()
+                .filter(|w| !personal_token::selected(w))
+                .filter_map(|w| w["workspace"].as_str())
+                .map(|name| (name, ())),
+            &mut detach_errors,
+            |name, ()| {
+                detach_result(
+                    app,
+                    name,
+                    crate::runtime::apply_github_policy(app, name, d.revision + 1, &profile(&[])),
+                )
+            },
+        );
         active()
             .lock()
             .map_err(|_| "GitHub state is unavailable.")?
@@ -1627,6 +1785,9 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             .retain(|key, _| !key.starts_with(&prefix));
         store(&c)?;
         record_connection(&mut d, account, repos);
+        for (name, error) in detach_errors.workspaces {
+            d.access_errors.insert(name, error);
+        }
         save(app, &d)?;
     }
     schedule(Duration::from_millis(500));
@@ -1668,6 +1829,7 @@ pub fn install(app: &tauri::AppHandle) {
             .and_then(|p| *p);
         let pending_due = pending_deadline.is_some_and(|time| Instant::now() >= time);
         personal_token::check(&app);
+        flush_account_credential();
         if let Ok(_network) = OPERATION.try_lock() {
             let observed = {
                 let _state = STATE.lock().ok();
@@ -2145,6 +2307,26 @@ pub async fn retry_github_configuration(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn one_failing_detach_does_not_stop_the_others() {
+        let mut errors = super::NarrowErrors::default();
+        let mut detached = Vec::new();
+        super::each_workspace([("a", 1), ("b", 2), ("c", 3)], &mut errors, |name, _| {
+            detached.push(name.to_owned());
+            if name == "b" { Err("b failed".into()) } else { Ok(()) }
+        });
+        assert_eq!(detached, ["a", "b", "c"]);
+        assert_eq!(errors.for_workspace("b").map(String::as_str), Some("b failed"));
+        assert_eq!(errors.for_workspace("a"), None);
+        assert_eq!(errors.for_workspace("c"), None);
+        assert_eq!(errors.into_result(), Err("b failed".into()));
+    }
+    #[test]
+    fn a_general_narrowing_failure_applies_to_every_workspace() {
+        let mut errors = super::NarrowErrors::default();
+        errors.record_all("storage".into());
+        assert_eq!(errors.for_workspace("any").map(String::as_str), Some("storage"));
+    }
+    #[test]
     fn session_secret_reads_once_and_writes_only_changes() {
         let cache = super::SessionSecret::new();
         assert_eq!(cache.read(|| Ok(Some(1))).unwrap(), Some(1));
@@ -2168,6 +2350,25 @@ mod tests {
         cache.retry();
         cache.write(Some(2), || Ok(())).unwrap();
         assert_eq!(cache.read(|| panic!("Read after write")).unwrap(), Some(2));
+    }
+    #[test]
+    fn expired_credential_with_refresh_token_stays_connected() {
+        let mut c = super::Credential { access_token: "a".into(), refresh_token: Some("r".into()), expires_at: 1 };
+        assert!(super::observed_expiry(&c) > super::now());
+        c.refresh_token = None;
+        assert_eq!(super::observed_expiry(&c), 1);
+    }
+    #[test]
+    fn failed_store_keeps_the_new_value_usable_and_retries_on_flush() {
+        let cache = super::SessionSecret::new();
+        assert_eq!(cache.read(|| Ok(Some(1))).unwrap(), Some(1));
+        assert!(cache.write(Some(2), || Err("store locked".into())).is_err());
+        // The renewed value is used in memory; storage is not retried by later writes.
+        assert_eq!(cache.read(|| panic!("Read after failed write")).unwrap(), Some(2));
+        assert!(cache.write(Some(2), || panic!("Automatic write retry")).is_err());
+        cache.flush(|value| { assert_eq!(*value, Some(2)); Ok(()) }).unwrap();
+        cache.flush(|_| panic!("Flush after successful store")).unwrap();
+        cache.write(Some(2), || panic!("Unchanged write after flush")).unwrap();
     }
     #[test]
     fn concurrent_secret_reads_share_one_keychain_request() {
@@ -2639,7 +2840,8 @@ mod tests {
             },
             |_| Err("secure store locked".into()),
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().access_token, "new");
+        assert!(pending.is_some());
         let restored = refresh_credential_with(
             old,
             &mut pending,
@@ -2857,7 +3059,8 @@ mod tests {
             |value| observed = Some(value),
         );
         assert!(result.unwrap().is_some());
-        assert_eq!(observed, Some(Ok(Some(expiry))));
+        // A renewable credential is observed as connected, never with its token.
+        assert_eq!(observed, Some(Ok(Some(u64::MAX))));
         observe_credential_read(|| Ok(None), |value| observed = Some(value)).unwrap();
         assert_eq!(observed, Some(Ok(None)));
     }

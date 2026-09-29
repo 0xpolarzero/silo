@@ -367,7 +367,7 @@ export function GitHubPage({
         connectedTitle={`Connected as @${source.github.account ?? "unknown"}`}
         connectedDetail={accessEnabled
           ? "Repository credentials are scoped to each workspace."
-          : "Repository access is disabled."}
+          : "GitHub access is off for every VM, including VMs that use a personal token."}
         connectedActions={connectedActions}
         notice={catalogNotice}
         renderWorkspaceActions={({ name }) => {

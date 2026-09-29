@@ -95,6 +95,10 @@ pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result
     if d.revision != revision {
         return Err("GitHub access changed. Applying your latest choices.".into());
     }
+    // Narrowing has already detached the token; never attach it while access is disabled.
+    if !d.access_enabled {
+        return Ok(());
+    }
     let token = value()?;
     let profile = json!({"version":2,"owners":[],"personalToken":token});
     if crate::runtime::github_policy_is_cached(app, name, &profile)?
@@ -118,47 +122,70 @@ pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result
     Ok(())
 }
 
-/// Remove token authority before a method switch, removal, failed validation or replacement.
-/// OAuth reconciliation never substitutes its own credential for a disconnected personal token.
-pub(super) fn narrow(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
-    let prefix = format!("{}:", path(app)?.display());
-    let cached = applied()
-        .lock()
-        .map_err(|_| "GitHub token state is unavailable.")?
-        .clone();
-    let current = value().ok().map(|token| fingerprint(&token));
-    for (key, attached) in cached.iter().filter(|(key, _)| key.starts_with(&prefix)) {
-        let name = &key[prefix.len()..];
-        let keep = d
-            .workspaces
+/// Disable access is a global kill switch: no VM keeps the personal token while it is off.
+fn keeps_token(d: &Document, name: &str, current: Option<&String>, attached: &String) -> bool {
+    d.access_enabled
+        && d.workspaces
             .iter()
             .any(|w| w["workspace"] == name && selected(w))
-            && current.as_ref() == Some(attached);
-        if !keep {
-            crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[]))?;
-            applied()
-                .lock()
-                .map_err(|_| "GitHub token state is unavailable.")?
-                .remove(key);
-        }
-    }
+        && current == Some(attached)
+}
+/// Remove token authority before a method switch, removal, failed validation or replacement.
+/// OAuth reconciliation never substitutes its own credential for a disconnected personal token.
+/// Every VM is detached even when another fails; failures are reported per workspace.
+pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowErrors) {
+    let prefix = match path(app) {
+        Ok(path) => format!("{}:", path.display()),
+        Err(error) => return errors.record_all(error),
+    };
+    let cached = match applied().lock() {
+        Ok(cached) => cached.clone(),
+        Err(_) => return errors.record_all("GitHub token state is unavailable.".into()),
+    };
+    let current = value().ok().map(|token| fingerprint(&token));
+    let detach = |name: &str, key: &str| -> Result<(), String> {
+        detach_result(
+            app,
+            name,
+            crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[])),
+        )?;
+        applied()
+            .lock()
+            .map_err(|_| "GitHub token state is unavailable.")?
+            .remove(key);
+        Ok(())
+    };
+    let stale: Vec<(String, String)> = cached
+        .iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .filter_map(|(key, attached)| {
+            let name = &key[prefix.len()..];
+            (!keeps_token(d, name, current.as_ref(), attached)).then(|| (name.to_owned(), key.clone()))
+        })
+        .collect();
+    each_workspace(stale.iter().map(|(name, key)| (name.as_str(), key.as_str())), errors, |name, key| detach(name, key));
     // A surviving runtime may still hold a token from the preceding app process.
     if d.session != session() {
+        let mut restored = Vec::new();
         for w in d.workspaces.iter().filter(|w| selected(w)) {
-            let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
-            applied()
-                .lock()
-                .map_err(|_| "GitHub token state is unavailable.")?
-                .entry(active_key(app, name)?)
-                .or_insert_with(|| "unverified".into());
-            crate::runtime::apply_github_policy(app, name, d.revision, &profile(&[]))?;
-            applied()
-                .lock()
-                .map_err(|_| "GitHub token state is unavailable.")?
-                .remove(&active_key(app, name)?);
+            let Some(name) = w["workspace"].as_str() else {
+                errors.record_all("Invalid sandbox policy.".into());
+                continue;
+            };
+            match active_key(app, name) {
+                Ok(key) => restored.push((name.to_owned(), key)),
+                Err(error) => errors.record(name, error),
+            }
         }
+        each_workspace(restored.iter().map(|(name, key)| (name.as_str(), key.as_str())), errors, |name, key| {
+            applied()
+                .lock()
+                .map_err(|_| "GitHub token state is unavailable.")?
+                .entry(key.to_owned())
+                .or_insert_with(|| "unverified".into());
+            detach(name, key)
+        });
     }
-    Ok(())
 }
 fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String> {
     let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
@@ -180,7 +207,9 @@ fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String>
     }
     mark_pending_for(&mut d, &names);
     save(app, &d)?;
-    let result = narrow(app, &d);
+    let mut errors = NarrowErrors::default();
+    narrow(app, &d, &mut errors);
+    let result = errors.into_result();
     schedule(Duration::ZERO);
     let _ = app.emit("silo://application-state-changed", ());
     result
@@ -242,6 +271,8 @@ pub async fn save_github_personal_token(
         let _network = TOKEN_OPERATION
             .lock()
             .map_err(|_| "GitHub operation failed.")?;
+        // Saving a token is an explicit retry; never leave validation blocked by earlier failures.
+        crate::github_http::reset_retries();
         let token = validated(token.trim())?;
         SECRET.retry();
         SECRET.write(Some(token.clone()), || {
@@ -322,6 +353,18 @@ mod tests {
         // Existing unavailable choices are preserved during unrelated identity edits.
         assert!(validate_method_change(Some(&token), &token, false, false).is_ok());
         assert!(validate_method_change(None, &oauth, false, false).is_ok());
+    }
+    #[test]
+    fn disable_access_detaches_personal_token_vms() {
+        let fingerprint = "attached".to_string();
+        let mut d = Document {
+            access_enabled: true,
+            workspaces: vec![json!({"workspace":"dev","authenticationMethod":"token"})],
+            ..Document::default()
+        };
+        assert!(keeps_token(&d, "dev", Some(&fingerprint), &fingerprint));
+        d.access_enabled = false;
+        assert!(!keeps_token(&d, "dev", Some(&fingerprint), &fingerprint));
     }
     #[test]
     fn legacy_policies_stay_oauth_and_token_policy_has_no_oauth_scopes() {
