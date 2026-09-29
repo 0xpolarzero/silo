@@ -259,12 +259,7 @@ pub(super) fn perform(
     }
     let machine = machine(paths, name)?;
     let existing = load(&path(paths, machine.id()))?;
-    if let Some(mut previous) = existing.clone().filter(|saved| saved.action != action) {
-        let result = Err(RuntimeError::Invalid(format!(
-            "Replaced by the requested {action} action."
-        )));
-        runtime_activity::finish(paths, &mut previous.event, &result).map_err(error)?;
-    }
+    let superseded = existing.clone().filter(|saved| saved.action != action);
     let mut intent = if let Some(saved) = existing.filter(|saved| saved.action == action) {
         saved
     } else {
@@ -295,6 +290,14 @@ pub(super) fn perform(
         }
     };
     store(paths, &intent)?;
+    // Settle the superseded action only once the new intent replaced its file;
+    // a new action rejected above leaves the saved one pending and unchanged.
+    if let Some(mut previous) = superseded {
+        let result = Err(RuntimeError::Invalid(format!(
+            "Replaced by the requested {action} action."
+        )));
+        runtime_activity::finish(paths, &mut previous.event, &result).map_err(error)?;
+    }
     settle(runner, paths, host, &mut intent, initial)
 }
 // The caller inspected this exact VM and confirmed Crashed while holding the
@@ -664,6 +667,19 @@ mod tests {
         forget_removed(&paths, &machine).unwrap();
         assert!(!path(&paths, ID).exists());
         assert!(recover_with(&runner, &paths, &host()).unwrap().is_empty());
+    }
+    #[test]
+    fn rejected_new_action_leaves_the_superseded_intent_and_activity_unchanged() {
+        let (_dir, paths, _) = setup();
+        pending(&paths, "restart", Phase::StartPending);
+        let mut runner = Fake::new("Running");
+        runner.replaced = true;
+        assert!(perform(&runner, &paths, &host(), "stop", "dev").is_err());
+        assert!(load(&path(&paths, ID)).unwrap().is_some_and(|saved| saved.action == "restart"));
+        let history = runtime_activity::read(&paths).unwrap();
+        assert!(!history.iter().any(|event| event["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("Replaced by"))));
     }
     #[test]
     fn explicit_new_action_settles_the_superseded_activity() {
