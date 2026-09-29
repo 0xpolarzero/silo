@@ -8,7 +8,7 @@
 //! This is the sole in-process gate for VM-changing work. It does not replace the
 //! OS file lock that coordinates cooperating runtime processes, nor short data locks.
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -172,9 +172,29 @@ struct State {
     next_id: u64,
     running: Vec<Entry>,
     waiting: VecDeque<Entry>,
+    /// Bumped whenever a visible computer-wide entry is queued, starts, or finishes.
+    computer_generation: u64,
+    /// Same, for entries scoped to one VM. Absent means never touched.
+    vm_generations: BTreeMap<String, u64>,
 }
 
 impl State {
+    /// Record that an operation touched `scope`, so observers can tell a state change
+    /// was caused by Silo. Hidden housekeeping is not attributed.
+    fn touch(&mut self, scope: &Scope, hidden: bool) {
+        if hidden {
+            return;
+        }
+        match scope {
+            Scope::Computer => self.computer_generation += 1,
+            Scope::Vm { id } => *self.vm_generations.entry(id.clone()).or_default() += 1,
+        }
+    }
+
+    fn generation(&self, id: &str) -> u64 {
+        self.computer_generation + self.vm_generations.get(id).copied().unwrap_or_default()
+    }
+
     /// A request may run when it conflicts with no running work and no earlier waiter.
     fn admissible(&self, index: usize) -> bool {
         let scope = &self.waiting[index].scope;
@@ -187,14 +207,21 @@ impl State {
             && !self.waiting.iter().any(|entry| entry.scope.conflicts(scope))
     }
 
-    fn entry(&mut self, scope: Scope, vm_name: Option<String>, label: &str, key: Option<String>) -> Entry {
+    fn entry(
+        &mut self,
+        scope: Scope,
+        vm_name: Option<String>,
+        kind: OperationKind,
+        label: &str,
+        key: Option<String>,
+    ) -> Entry {
         self.next_id += 1;
         Entry {
             id: self.next_id,
             scope,
             vm_name,
             label: label.to_owned(),
-            kind: OperationKind::Other,
+            kind,
             key,
             since: Instant::now(),
             since_ms: now_ms(),
@@ -210,6 +237,59 @@ pub(crate) struct OperationGate {
     state: Mutex<State>,
     changed: Condvar,
     listener: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// Count of finished visible operations, for observers that sleep until activity.
+    activity: Mutex<u64>,
+    activity_changed: Condvar,
+}
+
+/// A copy of the gate's generation counters. Compares equal to a later
+/// `OperationGate::generation` only if nothing touched the VM in between.
+pub(crate) struct Generations {
+    computer: u64,
+    vms: BTreeMap<String, u64>,
+}
+
+impl Generations {
+    pub(crate) fn of(&self, id: &str) -> u64 {
+        self.computer + self.vms.get(id).copied().unwrap_or_default()
+    }
+}
+
+/// The gate with the operation kind fixed, so the kind is known at admission.
+#[derive(Clone, Copy)]
+pub(crate) struct Kinded<'a> {
+    gate: &'a OperationGate,
+    kind: OperationKind,
+}
+
+impl<'a> Kinded<'a> {
+    pub(crate) fn computer(&self, label: &str) -> Result<OperationGuard<'a>, GateError> {
+        self.acquire(Scope::Computer, None, label, None)
+    }
+
+    pub(crate) fn vm(&self, id: &str, name: &str, label: &str) -> Result<OperationGuard<'a>, GateError> {
+        self.acquire(Scope::Vm { id: id.to_owned() }, Some(name.to_owned()), label, None)
+    }
+
+    pub(crate) fn acquire(
+        &self,
+        scope: Scope,
+        vm_name: Option<String>,
+        label: &str,
+        key: Option<String>,
+    ) -> Result<OperationGuard<'a>, GateError> {
+        self.gate.acquire_inner(scope, vm_name, self.kind, label, key, None)
+    }
+
+    pub(crate) fn acquire_while(
+        &self,
+        scope: Scope,
+        vm_name: Option<String>,
+        label: &str,
+        keep_waiting: &dyn Fn() -> bool,
+    ) -> Result<OperationGuard<'a>, GateError> {
+        self.gate.acquire_inner(scope, vm_name, self.kind, label, None, Some(keep_waiting))
+    }
 }
 
 thread_local! {
@@ -253,10 +333,56 @@ impl OperationGate {
                 next_id: 0,
                 running: Vec::new(),
                 waiting: VecDeque::new(),
+                computer_generation: 0,
+                vm_generations: BTreeMap::new(),
             }),
             changed: Condvar::new(),
             listener: OnceLock::new(),
+            activity: Mutex::new(0),
+            activity_changed: Condvar::new(),
         }
+    }
+
+    /// Fix the operation kind for the entries this request creates.
+    pub(crate) fn kind(&self, kind: OperationKind) -> Kinded<'_> {
+        Kinded { gate: self, kind }
+    }
+
+    /// A counter that changes whenever an operation touching this VM (or computer-wide
+    /// state, which touches every VM) was queued, started, or finished. Equal values
+    /// before and after mean no Silo operation affected the VM in between.
+    pub(crate) fn generation(&self, id: &str) -> u64 {
+        self.lock().generation(id)
+    }
+
+    /// Every VM's generation right now, for comparing across a slow read.
+    pub(crate) fn generations(&self) -> Generations {
+        let state = self.lock();
+        Generations {
+            computer: state.computer_generation,
+            vms: state.vm_generations.clone(),
+        }
+    }
+
+    /// Current activity counter; advances each time a visible operation finishes.
+    pub(crate) fn activity(&self) -> u64 {
+        *self.activity.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Sleep until the activity counter differs from `seen` or `timeout` elapses, and
+    /// return the current counter. Lets observers act soon after work finishes.
+    pub(crate) fn wait_for_activity(&self, seen: u64, timeout: Duration) -> u64 {
+        let guard = self.activity.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (guard, _) = self
+            .activity_changed
+            .wait_timeout_while(guard, timeout, |current| *current == seen)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard
+    }
+
+    fn signal_activity(&self) {
+        *self.activity.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
+        self.activity_changed.notify_all();
     }
 
     /// Called after every queue change, outside the internal lock. Set once at startup.
@@ -278,13 +404,13 @@ impl OperationGate {
 
     /// Wait for a turn to change shared computer state.
     pub(crate) fn computer(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
-        self.acquire(Scope::Computer, None, label, None)
+        self.kind(OperationKind::Other).computer(label)
     }
 
     /// Wait for a turn to change one VM, identified by its stable `id`. `name` is the
     /// current display name captured for the queue; ordering keys on `id` alone.
     pub(crate) fn vm(&self, id: &str, name: &str, label: &str) -> Result<OperationGuard<'_>, GateError> {
-        self.acquire(Scope::Vm { id: id.to_owned() }, Some(name.to_owned()), label, None)
+        self.kind(OperationKind::Other).vm(id, name, label)
     }
 
     /// Wait for a turn, rejecting the request when an identical `key` is already waiting.
@@ -296,7 +422,7 @@ impl OperationGate {
         label: &str,
         key: Option<String>,
     ) -> Result<OperationGuard<'_>, GateError> {
-        self.acquire_inner(scope, vm_name, label, key, None)
+        self.acquire_inner(scope, vm_name, OperationKind::Other, label, key, None)
     }
 
     /// Wait for a turn while `keep_waiting` returns true; otherwise leave the queue
@@ -308,13 +434,14 @@ impl OperationGate {
         label: &str,
         keep_waiting: &dyn Fn() -> bool,
     ) -> Result<OperationGuard<'_>, GateError> {
-        self.acquire_inner(scope, vm_name, label, None, Some(keep_waiting))
+        self.acquire_inner(scope, vm_name, OperationKind::Other, label, None, Some(keep_waiting))
     }
 
     fn acquire_inner(
         &self,
         scope: Scope,
         vm_name: Option<String>,
+        kind: OperationKind,
         label: &str,
         key: Option<String>,
         keep_waiting: Option<&dyn Fn() -> bool>,
@@ -326,8 +453,9 @@ impl OperationGate {
         if key.is_some() && state.waiting.iter().any(|entry| entry.key == key) {
             return Err(GateError::AlreadyQueued);
         }
-        let entry = state.entry(scope, vm_name, label, key);
+        let entry = state.entry(scope, vm_name, kind, label, key);
         let id = entry.id;
+        state.touch(&entry.scope, false);
         state.waiting.push_back(entry);
         drop(state);
         self.notify();
@@ -350,6 +478,7 @@ impl OperationGate {
                 entry.since = Instant::now();
                 entry.since_ms = now_ms();
                 let token = entry.cancel.clone();
+                state.touch(&entry.scope, false);
                 state.running.push(entry);
                 break token;
             }
@@ -409,10 +538,11 @@ impl OperationGate {
         if !state.free(&scope) {
             return Err(GateError::Busy);
         }
-        let mut entry = state.entry(scope, vm_name, label, None);
+        let mut entry = state.entry(scope, vm_name, OperationKind::Other, label, None);
         entry.hidden = hidden;
         let id = entry.id;
         let token = entry.cancel.clone();
+        state.touch(&entry.scope, hidden);
         state.running.push(entry);
         drop(state);
         HELD.with(|held| held.set(held.get() + 1));
@@ -546,10 +676,17 @@ impl OperationGate {
 
     fn release(&self, id: u64) {
         let mut state = self.lock();
+        let finished = state.running.iter().find(|entry| entry.id == id).map(|entry| (entry.scope.clone(), entry.hidden));
         state.running.retain(|entry| entry.id != id);
+        if let Some((scope, hidden)) = &finished {
+            state.touch(scope, *hidden);
+        }
         drop(state);
         HELD.with(|held| held.set(held.get().saturating_sub(1)));
         CURRENT.with(|current| *current.borrow_mut() = None);
+        if finished.is_some_and(|(_, hidden)| !hidden) {
+            self.signal_activity();
+        }
         self.notify();
     }
 
@@ -975,5 +1112,84 @@ mod tests {
         guard.expect_within(Duration::from_secs(120));
         assert_eq!(gate.snapshot().running[0].expected_ms, Some(120_000));
         drop(guard);
+    }
+
+    #[test]
+    fn kinds_are_known_while_waiting_and_serialize_camel_case() {
+        let gate = leak();
+        let first = gate.kind(OperationKind::Lifecycle).vm("id-a", "a", "Start a").unwrap();
+        let waiter = thread::spawn(move || {
+            drop(gate.kind(OperationKind::CheckpointCapture).vm("id-a", "a", "Creating checkpoint").unwrap());
+        });
+        wait_until(gate, |queue| queue.waiting.len() == 1);
+        let queue = gate.snapshot();
+        assert_eq!(queue.running[0].kind, OperationKind::Lifecycle);
+        assert_eq!(queue.waiting[0].kind, OperationKind::CheckpointCapture);
+        let json = serde_json::to_value(&queue).unwrap();
+        assert_eq!(json["running"][0]["kind"], "lifecycle");
+        assert_eq!(json["waiting"][0]["kind"], "checkpointCapture");
+        drop(first);
+        waiter.join().unwrap();
+        let other = gate.computer("Anything").unwrap();
+        assert_eq!(serde_json::to_value(gate.snapshot()).unwrap()["running"][0]["kind"], "other");
+        drop(other);
+        for (kind, name) in [
+            (OperationKind::CheckpointRestore, "checkpointRestore"),
+            (OperationKind::CheckpointFork, "checkpointFork"),
+            (OperationKind::StorageReclaim, "storageReclaim"),
+            (OperationKind::GithubApply, "githubApply"),
+            (OperationKind::PortPublish, "portPublish"),
+            (OperationKind::PortRemove, "portRemove"),
+            (OperationKind::Shutdown, "shutdown"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn generation_changes_when_an_operation_is_queued_runs_or_finishes() {
+        let gate = leak();
+        let start = gate.generation("id-a");
+        let first = gate.vm("id-a", "a", "Start a").unwrap();
+        let running = gate.generation("id-a");
+        assert_ne!(running, start);
+        assert_eq!(gate.generation("id-b"), start.min(gate.generation("id-b")));
+        drop(first);
+        assert_ne!(gate.generation("id-a"), running);
+        let settled = gate.generation("id-a");
+        assert_eq!(gate.generation("id-a"), settled, "reading is stable while idle");
+    }
+
+    #[test]
+    fn a_computer_wide_operation_touches_every_vm_and_hidden_ones_touch_none() {
+        let gate = leak();
+        let before = gate.generation("id-a");
+        drop(gate.computer("Updating").unwrap());
+        assert_ne!(gate.generation("id-a"), before);
+        let other = gate.generation("id-b");
+        let snapshot = gate.generations();
+        drop(gate.try_vm("id-a", "a", "Sync a").unwrap());
+        assert_eq!(gate.generation("id-b"), other);
+        assert_ne!(gate.generation("id-a"), snapshot.of("id-a"));
+        assert_eq!(gate.generation("id-b"), snapshot.of("id-b"));
+        let stable = gate.generation("id-a");
+        drop(gate.try_computer_hidden("Reconciling SSH access").unwrap());
+        drop(gate.try_vm_hidden("id-a", "a", "Reconciling ports on a").unwrap());
+        assert_eq!(gate.generation("id-a"), stable);
+    }
+
+    #[test]
+    fn activity_wakes_observers_when_a_visible_operation_finishes() {
+        let gate = leak();
+        let seen = gate.activity();
+        let guard = gate.vm("id-a", "a", "Start a").unwrap();
+        assert_eq!(gate.wait_for_activity(seen, Duration::from_millis(20)), seen);
+        let waiter = thread::spawn(move || gate.wait_for_activity(seen, Duration::from_secs(5)));
+        thread::sleep(Duration::from_millis(20));
+        drop(guard);
+        assert_ne!(waiter.join().unwrap(), seen);
+        let seen = gate.activity();
+        drop(gate.try_computer_hidden("Reconciling SSH access").unwrap());
+        assert_eq!(gate.activity(), seen);
     }
 }
