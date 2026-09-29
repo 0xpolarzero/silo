@@ -89,7 +89,17 @@ fn stop_local_vms_with(
     {
         // perform verifies both Silo ownership and the immutable machine ID,
         // settles an in-flight transition, and verifies the resulting stop.
-        let result = if committed.iter().any(|entry| entry.id() == machine.id()) {
+        let committed_vm = committed.iter().any(|entry| entry.id() == machine.id());
+        // A VM that is already stopped with no saved action needs no stop and
+        // no "Sandbox stopped" activity entry. Anything else goes through
+        // perform, which verifies identity and settles transitions.
+        if committed_vm && !lifecycle_recovery::has_intent(paths, machine.id())
+            && inspect_workspace(runner, paths, machine.name()).is_ok_and(|vm| matches!(
+                vm.status.to_ascii_lowercase().as_str(), "stopped" | "created" | "crashed"))
+        {
+            continue;
+        }
+        let result = if committed_vm {
             lifecycle_recovery::perform(runner, paths, &host, "stop", machine.name())
         } else {
             stop_uncommitted_vm(runner, paths, machine)
@@ -270,6 +280,21 @@ mod tests {
         assert!(!calls.iter().any(|args| args[0] == "stop" && args[1] == "first"));
         assert!(calls.iter().any(|args| args[0] == "stop" && args[1] == "second"));
         assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 2);
+    }
+
+    #[test]
+    fn quit_skips_already_stopped_vms_without_recording_a_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = setup(&dir);
+        let runner = runner(None);
+        runner.states.lock().unwrap().insert("first".into(), "Stopped".into());
+        stop_local_vms_with(&runner, &paths).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert!(!calls.iter().any(|args| args[0] == "stop" && args[1] == "first"));
+        assert!(calls.iter().any(|args| args[0] == "stop" && args[1] == "second"));
+        let history = runtime_activity::read(&paths).unwrap();
+        assert!(!history.iter().any(|event| event["workspace"] == "first"));
+        assert!(history.iter().any(|event| event["workspace"] == "second"));
     }
 
     #[test]

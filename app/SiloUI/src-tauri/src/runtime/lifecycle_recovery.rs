@@ -179,16 +179,20 @@ fn advance(
         // A surviving detached start can win the runtime's own transition guard.
         // Verify the desired state even when its duplicate command reports failure.
         if command == "stop" { storage::before_stop(runner, paths, &observed); }
-        let result = runner.run(
-            paths,
-            &[command.into(), intent.name.clone(), "--quiet".into()],
-            if command == "stop" {
-                STOP_TIMEOUT
-            } else {
-                MUTATION_TIMEOUT
-            },
-        );
-        observed = stable(runner, paths, intent, inspect(runner, paths, intent)?)?;
+        let args = [command.into(), intent.name.clone(), "--quiet".into()];
+        // Stop is not cancellable: a cancel during a restart's stop step is
+        // honoured before the start step instead of killing `msb stop`.
+        let result = if command == "stop" {
+            crate::runtime::operation_gate::uncancellable(|| runner.run(paths, &args, STOP_TIMEOUT))
+        } else {
+            runner.run(paths, &args, MUTATION_TIMEOUT)
+        };
+        let observe = || stable(runner, paths, intent, inspect(runner, paths, intent)?);
+        observed = if command == "stop" {
+            crate::runtime::operation_gate::uncancellable(observe)
+        } else {
+            observe()
+        }?;
         let reached = if command == "stop" {
             stopped(&observed)
         } else {
@@ -196,6 +200,12 @@ fn advance(
         };
         let started_here = command == "start" && result.is_ok();
         if !reached {
+            // The timed-out stop was already followed by the full state wait;
+            // report it as final rather than a transient error that is retried
+            // with another full stop timeout and wait.
+            if command == "stop" && matches!(result, Err(RuntimeError::TimedOut { .. })) {
+                return Err(error(format!("{} did not stop in time. Check its status and retry.", intent.name)));
+            }
             result?;
             return Err(error(format!(
                 "{} did not reach the {} state. Retry to continue the saved action.",
@@ -220,13 +230,24 @@ fn settle(
     runtime_activity::resume(paths, &mut intent.event, &intent.machine_id).map_err(error)?;
     let result = advance(runner, paths, host, intent, initial);
     runtime_activity::finish(paths, &mut intent.event, &result).map_err(error)?;
-    if result.is_ok() {
-        fs::remove_file(path(paths, &intent.machine_id)).map_err(|_| error("The sandbox action completed, but its saved progress could not be cleared. Retry to verify it."))?;
+    // A user cancel retires the intent: the next launch must not resume an
+    // action the user explicitly abandoned.
+    let cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
+    if result.is_ok() || cancelled {
+        fs::remove_file(path(paths, &intent.machine_id)).map_err(|_| error(if cancelled {
+            "The sandbox action was cancelled, but its saved progress could not be cleared."
+        } else {
+            "The sandbox action completed, but its saved progress could not be cleared. Retry to verify it."
+        }))?;
         File::open(directory(paths))
             .and_then(|f| f.sync_all())
             .map_err(|_| error("Completed sandbox action progress could not be synced."))?;
     }
     result
+}
+/// True when an unfinished action is saved for this VM.
+pub(super) fn has_intent(paths: &RuntimePaths, machine_id: &str) -> bool {
+    path(paths, machine_id).exists()
 }
 pub(super) fn perform(
     runner: &dyn RuntimeRunner,
@@ -242,12 +263,7 @@ pub(super) fn perform(
     }
     let machine = machine(paths, name)?;
     let existing = load(&path(paths, machine.id()))?;
-    if let Some(mut previous) = existing.clone().filter(|saved| saved.action != action) {
-        let result = Err(RuntimeError::Invalid(format!(
-            "Replaced by the requested {action} action."
-        )));
-        runtime_activity::finish(paths, &mut previous.event, &result).map_err(error)?;
-    }
+    let superseded = existing.clone().filter(|saved| saved.action != action);
     let mut intent = if let Some(saved) = existing.filter(|saved| saved.action == action) {
         saved
     } else {
@@ -278,6 +294,14 @@ pub(super) fn perform(
         }
     };
     store(paths, &intent)?;
+    // Settle the superseded action only once the new intent replaced its file;
+    // a new action rejected above leaves the saved one pending and unchanged.
+    if let Some(mut previous) = superseded {
+        let result = Err(RuntimeError::Invalid(format!(
+            "Replaced by the requested {action} action."
+        )));
+        runtime_activity::finish(paths, &mut previous.event, &result).map_err(error)?;
+    }
     settle(runner, paths, host, &mut intent, initial)
 }
 // The caller inspected this exact VM and confirmed Crashed while holding the
@@ -356,11 +380,19 @@ fn recover_with(
         {
             continue;
         }
-        let Some(mut intent) = load(&entry.path())? else {
-            continue;
+        // One unreadable or mismatched intent must not block the others;
+        // it is preserved and reported with the other failures.
+        let mut intent = match load(&entry.path()) {
+            Ok(Some(intent)) => intent,
+            Ok(None) => continue,
+            Err(failure) => {
+                failures.push(safe_activity_error(&failure));
+                continue;
+            }
         };
         if entry.path() != path(paths, &intent.machine_id) {
-            return Err(error("Saved sandbox action identity is invalid."));
+            failures.push(format!("{}: Saved sandbox action identity is invalid.", intent.name));
+            continue;
         }
         let result = inspect(runner, paths, &intent)
             .and_then(|initial| settle(runner, paths, host, &mut intent, initial));
@@ -393,6 +425,8 @@ mod tests {
         state: Mutex<String>,
         calls: Mutex<Vec<String>>,
         fail_start: bool,
+        cancel_start: bool,
+        stop_times_out: bool,
         start_wins: bool,
         replaced: bool,
     }
@@ -402,6 +436,8 @@ mod tests {
                 state: Mutex::new(state.into()),
                 calls: Mutex::new(vec![]),
                 fail_start: false,
+                cancel_start: false,
+                stop_times_out: false,
                 start_wins: false,
                 replaced: false,
             }
@@ -425,6 +461,9 @@ mod tests {
         ) -> Result<CommandOutput, RuntimeError> {
             let action = args[0].as_str();
             self.calls.lock().unwrap().push(action.into());
+            if action == "start" && self.cancel_start {
+                return Err(RuntimeError::Cancelled { operation: "start dev".into() });
+            }
             if action == "start" {
                 if !self.fail_start || self.start_wins {
                     *self.state.lock().unwrap() = "Running".into();
@@ -432,6 +471,9 @@ mod tests {
                 if self.fail_start {
                     return Err(error("Synthetic start interruption."));
                 }
+            }
+            if action == "stop" && self.stop_times_out {
+                return Err(RuntimeError::TimedOut { operation: "Stopping dev".into() });
             }
             if action == "stop" {
                 *self.state.lock().unwrap() = "Stopped".into();
@@ -573,6 +615,40 @@ mod tests {
         assert_eq!(history[0]["tone"], "success");
     }
     #[test]
+    fn cancelled_start_retires_its_intent_so_launch_does_not_resume_it() {
+        let (_dir, paths, _) = setup();
+        let mut runner = Fake::new("Stopped");
+        runner.cancel_start = true;
+        assert!(matches!(
+            perform(&runner, &paths, &host(), "start", "dev"),
+            Err(RuntimeError::Cancelled { .. })
+        ));
+        assert!(!path(&paths, ID).exists());
+        let relaunch = Fake::new("Stopped");
+        assert!(recover_with(&relaunch, &paths, &host()).unwrap().is_empty());
+        assert!(relaunch.mutations().is_empty());
+    }
+    #[test]
+    fn one_invalid_intent_does_not_block_recovery_of_the_others() {
+        let (_dir, paths, _) = setup();
+        pending(&paths, "stop", Phase::StopPending);
+        fs::write(directory(&paths).join("broken.json"), "{not json").unwrap();
+        let runner = Fake::new("Running");
+        assert!(recover_with(&runner, &paths, &host()).is_err());
+        assert_eq!(runner.mutations(), vec!["stop"]);
+        assert!(!path(&paths, ID).exists());
+        assert!(directory(&paths).join("broken.json").exists());
+    }
+    #[test]
+    fn timed_out_stop_that_never_settles_is_not_retried_as_transient() {
+        let (_dir, paths, _) = setup();
+        let mut runner = Fake::new("Running");
+        runner.stop_times_out = true;
+        let failure = perform(&runner, &paths, &host(), "stop", "dev").unwrap_err();
+        assert!(!crate::runtime::transient_runtime_error(&failure));
+        assert_eq!(runner.mutations(), vec!["stop"]);
+    }
+    #[test]
     fn surviving_detached_start_can_win_without_being_restarted() {
         let (_dir, paths, _) = setup();
         pending(&paths, "start", Phase::StartPending);
@@ -595,6 +671,19 @@ mod tests {
         forget_removed(&paths, &machine).unwrap();
         assert!(!path(&paths, ID).exists());
         assert!(recover_with(&runner, &paths, &host()).unwrap().is_empty());
+    }
+    #[test]
+    fn rejected_new_action_leaves_the_superseded_intent_and_activity_unchanged() {
+        let (_dir, paths, _) = setup();
+        pending(&paths, "restart", Phase::StartPending);
+        let mut runner = Fake::new("Running");
+        runner.replaced = true;
+        assert!(perform(&runner, &paths, &host(), "stop", "dev").is_err());
+        assert!(load(&path(&paths, ID)).unwrap().is_some_and(|saved| saved.action == "restart"));
+        let history = runtime_activity::read(&paths).unwrap();
+        assert!(!history.iter().any(|event| event["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("Replaced by"))));
     }
     #[test]
     fn explicit_new_action_settles_the_superseded_activity() {

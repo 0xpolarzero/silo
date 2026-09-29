@@ -2,7 +2,24 @@ use super::*;
 use std::os::fd::AsRawFd;
 
 const OWNER: &str = ".silo-configuration-owner";
-static RECOVERY_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+/// Set once startup recovery has run (successfully or not) in this process.
+static STARTUP_SETTLED: AtomicBool = AtomicBool::new(false);
+/// Configuration attempts currently running in this process.
+static LIVE_ATTEMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Marks a configuration attempt as live for as long as it is held. A saved
+/// journal blocks snapshots only while an attempt is live (or before startup
+/// recovery has run), so an attempt that fails in-session no longer freezes
+/// the sandbox list until relaunch.
+#[must_use]
+pub(super) struct Attempt(());
+impl Drop for Attempt {
+    fn drop(&mut self) { LIVE_ATTEMPTS.fetch_sub(1, Ordering::SeqCst); }
+}
+pub(super) fn attempt() -> Attempt {
+    LIVE_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+    Attempt(())
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +263,7 @@ pub(super) fn recover_at_paths(runner: &dyn RuntimeRunner, paths: &RuntimePaths,
 }
 
 pub(super) fn prepare_retry(runner: &dyn RuntimeRunner, paths: &RuntimePaths, request: Option<&MachineConfigurationRequest>) -> Result<(), RuntimeError> {
+    let _attempt = attempt();
     if let Some(journal) = load(paths)? {
         drop(command_lock(paths, MUTATION_TIMEOUT)?);
         reconcile(runner, paths, &journal)?;
@@ -271,26 +289,29 @@ pub(super) fn prepare_retry(runner: &dyn RuntimeRunner, paths: &RuntimePaths, re
             write(paths, &Journal { version: 1, previous, request: request.clone() })?;
         }
     }
-    *RECOVERY_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
 }
 
 pub(super) fn pending(paths: &RuntimePaths) -> Result<bool, String> {
-    let failed = RECOVERY_FAILURE.lock().unwrap_or_else(|e| e.into_inner()).is_some();
-    blocks_snapshot(paths, failed)
+    let idle = STARTUP_SETTLED.load(Ordering::SeqCst) && LIVE_ATTEMPTS.load(Ordering::SeqCst) == 0;
+    blocks_snapshot(paths, idle)
 }
 
-fn blocks_snapshot(paths: &RuntimePaths, recovery_failed: bool) -> Result<bool, String> {
-    // After recovery stops with an error, let the normal snapshot verifier show
-    // the actual committed state so the user can correct the request. The saved
-    // intent, activity failure and startup error remain; this is not completion.
-    if recovery_failed { return Ok(false); }
+fn blocks_snapshot(paths: &RuntimePaths, no_live_attempt: bool) -> Result<bool, String> {
+    // Once no attempt is running (startup recovery or an in-session change
+    // stopped with an error), let the normal snapshot verifier show the actual
+    // committed state so the user can correct the request. The saved intent,
+    // activity failure and error remain; this is not completion.
+    if no_live_attempt { return Ok(false); }
     load(paths).map(|journal| journal.is_some()).map_err(|e| e.to_string())
 }
 
 pub(crate) fn recover(app: &AppHandle) -> Result<(), String> {
-    let result = recover_inner(app);
-    *RECOVERY_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = result.as_ref().err().cloned();
+    let result = {
+        let _attempt = attempt();
+        STARTUP_SETTLED.store(true, Ordering::SeqCst);
+        recover_inner(app)
+    };
     let _ = app.emit("silo://application-state-changed", ());
     result
 }
@@ -486,6 +507,28 @@ mod tests {
         if let MachineConfiguration::Vm { memory_gib, .. } = &mut revised.machines[1] { *memory_gib = 2; }
         prepare_retry(&EmptyRuntime, &paths, Some(&revised)).unwrap();
         assert!(load(&paths).unwrap().is_some_and(|journal| journal.request == revised));
+    }
+
+    #[test]
+    fn in_session_failure_stops_blocking_snapshots_but_keeps_intent() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![remote.clone()] }).unwrap();
+        let new = MachineConfiguration::Vm { id: uuid::Uuid::new_v4().to_string(), name: "dev".into(), cpus: 1, max_cpus: 2, memory_gib: 4, max_memory_gib: 8, workspace_storage_gib: 10, runtime_storage_gib: 10, desktop: None };
+        let request = MachineConfigurationRequest { schema_version: 1, machines: vec![remote, new] };
+        let settled = STARTUP_SETTLED.swap(true, Ordering::SeqCst);
+        let blocked_while_live = {
+            let _attempt = attempt();
+            begin(&paths, &request).unwrap();
+            pending(&paths).unwrap()
+            // The attempt fails here without `finish`.
+        };
+        let blocked_after_failure = pending(&paths).unwrap();
+        STARTUP_SETTLED.store(settled, Ordering::SeqCst);
+        assert!(blocked_while_live);
+        assert!(!blocked_after_failure);
+        assert!(path(&paths).is_file(), "the interrupted intent stays available for Retry");
     }
 
     #[test]

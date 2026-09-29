@@ -15,6 +15,9 @@ pub(super) struct Event {
     failure: Option<String>,
     #[serde(default)]
     dismissed: bool,
+    /// The user cancelled the action; it is neither a failure nor a success.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cancelled: bool,
     process: u32,
 }
 
@@ -32,18 +35,15 @@ fn events(paths: &RuntimePaths) -> Result<Vec<Event>, RuntimeError> {
             ))
         }
     };
-    let events: Vec<Event> = serde_json::from_reader(file.take(MAX_OUTPUT_BYTES))
+    let mut events: Vec<Event> = serde_json::from_reader(file.take(MAX_OUTPUT_BYTES))
         .map_err(|_| RuntimeError::Malformed("Sandbox activity could not be decoded.".into()))?;
-    if events.len() > LIMIT
-        || events.iter().any(|event| {
-            validate_name(&event.workspace).is_err()
-                || !matches!(event.action.as_str(), "start" | "stop" | "restart")
-        })
-    {
-        return Err(RuntimeError::Malformed(
-            "Sandbox activity is invalid.".into(),
-        ));
-    }
+    // Entries from another build (a newer action, an over-long journal) only
+    // cost history; they must not stop start/stop from journaling.
+    events.retain(|event| {
+        validate_name(&event.workspace).is_ok()
+            && matches!(event.action.as_str(), "start" | "stop" | "restart")
+    });
+    if events.len() > LIMIT { events.drain(..events.len() - LIMIT); }
     Ok(events)
 }
 
@@ -105,6 +105,7 @@ pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str, machine
         completed: false,
         failure: None,
         dismissed: false,
+        cancelled: false,
         process: std::process::id(),
     };
     store(paths, &event)?;
@@ -121,6 +122,7 @@ pub(super) fn resume(paths: &RuntimePaths, event: &mut Event, machine_id: &str) 
     event.completed = false;
     event.failure = None;
     event.dismissed = false;
+    event.cancelled = false;
     store(paths, event)
 }
 
@@ -130,7 +132,8 @@ pub(super) fn finish(
     result: &Result<(), RuntimeError>,
 ) -> Result<(), String> {
     event.completed = true;
-    event.failure = result.as_ref().err().map(failure_message);
+    event.cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
+    event.failure = result.as_ref().err().filter(|_| !event.cancelled).map(failure_message);
     store(paths, event)
 }
 
@@ -194,6 +197,10 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
     result.extend(events(paths).unwrap_or_else(|_| { warnings.push(history_warning("sandbox")); Vec::new() }).into_iter().map(|event| {
         let interrupted = !event.completed && event.process != std::process::id();
         let failed = event.failure.is_some();
+        if event.cancelled {
+            let title = match event.action.as_str() { "start" => "Start cancelled", "stop" => "Stop cancelled", _ => "Restart cancelled" };
+            return serde_json::json!({"id": event.id, "category": "sandbox", "title": title, "detail": "The action was cancelled.", "occurredAt": timestamp(event.timestamp), "time": timestamp(event.timestamp), "tone": "neutral", "status": "completed", "workspace": event.workspace, "cancelled": true});
+        }
         let title = match (event.action.as_str(), event.completed, failed) {
             ("start", true, false) => "Sandbox started", ("stop", true, false) => "Sandbox stopped", ("restart", true, false) => "Sandbox restarted",
             ("start", _, _) => "Starting sandbox", ("stop", _, _) => "Stopping sandbox", _ => "Restarting sandbox",
@@ -206,31 +213,65 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
     Ok(result)
 }
 
+/// Remove terminal control sequences (7- and 8-bit CSI, OSC/DCS/APC/PM/SOS
+/// strings) and every other C0/C1 control except tab and newline, so exported
+/// logs cannot drive a terminal (CR/BS overwrites, colours, titles).
 pub(super) fn strip_ansi(text: &str) -> String {
-    let mut chars = text.chars();
+    fn skip_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+        while let Some(ch) = chars.next() {
+            if ch == '\u{7}' || ch == '\u{9c}' { break; }
+            if ch == '\u{1b}' && chars.peek() == Some(&'\\') { chars.next(); break; }
+        }
+    }
+    let mut chars = text.chars().peekable();
     let mut clean = String::with_capacity(text.len());
     while let Some(ch) = chars.next() {
-        if ch != '\u{1b}' { clean.push(ch); continue; }
-        match chars.next() {
-            Some('[') => { for ch in chars.by_ref() { if ('@'..='~').contains(&ch) { break; } } }
-            Some(']') => {
-                let mut escape = false;
-                for ch in chars.by_ref() {
-                    if ch == '\u{7}' || (escape && ch == '\\') { break; }
-                    escape = ch == '\u{1b}';
-                }
-            }
-            Some(_) | None => {}
+        let introducer = match ch {
+            '\u{1b}' => match chars.next() {
+                Some('[') => '\u{9b}',
+                Some(']') => '\u{9d}',
+                Some('P') => '\u{90}',
+                Some('X') => '\u{98}',
+                Some('^') => '\u{9e}',
+                Some('_') => '\u{9f}',
+                _ => continue,
+            },
+            ch => ch,
+        };
+        match introducer {
+            '\u{9b}' => { for ch in chars.by_ref() { if ('@'..='~').contains(&ch) { break; } } }
+            '\u{9d}' | '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => skip_string(&mut chars),
+            '\t' | '\n' => clean.push(introducer),
+            ch if ch.is_control() => {}
+            ch => clean.push(ch),
         }
     }
     clean
 }
 
+/// A secret-looking assignment: `secret`, `token`, `key`, `passw` or
+/// `credential` followed by optional word characters and quotes, then `:` or
+/// `=` (for example `AWS_SECRET_ACCESS_KEY=`, `api_key =`, `"password": `).
+fn sensitive_assignment(lower: &str) -> bool {
+    ["secret", "token", "key", "passw", "credential"].iter().any(|word| {
+        lower.match_indices(word).any(|(at, _)| {
+            let rest = lower[at + word.len()..].trim_start_matches(|ch: char| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
+            let rest = rest.trim_start_matches(['"', '\'']).trim_start();
+            rest.starts_with(':') || rest.starts_with('=')
+        })
+    })
+}
+
 pub(super) fn log_text(body: &str) -> String {
+    let mut in_pem = false;
     strip_ansi(body).lines()
         .map(|line| {
             let lower = line.to_ascii_lowercase();
-            if [
+            // Hide whole PEM blocks, not only their BEGIN line.
+            if lower.contains("-----begin") { in_pem = true; }
+            let pem = in_pem;
+            if lower.contains("-----end") { in_pem = false; }
+            if pem || sensitive_assignment(&lower) || [
                 "authorization",
                 "bearer ",
                 "ghp_",
@@ -238,12 +279,6 @@ pub(super) fn log_text(body: &str) -> String {
                 "ghu_",
                 "ghr_",
                 "github_pat_",
-                "password=",
-                "password\":",
-                "secret=",
-                "secret\":",
-                "token=",
-                "token\":",
                 "private key",
                 "environment:",
                 "\"env\"",
@@ -253,9 +288,7 @@ pub(super) fn log_text(body: &str) -> String {
             {
                 "[Sensitive runtime output hidden]".into()
             } else {
-                line.chars()
-                    .filter(|ch| !ch.is_control() || *ch == '\t')
-                    .collect::<String>()
+                line.to_string()
             }
         })
         .collect::<Vec<_>>()
@@ -265,6 +298,58 @@ pub(super) fn log_text(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn log_text_hides_common_secret_assignments_and_pem_blocks() {
+        for line in ["AWS_SECRET_ACCESS_KEY=abc", "api_key = abc", "Password: hunter2", "PASSWORD =x", "\"client_secret\": \"abc\"", "export GH_TOKEN=abc"] {
+            assert_eq!(log_text(line), "[Sensitive runtime output hidden]", "{line}");
+        }
+        let pem = "before\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----\nafter";
+        let text = log_text(pem);
+        assert!(!text.contains("b3BlbnNzaC1rZXk"));
+        assert!(text.starts_with("before\n") && text.ends_with("\nafter"));
+        assert_eq!(log_text("VM started in 2s"), "VM started in 2s");
+    }
+
+    #[test]
+    fn strip_ansi_removes_8bit_and_string_controls() {
+        assert_eq!(strip_ansi("a\u{9b}31mb"), "ab");
+        assert_eq!(strip_ansi("a\u{1b}P1;2|payload\u{1b}\\b"), "ab");
+        assert_eq!(strip_ansi("a\u{1b}_apc\u{9c}b\u{1b}]0;title\u{7}c"), "abc");
+        assert_eq!(strip_ansi("safe\rhidden\u{8}\u{8}x\tt\nn"), "safehiddenx\tt\nn");
+    }
+    #[test]
+    fn cancelled_action_is_persisted_as_cancelled_not_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+        finish(&paths, &mut event, &Err(RuntimeError::Cancelled { operation: "start dev".into() })).unwrap();
+        assert!(failures(&paths).unwrap().is_empty());
+        let entry = &read(&paths).unwrap()[0];
+        assert_eq!(entry["title"], "Start cancelled");
+        assert_eq!(entry["tone"], "neutral");
+        assert_eq!(entry["cancelled"], true);
+    }
+
+    #[test]
+    fn unknown_or_excess_entries_do_not_block_journaling() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut first = begin(&paths, "start", "dev", "vm-1").unwrap();
+        finish(&paths, &mut first, &Ok(())).unwrap();
+        let mut entries: Vec<Value> = serde_json::from_slice(&fs::read(path(&paths)).unwrap()).unwrap();
+        let mut unknown = entries[0].clone();
+        unknown["action"] = "hibernate".into();
+        unknown["id"] = "future".into();
+        entries.push(unknown);
+        while entries.len() <= LIMIT + 5 { let mut copy = entries[0].clone(); copy["id"] = format!("old-{}", entries.len()).into(); entries.push(copy); }
+        fs::write(path(&paths), serde_json::to_vec(&entries).unwrap()).unwrap();
+        let mut next = begin(&paths, "stop", "dev", "vm-1").unwrap();
+        finish(&paths, &mut next, &Ok(())).unwrap();
+        let stored = events(&paths).unwrap();
+        assert!(stored.len() <= LIMIT);
+        assert!(stored.iter().all(|event| event.action != "hibernate"));
+        assert!(stored.iter().any(|event| event.id == next.id));
+    }
     #[test]
     fn lifecycle_failure_keeps_diagnostics_and_survives_read_until_success() {
         let dir = tempfile::tempdir().unwrap();

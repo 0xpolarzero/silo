@@ -297,11 +297,27 @@ thread_local! {
     /// Cancel token of the operation the current thread is executing, set while its
     /// guard is held and cleared on drop. Nesting is rejected, so at most one is set.
     static CURRENT: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    /// Depth of `uncancellable` sections on this thread.
+    static MASKED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Run `work` with cancellation masked: a cancel requested meanwhile is not
+/// observed (children are not killed) until `work` returns, and is then honoured
+/// at the next check. Used for steps such as `msb stop` that must not be cut short.
+pub(crate) fn uncancellable<T>(work: impl FnOnce() -> T) -> T {
+    struct Unmask;
+    impl Drop for Unmask {
+        fn drop(&mut self) { MASKED.with(|masked| masked.set(masked.get() - 1)); }
+    }
+    MASKED.with(|masked| masked.set(masked.get() + 1));
+    let _unmask = Unmask;
+    work()
 }
 
 /// True when the operation running on this thread has been asked to cancel. Only ever
 /// true for operations that opted in with `OperationGuard::allow_cancel`.
 pub(crate) fn cancel_requested() -> bool {
+    if MASKED.with(Cell::get) > 0 { return false; }
     CURRENT.with(|current| {
         current
             .borrow()
@@ -1058,6 +1074,17 @@ mod tests {
         let running_id = gate.snapshot().running[0].id;
         gate.cancel(running_id).unwrap();
         assert!(finished.recv_timeout(Duration::from_secs(5)).unwrap());
+    }
+
+    #[test]
+    fn uncancellable_section_defers_a_cancel_until_it_returns() {
+        let gate = leak();
+        let guard = gate.vm("id-a", "a", "Restarting a").unwrap();
+        guard.allow_cancel();
+        gate.cancel(gate.snapshot().running[0].id).unwrap();
+        assert!(!uncancellable(cancel_requested));
+        assert!(cancel_requested());
+        drop(guard);
     }
 
     #[test]
