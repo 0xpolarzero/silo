@@ -2,7 +2,7 @@
 use crate::runtime::{self, RuntimePaths};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
-use std::os::unix::process::CommandExt;
+use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
     collections::HashMap,
     fs,
@@ -201,18 +201,97 @@ struct HostGit {
     ssh_command: Option<String>,
     cache_lock_fd: Option<std::os::fd::RawFd>,
 }
+/// Git and Git LFS read the GitHub token from this inherited pipe through the
+/// standard credential-helper protocol. The token never appears in arguments,
+/// the environment or a file, where other processes of the user could read it.
+const CREDENTIAL_FD: libc::c_int = 3;
+const CREDENTIAL_HELPER: &str = r#"!f() { test "$1" = get || exit 0; while IFS= read -r line && test -n "$line"; do :; done; IFS= read -r token <&3 || exit 0; printf 'username=x-access-token\npassword=%s\n' "$token"; }; f"#;
+/// One answer per credential request; Git and Git LFS ask about once per
+/// endpoint. The answers fit an empty pipe, so writing them never blocks.
+fn credential_pipe(token: &str) -> Result<std::io::PipeReader, String> {
+    use std::io::Write;
+    const FAILED: &str = "Cannot prepare the GitHub credential for Git.";
+    if token.is_empty() || token.len() > 1024 || token.bytes().any(|b| b <= b' ' || b == 127) {
+        return Err("Invalid GitHub credential.".into());
+    }
+    let (reader, mut writer) = std::io::pipe().map_err(|_| FAILED)?;
+    let answer = format!("{token}\n");
+    for _ in 0..(4096 / answer.len()).min(32) {
+        writer.write_all(answer.as_bytes()).map_err(|_| FAILED)?;
+    }
+    Ok(reader)
+}
+/// Credentials are offered only to the destination's origin, never to other hosts.
+fn credential_origin(remote: &str) -> Result<&str, String> {
+    let (scheme, rest) = remote
+        .split_once("://")
+        .ok_or("Invalid push destination.")?;
+    let host = rest.split('/').next().unwrap_or_default();
+    if !matches!(scheme, "https" | "http") || host.is_empty() {
+        return Err("Invalid push destination.".into());
+    }
+    Ok(&remote[..scheme.len() + 3 + host.len()])
+}
 impl HostGit {
     fn run(&self, args: &[&str], token: Option<&str>, remote: &str) -> Result<String, String> {
         let mut command = Command::new(&self.executable);
         command.process_group(0);
         let file_budget = temporary_budget(&self.directory)? as libc::rlim_t;
         let cache_lock_fd = self.cache_lock_fd;
+        let credential = token.map(credential_pipe).transpose()?;
+        let credential_fd = credential.as_ref().map(|reader| reader.as_raw_fd());
+        let mut settings = vec![
+            "core.hooksPath=/dev/null".to_owned(),
+            "core.fsmonitor=false".into(),
+            // Production sources are ssh://; only the local test harness
+            // publishes from file paths.
+            if cfg!(test) {
+                "protocol.file.allow=always".into()
+            } else {
+                "protocol.file.allow=never".into()
+            },
+            "protocol.ext.allow=never".into(),
+            "http.followRedirects=false".into(),
+            "credential.helper=".into(),
+        ];
+        if token.is_some() {
+            settings.push(format!(
+                "credential.{}.helper={CREDENTIAL_HELPER}",
+                credential_origin(remote)?
+            ));
+        }
+        settings.extend(
+            [
+                "fetch.fsckObjects=true",
+                "transfer.fsckObjects=true",
+                "gc.auto=0",
+                "maintenance.auto=false",
+            ]
+            .map(String::from),
+        );
         unsafe {
             command.pre_exec(move || {
                 // Keep the cache locked until this Git process exits, even if
                 // Silo crashes. The parent owns the file for the entire command.
-                if let Some(fd) = cache_lock_fd {
+                if let Some(mut fd) = cache_lock_fd {
+                    if credential_fd.is_some() && fd == CREDENTIAL_FD {
+                        // Move the lock aside; the credential pipe takes this number.
+                        fd = libc::fcntl(fd, libc::F_DUPFD, CREDENTIAL_FD + 1);
+                        if fd == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
                     if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                if let Some(fd) = credential_fd {
+                    let result = if fd == CREDENTIAL_FD {
+                        libc::fcntl(fd, libc::F_SETFD, 0)
+                    } else {
+                        libc::dup2(fd, CREDENTIAL_FD)
+                    };
+                    if result == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                 }
@@ -233,35 +312,10 @@ impl HostGit {
                 Ok(())
             });
         }
+        for setting in &settings {
+            command.arg("-c").arg(setting);
+        }
         command
-            .args([
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                // Production sources are ssh://; only the local test harness
-                // publishes from file paths.
-                if cfg!(test) {
-                    "protocol.file.allow=always"
-                } else {
-                    "protocol.file.allow=never"
-                },
-                "-c",
-                "protocol.ext.allow=never",
-                "-c",
-                "http.followRedirects=false",
-                "-c",
-                "credential.helper=",
-                "-c",
-                "fetch.fsckObjects=true",
-                "-c",
-                "transfer.fsckObjects=true",
-                "-c",
-                "gc.auto=0",
-                "-c",
-                "maintenance.auto=false",
-            ])
             .args(args)
             .current_dir(&self.directory)
             .env_clear()
@@ -293,23 +347,17 @@ impl HostGit {
         if cfg!(target_os = "linux") {
             command.env("GIT_SSL_CAINFO", linux_ca_bundle(&self.support));
         }
-        if let Some(token) = token {
+        if token.is_some() {
             command
-                .env("GIT_CONFIG_COUNT", "2")
-                .env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraHeader")
-                .env(
-                    "GIT_CONFIG_VALUE_0",
-                    format!(
-                        "Authorization: Basic {}",
-                        STANDARD.encode(format!("x-access-token:{token}"))
-                    ),
-                )
-                .env("GIT_CONFIG_KEY_1", "lfs.url")
-                .env("GIT_CONFIG_VALUE_1", format!("{remote}/info/lfs"));
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "lfs.url")
+                .env("GIT_CONFIG_VALUE_0", format!("{remote}/info/lfs"));
         }
         let mut child = command
             .spawn()
             .map_err(|_| "Bundled Git could not start. Repair Silo and retry.")?;
+        // Only the Git process tree keeps the credential pipe open.
+        drop(credential);
         let stdout = child.stdout.take().ok_or("Cannot capture Git output.")?;
         let stderr = child
             .stderr
@@ -509,7 +557,8 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
     )?;
     drop(read_guard);
     let repo = repository(origin.trim())?;
-    let token = crate::github::host_push_credential(app, workspace, &repo)?;
+    // Revoked when this function returns, whatever the outcome.
+    let credential = crate::github::host_push_credential(app, workspace, &repo)?;
     let _guard = runtime::OPERATIONS
         .kind(runtime::operation_gate::OperationKind::Push)
         .vm(&vm_id, workspace, &format!("Pushing from {workspace}"))
@@ -526,8 +575,8 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
         &paths,
         workspace,
         path,
-        &repo,
-        &token,
+        credential.repository(),
+        credential.token(),
         &executable,
         &support,
     )
@@ -1059,6 +1108,41 @@ mod tests {
         };
         assert!(git.run(&[], None, "").is_err());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn host_git_passes_the_token_through_a_pipe_not_arguments_or_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("git");
+        fs::write(
+            &executable,
+            "#!/bin/sh\n{ env; printf '%s\\n' \"$@\"; } >observed\nIFS= read -r token <&3 && printf '%s' \"$token\" >credential\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let git = HostGit {
+            executable,
+            directory: directory.path().into(),
+            home: directory.path().into(),
+            support: directory.path().into(),
+            ssh_command: None,
+            cache_lock_fd: None,
+        };
+        let token = "ghu_fixtureToken123";
+        git.run(
+            &["ls-remote", "origin"],
+            Some(token),
+            "https://github.com/owner/repo.git",
+        )
+        .unwrap();
+        let observed = fs::read_to_string(directory.path().join("observed")).unwrap();
+        assert!(!observed.contains(token));
+        assert!(!observed.contains(&STANDARD.encode(format!("x-access-token:{token}"))));
+        assert!(observed.contains("credential.https://github.com.helper=!"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("credential")).unwrap(),
+            token
+        );
     }
     #[test]
     fn failed_results_separate_summary_from_git_diagnostics() {
