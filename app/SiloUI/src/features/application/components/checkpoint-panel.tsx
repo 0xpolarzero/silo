@@ -151,7 +151,9 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                 <ConfirmPopover
                   align="end"
                   title={`Restore “${checkpoint.name}”?`}
-                  description={`Silo saves a recovery checkpoint first, then rewinds ${sandbox}. It stays stopped.`}
+                  description={workspace.state === "running"
+                    ? `${sandbox} is running. Silo pauses it, saves a recovery checkpoint that includes its memory (this can use a lot of disk space), force-stops it, then rewinds it. It stays stopped. Changes outside the sandbox, such as pushed commits or sent requests, are not undone.`
+                    : `Silo saves a recovery checkpoint first, then rewinds ${sandbox}. It stays stopped. Changes outside the sandbox, such as pushed commits or sent requests, are not undone.`}
                   confirmLabel="Restore"
                   onConfirm={() => restore(checkpoint)}
                 >

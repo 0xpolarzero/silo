@@ -63,6 +63,17 @@ it("disables Export while a transfer is running", async () => {
   expect(screen.getByRole("menuitem", { name: "Export Before refactor" })).toHaveAttribute("aria-disabled", "true")
 })
 
+it("explains the pause, memory checkpoint and force-stop before restoring a running sandbox", async () => {
+  const user = userEvent.setup()
+  render(<CheckpointPanel workspace={{ ...workspace, state: "running" }} target="dev" actions={{ restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} />)
+  await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Restore" }))
+  const description = await screen.findByText(/dev is running/)
+  expect(description).toHaveTextContent(/pauses it/)
+  expect(description).toHaveTextContent(/includes its memory/)
+  expect(description).toHaveTextContent(/force-stops it/)
+  expect(description).toHaveTextContent(/not undone/)
+})
+
 it("confirms a restore in a popover before restoring", async () => {
   const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
   const user = userEvent.setup()
