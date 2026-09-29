@@ -15,6 +15,9 @@ pub(super) struct Event {
     failure: Option<String>,
     #[serde(default)]
     dismissed: bool,
+    /// The user cancelled the action; it is neither a failure nor a success.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cancelled: bool,
     process: u32,
 }
 
@@ -32,18 +35,15 @@ fn events(paths: &RuntimePaths) -> Result<Vec<Event>, RuntimeError> {
             ))
         }
     };
-    let events: Vec<Event> = serde_json::from_reader(file.take(MAX_OUTPUT_BYTES))
+    let mut events: Vec<Event> = serde_json::from_reader(file.take(MAX_OUTPUT_BYTES))
         .map_err(|_| RuntimeError::Malformed("Sandbox activity could not be decoded.".into()))?;
-    if events.len() > LIMIT
-        || events.iter().any(|event| {
-            validate_name(&event.workspace).is_err()
-                || !matches!(event.action.as_str(), "start" | "stop" | "restart")
-        })
-    {
-        return Err(RuntimeError::Malformed(
-            "Sandbox activity is invalid.".into(),
-        ));
-    }
+    // Entries from another build (a newer action, an over-long journal) only
+    // cost history; they must not stop start/stop from journaling.
+    events.retain(|event| {
+        validate_name(&event.workspace).is_ok()
+            && matches!(event.action.as_str(), "start" | "stop" | "restart")
+    });
+    if events.len() > LIMIT { events.drain(..events.len() - LIMIT); }
     Ok(events)
 }
 
@@ -105,6 +105,7 @@ pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str, machine
         completed: false,
         failure: None,
         dismissed: false,
+        cancelled: false,
         process: std::process::id(),
     };
     store(paths, &event)?;
@@ -121,6 +122,7 @@ pub(super) fn resume(paths: &RuntimePaths, event: &mut Event, machine_id: &str) 
     event.completed = false;
     event.failure = None;
     event.dismissed = false;
+    event.cancelled = false;
     store(paths, event)
 }
 
@@ -130,7 +132,8 @@ pub(super) fn finish(
     result: &Result<(), RuntimeError>,
 ) -> Result<(), String> {
     event.completed = true;
-    event.failure = result.as_ref().err().map(failure_message);
+    event.cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
+    event.failure = result.as_ref().err().filter(|_| !event.cancelled).map(failure_message);
     store(paths, event)
 }
 
@@ -194,6 +197,10 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
     result.extend(events(paths).unwrap_or_else(|_| { warnings.push(history_warning("sandbox")); Vec::new() }).into_iter().map(|event| {
         let interrupted = !event.completed && event.process != std::process::id();
         let failed = event.failure.is_some();
+        if event.cancelled {
+            let title = match event.action.as_str() { "start" => "Start cancelled", "stop" => "Stop cancelled", _ => "Restart cancelled" };
+            return serde_json::json!({"id": event.id, "category": "sandbox", "title": title, "detail": "The action was cancelled.", "occurredAt": timestamp(event.timestamp), "time": timestamp(event.timestamp), "tone": "neutral", "status": "completed", "workspace": event.workspace, "cancelled": true});
+        }
         let title = match (event.action.as_str(), event.completed, failed) {
             ("start", true, false) => "Sandbox started", ("stop", true, false) => "Sandbox stopped", ("restart", true, false) => "Sandbox restarted",
             ("start", _, _) => "Starting sandbox", ("stop", _, _) => "Stopping sandbox", _ => "Restarting sandbox",
@@ -265,6 +272,39 @@ pub(super) fn log_text(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_action_is_persisted_as_cancelled_not_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+        finish(&paths, &mut event, &Err(RuntimeError::Cancelled { operation: "start dev".into() })).unwrap();
+        assert!(failures(&paths).unwrap().is_empty());
+        let entry = &read(&paths).unwrap()[0];
+        assert_eq!(entry["title"], "Start cancelled");
+        assert_eq!(entry["tone"], "neutral");
+        assert_eq!(entry["cancelled"], true);
+    }
+
+    #[test]
+    fn unknown_or_excess_entries_do_not_block_journaling() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut first = begin(&paths, "start", "dev", "vm-1").unwrap();
+        finish(&paths, &mut first, &Ok(())).unwrap();
+        let mut entries: Vec<Value> = serde_json::from_slice(&fs::read(path(&paths)).unwrap()).unwrap();
+        let mut unknown = entries[0].clone();
+        unknown["action"] = "hibernate".into();
+        unknown["id"] = "future".into();
+        entries.push(unknown);
+        while entries.len() <= LIMIT + 5 { let mut copy = entries[0].clone(); copy["id"] = format!("old-{}", entries.len()).into(); entries.push(copy); }
+        fs::write(path(&paths), serde_json::to_vec(&entries).unwrap()).unwrap();
+        let mut next = begin(&paths, "stop", "dev", "vm-1").unwrap();
+        finish(&paths, &mut next, &Ok(())).unwrap();
+        let stored = events(&paths).unwrap();
+        assert!(stored.len() <= LIMIT);
+        assert!(stored.iter().all(|event| event.action != "hibernate"));
+        assert!(stored.iter().any(|event| event.id == next.id));
+    }
     #[test]
     fn lifecycle_failure_keeps_diagnostics_and_survives_read_until_success() {
         let dir = tempfile::tempdir().unwrap();
