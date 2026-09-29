@@ -565,6 +565,15 @@ pub(crate) fn blocks_operations(app: &AppHandle) -> bool {
     ensure_ready(app).is_err()
 }
 
+/// Record a failed migration in memory even when saving it fails (a full disk
+/// is the likely cause of the failed copy), so Retry and Continue stay
+/// available for this session. The persistence error is returned.
+fn record_failure(state: &Mutex<MigrationState>, path: &Path, error: String) -> Result<(), String> {
+    let mut state = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    record_migration_failure(&mut state, error);
+    write(path, &state)
+}
+
 fn update(app: &AppHandle, change: impl FnOnce(&mut MigrationState) -> Result<(), String>) -> Result<MigrationState, String> {
     let controller = app.state::<Arc<Controller>>();
     if !controller.writable { return Err("Saved migration data needs manual repair. The file was preserved.".into()); }
@@ -600,11 +609,13 @@ pub(crate) fn retry_runtime_migration(app: AppHandle) -> Result<MigrationState, 
     })?;
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = convert(&worker) {
-            let _ = update(&worker, |state| {
-                record_migration_failure(state, error);
-                Ok(())
-            });
+        // A panic must still leave a retryable failed state, not "running".
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| convert(&worker)))
+            .unwrap_or_else(|_| Err("Migration stopped unexpectedly. Retry the migration.".into()));
+        if let Err(error) = outcome {
+            let controller = worker.state::<Arc<Controller>>();
+            let _ = record_failure(&controller.state, &controller.path, error);
+            let _ = worker.emit("silo://application-state-changed", ());
         }
     });
     Ok(result)
@@ -644,6 +655,21 @@ pub(crate) fn continue_after_migration_failure(app: AppHandle) -> Result<Migrati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_is_recorded_in_memory_when_saving_it_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let blocker = directory.path().join("file");
+        fs::write(&blocker, "").unwrap();
+        let mut running = fresh("running", 2);
+        running.migrated_count = 1;
+        let state = Mutex::new(running);
+        assert!(record_failure(&state, &blocker.join("state.json"), "disk full".into()).is_err());
+        let state = state.lock().unwrap();
+        assert_eq!(state.status, "failed");
+        assert!(state.can_continue);
+        assert_eq!(state.error.as_deref(), Some("disk full"));
+    }
 
     fn one_vm(name: &str, id: &str) -> runtime::MachineConfigurationRequest {
         serde_json::from_value(serde_json::json!({
