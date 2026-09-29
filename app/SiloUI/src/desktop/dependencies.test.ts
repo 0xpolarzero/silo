@@ -101,6 +101,54 @@ describe("native dependency report validation", () => {
     vi.useRealTimers()
   })
 
+  it("starts a new request on Retry after the watchdog abandons a bridge call that never settles", async () => {
+    vi.useFakeTimers()
+    const invokeChecks = vi.fn()
+      .mockImplementationOnce(() => new Promise(() => undefined))
+      .mockImplementationOnce((_command, { requestId }) => Promise.resolve({ schemaVersion: 1, requestId, checkedAtMs: Date.now(), checks }))
+    const store = createNativeDependencyStore(invokeChecks)
+
+    store.retry()
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(store.getSnapshot().every(({ status }) => status === "timeout")).toBe(true)
+    store.retry()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(invokeChecks).toHaveBeenCalledTimes(2)
+    expect(store.getSnapshot().every(({ status }) => status === "pass")).toBe(true)
+
+    store.dispose()
+    vi.useRealTimers()
+  })
+
+  it("ignores an abandoned call that settles late without disturbing the next request", async () => {
+    vi.useFakeTimers()
+    const requests: Array<{ requestId: string; resolve: (value: unknown) => void }> = []
+    const invokeChecks = vi.fn((_command, { requestId }) => new Promise((resolve) => requests.push({ requestId, resolve })))
+    const store = createNativeDependencyStore(invokeChecks)
+
+    store.retry()
+    await Promise.resolve()
+    store.retry()
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(store.getSnapshot().every(({ status }) => status === "timeout")).toBe(true)
+    store.retry()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(requests).toHaveLength(2)
+    // The abandoned first call answers now: it must neither publish nor clear the
+    // second request's watchdog or in-flight state.
+    requests[0].resolve({ schemaVersion: 1, requestId: requests[0].requestId, checkedAtMs: Date.now(), checks })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getSnapshot().every(({ status }) => status === "pending")).toBe(true)
+    store.retry()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(invokeChecks).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(store.getSnapshot().every(({ status }) => status === "timeout")).toBe(true)
+
+    store.dispose()
+    vi.useRealTimers()
+  })
+
   it("disposes listeners and suppresses late results", async () => {
     let resolveRequest!: (value: unknown) => void
     let requestId = ""
