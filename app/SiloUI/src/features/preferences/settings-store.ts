@@ -22,12 +22,21 @@ export interface SettingsBackend {
 type Change = { kind: "settings"; patch: SettingsPatch } | { kind: "draft"; draft: OnboardingDraft | null }
 export interface SettingsView extends Omit<SettingsSnapshot, "settings"> { settings: Settings }
 
+function errorText(error: unknown) { return error instanceof Error ? error.message : String(error) }
+/**
+ * The native store validated and refused the change (`settings.rs` update and
+ * update_draft). Resending it can never succeed, unlike a failed delivery.
+ */
+function isRejection(error: unknown) { return /^Invalid (settings change|onboarding draft)$/.test(errorText(error)) }
+
 export function createSettingsStore(backend: SettingsBackend, initialSettings: SettingsPatch = {}, initialSnapshot?: SettingsSnapshot) {
   const defaults = { ...defaultSettings, ...initialSettings }
   const listeners = new Set<() => void>()
   const pending: Change[] = []
   let confirmed: SettingsSnapshot = initialSnapshot ?? { revision: -1, settings: {}, onboardingDraft: null, saveError: null }
   let transportError: string | null = null
+  /** The last rejected change, shown until the next change or flush. */
+  let rejection: string | null = null
   function resolveSettings(overrides: SettingsPatch) {
     const settings = { ...defaults, ...overrides }
     for (const kind of ["terminal", "editor", "browser"] as const) {
@@ -58,8 +67,8 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
     const next: SettingsView = {
       ...confirmed,
       settings: resolveSettings(overrides),
-      saveError: transportError ?? confirmed.saveError,
-      writeProtected: transportError === null && confirmed.writeProtected ? true : undefined,
+      saveError: transportError ?? rejection ?? confirmed.saveError,
+      writeProtected: transportError === null && rejection === null && confirmed.writeProtected ? true : undefined,
     }
     for (const change of pending) {
       if (change.kind === "draft") next.onboardingDraft = change.draft
@@ -76,7 +85,7 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
   }
 
   function failed(error: unknown) {
-    transportError = error instanceof Error ? error.message : String(error)
+    transportError = errorText(error)
     console.error("Silo settings:", transportError)
     publish()
   }
@@ -96,6 +105,15 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
           receive(snapshot)
           publish()
         } catch (error) {
+          if (isRejection(error)) {
+            // Roll back the refused change instead of resending it forever, which
+            // would also block every later change behind it.
+            pending.shift()
+            rejection = errorText(error)
+            console.error("Silo settings: change rejected:", rejection)
+            publish()
+            continue
+          }
           writeFailed = true
           failed(error)
           // Keep an unsent edit visible and retry it on the next edit or flush.
@@ -112,6 +130,7 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
   }
 
   function enqueue(change: Change) {
+    rejection = null
     pending.push(change)
     publish()
     return drain()
@@ -158,6 +177,10 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
       catch (error) { failed(error) }
     },
     async flush() {
+      // An earlier rejected change is already rolled back; nothing of it remains
+      // unsaved, so it must not fail this flush (for example, Quit).
+      rejection = null
+      publish()
       try {
         do {
           await drain()
