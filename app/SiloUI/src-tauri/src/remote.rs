@@ -459,6 +459,36 @@ fn request_timeout(request: &Value) -> Duration {
         Duration::from_secs(600)
     }
 }
+const CONNECTION_HELP: &str = "Cannot connect to Silo over SSH. Verify the address, authorize its host key using SSH, and configure an SSH key or agent. On the other computer, keep Silo running with remote management enabled.";
+/// Names the cause of a failed connection from the ssh exit code and stderr, without echoing raw output.
+fn connection_failure(code: Option<i32>, stderr: &str) -> String {
+    let has = |needle: &str| stderr.contains(needle);
+    if code == Some(255) {
+        let cause = if has("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+            "The other computer's SSH host key changed. Verify the computer before trusting its new key (Host key verification failed)."
+        } else if has("Host key verification failed") {
+            "Host key verification failed. Connect once with SSH in a terminal to verify and trust the other computer's host key."
+        } else if has("Permission denied") || has("Too many authentication failures") {
+            "SSH authentication failed. Set up Silo's SSH key for this computer, or configure an SSH key or agent."
+        } else if has("Could not resolve hostname") {
+            "Cannot resolve the computer's address. Check the address and network."
+        } else if has("Connection refused") {
+            "The other computer refused the SSH connection. Turn on Remote Login (SSH) there."
+        } else if has("timed out") {
+            "The SSH connection timed out. Check that the other computer is awake and reachable."
+        } else {
+            CONNECTION_HELP
+        };
+        return cause.into();
+    }
+    if has("Silo is not running on this computer.") {
+        return "Silo is not running on the other computer. Open Silo there with remote management enabled.".into();
+    }
+    if code == Some(127) || has("silo-remote: No such file") || has("silo-remote: not found") {
+        return "Silo's remote bridge is missing on the other computer. Turn remote management off and on again there.".into();
+    }
+    CONNECTION_HELP.into()
+}
 fn exchange(address: &str, request: Value) -> Result<Value, String> {
     validate_address(address)?;
     let stdout = tempfile::tempfile().map_err(|e| e.to_string())?;
@@ -498,7 +528,12 @@ fn exchange(address: &str, request: Value) -> Result<Value, String> {
         thread::sleep(Duration::from_millis(40));
     };
     if !exit.success() {
-        return Err("Cannot connect to Silo over SSH. Verify the address, authorize its host key using SSH, and configure an SSH key or agent. On the other computer, keep Silo running with remote management enabled.".into());
+        let mut stderr = stderr;
+        let mut text = String::new();
+        let _ = stderr
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| Read::by_ref(&mut stderr).take(65536).read_to_string(&mut text));
+        return Err(connection_failure(exit.code(), &text));
     }
     use std::io::{Seek, SeekFrom};
     let mut stdout = stdout;
@@ -1403,6 +1438,27 @@ mod setup_tests {
             fs::read_to_string(authorized).unwrap(),
             format!("existing-key-without-final-newline\n{public}\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod connection_failure_tests {
+    use super::*;
+    #[test]
+    fn distinguishes_ssh_failures_from_bridge_failures() {
+        let changed = "@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.\n";
+        assert!(connection_failure(Some(255), changed).contains("host key changed"));
+        assert!(connection_failure(Some(255), "Host key verification failed.\n").starts_with("Host key verification failed."));
+        assert!(connection_failure(Some(255), "user@office: Permission denied (publickey).\n").starts_with("SSH authentication failed"));
+        assert!(connection_failure(Some(255), "Received disconnect: Too many authentication failures\n").starts_with("SSH authentication failed"));
+        assert!(connection_failure(Some(255), "ssh: connect to host office port 22: Connection refused\n").contains("refused"));
+        assert!(connection_failure(Some(255), "ssh: connect to host office port 22: Operation timed out\n").contains("timed out"));
+        assert!(connection_failure(Some(255), "ssh: Could not resolve hostname office\n").contains("resolve"));
+        assert_eq!(connection_failure(Some(255), "\x1b[31msecret banner"), CONNECTION_HELP);
+        // Bridge failures exit 1 (or 127 when the link is missing) after authentication succeeded.
+        assert!(connection_failure(Some(1), "Silo is not running on this computer.\n").contains("not running on the other computer"));
+        assert!(connection_failure(Some(127), "sh: /home/u/.local/bin/silo-remote: not found\n").contains("bridge is missing"));
+        assert_eq!(connection_failure(Some(1), "Permission denied"), CONNECTION_HELP);
     }
 }
 
