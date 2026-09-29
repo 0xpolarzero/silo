@@ -254,7 +254,12 @@ pub(crate) enum BackupError {
     Cancelled,
     CommandTimeout,
     CommandFailed { operation: String, detail: String },
+    /// A sandbox name is already taken.
     Conflict(String),
+    /// A file already exists at the given path.
+    FileConflict(String),
+    /// A stored import group with the same identity already exists.
+    ImportGroupConflict(String),
     InvalidArchive(String),
     UnsupportedStorage(String),
     InvalidRequest(String),
@@ -272,6 +277,11 @@ impl std::fmt::Display for BackupError {
                 write!(formatter, "{operation} failed: {detail}")
             }
             Self::Conflict(name) => write!(formatter, "A VM named {name} already exists."),
+            Self::FileConflict(path) => write!(formatter, "A file already exists at {path}."),
+            Self::ImportGroupConflict(group) => write!(
+                formatter,
+                "An earlier import is still stored as {group}. Try the import again."
+            ),
             Self::InvalidArchive(detail) => write!(formatter, "Invalid Silo export: {detail}"),
             Self::UnsupportedStorage(detail) => write!(formatter, "{detail}"),
             Self::InvalidRequest(detail) => write!(formatter, "{detail}"),
@@ -379,7 +389,7 @@ pub(crate) fn materialize_prepared_volume(
     })?;
     fs::create_dir_all(parent)?;
     if destination.exists() || fs::symlink_metadata(destination).is_ok() {
-        return Err(BackupError::Conflict(destination.display().to_string()));
+        return Err(BackupError::FileConflict(destination.display().to_string()));
     }
     let temporary = tempfile::Builder::new()
         .prefix(".silo-restored-disk-")
@@ -400,7 +410,7 @@ pub(crate) fn materialize_prepared_volume(
     if let Err(error) = rename_without_replacing(&temporary_path, destination) {
         let _ = fs::remove_file(&temporary_path);
         return Err(if error.kind() == io::ErrorKind::AlreadyExists {
-            BackupError::Conflict(destination.display().to_string())
+            BackupError::FileConflict(destination.display().to_string())
         } else {
             BackupError::Io(error)
         });
@@ -809,7 +819,7 @@ impl<R: MsbRunner> BackupService<R> {
             BackupError::InvalidArchive("the runtime returned an invalid checkpoint index".into())
         })?;
         if before.iter().any(|entry| entry["group"] == import_group) {
-            return Err(BackupError::Conflict(import_group));
+            return Err(BackupError::ImportGroupConflict(import_group));
         }
         let import_stages_before = cache_import_stages(&self.command.home)?;
         let load_result = self.require_success(
@@ -1359,7 +1369,7 @@ fn validate_backup_request(request: &BackupRequest) -> Result<(), BackupError> {
         ));
     }
     if request.destination.exists() {
-        return Err(BackupError::Conflict(
+        return Err(BackupError::FileConflict(
             request.destination.display().to_string(),
         ));
     }
@@ -2310,7 +2320,7 @@ fn write_immutable_package(
     check_cancelled(cancellation)?;
     rename_without_replacing(temporary.path(), destination).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
-            BackupError::Conflict(destination.display().to_string())
+            BackupError::FileConflict(destination.display().to_string())
         } else {
             BackupError::Io(error)
         }
@@ -2789,10 +2799,11 @@ mod tests {
         assert_eq!(inspection.sandboxes, ["dev"]);
         assert_eq!(inspection.size_bytes, result.size_bytes);
         let first = fs::read(&destination).unwrap();
-        assert!(matches!(
-            create_one(&service, destination.clone(), false),
-            Err(BackupError::Conflict(_))
-        ));
+        let conflict = create_one(&service, destination.clone(), false);
+        assert!(matches!(conflict, Err(BackupError::FileConflict(_))));
+        let message = conflict.err().unwrap().to_string();
+        assert!(message.starts_with("A file already exists at "), "{message}");
+        assert!(!message.contains("VM named"), "{message}");
         assert_eq!(fs::read(destination).unwrap(), first);
         let calls = service.runner.calls.lock().unwrap();
         assert!(
@@ -3306,7 +3317,7 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"original");
         assert!(matches!(
             materialize_prepared_volume(&volume, &target, &Cancellation::default()),
-            Err(BackupError::Conflict(_))
+            Err(BackupError::FileConflict(_))
         ));
         assert_eq!(fs::read(&target).unwrap(), b"original");
         fs::remove_file(&target).unwrap();
