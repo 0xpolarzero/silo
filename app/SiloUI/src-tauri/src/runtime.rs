@@ -3328,6 +3328,7 @@ fn apply_whole_configuration_with_progress(
     retry_workspace: Option<&str>,
     progress: &dyn Fn(&str, &str, u8),
 ) -> Result<(), RuntimeError> {
+    let _attempt = configuration_recovery::attempt();
     validate_request(&request)?;
     let previous = read_metadata(&paths.metadata)?;
     if retry_workspace.is_some_and(|name| {
