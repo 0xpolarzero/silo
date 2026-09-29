@@ -127,11 +127,29 @@ fn retry_store() {
         *cached = None;
     }
 }
+#[cfg(test)]
+thread_local! {
+    static TEST_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+/// Tests on this thread use `path` as the secret document instead of the app's.
+/// Values still come from the credential store, so tests must not assign secrets
+/// to a workspace whose runtime material they read.
+#[cfg(test)]
+pub(crate) fn use_test_store(path: Option<PathBuf>) {
+    TEST_PATH.with(|test| *test.borrow_mut() = path);
+}
+fn store_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_PATH.with(|test| test.borrow().clone()) {
+        return Some(path);
+    }
+    PATH.get().cloned()
+}
 fn load() -> Result<Document, String> {
-    let Some(path) = PATH.get() else {
+    let Some(path) = store_path() else {
         return Ok(Document::default());
     };
-    match File::open(path) {
+    match File::open(&path) {
         Ok(file) => serde_json::from_reader(file.take(2 * 1024 * 1024))
             .map_err(|_| "Secret settings could not be read. No settings were overwritten.".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Document::default()),
@@ -139,7 +157,7 @@ fn load() -> Result<Document, String> {
     }
 }
 fn save(document: &Document) -> Result<(), String> {
-    let path = PATH.get().ok_or("Secret storage is not initialized.")?;
+    let path = store_path().ok_or("Secret storage is not initialized.")?;
     let parent = path.parent().ok_or("Secret storage is unavailable.")?;
     fs::create_dir_all(parent).map_err(|_| "Secret settings could not be saved.")?;
     let mut file = tempfile::NamedTempFile::new_in(parent)
@@ -149,7 +167,7 @@ fn save(document: &Document) -> Result<(), String> {
     file.as_file()
         .sync_all()
         .map_err(|_| "Secret settings could not be saved.")?;
-    file.persist(path)
+    file.persist(&path)
         .map_err(|_| "Secret settings could not be saved.")?;
     Ok(())
 }
@@ -250,7 +268,7 @@ pub(crate) fn workspace_revision(workspace: &str) -> Result<String, String> {
 }
 pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Result<(), String> {
     // Called only after runtime verification. No operation lock: start owns the runtime lock.
-    if PATH.get().is_none() {
+    if store_path().is_none() {
         return Ok(());
     }
     update(|document| {
@@ -266,7 +284,7 @@ pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Resu
     })
 }
 pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
-    if PATH.get().is_none() {
+    if store_path().is_none() {
         return Ok(());
     }
     update(|document| {
@@ -824,6 +842,26 @@ mod tests {
         let mut unlocked: Cached = Some((Ok(Vault::new()), failed_at));
         expire_failure(&mut unlocked, failed_at + STORE_RETRY_AFTER * 100);
         assert!(unlocked.is_some(), "successful reads stay cached");
+    }
+    #[test]
+    fn deleting_and_recreating_a_sandbox_leaves_it_no_secret_material() {
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        let mut assigned = secret();
+        assigned.workspaces = vec!["dev".into(), "other".into()];
+        assigned.pending_workspaces = vec!["dev".into()];
+        assigned.errors.insert("dev".into(), "Retry".into());
+        save(&Document { secrets: vec![assigned], activities: Vec::new() }).unwrap();
+        workspace_removed("dev").unwrap();
+        let document = load().unwrap();
+        let kept = &document.secrets[0];
+        assert_eq!(kept.workspaces, ["other"]);
+        assert!(kept.affected.is_empty() && kept.pending_workspaces.is_empty());
+        assert!(kept.errors.is_empty());
+        // A new `dev` selects no secrets, so no credential-store read happens.
+        assert!(runtime_material("dev").unwrap().is_empty());
+        assert_eq!(workspace_revision("dev").unwrap(), revision(&Document::default(), "dev"));
+        use_test_store(None);
     }
     #[test]
     fn history_is_bounded_and_contains_no_values() {
