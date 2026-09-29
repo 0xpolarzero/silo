@@ -553,7 +553,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       catch (cause) { backup = unreadableBackup(`Silo returned invalid backup state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
     } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
     if (disposed || sequence !== refreshSequence) return
-    if (source && snapshot.source && (githubMutationPending || (source.github.policyRevision ?? 0) < (snapshot.source.github.policyRevision ?? 0))) source = { ...source, github: snapshot.source.github }
+    // Only a known older policy revision is stale. The runtime's fallback for a failed
+    // GitHub read carries no revision and must replace the last verified state.
+    const githubRevision = source?.github.policyRevision
+    if (source && snapshot.source && (githubMutationPending || (githubRevision !== undefined && githubRevision < (snapshot.source.github.policyRevision ?? 0)))) source = { ...source, github: snapshot.source.github }
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
     publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error })
     void refreshNetwork()

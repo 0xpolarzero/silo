@@ -57,3 +57,35 @@ describe("machine configuration jobs", () => {
     } finally { store.dispose() }
   })
 })
+
+describe("GitHub state from full reads", () => {
+  it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
+    let failed = false
+    const connected = { ...source, github: { ...source.github, state: "connected" as const, account: "octo", policyRevision: 4, repositoryCatalog: ["acme/silo"], repositoryCatalogStatus: { status: "available" as const } } }
+    const fallback = { ...source, github: { state: "disconnected", accessEnabled: false, repositoryCatalog: [], repositoryCatalogStatus: { status: "unavailable", message: "GitHub settings could not be read.", canRetry: true }, workspaceOperations: [] } }
+    const mock = bridge(command => command === "read_application_state" ? structuredClone(failed ? fallback : connected) : undefined)
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      expect(store.getSnapshot().source?.github).toMatchObject({ state: "connected", policyRevision: 4 })
+      failed = true
+      await store.refresh()
+      expect(store.getSnapshot().source?.github.repositoryCatalogStatus).toEqual({ status: "unavailable", message: "GitHub settings could not be read.", canRetry: true })
+      failed = false
+      await store.refresh()
+      expect(store.getSnapshot().source?.github).toMatchObject({ state: "connected", policyRevision: 4, repositoryCatalogStatus: { status: "available" } })
+    } finally { store.dispose() }
+  })
+
+  it("still ignores an older policy revision than the one shown", async () => {
+    let revision = 4
+    const mock = bridge(command => command === "read_application_state" ? { ...structuredClone(source), github: { ...source.github, policyRevision: revision, accessEnabled: revision === 4 } } : undefined)
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      revision = 3
+      await store.refresh()
+      expect(store.getSnapshot().source?.github).toMatchObject({ policyRevision: 4, accessEnabled: true })
+    } finally { store.dispose() }
+  })
+})
