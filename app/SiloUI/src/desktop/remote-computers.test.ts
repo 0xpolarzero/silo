@@ -33,7 +33,7 @@ describe("remote computer ownership", () => {
       const observedRemoteLogs: string[] = []
       const unsubscribe = store.subscribe(() => observedRemoteLogs.push(...(store.getSnapshot().source?.workspaces.find(workspace => workspace.computer)?.logs.map(log => log.line) ?? [])))
       store.applicationActions.stopWorkspace(target)
-      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_workspace_action", { hostId: "office", vmId: remote.workspaces[0].machine.id, action: "stop" }))
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_workspace_action", { hostId: "office", vmId: remote.workspaces[0].machine.id, action: "stop", name: remote.workspaces[0].machine.name }))
       expect(invoke).not.toHaveBeenCalledWith("workspace_action", expect.anything())
       await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces).toHaveLength(local.workspaces.length + 1))
       expect(observedRemoteLogs).not.toContain("Local VM log")
@@ -175,7 +175,7 @@ it("preserves connected remote VMs when later local state reads fail", async () 
     const remote = source.workspaces.find(workspace => workspace.computer)!
     expect(remote.freshness).toBe("fresh")
     store.applicationActions.stopWorkspace(remote.machine.id)
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_workspace_action", { hostId: "office", vmId: local.workspaces[0].machine.id, action: "stop" }))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_workspace_action", { hostId: "office", vmId: local.workspaces[0].machine.id, action: "stop", name: expect.anything() }))
   } finally { store.dispose() }
 })
 

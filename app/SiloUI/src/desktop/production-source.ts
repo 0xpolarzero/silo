@@ -606,6 +606,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     } : null })
   }
 
+  /** The sandbox's display name for system notifications; the target encodes the host and id. */
+  function remoteDisplayName(target: string): string | null {
+    return snapshot.source?.workspaces.find(item => workspaceTarget(item) === target)?.machine.name ?? null
+  }
+
   function workspaceAction(action: string, name: string, extras: Record<string, unknown> = {}) {
     const remote = parseRemoteWorkspaceTarget(name)
     if (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected) {
@@ -631,7 +636,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         : snapshot.source
       publish({ ...snapshot, source: cleared })
     }
-    void native.invoke<unknown>(remote && lifecycle ? "remote_workspace_action" : "workspace_action", remote && lifecycle ? { ...remote, action, ...extras } : { action, name, ...extras })
+    void native.invoke<unknown>(remote && lifecycle ? "remote_workspace_action" : "workspace_action", remote && lifecycle ? { ...remote, action, name: remoteDisplayName(name), ...extras } : { action, name, ...extras })
       .then((result) => {
         if (remote && !lifecycle) return refreshComputers()
         const source = parseMutationSource(result, remote ? remoteSnapshots.get(remote.hostId) ?? null : snapshot.source)
