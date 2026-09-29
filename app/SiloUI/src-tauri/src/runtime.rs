@@ -1024,9 +1024,28 @@ fn run_msb_process(
         report,
     })?;
     if let Some(workspace) = github_command_workspace(args).filter(|_| matches!(args[0].as_str(), "start" | "restart")) {
-        let inspected = inspect_workspace(&ProcessRunner, paths, workspace)?;
-        if inspected.status == "Running" {
-            crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default()).map_err(RuntimeError::Unavailable)?;
+        let verified = inspect_workspace(&ProcessRunner, paths, workspace).and_then(|inspected| {
+            if inspected.status != "Running" {
+                return Ok(());
+            }
+            crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default())
+                .map_err(|error| RuntimeError::Unavailable(format!(
+                    "Silo could not record which secrets {workspace} started with, so it stopped the sandbox again. {error}"
+                )))
+        });
+        if let Err(error) = verified {
+            // The VM booted, but Silo could not confirm its state or record the secret
+            // revision it booted with. Undo the boot (the stop is not cancellable) so no
+            // caller reports, or leaves behind, a running VM in an unverified state.
+            let stopped = without_cancellation(|| {
+                run_msb_process(paths, &["stop".into(), workspace.into()], STOP_TIMEOUT, &ignore_progress)
+            });
+            return Err(match stopped {
+                Ok(_) => error,
+                Err(cleanup) => RuntimeError::Unavailable(format!(
+                    "{error} Stopping the sandbox also failed: {cleanup}"
+                )),
+            });
         }
     }
     Ok(output)
@@ -5408,6 +5427,39 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
             let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
             assert_eq!(calls.lines().last(), Some("stop"), "{block_on}: {calls}");
             assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), "Stopped", "{block_on}");
+        }
+    }
+
+    #[test]
+    fn a_start_whose_boot_cannot_be_verified_or_recorded_is_stopped_again() {
+        use std::os::unix::fs::PermissionsExt;
+        for failure in ["inspect", "record"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            fake_lifecycle_msb(&paths, "never");
+            let secrets_directory = directory.path().join("secrets");
+            fs::create_dir_all(&secrets_directory).unwrap();
+            // After booting, the runtime either stops answering inspect, or the secret
+            // settings become unwritable so the booted secret revision cannot be recorded.
+            let script = fs::read_to_string(&paths.executable).unwrap().replace(
+                "  start) printf Running > \"$MSB_HOME/state\" ;;",
+                &format!(
+                    "  start) printf Running > \"$MSB_HOME/state\"; {} ;;",
+                    if failure == "inspect" { "touch \"$MSB_HOME/inspect-fails\"".to_string() } else { format!("chmod 500 '{}'", secrets_directory.display()) }
+                ),
+            ).replace(
+                "  inspect) state=",
+                "  inspect) if [ -f \"$MSB_HOME/inspect-fails\" ] && [ \"$(cat \"$MSB_HOME/state\")\" = Running ]; then echo unavailable >&2; exit 1; fi; state=",
+            );
+            fs::write(&paths.executable, script).unwrap();
+            crate::secrets::use_test_store(Some(secrets_directory.join("secrets.json")));
+            let result = run_msb_with_progress(&paths, &["start".into(), "cleanup".into()], Duration::from_secs(20), &|_| {});
+            crate::secrets::use_test_store(None);
+            fs::set_permissions(&secrets_directory, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(result.is_err(), "{failure}: the unverified start was reported as a success");
+            let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
+            assert_eq!(calls.lines().last(), Some("stop"), "{failure}: {calls}");
+            assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), "Stopped", "{failure}");
         }
     }
 
