@@ -165,9 +165,7 @@ fn sweep(root: &Path, budget: u64) -> Result<(), String> {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if name == ".lock"
-            || name.len() != 64
-            || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
+        if name == ".lock" || name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
         {
             continue;
         }

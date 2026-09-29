@@ -75,9 +75,12 @@ fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Resul
     let mut command = vec![
         "exec".into(),
         name.into(),
-        "--user".into(), user.into(),
-        "--env".into(), format!("USER={user}"),
-        "--env".into(), format!("LOGNAME={user}"),
+        "--user".into(),
+        user.into(),
+        "--env".into(),
+        format!("USER={user}"),
+        "--env".into(),
+        format!("LOGNAME={user}"),
         "--no-start".into(),
         "--no-tty".into(),
         "--quiet".into(),
@@ -137,7 +140,11 @@ fn repository(url: &str) -> Result<String, String> {
     }
     Ok(name.into())
 }
-pub(crate) fn discover(paths: &RuntimePaths, name: &str, refresh: bool) -> Result<Vec<Value>, String> {
+pub(crate) fn discover(
+    paths: &RuntimePaths,
+    name: &str,
+    refresh: bool,
+) -> Result<Vec<Value>, String> {
     let key = format!("{}:{name}", paths.home.display());
     let cache = DISCOVERIES.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some((at, result)) = cache
@@ -369,7 +376,7 @@ impl HostGit {
         match outcome {
             Ok(status) if !status.success() => {
                 // The first line is the summary; the rest becomes diagnostic details.
-                return Err(format!("Git {stage} failed ({status}).\n{diagnostic}"))
+                return Err(format!("Git {stage} failed ({status}).\n{diagnostic}"));
             }
             Err(message) => return Err(format!("{message}\n{diagnostic}")),
             _ => {}
@@ -486,7 +493,11 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
         .ok_or("Choose a managed Silo VM.")?;
     // Host-push reads and writes one VM's guest; it waits its turn for that VM.
     let read_guard = runtime::OPERATIONS
-        .vm(&vm_id, workspace, &format!("Reading repository in {workspace}"))
+        .vm(
+            &vm_id,
+            workspace,
+            &format!("Reading repository in {workspace}"),
+        )
         .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
     require_running(&paths, workspace)?;
@@ -815,9 +826,7 @@ pub(crate) async fn push_repository(
     let task = {
         let (app, workspace, repository_path) =
             (app.clone(), workspace.clone(), repository_path.clone());
-        tauri::async_runtime::spawn_blocking(move || {
-            perform(&app, &workspace, &repository_path)
-        })
+        tauri::async_runtime::spawn_blocking(move || perform(&app, &workspace, &repository_path))
     };
     // A panicked task must still resolve the entry, or it would stay
     // "pushing" forever and block every retry.
@@ -918,7 +927,10 @@ mod tests {
         };
         let key = format!("{}:test", paths.home.display());
         let cached = vec![json!({"path": "removed-repository"})];
-        DISCOVERIES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
+        DISCOVERIES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
             .insert(key.clone(), (Instant::now(), Ok(cached.clone())));
         assert_eq!(discover(&paths, "test", false).unwrap(), cached);
         // A forced read must reach the missing runtime instead of returning
@@ -1057,7 +1069,8 @@ mod tests {
         );
         assert_eq!(value["message"], "Git push failed (exit status: 1).");
         assert_eq!(value["diagnosticDetails"], "remote: rejected\nmore");
-        let plain = super::finished_result("dev", "/workspace/repo", Err("Start the sandbox.".into()));
+        let plain =
+            super::finished_result("dev", "/workspace/repo", Err("Start the sandbox.".into()));
         assert_eq!(plain["message"], "Start the sandbox.");
         assert!(plain.get("diagnosticDetails").is_none());
     }

@@ -108,12 +108,14 @@ fn prune(jobs: &mut Journal, now: u64) {
             "{}\0{}",
             job.operation["workspace"], job.operation["repositoryPath"]
         );
-        if latest.get(&key).is_none_or(|(updated, _)| *updated <= job.updated) {
+        if latest
+            .get(&key)
+            .is_none_or(|(updated, _)| *updated <= job.updated)
+        {
             latest.insert(key, (job.updated, id.clone()));
         }
     }
-    let keep: std::collections::HashSet<String> =
-        latest.into_values().map(|(_, id)| id).collect();
+    let keep: std::collections::HashSet<String> = latest.into_values().map(|(_, id)| id).collect();
     jobs.retain(|id, job| {
         keep.contains(id)
             || job.operation["status"] == "pushing"
@@ -185,7 +187,9 @@ pub(crate) fn start(
         let mut value = result.unwrap_or_else(|message| json!({"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":message}));
         value["operationId"] = json!(id);
         // The std lock and fsync'd journal write block; keep them off the async workers.
-        let _ = tauri::async_runtime::spawn_blocking(move || record_completion(&journal, &id, value)).await;
+        let _ =
+            tauri::async_runtime::spawn_blocking(move || record_completion(&journal, &id, value))
+                .await;
         let _ = app.emit("silo://application-state-changed", ());
     });
     Ok(value)
@@ -376,10 +380,19 @@ mod tests {
             dismissed,
             operation: json!({"workspace":"dev","repositoryPath":path,"status":status}),
         };
-        jobs.insert("old-dismissed".into(), job("failed", "/workspace/a", 1, true));
+        jobs.insert(
+            "old-dismissed".into(),
+            job("failed", "/workspace/a", 1, true),
+        );
         jobs.insert("latest-a".into(), job("failed", "/workspace/a", 2, true));
-        jobs.insert("old-finished".into(), job("succeeded", "/workspace/b", 1, false));
-        jobs.insert("latest-b".into(), job("succeeded", "/workspace/b", 2, false));
+        jobs.insert(
+            "old-finished".into(),
+            job("succeeded", "/workspace/b", 1, false),
+        );
+        jobs.insert(
+            "latest-b".into(),
+            job("succeeded", "/workspace/b", 2, false),
+        );
         jobs.insert("active".into(), job("pushing", "/workspace/c", 1, false));
         prune(&mut jobs, 30 * 24 * 60 * 60 * 1_000_000_000);
         let mut kept: Vec<_> = jobs.keys().cloned().collect();
@@ -391,7 +404,9 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("jobs.json");
         fs::write(&path, b"{not json").unwrap();
-        let legacy = vec![serde_json::json!({"workspace":"dev","repositoryPath":"/workspace/repo","status":"pushing"})];
+        let legacy = vec![
+            serde_json::json!({"workspace":"dev","repositoryPath":"/workspace/repo","status":"pushing"}),
+        ];
         assert_eq!(merge_journal(&path, legacy.clone()), legacy);
     }
     #[test]
