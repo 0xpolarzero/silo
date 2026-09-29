@@ -157,27 +157,25 @@ function SecretsSection({ workspace, source, actions, onNavigate }: { workspace:
   const { machine } = workspace
   const canManage = machine.kind === "vm" && !workspace.computer
   const manager = useSecretsManager({ source, onSaveSecret: actions.saveSecret, onRemoveSecret: actions.removeSecret, onRetrySecret: actions.retrySecret })
-  const sandboxSecrets = source.secrets.filter(secret => secret.workspaces.includes(machine.name))
+  // Secret assignments name local sandboxes, so a remote or SSH sandbox never lists them.
+  const sandboxSecrets = canManage ? source.secrets.filter(secret => secret.workspaces.includes(machine.name)) : []
   const adding = Boolean(manager.editor && !manager.editor.secret)
 
+  if (!canManage) return <Section label="Secrets">
+    <p className="text-xs text-muted-foreground">Secrets are available only for sandboxes on this computer.</p>
+  </Section>
+
   const action = <div className="flex items-center gap-2">
-    {canManage && <AddAction label="Add secret" disabled={manager.saving || manager.busy !== null} onClick={(event) => manager.openEditor(event.currentTarget, { initialWorkspaces: [machine.name] })} />}
+    <AddAction label="Add secret" disabled={manager.saving || manager.busy !== null} onClick={(event) => manager.openEditor(event.currentTarget, { initialWorkspaces: [machine.name] })} />
     {onNavigate && <ViewAllAction label="View all secrets" onClick={() => onNavigate({ tab: "secrets" })} />}
   </div>
 
   return <Section label="Secrets" action={action}>
     <ListCard>
       {adding && <div className="border-b border-border"><AddSecretEditor manager={manager} /></div>}
-      {canManage && sandboxSecrets.length > 0
+      {sandboxSecrets.length > 0
         ? <ul className="divide-y divide-border" aria-label={`Secrets for ${machine.name}`}>{sandboxSecrets.map(secret => <SecretRow key={secret.id} secret={secret} manager={manager} />)}</ul>
-        : sandboxSecrets.length > 0
-          ? <div className="divide-y divide-border">{sandboxSecrets.map(secret => <ListRow
-              key={secret.id}
-              icon={<ListRowIcon aria-hidden="true"><KeyRound className="size-3.5" /></ListRowIcon>}
-              title={<span className="truncate font-mono" title={secret.name}>{secret.name}</span>}
-              detail={secret.allowedDomains.length ? secret.allowedDomains.join(", ") : "Available in this sandbox"}
-            />)}</div>
-          : !adding && <ListRow
+        : !adding && <ListRow
               icon={<ListRowIcon aria-hidden="true"><KeyRound className="size-3.5" /></ListRowIcon>}
               title={<span className="font-normal text-muted-foreground">No secrets assigned.</span>}
               detail=""

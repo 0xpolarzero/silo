@@ -240,14 +240,15 @@ it("edits and removes a sandbox's secret from the Overview tab", async () => {
   expect(removeSecret).toHaveBeenCalledExactlyOnceWith("svc")
 })
 
-it("keeps a remote computer's secrets read-only on the Overview tab", async () => {
+it("never lists a same-named local sandbox's secrets on a remote sandbox page", async () => {
   const source = localVmSource()
   const workspace = localVm(source)
   workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   source.secrets = [{ id: "svc", name: "SERVICE_TOKEN", workspaces: [workspace.machine.name], allowedDomains: [], state: "active" }]
   await openDetail(source, { saveSecret: vi.fn(), removeSecret: vi.fn() }, workspace)
 
-  expect(screen.getByText("SERVICE_TOKEN")).toBeVisible()
+  expect(screen.getByText("Secrets are available only for sandboxes on this computer.")).toBeVisible()
+  expect(screen.queryByText("SERVICE_TOKEN")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Add secret" })).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Edit SERVICE_TOKEN" })).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Remove SERVICE_TOKEN" })).not.toBeInTheDocument()
