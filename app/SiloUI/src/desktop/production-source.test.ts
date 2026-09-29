@@ -188,6 +188,25 @@ describe("production application bridge", () => {
     } finally { store.dispose() }
   })
 
+  it("records a failed remote lifecycle action on the VM without marking its computer offline", async () => {
+    const mock = native()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+      if (command === "remote_host_snapshot") return structuredClone(source)
+      if (command === "remote_workspace_action") throw new Error("insufficient memory")
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    const target = `silo-remote:office:${source.workspaces[0].machine.id}`
+    try {
+      await store.initialize()
+      store.applicationActions.startWorkspace!(target)
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.lifecycleFailure).toContain("insufficient memory"))
+      const row = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
+      expect(row).toMatchObject({ lifecycleFailureAction: "start", computer: { connected: true } })
+    } finally { store.dispose() }
+  })
+
   it("routes checkpoint actions through the owning remote computer", async () => {
     const mock = native()
     const store = createProductionSource(mock.bridge)

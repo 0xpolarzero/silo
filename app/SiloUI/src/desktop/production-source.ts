@@ -662,9 +662,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       })
       .catch((cause) => {
         if (!remote) { setWorkspaceFailure(action, name, cause); return }
-        const message = errorMessage(cause)
-        if (lifecycle) remoteComputers = remoteComputers.map(computer => computer.id === remote.hostId ? { ...computer, connected: false, error: message } : computer)
-        publish({ ...snapshot, error: message })
+        // One VM's failure (e.g. insufficient memory) belongs on that VM's row. Whether
+        // the computer itself is reachable is decided by the next transport check.
+        if (lifecycle) { setWorkspaceFailure(action, name, cause); void refreshComputers(); return }
+        publish({ ...snapshot, error: errorMessage(cause) })
       })
       .finally(() => {
         pendingWorkspaceActions.delete(key)
