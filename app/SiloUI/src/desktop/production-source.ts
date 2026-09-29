@@ -216,9 +216,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let network: NetworkState | undefined
   let networkError: string | null = null
   let networkRequest: Promise<void> | undefined
+  let networkDirty = false
   let networkRevision = 0
   let operationQueue: OperationQueue | undefined
   let operationQueueRequest: Promise<void> | undefined
+  let operationQueueDirty = false
   let disposed = false
   let activeRefreshes = 0
   let refreshSequence = 0
@@ -288,10 +290,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return sshRequest
   }
 
+  // An event that arrives during a read marks it dirty so one re-read follows
+  // instead of the change being lost behind the in-flight result.
   function refreshNetwork(): Promise<void> {
-    if (networkRequest) return networkRequest
-    const revision = networkRevision
-    networkRequest = (async () => {
+    if (networkRequest) { networkDirty = true; return networkRequest }
+    networkRequest = (async () => { do {
+      networkDirty = false
+      const revision = networkRevision
       try {
         const local = networkStateShape.parse(await native.invoke("read_network_state"))
         const remotes = await Promise.all(remoteComputers.map(async computer => {
@@ -303,19 +308,20 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           }
         }))
         const result = { workspaces: [...local.workspaces, ...remotes.flat()] }
-        if (revision !== networkRevision || disposed) return
+        if (revision !== networkRevision || disposed) continue
         network = result; networkError = null
       } catch {
-        if (revision !== networkRevision || disposed) return
+        if (revision !== networkRevision || disposed) continue
         networkError = "Could not check network services."
       }
       publish({ ...snapshot })
-    })().finally(() => { networkRequest = undefined })
+    } while (networkDirty && !disposed) })().finally(() => { networkRequest = undefined })
     return networkRequest
   }
   function refreshOperationQueue(): Promise<void> {
-    if (operationQueueRequest) return operationQueueRequest
-    operationQueueRequest = (async () => {
+    if (operationQueueRequest) { operationQueueDirty = true; return operationQueueRequest }
+    operationQueueRequest = (async () => { do {
+      operationQueueDirty = false
       try {
         const next = operationQueueSchema.parse(await native.invoke("read_operation_queue"))
         if (disposed) return
@@ -324,7 +330,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       } catch {
         // A read failure leaves the last queue in place; a later event refetches.
       }
-    })().finally(() => { operationQueueRequest = undefined })
+    } while (operationQueueDirty && !disposed) })().finally(() => { operationQueueRequest = undefined })
     return operationQueueRequest
   }
 

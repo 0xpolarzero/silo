@@ -223,6 +223,35 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("re-reads the operation queue once when it changes during a read", async () => {
+    const mock = native()
+    const handlers = new Map<string, () => void>()
+    let finishRead: ((value: unknown) => void) | undefined
+    let queueReads = 0
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "read_operation_queue") {
+        queueReads++
+        if (queueReads === 2) return new Promise(resolve => { finishRead = resolve })
+        return { running: [], waiting: [] }
+      }
+      return mock.invoke(command, args)
+    })
+    const listen = vi.fn(async (name: string, handler: () => void) => { handlers.set(name, handler); return () => { handlers.delete(name) } })
+    const store = createProductionSource({ invoke, listen } as unknown as ProductionBridge)
+    try {
+      await store.initialize()
+      const reads = queueReads
+      handlers.get("silo://operation-queue-changed")?.()
+      handlers.get("silo://operation-queue-changed")?.()
+      handlers.get("silo://operation-queue-changed")?.()
+      await vi.waitFor(() => expect(finishRead).toBeDefined())
+      finishRead!({ running: [], waiting: [] })
+      await vi.waitFor(() => expect(queueReads).toBe(reads + 2))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(queueReads).toBe(reads + 2)
+    } finally { store.dispose() }
+  })
+
   it("polls remote computers once per visible tick, pauses while hidden, and coalesces event bursts", async () => {
     vi.useFakeTimers()
     const mock = native()
