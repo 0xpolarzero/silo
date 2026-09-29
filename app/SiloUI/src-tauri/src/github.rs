@@ -340,8 +340,9 @@ struct Document {
     access_errors: std::collections::HashMap<String, String>,
     #[serde(default)]
     disconnect_pending: bool,
+    /// Server-imposed waiting deadlines per GitHub rate class, kept across relaunch.
     #[serde(default)]
-    rate_retry_at: u64,
+    rate_retry: std::collections::BTreeMap<String, u64>,
 }
 
 /// Copy the source's current GitHub assignment for a stopped checkpoint fork.
@@ -469,7 +470,12 @@ fn load(app: &tauri::AppHandle) -> Result<Document, String> {
 }
 fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
     let mut saved = d.clone();
-    saved.rate_retry_at = saved.rate_retry_at.max(crate::github_http::retry_floor());
+    for (class, until) in crate::github_http::retry_floors() {
+        let floor = saved.rate_retry.entry(class).or_default();
+        *floor = (*floor).max(until);
+    }
+    let at = now();
+    saved.rate_retry.retain(|_, until| *until > at);
     let d = &saved;
     let p = path(app)?;
     let parent = p.parent().ok_or("Missing configuration directory.")?;
@@ -1858,7 +1864,7 @@ fn catalog_refresh_due(d: &Document, now: u64) -> bool {
 pub fn install(app: &tauri::AppHandle) {
     let _ = OBSERVATION_APP.set(app.clone());
     if let Ok(document) = load(app) {
-        crate::github_http::restore_retry_floor(document.rate_retry_at);
+        crate::github_http::restore_retry_floors(&document.rate_retry);
     }
     let app = app.clone();
     std::thread::spawn(move || loop {
