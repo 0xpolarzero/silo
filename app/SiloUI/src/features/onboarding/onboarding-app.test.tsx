@@ -885,13 +885,7 @@ describe("onboarding", () => {
     }
 
     await user.click(screen.getByRole("button", { name: "Delete dev" }))
-    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument())
-    const confirm = screen.getByRole("button", { name: "Confirm deletion of dev" })
-    expect(confirm).not.toHaveAttribute("title")
-    expect(confirm).toHaveAccessibleName("Confirm deletion of dev")
-    fireEvent.focus(confirm)
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Confirm deletion of dev")
-    expect(screen.getAllByRole("tooltip")).toHaveLength(1)
+    expect(screen.getByText("Delete dev?")).toBeVisible()
   })
 
   it("preserves GitHub policy and identity settings when VM resources change", async () => {
@@ -943,31 +937,24 @@ describe("onboarding", () => {
     ])
   })
 
-  it("arms inline deletion, cancels with Escape or outside input, and deletes only after confirmation", async () => {
+  it("confirms deletion in a popover; Cancel or Escape keeps the sandbox", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
 
     await user.click(screen.getByRole("button", { name: "Delete dev" }))
-    expect(screen.getByRole("button", { name: "Confirm deletion of dev" })).toBeVisible()
+    expect(screen.getByText("Delete dev?")).toBeVisible()
+    expect(screen.getByText("Removing dev from Silo. Persistent volumes are kept.")).toBeVisible()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
-    expect(screen.queryByRole("button", { name: "Duplicate dev" })).not.toBeInTheDocument()
-    await user.click(screen.getByRole("button", { name: "Cancel deletion of dev" }))
-    expect(screen.getByRole("button", { name: "Duplicate dev" })).toBeVisible()
-    expect(screen.queryByRole("button", { name: "Confirm deletion of dev" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(screen.queryByText("Delete dev?")).not.toBeInTheDocument()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
     await user.click(screen.getByRole("button", { name: "Delete dev" }))
     await user.keyboard("{Escape}")
-    expect(screen.queryByRole("button", { name: "Confirm deletion of dev" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Delete dev?")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Delete dev" })).toBeVisible()
-
-    await user.click(screen.getByRole("button", { name: "Delete dev" }))
-    const devRow = screen.getByTestId("machine-list").querySelector('[data-sandbox-name="dev"]')
-    expect(devRow).not.toBeNull()
-    fireEvent.pointerDown(within(devRow as HTMLElement).getByText("dev"))
-    expect(screen.queryByRole("button", { name: "Confirm deletion of dev" })).not.toBeInTheDocument()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
 
     await user.click(screen.getByRole("button", { name: "Delete dev" }))
-    await user.click(screen.getByRole("button", { name: "Confirm deletion of dev" }))
+    await user.click(screen.getByRole("button", { name: /^Delete$/ }))
     expect(saveMachineConfiguration.mock.lastCall?.[0].machines.map(({ name }: { name: string }) => name)).toEqual(["playgrounds", "personal"])
     expect(screen.queryByRole("button", { name: "Edit dev" })).not.toBeInTheDocument()
   })

@@ -46,7 +46,7 @@ describe("onboarding restart recovery", () => {
     const handlers = { ...actions(), submitStep: vi.fn() }
     const view = render(onboarding(first, handlers, { scenario: "complete" }))
     await user.click(screen.getByRole("button", { name: `Delete ${machine.name}` }))
-    await user.click(screen.getByRole("button", { name: `Confirm deletion of ${machine.name}` }))
+    await user.click(screen.getByRole("button", { name: /^Delete$/ }))
     expect(screen.queryByRole("button", { name: `Delete ${machine.name}` })).not.toBeInTheDocument()
     expect(first.getSnapshot().onboardingDraft?.machines).toEqual([])
     view.unmount()

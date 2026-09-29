@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -71,7 +71,7 @@ describe("onboarding preparation interactions", () => {
     expect(within(notice).queryByRole("button", { name: /Repair/ })).not.toBeInTheDocument()
   })
 
-  it("requires inline confirmation before clearing onboarding repository access", () => {
+  it("asks for confirmation before clearing onboarding repository access", async () => {
     const changeSelections = vi.fn()
     render(<GitHubStep
       workspaces={[{ name: "dev" }]}
@@ -86,9 +86,15 @@ describe("onboarding preparation interactions", () => {
       onResetWorkspaceIdentity={vi.fn()}
     />)
 
-    fireEvent.click(screen.getByRole("button", { name: "Clear repositories from dev" }))
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Clear repositories from dev" }))
     expect(changeSelections).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole("button", { name: "Confirm clearing repositories from dev" }))
-    expect(changeSelections).toHaveBeenCalledExactlyOnceWith("dev", [])
+    await user.keyboard("{Escape}")
+    await waitFor(() => expect(screen.queryByText("Remove all repositories from dev?")).not.toBeInTheDocument())
+    expect(changeSelections).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "Clear repositories from dev" }))
+    expect(screen.getByText("Remove all repositories from dev?")).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Remove all" }))
+    await waitFor(() => expect(changeSelections).toHaveBeenCalledExactlyOnceWith("dev", []))
   })
 })

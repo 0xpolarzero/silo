@@ -48,7 +48,6 @@ export function useMachineEditing({
   const disabled = interactionDisabled || committing
   const [editorFocusRequest, setEditorFocusRequest] = useState(0)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   // The saved configuration captured when the current operation began. Every local
   // save/delete/reorder carries it as the change's `expected` baseline, so a queued edit
   // applies to fresh state — or is rejected — instead of overwriting concurrent work.
@@ -69,7 +68,6 @@ export function useMachineEditing({
   }
 
   function beginOperation() {
-    setPendingDelete(null)
     setEditor(null)
   }
 
@@ -171,26 +169,21 @@ export function useMachineEditing({
 
   async function remove(machine: SetupMachineConfiguration) {
     if (disabled || (machine.kind === "vm" && isMachineRunning?.(machine))) return
-    if (pendingDelete !== machine.id) {
-      beginOperation()
-      captureBaseline()
-      setPendingDelete(machine.id)
-      return
-    }
+    beginOperation()
+    captureBaseline()
     const baseline = baselineRef.current ?? undefined
     if (onDeleteMachine) {
       setCommitting(true)
-      try { await onDeleteMachine(machine, baseline); setPendingDelete(null) }
+      try { await onDeleteMachine(machine, baseline) }
       catch (cause) { showActionFailure(`Couldn't delete ${machine.name}`, cause) }
       finally { setCommitting(false) }
       return
     }
     const base = baseline ?? machines
     dispatchChange(configurationRequest(base.filter(({ id }) => id !== machine.id)).machines, baseline ? scopedBaseline() : undefined)
-    setPendingDelete(null)
   }
 
-  // Delete a machine without the list's two-step arm/confirm gate — the detail page confirms
+  // Delete a machine without the list's confirmation — the detail page confirms
   // in its own dialog, so it captures a fresh baseline and awaits the deletion here, letting
   // failures propagate to the dialog instead of the inline notice.
   async function deleteMachineNow(machine: SetupMachineConfiguration) {
@@ -229,7 +222,6 @@ export function useMachineEditing({
     editor, setEditor,
     editorBaseline, editorConflict, editorResetToken,
     editorFocusRequest, setEditorFocusRequest,
-    pendingDelete, setPendingDelete,
     baselineRef,
     captureBaseline, beginOperation, scopedBaseline, dispatchChange,
     startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteMachineNow, deleteWithNotice,

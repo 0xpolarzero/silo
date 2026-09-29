@@ -3,7 +3,7 @@ import { Check, ExternalLink, GitBranch, Info, LoaderCircle, RotateCcw, Search, 
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { DisclosureHeader } from "@/components/disclosure-header"
-import { InlineConfirmation } from "@/components/inline-confirmation"
+import { ConfirmPopover } from "@/components/confirm-popover"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
@@ -252,7 +252,6 @@ export function GitHubAccessEditor({
   confirmRepositoryClear = false,
   busy = false,
 }: GitHubAccessEditorProps) {
-  const [confirmingClearWorkspace, setConfirmingClearWorkspace] = useState<string | null>(null)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -301,7 +300,6 @@ export function GitHubAccessEditor({
             const workspaceActions = renderWorkspaceActions?.(workspace)
             const workspaceNotice = renderWorkspaceNotice?.(workspace)
             const workspaceDisabled = disabled
-            const clearConfirmationVisible = confirmRepositoryClear && confirmingClearWorkspace === name
             return (
               <WorkspaceDisclosure key={name} name={name} actions={workspaceActions}>
                   <div className="grid gap-3 px-3 pb-3">
@@ -454,38 +452,31 @@ export function GitHubAccessEditor({
                                 </TooltipProvider>
                               </span>
                               <span role="columnheader" className="flex justify-start">
-                                <InlineConfirmation
-                                  active={clearConfirmationVisible}
-                                  onDismiss={() => setConfirmingClearWorkspace(null)}
-                                >
-                                  <TooltipProvider delayDuration={150}>
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <Button
-                                          type="button"
-                                          variant={clearConfirmationVisible ? "destructive" : "ghost"}
-                                          size="icon-xs"
-                                          className="size-5"
-                                          aria-label={clearConfirmationVisible ? `Confirm clearing repositories from ${name}` : `Clear repositories from ${name}`}
-                                          disabled={workspaceDisabled || !repositoryControlsAvailable}
-                                          onClick={() => {
-                                            if (confirmRepositoryClear && !clearConfirmationVisible) {
-                                              setConfirmingClearWorkspace(name)
-                                              return
-                                            }
-                                            setConfirmingClearWorkspace(null)
-                                            onWorkspaceSelectionsChange(name, [])
-                                          }}
-                                        >
-                                          {clearConfirmationVisible
-                                            ? <Check aria-hidden="true" className="size-3" />
-                                            : <Trash2 aria-hidden="true" className="size-3" />}
-                                        </Button>
-                                      </TooltipTrigger>
-                                      <TooltipContent>{clearConfirmationVisible ? `Confirm clearing repositories from ${name}` : `Clear repositories from ${name}`}</TooltipContent>
-                                    </Tooltip>
-                                  </TooltipProvider>
-                                </InlineConfirmation>
+                                <TooltipProvider delayDuration={150}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className="inline-flex">
+                                        {(() => {
+                                          const trigger = <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon-xs"
+                                            className="size-5"
+                                            aria-label={`Clear repositories from ${name}`}
+                                            disabled={workspaceDisabled || !repositoryControlsAvailable}
+                                            onClick={confirmRepositoryClear ? undefined : () => onWorkspaceSelectionsChange(name, [])}
+                                          >
+                                            <Trash2 aria-hidden="true" className="size-3" />
+                                          </Button>
+                                          return confirmRepositoryClear
+                                            ? <ConfirmPopover align="start" tone="destructive" title={`Remove all repositories from ${name}?`} description={`${name} loses GitHub access to them.`} confirmLabel="Remove all" onConfirm={() => onWorkspaceSelectionsChange(name, [])}>{trigger}</ConfirmPopover>
+                                            : trigger
+                                        })()}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent>{`Clear repositories from ${name}`}</TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
                               </span>
                             </div>
                             {selections.map((selection) => (

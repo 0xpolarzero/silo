@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -64,7 +64,7 @@ describe("SecretsPage", () => {
     const remove = vi.fn().mockRejectedValueOnce(new Error("private failure")).mockResolvedValue(undefined)
     render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={vi.fn()} onRemoveSecret={remove} />)
     await user.click(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
-    await user.click(screen.getByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" }))
+    await user.click(screen.getByRole("button", { name: /^Remove$/ }))
     expect(screen.getByText("PACKAGE_TOKEN")).toBeVisible()
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t update this secret.")
     await user.click(screen.getByRole("button", { name: "Retry" }))
@@ -134,8 +134,9 @@ describe("SecretsPage", () => {
     const onRemoveSecret = vi.fn()
     const { rerender } = render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={onRemoveSecret} />)
     await user.click(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
+    expect(screen.getByText("Remove PACKAGE_TOKEN?")).toBeVisible()
     expect(onRemoveSecret).not.toHaveBeenCalled()
-    await user.click(screen.getByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" }))
+    await user.click(screen.getByRole("button", { name: /^Remove$/ }))
     expect(onRemoveSecret).toHaveBeenCalledExactlyOnceWith("package-token")
     expect(screen.getByText("PACKAGE_TOKEN")).toBeVisible()
 
@@ -262,37 +263,32 @@ describe("SecretsPage", () => {
     expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toHaveFocus()
   })
 
-  it("requires confirmation and lets Escape or an outside click cancel removal", async () => {
+  it("requires confirmation and lets Cancel or Escape dismiss removal", async () => {
     const user = userEvent.setup()
     render(<SecretsPreview source={applicationSourceForScenario("running")} />)
     const list = within(screen.getByRole("list", { name: "Configured secrets" }))
+    const confirm = () => screen.getByRole("button", { name: /^Remove$/ })
 
     await user.click(list.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
-    expect(list.getAllByRole("listitem")).toHaveLength(2)
-    expect(list.getByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" })).toBeVisible()
-
-    expect(list.queryByRole("button", { name: "Edit PACKAGE_TOKEN" })).not.toBeInTheDocument()
-    await user.click(list.getByRole("button", { name: "Cancel removal of PACKAGE_TOKEN" }))
-    expect(list.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeVisible()
-    expect(screen.queryByRole("textbox", { name: "Allowed domains" })).not.toBeInTheDocument()
-    expect(list.getAllByRole("listitem")).toHaveLength(2)
-    await user.click(list.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
+    expect(screen.getByText("Remove PACKAGE_TOKEN?")).toBeVisible()
+    expect(screen.getByText("Sandboxes using it lose access after they restart.")).toBeVisible()
     await user.keyboard("{Escape}")
-    expect(list.queryByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText("Remove PACKAGE_TOKEN?")).not.toBeInTheDocument())
+    expect(list.getAllByRole("listitem")).toHaveLength(2)
     await user.click(list.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
-    await user.click(screen.getByRole("heading", { name: "Secrets" }))
-    expect(list.queryByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(screen.queryByText("Remove PACKAGE_TOKEN?")).not.toBeInTheDocument())
     expect(list.getAllByRole("listitem")).toHaveLength(2)
 
     await user.click(list.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
-    await user.click(list.getByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" }))
+    await user.click(confirm())
     expect(list.queryByText("PACKAGE_TOKEN")).not.toBeInTheDocument()
     expect(list.getByText("DATABASE_URL")).toBeVisible()
     expect(list.getByText("Restart to apply")).toBeVisible()
     expect(screen.getByText("1 configured")).toBeVisible()
 
     await user.click(list.getByRole("button", { name: "Remove DATABASE_URL" }))
-    await user.click(list.getByRole("button", { name: "Confirm removal of DATABASE_URL" }))
+    await user.click(confirm())
     expect(screen.getByText("No secrets configured.")).toBeVisible()
     expect(screen.getByText("0 configured")).toBeVisible()
     expect(screen.getByRole("button", { name: "Add secret" })).toBeVisible()
@@ -310,17 +306,15 @@ describe("SecretsPage", () => {
     expect(screen.getByLabelText("Allowed domains for PACKAGE_TOKEN")).toHaveTextContent("packages.example.test")
   })
 
-  it("replaces preview removals and pending confirmation when the source metadata changes", async () => {
+  it("replaces preview removals when the source metadata changes", async () => {
     const user = userEvent.setup()
     const source = applicationSourceForScenario("running")
     const { rerender } = render(<SecretsPreview source={source} />)
     await user.click(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
-    await user.click(screen.getByRole("button", { name: "Confirm removal of PACKAGE_TOKEN" }))
-    await user.click(screen.getByRole("button", { name: "Remove DATABASE_URL" }))
+    await user.click(screen.getByRole("button", { name: /^Remove$/ }))
 
     rerender(<SecretsPreview source={{ ...source, secrets: source.secrets.map((secret) => ({ ...secret, state: "active" })) }} />)
     expect(screen.getByText("2 configured")).toBeVisible()
     expect(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" })).toBeVisible()
-    expect(screen.queryByRole("button", { name: "Confirm removal of DATABASE_URL" })).not.toBeInTheDocument()
   })
 })

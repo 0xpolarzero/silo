@@ -226,10 +226,17 @@ it("edits and removes a sandbox's secret from the Overview tab", async () => {
   await user.click(form.getByRole("button", { name: "Save" }))
   expect(saveSecret).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "edit", id: "svc", value: "rotated" }))
 
-  // Remove requires the same inline confirmation as the Secrets page.
+  // Remove requires the same confirmation popover as the Secrets page.
   await user.click(screen.getByRole("button", { name: "Remove SERVICE_TOKEN" }))
   expect(removeSecret).not.toHaveBeenCalled()
-  await user.click(screen.getByRole("button", { name: "Confirm removal of SERVICE_TOKEN" }))
+  await user.click(screen.getByRole("button", { name: "Cancel" }))
+  expect(removeSecret).not.toHaveBeenCalled()
+  await user.click(screen.getByRole("button", { name: "Remove SERVICE_TOKEN" }))
+  await user.keyboard("{Escape}")
+  await waitFor(() => expect(screen.queryByText("Remove SERVICE_TOKEN?")).not.toBeInTheDocument())
+  expect(removeSecret).not.toHaveBeenCalled()
+  await user.click(screen.getByRole("button", { name: "Remove SERVICE_TOKEN" }))
+  await user.click(screen.getByRole("button", { name: /^Remove$/ }))
   expect(removeSecret).toHaveBeenCalledExactlyOnceWith("svc")
 })
 

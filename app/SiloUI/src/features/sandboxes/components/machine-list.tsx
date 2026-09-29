@@ -1,9 +1,8 @@
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
-import { Check, CopyPlus, GripVertical, Monitor, Pencil, Plus, Trash2, X } from "lucide-react"
+import { CopyPlus, GripVertical, Monitor, Pencil, Plus, Trash2 } from "lucide-react"
 
-import { ConfirmBody } from "@/components/confirm-popover"
-import { InlineConfirmation } from "@/components/inline-confirmation"
+import { ConfirmBody, ConfirmPopover } from "@/components/confirm-popover"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -71,7 +70,6 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     editor, setEditor,
     editorBaseline, editorConflict, editorResetToken,
     editorFocusRequest, setEditorFocusRequest,
-    pendingDelete, setPendingDelete,
     baselineRef,
     captureBaseline, beginOperation, dispatchChange,
     startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteWithNotice,
@@ -217,7 +215,6 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : undefined
               const presentation = getRowPresentation?.(machine)
               const rowInteractionsDisabled = interactionDisabled || Boolean(presentation?.suppressInteractions)
-              const deleteArmed = pendingDelete === machine.id
               const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
               const deletionName = computerName ? `${machine.name} on ${computerName}` : machine.name
               return (
@@ -289,21 +286,14 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
                         <SandboxAction label={`Edit ${machine.name}`} disabled={interactionDisabled} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
-                        {deleteArmed && computerName && <span className="text-[10px] text-destructive">Delete on {computerName}?</span>}
-                        <InlineConfirmation active={deleteArmed} onDismiss={() => setPendingDelete(null)}>
-                          <SandboxAction tooltip={deleteArmed ? undefined : machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={deleteArmed ? `Cancel deletion of ${machine.name}` : `Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => deleteArmed ? setPendingDelete(null) : startDuplicate(machine)}>
-                            {deleteArmed ? <X /> : <CopyPlus />}
+                        <SandboxAction tooltip={machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={`Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
+                          <CopyPlus />
+                        </SandboxAction>
+                        <ConfirmPopover align="end" tone="destructive" title={`Delete ${deletionName}?`} description={computerName ? `Removing ${machine.name} from ${computerName}.` : `Removing ${machine.name} from Silo. Persistent volumes are kept.`} confirmLabel="Delete" onConfirm={() => remove(machine)}>
+                          <SandboxAction label={`Delete ${deletionName}`} tooltip={deleteTooltip} disabled={interactionDisabled || runningVM}>
+                            <Trash2 />
                           </SandboxAction>
-                          <SandboxAction
-                            label={deleteArmed ? `Confirm deletion of ${deletionName}` : `Delete ${deletionName}`}
-                            destructive={deleteArmed}
-                            tooltip={deleteTooltip}
-                            disabled={interactionDisabled || runningVM}
-                            onClick={() => remove(machine)}
-                          >
-                            {deleteArmed ? <Check /> : <Trash2 />}
-                          </SandboxAction>
-                        </InlineConfirmation>
+                        </ConfirmPopover>
                       </>}
                     />
                   )}

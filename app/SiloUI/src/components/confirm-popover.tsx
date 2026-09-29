@@ -60,6 +60,16 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
 }) {
   const element = useRef<HTMLElement | null>(null)
   const setElement = (node: HTMLElement | null) => { element.current = node; assignRef(anchorRef, node) }
+  // A hover/focus tooltip on the trigger sits above the popover in Radix's layer stack and would
+  // swallow the first Escape. Close the popover ourselves so one Escape always dismisses it.
+  useEffect(() => {
+    if (!open) return
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && document.querySelector('[role="tooltip"]')) setOpen(false)
+    }
+    document.addEventListener("keydown", onKeyDown, true)
+    return () => document.removeEventListener("keydown", onKeyDown, true)
+  })
   return <Popover open={open} onOpenChange={setOpen}>
     {anchor ? <PopoverAnchor asChild ref={setElement}>{anchor}</PopoverAnchor> : children ? <PopoverTrigger asChild>{children}</PopoverTrigger> : null}
     <PopoverContent align={align} side={side} className="w-64 p-3 text-xs" onCloseAutoFocus={(event) => { if (anchor) { event.preventDefault(); element.current?.focus() } }}>

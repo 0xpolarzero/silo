@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react"
-import { Box, Check, Globe, KeyRound, LoaderCircle, Pencil, RotateCw, Trash2, X } from "lucide-react"
+import { Box, Globe, KeyRound, LoaderCircle, Pencil, RotateCw, Trash2 } from "lucide-react"
 
 import { ListRow, ListRowIcon } from "@/components/list-row"
-import { InlineConfirmation } from "@/components/inline-confirmation"
+import { ConfirmPopover } from "@/components/confirm-popover"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -30,7 +30,6 @@ export function useSecretsManager({ source, onSaveSecret, onRemoveSecret, onRetr
   onRemoveSecret: (id: string) => Promise<void> | void
   onRetrySecret?: (id: string) => Promise<void> | void
 }) {
-  const [pendingRemoval, setPendingRemoval] = useState<string | null>(null)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string>()
@@ -38,11 +37,6 @@ export function useSecretsManager({ source, onSaveSecret, onRemoveSecret, onRetr
   const [operationError, setOperationError] = useState<{ id: string; message: string; action: (id: string) => Promise<void> | void } | null>(null)
   const shouldRestoreFocus = useRef(false)
   const editorTrigger = useRef<HTMLElement | null>(null)
-
-  useEffect(() => {
-    // oxlint-disable-next-line react/set-state-in-effect
-    setPendingRemoval(null)
-  }, [source.secrets])
 
   useEffect(() => {
     if (!editor && !saving && shouldRestoreFocus.current) {
@@ -53,7 +47,6 @@ export function useSecretsManager({ source, onSaveSecret, onRemoveSecret, onRetr
 
   function openEditor(trigger: HTMLElement | null, options: EditorState = {}) {
     editorTrigger.current = trigger
-    setPendingRemoval(null)
     setSaveError(undefined)
     setEditor(options)
   }
@@ -81,7 +74,6 @@ export function useSecretsManager({ source, onSaveSecret, onRemoveSecret, onRetr
     setOperationError(null)
     try {
       await action(id)
-      setPendingRemoval(null)
     } catch (error) {
       setOperationError({ id, message: operationFailure(error, "Couldn’t update this secret. Retry."), action })
     } finally {
@@ -90,16 +82,11 @@ export function useSecretsManager({ source, onSaveSecret, onRemoveSecret, onRetr
   }
 
   function removeSecret(id: string) {
-    if (pendingRemoval !== id) {
-      setPendingRemoval(id)
-      return
-    }
     void runOperation(id, onRemoveSecret)
   }
 
   return {
     source, onRetrySecret,
-    pendingRemoval, setPendingRemoval,
     editor, saving, saveError, busy, operationError,
     openEditor, closeEditor, saveSecret, runOperation, removeSecret,
   }
@@ -122,13 +109,11 @@ export function AddSecretEditor({ manager }: { manager: SecretsManager }) {
 }
 
 /** A single secret row with its live state (applying/restart-required/removing), Edit and
- * Remove controls with inline confirmation, failure/Retry, and the inline editor. */
+ * Remove controls (Remove asks in a popover), failure/Retry, and the inline editor. */
 export function SecretRow({ secret, manager }: { secret: ApplicationSecret; manager: SecretsManager }) {
   const { source } = manager
   const working = manager.busy === secret.id || secret.state === "applying"
   const failure = manager.operationError?.id === secret.id ? manager.operationError.message : secret.error
-  const confirmingRemoval = manager.pendingRemoval === secret.id
-  const removalLabel = confirmingRemoval ? `Confirm removal of ${secret.name}` : `Remove ${secret.name}`
   const disabled = manager.saving || manager.busy !== null
 
   return (
@@ -162,24 +147,26 @@ export function SecretRow({ secret, manager }: { secret: ApplicationSecret; mana
           </p>
         </div>}
         actions={<div className="flex shrink-0 items-center gap-0.5 text-muted-foreground" role="group" aria-label={`Manage ${secret.name}`}>
-          <InlineConfirmation active={confirmingRemoval} onDismiss={() => manager.setPendingRemoval(null)}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button type="button" variant="ghost" size="icon-xs" aria-label={confirmingRemoval ? `Cancel removal of ${secret.name}` : `Edit ${secret.name}`} disabled={disabled || working || secret.removing} onClick={(event) => confirmingRemoval ? manager.setPendingRemoval(null) : manager.openEditor(event.currentTarget, { secret })}>
-                  {confirmingRemoval ? <X aria-hidden="true" /> : <Pencil aria-hidden="true" />}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{confirmingRemoval ? "Cancel" : `Edit ${secret.name}`}</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button type="button" variant={confirmingRemoval ? "destructive" : "ghost"} size="icon-xs" aria-label={removalLabel} disabled={disabled || working || secret.removing} onClick={() => manager.removeSecret(secret.id)}>
-                  {working ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : confirmingRemoval ? <Check aria-hidden="true" /> : <Trash2 aria-hidden="true" />}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{removalLabel}</TooltipContent>
-            </Tooltip>
-          </InlineConfirmation>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" variant="ghost" size="icon-xs" aria-label={`Edit ${secret.name}`} disabled={disabled || working || secret.removing} onClick={(event) => manager.openEditor(event.currentTarget, { secret })}>
+                <Pencil aria-hidden="true" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{`Edit ${secret.name}`}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <ConfirmPopover align="end" tone="destructive" title={`Remove ${secret.name}?`} description="Sandboxes using it lose access after they restart." confirmLabel="Remove" onConfirm={() => manager.removeSecret(secret.id)}>
+                  <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${secret.name}`} disabled={disabled || working || secret.removing}>
+                    {working ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Trash2 aria-hidden="true" />}
+                  </Button>
+                </ConfirmPopover>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{`Remove ${secret.name}`}</TooltipContent>
+          </Tooltip>
         </div>}
       />
       {failure && <div className="flex items-center justify-between gap-3 px-3 pb-3 text-[11px] text-destructive">
