@@ -446,7 +446,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
               <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
             </TabsContent>}
             {showStorage && actions.readWorkspaceStorage && <TabsContent value="storage">
-              <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} sandboxName={machine.name} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />
+              <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} sandboxName={machine.name} computerName={workspace.computer?.name} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />
             </TabsContent>}
             {showAccess && <TabsContent value="access">
               <SshAccessRow embedded readOnly={controls.readOnly || controls.workspaceOperationBusy} workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} />

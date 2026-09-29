@@ -20,6 +20,8 @@ interface StoragePanelProps {
   /** Names the sandbox in the system notification. */
   sandboxName?: string
   running: boolean
+  /** The computer that owns the sandbox; omitted for a sandbox on this computer. */
+  computerName?: string
   disabled?: boolean
   read: (workspaceId: string) => Promise<WorkspaceStorageState>
   reclaim?: (workspaceId: string) => Promise<WorkspaceStorageState>
@@ -29,7 +31,9 @@ export function WorkspaceStoragePanel(props: StoragePanelProps) {
   return <WorkspaceStorageContent key={`${props.workspaceId}:${props.running}`} {...props} />
 }
 
-function WorkspaceStorageContent({ workspaceId, sandboxName, running, disabled = false, read, reclaim }: StoragePanelProps) {
+function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerName, disabled = false, read, reclaim }: StoragePanelProps) {
+  const location = computerName ?? 'This computer'
+
   const [storage, setStorage] = useState<WorkspaceStorageState | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [reclaiming, setReclaiming] = useState(false)
@@ -64,7 +68,7 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, disabled =
       dismissOperationToast(`storage-read:${workspaceId}`)
       if (reclaimSpace) {
         if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: value.lastError, retry: () => void load(true) })
-        else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: 'Freed on this computer.', persist: true, noticeSandbox })
+        else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: computerName ? `Freed on ${computerName}.` : 'Freed on this computer.', persist: true, noticeSandbox })
       }
     } catch (cause) {
       if (requests.current.generation === request) {
@@ -85,7 +89,7 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, disabled =
   const history = storage?.history ?? []
  const cards=[{icon:HardDrive,label:'Workspace on disk',value:storage ? formatBytes(storage.workspaceHostBytes) : '—',tip:'Physical space occupied by the workspace disk on this computer. Deleted guest files can still occupy space here until a reclaim.'},{icon:Database,label:'Runtime on disk',value:storage ? formatBytes(storage.runtimeHostBytes) : '—',tip:'Physical space used by the sandbox’s operating system and runtime. Workspace reclamation does not reduce this disk.'},{icon:Folder,label:'Workspace files',value:running && storage?.workspaceUsedBytes != null ? formatBytes(storage.workspaceUsedBytes) : 'Unavailable',tip:'Space reported as used by the workspace filesystem inside the running sandbox, including filesystem metadata.'},{icon:Gauge,label:'Workspace capacity',value:running && storage?.workspaceCapacityBytes != null ? formatBytes(storage.workspaceCapacityBytes) : 'Unavailable',tip:'Usable filesystem capacity inside the sandbox. This is a limit, not space currently occupied on this computer.'}]
  return <TooltipProvider delayDuration={150}><section aria-label="Sandbox storage" className="@container text-xs space-y-3" aria-busy={busy}>
- <div className="flex min-h-6 items-center justify-between"><span className="text-muted-foreground">This computer</span><Tip text={'Refresh storage measurements'}><Button variant="ghost" size="icon-xs" aria-label="Refresh storage" disabled={busy || disabled} onClick={()=>void load(false)}><RefreshCw className={busy && !reclaiming ? "animate-spin" : undefined}/></Button></Tip></div>
+ <div className="flex min-h-6 items-center justify-between"><span className="text-muted-foreground">{location}</span><Tip text={'Refresh storage measurements'}><Button variant="ghost" size="icon-xs" aria-label="Refresh storage" disabled={busy || disabled} onClick={()=>void load(false)}><RefreshCw className={busy && !reclaiming ? "animate-spin" : undefined}/></Button></Tip></div>
  <div className="grid grid-cols-2 gap-2 @min-[640px]:grid-cols-4">{cards.map(c=><Tip key={c.label} text={c.tip}><div tabIndex={0} className="rounded-md border border-border bg-background/40 p-3"><div className="flex items-center gap-2 text-muted-foreground"><c.icon className="size-3.5"/><span>{c.label}</span></div><div className="mt-2 text-lg font-medium tabular-nums tracking-tight">{!storage && busy ? <span aria-hidden="true" className="inline-block h-6 w-16 animate-pulse rounded bg-muted" /> : c.value}</div></div></Tip>)}</div>
  <div className="flex flex-wrap items-center justify-between gap-3"><Tip text="Unused workspace blocks are released without deleting your files. Automatic reclaims run after 7 days while running, or before a normal stop after 24 hours. Failed attempts wait 24 hours before retrying automatically."><span tabIndex={0} className="text-muted-foreground flex items-center gap-1.5 cursor-help"><Clock className="size-3"/>Automatic reclamation enabled</span></Tip><Tip text="Release unused workspace disk space on this computer. Your files and workspace capacity stay the same."><Button variant="outline" size="xs" disabled={busy || disabled || !running || !storage || !reclaim} onClick={()=>void load(true)}><Sparkles/>Reclaim unused space</Button></Tip></div>
  {!running && <p className="text-muted-foreground">Start the sandbox to measure workspace usage and reclaim unused space.</p>}
