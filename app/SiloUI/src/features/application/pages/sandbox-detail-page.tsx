@@ -13,14 +13,14 @@ import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { WorkspaceStateDot, WorkspaceStateLabel } from "@/features/application/components/application-ui"
+import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { CheckpointPanel } from "@/features/application/components/checkpoint-panel"
 import { WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
 import { emptyOperationQueue, waitingOperationForVm, cancelledActionLabel } from "@/features/application/model/operation-queue"
-import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
 import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
-import { SshAccessRow } from "@/features/application/pages/ssh-access-panel"
+import { SshAccessBadges, SshAccessRow } from "@/features/application/pages/ssh-access-panel"
 import { WorkspaceStoragePanel } from "@/features/application/pages/workspace-storage-panel"
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { AddSecretEditor, SecretRow, useSecretsManager } from "@/features/application/components/secrets-management"
@@ -73,8 +73,8 @@ export interface SandboxDetailControls {
 
 const Sep = () => <span aria-hidden="true" className="mx-1">·</span>
 
-/** The lifecycle-aware state segment that leads the detail subtitle: a state dot
- * and label, or a lifecycle/queue status while an operation is in flight. */
+/** The lifecycle-aware state segment that leads the detail subtitle: a state
+ * label, or a lifecycle/queue status while an operation is in flight. */
 function StateSegment({ workspace, source, readOnly, onCancel }: { workspace: ApplicationWorkspace; source: ApplicationSource; readOnly: boolean; onCancel?: ApplicationActions["cancelOperation"] }) {
   const state = workspace.state
   const lifecycle = workspace.lifecycleAction
@@ -89,18 +89,18 @@ function StateSegment({ workspace, source, readOnly, onCancel }: { workspace: Ap
   if (workspace.computer?.busy) return <span role="status">Refreshing status…</span>
   if (workspace.computer && !workspace.computer.connected) return <span>Unavailable</span>
   return <span className="inline-flex items-center gap-1.5 align-middle">
-    <WorkspaceStateDot state={state} className="size-1.5" />
     <WorkspaceStateLabel state={state} />
     {queueVmId !== null && waitingForVm && <><Sep /><WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={readOnly ? undefined : onCancel} /></>}
   </span>
 }
 
-function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshEnabled, onCancel }: {
+function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess, sshStale, onCancel }: {
   workspace: ApplicationWorkspace
   source: ApplicationSource
   readOnly: boolean
   pendingSecrets: string[]
-  sshEnabled: boolean
+  sshAccess?: SshAccessWorkspace
+  sshStale: boolean
   onCancel?: ApplicationActions["cancelOperation"]
 }) {
   const { machine } = workspace
@@ -108,13 +108,8 @@ function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshEnable
   return <span>
     <StateSegment workspace={workspace} source={source} readOnly={readOnly} onCancel={onCancel} />
     <Sep />{location}
-    {machine.kind === "vm" && <>
-      <Sep />{machine.cpus} CPU{machine.cpus === 1 ? "" : "s"}
-      <Sep />{machine.memoryGiB} GB
-      <Sep />{machine.workspaceStorageGiB} GB disk
-    </>}
     {pendingSecrets.length > 0 && <><Sep /><SecretChangesLabel inline workspace={machine.name} state={workspace.state} secrets={pendingSecrets} /></>}
-    {sshEnabled && <><Sep /><span className="text-foreground">SSH on</span></>}
+    {sshAccess?.enabled && <><Sep /><SshAccessBadges access={sshAccess} stale={sshStale} /></>}
   </span>
 }
 
@@ -370,7 +365,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     { value: "overview", label: "Overview", visible: true },
     { value: "checkpoints", label: "Checkpoints", visible: showCheckpoints },
     { value: "storage", label: "Storage", visible: showStorage },
-    { value: "access", label: "Access", visible: showAccess },
+    { value: "access", label: "SSH", visible: showAccess },
   ]
   const visibleTabs = tabs.filter(tab => tab.visible)
   const activeTab = visibleTabs.some(tab => tab.value === controls.activeTab) ? controls.activeTab : "overview"
@@ -398,7 +393,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           <ChevronRight className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className={cn(listHeadingClassName, "truncate")} title={machine.name}>{machine.name}</span>
         </nav>}
-        subtitle={<span data-slot="sandbox-detail-status"><DetailSubtitle workspace={workspace} source={source} readOnly={controls.readOnly} pendingSecrets={pendingSecrets} sshEnabled={Boolean(access?.enabled)} onCancel={actions.cancelOperation} /></span>}
+        subtitle={<span data-slot="sandbox-detail-status"><DetailSubtitle workspace={workspace} source={source} readOnly={controls.readOnly} pendingSecrets={pendingSecrets} sshAccess={access} sshStale={sshStale} onCancel={actions.cancelOperation} /></span>}
         actions={<div className="flex shrink-0 items-center gap-1">
           <Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={!controls.canOpen} onClick={controls.onTerminal}><Terminal aria-hidden="true" data-icon="inline-start" />Terminal</Button>
           <Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!controls.canOpen} onClick={controls.onEditor}><Code aria-hidden="true" data-icon="inline-start" />Editor</Button>
@@ -450,18 +445,10 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
               <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} onForked={controls.onCheckpointForked} onRestored={controls.onCheckpointRestored} />
             </TabsContent>}
             {showStorage && actions.readWorkspaceStorage && <TabsContent value="storage">
-              <Section label="Storage">
-                <ListCard>
-                  <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />
-                </ListCard>
-              </Section>
+              <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />
             </TabsContent>}
             {showAccess && <TabsContent value="access">
-              <Section label="SSH access">
-                <ListCard>
-                  <SshAccessRow embedded readOnly={controls.readOnly || controls.workspaceOperationBusy} workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} />
-                </ListCard>
-              </Section>
+              <SshAccessRow embedded readOnly={controls.readOnly || controls.workspaceOperationBusy} workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} />
             </TabsContent>}
           </div>
         </ScrollArea>

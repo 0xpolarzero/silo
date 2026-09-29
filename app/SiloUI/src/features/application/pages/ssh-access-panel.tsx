@@ -83,7 +83,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
           </form>)
 
   const content = <>
-    <fieldset disabled={readOnly} className={cn("min-w-0 space-y-3 p-3 text-xs", !embedded && "border-0 border-t border-border")}>
+    <fieldset disabled={readOnly} className={cn("min-w-0 space-y-3 text-xs", embedded ? "p-0" : "border-0 border-t border-border p-3")}>
       {!access ? <p className="text-muted-foreground">{workspace.computer ? `Waiting for SSH configuration from ${workspace.computer.name}.` : "Waiting for SSH configuration."}</p> : <>
         {(stale || access.state === "error") && <p role="status" className="text-muted-foreground">{access.unavailable || (stale ? "SSH status is unavailable. Reconnect and refresh before changing access." : access.message || "SSH could not start.")}</p>}
         {[false, true].map(network => {

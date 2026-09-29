@@ -8,7 +8,7 @@ import { ConnectionIcon } from "@/components/connection-icon"
 import { SshAccessBadges } from "./ssh-access-panel"
 import { NetworkPage } from "./network-page"
 
-it("surfaces both SSH addresses and the scope badge on the sandbox Access tab", async () => {
+it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
   source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "192.168.1.42", keys: [], state: "listening", message: null, fingerprint: null, computerName: "Ada Mac", addresses: ["127.0.0.1", "192.168.1.42"] }] }
@@ -21,7 +21,7 @@ it("surfaces both SSH addresses and the scope badge on the sandbox Access tab", 
   expect(row.queryByRole("button", { name: /SSH controls/ })).not.toBeInTheDocument()
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
-  await user.click(screen.getByRole("tab", { name: "Access" }))
+  await user.click(screen.getByRole("tab", { name: "SSH" }))
   expect(screen.getAllByRole("switch")).toHaveLength(2)
   expect(screen.getByText("root@127.0.0.1:2222")).toBeVisible()
   expect(screen.getByText("root@192.168.1.42:2222")).toBeVisible()
@@ -31,10 +31,10 @@ it("surfaces both SSH addresses and the scope badge on the sandbox Access tab", 
   expect(await navigator.clipboard.readText()).toBe("root@192.168.1.42:2222")
 
   // The detail subtitle reflects that SSH is enabled without a separate scope chip;
-  // the network/local scope stays visible in the Access tab controls above.
+  // the network/local scope stays visible in the SSH tab controls above.
   source.sshAccess.workspaces[0].bindAddress = "127.0.0.1"
   view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
-  expect(within(screen.getByRole("navigation", { name: "Breadcrumb" }).parentElement!).getByText("SSH on")).toBeVisible()
+  expect(within(screen.getByRole("navigation", { name: "Breadcrumb" }).parentElement!).getByLabelText(/^SSH from .* only$/)).toBeVisible()
 })
 
 it("keeps Network limited to service ports", () => {
@@ -53,7 +53,7 @@ it("allows read-only SSH disclosure without refreshing, copying, or changing the
   expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Stop dev" })).toBeDisabled()
   await user.click(screen.getByRole("button", { name: "Open dev" }))
-  await user.click(screen.getByRole("tab", { name: "Access" }))
+  await user.click(screen.getByRole("tab", { name: "SSH" }))
   expect(screen.getByText("root@192.168.1.42:2222")).toBeVisible()
   for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled()
   expect(screen.getByRole("button", { name: "Copy SSH address" })).toBeDisabled()

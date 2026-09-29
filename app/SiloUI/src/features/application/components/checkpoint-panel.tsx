@@ -82,9 +82,9 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
   const operationError = operation?.status === "failed" ? operation.error ?? operation.stage : null
 
   return <TooltipProvider delayDuration={250}>
-    <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="grid gap-3 text-xs">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-muted-foreground">Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.</p>
+    <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="grid gap-1.5 text-xs">
+      <div className="flex min-h-6 items-center justify-between gap-2">
+        <h3 className="text-xs font-medium" title="Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.">Checkpoints</h3>
         {actions.createCheckpoint && <Popover open={createOpen} onOpenChange={open => { if (!locked) { setCreateOpen(open); if (open) { setName(suggestedName()); setError(null) } } }}>
           <PopoverTrigger asChild>
             <Button size="xs" variant="outline" className="shrink-0" disabled={locked}>New checkpoint</Button>
