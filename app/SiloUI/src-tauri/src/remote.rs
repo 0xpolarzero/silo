@@ -8,7 +8,7 @@ use std::{
         fs::{symlink, PermissionsExt},
         net::{UnixListener, UnixStream},
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Mutex,
     thread,
@@ -19,7 +19,8 @@ const INSTALL_PUBLIC_KEY: &str = r#"umask 077; mkdir -p ~/.ssh && touch ~/.ssh/a
 /// Silo's key may only run the bridge and open `-N` tunnels to loopback ports on the owner.
 const AUTHORIZED_KEY_OPTIONS: &str = r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge""#;
 const SILO_KEY_COMMENT: &str = "Silo remote management";
-const VERSION: u32 = 1;
+/// Bridge protocol version; both computers must match. 2 adds the method table and capabilities.
+const VERSION: u32 = 2;
 const LIMIT: usize = 4 * 1024 * 1024;
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 static REQUEST_LOCK: Mutex<()> = Mutex::new(());
@@ -31,7 +32,7 @@ pub struct RemoteHost {
     pub name: String,
     pub address: String,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
     host_id: String,
@@ -48,7 +49,11 @@ pub struct ManagementStatus {
 }
 fn directory() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
-    let root = PathBuf::from(home).join(".silo");
+    directory_in(Path::new(&home))
+}
+/// `~/.silo/desktop-remote` under `home`, private to this account.
+fn directory_in(home: &Path) -> Result<PathBuf, String> {
+    let root = home.join(".silo");
     crate::runtime::prepare_private_directory(&root).map_err(|e| e.to_string())?;
     let dir = root.join("desktop-remote");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -56,8 +61,10 @@ fn directory() -> Result<PathBuf, String> {
     Ok(dir)
 }
 fn read_config() -> Result<Config, String> {
-    let path = directory()?.join("config.json");
-    match fs::read(path) {
+    read_config_in(&directory()?)
+}
+fn read_config_in(dir: &Path) -> Result<Config, String> {
+    match fs::read(dir.join("config.json")) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|_| "Remote management settings are damaged.".into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -66,21 +73,70 @@ fn read_config() -> Result<Config, String> {
                 enabled: false,
                 hosts: vec![],
             };
-            save_config(&config)?;
+            save_config_in(dir, &config)?;
             Ok(config)
         }
         Err(e) => Err(e.to_string()),
     }
 }
 fn save_config(config: &Config) -> Result<(), String> {
-    let dir = directory()?;
-    let mut temp = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
+    save_config_in(&directory()?, config)
+}
+fn save_config_in(dir: &Path, config: &Config) -> Result<(), String> {
+    let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
     temp.write_all(&serde_json::to_vec(config).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     temp.persist(dir.join("config.json"))
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+/// Whether a bridged method only observes state or changes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Access {
+    /// Observes state only; repeating it changes nothing.
+    Read,
+    /// Changes state on this computer: accepted once per request identity, never replayed.
+    Change,
+    /// An interactive byte stream, served before request dispatch.
+    Stream,
+}
+/// Every method the bridge serves. A method is reachable only once it is classified here,
+/// so a new state change cannot skip the replay record by accident.
+const METHODS: &[(&str, Access)] = &[
+    ("handshake", Access::Read),
+    ("runtime.snapshot", Access::Read),
+    ("runtime.logs", Access::Read),
+    ("runtime.configuration", Access::Read),
+    ("runtime.action", Access::Change),
+    ("runtime.upsert", Access::Change),
+    ("runtime.delete", Access::Change),
+    ("desktop.connect", Access::Read),
+    ("desktop.status", Access::Read),
+    ("desktop.action", Access::Change),
+    ("ssh.access.state", Access::Read),
+    ("ssh.access.connection", Access::Read),
+    ("ssh.access.save", Access::Change),
+    ("files.list", Access::Read),
+    ("guest.prepare", Access::Change),
+    ("guest.ssh", Access::Stream),
+    ("network.state", Access::Read),
+    ("network.publish", Access::Change),
+    ("repository.push.status", Access::Read),
+    ("repository.push.start", Access::Change),
+    ("repository.push", Access::Change),
+    ("repository.dismiss", Access::Change),
+    ("checkpoint.create", Access::Change),
+    ("checkpoint.fork", Access::Change),
+    ("checkpoint.restore", Access::Change),
+];
+/// The error an older or newer computer reports for a method it does not serve.
+const UNSUPPORTED: &str = "This Silo version does not support that remote operation.";
+fn access(method: &str) -> Option<Access> {
+    METHODS
+        .iter()
+        .find(|(name, _)| *name == method)
+        .map(|(_, access)| *access)
 }
 fn name() -> String {
     let mut bytes = [0u8; 256];
@@ -846,7 +902,8 @@ fn serve_connections<S>(
         }
     }
 }
-pub(crate) fn start(app: AppHandle) -> Result<(), String> {
+/// Holds `control.lock` in `dir`; only one Silo process serves remote management.
+fn lease_control(dir: &Path) -> Result<fs::File, String> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
     let lease = fs::OpenOptions::new()
@@ -855,12 +912,16 @@ pub(crate) fn start(app: AppHandle) -> Result<(), String> {
         .write(true)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(directory()?.join("control.lock"))
+        .open(dir.join("control.lock"))
         .map_err(|e| e.to_string())?;
     if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err("Another Silo instance owns remote management.".into());
     }
-    let path = directory()?.join("control.sock");
+    Ok(lease)
+}
+/// Binds `control.sock` in `dir` for this account only, replacing a stale socket.
+fn bind_control_socket(dir: &Path) -> Result<UnixListener, String> {
+    let path = dir.join("control.sock");
     if path.exists() {
         match UnixStream::connect(&path) {
             Ok(_) => return Err("Another Silo instance owns remote management.".into()),
@@ -874,11 +935,16 @@ pub(crate) fn start(app: AppHandle) -> Result<(), String> {
             }
         }
     }
+    let listener = UnixListener::bind(&path).map_err(|e| e.to_string())?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    Ok(listener)
+}
+pub(crate) fn start(app: AppHandle) -> Result<(), String> {
+    let lease = lease_control(&directory()?)?;
     if read_config()?.enabled {
         set_remote_management(true)?;
     }
-    let listener = UnixListener::bind(&path).map_err(|e| e.to_string())?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    let listener = bind_control_socket(&directory()?)?;
     thread::spawn(move || {
         let _lease = lease;
         serve_connections(listener.incoming(), ACCEPT_BACKOFF, |mut stream| {
@@ -936,9 +1002,12 @@ pub(crate) fn ensure_management_enabled() -> Result<(), String> {
 }
 
 fn authorize(request: &Value) -> Result<Config, String> {
+    authorize_in(&directory()?, request)
+}
+fn authorize_in(dir: &Path, request: &Value) -> Result<Config, String> {
     let config = {
         let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
-        read_config()?
+        read_config_in(dir)?
     };
     validate_authorization(&config, request)?;
     Ok(config)
@@ -962,50 +1031,64 @@ fn validate_authorization(config: &Config, request: &Value) -> Result<(), String
 }
 
 fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
-    let config = authorize(&request)?;
-    let method = request["method"].as_str().ok_or("Missing remote method.")?;
-    if method == "handshake" {
-        // Earlier versions installed Silo's key without restrictions; tighten it over this session.
-        if let Some(public) = request["params"]["sshKey"].as_str() {
-            if let Err(error) = restrict_installed_key(public) {
-                eprintln!("Could not restrict Silo's SSH key: {error}");
+    handle(&directory()?, &request, |method, params| execute(app, method, params))
+}
+/// Runs one authorized, classified request against this computer.
+fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
+    match method {
+        "handshake" => {
+            // Earlier versions installed Silo's key without restrictions; tighten it over this session.
+            if let Some(public) = params["sshKey"].as_str() {
+                if let Err(error) = restrict_installed_key(public) {
+                    eprintln!("Could not restrict Silo's SSH key: {error}");
+                }
             }
+            Ok(Value::Null)
         }
-        return Ok(json!({"hostId":config.host_id,"name":name(),"version":VERSION}));
-    }
-    if request["hostId"].as_str() != Some(&config.host_id) {
-        return Err(
-            "This address now belongs to a different Silo computer. Reconnect it explicitly."
-                .into(),
-        );
-    }
-    let id = request["requestId"]
-        .as_str()
-        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
-        .ok_or("Invalid remote request identity.")?;
-    let execute = || {
-        if method.starts_with("runtime.") {
-            crate::runtime::remote_ops::dispatch(app, method, request["params"].clone())
-        } else {
-            crate::remote_access::dispatch(app, method, &request["params"])
+        _ if method.starts_with("runtime.") => {
+            crate::runtime::remote_ops::dispatch(app, method, params.clone())
         }
-    };
-    if !matches!(
-        method,
-        "runtime.action" | "runtime.upsert" | "runtime.delete" | "ssh.access.save" | "desktop.action"
-            | "checkpoint.create" | "checkpoint.fork" | "checkpoint.restore"
-    ) {
-        return execute();
+        _ => crate::remote_access::dispatch(app, method, params),
     }
-    // Record acceptance before touching a VM. Lost replies and restarts never replay a change.
-    let _guard = REQUEST_LOCK
-        .lock()
-        .map_err(|_| "Remote operation state unavailable.")?;
-    // A queued request must recheck access after the preceding operation finishes.
-    authorize(&request)?;
-    let operations = directory()?.join("operations");
-    fs::create_dir_all(&operations).map_err(|e| e.to_string())?;
-    recorded_operation(&operations, id, &request, execute)
+}
+/// The methods this computer serves, reported in the handshake.
+fn capabilities() -> Vec<&'static str> {
+    METHODS.iter().map(|(method, _)| *method).collect()
+}
+/// Owner side of one bridged request: authorize, classify, then run it. Changes are
+/// recorded under `dir/operations` before they run so a repeated identity never replays.
+fn handle(
+    dir: &Path,
+    request: &Value,
+    execute: impl FnOnce(&str, &Value) -> Result<Value, String>,
+) -> Result<Value, String> {
+    let config = authorize_in(dir, request)?;
+    let method = request["method"].as_str().ok_or("Missing remote method.")?;
+    let params = &request["params"];
+    match access(method) {
+        // Unknown methods are refused before any gate, state event or record.
+        None | Some(Access::Stream) => Err(UNSUPPORTED.into()),
+        Some(Access::Read) if method == "handshake" => {
+            execute(method, params)?;
+            Ok(json!({"hostId":config.host_id,"name":name(),"version":VERSION,"capabilities":capabilities()}))
+        }
+        Some(Access::Read) => execute(method, params),
+        Some(Access::Change) => {
+            let id = request["requestId"]
+                .as_str()
+                .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                .ok_or("Invalid remote request identity.")?;
+            // Record acceptance before touching a VM. Lost replies and restarts never replay a change.
+            let _guard = REQUEST_LOCK
+                .lock()
+                .map_err(|_| "Remote operation state unavailable.")?;
+            // A queued request must recheck access after the preceding operation finishes.
+            authorize_in(dir, request)?;
+            let operations = dir.join("operations");
+            fs::create_dir_all(&operations).map_err(|e| e.to_string())?;
+            recorded_operation(&operations, id, request, || execute(method, params))
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -1551,6 +1634,194 @@ mod authorized_key_tests {
         assert!(!restrict_authorized_keys_file(&link, &public).unwrap());
         assert_eq!(fs::read_to_string(&target).unwrap(), format!("{public}\n"));
         assert!(!restrict_authorized_keys_file(&home.path().join("missing"), &public).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A private owner directory (never the real `~/.silo`) with management enabled.
+    fn owner() -> (tempfile::TempDir, PathBuf, Config) {
+        let home = tempfile::tempdir().unwrap();
+        let dir = directory_in(home.path()).unwrap();
+        let mut config = read_config_in(&dir).unwrap();
+        config.enabled = true;
+        save_config_in(&dir, &config).unwrap();
+        (home, dir, config)
+    }
+    fn request(config: &Config, method: &str) -> Value {
+        json!({"version":VERSION,"hostId":config.host_id,"requestId":uuid::Uuid::new_v4().to_string(),"method":method,"params":{"vmId":"vm"}})
+    }
+    fn methods(access: Access) -> Vec<&'static str> {
+        METHODS.iter().filter(|(_, a)| *a == access).map(|(m, _)| *m).collect()
+    }
+    /// Quoted `word.word` literals: the method names a dispatcher source matches on.
+    fn method_literals(source: &str) -> std::collections::BTreeSet<String> {
+        source
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .filter(|text| {
+                text.contains('.')
+                    && text.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase()))
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn every_served_method_is_classified_and_every_change_is_recorded() {
+        assert_eq!(
+            methods(Access::Change),
+            [
+                "runtime.action", "runtime.upsert", "runtime.delete", "desktop.action",
+                "ssh.access.save", "guest.prepare", "network.publish", "repository.push.start",
+                "repository.push", "repository.dismiss", "checkpoint.create", "checkpoint.fork",
+                "checkpoint.restore",
+            ]
+        );
+        assert_eq!(methods(Access::Stream), ["guest.ssh"]);
+        let served: std::collections::BTreeSet<String> = method_literals(include_str!("remote_access.rs"))
+            .into_iter()
+            .chain(method_literals(include_str!("runtime/remote_ops.rs")))
+            .collect();
+        for method in &served {
+            assert!(access(method).is_some(), "{method} is dispatched but not classified");
+        }
+        for (method, _) in METHODS.iter().filter(|(m, _)| *m != "handshake") {
+            assert!(served.contains(*method), "{method} is classified but never dispatched");
+        }
+        let mut names = capabilities();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), METHODS.len());
+    }
+
+    #[test]
+    fn changes_are_recorded_once_and_reads_run_every_time() {
+        let (_home, dir, config) = owner();
+        let runs = AtomicUsize::new(0);
+        for method in methods(Access::Change) {
+            let request = request(&config, method);
+            for _ in 0..2 {
+                let result = handle(&dir, &request, |called, _| {
+                    assert_eq!(called, method);
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"ran":method}))
+                });
+                assert_eq!(result.unwrap(), json!({"ran":method}));
+            }
+            let id = request["requestId"].as_str().unwrap();
+            assert!(dir.join("operations").join(format!("{id}.json")).is_file(), "{method}");
+        }
+        assert_eq!(runs.swap(0, Ordering::SeqCst), methods(Access::Change).len());
+        let recorded = fs::read_dir(dir.join("operations")).unwrap().count();
+        for method in methods(Access::Read).into_iter().filter(|m| *m != "handshake") {
+            let request = request(&config, method);
+            for _ in 0..2 {
+                handle(&dir, &request, |_, _| {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(Value::Null)
+                })
+                .unwrap();
+            }
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 2 * (methods(Access::Read).len() - 1));
+        assert_eq!(fs::read_dir(dir.join("operations")).unwrap().count(), recorded);
+    }
+
+    #[test]
+    fn refused_requests_never_run() {
+        let (_home, dir, config) = owner();
+        let refuse = |request: &Value| {
+            handle(&dir, request, |method, _| panic!("{method} must not run")).unwrap_err()
+        };
+        let mut other = request(&config, "runtime.action");
+        other["hostId"] = json!(uuid::Uuid::new_v4().to_string());
+        assert!(refuse(&other).contains("different Silo computer"));
+        other["method"] = json!("runtime.snapshot");
+        assert!(refuse(&other).contains("different Silo computer"));
+        let mut stale = request(&config, "runtime.action");
+        stale["version"] = json!(VERSION - 1);
+        assert!(refuse(&stale).contains("incompatible"));
+        for id in [json!("not-a-uuid"), Value::Null, json!(7)] {
+            let mut change = request(&config, "checkpoint.restore");
+            change["requestId"] = id;
+            assert_eq!(refuse(&change), "Invalid remote request identity.");
+        }
+        for method in ["runtime.unknown", "network.unpublish.all", "guest.ssh", ""] {
+            assert_eq!(refuse(&request(&config, method)), UNSUPPORTED);
+        }
+        let mut disabled = config.clone();
+        disabled.enabled = false;
+        save_config_in(&dir, &disabled).unwrap();
+        assert!(refuse(&request(&config, "runtime.snapshot")).contains("disabled"));
+        assert!(!dir.join("operations").exists());
+    }
+
+    #[test]
+    fn handshake_reports_identity_and_capabilities_without_a_pinned_owner() {
+        let (_home, dir, config) = owner();
+        let request = json!({"version":VERSION,"requestId":uuid::Uuid::new_v4().to_string(),"method":"handshake","params":{}});
+        let result = handle(&dir, &request, |method, _| {
+            assert_eq!(method, "handshake");
+            Ok(Value::Null)
+        })
+        .unwrap();
+        assert_eq!(result["hostId"], json!(config.host_id));
+        assert_eq!(result["version"], json!(VERSION));
+        assert_eq!(result["capabilities"], json!(capabilities()));
+    }
+
+    #[test]
+    fn a_queued_change_rechecks_access_when_its_turn_comes() {
+        let (_home, dir, config) = owner();
+        let (started, running) = std::sync::mpsc::channel();
+        let (finish, release) = std::sync::mpsc::channel::<()>();
+        let first = {
+            let (dir, request) = (dir.clone(), request(&config, "runtime.action"));
+            thread::spawn(move || {
+                handle(&dir, &request, |_, _| {
+                    started.send(()).unwrap();
+                    release.recv().unwrap();
+                    Ok(Value::Null)
+                })
+            })
+        };
+        running.recv().unwrap();
+        let queued = {
+            let (dir, request) = (dir.clone(), request(&config, "runtime.upsert"));
+            thread::spawn(move || handle(&dir, &request, |_, _| panic!("a revoked change must not run")))
+        };
+        thread::sleep(Duration::from_millis(100));
+        let mut disabled = config.clone();
+        disabled.enabled = false;
+        save_config_in(&dir, &disabled).unwrap();
+        finish.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        assert!(queued.join().unwrap().unwrap_err().contains("disabled"));
+    }
+
+    #[test]
+    fn owner_directory_lock_and_socket_are_private_to_this_account() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = directory_in(home.path()).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&home.path().join(".silo")) & 0o022, 0);
+        assert_eq!(mode(&dir), 0o700);
+        let lease = lease_control(&dir).unwrap();
+        assert_eq!(mode(&dir.join("control.lock")), 0o600);
+        assert!(lease_control(&dir).unwrap_err().contains("Another Silo instance"));
+        let listener = bind_control_socket(&dir).unwrap();
+        assert_eq!(mode(&dir.join("control.sock")), 0o600);
+        assert!(bind_control_socket(&dir).unwrap_err().contains("Another Silo instance"));
+        drop(listener);
+        // A socket left by a stopped owner is replaced, not treated as a live owner.
+        drop(bind_control_socket(&dir).unwrap());
+        drop(lease);
+        drop(lease_control(&dir).unwrap());
     }
 }
 

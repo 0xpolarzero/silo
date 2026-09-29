@@ -26,6 +26,10 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     if method == "runtime.action" {
         return remote_action(app, &paths, &params);
     }
+    // Anything else is unknown: refuse it before taking the gate or announcing a change.
+    if !matches!(method, "runtime.upsert" | "runtime.delete") {
+        return Err("This Silo version does not support that remote operation.".into());
+    }
     // Inventory changes (upsert/delete) stay computer-scoped: they rewrite the shared
     // metadata file. They run once, holding the gate for the whole operation.
     let _guard = OPERATIONS
