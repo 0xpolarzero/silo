@@ -1,4 +1,21 @@
 import type { ApplicationSource } from "@/features/application/model/application-source"
+import { parseRemoteWorkspaceTarget, workspaceTarget } from "@/features/application/model/remote-computers"
+
+/**
+ * A user-facing name for an operation's sandbox target. Remote targets are internal
+ * (`silo-remote:<host>:<vm>`), so they resolve to "{sandbox} on {computer}"; a remote
+ * sandbox that is no longer listed still names its computer.
+ */
+export function sandboxTargetLabel(target: string, source: Pick<ApplicationSource, "workspaces" | "remoteComputers">): string {
+  const workspace = source.workspaces.find((candidate) => workspaceTarget(candidate) === target)
+  if (workspace) return workspace.computer ? `${workspace.machine.name} on ${workspace.computer.name}` : workspace.machine.name
+  let remote: ReturnType<typeof parseRemoteWorkspaceTarget>
+  try { remote = parseRemoteWorkspaceTarget(target) } catch { return "a remote sandbox" }
+  if (!remote) return target
+  const hostId = remote.hostId
+  const computer = source.remoteComputers?.find(({ id }) => id === hostId)
+  return computer ? `a sandbox on ${computer.name}` : "a remote sandbox"
+}
 
 export function statusBarHealth(source: ApplicationSource) {
   const repair = source.runtimeRepair

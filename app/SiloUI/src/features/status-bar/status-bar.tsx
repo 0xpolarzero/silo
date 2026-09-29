@@ -18,7 +18,7 @@ import { SandboxAction, SandboxListItem, SandboxListRow } from "@/features/sandb
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
 import { cn } from "@/lib/utils"
-import { statusBarHealth } from "./status-bar-model"
+import { sandboxTargetLabel, statusBarHealth } from "./status-bar-model"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import type { StatusBarActions } from "./status-bar-types"
 import { StatusFolderPicker } from "./status-folder-picker"
@@ -189,11 +189,12 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
         {failedPushes.map((operation) => {
           const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === operation.workspace)
           const canRetry = workspace && workspace.repositories.some(({ path, ahead }) => path === operation.repositoryPath && ahead > 0) && workspaceAvailability(workspace, source).canOpen
+          const sandbox = sandboxTargetLabel(operation.workspace, source)
           return <OperationIssue
             key={`${operation.workspace}:${operation.repositoryPath}`}
-            title={`Push failed · ${operation.workspace}`}
+            title={`Push failed · ${sandbox}`}
             detail={`${operation.repositoryPath} · ${operation.message}`}
-            actionLabel={`Review push failure for ${operation.workspace}, ${operation.repositoryPath}`}
+            actionLabel={`Review push failure for ${sandbox}, ${operation.repositoryPath}`}
             onReview={() => actions.openSilo({ workspace: operation.workspace, workspaceSection: "files" })}
             retry={<Button variant="outline" size="xs" aria-label={`Retry push for ${operation.repositoryPath}`} disabled={!canRetry} onClick={() => { if (canRetry) actions.pushRepository(operation.workspace, operation.repositoryPath) }}><RotateCw />Retry</Button>}
           />

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import type { ApplicationSource } from "@/features/application/model/application-source"
+import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { fixtureDirectoryLoader } from "@/fixtures/directory-loader"
 import { StatusBar } from "./status-bar"
@@ -73,6 +74,27 @@ describe("status bar", () => {
     await user.click(within(issue).getByRole("button", { name: "Retry push for acme/silo" }))
     expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo")
     expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
+  })
+
+  it("names a remote sandbox's failed push by sandbox and computer, not its internal target", async () => {
+    const base = applicationSourceForScenario("complete")
+    const computer = { id: "office", name: "office-mac", address: "office.local", connected: true, vmId: "vm-1" }
+    const remote = { ...base.workspaces[0]!, computer }
+    const target = remoteWorkspaceTarget("office", "vm-1")
+    const { user, actions } = setup({
+      workspaces: [remote],
+      repositoryPushOperations: [
+        { workspace: target, repositoryPath: "acme/silo", commitCount: 2, status: "failed", message: "Remote unavailable." },
+        { workspace: remoteWorkspaceTarget("office", "gone"), repositoryPath: "acme/old", commitCount: 1, status: "failed", message: "Remote unavailable." },
+      ],
+      remoteComputers: [computer],
+    })
+    const issue = screen.getByRole("alert", { name: "Push failed · dev on office-mac" })
+    expect(issue).not.toHaveTextContent("silo-remote")
+    // A push whose sandbox is no longer listed still names its computer.
+    expect(screen.getByRole("alert", { name: "Push failed · a sandbox on office-mac" })).not.toHaveTextContent("silo-remote")
+    await user.click(within(issue).getByRole("button", { name: "Review push failure for dev on office-mac, acme/silo" }))
+    expect(actions.openSilo).toHaveBeenCalledWith({ workspace: target, workspaceSection: "files" })
   })
 
   it("updates the menu bar icon from loading to warning, error, and ready", () => {
