@@ -156,6 +156,9 @@ function workspacesForScenario(scenario: ScenarioName): ApplicationWorkspace[] {
       state: "running",
       stateDetail: "Running and verified",
       ports: workspace.ports.length > 0 ? workspace.ports : [{ port: 3000, listening: true, configured: true, hostPort: 3000, scheme: "http" }],
+      checkpoints: workspace.machine.name === "dev"
+        ? [{ id: "checkpoint-dev-1", name: "Before dependency upgrade", createdAt: "2026-09-04T18:00:00Z", scope: "full", reason: "manual" }]
+        : workspace.checkpoints,
     }))
   }
   if (scenario === "bootstrap-failure") {

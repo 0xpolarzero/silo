@@ -212,7 +212,7 @@ pub(crate) fn wait_for_interrupted_command(home: &Path, timeout: Duration) -> io
         if started.elapsed() >= timeout {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "The previous backup command is still finishing. Wait a moment and relaunch Silo to resume.",
+                "The previous export or import command is still finishing. Wait a moment and relaunch Silo to resume.",
             ));
         }
         thread::sleep(COMMAND_POLL_INTERVAL);
@@ -265,14 +265,14 @@ pub(crate) enum BackupError {
 impl std::fmt::Display for BackupError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Busy => write!(formatter, "Another backup or restore operation is running."),
+            Self::Busy => write!(formatter, "Another export or import is running."),
             Self::Cancelled => write!(formatter, "The operation was cancelled."),
             Self::CommandTimeout => write!(formatter, "The bundled runtime operation timed out."),
             Self::CommandFailed { operation, detail } => {
                 write!(formatter, "{operation} failed: {detail}")
             }
             Self::Conflict(name) => write!(formatter, "A VM named {name} already exists."),
-            Self::InvalidArchive(detail) => write!(formatter, "Invalid Silo backup: {detail}"),
+            Self::InvalidArchive(detail) => write!(formatter, "Invalid Silo export: {detail}"),
             Self::UnsupportedStorage(detail) => write!(formatter, "{detail}"),
             Self::InvalidRequest(detail) => write!(formatter, "{detail}"),
             Self::Io(error) => write!(formatter, "{error}"),
@@ -302,6 +302,10 @@ pub(crate) struct BackupSource {
     pub(crate) was_running: bool,
     pub(crate) runtime_config: Value,
     pub(crate) machine_config: Value,
+    /// When set, export an already-captured checkpoint member from
+    /// `snapshot_group` instead of capturing the sandbox's current state.
+    /// `was_running` is irrelevant on this path (no new capture is taken).
+    pub(crate) existing_member: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -550,7 +554,6 @@ impl<R: MsbRunner> BackupService<R> {
             validate_snapshottable_config(&source.name, &source.runtime_config)?;
             validate_machine_config(&source.name, &source.machine_config)?;
             validate_volume_sources(&source.name, &source.runtime_config, &source.machine_config)?;
-            let snapshot_name = format!("silo-backup-{index}-{}", unique_suffix());
             let snapshot_group = source.snapshot_group.clone();
             let flush = if source.was_running {
                 "required"
@@ -558,30 +561,33 @@ impl<R: MsbRunner> BackupService<R> {
                 "auto"
             };
             let capture_result = (|| {
-                self.require_success(
-                    "Capturing VM disk",
-                    &[
-                        "snapshot".into(),
-                        "create".into(),
-                        snapshot_name.clone(),
-                        "--from-sandbox".into(),
-                        source.name.clone(),
-                        "--group".into(),
-                        snapshot_group.clone(),
-                        "--guest-flush".into(),
-                        flush.into(),
-                        "--integrity".into(),
-                        "--quiet".into(),
-                    ],
-                    cancellation,
-                )?;
-                // Capture advances MicroSandbox's source lineage. Its ancestor must
-                // remain in the native snapshot store even if archive writing fails.
-                let snapshot = self.captured_snapshot_path(
-                    &snapshot_group,
-                    &snapshot_name,
-                    cancellation,
-                )?;
+                // A checkpoint export reuses an already-captured, immutable member;
+                // a state export captures the sandbox's current disk first.
+                let snapshot = if let Some(member) = &source.existing_member {
+                    self.captured_snapshot_path(&snapshot_group, member, cancellation)?
+                } else {
+                    let snapshot_name = format!("silo-backup-{index}-{}", unique_suffix());
+                    self.require_success(
+                        "Capturing VM disk",
+                        &[
+                            "snapshot".into(),
+                            "create".into(),
+                            snapshot_name.clone(),
+                            "--from-sandbox".into(),
+                            source.name.clone(),
+                            "--group".into(),
+                            snapshot_group.clone(),
+                            "--guest-flush".into(),
+                            flush.into(),
+                            "--integrity".into(),
+                            "--quiet".into(),
+                        ],
+                        cancellation,
+                    )?;
+                    // Capture advances MicroSandbox's source lineage. Its ancestor must
+                    // remain in the native snapshot store even if archive writing fails.
+                    self.captured_snapshot_path(&snapshot_group, &snapshot_name, cancellation)?
+                };
                 self.require_success(
                     "Verifying captured VM disk",
                     &[
@@ -613,7 +619,7 @@ impl<R: MsbRunner> BackupService<R> {
                 sum.checked_add(volume.manifest.payload_size)
                     .ok_or_else(|| {
                         BackupError::InvalidRequest(
-                            "The selected VM disk payloads exceed the backup size safety limit."
+                            "The selected VM disk payloads exceed the export size safety limit."
                                 .into(),
                         )
                     })
@@ -624,7 +630,7 @@ impl<R: MsbRunner> BackupService<R> {
                 .filter(|size| *size <= self.max_archive_bytes)
                 .ok_or_else(|| {
                     BackupError::InvalidRequest(
-                        "The selected VM snapshots exceed the backup size safety limit.".into(),
+                        "The selected VM snapshots exceed the export size safety limit.".into(),
                     )
                 })?;
             payloads.push((
@@ -2399,6 +2405,9 @@ mod tests {
     struct FakeRunner {
         calls: Mutex<Vec<Vec<String>>>,
         existing: Mutex<Vec<String>>,
+        /// Pre-captured `(group, member)` snapshots published by `snapshot list`,
+        /// so a checkpoint export can locate a member without a fresh capture.
+        existing_members: Mutex<Vec<(String, String)>>,
         fail_start: AtomicBool,
         fail_running_verification: AtomicBool,
         fail_load: AtomicBool,
@@ -2474,6 +2483,22 @@ mod tests {
                 ["snapshot", "list", "--format", "json"] => {
                     let calls = self.calls.lock().unwrap();
                     let mut entries = Vec::new();
+                    for (group, member) in self.existing_members.lock().unwrap().iter() {
+                        let snapshot = command
+                            .home
+                            .join("snapshots")
+                            .join(group)
+                            .join("snap_00000000000000000000000000000000");
+                        fs::create_dir_all(&snapshot)?;
+                        fs::write(snapshot.join("snapshot.json"), b"{}")?;
+                        entries.push(serde_json::json!({
+                            "group": group,
+                            "name": member,
+                            "availability": "ready",
+                            "snapshot_id": "snap_00000000000000000000000000000000",
+                            "artifact_path": snapshot
+                        }));
+                    }
                     if let Some(create) = calls.iter().rev().find(|call| call.get(1).is_some_and(|part| part == "create")) {
                         let group = &create[6];
                         entries.push(serde_json::json!({
@@ -2636,6 +2661,7 @@ mod tests {
                     was_running: running,
                     runtime_config,
                     machine_config: machine_config("dev"),
+                    existing_member: None,
                 }],
             },
             &Cancellation::default(),
@@ -2774,6 +2800,51 @@ mod tests {
                 .iter()
                 .any(|args| args.ends_with(&["--with-parents".into(), "--with-image".into()]))
         );
+    }
+
+    #[test]
+    fn checkpoint_export_reuses_the_existing_member_without_capturing() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev-checkpoint.silo-backup");
+        let member = "c0123456789abcdef0123456789abcde";
+        let runner = FakeRunner::default();
+        runner
+            .existing_members
+            .lock()
+            .unwrap()
+            .push(("dev".into(), member.into()));
+        let service = service(&temp, runner);
+        let result = service
+            .create_backup(
+                BackupRequest {
+                    destination: destination.clone(),
+                    sources: vec![BackupSource {
+                        name: "dev".into(),
+                        snapshot_group: "dev".into(),
+                        // Irrelevant on the checkpoint path: no fresh capture runs.
+                        was_running: true,
+                        runtime_config: managed_config("dev"),
+                        machine_config: machine_config("dev"),
+                        existing_member: Some(member.into()),
+                    }],
+                },
+                &Cancellation::default(),
+            )
+            .unwrap();
+        assert!(result.restart_failures.is_empty());
+        assert!(destination.is_file());
+        let calls = service.runner.calls.lock().unwrap();
+        // No fresh snapshot capture was taken.
+        assert!(calls
+            .iter()
+            .all(|args| args.get(1).map(String::as_str) != Some("create")));
+        // The existing member was verified and saved self-contained.
+        assert!(calls
+            .iter()
+            .any(|args| matches!(args.as_slice(), [head, verb, ..] if head == "snapshot" && verb == "verify")));
+        assert!(calls
+            .iter()
+            .any(|args| args.ends_with(&["--with-parents".into(), "--with-image".into()])));
     }
 
     #[test]
@@ -2935,6 +3006,7 @@ mod tests {
                         was_running: false,
                         runtime_config: managed_config("dev"),
                         machine_config: machine_config("dev"),
+                        existing_member: None,
                     }],
                 },
                 &cancellation,

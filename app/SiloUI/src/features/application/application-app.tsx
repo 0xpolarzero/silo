@@ -13,7 +13,6 @@ import { ApplicationCommandMenu } from "@/features/application/components/applic
 import { applicationCommands } from "@/features/application/components/application-commands"
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { BackupPage } from "@/features/application/pages/backup-page"
 import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
@@ -59,13 +58,14 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
     tabs: {
       github: githubBusy || githubSourceBusy || runningCategories.has("github"),
       secrets: runningCategories.has("secrets"),
-      backup: backupBusy || runningCategories.has("backup"),
       system: source.runtimeRepair?.checking || runningCategories.has("system"),
     },
     workspaceSections: {
       overview: source.sandboxConfigurationOperation?.status === "applying"
         || source.workspaces.some(({ state }) => state === "starting")
-        || runningCategories.has("sandbox"),
+        || backupBusy
+        || runningCategories.has("sandbox")
+        || runningCategories.has("backup"),
       files: source.repositoryPushOperations.some(({ status }) => status === "pushing")
         || runningCategories.has("git"),
     },
@@ -91,7 +91,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const [searchRequest, setSearchRequest] = useState(0)
   const [sidebarRequest, setSidebarRequest] = useState(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [backupMenuRequest, setBackupMenuRequest] = useState<{ id: number; action: "create" | "restore" }>()
+  const [importRequest, setImportRequest] = useState(0)
   const [directoryStore] = useState(() => createDirectoryStore(actions.listWorkspaceDirectory))
   useLayoutEffect(() => {
     directoryStore.setLoader(actions.listWorkspaceDirectory)
@@ -132,7 +132,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const [logQuery, setLogQuery] = useState("")
   const [sandboxConfigurationOperation, setSandboxConfigurationOperation] = useState<SandboxConfigurationOperation | null>(source.sandboxConfigurationOperation)
   const [repositoryPushOperations, setRepositoryPushOperations] = useState<RepositoryPushOperation[]>(source.repositoryPushOperations)
-  const [backupBusy, setBackupBusy] = useState(false)
+  const backupBusy = backup.state.operation?.kind === "running"
   const [githubBusy, setGitHubBusy] = useState(
     source.github.state === "connecting"
       || (source.github.workspaceOperations ?? []).some(({ status }) => status === "applying"),
@@ -220,11 +220,12 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   }, [routeRequest])
 
   const canCreateSandbox = sandboxConfigurationOperation === null
-  const canUseBackup = !backupBusy && backup.state.operation?.kind !== "running"
+  const canImport = !backupBusy
   const canCheckUpdates = Boolean(updates && !updates.pending && !["checking", "downloading", "installing"].includes(updates.snapshot?.phase ?? ""))
+  const openImport = () => { navigation.selectWorkspaceSection("overview"); setImportRequest((current) => current + 1) }
   const nativeMenu = useAppMenu({ ready: true, busy: installingUpdate,
     canGoBack: navigation.canGoBack, canGoForward: navigation.canGoForward,
-    canCreateSandbox, canBackup: canUseBackup, canRestore: canUseBackup, canCheckUpdates, sidebarCollapsed,
+    canCreateSandbox, canImport, canCheckUpdates, sidebarCollapsed,
   }, (command) => {
     if (installingUpdate) return
     switch (command) {
@@ -236,11 +237,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       case "new-sandbox":
         if (canCreateSandbox) { navigation.selectWorkspaceSection("overview"); setNewSandboxRequest(++nextSandboxRequest.current) }
         break
-      case "create-backup": case "restore-backup":
-        if (canUseBackup) {
-          navigation.selectTab("backup")
-          setBackupMenuRequest(value => ({ id: (value?.id ?? 0) + 1, action: command === "create-backup" ? "create" : "restore" }))
-        }
+      case "import-sandbox":
+        if (canImport) openImport()
         break
       case "search": setSearchRequest(value => value + 1); break
       case "toggle-sidebar": setSidebarRequest(value => value + 1); break
@@ -253,7 +251,6 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       case "go-activity": navigation.selectWorkspaceSection("activity"); break
       case "go-github": navigation.selectTab("github"); break
       case "go-secrets": navigation.selectTab("secrets"); break
-      case "go-backup": navigation.selectTab("backup"); break
     }
   })
 
@@ -277,11 +274,11 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       onGoBack={navigation.goBack}
       onGoForward={navigation.goForward}
       reduceMotion={reduceMotion}
-      commandMenu={<ApplicationCommandMenu nativeShortcuts={nativeMenu} openRequest={searchRequest} disabled={installingUpdate} commands={[...applicationCommands(applicationSource, actions, navigateCommand), ...updateCommands(updates, () => navigation.selectSettingsSection("general"))]} />}
+      commandMenu={<ApplicationCommandMenu nativeShortcuts={nativeMenu} openRequest={searchRequest} disabled={installingUpdate} commands={[...applicationCommands(applicationSource, actions, navigateCommand, canImport ? openImport : undefined), ...updateCommands(updates, () => navigation.selectSettingsSection("general"))]} />}
     >
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} source={applicationSource} actions={{ ...actions, dismissMachineConfigurationError: () => {
+          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} importRequest={importRequest} backup={backup} source={applicationSource} actions={{ ...actions, dismissMachineConfigurationError: () => {
             if (sandboxConfigurationOperation?.status !== "failed") return
             actions.dismissMachineConfigurationError()
             setSandboxConfigurationOperation(null)
@@ -314,7 +311,6 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <GitHubPage source={applicationSource} actions={actions} onBusyChange={setGitHubBusy} />
       </section>
       <section id="application-panel-secrets" role="region" aria-labelledby="application-nav-secrets" hidden={visibleTab !== "secrets"}><SecretsPage source={applicationSource} onSaveSecret={actions.saveSecret} onRemoveSecret={actions.removeSecret} onRetrySecret={actions.retrySecret} /></section>
-      <section id="application-panel-backup" role="region" aria-labelledby="application-nav-backup" hidden={visibleTab !== "backup"}><BackupPage menuRequest={backupMenuRequest} source={applicationSource} backup={backup} onBusyChange={setBackupBusy} /></section>
       {activeRuntimeRepair && (
         <section id="application-panel-system" role="region" aria-labelledby="application-nav-system" hidden={visibleTab !== "system"}>
           <SystemIssuePage issue={activeRuntimeRepair} actions={actions} />

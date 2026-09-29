@@ -27,13 +27,13 @@ export function initialBackupArchive(source: ApplicationSource): BackupArchive {
 }
 
 const backupPhases: Array<[string, string]> = [
-  ["Stop selected sandboxes", "Stopping running sandboxes cleanly."],
+  ["Prepare export", "Taking a live snapshot with a guest filesystem flush."],
   ["Save disk copies", "Saving each managed disk."],
-  ["Restart previous sandboxes", "Restarting sandboxes after capture."],
-  ["Write and verify backup", "Writing a self-contained backup."],
+  ["Write and verify archive", "Writing a self-contained export file."],
+  ["Finalize export", "Saving the durable result."],
 ]
 const restorePhases: Array<[string, string]> = [
-  ["Validate backup", "Checking the manifest and checksum."],
+  ["Validate export", "Checking the manifest and checksum."],
   ["Create new sandbox", "Writing managed disk data."],
   ["Apply Silo settings", "Restoring the saved VM settings."],
   ["Verify new sandbox", "Checking the new stopped sandbox."],
@@ -42,7 +42,7 @@ const restorePhases: Array<[string, string]> = [
 function phasesFor(operation: BackupOperationKind, step: number): BackupPhase[] {
   return (operation === "backup" ? backupPhases : restorePhases).map(([title, detail], index) => ({
     title,
-    detail: index < step ? (operation === "backup" && index === 2 ? "Previously running sandboxes restarted." : "Completed.") : detail,
+    detail: index < step ? "Completed." : detail,
     tone: index < step ? "succeeded" as const : index === step ? "running" as const : "waiting" as const,
   }))
 }
@@ -59,14 +59,14 @@ type RunningFixture = { operation: BackupOperationKind; archive: BackupArchive; 
 function resultFor(running: RunningFixture, mode: BackupFixtureMode): Extract<BackupOperation, { kind: "result" }> {
   const common = { operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }) }
   if (running.operation === "backup") {
-    if (mode === "restart-required") return { ...common, kind: "result", outcome: "restart-required", title: "Backup ready; restart failed", message: "The backup is complete and verified. dev remains stopped because its restart failed.", detail: "No backup data was lost." }
-    if (mode === "stop-failed") return { ...common, kind: "result", outcome: "failed", title: "Backup stopped before disk capture", message: "dev did not stop cleanly. Silo did not force it to terminate.", detail: "No backup file was created." }
-    if (mode === "capture-failed") return { ...common, kind: "result", outcome: "failed", title: "Could not save the disk copy", message: "dev restarted successfully. No backup file was created.", detail: "Earlier backups were not changed." }
-    if (mode === "backup-failed") return { ...common, kind: "result", outcome: "failed", title: "Backup could not be verified", message: "The destination disconnected while writing. The incomplete temporary file was removed.", detail: "Previously running sandboxes restarted. Earlier backups were not changed." }
-    return { ...common, kind: "result", outcome: "success", title: "Backup ready", message: `${running.archive.name} · ${running.archive.size} · checksum verified`, detail: `Saved in ${running.archive.destination}. Previously running sandboxes restarted.` }
+    if (mode === "restart-required") return { ...common, kind: "result", outcome: "restart-required", title: "Export ready", message: "The export is complete and verified.", detail: "No sandbox data was lost." }
+    if (mode === "stop-failed") return { ...common, kind: "result", outcome: "failed", title: "Export could not start", message: "dev could not be snapshotted. No export file was created.", detail: "No sandbox data changed." }
+    if (mode === "capture-failed") return { ...common, kind: "result", outcome: "failed", title: "Could not save the disk copy", message: "The disk copy failed. No export file was created.", detail: "Earlier exports were not changed." }
+    if (mode === "backup-failed") return { ...common, kind: "result", outcome: "failed", title: "Export could not be verified", message: "The destination disconnected while writing. The incomplete temporary file was removed.", detail: "Earlier exports were not changed." }
+    return { ...common, kind: "result", outcome: "success", title: "Export ready", message: `${running.archive.name} · ${running.archive.size} · checksum verified`, detail: `Saved in ${running.archive.destination}.` }
   }
-  if (mode === "restore-failed") return { ...common, kind: "result", outcome: "failed", title: "Restore did not complete", message: `The new disk failed verification. The incomplete ${running.targetName} sandbox was removed.`, detail: "The backup file and existing sandboxes were not changed." }
-  return { ...common, kind: "result", outcome: "success", title: `${running.targetName} is ready`, message: "The new sandbox was restored and verified. It is stopped.", detail: "Disk files and settings were restored; running programs were not." }
+  if (mode === "restore-failed") return { ...common, kind: "result", outcome: "failed", title: "Import did not complete", message: `The new disk failed verification. The incomplete ${running.targetName} sandbox was removed.`, detail: "The export file and existing sandboxes were not changed." }
+  return { ...common, kind: "result", outcome: "success", title: `${running.targetName} is ready`, message: "The new sandbox was imported and verified. It is stopped.", detail: "Disk files and settings were imported; running programs were not." }
 }
 
 export function useBackupFixture({ source, previewMode = "success", onRestoreComplete, onRestartRequired }: BackupFixtureOptions): BackupController {
@@ -114,17 +114,18 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
         const archive = selection
         return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this backup format is newer than this Silo version." } : { archive, valid: true }
       },
-      startBackup(destination, sandboxes) {
-        const name = `silo-${new Date().toISOString().slice(0, 10)}-${sandboxes.join("-")}.silo-backup`
+      startBackup(destination, sandboxes, checkpointId) {
+        const base = sandboxes.length === 1 ? sandboxes[0] : "Silo-Export"
+        const name = `${base}${checkpointId ? "-checkpoint" : ""}-${new Date().toISOString().slice(0, 10)}.silo-backup`
         start("backup", { name, archivePath: `${destination}/${name}`, completedLabel: "Just now", size: source.backup.compressedSize, destination, sandboxes }, sandboxes)
       },
       startRestore: (archive, newName) => start("restore", archive, archive.sandboxes, newName),
       cancelOperation() {
         if (!running) return
-        setResult({ operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), kind: "result", outcome: "cancelled", title: running.operation === "backup" ? "Backup cancelled" : "Restore cancelled", message: running.operation === "backup" ? "The incomplete file was removed. Previously running sandboxes restarted." : `The incomplete ${running.targetName} sandbox was removed.`, detail: running.operation === "backup" ? "Existing backups were not changed." : "The backup file and existing sandboxes were not changed." })
+        setResult({ operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), kind: "result", outcome: "cancelled", title: running.operation === "backup" ? "Export cancelled" : "Import cancelled", message: running.operation === "backup" ? "The incomplete file was removed." : `The incomplete ${running.targetName} sandbox was removed.`, detail: running.operation === "backup" ? "Existing exports were not changed." : "The export file and existing sandboxes were not changed." })
         setRunning(null)
       },
-      retryStart(sandbox) { setResult((current) => current && { ...current, outcome: "success", title: "Backup ready", message: `${sandbox} is running again. The backup remains complete and verified.` }) },
+      retryStart(sandbox) { setResult((current) => current && { ...current, outcome: "success", title: "Export ready", message: `${sandbox} export remains complete and verified.` }) },
       dismissOperation: () => setResult(null),
     },
   }

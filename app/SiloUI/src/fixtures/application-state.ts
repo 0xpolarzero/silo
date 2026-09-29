@@ -41,6 +41,20 @@ export function useApplicationFixture(source: ApplicationSource) {
     setSecrets((current) => current.filter((secret) => secret.id !== id))
   }, [])
 
+  const createCheckpoint = useCallback(async (target: string, name: string) => {
+    setWorkspaces((current) => current.map((workspace) => workspace.machine.kind === "vm" && workspace.machine.name === target
+      ? { ...workspace, checkpoints: [...(workspace.checkpoints ?? []), { id: crypto.randomUUID(), name, createdAt: new Date().toISOString(), scope: workspace.state === "running" ? "full" : "disk", reason: "manual" }] }
+      : workspace))
+  }, [])
+  const forkCheckpoint = useCallback(async (_target: string, _checkpointId: string | null, newName: string) => {
+    onRestoreComplete(newName)
+  }, [onRestoreComplete])
+  const restoreCheckpoint = useCallback(async (target: string, checkpointId: string) => {
+    setWorkspaces((current) => current.map((workspace) => workspace.machine.kind === "vm" && workspace.machine.name === target
+      ? { ...workspace, state: "stopped", stateDetail: "Restored from checkpoint", checkpoints: (workspace.checkpoints ?? []).some((point) => point.id === checkpointId && point.reason === "before-restore") ? workspace.checkpoints : [...(workspace.checkpoints ?? []), { id: crypto.randomUUID(), name: "Before restore", createdAt: new Date().toISOString(), scope: "full", reason: "before-restore" }] }
+      : workspace))
+  }, [])
+
   const saveSecret = useCallback((request: SecretConfigurationRequest) => {
     // The preview retains metadata only; entered values are deliberately discarded.
     const secret: ApplicationSecret = {
@@ -55,5 +69,5 @@ export function useApplicationFixture(source: ApplicationSource) {
       : [...current, secret])
   }, [])
 
-  return { source: { ...source, workspaces, secrets }, saveSecret, removeSecret, onRestoreComplete, onRestartRequired }
+  return { source: { ...source, workspaces, secrets }, saveSecret, removeSecret, onRestoreComplete, onRestartRequired, createCheckpoint, forkCheckpoint, restoreCheckpoint }
 }

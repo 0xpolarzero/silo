@@ -779,7 +779,7 @@ mod tests {
     fn cancel_all_waiting_cancels_every_waiter_and_leaves_running_work() {
         let gate = leak();
         // One running entry that must be left untouched.
-        let running = gate.computer("Backing up sandboxes").unwrap();
+        let running = gate.computer("Exporting sandbox").unwrap();
         let first = thread::spawn(move || gate.vm("id-a", "a", "Stop a").unwrap_err());
         wait_until(gate, |queue| queue.waiting.len() == 1);
         let second = thread::spawn(move || gate.vm("id-b", "b", "Stop b").unwrap_err());
@@ -790,7 +790,7 @@ mod tests {
         let queue = gate.snapshot();
         assert!(queue.waiting.is_empty());
         assert_eq!(queue.running.len(), 1);
-        assert_eq!(queue.running[0].label, "Backing up sandboxes");
+        assert_eq!(queue.running[0].label, "Exporting sandbox");
         drop(running);
         assert!(gate.is_idle());
     }

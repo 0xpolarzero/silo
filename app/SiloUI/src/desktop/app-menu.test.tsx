@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: async (_name: string, receive:
   native.receive = receive; return native.stop
 } }))
 const state: AppMenuState = { ready: true, busy: false, canGoBack: true, canGoForward: true,
-  canCreateSandbox: true, canBackup: true, canRestore: true, canCheckUpdates: true, sidebarCollapsed: false }
+  canCreateSandbox: true, canImport: true, canCheckUpdates: true, sidebarCollapsed: false }
 afterEach(() => vi.restoreAllMocks())
 
 it("routes Linux Control shortcuts and removes the listener on unmount", () => {

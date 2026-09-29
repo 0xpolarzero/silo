@@ -51,6 +51,7 @@ interface MachineListProps {
   onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
   onDeleteMachine?: (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => Promise<void>
   onConnectComputer?: () => void
+  onImportSandbox?: () => void
   onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
   getRowPresentation?: (machine: SetupMachineConfiguration) => MachineRowPresentation
   sortPriority?: (machine: SetupMachineConfiguration) => number
@@ -276,7 +277,7 @@ function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, b
   )
 }
 
-export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, newSandboxRequest, onNewSandboxRequestHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
+export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled = false, newSandboxRequest, onNewSandboxRequestHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
   const [computerId, setComputerId] = useState("")
   const [committing, setCommitting] = useState(false)
   interactionDisabled = interactionDisabled || committing
@@ -544,6 +545,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
             <PopoverContent role="menu" aria-label="Add sandbox" align="end" className="grid w-48 gap-1 p-1">
               <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => startAdd("vm")}>New sandbox</button>
               <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { if (onConnectComputer) { setAddOpen(false); onConnectComputer() } else startAdd("ssh") }}>{onConnectComputer ? "Connect computer…" : "Connect a machine via SSH"}</button>
+              {onImportSandbox && <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { setAddOpen(false); onImportSandbox() }}>Import sandbox…</button>}
             </PopoverContent>
           </Popover>
         </div>

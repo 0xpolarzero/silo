@@ -77,6 +77,9 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
     actions={{
       ...inactiveApplicationActions,
       saveSshAccess: async request => { setSshSettings(current => ({ ...current, [request.workspace]: request })) },
+      createCheckpoint: fixture.createCheckpoint,
+      forkCheckpoint: fixture.forkCheckpoint,
+      restoreCheckpoint: fixture.restoreCheckpoint,
       listWorkspaceDirectory,
       queryLogs,
       ...actions,

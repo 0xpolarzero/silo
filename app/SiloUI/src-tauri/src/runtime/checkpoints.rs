@@ -734,6 +734,55 @@ pub(super) fn pending_workspace(
     })
 }
 
+/// True for the exact `c` + 31 hex-digit form produced by `new_checkpoint_id`.
+fn is_checkpoint_native_id(id: &str) -> bool {
+    id.len() == 32
+        && id.as_bytes()[0] == b'c'
+        && id[1..].bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// Resolve a stored checkpoint into the MicroSandbox lineage selector a portable
+/// export needs. The checkpoint is addressed by its public Silo id in this
+/// workspace's record; the returned member is MicroSandbox's immutable name.
+/// Returns `(snapshot_group, native_member, scope, display_name)`.
+pub(crate) fn export_source(
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    checkpoint_id: &str,
+) -> Result<(String, String, String, String), RuntimeError> {
+    let machine = machine(paths, workspace_id)?;
+    let record = load(paths, workspace_id)?;
+    if record.restore_journal.is_some() {
+        return Err(error(
+            "Finish the pending Restore before exporting a checkpoint.",
+        ));
+    }
+    if record
+        .inflight_checkpoint
+        .as_ref()
+        .is_some_and(|checkpoint| checkpoint.id == checkpoint_id)
+    {
+        return Err(error(
+            "That checkpoint is still being captured. Export it once capture finishes.",
+        ));
+    }
+    let checkpoint = record
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.id == checkpoint_id)
+        .ok_or_else(|| RuntimeError::Invalid("The selected checkpoint no longer exists.".into()))?
+        .clone();
+    // Resolve (and migrate, for original-format records) the immutable native
+    // lineage group that holds this checkpoint's member.
+    let snapshot_group = ensure_snapshot_group(paths, workspace_id, machine.name())?;
+    Ok((
+        snapshot_group,
+        checkpoint.native_id().to_owned(),
+        checkpoint.scope.clone(),
+        checkpoint.name.clone(),
+    ))
+}
+
 /// Record an archive snapshot as a new stopped workspace. Snapshot loading
 /// only installs immutable data; activation is deliberately deferred to the
 /// common explicit-start path.
@@ -745,19 +794,23 @@ pub(crate) fn import_pending_restore(
 ) -> Result<(), RuntimeError> {
     // These are MicroSandbox snapshot selectors, not sandbox names. Require
     // the exact forms produced by Silo's v3 export/import before saving intent.
+    // The member is either a state export's `silo-backup-<n>-<n>-<n>` name or,
+    // for a checkpoint export, that checkpoint's `c`+31-hex native id.
     let group_suffix = source_group.strip_prefix("silo-import-").unwrap_or("");
     let member_suffix = member.strip_prefix("silo-backup-").unwrap_or("");
     let member_parts: Vec<_> = member_suffix.split('-').collect();
+    let backup_member = member.starts_with("silo-backup-")
+        && member_parts.len() == 3
+        && member_parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
     if source_group.len() != 44
         || group_suffix.len() != 32
         || !group_suffix
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         || member.len() > 128
-        || member_parts.len() != 3
-        || member_parts
-            .iter()
-            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+        || !(backup_member || is_checkpoint_native_id(member))
     {
         return Err(RuntimeError::Invalid(
             "Imported snapshot reference is invalid.".into(),
@@ -778,6 +831,22 @@ pub(crate) fn import_pending_restore(
         "rules": []
     }));
     save(paths, workspace_id, &record)
+}
+
+/// Capture a checkpoint through the production capture path and return its public
+/// Silo id. Used by opt-in live tests to exercise real checkpoint exports.
+#[cfg(test)]
+pub(crate) fn capture_for_test(
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    name: &str,
+) -> Result<String, RuntimeError> {
+    capture_with(&ProcessRunner, paths, workspace_id, name, "manual")?;
+    load(paths, workspace_id)?
+        .checkpoints
+        .first()
+        .map(|checkpoint| checkpoint.id.clone())
+        .ok_or_else(|| error("The captured checkpoint was not recorded."))
 }
 
 fn running_child_matches(
@@ -1557,6 +1626,71 @@ mod tests {
         ] {
             assert!(import_pending_restore(&paths, ID, bad_group, bad_member).is_err());
         }
+    }
+
+    #[test]
+    fn imported_snapshot_intent_accepts_a_checkpoint_native_member() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let group = "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9";
+        // A `c` + 31 hex-digit member, as produced by a checkpoint export.
+        let member = "c0123456789abcdef0123456789abcde";
+        import_pending_restore(&paths, ID, group, member).unwrap();
+        let pending = load(&paths, ID)
+            .unwrap()
+            .pending_checkpoint_restore
+            .unwrap();
+        assert_eq!(pending.checkpoint_id, member);
+        assert_eq!(pending.state, "disk");
+        // Uppercase hex is not a form Silo produces and stays rejected.
+        assert!(import_pending_restore(&paths, ID, group, "c0123456789ABCDEF0123456789abcde").is_err());
+        // A bare word that is neither a backup member nor a checkpoint id is rejected.
+        assert!(import_pending_restore(&paths, ID, group, "imported-member").is_err());
+    }
+
+    #[test]
+    fn export_source_resolves_checkpoint_member_and_rejects_unknown_or_inflight() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(
+            &paths.metadata,
+            &MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine()],
+            },
+        )
+        .unwrap();
+        let mut record = Record::default();
+        record.snapshot_group = Some("dev".into());
+        record.checkpoints.push(Checkpoint {
+            id: "c000000000000000000000000000001".into(),
+            native_id: Some("c0000000000000000000000000000aa".into()),
+            name: "Milestone".into(),
+            created_at: 1,
+            scope: "full".into(),
+            reason: "manual".into(),
+        });
+        save(&paths, ID, &record).unwrap();
+        let (group, member, scope, name) =
+            export_source(&paths, ID, "c000000000000000000000000000001").unwrap();
+        assert_eq!(group, "dev");
+        assert_eq!(member, "c0000000000000000000000000000aa");
+        assert_eq!(scope, "full");
+        assert_eq!(name, "Milestone");
+        // Unknown ids are rejected.
+        assert!(export_source(&paths, ID, "c000000000000000000000000000999").is_err());
+        // An inflight checkpoint cannot be exported until capture finishes.
+        let mut inflight = record;
+        inflight.inflight_checkpoint = Some(Checkpoint {
+            id: "c000000000000000000000000000002".into(),
+            native_id: None,
+            name: "Capturing".into(),
+            created_at: 2,
+            scope: "disk".into(),
+            reason: "manual".into(),
+        });
+        save(&paths, ID, &inflight).unwrap();
+        assert!(export_source(&paths, ID, "c000000000000000000000000000002").is_err());
     }
 
     #[test]

@@ -5,13 +5,16 @@ import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import type { ApplicationActions, ApplicationWorkspace } from "@/features/application/model/application-source"
+import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 
 type Choice = { action: "fork" | "restore"; checkpointId: string }
-export function CheckpointPanel({ workspace, target, actions, disabled }: {
+export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false }: {
   workspace: ApplicationWorkspace
   target: string
   actions: ApplicationActions
   disabled: boolean
+  onExport?: (checkpoint: WorkspaceCheckpoint) => void
+  exportDisabled?: boolean
 }) {
   const [name, setName] = useState("")
   const [forkName, setForkName] = useState("")
@@ -38,7 +41,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled }: {
     }
   }
 
-  return <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="mx-3 mb-2 p-3 text-xs">
+  return <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="border-t border-border p-3 text-xs">
     <div>
       <h3 className="font-medium">Checkpoints</h3>
       <p className="mt-0.5 text-muted-foreground">Save this sandbox’s current session and disks. Forks start stopped.</p>
@@ -47,8 +50,8 @@ export function CheckpointPanel({ workspace, target, actions, disabled }: {
       <Input aria-label="Checkpoint name" className="h-7 flex-1 text-xs" maxLength={80} value={choice ? "" : name} disabled={locked || Boolean(choice) || !actions.createCheckpoint} placeholder="Checkpoint name" onChange={event => setName(event.target.value)} />
       <Button type="submit" size="xs" disabled={locked || Boolean(choice) || !name.trim() || !actions.createCheckpoint}>Create</Button>
     </form>
-    {checkpoints.length === 0 ? <p className="mt-3 text-muted-foreground">No checkpoints yet.</p> : <ol className="mt-3 divide-y rounded-md border" aria-label="Checkpoint history">
-      {[...checkpoints].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map(item => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 p-2">
+    {checkpoints.length === 0 ? <p className="mt-3 text-muted-foreground">No checkpoints yet.</p> : <ol className="mt-3 divide-y divide-border border-t border-border" aria-label="Checkpoint history">
+      {[...checkpoints].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map(item => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
         <div className="min-w-0">
           <p className="truncate font-medium" title={item.name}>{item.name}</p>
           <p className="text-[11px] text-muted-foreground">{item.reason === "before-restore" ? "Recovery" : "Manual"} · {item.scope === "full" ? "Session and disks" : "Disks"} · <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time></p>
@@ -74,6 +77,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled }: {
                 <TooltipContent>Save a recovery checkpoint, then restore this state. The sandbox stays stopped.</TooltipContent>
               </Tooltip>
             </TooltipProvider>
+            {!workspace.computer && onExport && <Button size="xs" variant="ghost" disabled={locked || exportDisabled} onClick={() => onExport(item)}>Export</Button>}
           </>}
         </div>
       </li>)}

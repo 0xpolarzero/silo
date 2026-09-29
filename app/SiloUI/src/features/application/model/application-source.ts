@@ -13,7 +13,7 @@ import type {
 } from "@/contracts/silo"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 
-export type ApplicationTab = "workspaces" | "github" | "secrets" | "backup" | "system" | "settings"
+export type ApplicationTab = "workspaces" | "github" | "secrets" | "system" | "settings"
 export type SettingsSection = "general" | "computers" | "notifications"
 export type WorkspaceSection = "overview" | "files" | "logs" | "network" | "activity"
 export type WorkspaceDetailSection = Exclude<WorkspaceSection, "overview">

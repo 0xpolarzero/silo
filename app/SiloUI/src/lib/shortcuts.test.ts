@@ -4,7 +4,7 @@ import { desktopShortcutCommand, shortcutFor } from "./shortcuts"
 describe("desktop shortcuts", () => {
   it.each([
     ["1", "go-sandboxes"], ["2", "go-files"], ["3", "go-logs"], ["4", "go-network"],
-    ["5", "go-activity"], ["6", "go-github"], ["7", "go-secrets"], ["8", "go-backup"],
+    ["5", "go-activity"], ["6", "go-github"], ["7", "go-secrets"],
   ])("routes Control-%s to %s", (key, command) => {
     expect(desktopShortcutCommand(new KeyboardEvent("keydown", { key, ctrlKey: true }))).toBe(command)
   })

@@ -102,9 +102,9 @@ pub(crate) fn action_failed(app: &AppHandle, title: &'static str) {
 
 fn backup_title(operation: &str, outcome: &str) -> Option<&'static str> {
     match (operation, outcome) {
-        ("backup", "failed") => Some("Backup failed"),
-        ("backup", "restart-required") => Some("Backup complete; sandbox restart failed"),
-        ("restore", "failed") => Some("Restore failed"),
+        ("backup", "failed") => Some("Export failed"),
+        ("backup", "restart-required") => Some("Export complete; sandbox restart failed"),
+        ("restore", "failed") => Some("Import failed"),
         _ => None,
     }
 }
@@ -117,7 +117,7 @@ pub(crate) fn backup_result(app: &AppHandle, operation: &str, outcome: &str) {
         app,
         Category::Backup,
         title,
-        "Open Silo’s Backup screen to review the result and recovery instructions.",
+        "Open Silo to review the result.",
     );
 }
 
@@ -198,8 +198,8 @@ mod tests {
     }
     #[test]
     fn backup_failures_and_partial_restart_failures_alert_but_cancel_does_not() {
-        assert_eq!(backup_title("backup", "failed"), Some("Backup failed"));
-        assert_eq!(backup_title("restore", "failed"), Some("Restore failed"));
+        assert_eq!(backup_title("backup", "failed"), Some("Export failed"));
+        assert_eq!(backup_title("restore", "failed"), Some("Import failed"));
         assert!(backup_title("backup", "restart-required").is_some());
         for operation in ["backup", "restore"] {
             for outcome in ["success", "cancelled", "running"] {

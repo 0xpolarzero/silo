@@ -136,7 +136,7 @@ describe("sidebar hover preview", () => {
     const { toggle } = renderSidebar()
     fireEvent.click(toggle)
 
-    for (const name of ["Files", "GitHub", "Backup"]) {
+    for (const name of ["Files", "GitHub", "Secrets"]) {
       const item = screen.getByRole("button", { name })
       fireEvent.pointerMove(item)
       wait(350)

@@ -15,8 +15,7 @@ pub(crate) struct MenuState {
     can_go_back: bool,
     can_go_forward: bool,
     can_create_sandbox: bool,
-    can_backup: bool,
-    can_restore: bool,
+    can_import: bool,
     can_check_updates: bool,
     sidebar_collapsed: bool,
 }
@@ -46,13 +45,12 @@ fn enabled(command: &str, state: &MenuState) -> bool {
     }
     match command {
         "new-sandbox" => state.can_create_sandbox,
-        "create-backup" => state.can_backup,
-        "restore-backup" => state.can_restore,
+        "import-sandbox" => state.can_import,
         "check-updates" => state.can_check_updates,
         "go-back" => state.can_go_back,
         "go-forward" => state.can_go_forward,
         "settings" | "search" | "toggle-sidebar" | "go-sandboxes" | "go-github" | "go-secrets"
-        | "go-files" | "go-logs" | "go-network" | "go-backup" | "go-activity" => true,
+        | "go-files" | "go-logs" | "go-network" | "go-activity" => true,
         _ => false,
     }
 }
@@ -209,8 +207,7 @@ mod native {
             true,
             &[
                 &item("new-sandbox", "New Sandbox…", Some("CmdOrCtrl+N"))?,
-                &item("create-backup", "Create Backup…", None)?,
-                &item("restore-backup", "Restore Backup…", None)?,
+                &item("import-sandbox", "Import Sandbox…", None)?,
                 &Standard::separator(app)?,
                 #[cfg(target_os = "macos")]
                 &Standard::close_window(app, None)?,
@@ -267,7 +264,6 @@ mod native {
                 &item("go-activity", "Activity", Some("CmdOrCtrl+5"))?,
                 &item("go-github", "GitHub", Some("CmdOrCtrl+6"))?,
                 &item("go-secrets", "Secrets", Some("CmdOrCtrl+7"))?,
-                &item("go-backup", "Backup", Some("CmdOrCtrl+8"))?,
             ],
         )?;
         #[cfg(target_os = "macos")]
@@ -505,8 +501,7 @@ mod tests {
             ready: true,
             busy: true,
             can_create_sandbox: true,
-            can_backup: true,
-            can_restore: true,
+            can_import: true,
             can_check_updates: true,
             can_go_back: true,
             can_go_forward: true,
@@ -516,8 +511,7 @@ mod tests {
             for command in [
                 "settings",
                 "new-sandbox",
-                "create-backup",
-                "restore-backup",
+                "import-sandbox",
                 "check-updates",
                 "search",
                 "go-back",
@@ -536,14 +530,13 @@ mod tests {
             ..Default::default()
         };
         assert!(!enabled("new-sandbox", &state));
-        assert!(!enabled("create-backup", &state));
-        assert!(!enabled("restore-backup", &state));
+        assert!(!enabled("import-sandbox", &state));
         assert!(!enabled("check-updates", &state));
         assert!(enabled("settings", &state));
-        assert!(enabled("go-backup", &state));
-        state.can_backup = true;
+        assert!(enabled("go-sandboxes", &state));
+        state.can_import = true;
         state.can_go_back = true;
-        assert!(enabled("create-backup", &state));
+        assert!(enabled("import-sandbox", &state));
         assert!(enabled("go-back", &state));
         assert!(!enabled("go-forward", &state));
         assert!(!enabled("unknown-command", &state));

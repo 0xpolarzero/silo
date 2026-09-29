@@ -44,7 +44,7 @@ export interface BackupActions {
   chooseDestination: () => Promise<string | null>
   chooseArchive: (onSelected?: (archivePath: string) => void) => Promise<{ archive: BackupArchive; valid: boolean; reason?: string } | null>
   inspectArchive: (selection: BackupArchive) => Promise<{ archive: BackupArchive; valid: boolean; reason?: string }>
-  startBackup: (destination: string, sandboxes: string[]) => void
+  startBackup: (destination: string, sandboxes: string[], checkpointId?: string) => void
   startRestore: (archive: BackupArchive, newName: string, sourceName?: string) => void
   cancelOperation: () => void
   retryStart: (sandbox: string) => void

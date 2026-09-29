@@ -9,8 +9,7 @@ export interface AppMenuState {
   canGoBack: boolean
   canGoForward: boolean
   canCreateSandbox: boolean
-  canBackup: boolean
-  canRestore: boolean
+  canImport: boolean
   canCheckUpdates: boolean
   sidebarCollapsed: boolean
 }

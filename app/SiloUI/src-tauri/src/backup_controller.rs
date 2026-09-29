@@ -11,7 +11,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -288,11 +288,11 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
             return Ok(());
         }
         if !controller.busy.load(Ordering::Acquire) {
-            return Err("The interrupted backup or restore could not finish. Open Backup to see the error. Saved progress was preserved.".into());
+            return Err("The interrupted export or import could not finish. Open Silo to see the error. Saved progress was preserved.".into());
         }
         if started.elapsed() >= RESTORE_TIMEOUT {
             return Err(
-                "Backup recovery is still running. Automatic sandbox startup was deferred.".into(),
+                "Export or import recovery is still running. Automatic sandbox startup was deferred.".into(),
             );
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -302,7 +302,7 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
 fn require_main(window: &WebviewWindow) -> Result<(), String> {
     (window.label() == "main")
         .then_some(())
-        .ok_or_else(|| "Only the main Silo window can manage backups.".into())
+        .ok_or_else(|| "Only the main Silo window can export or import sandboxes.".into())
 }
 
 fn publish(app: &AppHandle, controller: &Controller) {
@@ -323,7 +323,7 @@ fn archive_from(path: &Path, inspected: &backup::ArchiveInspection) -> Archive {
         name: path
             .file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or("Silo backup")
+            .unwrap_or("Silo export")
             .to_string(),
         archive_path: path.to_string_lossy().into_owned(),
         completed_label: "Verified archive".into(),
@@ -342,7 +342,7 @@ fn free_bytes(path: &Path) -> Result<u64, String> {
         .map_err(|error| format!("Silo could not inspect the selected destination: {error}"))?;
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let encoded = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| "The selected backup destination is invalid.".to_string())?;
+        .map_err(|_| "The selected export destination is invalid.".to_string())?;
     let mut statistics: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: encoded is NUL terminated and statistics is a valid exclusive output pointer.
     if unsafe { libc::statvfs(encoded.as_ptr(), &mut statistics) } != 0 {
@@ -376,7 +376,7 @@ pub(crate) fn read_backup_state(
                 None => Some(managed),
             });
     let availability_message = view.history_error.clone().or_else(|| {
-        recovery::unresolved(&controller).unwrap_or(true).then(|| "The interrupted backup or restore could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
+        recovery::unresolved(&controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
     });
     Ok(BackupState {
         snapshot_id: controller.revision.load(Ordering::Relaxed).to_string(),
@@ -406,14 +406,22 @@ pub(crate) async fn choose_backup_destination(
 ) -> Result<Option<String>, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
+    let starting_directory = controller
+        .view
+        .lock()
+        .map_err(|_| "Backup state is unavailable.".to_string())?
+        .destination
+        .clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(selected) = app
+        let mut dialog = app
             .dialog()
             .file()
-            .set_title("Choose a backup destination")
-            .set_parent(&window)
-            .blocking_pick_folder()
-        else {
+            .set_title("Choose where to export")
+            .set_parent(&window);
+        if let Some(directory) = starting_directory {
+            dialog = dialog.set_directory(directory);
+        }
+        let Some(selected) = dialog.blocking_pick_folder() else {
             return Ok(None);
         };
         let path = selected.into_path().map_err(|error| error.to_string())?;
@@ -453,9 +461,9 @@ pub(crate) async fn choose_backup_archive(
         let selected = app
             .dialog()
             .file()
-            .set_title("Choose a Silo backup")
+            .set_title("Choose a Silo export to import")
             .set_parent(&window)
-            .add_filter("Silo backup", &["silo-backup"])
+            .add_filter("Silo export", &["silo-backup"])
             .blocking_pick_file();
         selected
             .map(|path| path.into_path().map_err(|error| error.to_string()))
@@ -492,7 +500,7 @@ pub(crate) async fn inspect_backup_archive(
                     name: path
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .unwrap_or("Backup")
+                        .unwrap_or("Export")
                         .into(),
                     archive_path: path.to_string_lossy().into_owned(),
                     completed_label: "Not validated".into(),
@@ -513,17 +521,28 @@ pub(crate) async fn inspect_backup_archive(
     .map_err(|error| error.to_string())?
 }
 
-fn unique_archive(destination: &Path) -> PathBuf {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let base = destination.join(format!("Silo-Backup-{seconds}.silo-backup"));
+fn unique_archive(destination: &Path, sandboxes: &[String], checkpoint: bool) -> PathBuf {
+    // A single-sandbox export reads as "<sandbox>-<date>"; a checkpoint export of
+    // that sandbox reads as "<sandbox>-checkpoint-<date>"; a multi-sandbox export
+    // keeps a generic base. The UTC date avoids a local-offset dependency.
+    let today = time::OffsetDateTime::now_utc();
+    let date = format!(
+        "{:04}-{:02}-{:02}",
+        today.year(),
+        today.month() as u8,
+        today.day()
+    );
+    let base_name = match (sandboxes, checkpoint) {
+        ([only], true) => format!("{only}-checkpoint-{date}"),
+        ([only], false) => format!("{only}-{date}"),
+        _ => format!("Silo-Export-{date}"),
+    };
+    let base = destination.join(format!("{base_name}.silo-backup"));
     if !base.exists() {
         return base;
     }
-    (1_u32..)
-        .map(|suffix| destination.join(format!("Silo-Backup-{seconds}-{suffix}.silo-backup")))
+    (2_u32..)
+        .map(|suffix| destination.join(format!("{base_name}-{suffix}.silo-backup")))
         .find(|path| !path.exists())
         .unwrap_or(base)
 }
@@ -551,9 +570,18 @@ pub(crate) async fn start_backup(
     controller: State<'_, Arc<Controller>>,
     destination: String,
     sandboxes: Vec<String>,
+    checkpoint_id: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
-    let result = start_backup_inner(app.clone(), window, controller, destination, sandboxes).await;
+    let result = start_backup_inner(
+        app.clone(),
+        window,
+        controller,
+        destination,
+        sandboxes,
+        checkpoint_id,
+    )
+    .await;
     if result.is_err() {
         crate::notifications::backup_result(&app, "backup", "failed");
     }
@@ -566,6 +594,7 @@ async fn start_backup_inner(
     controller: State<'_, Arc<Controller>>,
     destination: String,
     sandboxes: Vec<String>,
+    checkpoint_id: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
@@ -577,15 +606,41 @@ async fn start_backup_inner(
         .clone();
     let canonical = PathBuf::from(&destination)
         .canonicalize()
-        .map_err(|error| format!("Silo could not use the backup destination: {error}"))?;
+        .map_err(|error| format!("Silo could not use the export destination: {error}"))?;
     if selected_destination.as_deref() != Some(canonical.as_path()) {
-        return Err("Choose the backup destination again before starting.".into());
+        return Err("Choose the export destination again before starting.".into());
     }
+    // Sandbox names become part of the archive file name, so validate them before
+    // building the path to keep the archive inside the chosen destination.
+    for name in &sandboxes {
+        runtime::validate_name(name).map_err(|error| error.to_string())?;
+    }
+    // A checkpoint export packages one sandbox's stored checkpoint. Resolve its
+    // name up front so the operation phase can name it and unknown ids fail early.
+    let checkpoint_name = if let Some(checkpoint_id) = &checkpoint_id {
+        let [sandbox] = sandboxes.as_slice() else {
+            return Err("Choose exactly one sandbox to export from a checkpoint.".into());
+        };
+        let paths = runtime::runtime_paths(&app)?;
+        let metadata =
+            runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
+        let machine = metadata
+            .machines
+            .iter()
+            .find(|machine| machine.is_vm() && machine.name() == sandbox)
+            .ok_or_else(|| format!("Sandbox '{sandbox}' is not a Silo-managed VM."))?;
+        let (_group, _member, _scope, name) =
+            runtime::checkpoints::export_source(&paths, machine.id(), checkpoint_id)
+                .map_err(|error| error.to_string())?;
+        Some(name)
+    } else {
+        None
+    };
     controller
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another backup or restore operation is running.".to_string())?;
-    let archive_path = unique_archive(&canonical);
+        .map_err(|_| "Another export or import is running.".to_string())?;
+    let archive_path = unique_archive(&canonical, &sandboxes, checkpoint_id.is_some());
     let pending_archive = Archive {
         name: archive_path
             .file_name()
@@ -600,7 +655,11 @@ async fn start_backup_inner(
     };
     if let Err(error) = recovery::begin(
         &controller,
-        recovery::Journal::backup(pending_archive.clone(), sandboxes.clone()),
+        recovery::Journal::backup(
+            pending_archive.clone(),
+            sandboxes.clone(),
+            checkpoint_id.clone(),
+        ),
     ) {
         finish(&controller);
         return Err(error);
@@ -612,6 +671,18 @@ async fn start_backup_inner(
             .lock()
             .map_err(|_| "Backup state is unavailable.".to_string())?;
         view.cancellation = Some(cancellation.clone());
+        let phase = match &checkpoint_name {
+            Some(name) => Phase {
+                title: format!("Using checkpoint \u{201c}{name}\u{201d}"),
+                detail: "Silo is packaging and verifying the selected checkpoint.".into(),
+                tone: "running",
+            },
+            None => Phase {
+                title: "Capture and verify".into(),
+                detail: "Silo is creating verified self-contained snapshots.".into(),
+                tone: "running",
+            },
+        };
         view.operation = Some(Operation::Running {
             operation: "backup",
             archive: pending_archive.clone(),
@@ -619,11 +690,7 @@ async fn start_backup_inner(
             target_name: None,
             progress: 0,
             indeterminate: Some(true),
-            phases: vec![Phase {
-                title: "Capture and verify".into(),
-                detail: "Silo is creating verified self-contained snapshots.".into(),
-                tone: "running",
-            }],
+            phases: vec![phase],
         });
     }
     publish(&app, &controller);
@@ -635,6 +702,7 @@ async fn start_backup_inner(
             controller_for_work,
             archive_path,
             sandboxes,
+            checkpoint_id,
             cancellation,
             pending_archive,
         )
@@ -647,10 +715,18 @@ fn run_backup(
     controller: Arc<Controller>,
     archive_path: PathBuf,
     sandboxes: Vec<String>,
+    checkpoint_id: Option<String>,
     cancellation: backup::Cancellation,
     pending_archive: Archive,
 ) {
-    let result = backup_work(&app, &controller, &archive_path, &sandboxes, &cancellation);
+    let result = backup_work(
+        &app,
+        &controller,
+        &archive_path,
+        &sandboxes,
+        checkpoint_id.as_deref(),
+        &cancellation,
+    );
     let mut operation = match result {
         Ok((archive, restart_failures)) if restart_failures.is_empty() => Operation::Result {
             operation: "backup",
@@ -658,8 +734,8 @@ fn run_backup(
             running_names: Vec::new(),
             target_name: None,
             outcome: "success",
-            title: "Backup complete".into(),
-            message: "Backup completed successfully.".into(),
+            title: "Export complete".into(),
+            message: "Sandbox exported.".into(),
             detail: None,
         },
         Ok((archive, restart_failures)) => {
@@ -667,7 +743,7 @@ fn run_backup(
                 .iter()
                 .map(|failure| failure.sandbox.clone())
                 .collect::<Vec<_>>();
-            Operation::Result { operation: "backup", archive, running_names: names, target_name: None, outcome: "restart-required", title: "Backup complete; restart failed".into(), message: "The archive is complete and verified, but a previously running sandbox did not restart.".into(), detail: Some(restart_failures.into_iter().map(|failure| format!("{}: {}", failure.sandbox, failure.detail)).collect::<Vec<_>>().join("\n")) }
+            Operation::Result { operation: "backup", archive, running_names: names, target_name: None, outcome: "restart-required", title: "Export complete; restart failed".into(), message: "The export is complete and verified, but a previously running sandbox did not restart.".into(), detail: Some(restart_failures.into_iter().map(|failure| format!("{}: {}", failure.sandbox, failure.detail)).collect::<Vec<_>>().join("\n")) }
         }
         Err(error) => Operation::Result {
             operation: "backup",
@@ -680,13 +756,13 @@ fn run_backup(
                 "failed"
             },
             title: if error == "The operation was cancelled." {
-                "Backup cancelled".into()
+                "Export cancelled".into()
             } else {
-                "Backup failed".into()
+                "Export failed".into()
             },
             message: error,
             detail: Some(
-                "No completed archive was recorded; incomplete files were removed.".into(),
+                "No completed export was recorded; incomplete files were removed.".into(),
             ),
         },
     };
@@ -702,14 +778,14 @@ fn run_backup(
         if matches!(*outcome, "success" | "restart-required") {
             if let Err(error) = record_archive(&controller, archive) {
                 *outcome = "failed";
-                *title = "Backup saved; history update failed".into();
+                *title = "Export saved; history update failed".into();
                 *message = format!(
-                    "The verified archive remains at {}. {error}",
+                    "The verified export remains at {}. {error}",
                     archive.archive_path
                 );
                 *detail = Some(
                     format!(
-                        "{} The archive was not added to recent backups.",
+                        "{} Silo could not save its export records.",
                         detail.take().unwrap_or_default()
                     )
                     .trim()
@@ -735,9 +811,10 @@ fn run_backup(
 fn mutation_guard(
     cancellation: &backup::Cancellation,
     label: &str,
+    cancellable: bool,
 ) -> Result<runtime::operation_gate::OperationGuard<'static>, String> {
-    // Backup and restore change shared state and wait their turn (computer scope).
-    // A queued backup stays cancellable and gives up if the work ahead never ends.
+    // Export and import change shared state and wait their turn (computer scope).
+    // A queued export stays cancellable and gives up if the work ahead never ends.
     if cancellation.cancelled() {
         return Err("The operation was cancelled.".into());
     }
@@ -755,9 +832,9 @@ fn mutation_guard(
             }
             error => error.to_string(),
         })?;
-    // Backup capture can be cancelled while running; restore cannot. Share the one
-    // cancel flag with the gate so the queue's Cancel and the backup UI's Cancel agree.
-    if label == "Backing up sandboxes" {
+    // Export capture can be cancelled while running; import cannot. Share the one
+    // cancel flag with the gate so the queue's Cancel and the export UI's Cancel agree.
+    if cancellable {
         guard.adopt_cancel_token(cancellation.flag());
         guard.allow_cancel();
     }
@@ -771,13 +848,17 @@ fn backup_work(
     controller: &Controller,
     archive_path: &Path,
     names: &[String],
+    checkpoint_id: Option<&str>,
     cancellation: &backup::Cancellation,
 ) -> Result<(Archive, Vec<backup::RestartFailure>), String> {
-    let _guard = mutation_guard(cancellation, "Backing up sandboxes")?;
+    let _guard = mutation_guard(cancellation, "Exporting sandbox", true)?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if names.is_empty() {
-        return Err("Choose at least one sandbox to back up.".into());
+        return Err("Choose at least one sandbox to export.".into());
+    }
+    if checkpoint_id.is_some() && names.len() != 1 {
+        return Err("Exporting from a checkpoint supports one sandbox at a time.".into());
     }
     let mut sources = Vec::new();
     for name in names {
@@ -791,18 +872,28 @@ fn backup_work(
         runtime::ensure_managed(&inspected).map_err(|error| error.to_string())?;
         canonicalize_backup_runtime(&mut inspected.config)?;
         backup_volumes(machine, &mut inspected)?;
-        let snapshot_group = runtime::checkpoints::ensure_snapshot_group(
-            &paths,
-            machine.id(),
-            machine.name(),
-        )
-        .map_err(|error| error.to_string())?;
+        // A checkpoint export reuses the checkpoint's immutable member from its
+        // lineage group; a state export captures the sandbox's current disk.
+        let (snapshot_group, existing_member) = match checkpoint_id {
+            Some(checkpoint_id) => {
+                let (group, member, _scope, _name) =
+                    runtime::checkpoints::export_source(&paths, machine.id(), checkpoint_id)
+                        .map_err(|error| error.to_string())?;
+                (group, Some(member))
+            }
+            None => (
+                runtime::checkpoints::ensure_snapshot_group(&paths, machine.id(), machine.name())
+                    .map_err(|error| error.to_string())?,
+                None,
+            ),
+        };
         sources.push(backup::BackupSource {
             name: name.clone(),
             snapshot_group,
-            was_running: inspected.status == "Running",
+            was_running: existing_member.is_none() && inspected.status == "Running",
             runtime_config: inspected.config,
             machine_config: serde_json::to_value(machine).map_err(|error| error.to_string())?,
+            existing_member,
         });
     }
     recovery::save_sources(controller, &sources)?;
@@ -839,7 +930,7 @@ fn backup_volumes(
         ..
     } = machine
     else {
-        return Err("Only local VMs have backup disk storage.".into());
+        return Err("Only local VMs have exportable disk storage.".into());
     };
     if !normalize_backup_root_capacity(&mut inspected.config, u64::from(*runtime_storage_gib) * 1024) {
         return Err(format!(
@@ -1056,7 +1147,7 @@ async fn start_restore_inner(
     controller
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another backup or restore operation is running.".to_string())?;
+        .map_err(|_| "Another export or import is running.".to_string())?;
     let controller = controller.inner().clone();
     let path = PathBuf::from(&archive_path);
     let cancellation = backup::Cancellation::default();
@@ -1067,7 +1158,7 @@ async fn start_restore_inner(
             .to_string_lossy()
             .into_owned(),
         archive_path,
-        completed_label: "Checking backup".into(),
+        completed_label: "Checking export file".into(),
         size: "Unknown".into(),
         destination: path
             .parent()
@@ -1097,8 +1188,8 @@ async fn start_restore_inner(
             progress: 0,
             indeterminate: Some(true),
             phases: vec![Phase {
-                title: "Checking backup".into(),
-                detail: "Verifying the archive before restoring.".into(),
+                title: "Checking export file".into(),
+                detail: "Verifying the export before importing.".into(),
                 tone: "running",
             }],
         });
@@ -1162,8 +1253,8 @@ fn run_restore(
             running_names: Vec::new(),
             target_name: Some(new_name.clone()),
             outcome: "success",
-            title: "Restore complete".into(),
-            message: "Sandbox restored successfully.".into(),
+            title: "Import complete".into(),
+            message: "Sandbox imported.".into(),
             detail: None,
         },
         Err(error) => Operation::Result {
@@ -1177,12 +1268,12 @@ fn run_restore(
                 "failed"
             },
             title: if error == "The operation was cancelled." {
-                "Restore cancelled".into()
+                "Import cancelled".into()
             } else {
-                "Restore failed".into()
+                "Import failed".into()
             },
             message: error,
-            detail: Some("No existing sandbox or backup was replaced.".into()),
+            detail: Some("No existing sandbox was replaced.".into()),
         },
     };
     let operation = recovery::complete(&controller, operation);
@@ -1202,9 +1293,9 @@ fn run_restore(
 fn select_archive_source(names: &[String], selected: Option<&str>) -> Result<String, String> {
     match selected {
         Some(name) if names.iter().any(|candidate| candidate == name) => Ok(name.into()),
-        Some(_) => Err("The selected VM is not in this backup.".into()),
+        Some(_) => Err("The selected VM is not in this export.".into()),
         None if names.len() == 1 => Ok(names[0].clone()),
-        None => Err("Choose which VM to restore from this backup.".into()),
+        None => Err("Choose which VM to import from this export.".into()),
     }
 }
 
@@ -1255,8 +1346,8 @@ fn restore_at_paths(
     cancellation: &backup::Cancellation,
     progress: &dyn Fn(&str),
 ) -> Result<(), String> {
-    progress("Preparing restore");
-    let _guard = mutation_guard(cancellation, "Restoring sandbox")?;
+    progress("Preparing import");
+    let _guard = mutation_guard(cancellation, "Importing sandbox", false)?;
     let original = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if original
         .machines
@@ -1283,7 +1374,7 @@ fn restore_at_paths(
             "A runtime sandbox named {new_name} already exists."
         ));
     }
-    progress("Unpacking backup");
+    progress("Unpacking export");
     let prepared = controller
         .service
         .prepare_restore(
@@ -1343,7 +1434,7 @@ pub(crate) fn cancel_backup_operation(
     let cancellation = view
         .cancellation
         .as_ref()
-        .ok_or("No backup or restore operation is running.")?;
+        .ok_or("No export or import is running.")?;
     recovery::cancel(&controller)?;
     cancellation.cancel();
     Ok(())
@@ -1427,12 +1518,12 @@ pub(crate) async fn retry_workspace_start(
                 running_names.retain(|candidate| candidate != &name);
                 if running_names.is_empty() {
                     *outcome = "success";
-                    *title = "Backup complete".into();
-                    *message = "The backup is complete and all previously running sandboxes are running again.".into();
+                    *title = "Export complete".into();
+                    *message = "The export is complete and all previously running sandboxes are running again.".into();
                     *detail = None;
                 } else {
                     *message = format!(
-                        "The backup is complete. {} still require a manual restart.",
+                        "The export is complete. {} still require a manual restart.",
                         running_names.join(", ")
                     );
                 }
@@ -1626,7 +1717,7 @@ mod tests {
                 progress: 0,
                 indeterminate: Some(true),
                 phases: vec![Phase {
-                    title: "Checking backup".into(),
+                    title: "Checking export file".into(),
                     detail: String::new(),
                     tone: "running",
                 }],
@@ -1638,14 +1729,14 @@ mod tests {
             controller.view.lock().unwrap().operation,
             Some(Operation::Running { .. })
         ));
-        advance_restore_phase(&controller, "Unpacking backup");
+        advance_restore_phase(&controller, "Unpacking export");
         let serialized = serde_json::to_value(&controller.view.lock().unwrap().operation).unwrap();
         assert_eq!(serialized["indeterminate"], true);
         assert_eq!(
             serialized["phases"],
             serde_json::json!([
-                { "title": "Checking backup", "detail": "", "tone": "succeeded" },
-                { "title": "Unpacking backup", "detail": "", "tone": "running" },
+                { "title": "Checking export file", "detail": "", "tone": "succeeded" },
+                { "title": "Unpacking export", "detail": "", "tone": "running" },
             ])
         );
         set_operation(
@@ -1671,14 +1762,14 @@ mod tests {
         let guard = runtime::OPERATIONS.computer("Contended work").unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = mutation_guard(&backup::Cancellation::default(), "Backing up sandboxes").map(|_| ());
+            let result = mutation_guard(&backup::Cancellation::default(), "Exporting sandbox", true).map(|_| ());
             sender.send(result).unwrap();
         });
         assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
         let cancellation = backup::Cancellation::default();
         cancellation.cancel();
         assert_eq!(
-            mutation_guard(&cancellation, "Backing up sandboxes").unwrap_err(),
+            mutation_guard(&cancellation, "Exporting sandbox", true).unwrap_err(),
             "The operation was cancelled."
         );
         drop(guard);
@@ -1735,11 +1826,56 @@ mod tests {
     #[test]
     fn archive_names_never_replace_an_existing_backup() {
         let directory = tempfile::tempdir().unwrap();
-        let first = unique_archive(directory.path());
+        let names = vec!["dev".into()];
+        let first = unique_archive(directory.path(), &names, false);
         fs::write(&first, b"existing").unwrap();
-        let second = unique_archive(directory.path());
+        let second = unique_archive(directory.path(), &names, false);
         assert_ne!(first, second);
         assert_eq!(fs::read(first).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn archive_name_uses_the_sandbox_for_single_exports_and_a_generic_base_otherwise() {
+        let directory = tempfile::tempdir().unwrap();
+        let date = {
+            let today = time::OffsetDateTime::now_utc();
+            format!(
+                "{:04}-{:02}-{:02}",
+                today.year(),
+                today.month() as u8,
+                today.day()
+            )
+        };
+        let single = unique_archive(directory.path(), &["dev".into()], false);
+        assert_eq!(
+            single.file_name().unwrap().to_str().unwrap(),
+            format!("dev-{date}.silo-backup")
+        );
+        let multiple = unique_archive(directory.path(), &["dev".into(), "personal".into()], false);
+        assert_eq!(
+            multiple.file_name().unwrap().to_str().unwrap(),
+            format!("Silo-Export-{date}.silo-backup")
+        );
+        // A same-day second export of the same sandbox falls back to a "-2" suffix.
+        fs::write(&single, b"first").unwrap();
+        let next = unique_archive(directory.path(), &["dev".into()], false);
+        assert_eq!(
+            next.file_name().unwrap().to_str().unwrap(),
+            format!("dev-{date}-2.silo-backup")
+        );
+        // A checkpoint export of a single sandbox carries the "-checkpoint-" marker
+        // and keeps the same "-2" suffix fallback.
+        let checkpoint = unique_archive(directory.path(), &["dev".into()], true);
+        assert_eq!(
+            checkpoint.file_name().unwrap().to_str().unwrap(),
+            format!("dev-checkpoint-{date}.silo-backup")
+        );
+        fs::write(&checkpoint, b"first").unwrap();
+        let checkpoint_next = unique_archive(directory.path(), &["dev".into()], true);
+        assert_eq!(
+            checkpoint_next.file_name().unwrap().to_str().unwrap(),
+            format!("dev-checkpoint-{date}-2.silo-backup")
+        );
     }
     #[test]
     fn multi_vm_restore_requires_an_explicit_source() {
@@ -1871,6 +2007,7 @@ mod tests {
                             was_running: true,
                             runtime_config: inspected.config.clone(),
                             machine_config: serde_json::to_value(&machine).unwrap(),
+                            existing_member: None,
                         },
                         backup::BackupSource {
                             name: second_name.into(),
@@ -1878,6 +2015,7 @@ mod tests {
                             was_running: false,
                             runtime_config: second_inspected.config.clone(),
                             machine_config: serde_json::to_value(&second_machine).unwrap(),
+                            existing_member: None,
                         },
                     ],
                 },
@@ -1894,6 +2032,7 @@ mod tests {
             recovery::Journal::backup(
                 archive_from(&archive, &checked),
                 vec![name.into(), second_name.into()],
+                None,
             ),
         )
         .unwrap();
@@ -1906,6 +2045,7 @@ mod tests {
                     was_running: true,
                     runtime_config: inspected.config,
                     machine_config: serde_json::to_value(&machine).unwrap(),
+                            existing_member: None,
                 },
                 backup::BackupSource {
                     name: second_name.into(),
@@ -1913,6 +2053,7 @@ mod tests {
                     was_running: false,
                     runtime_config: second_inspected.config,
                     machine_config: serde_json::to_value(&second_machine).unwrap(),
+                            existing_member: None,
                 },
             ],
         )
@@ -2059,8 +2200,8 @@ mod tests {
         assert_eq!(
             *restore_phases.lock().unwrap(),
             [
-                "Preparing restore",
-                "Unpacking backup",
+                "Preparing import",
+                "Unpacking export",
                 "Restoring workspace disk",
                 "Creating restored sandbox",
                 "Verifying restored sandbox",
@@ -2267,12 +2408,243 @@ mod tests {
             "Verified stopped restore without original VM/cache; both root and workspace files survived."
         );
     }
+
+    /// Exports a real full checkpoint, imports it as a new sandbox, cold-boots the
+    /// imported disk, and asserts the checkpoint-time marker survived. Uses only a
+    /// disposable /tmp home; never touches the user's Silo data or running VMs.
+    #[test]
+    #[ignore = "requires the packaged runtime and hardware virtualization"]
+    fn real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk() {
+        let directory = tempfile::Builder::new()
+            .prefix("silo-ckpt-proof-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let guest_image =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image");
+        let executable = PathBuf::from(std::env::var("SILO_TEST_MSB").expect("packaged msb path"));
+        let library = PathBuf::from(
+            std::env::var("SILO_TEST_LIBKRUNFW").expect("packaged library path"),
+        );
+        let paths = runtime::RuntimePaths {
+            guest_image: guest_image.clone(),
+            executable: executable.clone(),
+            library: library.clone(),
+            home: directory.path().join("runtime"),
+            storage_home: None,
+            metadata: directory.path().join("machines.json"),
+            volumes: directory.path().join("volumes"),
+        };
+        let cold = runtime::RuntimePaths {
+            guest_image,
+            executable,
+            library,
+            home: directory.path().join("cold"),
+            storage_home: None,
+            metadata: directory.path().join("cold-machines.json"),
+            volumes: directory.path().join("cold-volumes"),
+        };
+        let source_name = "silo-ckpt-source";
+        let restored_name = "silo-ckpt-restored";
+        struct GuestCleanup<'a>(&'a runtime::RuntimePaths, &'static [&'static str]);
+        impl Drop for GuestCleanup<'_> {
+            fn drop(&mut self) {
+                for name in self.1 {
+                    let _ = runtime::run_msb(
+                        self.0,
+                        &["stop".into(), (*name).into()],
+                        Duration::from_secs(30),
+                    );
+                }
+            }
+        }
+        let _cleanup = GuestCleanup(&paths, &["silo-ckpt-source"]);
+        let _cold_cleanup = GuestCleanup(&cold, &["silo-ckpt-restored"]);
+        let run = |paths: &runtime::RuntimePaths, arguments: &[&str]| {
+            runtime::run_msb(
+                paths,
+                &arguments.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                Duration::from_secs(180),
+            )
+            .unwrap()
+        };
+
+        let machine = runtime::create_disposable_test_machine(&paths, source_name).unwrap();
+        run(&paths, &["start", source_name]);
+        run(
+            &paths,
+            &[
+                "exec",
+                source_name,
+                "--",
+                "sh",
+                "-c",
+                "printf checkpoint-workspace > /workspace/silo-ckpt-proof; printf checkpoint-root > /root/silo-ckpt-proof; sync",
+            ],
+        );
+        // Capture a FULL checkpoint of the running guest via the production path.
+        let checkpoint_id =
+            runtime::checkpoints::capture_for_test(&paths, machine.id(), "Milestone").unwrap();
+        // Overwrite the marker after the checkpoint. This later content must NOT
+        // appear in the exported checkpoint.
+        run(
+            &paths,
+            &[
+                "exec",
+                source_name,
+                "--",
+                "sh",
+                "-c",
+                "printf post-workspace > /workspace/silo-ckpt-proof; printf post-root > /root/silo-ckpt-proof; sync",
+            ],
+        );
+        run(&paths, &["stop", source_name]);
+        // Prepare the runtime configuration exactly as `backup_work` does.
+        let mut inspected = inspect(&paths, source_name).unwrap();
+        canonicalize_backup_runtime(&mut inspected.config).unwrap();
+        backup_volumes(&machine, &mut inspected).unwrap();
+
+        let (group, member, scope, _display) =
+            runtime::checkpoints::export_source(&paths, machine.id(), &checkpoint_id).unwrap();
+        assert_eq!(scope, "full");
+
+        let make_controller = |paths: &runtime::RuntimePaths| Controller {
+            history_path: paths.metadata.with_file_name("backup-history.json"),
+            journal: Mutex::new(None),
+            service: backup::BackupService::new(
+                backup::MsbCommand {
+                    metadata: paths.metadata.clone(),
+                    executable: paths.executable.clone(),
+                    home: paths.home.clone(),
+                    storage_home: paths.storage_home.clone(),
+                    library: paths.library.clone(),
+                },
+                directory.path().join("scratch"),
+            ),
+            view: Mutex::new(ViewState {
+                history_error: None,
+                destination: None,
+                archives: Vec::new(),
+                operation: None,
+                cancellation: None,
+            }),
+            busy: AtomicBool::new(false),
+            revision: AtomicU64::new(0),
+        };
+        let controller = make_controller(&paths);
+        let archive = directory.path().join("checkpoint.silo-backup");
+        controller
+            .service
+            .create_backup(
+                backup::BackupRequest {
+                    destination: archive.clone(),
+                    sources: vec![backup::BackupSource {
+                        name: source_name.into(),
+                        snapshot_group: group,
+                        was_running: false,
+                        runtime_config: inspected.config.clone(),
+                        machine_config: serde_json::to_value(&machine).unwrap(),
+                        existing_member: Some(member),
+                    }],
+                },
+                &backup::Cancellation::default(),
+            )
+            .unwrap();
+
+        // Import into a fresh cold home. This installs a stopped, pending-restore
+        // workspace and never touches the source home.
+        fs::create_dir_all(&cold.home).unwrap();
+        fs::create_dir_all(&cold.volumes).unwrap();
+        let cold_controller = make_controller(&cold);
+        restore_at_paths(
+            &cold,
+            &cold_controller,
+            &archive,
+            source_name,
+            restored_name,
+            &backup::Cancellation::default(),
+            &|_| {},
+        )
+        .unwrap();
+
+        // Read the imported pending-restore selectors, then cold-boot the disk only.
+        let restored_id = runtime::read_metadata(&cold.metadata)
+            .unwrap()
+            .machines
+            .into_iter()
+            .find(|m| m.name() == restored_name)
+            .unwrap()
+            .id()
+            .to_owned();
+        let record: Value = serde_json::from_slice(
+            &fs::read(
+                cold.metadata
+                    .with_file_name("checkpoints")
+                    .join(format!("{restored_id}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let import_group = record["pendingCheckpointRestore"]["sourceWorkspace"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let import_member = record["pendingCheckpointRestore"]["checkpointId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // A full checkpoint imported as disk-state cold-boots with --disk-only.
+        run(
+            &cold,
+            &[
+                "restore",
+                &format!("{import_group}:{import_member}"),
+                "--name",
+                restored_name,
+                "--disk-only",
+                "--cpus",
+                "1",
+                "--memory",
+                "1G",
+            ],
+        );
+        // Consume the pending restore as a successful explicit Start does, so the
+        // guarded exec below treats the imported workspace as active.
+        let record_path = cold
+            .metadata
+            .with_file_name("checkpoints")
+            .join(format!("{restored_id}.json"));
+        let mut active: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+        active["pendingCheckpointRestore"] = Value::Null;
+        fs::write(&record_path, serde_json::to_vec(&active).unwrap()).unwrap();
+        let proof = run(
+            &cold,
+            &[
+                "exec",
+                restored_name,
+                "--",
+                "sh",
+                "-c",
+                "cat /root/silo-ckpt-proof; printf ':'; cat /workspace/silo-ckpt-proof",
+            ],
+        );
+        let _ = runtime::run_msb(
+            &cold,
+            &["stop".into(), restored_name.into()],
+            Duration::from_secs(60),
+        );
+        assert!(
+            proof.stdout.contains("checkpoint-root:checkpoint-workspace"),
+            "expected checkpoint-time content, got: {}",
+            proof.stdout
+        );
+        eprintln!("Verified checkpoint export/import preserves checkpoint-time disk content.");
+    }
 }
 
 pub(crate) fn update_ready(app: &AppHandle) -> Result<(), String> {
     let controller = app.state::<Arc<Controller>>();
     if controller.busy.load(Ordering::Acquire) || recovery::unresolved(&controller)? {
-        Err("Wait for the backup or restore operation to finish before updating.".into())
+        Err("Wait for the export or import to finish before updating.".into())
     } else {
         Ok(())
     }
@@ -2289,10 +2661,10 @@ pub(crate) fn update_guard(app: &AppHandle) -> Result<UpdateGuard, String> {
     controller
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Wait for the backup or restore operation to finish before updating.")?;
+        .map_err(|_| "Wait for the export or import to finish before updating.")?;
     let guard = UpdateGuard(controller);
     if recovery::unresolved(&guard.0)? {
-        return Err("An interrupted backup or restore must finish before updating.".into());
+        return Err("An interrupted export or import must finish before updating.".into());
     }
     Ok(guard)
 }

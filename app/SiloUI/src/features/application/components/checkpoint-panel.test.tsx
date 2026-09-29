@@ -15,6 +15,29 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+it("offers Fork, Restore and Export on a local checkpoint and reports the checkpoint on export", () => {
+  const onExport = vi.fn()
+  render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={onExport} />)
+  const row = screen.getByText("Before refactor").closest("li")!
+  const buttons = within(row).getAllByRole("button").map((button) => button.textContent)
+  expect(buttons).toEqual(["Fork", "Restore", "Export"])
+  fireEvent.click(within(row).getByRole("button", { name: "Export" }))
+  expect(onExport).toHaveBeenCalledWith(workspace.checkpoints![0])
+})
+
+it("hides Export for a remote sandbox checkpoint", () => {
+  const remote = { ...workspace, computer: { id: "mac", name: "Ada’s Mac mini", connected: true } } as ApplicationWorkspace
+  render(<CheckpointPanel workspace={remote} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={vi.fn()} />)
+  const row = screen.getByText("Before refactor").closest("li")!
+  expect(within(row).queryByRole("button", { name: "Export" })).toBeNull()
+})
+
+it("disables Export while a transfer is running", () => {
+  render(<CheckpointPanel workspace={workspace} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={vi.fn()} exportDisabled />)
+  const row = screen.getByText("Before refactor").closest("li")!
+  expect(within(row).getByRole("button", { name: "Export" })).toBeDisabled()
+})
+
 it("shows short restore guidance and inline cancel/confirm controls", async () => {
   const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ restoreCheckpoint } as unknown as ApplicationActions} disabled={false} />)

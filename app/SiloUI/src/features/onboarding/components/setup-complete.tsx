@@ -12,7 +12,7 @@ import type { SetupMachineConfiguration } from "@/contracts/silo"
 const notificationCategories = [
   { id: "notifyHealth", label: "Sandbox health", icon: HeartPulse },
   { id: "notifyActions", label: "Action failures", icon: CircleAlert },
-  { id: "notifyBackup", label: "Backup failures", icon: HardDrive },
+  { id: "notifyBackup", label: "Export and import failures", icon: HardDrive },
 ] as const
 
 export function SetupComplete({ machines, githubSummary }: {

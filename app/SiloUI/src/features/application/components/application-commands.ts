@@ -1,4 +1,4 @@
-import { Activity, Bell, Boxes, CircleAlert, Code, File, GitFork, HardDrive, KeyRound, Monitor, Network, Play, RotateCw, Settings2, Square, Terminal, type LucideIcon } from "lucide-react"
+import { Activity, Bell, Boxes, CircleAlert, Code, File, GitFork, KeyRound, Monitor, Network, Play, RotateCw, Settings2, Square, Terminal, Upload, type LucideIcon } from "lucide-react"
 
 import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
@@ -20,13 +20,12 @@ const workspaceSections = [
   { section: "activity", label: "Activity", icon: Activity, keywords: ["history", "events"] },
 ] as const
 
-export function applicationCommands(source: ApplicationSource, actions: ApplicationActions, navigate: (route: ApplicationInitialRoute) => void): ApplicationCommand[] {
+export function applicationCommands(source: ApplicationSource, actions: ApplicationActions, navigate: (route: ApplicationInitialRoute) => void, onImportSandbox?: () => void): ApplicationCommand[] {
   const destinations: { label: string; icon: LucideIcon; route: ApplicationInitialRoute; keywords?: string[] }[] = [
     { label: "Sandboxes", icon: Boxes, route: { workspaceSection: "overview" }, keywords: ["overview", "workspaces", "machines"] },
     ...workspaceSections.map(({ section, label, icon, keywords }) => ({ label, icon, route: { workspaceSection: section }, keywords: [...keywords] })),
     { label: "GitHub", icon: GitFork, route: { tab: "github" }, keywords: ["git", "account", "access"] },
     { label: "Secrets", icon: KeyRound, route: { tab: "secrets" }, keywords: ["tokens", "credentials"] },
-    { label: "Backup", icon: HardDrive, route: { tab: "backup" }, keywords: ["archive", "restore"] },
     { label: "Settings", icon: Settings2, route: { settingsSection: "general" }, keywords: ["general", "preferences", "applications"] },
     { label: "Computers", icon: Monitor, route: { settingsSection: "computers" }, keywords: ["remote", "ssh", "connections", "management"] },
     { label: "Notifications", icon: Bell, route: { settingsSection: "notifications" }, keywords: ["alerts"] },
@@ -37,6 +36,10 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
   const commands: ApplicationCommand[] = destinations.map(({ label, icon, route, keywords }) => ({
     id: `page:${label}`, label, icon, keywords, group: "Go to", run: () => navigate(route),
   }))
+
+  if (onImportSandbox) {
+    commands.push({ id: "action:import-sandbox", label: "Import sandbox…", icon: Upload, group: "Actions", keywords: ["restore", "archive", "backup", "transfer"], run: onImportSandbox })
+  }
 
   for (const workspace of source.workspaces) {
     const { id, name } = workspace.machine

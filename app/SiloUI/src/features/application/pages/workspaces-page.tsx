@@ -194,7 +194,7 @@ function Files({
 const activityCategoryOptions: ReadonlyArray<FilterOption<ApplicationActivityCategory>> = [
   { value: "sandbox", label: "Sandbox" },
   { value: "git", label: "Git" },
-  { value: "backup", label: "Backup" },
+  { value: "backup", label: "Export & import" },
   { value: "secrets", label: "Secrets" },
   { value: "github", label: "GitHub" },
   { value: "system", label: "System" },
@@ -203,7 +203,7 @@ const activityCategoryOptions: ReadonlyArray<FilterOption<ApplicationActivityCat
 const activityCategoryPresentation = {
   sandbox: { label: "Sandbox", icon: Box },
   git: { label: "Git", icon: GitBranch },
-  backup: { label: "Backup", icon: Archive },
+  backup: { label: "Export & import", icon: Archive },
   secrets: { label: "Secrets", icon: KeyRound },
   github: { label: "GitHub", icon: Cloud },
   system: { label: "System", icon: Wrench },

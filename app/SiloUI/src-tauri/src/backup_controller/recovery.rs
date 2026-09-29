@@ -19,6 +19,10 @@ enum Request {
         names: Vec<String>,
         machines: Vec<(String, String)>,
         running: Vec<(String, String)>,
+        /// Present when the export packages a stored checkpoint rather than the
+        /// sandbox's current state. Absent in journals written before this field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkpoint_id: Option<String>,
     },
     Restore {
         name: String,
@@ -42,7 +46,11 @@ impl Journal {
     pub(super) fn identity(&self) -> &str {
         &self.id
     }
-    pub(super) fn backup(archive: Archive, names: Vec<String>) -> Self {
+    pub(super) fn backup(
+        archive: Archive,
+        names: Vec<String>,
+        checkpoint_id: Option<String>,
+    ) -> Self {
         Self {
             version: 1,
             id: uuid::Uuid::new_v4().to_string(),
@@ -51,6 +59,7 @@ impl Journal {
                 names,
                 machines: vec![],
                 running: vec![],
+                checkpoint_id,
             },
             cancelled: false,
             terminal: None,
@@ -141,20 +150,21 @@ pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
     let bytes = match fs::read(journal_path(history)) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("Silo could not read interrupted backup work: {e}")),
+        Err(e) => return Err(format!("Silo could not read the interrupted export or import: {e}")),
     };
     let journal: Journal = serde_json::from_slice(&bytes).map_err(|e| {
-        format!("Silo could not read interrupted backup work. The saved file was preserved: {e}")
+        format!("Silo could not read the interrupted export or import. The saved file was preserved: {e}")
     })?;
     uuid::Uuid::parse_str(&journal.id).map_err(|_| "Invalid saved backup operation identity.")?;
     if journal.version != 1 || !Path::new(&journal.archive.archive_path).is_absolute() {
-        return Err("Unsupported saved backup operation. The file was preserved.".into());
+        return Err("Unsupported saved export or import. The file was preserved.".into());
     }
     match &journal.request {
         Request::Backup {
             names,
             machines,
             running,
+            ..
         } => {
             for name in names
                 .iter()
@@ -349,7 +359,7 @@ pub(super) fn dismiss(controller: &Controller) -> Result<(), String> {
             .and_then(|dir| dir.sync_all())
             .map_err(|e| e.to_string())?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("Could not dismiss saved backup result: {e}")),
+        Err(e) => return Err(format!("Could not dismiss the saved export or import result: {e}")),
     }
     *saved = None;
     Ok(())
@@ -469,11 +479,16 @@ pub(super) fn resume(
                 publish(&app, &controller);
             }
             Ok(false) => match journal.request {
-                Request::Backup { names, .. } => run_backup(
+                Request::Backup {
+                    names,
+                    checkpoint_id,
+                    ..
+                } => run_backup(
                     app,
                     controller,
                     PathBuf::from(&journal.archive.archive_path),
                     names,
+                    checkpoint_id,
                     cancellation,
                     journal.archive,
                 ),
@@ -551,6 +566,7 @@ pub(super) fn recover_at_paths(
             machines,
             running,
             names,
+            ..
         } => {
             for (name, id) in machines {
                 if !metadata
@@ -559,7 +575,7 @@ pub(super) fn recover_at_paths(
                     .any(|m| m.name() == name && m.id() == id)
                 {
                     return Err(format!(
-                        "Sandbox {name} changed since backup started. Its current state was preserved."
+                        "Sandbox {name} changed since the export started. Its current state was preserved."
                     ));
                 }
             }
@@ -570,7 +586,7 @@ pub(super) fn recover_at_paths(
                     .any(|m| m.name() == name && m.id() == id)
                 {
                     return Err(format!(
-                        "Sandbox {name} changed since backup started. Its current state was preserved."
+                        "Sandbox {name} changed since the export started. Its current state was preserved."
                     ));
                 }
                 let vm = inspect(&paths, name)?;
@@ -593,7 +609,7 @@ pub(super) fn recover_at_paths(
                     .map_err(|e| e.to_string())?;
                     if inspect(&paths, name)?.status != "Running" {
                         return Err(format!(
-                            "Sandbox {name} did not restart. Saved backup progress was preserved."
+                            "Sandbox {name} did not restart. Saved export progress was preserved."
                         ));
                     }
                 }
@@ -751,7 +767,7 @@ mod tests {
         assert!(
             begin(
                 &controller,
-                Journal::backup(completed_archive(), vec!["dev".into()])
+                Journal::backup(completed_archive(), vec!["dev".into()], None)
             )
             .is_err()
         );
@@ -769,7 +785,7 @@ mod tests {
             .join("saved.silo-backup")
             .to_string_lossy()
             .into_owned();
-        let journal = Journal::backup(archive, vec!["dev".into()]);
+        let journal = Journal::backup(archive, vec!["dev".into()], None);
         let owned = directory
             .path()
             .join(format!(".silo-backup-{}-partial", journal.id));
@@ -795,7 +811,7 @@ mod tests {
         let controller = history_controller(path.clone());
         begin(
             &controller,
-            Journal::backup(completed_archive(), vec!["dev".into()]),
+            Journal::backup(completed_archive(), vec!["dev".into()], None),
         )
         .unwrap();
         dismiss(&controller).unwrap();
@@ -840,7 +856,7 @@ mod tests {
         assert!(
             begin(
                 &controller,
-                Journal::backup(completed_archive(), vec!["dev".into()])
+                Journal::backup(completed_archive(), vec!["dev".into()], None)
             )
             .is_err()
         );
@@ -853,7 +869,7 @@ mod tests {
         let controller = history_controller(path.clone());
         begin(
             &controller,
-            Journal::backup(completed_archive(), vec!["dev".into()]),
+            Journal::backup(completed_archive(), vec!["dev".into()], None),
         )
         .unwrap();
         assert!(matches!(
@@ -878,7 +894,7 @@ mod tests {
         );
         begin(
             &controller,
-            Journal::backup(completed_archive(), vec!["dev".into()]),
+            Journal::backup(completed_archive(), vec!["dev".into()], None),
         )
         .unwrap();
     }
@@ -890,7 +906,7 @@ mod tests {
         let controller = history_controller(path.clone());
         begin(
             &controller,
-            Journal::backup(completed_archive(), vec!["dev".into()]),
+            Journal::backup(completed_archive(), vec!["dev".into()], None),
         )
         .unwrap();
         fs::remove_file(journal_path(&path)).unwrap();
@@ -915,7 +931,7 @@ mod tests {
         fs::write(&saved, b"broken").unwrap();
         assert!(load(&path).is_err());
         assert_eq!(fs::read(&saved).unwrap(), b"broken");
-        let mut journal = Journal::backup(completed_archive(), vec!["dev".into()]);
+        let mut journal = Journal::backup(completed_archive(), vec!["dev".into()], None);
         journal.version = 99;
         write(&path, &journal).unwrap();
         assert!(load(&path).is_err());

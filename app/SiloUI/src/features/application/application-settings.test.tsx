@@ -42,7 +42,7 @@ it("keeps every General and Notifications choice after source replacement and re
   await user.click(settings.getByRole("switch", { name: "Sandbox health" }))
   await user.click(settings.getByRole("switch", { name: "Action failures" }))
   await user.click(settings.getByRole("switch", { name: "Action failures" }))
-  await user.click(settings.getByRole("switch", { name: "Backup failures" }))
+  await user.click(settings.getByRole("switch", { name: "Export and import failures" }))
   await user.click(settings.getByRole("switch", { name: "Enable notifications" }))
   expect(settings.getByRole("switch", { name: "Action failures" })).toBeChecked()
   expect(settings.getByRole("switch", { name: "Action failures" })).toBeDisabled()
@@ -83,11 +83,11 @@ it("keeps every General and Notifications choice after source replacement and re
   expect(restored.getByRole("switch", { name: "Enable notifications" })).not.toBeChecked()
   expect(restored.getByRole("switch", { name: "Sandbox health" })).not.toBeChecked()
   expect(restored.getByRole("switch", { name: "Action failures" })).toBeChecked()
-  expect(restored.getByRole("switch", { name: "Backup failures" })).not.toBeChecked()
+  expect(restored.getByRole("switch", { name: "Export and import failures" })).not.toBeChecked()
   await user.click(restored.getByRole("switch", { name: "Enable notifications" }))
   expect(restored.getByRole("switch", { name: "Sandbox health" })).not.toBeChecked()
   expect(restored.getByRole("switch", { name: "Action failures" })).toBeEnabled()
-  expect(restored.getByRole("switch", { name: "Backup failures" })).not.toBeChecked()
+  expect(restored.getByRole("switch", { name: "Export and import failures" })).not.toBeChecked()
 })
 
 it("retains saved startup IDs absent from telemetry and preserves an explicitly empty selection", async () => {

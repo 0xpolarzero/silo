@@ -1215,11 +1215,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       await refresh()
       return inspected
     },
-    startBackup(destination, sandboxes) {
+    startBackup(destination, sandboxes, checkpointId) {
       if (pendingBackupOperation || snapshot.backup.operation?.kind === "running") return
       pendingBackupOperation = true
       showPendingBackup("backup", { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes })
-      void native.invoke("start_backup", { destination, sandboxes }).then(() => { if (localBackupOperation?.kind === "running") dismissedBackupResults.clear(); return refresh() }).catch((cause) => {
+      void native.invoke("start_backup", { destination, sandboxes, ...(checkpointId && { checkpointId }) }).then(() => { if (localBackupOperation?.kind === "running") dismissedBackupResults.clear(); return refresh() }).catch((cause) => {
         const archive: BackupArchive = { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
         localBackupOperation = backupFailure("backup", archive, errorMessage(cause))
         publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })

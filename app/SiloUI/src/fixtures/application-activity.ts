@@ -160,10 +160,10 @@ const liveSequences: Record<Exclude<ActivityFixtureMode, "catalog">, readonly Ap
     live("live-git", "git", "Push completed", "Pushed 2 commits from acme/silo on main.", "dev", 1, "Push complete", "success", "completed"),
   ],
   "backup-live": [
-    live("live-backup", "backup", "Preparing backup", "Flushing and stopping the previously running sandboxes.", undefined, 0.1, "Backup 10% complete"),
-    live("live-backup", "backup", "Writing archive", "Scanning, compressing, and writing the destination.", undefined, 0.45, "Backup 45% complete"),
-    live("live-backup", "backup", "Checksumming archive", "Verifying the completed archive.", undefined, 0.75, "Backup 75% complete"),
-    live("live-backup", "backup", "Finalizing backup", "Saving the durable result and restoring sandbox state.", undefined, 0.92, "Backup 92% complete"),
+    live("live-backup", "backup", "Preparing export", "Taking a live snapshot with a guest filesystem flush.", undefined, 0.1, "Export 10% complete"),
+    live("live-backup", "backup", "Writing archive", "Scanning, compressing, and writing the destination.", undefined, 0.45, "Export 45% complete"),
+    live("live-backup", "backup", "Checksumming archive", "Verifying the completed archive.", undefined, 0.75, "Export 75% complete"),
+    live("live-backup", "backup", "Finalizing export", "Saving the durable result.", undefined, 0.92, "Export 92% complete"),
     live("live-backup", "backup", "Backup completed", "The archive and checksum were written successfully.", undefined, 1, "Backup complete", "success", "completed"),
   ],
   "secrets-live": [
