@@ -250,7 +250,15 @@ fn cleanup_archive_partial(journal: &Journal) -> Result<(), String> {
         .parent()
         .ok_or("Missing backup destination.")?;
     let prefix = format!(".silo-backup-{}-", journal.id);
-    for entry in fs::read_dir(parent).map_err(|e| e.to_string())? {
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        // An unplugged or renamed destination holds no partial file that this
+        // process could reach; failing here would block recovery until the
+        // drive returns (E-36).
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.file_name().to_string_lossy().starts_with(&prefix)
             && entry.file_type().map_err(|e| e.to_string())?.is_file()
@@ -829,6 +837,20 @@ mod tests {
             fs::read(&journal.archive.archive_path).unwrap(),
             b"completed archive"
         );
+    }
+
+    #[test]
+    fn archive_cleanup_treats_a_missing_destination_as_nothing_to_clean() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut archive = completed_archive();
+        archive.archive_path = directory
+            .path()
+            .join("unplugged")
+            .join("saved.silo-backup")
+            .to_string_lossy()
+            .into_owned();
+        let journal = Journal::backup(archive, vec!["dev".into()], None);
+        cleanup_archive_partial(&journal).unwrap();
     }
 
     #[test]
