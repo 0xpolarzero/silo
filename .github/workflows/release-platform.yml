@@ -170,13 +170,11 @@ jobs:
       run:
         working-directory: app/SiloUI
         shell: bash
+    # GitHub App values and signing keys are step-scoped: only the steps that
+    # compile Silo see the App configuration, and only the steps that sign see
+    # the updater key. npm, Homebrew, Python tests and other build scripts never do.
     env:
-      SILO_GITHUB_APP_SLUG: ${{ secrets.SILO_GITHUB_APP_SLUG }}
-      SILO_GITHUB_CLIENT_ID: ${{ secrets.SILO_GITHUB_CLIENT_ID }}
-      SILO_GITHUB_CLIENT_SECRET: ${{ secrets.SILO_GITHUB_CLIENT_SECRET }}
       APPLE_SIGNING_IDENTITY: '-'
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -188,6 +186,10 @@ jobs:
         with:
           python-version: '3.12'
       - name: Require GitHub App configuration
+        env:
+          SILO_GITHUB_APP_SLUG: ${{ secrets.SILO_GITHUB_APP_SLUG }}
+          SILO_GITHUB_CLIENT_ID: ${{ secrets.SILO_GITHUB_CLIENT_ID }}
+          SILO_GITHUB_CLIENT_SECRET: ${{ secrets.SILO_GITHUB_CLIENT_SECRET }}
         run: |
           for key in SILO_GITHUB_APP_SLUG SILO_GITHUB_CLIENT_ID SILO_GITHUB_CLIENT_SECRET; do
             if [[ -z "${!key//[[:space:]]/}" ]]; then
@@ -223,7 +225,7 @@ jobs:
         run: |
           umask 077
           npx tauri signer generate --ci -p '' -w "$RUNNER_TEMP/silo-test.key" >/dev/null
-          echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/silo-test.key" >> "$GITHUB_ENV"
+          echo "SILO_TEST_SIGNING_KEY=$RUNNER_TEMP/silo-test.key" >> "$GITHUB_ENV"
           python3 - <<'PYCODE'
           import json, os
           from pathlib import Path
@@ -234,6 +236,8 @@ jobs:
           PYCODE
       - name: Require production signing key
         if: inputs.draft
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: test -n "$TAURI_SIGNING_PRIVATE_KEY"
       - name: Test release tooling
         run: python3 -m unittest discover -s scripts -p 'test_*release*.py'
@@ -246,6 +250,10 @@ jobs:
           artifact-sha256: ${{ needs.runtime.outputs.archive-sha256 }}
       - name: Test build configuration and native behavior
         if: inputs.benchmark-schedule == 'sequential'
+        env:
+          SILO_GITHUB_APP_SLUG: ${{ secrets.SILO_GITHUB_APP_SLUG }}
+          SILO_GITHUB_CLIENT_ID: ${{ secrets.SILO_GITHUB_CLIENT_ID }}
+          SILO_GITHUB_CLIENT_SECRET: ${{ secrets.SILO_GITHUB_CLIENT_SECRET }}
         run: python3 scripts/measure-command.py native-tests -- cargo test --manifest-path src-tauri/Cargo.toml --locked --timings -- --test-threads=1
       - name: Test updater transport and interrupted installation
         if: inputs.benchmark-schedule == 'sequential'
@@ -264,8 +272,17 @@ jobs:
           python3 scripts/release-dependency-cache.py restore --target '${{ inputs.target }}' --state "$RUNNER_TEMP/release-dependencies"
           echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/app/SiloUI/src-tauri/target/release-compile" >> "$GITHUB_ENV"
       - name: Compile release application
+        env:
+          SILO_GITHUB_APP_SLUG: ${{ secrets.SILO_GITHUB_APP_SLUG }}
+          SILO_GITHUB_CLIENT_ID: ${{ secrets.SILO_GITHUB_CLIENT_ID }}
+          SILO_GITHUB_CLIENT_SECRET: ${{ secrets.SILO_GITHUB_CLIENT_SECRET }}
         run: python3 scripts/measure-command.py release-build -- python3 scripts/release-dependency-cache.py build --target '${{ inputs.target }}' --state "$RUNNER_TEMP/release-dependencies"
       - name: Build release bundles
+        env:
+          # Drafts sign with the production key; verification runs use the
+          # isolated key generated above.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.draft && secrets.TAURI_SIGNING_PRIVATE_KEY || env.SILO_TEST_SIGNING_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.draft && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then
             bundle_config_args=(--config src-tauri/tauri.linux.package.conf.json)
@@ -282,6 +299,9 @@ jobs:
           retention-days: 7
       - name: Enforce exact macOS runtime libraries and rebuild signed packages
         if: runner.os == 'macOS'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.draft && secrets.TAURI_SIGNING_PRIVATE_KEY || env.SILO_TEST_SIGNING_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.draft && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: python3 scripts/package-macos-release.py 'src-tauri/target/release-compile/${{ inputs.target }}/release/bundle/macos/Silo.app' release-assets
       - name: Verify macOS library constraints
         if: runner.os == 'macOS'
