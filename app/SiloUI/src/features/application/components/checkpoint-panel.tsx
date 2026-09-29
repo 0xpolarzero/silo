@@ -22,8 +22,10 @@ function checkpointTag(checkpoint: WorkspaceCheckpoint) {
   return checkpoint.scope === "full" ? "Includes memory" : "Disks only"
 }
 
-export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false, forkedAction, restoredAction }: {
+export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false, forkedAction, restoredAction, takenNames }: {
   workspace: ApplicationWorkspace
+  /** Sandbox names already used on this sandbox's computer, so a fork name conflict shows inline. */
+  takenNames?: readonly string[]
   target: string
   actions: ApplicationActions
   disabled: boolean
@@ -106,7 +108,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
   return <TooltipProvider delayDuration={250}>
     <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="grid gap-1.5 text-xs">
       <div className="flex min-h-6 items-center justify-between gap-2">
-        <h3 className="text-xs font-medium" title="Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.">Checkpoints</h3>
+        <h3 className="text-xs font-medium">Checkpoints</h3>
         {actions.createCheckpoint && <FormPopover
           open={createOpen}
           onOpenChange={open => { if (!open || !locked) { setCreateOpen(open); if (open) setName(suggestedName()) } }}
@@ -120,6 +122,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
           <Button size="xs" variant="outline" className="shrink-0" disabled={locked}>New checkpoint</Button>
         </FormPopover>}
       </div>
+      <p className="text-[11px] text-muted-foreground">Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.</p>
 
       {staleFailure && <p className="text-muted-foreground">Last checkpoint operation failed: <span className="text-destructive">{staleFailure}</span></p>}
 
@@ -149,7 +152,9 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                 <ConfirmPopover
                   align="end"
                   title={`Restore “${checkpoint.name}”?`}
-                  description={`Silo saves a recovery checkpoint first, then rewinds ${sandbox}. It stays stopped.`}
+                  description={workspace.state === "running"
+                    ? `${sandbox} is running. Silo pauses it, saves a recovery checkpoint that includes its memory (this can use a lot of disk space), force-stops it, then rewinds it. It stays stopped. Changes outside the sandbox, such as pushed commits or sent requests, are not undone.`
+                    : `Silo saves a recovery checkpoint first, then rewinds ${sandbox}. It stays stopped. Changes outside the sandbox, such as pushed commits or sent requests, are not undone.`}
                   confirmLabel="Restore"
                   onConfirm={() => restore(checkpoint)}
                 >
@@ -158,7 +163,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                 <ActionsMenu
                   label={`Checkpoint actions for ${checkpoint.name}`}
                   disabled={locked}
-                  popovers={{ fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox from this checkpoint. Select Start when ready." disabled={locked} onFork={newName => fork(checkpoint, newName)} onClose={close} /> }}
+                  popovers={{ fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox from this checkpoint. Select Start when ready." disabled={locked} takenNames={takenNames} onFork={newName => fork(checkpoint, newName)} onClose={close} /> }}
                   items={[
                     ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
                     ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),

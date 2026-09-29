@@ -27,6 +27,14 @@ it("closes at once on submit and hands the trimmed name to the caller", async ()
   await waitFor(() => expect(onFork).toHaveBeenCalledWith("experiment"))
 })
 
+it("discloses the Fork point checkpoint and the brief pause of the source", async () => {
+  const user = userEvent.setup()
+  setup()
+  await openFork(user)
+  expect(await screen.findByText(/adds a “Fork point” checkpoint to dev’s history/)).toBeVisible()
+  expect(screen.getByText(/pauses briefly/)).toBeVisible()
+})
+
 it("does not submit while disabled", async () => {
   const user = userEvent.setup()
   setup(vi.fn(), true)
@@ -44,6 +52,26 @@ it("turns off auto-capitalization and autocorrect on the name field", async () =
   expect(input).toHaveAttribute("autocorrect", "off")
   expect(input).toHaveAttribute("spellcheck", "false")
   expect(input).toHaveAttribute("autocomplete", "off")
+})
+
+it("rejects invalid or taken names inline before submit", async () => {
+  const user = userEvent.setup()
+  const onFork = vi.fn()
+  render(<TooltipProvider><ActionsMenu label="More actions for dev" items={[{ label: "Fork…", accessibleLabel: "Fork dev", popover: "fork" }]} popovers={{ fork: close => <ForkBody sandboxName="dev" takenNames={["dev", "taken"]} onFork={onFork} onClose={close} /> }} /></TooltipProvider>)
+  await openFork(user)
+  const input = await screen.findByRole("textbox", { name: "New sandbox name" })
+  await user.type(input, "My Fork")
+  expect(screen.getByText(/lowercase letters, numbers, or hyphens/)).toBeVisible()
+  expect(input).toHaveAttribute("aria-invalid", "true")
+  expect(screen.getByRole("button", { name: "Fork" })).toBeDisabled()
+  await user.clear(input)
+  await user.type(input, "taken")
+  expect(screen.getByText("A sandbox named taken already exists.")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Fork" })).toBeDisabled()
+  await user.clear(input)
+  await user.type(input, "fresh")
+  await user.click(screen.getByRole("button", { name: "Fork" }))
+  await waitFor(() => expect(onFork).toHaveBeenCalledWith("fresh"))
 })
 
 it("Escape closes the popover and it stays closed", async () => {

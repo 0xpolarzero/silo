@@ -35,6 +35,17 @@ it("distinguishes host allocation from guest usage and reports measured recovery
   expect(screen.getByText("2.00 GiB")).toBeVisible()
 })
 
+it("names the owning computer instead of this computer for a remote sandbox", async () => {
+  const read = vi.fn().mockResolvedValue(storage)
+  const { unmount } = render(<Panel workspaceId="vm-id" running computerName="studio" read={read} />)
+  expect(await screen.findByText("36.00 GiB")).toBeVisible()
+  expect(screen.getByText("studio")).toBeVisible()
+  expect(screen.queryByText("This computer")).not.toBeInTheDocument()
+  unmount()
+  render(<Panel workspaceId="vm-id" running read={read} />)
+  expect(await screen.findByText("This computer")).toBeVisible()
+})
+
 it("requires a running sandbox without starting it and hides stale guest usage", async () => {
   const read = vi.fn().mockResolvedValue(storage)
   const reclaim = vi.fn()
