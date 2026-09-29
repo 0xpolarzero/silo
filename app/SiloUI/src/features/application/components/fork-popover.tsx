@@ -24,7 +24,7 @@ export function ForkBody({ sandboxName, title, description, disabled = false, ta
     : validateSandboxName(trimmed) ?? (takenNames.includes(trimmed) ? `A sandbox named ${trimmed} already exists.` : undefined)
   return <FormBody
     title={title ?? `Fork ${sandboxName}`}
-    description={description ?? "Creates a stopped fork from the current state."}
+    description={description ?? `Creates a stopped fork from the current state. Silo adds a “Fork point” checkpoint to ${sandboxName}’s history, and a running ${sandboxName} pauses briefly while it is saved.`}
     confirmLabel="Fork"
     canSubmit={!disabled && trimmed.length > 0 && !nameError}
     onSubmit={() => onFork(trimmed)}

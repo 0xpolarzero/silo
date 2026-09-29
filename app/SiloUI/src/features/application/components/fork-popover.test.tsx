@@ -27,6 +27,14 @@ it("closes at once on submit and hands the trimmed name to the caller", async ()
   await waitFor(() => expect(onFork).toHaveBeenCalledWith("experiment"))
 })
 
+it("discloses the Fork point checkpoint and the brief pause of the source", async () => {
+  const user = userEvent.setup()
+  setup()
+  await openFork(user)
+  expect(await screen.findByText(/adds a “Fork point” checkpoint to dev’s history/)).toBeVisible()
+  expect(screen.getByText(/pauses briefly/)).toBeVisible()
+})
+
 it("does not submit while disabled", async () => {
   const user = userEvent.setup()
   setup(vi.fn(), true)
