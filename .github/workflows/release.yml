@@ -19,7 +19,9 @@ on:
         options: [parallel, sequential]
         default: parallel
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && !inputs.draft && format('silo-release-benchmark-{0}', github.run_id) || 'silo-release-build' }}
+  # One group per release ref: GitHub keeps only one pending run per group, so a
+  # shared group would let a third queued run cancel another waiting release.
+  group: ${{ github.event_name == 'workflow_dispatch' && !inputs.draft && format('silo-release-benchmark-{0}', github.run_id) || format('silo-release-build-{0}', github.ref) }}
   cancel-in-progress: false
 
 permissions:

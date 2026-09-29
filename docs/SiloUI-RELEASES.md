@@ -502,8 +502,9 @@ test jobs receive no signing credentials. Only the reviewed public release depen
 described above are cached; application and native-test products are excluded.
 
 Artifact-only runs have independent concurrency groups, so they do not queue
-behind or displace a pending publication. Tagged and draft publications retain
-the shared release concurrency group. Optional `benchmark_ref` pins every
+behind or displace a pending publication. Tagged and draft publications of the
+same release tag share one concurrency group per tag, so builds of different
+releases never cancel each other while waiting. Optional `benchmark_ref` pins every
 checkout to a full 40-character source commit while using the dispatched
 workflow definition. It is rejected for publication; validation logs both
 workflow and source commits before checkout. Omit it for normal releases.

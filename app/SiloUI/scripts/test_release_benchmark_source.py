@@ -59,8 +59,10 @@ class BenchmarkSourceTests(unittest.TestCase):
         self.assertIn('source-ref: ${{ needs.validate.outputs.source-ref }}', WORKFLOW)
         self.assertLess(WORKFLOW.index('Validate source revision before checkout'), WORKFLOW.index('uses: actions/checkout@'))
 
-    def test_concurrency_separates_artifact_runs_and_preserves_production_group(self):
-        self.assertIn("group: ${{ github.event_name == 'workflow_dispatch' && !inputs.draft && format('silo-release-benchmark-{0}', github.run_id) || 'silo-release-build' }}", WORKFLOW)
+    def test_concurrency_separates_artifact_runs_and_release_refs(self):
+        # GitHub keeps only one pending run per group, so a shared group would let
+        # a third queued release run cancel another release that is waiting.
+        self.assertIn("group: ${{ github.event_name == 'workflow_dispatch' && !inputs.draft && format('silo-release-benchmark-{0}', github.run_id) || format('silo-release-build-{0}', github.ref) }}", WORKFLOW)
         self.assertIn('cancel-in-progress: false', WORKFLOW)
 
 
