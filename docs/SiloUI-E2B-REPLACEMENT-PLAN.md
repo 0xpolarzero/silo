@@ -312,7 +312,7 @@ targets are scoped by responsibility: some files also contain useful policy.
 | `src-tauri/src/backup.rs`, `backup_controller.rs`, `backup_controller/recovery.rs` | E2B checkpoints with revert and fork; separately qualified export | Old archive format, sparse codecs, stopped-VM snapshots, mount validators and multi-VM archive restore UI |
 | `src-tauri/src/desktop.rs`, `desktop_proxy.rs`, parts of `desktop_viewer.rs` | Prepared Xfce template + authenticated noVNC gateway + input ownership | KasmVNC credentials, install/repair progress, proxy protocol specifics; keep useful native window lifecycle |
 | `src-tauri/guest/setup-desktop.sh`, `desktop-service.py` | Template build/start recipe | Download/install/retry-at-runtime desktop state machine |
-| `src-tauri/src/files.rs`, `guest/list-directory.sh` | SDK filesystem operations | NUL-record shell parser and command transport; retain bounded listing/cache behavior only where needed |
+| `src-tauri/src/files.rs`, `guest/list-directory.py` | SDK filesystem operations | NUL-record shell parser and command transport; retain bounded listing/cache behavior only where needed |
 | `src-tauri/src/terminal.rs` | SDK PTY with a small `silo shell` native launcher | `msb exec` construction; keep terminal application integration |
 | `src-tauri/src/editor.rs`, `ssh_access.rs`, `remote_ssh_access.rs` | One qualified SSH/SFTP guest endpoint and host routing | MicroSandbox stdio SSH server coupling and duplicate local/remote access paths |
 | `src-tauri/src/network.rs`, `remote_network.rs` | E2B HTTP/WS traffic routing and one qualified raw-TCP relay | Runtime control-socket protocol and duplicated publication/reconciliation; keep explicit exposure and connection removal |
