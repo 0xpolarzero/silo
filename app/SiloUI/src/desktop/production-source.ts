@@ -833,8 +833,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         publish({ ...snapshot, setupFinishedAt: Math.floor(Date.now() / 1000) })
       }
     })
+    // Only an in-flight job is shared: a later identical request (Continue on a
+    // starting VM, Retry after a failure) must reach the backend again.
     lastMachineJob = { key, promise }
-    void promise.catch(() => { if (lastMachineJob?.promise === promise) lastMachineJob = undefined })
+    const settled = () => { if (lastMachineJob?.promise === promise) lastMachineJob = undefined }
+    void promise.then(settled, settled)
     return promise
   }
 

@@ -10,6 +10,8 @@ const request: OnboardingCompletionRequest = {
   applications: application.preferences,
   github: { connectionState: "disconnected", workspaces: [{ workspace: application.workspaces[0].machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } }] },
 }
+/** The committed state once `request` has been applied. */
+const applied = { ...application, workspaces: [application.workspaces[0]] }
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: Error) => void
@@ -21,11 +23,13 @@ async function setup(savedActivity: SiloProgressEvent[] = [], currentApplication
   const identities = vi.fn<() => Promise<unknown>>().mockResolvedValue(undefined)
   const github = vi.fn<() => Promise<unknown>>().mockResolvedValue({ ...application.github, workspaceOperations: [{ workspace: request.github.workspaces[0].workspace, status: "failed", message: "Runtime did not acknowledge access", canRetry: true }] })
   const events = new Map<string, (event?: { payload: unknown }) => void>()
+  // The committed state follows the last applied configuration, as the runtime's does.
+  let current: unknown = currentApplication
   const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) => {
-    if (command === "read_application_state") return currentApplication
+    if (command === "read_application_state") return current
     if (command === "read_backup_state") return { snapshotId: "test", availability: "available", archives: [], operation: null }
     if (command === "read_setup_activity") return savedActivity
-    if (command === "change_machine_configuration" || command === "retry_machine_configuration") return machines()
+    if (command === "change_machine_configuration" || command === "retry_machine_configuration") return machines().then((applied) => { current = applied; return applied })
     if (command === "configure_workspace_identities") return identities()
     if (command === "save_github_configuration" || command === "read_github_state" || command === "retry_github_configuration") return github()
     throw new Error(`Unexpected command ${command}`)
@@ -179,6 +183,7 @@ describe("production setup queue", () => {
 
   it("marks completion only after identity succeeds and retries failed identity without recreating VMs", async () => {
     const { store, machines, identities } = await setup()
+    machines.mockResolvedValue(applied)
     const pending = deferred<unknown>()
     identities.mockReturnValueOnce(pending.promise)
     const markComplete = vi.fn(async () => {})
@@ -247,7 +252,8 @@ describe("production setup queue", () => {
   })
 
   it("explicitly retries a failed unchanged GitHub policy without rerunning identity", async () => {
-    const { store, github, identities, invoke } = await setup()
+    const { store, machines, github, identities, invoke } = await setup()
+    machines.mockResolvedValue(applied)
     const selected = structuredClone(request)
     selected.github.connectionState = "connected"
     const workspace = selected.github.workspaces[0].workspace
@@ -290,6 +296,7 @@ describe("production setup queue", () => {
 
   it("keeps failed completion visible and retries only completion", async () => {
     const { store, machines, identities } = await setup()
+    machines.mockResolvedValue(applied)
     const markComplete = vi.fn<() => Promise<void>>().mockRejectedValueOnce(new Error("settings write failed")).mockResolvedValue(undefined)
     await expect(store.finishSetup(request, markComplete)).rejects.toThrow("settings write failed")
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "completion")).toMatchObject({ status: "failed", failure: "settings write failed" })
