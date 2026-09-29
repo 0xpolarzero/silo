@@ -1134,19 +1134,25 @@ mod tests {
 
     #[test]
     fn checked_in_runtime_patches_match_packaged_build_pins() {
-        let files = [
-            ("../../patches/microsandbox-silo-network-0.7.2.patch", include_bytes!("../../patches/microsandbox-silo-network-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-restore-policy-0.7.2.patch", include_bytes!("../../patches/microsandbox-restore-policy-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-create-stopped-0.7.2.patch", include_bytes!("../../patches/microsandbox-create-stopped-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-adopt-owned-disk-0.7.2.patch", include_bytes!("../../patches/microsandbox-adopt-owned-disk-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-log-retention-desktop-start-0.7.2.patch", include_bytes!("../../patches/microsandbox-log-retention-desktop-start-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-restore-root-capacity-0.7.2.patch", include_bytes!("../../patches/microsandbox-restore-root-capacity-0.7.2.patch").as_slice()),
-        ];
-        assert_eq!(RUNTIME_INPUTS.patches.len(), files.len());
-        for (input, (path, bytes)) in RUNTIME_INPUTS.patches.iter().zip(files) {
-            assert_eq!(input.path, path.trim_start_matches("../../"));
-            assert_eq!(format!("{:x}", Sha256::digest(bytes)), input.sha256);
+        // runtime-inputs.json is the single list of pinned patches. Every listed
+        // patch must match its checked-in bytes, and every checked-in patch must
+        // be listed, so adding a patch cannot silently skip this check.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut listed = std::collections::BTreeSet::new();
+        for input in &RUNTIME_INPUTS.patches {
+            assert!(input.path.starts_with("patches/") && !input.path.contains(".."), "{}", input.path);
+            let bytes = fs::read(root.join(&input.path))
+                .unwrap_or_else(|error| panic!("{}: {error}", input.path));
+            assert_eq!(format!("{:x}", Sha256::digest(&bytes)), input.sha256, "{}", input.path);
+            assert!(listed.insert(input.path.clone()), "{} is listed twice", input.path);
         }
+        let checked_in: std::collections::BTreeSet<_> = fs::read_dir(root.join("patches"))
+            .unwrap()
+            .map(|entry| format!("patches/{}", entry.unwrap().file_name().to_string_lossy()))
+            .filter(|path| path.ends_with(".patch"))
+            .collect();
+        assert_eq!(checked_in, listed);
+        assert!(!listed.is_empty());
     }
 
     #[test]
