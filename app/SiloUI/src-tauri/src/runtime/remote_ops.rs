@@ -68,6 +68,11 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
                     })?;
                 validate_request(&request).map_err(|e| e.to_string())?;
                 validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
+                // A remote change must not silently replace a local change
+                // that is waiting for Retry on this computer.
+                if configuration_recovery::pending_request(&paths).map_err(|e| e.to_string())?.is_some() {
+                    return Err("A sandbox change on this computer is waiting to be retried. Retry or correct it there first.".into());
+                }
                 configuration_recovery::prepare_retry(&ProcessRunner, &paths, Some(&request))
                     .map_err(|e| e.to_string())?;
                 apply_whole_configuration_with_progress(
