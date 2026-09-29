@@ -303,6 +303,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
           } }} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
+            source={applicationSource}
             onSectionChange={navigation.selectWorkspaceSection}
             network={source.network}
             networkError={source.networkError}

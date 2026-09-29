@@ -596,7 +596,7 @@ describe("application", () => {
     expect(playgroundsRepository.querySelector('[data-workspace-state-dot="stopped"]')).toHaveClass("bg-muted-foreground/55")
     const repositoryHeader = devRepository.querySelector("[data-repository-header]") as HTMLElement
     const repositoryActions = devRepository.querySelector("[data-repository-actions]") as HTMLElement
-    const pushButton = within(repositoryActions).getByRole("button", { name: "Push 2 commits" })
+    const pushButton = within(repositoryActions).getByRole("button", { name: "Push 2 commits for acme/silo in dev" })
     expect(repositoryActions).toHaveClass("flex", "min-h-6", "items-start")
     expect(pushButton).toHaveClass("h-6")
     expect(repositoryHeader).toContainElement(devBadge)

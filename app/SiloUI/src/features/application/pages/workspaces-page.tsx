@@ -19,6 +19,7 @@ import { RepositoryPushFeedback, useRepositoryPushToasts } from "@/features/appl
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
 import type { ApplicationActions, ApplicationSource, ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, WorkspaceDetailSection } from "@/features/application/model/application-source"
 import { commitLabel } from "@/features/application/model/repository-push"
+import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import { showActionFailure } from "@/lib/operation-toast"
 import { cn } from "@/lib/utils"
 
@@ -61,6 +62,7 @@ function EmptyState({ title, description }: { title: string; description: string
 }
 
 function Files({
+  source,
   onRefreshRepositories,
   workspaces,
   repositoryPushOperations,
@@ -71,6 +73,7 @@ function Files({
   directoryStore,
   active,
 }: {
+  source: ApplicationSource
   onRefreshRepositories?: () => Promise<void>
   editor: string
   onOpenEditor: (workspace: string, path: string) => void
@@ -126,6 +129,9 @@ function Files({
                   {repositories.map(({ workspace, repository }) => {
                     const operation = pushOperations.get(`${workspaceTarget(workspace)}:${repository.path}`)
                     const push = () => onPushRepository(workspaceTarget(workspace), repository.path, operation?.commitCount ?? repository.ahead)
+                    // Same gate and name as the status bar: identical buttons need the repository and sandbox.
+                    const canPush = workspaceAvailability(workspace, source).canOpen
+                    const sandbox = workspace.computer ? `${workspace.machine.name} on ${workspace.computer.name}` : workspace.machine.name
                     return (
                       <div key={`${workspace.machine.id}:${repository.path}`} role="listitem" aria-busy={operation?.status === "pushing" || undefined} className="group/folder transition-colors hover:bg-muted/35 focus-within:bg-muted/35">
                         <ListRow
@@ -142,7 +148,7 @@ function Files({
                           <div className="flex min-h-6 items-start pr-2 pb-2 pl-10" data-repository-actions>
                             {operation
                               ? <RepositoryPushFeedback operation={operation} workspace={workspaceTarget(workspace)} repositoryPath={repository.path} onRetry={push} onDismiss={onDismissRepositoryPush} />
-                              : <Button variant="outline" size="xs" onClick={push}>Push {commitLabel(repository.ahead)}</Button>}
+                              : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${sandbox}`} onClick={() => { if (canPush) push() }}>Push {commitLabel(repository.ahead)}</Button>}
                           </div>
                         )}
                       </div>
@@ -312,6 +318,7 @@ function ActivityLog({ workspaces, sourceActivities, filtered, onShowLogs }: { w
 }
 
 export function WorkspacesPage({
+  source,
   network, networkError, networkActions, onSectionChange,
   editor,
   onOpenEditor,
@@ -329,6 +336,8 @@ export function WorkspacesPage({
   onPushRepository,
   onDismissRepositoryPush,
 }: {
+  /** The application source, for the same availability rules as the other surfaces. */
+  source: ApplicationSource
   onSectionChange: (section: WorkspaceDetailSection) => void
   network?: ApplicationSource["network"]
   networkError?: string | null
@@ -366,7 +375,7 @@ export function WorkspacesPage({
   return (
     <div className="mx-auto grid h-full min-h-0 w-full max-w-4xl grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6">
       <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />
-      {section === "files" && <Files onRefreshRepositories={networkActions.refreshRepositories} editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
+      {section === "files" && <Files source={source} onRefreshRepositories={networkActions.refreshRepositories} editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
       {section === "logs" && <Logs key={JSON.stringify(visibleWorkspaces.map(workspaceTarget))} workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} actions={networkActions} active={active} window={logWindow} onWindowChange={setLogWindow} />}
       {section === "network" && <NetworkPage workspaces={visibleWorkspaces} browser={browser} network={network} error={networkError} actions={networkActions} active={active} />}
       {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} filtered={selectedWorkspaceIds.size > 0} onShowLogs={activity => {
