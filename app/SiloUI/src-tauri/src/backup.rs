@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     os::fd::AsRawFd,
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
@@ -18,8 +18,6 @@ use std::{
 
 const MAGIC: &[u8; 16] = b"SILO-BACKUP\0\0\0\0\0";
 const FORMAT_VERSION: u32 = 3;
-const SPARSE_MAGIC: &[u8; 16] = b"SILO-SPARSE\0\0\0\0\0";
-const SPARSE_VERSION: u32 = 1;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_COMMAND_OUTPUT: usize = 32 * 1024;
 const MAX_SNAPSHOT_INDEX_OUTPUT: usize = 1024 * 1024;
@@ -86,31 +84,12 @@ impl MsbRunner for SystemMsbRunner {
         if cancellation.cancelled() {
             return Err(BackupError::Cancelled);
         }
-        // Backup stops use their own cancellable process runner. Revoke SSH
-        // before the VM stops, just as the normal lifecycle runner does.
-        if arguments
-            .first()
-            .is_some_and(|arg| matches!(arg.as_str(), "stop" | "remove" | "restart"))
-        {
-            if let Some(workspace) = arguments
-                .iter()
-                .skip(1)
-                .find(|argument| !argument.starts_with('-'))
-            {
-                crate::ssh_access::close_workspace(workspace);
-            }
-        }
         crate::runtime::prepare_runtime_home(&command.home, command.storage_home.as_deref())
             .map_err(|error| BackupError::InvalidRequest(error.to_string()))?;
-        // Only these stopped-VM commands can outlive Silo while writing restore
-        // output. Keep the lock in the child until it exits, even if Silo dies.
-        let worker_lock = if arguments.first().is_some_and(|arg| {
-            matches!(arg.as_str(), "snapshot" | "restore" | "stop")
-                || (arg == "create"
-                    && arguments
-                        .iter()
-                        .any(|value| value == "--no-start"))
-        }) {
+        // Export and import only run `snapshot` commands that write native
+        // snapshot data. Such a command can outlive Silo; keep the lock in the
+        // child until it exits, even if Silo dies.
+        let worker_lock = if arguments.first().is_some_and(|arg| arg == "snapshot") {
             Some(wait_for_interrupted_command(&command.home, timeout).map_err(BackupError::Io)?)
         } else {
             None
@@ -363,63 +342,7 @@ pub(crate) struct PreparedRestore {
     pub(crate) machine_config: Value,
     pub(crate) snapshot_group: String,
     pub(crate) snapshot_member: String,
-    pub(crate) volumes: Vec<PreparedVolume>,
     _stage: tempfile::TempDir,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct PreparedVolume {
-    pub(crate) role: String,
-    pub(crate) mount_path: String,
-    pub(crate) capacity_bytes: u64,
-    pub(crate) logical_size_bytes: u64,
-    pub(crate) disk_path: PathBuf,
-}
-
-/// Atomically installs a verified restored disk into an app-owned destination.
-/// The caller owns cleanup of the destination if a later restore step fails.
-pub(crate) fn materialize_prepared_volume(
-    volume: &PreparedVolume,
-    destination: &Path,
-    cancellation: &Cancellation,
-) -> Result<(), BackupError> {
-    check_cancelled(cancellation)?;
-    let parent = destination.parent().ok_or_else(|| {
-        BackupError::InvalidRequest("The restored disk destination has no parent directory.".into())
-    })?;
-    fs::create_dir_all(parent)?;
-    if destination.exists() || fs::symlink_metadata(destination).is_ok() {
-        return Err(BackupError::FileConflict(destination.display().to_string()));
-    }
-    let temporary = tempfile::Builder::new()
-        .prefix(".silo-restored-disk-")
-        .tempfile_in(parent)?;
-    let temporary_path = temporary.path().to_path_buf();
-    temporary.close()?;
-    clone_or_sparse_copy(&volume.disk_path, &temporary_path, cancellation)?;
-    let installed = fs::symlink_metadata(&temporary_path)?;
-    if !installed.is_file() || installed.len() != volume.logical_size_bytes {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(BackupError::InvalidArchive(
-            "The restored disk materialization is incomplete.".into(),
-        ));
-    }
-    check_cancelled(cancellation).inspect_err(|_| {
-        let _ = fs::remove_file(&temporary_path);
-    })?;
-    if let Err(error) = rename_without_replacing(&temporary_path, destination) {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(if error.kind() == io::ErrorKind::AlreadyExists {
-            BackupError::FileConflict(destination.display().to_string())
-        } else {
-            BackupError::Io(error)
-        });
-    }
-    if let Err(error) = File::open(parent).and_then(|directory| directory.sync_all()) {
-        let _ = fs::remove_file(destination);
-        return Err(BackupError::Io(error));
-    }
-    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -448,23 +371,9 @@ struct PackageSandbox {
     machine_config: Value,
     payload_size: u64,
     payload_sha256: String,
-    volumes: Vec<PackageVolume>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PackageVolume {
-    role: String,
-    mount_path: String,
-    capacity_bytes: u64,
-    logical_size_bytes: u64,
-    payload_size: u64,
-    payload_sha256: String,
-}
-
-struct CapturedVolume {
-    manifest: PackageVolume,
-    payload_path: PathBuf,
+    /// Format 3 reserves this list for separate disk payloads. The workspace
+    /// disk travels inside the MicroSandbox snapshot, so it must stay empty.
+    volumes: Vec<Value>,
 }
 
 struct OperationGuard<'a>(&'a AtomicBool);
@@ -620,36 +529,20 @@ impl<R: MsbRunner> BackupService<R> {
                     ],
                     cancellation,
                 )?;
-                Ok::<_, BackupError>((payload_path, Vec::<CapturedVolume>::new()))
+                Ok::<_, BackupError>(payload_path)
             })();
-            let (payload_path, captured_volumes) = capture_result?;
+            let payload_path = capture_result?;
             let (payload_size, payload_sha256) =
                 hash_regular_file(&payload_path, self.max_archive_bytes, cancellation)?;
-            let volume_payload_bytes = captured_volumes.iter().try_fold(0_u64, |sum, volume| {
-                sum.checked_add(volume.manifest.payload_size)
-                    .ok_or_else(|| {
-                        BackupError::InvalidRequest(
-                            "The selected VM disk payloads exceed the export size safety limit."
-                                .into(),
-                        )
-                    })
-            })?;
             total_payload_bytes = total_payload_bytes
                 .checked_add(payload_size)
-                .and_then(|size| size.checked_add(volume_payload_bytes))
                 .filter(|size| *size <= self.max_archive_bytes)
                 .ok_or_else(|| {
                     BackupError::InvalidRequest(
                         "The selected VM snapshots exceed the export size safety limit.".into(),
                     )
                 })?;
-            payloads.push((
-                source,
-                payload_path,
-                payload_size,
-                payload_sha256,
-                captured_volumes,
-            ));
+            payloads.push((source, payload_path, payload_size, payload_sha256));
         }
 
         let manifest = PackageManifest {
@@ -663,34 +556,20 @@ impl<R: MsbRunner> BackupService<R> {
             },
             sandboxes: payloads
                 .iter()
-                .map(
-                    |(source, _, payload_size, payload_sha256, volumes)| PackageSandbox {
-                        name: source.name.clone(),
-                        runtime_config: source.runtime_config.clone(),
-                        machine_config: source.machine_config.clone(),
-                        payload_size: *payload_size,
-                        payload_sha256: payload_sha256.clone(),
-                        volumes: volumes
-                            .iter()
-                            .map(|volume| PackageVolume {
-                                role: volume.manifest.role.clone(),
-                                mount_path: volume.manifest.mount_path.clone(),
-                                capacity_bytes: volume.manifest.capacity_bytes,
-                                logical_size_bytes: volume.manifest.logical_size_bytes,
-                                payload_size: volume.manifest.payload_size,
-                                payload_sha256: volume.manifest.payload_sha256.clone(),
-                            })
-                            .collect(),
-                    },
-                )
+                .map(|(source, _, payload_size, payload_sha256)| PackageSandbox {
+                    name: source.name.clone(),
+                    runtime_config: source.runtime_config.clone(),
+                    machine_config: source.machine_config.clone(),
+                    payload_size: *payload_size,
+                    payload_sha256: payload_sha256.clone(),
+                    // Format 3 keeps this field; MicroSandbox's snapshot carries the disks.
+                    volumes: Vec::new(),
+                })
                 .collect(),
         };
         let archive_payloads = payloads
             .iter()
-            .flat_map(|(_, snapshot, _, _, volumes)| {
-                std::iter::once(snapshot.as_path())
-                    .chain(volumes.iter().map(|volume| volume.payload_path.as_path()))
-            })
+            .map(|(_, snapshot, _, _)| snapshot.as_path())
             .collect::<Vec<_>>();
         let size_bytes = write_immutable_package(
             &request.destination,
@@ -918,23 +797,6 @@ impl<R: MsbRunner> BackupService<R> {
             cleanup_new_cache_import_stages(&self.command.home, &import_stages_before);
             return Err(error);
         }
-        let volume_paths = package.volume_disk_paths[selected_index]
-            .as_ref()
-            .ok_or_else(|| {
-                BackupError::InvalidArchive("volume payloads were not extracted".into())
-            })?;
-        let volumes = source
-            .volumes
-            .iter()
-            .zip(volume_paths)
-            .map(|(volume, path)| PreparedVolume {
-                role: volume.role.clone(),
-                mount_path: volume.mount_path.clone(),
-                capacity_bytes: volume.capacity_bytes,
-                logical_size_bytes: volume.logical_size_bytes,
-                disk_path: path.clone(),
-            })
-            .collect();
         Ok(PreparedRestore {
             source_name: source.name.clone(),
             new_name: request.new_name,
@@ -942,7 +804,6 @@ impl<R: MsbRunner> BackupService<R> {
             machine_config: source.machine_config.clone(),
             snapshot_group: import_group,
             snapshot_member,
-            volumes,
             _stage: stage,
         })
     }
@@ -1045,7 +906,6 @@ fn cleanup_new_cache_import_stages(home: &Path, before: &HashSet<std::ffi::OsStr
 struct VerifiedPackage {
     manifest: PackageManifest,
     snapshot_payload_paths: Vec<Option<PathBuf>>,
-    volume_disk_paths: Vec<Option<Vec<PathBuf>>>,
     size_bytes: u64,
 }
 
@@ -1097,15 +957,12 @@ fn read_and_verify_package(
     validate_manifest(&manifest)?;
 
     let header_len = MAGIC.len() as u64 + 4 + 8 + manifest_len;
+    // `validate_manifest` rejects separate volume payloads, so the snapshot
+    // payloads are the whole body.
     let payload_total = manifest
         .sandboxes
         .iter()
-        .try_fold(0_u64, |sum, sandbox| {
-            sandbox.volumes.iter().try_fold(
-                sum.checked_add(sandbox.payload_size)?,
-                |subtotal, volume| subtotal.checked_add(volume.payload_size),
-            )
-        })
+        .try_fold(0_u64, |sum, sandbox| sum.checked_add(sandbox.payload_size))
         .ok_or_else(|| BackupError::InvalidArchive("payload sizes overflow".into()))?;
     let expected_len = header_len
         .checked_add(payload_total)
@@ -1117,7 +974,6 @@ fn read_and_verify_package(
     }
 
     let mut snapshot_payload_paths = Vec::with_capacity(manifest.sandboxes.len());
-    let mut volume_disk_paths = Vec::with_capacity(manifest.sandboxes.len());
     for (index, sandbox) in manifest.sandboxes.iter().enumerate() {
         let snapshot_output = extract_verified_payload(
             &mut file,
@@ -1128,41 +984,10 @@ fn read_and_verify_package(
             cancellation,
         )?;
         snapshot_payload_paths.push(snapshot_output);
-        let mut disks = Vec::with_capacity(sandbox.volumes.len());
-        for (volume_index, volume) in sandbox.volumes.iter().enumerate() {
-            let payload_start = file.stream_position()?;
-            let encoded = extract_verified_payload(
-                &mut file,
-                volume.payload_size,
-                &volume.payload_sha256,
-                extract_dir.map(|dir| dir.join(format!("volume-{index}-{volume_index}.sparse"))),
-                &format!("{} volume payload for {}", volume.role, sandbox.name),
-                cancellation,
-            )?;
-            if let Some(encoded) = encoded {
-                let disk = extract_dir
-                    .expect("encoded output requires extraction")
-                    .join(format!("volume-{index}-{volume_index}.raw"));
-                decode_sparse_file(&encoded, &disk, volume.logical_size_bytes, cancellation)?;
-                fs::remove_file(encoded)?;
-                disks.push(disk);
-            } else {
-                let payload_end = file.stream_position()?;
-                file.seek(SeekFrom::Start(payload_start))?;
-                validate_sparse_stream(
-                    (&mut file).take(volume.payload_size),
-                    volume.logical_size_bytes,
-                    cancellation,
-                )?;
-                file.seek(SeekFrom::Start(payload_end))?;
-            }
-        }
-        volume_disk_paths.push(extract_dir.map(|_| disks));
     }
     Ok(VerifiedPackage {
         manifest,
         snapshot_payload_paths,
-        volume_disk_paths,
         size_bytes: metadata.len(),
     })
 }
@@ -1217,16 +1042,12 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
         validate_machine_config(&sandbox.name, &sandbox.machine_config)
             .map_err(|error| BackupError::InvalidArchive(error.to_string()))?;
         validate_package_volumes(&sandbox.volumes)?;
-        validate_volume_contract(
-            &sandbox.volumes,
-            &sandbox.runtime_config,
-            &sandbox.machine_config,
-        )?;
+        validate_volume_contract(&sandbox.runtime_config, &sandbox.machine_config)?;
     }
     Ok(())
 }
 
-fn validate_package_volumes(volumes: &[PackageVolume]) -> Result<(), BackupError> {
+fn validate_package_volumes(volumes: &[Value]) -> Result<(), BackupError> {
     if !volumes.is_empty() {
         return Err(BackupError::InvalidArchive(
             "workspace disks must be carried by the MicroSandbox snapshot".into(),
@@ -1240,18 +1061,14 @@ fn validate_volume_sources(
     runtime_config: &Value,
     machine_config: &Value,
 ) -> Result<(), BackupError> {
-    validate_volume_contract(&[], runtime_config, machine_config).map_err(|_| {
+    validate_volume_contract(runtime_config, machine_config).map_err(|_| {
         BackupError::UnsupportedStorage(format!(
             "{name} disk metadata does not match its Silo VM configuration."
         ))
     })
 }
 
-fn validate_volume_contract(
-    volumes: &[PackageVolume],
-    runtime_config: &Value,
-    machine_config: &Value,
-) -> Result<(), BackupError> {
+fn validate_volume_contract(runtime_config: &Value, machine_config: &Value) -> Result<(), BackupError> {
     for (runtime_field, machine_field, multiplier) in [
         ("cpus", "cpus", 1),
         ("max_cpus", "maxCPUs", 1),
@@ -1315,24 +1132,12 @@ fn validate_volume_contract(
         .iter()
         .filter(|mount| mount.get("guest").and_then(Value::as_str) == Some("/workspace"))
         .collect::<Vec<_>>();
-    if workspace_mounts.len() != 1 || !volumes.is_empty() {
+    if workspace_mounts.len() != 1 {
         return Err(BackupError::InvalidArchive(
             "VM disk mounts do not match the machine settings".into(),
         ));
     }
     Ok(())
-}
-
-fn valid_mount_path(path: &str) -> bool {
-    path.starts_with('/')
-        && path.len() > 1
-        && !path.contains('\0')
-        && Path::new(path).components().all(|component| {
-            matches!(
-                component,
-                std::path::Component::RootDir | std::path::Component::Normal(_)
-            )
-        })
 }
 
 fn select_restore_source(
@@ -1746,45 +1551,6 @@ fn silo_disk_mounts_with_optional_tmpfs(
             .all(|key| options.get(*key).is_none_or(Value::is_null))
 }
 
-fn valid_disk_image_mount(mount: &Value) -> bool {
-    let Some(mount) = mount.as_object() else {
-        return false;
-    };
-    const FIELDS: &[&str] = &["type", "host", "guest", "format", "fstype", "options"];
-    if mount.keys().any(|key| !FIELDS.contains(&key.as_str()))
-        || mount.get("type").and_then(Value::as_str) != Some("DiskImage")
-        || !mount
-            .get("host")
-            .and_then(Value::as_str)
-            .is_some_and(|path| Path::new(path).is_absolute())
-        || !mount
-            .get("guest")
-            .and_then(Value::as_str)
-            .is_some_and(valid_mount_path)
-        || mount.get("format").and_then(Value::as_str) != Some("Raw")
-        || !mount
-            .get("fstype")
-            .is_some_and(|value| value.is_null() || value.as_str() == Some("ext4"))
-    {
-        return false;
-    }
-    let Some(options) = mount.get("options").and_then(Value::as_object) else {
-        return false;
-    };
-    const OPTION_FIELDS: &[&str] = &[
-        "readonly",
-        "noexec",
-        "nosuid",
-        "nodev",
-        "override_uid",
-        "override_gid",
-    ];
-    !options
-        .keys()
-        .any(|key| !OPTION_FIELDS.contains(&key.as_str()))
-        && options.get("readonly").and_then(Value::as_bool) == Some(false)
-}
-
 fn valid_owned_workspace_mount(mount: &Value) -> bool {
     mount.get("type").and_then(Value::as_str) == Some("Owned")
         && mount.get("guest").and_then(Value::as_str) == Some("/workspace")
@@ -1812,374 +1578,6 @@ fn network_uses_host_files(network: &Value) -> bool {
                     .iter()
                     .any(|key| ca.get(*key).is_some_and(|value| !value.is_null()))
             })
-}
-
-fn clone_or_sparse_copy(
-    source: &Path,
-    destination: &Path,
-    cancellation: &Cancellation,
-) -> Result<(), BackupError> {
-    match try_clone_file(source, destination) {
-        Ok(true) => {
-            File::open(destination)?.sync_all()?;
-            return Ok(());
-        }
-        Ok(false) => {}
-        Err(error) => {
-            let _ = fs::remove_file(destination);
-            return Err(BackupError::Io(error));
-        }
-    }
-    let _ = fs::remove_file(destination);
-    let mut input = File::open(source)?;
-    let logical_size = input.metadata()?.len();
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
-    output.set_len(logical_size)?;
-    copy_sparse_contents(&mut input, &mut output, logical_size, cancellation)?;
-    output.sync_all()?;
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn try_clone_file(source: &Path, destination: &Path) -> io::Result<bool> {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    unsafe extern "C" {
-        fn clonefile(
-            source: *const libc::c_char,
-            destination: *const libc::c_char,
-            flags: u32,
-        ) -> libc::c_int;
-    }
-    let source = CString::new(source.as_os_str().as_bytes())?;
-    let destination = CString::new(destination.as_os_str().as_bytes())?;
-    // SAFETY: both pointers reference live NUL-terminated path strings for this call.
-    let result = unsafe { clonefile(source.as_ptr(), destination.as_ptr(), 0) };
-    if result == 0 {
-        Ok(true)
-    } else {
-        let error = io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(libc::ENOTSUP | libc::EXDEV | libc::EINVAL) => Ok(false),
-            _ => Err(error),
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn try_clone_file(source: &Path, destination: &Path) -> io::Result<bool> {
-    const FICLONE: libc::c_ulong = 0x4004_9409;
-    let input = File::open(source)?;
-    let output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
-    // SAFETY: ioctl only reads the valid source fd and writes clone metadata to output fd.
-    let result = unsafe { libc::ioctl(output.as_raw_fd(), FICLONE, input.as_raw_fd()) };
-    if result == 0 {
-        Ok(true)
-    } else {
-        let error = io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(libc::EOPNOTSUPP | libc::EXDEV | libc::EINVAL | libc::ENOTTY) => Ok(false),
-            _ => Err(error),
-        }
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn try_clone_file(_source: &Path, _destination: &Path) -> io::Result<bool> {
-    Ok(false)
-}
-
-fn copy_sparse_contents(
-    input: &mut File,
-    output: &mut File,
-    logical_size: u64,
-    cancellation: &Cancellation,
-) -> Result<(), BackupError> {
-    match sparse_extents(input, logical_size)? {
-        Some(extents) => {
-            for (offset, length) in extents {
-                copy_extent(input, output, offset, length, cancellation)?;
-            }
-        }
-        None => copy_nonzero_blocks(input, output, logical_size, cancellation)?,
-    }
-    Ok(())
-}
-
-fn sparse_extents(input: &File, logical_size: u64) -> io::Result<Option<Vec<(u64, u64)>>> {
-    if logical_size > i64::MAX as u64 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "disk image is too large",
-        ));
-    }
-    let mut extents = Vec::new();
-    let mut cursor = 0_u64;
-    while cursor < logical_size {
-        // SAFETY: input fd is valid and offsets were bounded above.
-        let data =
-            unsafe { libc::lseek(input.as_raw_fd(), cursor as libc::off_t, libc::SEEK_DATA) };
-        if data < 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ENXIO) {
-                break;
-            }
-            if error.raw_os_error() == Some(libc::EINVAL) {
-                return Ok(None);
-            }
-            return Err(error);
-        }
-        // SAFETY: input fd is valid and data was returned by lseek.
-        let hole = unsafe { libc::lseek(input.as_raw_fd(), data, libc::SEEK_HOLE) };
-        if hole < 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::EINVAL) {
-                return Ok(None);
-            }
-            return Err(error);
-        }
-        let start = data as u64;
-        let end = (hole as u64).min(logical_size);
-        if end <= start {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid sparse extent",
-            ));
-        }
-        extents.push((start, end - start));
-        cursor = end;
-    }
-    Ok(Some(extents))
-}
-
-fn copy_extent(
-    input: &mut File,
-    output: &mut File,
-    offset: u64,
-    length: u64,
-    cancellation: &Cancellation,
-) -> Result<(), BackupError> {
-    input.seek(SeekFrom::Start(offset))?;
-    output.seek(SeekFrom::Start(offset))?;
-    let mut remaining = length;
-    let mut buffer = [0_u8; 128 * 1024];
-    while remaining > 0 {
-        check_cancelled(cancellation)?;
-        let wanted = remaining.min(buffer.len() as u64) as usize;
-        input.read_exact(&mut buffer[..wanted])?;
-        output.write_all(&buffer[..wanted])?;
-        remaining -= wanted as u64;
-    }
-    Ok(())
-}
-
-fn copy_nonzero_blocks(
-    input: &mut File,
-    output: &mut File,
-    logical_size: u64,
-    cancellation: &Cancellation,
-) -> Result<(), BackupError> {
-    input.seek(SeekFrom::Start(0))?;
-    let mut offset = 0_u64;
-    let mut buffer = [0_u8; 128 * 1024];
-    while offset < logical_size {
-        check_cancelled(cancellation)?;
-        let wanted = (logical_size - offset).min(buffer.len() as u64) as usize;
-        input.read_exact(&mut buffer[..wanted])?;
-        if buffer[..wanted].iter().any(|byte| *byte != 0) {
-            output.seek(SeekFrom::Start(offset))?;
-            output.write_all(&buffer[..wanted])?;
-        }
-        offset += wanted as u64;
-    }
-    Ok(())
-}
-
-fn encode_sparse_file(
-    source: &Path,
-    destination: &Path,
-    cancellation: &Cancellation,
-) -> Result<(), BackupError> {
-    let mut input = File::open(source)?;
-    let logical_size = input.metadata()?.len();
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
-    output.write_all(SPARSE_MAGIC)?;
-    output.write_all(&SPARSE_VERSION.to_be_bytes())?;
-    output.write_all(&logical_size.to_be_bytes())?;
-    match sparse_extents(&input, logical_size)? {
-        Some(extents) => {
-            for (offset, length) in extents {
-                output.write_all(&offset.to_be_bytes())?;
-                output.write_all(&length.to_be_bytes())?;
-                input.seek(SeekFrom::Start(offset))?;
-                copy_exact_bytes(&mut input, &mut output, length, cancellation)?;
-            }
-        }
-        None => {
-            input.seek(SeekFrom::Start(0))?;
-            let mut offset = 0_u64;
-            let mut buffer = [0_u8; 128 * 1024];
-            while offset < logical_size {
-                check_cancelled(cancellation)?;
-                let wanted = (logical_size - offset).min(buffer.len() as u64) as usize;
-                input.read_exact(&mut buffer[..wanted])?;
-                if buffer[..wanted].iter().any(|byte| *byte != 0) {
-                    output.write_all(&offset.to_be_bytes())?;
-                    output.write_all(&(wanted as u64).to_be_bytes())?;
-                    output.write_all(&buffer[..wanted])?;
-                }
-                offset += wanted as u64;
-            }
-        }
-    }
-    output.write_all(&u64::MAX.to_be_bytes())?;
-    output.write_all(&0_u64.to_be_bytes())?;
-    output.sync_all()?;
-    Ok(())
-}
-
-fn copy_exact_bytes(
-    input: &mut File,
-    output: &mut File,
-    mut remaining: u64,
-    cancellation: &Cancellation,
-) -> Result<(), BackupError> {
-    let mut buffer = [0_u8; 128 * 1024];
-    while remaining > 0 {
-        check_cancelled(cancellation)?;
-        let wanted = remaining.min(buffer.len() as u64) as usize;
-        input.read_exact(&mut buffer[..wanted])?;
-        output.write_all(&buffer[..wanted])?;
-        remaining -= wanted as u64;
-    }
-    Ok(())
-}
-
-fn decode_sparse_file(
-    source: &Path,
-    destination: &Path,
-    expected_logical_size: u64,
-    cancellation: &Cancellation,
-) -> Result<(), BackupError> {
-    let mut input = File::open(source)?;
-    let mut magic = [0_u8; SPARSE_MAGIC.len()];
-    input.read_exact(&mut magic).map_err(|_| {
-        BackupError::InvalidArchive("a VM disk payload header is incomplete".into())
-    })?;
-    if &magic != SPARSE_MAGIC || read_u32(&mut input)? != SPARSE_VERSION {
-        return Err(BackupError::InvalidArchive(
-            "a VM disk payload format is unsupported".into(),
-        ));
-    }
-    let logical_size = read_u64(&mut input)?;
-    if logical_size != expected_logical_size {
-        return Err(BackupError::InvalidArchive(
-            "a VM disk logical size does not match its manifest".into(),
-        ));
-    }
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
-    output.set_len(logical_size)?;
-    let mut previous_end = 0_u64;
-    loop {
-        check_cancelled(cancellation)?;
-        let offset = read_u64(&mut input)?;
-        let length = read_u64(&mut input)?;
-        if offset == u64::MAX && length == 0 {
-            break;
-        }
-        let end = offset
-            .checked_add(length)
-            .ok_or_else(|| BackupError::InvalidArchive("a VM disk extent overflows".into()))?;
-        if length == 0 || offset < previous_end || end > logical_size {
-            return Err(BackupError::InvalidArchive(
-                "a VM disk extent is invalid".into(),
-            ));
-        }
-        output.seek(SeekFrom::Start(offset))?;
-        let mut remaining = length;
-        let mut buffer = [0_u8; 128 * 1024];
-        while remaining > 0 {
-            check_cancelled(cancellation)?;
-            let wanted = remaining.min(buffer.len() as u64) as usize;
-            input.read_exact(&mut buffer[..wanted]).map_err(|_| {
-                BackupError::InvalidArchive("a VM disk extent is incomplete".into())
-            })?;
-            output.write_all(&buffer[..wanted])?;
-            remaining -= wanted as u64;
-        }
-        previous_end = end;
-    }
-    if input.stream_position()? != input.metadata()?.len() {
-        return Err(BackupError::InvalidArchive(
-            "a VM disk payload has trailing data".into(),
-        ));
-    }
-    output.sync_all()?;
-    Ok(())
-}
-
-fn validate_sparse_stream(
-    mut input: impl Read,
-    expected_logical_size: u64,
-    cancellation: &Cancellation,
-) -> Result<(), BackupError> {
-    let mut magic = [0_u8; SPARSE_MAGIC.len()];
-    input.read_exact(&mut magic).map_err(|_| {
-        BackupError::InvalidArchive("a VM disk payload header is incomplete".into())
-    })?;
-    if &magic != SPARSE_MAGIC || read_u32(&mut input)? != SPARSE_VERSION {
-        return Err(BackupError::InvalidArchive(
-            "a VM disk payload format is unsupported".into(),
-        ));
-    }
-    let logical_size = read_u64(&mut input)?;
-    if logical_size != expected_logical_size {
-        return Err(BackupError::InvalidArchive(
-            "a VM disk logical size does not match its manifest".into(),
-        ));
-    }
-    let mut previous_end = 0_u64;
-    let mut buffer = [0_u8; 128 * 1024];
-    loop {
-        check_cancelled(cancellation)?;
-        let offset = read_u64(&mut input)?;
-        let length = read_u64(&mut input)?;
-        if offset == u64::MAX && length == 0 {
-            break;
-        }
-        let end = offset
-            .checked_add(length)
-            .filter(|end| length > 0 && offset >= previous_end && *end <= logical_size)
-            .ok_or_else(|| BackupError::InvalidArchive("a VM disk extent is invalid".into()))?;
-        let mut remaining = length;
-        while remaining > 0 {
-            check_cancelled(cancellation)?;
-            let wanted = remaining.min(buffer.len() as u64) as usize;
-            input.read_exact(&mut buffer[..wanted]).map_err(|_| {
-                BackupError::InvalidArchive("a VM disk extent is incomplete".into())
-            })?;
-            remaining -= wanted as u64;
-        }
-        previous_end = end;
-    }
-    let mut trailing = [0_u8; 1];
-    if input.read(&mut trailing)? != 0 {
-        return Err(BackupError::InvalidArchive(
-            "a VM disk payload has trailing data".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn extract_verified_payload(
@@ -2678,41 +2076,77 @@ mod tests {
         )
     }
 
-    #[test]
-    fn stop_command_keeps_recovery_out_until_guest_stop_finishes() {
+    fn script_command(directory: &Path, script: &str) -> MsbCommand {
         use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::tempdir().unwrap();
-        let executable = directory.path().join("msb");
-        let home = directory.path().join("home");
-        fs::create_dir(&home).unwrap();
-        fs::write(&executable, b"#!/bin/sh\nprintf ready > \"$MSB_HOME/ready\"\nwhile [ ! -e \"$MSB_HOME/release\" ]; do sleep 0.02; done\n").unwrap();
+        let executable = directory.join("msb");
+        let home = directory.join("home");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(&executable, script).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let command = MsbCommand {
-            metadata: directory.path().join("machines.json"),
+        MsbCommand {
+            metadata: directory.join("machines.json"),
             executable,
-            home: home.clone(),
+            home,
             storage_home: None,
-            library: directory.path().join("unused-library"),
-        };
+            library: directory.join("unused-library"),
+        }
+    }
+
+    fn wait_for_file(path: &Path) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        path.exists()
+    }
+
+    #[test]
+    fn snapshot_command_keeps_recovery_out_until_it_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        let command = script_command(
+            directory.path(),
+            "#!/bin/sh\nprintf ready > \"$MSB_HOME/ready\"\nwhile [ ! -e \"$MSB_HOME/release\" ]; do sleep 0.02; done\n",
+        );
+        let home = command.home.clone();
         let worker = thread::spawn(move || {
             SystemMsbRunner.run(
                 &command,
-                &["stop".into(), "example".into()],
+                &["snapshot".into(), "load".into(), "/tmp/unused.msb".into()],
                 Duration::from_secs(5),
                 &Cancellation::default(),
             )
         });
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !home.join("ready").exists() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        let ready = home.join("ready").exists();
+        let ready = wait_for_file(&home.join("ready"));
         let lock_result = wait_for_interrupted_command(&home, Duration::ZERO);
         fs::write(home.join("release"), b"release").unwrap();
         let result = worker.join().unwrap();
-        assert!(ready, "stop command never reached its side effect");
+        assert!(ready, "snapshot command never reached its side effect");
         assert_eq!(lock_result.unwrap_err().kind(), io::ErrorKind::TimedOut);
         assert!(result.unwrap().status.success());
+    }
+
+    #[test]
+    fn non_snapshot_commands_do_not_take_the_worker_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let command = script_command(
+            directory.path(),
+            "#!/bin/sh\nprintf ready > \"$MSB_HOME/ready\"\nwhile [ ! -e \"$MSB_HOME/release\" ]; do sleep 0.02; done\nprintf '[]'\n",
+        );
+        let home = command.home.clone();
+        let worker = thread::spawn(move || {
+            SystemMsbRunner.run(
+                &command,
+                &["list".into(), "--format".into(), "json".into()],
+                Duration::from_secs(5),
+                &Cancellation::default(),
+            )
+        });
+        let ready = wait_for_file(&home.join("ready"));
+        let lock_result = wait_for_interrupted_command(&home, Duration::ZERO);
+        fs::write(home.join("release"), b"release").unwrap();
+        assert!(ready);
+        assert!(lock_result.is_ok(), "a read-only list must not hold the worker lock");
+        assert_eq!(worker.join().unwrap().unwrap().stdout, "[]");
     }
 
     #[test]
@@ -2735,10 +2169,10 @@ mod tests {
     fn backup_contract_requires_owned_workspace_snapshot_and_real_root_capacity() {
         let config = managed_config("dev");
         let machine = machine_config("dev");
-        assert!(validate_volume_contract(&[], &config, &machine).is_ok());
+        assert!(validate_volume_contract(&config, &machine).is_ok());
         let mut wrong_root = config.clone();
         wrong_root["image"]["Oci"]["root_disk"]["size_mib"] = Value::from(8192);
-        assert!(validate_volume_contract(&[], &wrong_root, &machine).is_err());
+        assert!(validate_volume_contract(&wrong_root, &machine).is_err());
         let mut extra_disk = config;
         extra_disk["mounts"]
             .as_array_mut()
@@ -2747,14 +2181,14 @@ mod tests {
         assert!(validate_snapshottable_config("dev", &extra_disk).is_err());
         assert!(validate_package_volumes(&[]).is_ok());
         assert!(
-            validate_package_volumes(&[PackageVolume {
-                role: "workspace".into(),
-                mount_path: "/workspace".into(),
-                capacity_bytes: 1,
-                logical_size_bytes: 1,
-                payload_size: 1,
-                payload_sha256: format!("sha256:{}", "0".repeat(64)),
-            }])
+            validate_package_volumes(&[serde_json::json!({
+                "role": "workspace",
+                "mountPath": "/workspace",
+                "capacityBytes": 1,
+                "logicalSizeBytes": 1,
+                "payloadSize": 1,
+                "payloadSha256": format!("sha256:{}", "0".repeat(64)),
+            })])
             .is_err()
         );
     }
@@ -3194,7 +2628,6 @@ mod tests {
         assert_eq!(restored.machine_config["runtimeStorageGiB"], 80);
         assert!(restored.snapshot_group.starts_with("silo-import-"));
         assert_eq!(restored.snapshot_member, "imported-member");
-        assert!(restored.volumes.is_empty());
         let calls = service.runner.calls.lock().unwrap();
         assert!(!calls.iter().any(|arguments| {
             arguments
@@ -3267,74 +2700,4 @@ mod tests {
         assert!(validate_sandbox_name("valid-name").is_ok());
     }
 
-    #[test]
-    fn malformed_sparse_extents_are_rejected() {
-        let temp = tempfile::tempdir().unwrap();
-        let payload = temp.path().join("unsafe.sparse");
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(SPARSE_MAGIC);
-        bytes.extend_from_slice(&SPARSE_VERSION.to_be_bytes());
-        bytes.extend_from_slice(&4096_u64.to_be_bytes());
-        bytes.extend_from_slice(&2048_u64.to_be_bytes());
-        bytes.extend_from_slice(&4_u64.to_be_bytes());
-        bytes.extend_from_slice(b"safe");
-        bytes.extend_from_slice(&1024_u64.to_be_bytes());
-        bytes.extend_from_slice(&4_u64.to_be_bytes());
-        bytes.extend_from_slice(b"evil");
-        bytes.extend_from_slice(&u64::MAX.to_be_bytes());
-        bytes.extend_from_slice(&0_u64.to_be_bytes());
-        fs::write(&payload, bytes).unwrap();
-        let destination = temp.path().join("disk.raw");
-        assert!(matches!(
-            decode_sparse_file(&payload, &destination, 4096, &Cancellation::default()),
-            Err(BackupError::InvalidArchive(_))
-        ));
-    }
-
-    #[test]
-    fn prepared_disk_materialization_is_atomic_and_never_replaces_a_target() {
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("source.raw");
-        let file = File::create(&source).unwrap();
-        file.set_len(1024 * 1024).unwrap();
-        use std::os::unix::fs::FileExt;
-        file.write_all_at(b"restored", 4096).unwrap();
-        let volume = PreparedVolume {
-            role: "workspace".into(),
-            mount_path: "/workspace".into(),
-            capacity_bytes: 1024 * 1024,
-            logical_size_bytes: 1024 * 1024,
-            disk_path: source,
-        };
-        let target = temp.path().join("target.raw");
-        fs::write(&target, b"original").unwrap();
-        let cancellation = Cancellation::default();
-        cancellation.cancel();
-        assert!(matches!(
-            materialize_prepared_volume(&volume, &target, &cancellation),
-            Err(BackupError::Cancelled)
-        ));
-        assert_eq!(fs::read(&target).unwrap(), b"original");
-        assert!(matches!(
-            materialize_prepared_volume(&volume, &target, &Cancellation::default()),
-            Err(BackupError::FileConflict(_))
-        ));
-        assert_eq!(fs::read(&target).unwrap(), b"original");
-        fs::remove_file(&target).unwrap();
-        materialize_prepared_volume(&volume, &target, &Cancellation::default()).unwrap();
-        assert_eq!(fs::metadata(&target).unwrap().len(), 1024 * 1024);
-        let mut bytes = [0_u8; 8];
-        File::open(&target)
-            .unwrap()
-            .read_exact_at(&mut bytes, 4096)
-            .unwrap();
-        assert_eq!(&bytes, b"restored");
-        assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".silo-restored-disk-")
-        }));
-    }
 }
