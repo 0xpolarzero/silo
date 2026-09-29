@@ -24,6 +24,27 @@ fn network_lock() -> std::sync::MutexGuard<'static, ()> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+/// Serializes one VM's runtime forwarding calls: a repair's add/remove sequence and
+/// a read's snapshot of that VM's live forwards. Runtime calls can each take up to
+/// their 3 s timeout, so they never run under the shared `network_lock`; other VMs'
+/// reads and saves do not wait behind them (C-26). Lock order: this lock first, then
+/// `network_lock` only briefly for the settings file. Like `network_lock` it guards
+/// no in-memory state, so poisoning is recovered.
+fn forwarding_lock(workspace: &str) -> std::sync::Arc<Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<Mutex<BTreeMap<String, std::sync::Arc<Mutex<()>>>>> =
+        std::sync::OnceLock::new();
+    LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(workspace.to_owned())
+        .or_default()
+        .clone()
+}
+fn hold(lock: &Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 const LIMIT: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -341,13 +362,18 @@ fn observe(
             .collect();
         return result;
     }
-    // Hold the short data lock only to read a consistent snapshot of the desired
-    // settings and the live forwards. It is dropped before the slow guest probes,
-    // and this read never mutates the forwarding table or the settings file.
-    let guard = network_lock();
-    // Read the current desired revision only after obtaining the data lock.
+    // Hold this VM's forwarding lock only to read a consistent snapshot of the desired
+    // settings and the live forwards, so a repair of this VM is never seen half done.
+    // It is dropped before the slow guest probes, and this read never mutates the
+    // forwarding table or the settings file. Other VMs never wait on it.
+    let forwarding = forwarding_lock(workspace);
+    let guard = hold(&forwarding);
+    // Read the current desired revision only after obtaining the lock.
     // An older refresh must never observe against access removed by another window.
-    let config = match read_config(paths) {
+    let config = match {
+        let _data = network_lock();
+        read_config(paths)
+    } {
         Ok(config) => config,
         Err(e) => {
             result.error = Some(e);
@@ -493,8 +519,11 @@ fn observe(
     // Guest probes run without blocking mutations. Never publish their result
     // against settings or endpoints that changed while those probes were running.
     let latest = (|| -> Result<(), String> {
-        let _guard = network_lock();
-        let current = read_config(paths)?;
+        let _guard = hold(&forwarding);
+        let current = {
+            let _data = network_lock();
+            read_config(paths)?
+        };
         let current: Vec<_> = current
             .mappings
             .iter()
@@ -538,18 +567,25 @@ fn observe(
 /// be reached every saved port of the VM carries that failure; a write path shows it
 /// only while the VM runs (a stopped VM's ports read as waiting and reconcile on the
 /// next start). Nothing is published when the VM is not running.
+///
+/// The shared `network_lock` is held only to read the settings and to prune them;
+/// the runtime calls run under this VM's `forwarding_lock`, so a slow or hung runtime
+/// never blocks other VMs' reads and saves (C-26).
 fn reconcile_forwarding(
     paths: &RuntimePaths,
     workspace: &str,
 ) -> Result<BTreeMap<u16, String>, String> {
     let mut failures = BTreeMap::new();
-    let guard = network_lock();
-    let config = read_config(paths)?;
-    let desired: Vec<_> = config
-        .mappings
-        .iter()
-        .filter(|m| m.workspace == workspace)
-        .collect();
+    let forwarding = forwarding_lock(workspace);
+    let _forwarding = hold(&forwarding);
+    let desired: Vec<Mapping> = {
+        let _data = network_lock();
+        read_config(paths)?
+            .mappings
+            .into_iter()
+            .filter(|m| m.workspace == workspace)
+            .collect()
+    };
     if desired.is_empty() {
         return Ok(failures);
     }
@@ -587,16 +623,19 @@ fn reconcile_forwarding(
         }
     }
     // Remove confirmed tombstones, so repeated add/remove never grows settings forever.
-    let mut cleaned = Configuration {
-        mappings: config.mappings.clone(),
-    };
-    cleaned.mappings.retain(|m| {
-        m.workspace != workspace || m.enabled || published.iter().any(|p| p.guest_port == m.port)
-    });
-    if cleaned.mappings.len() != config.mappings.len() {
-        let _ = write_config(paths, &cleaned);
+    // Other VMs may have saved while the runtime calls ran: prune the current file.
+    let _data = network_lock();
+    if let Ok(mut current) = read_config(paths) {
+        let before = current.mappings.len();
+        current.mappings.retain(|m| {
+            m.workspace != workspace
+                || m.enabled
+                || published.iter().any(|p| p.guest_port == m.port)
+        });
+        if current.mappings.len() != before {
+            let _ = write_config(paths, &current);
+        }
     }
-    drop(guard);
     Ok(failures)
 }
 /// Reconcile the affected VM's forwards on a background thread, skipping it when
@@ -870,25 +909,6 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn desktop_reuses_existing_publication_without_changing_its_port() {
-        use std::os::unix::net::UnixListener;
-        let directory = tempfile::tempdir_in("/tmp").unwrap();
-        let path = directory.path().join("control.sock");
-        let listener = UnixListener::bind(&path).unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
-            assert_eq!(serde_json::from_str::<Value>(&request).unwrap()["op"], "ports_list");
-            stream.write_all(b"{\"ok\":true,\"ports\":[{\"guest_port\":6901,\"host_port\":43000,\"host_bind\":\"127.0.0.1\"}]}\n").unwrap();
-            // A second request would fail after this listener closes.
-        });
-        assert_eq!(desktop_port(&path, 6901).unwrap(), 43000);
-        server.join().unwrap();
-    }
-
-    #[test]
-    #[cfg(unix)]
     fn runtime_errors_are_short_and_do_not_expose_raw_details() {
         let conflict = control_reply("{\"ok\":false,\"error\":\"Address already in use: private runtime diagnostics\"}\n").unwrap_err();
         assert_eq!(conflict, "This local port is already in use. Choose another or use Automatic.");
@@ -1067,28 +1087,101 @@ mod tests {
         NETWORK_LOCK.clear_poison();
     }
 
+    /// A runtime control socket that answers `ports_list` at once and each
+    /// `port_add` only after `delay`, like a runtime under load. It reports each
+    /// accepted `port_add` on `added` before waiting.
+    #[cfg(unix)]
+    fn slow_runtime(
+        socket: std::path::PathBuf,
+        connections: usize,
+        delay: Duration,
+        added: std::sync::mpsc::Sender<u16>,
+    ) -> std::thread::JoinHandle<()> {
+        use std::os::unix::net::UnixListener;
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            let mut published: Vec<Value> = vec![];
+            for _ in 0..connections {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
+                let request: Value = serde_json::from_str(&request).unwrap();
+                if request["op"] == "port_add" {
+                    let port = request["guest_port"].as_u64().unwrap() as u16;
+                    added.send(port).unwrap();
+                    std::thread::sleep(delay);
+                    published.push(json!({"guest_port":port,"host_port":40000 + port,"host_bind":"127.0.0.1"}));
+                }
+                let reply = json!({"ok":true,"ports":published});
+                stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+            }
+        })
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn repairing_one_vm_never_holds_the_network_lock_across_runtime_calls() {
+        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let paths = temp_paths(&temp);
+        let mut config = one_port("dev", 3000, true);
+        config.mappings.push(Mapping { port: 3001, ..config.mappings[0].clone() });
+        write_config(&paths, &config).unwrap();
+        let (added_tx, added) = std::sync::mpsc::channel();
+        // ports_list, then two slow port_add calls.
+        let runtime = slow_runtime(socket_path(&paths, "dev"), 3, Duration::from_millis(800), added_tx);
+        let repair = {
+            let paths = paths.clone();
+            std::thread::spawn(move || reconcile_forwarding(&paths, "dev"))
+        };
+        assert_eq!(added.recv_timeout(Duration::from_secs(5)).unwrap(), 3000);
+        // Another VM's read or save needs only the short data lock.
+        let started = std::time::Instant::now();
+        drop(network_lock());
+        let waited = started.elapsed();
+        let failures = repair.join().unwrap().unwrap();
+        runtime.join().unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(waited < Duration::from_millis(400), "waited {waited:?} behind runtime calls");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tombstone_cleanup_keeps_settings_saved_during_a_repair() {
+        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let paths = temp_paths(&temp);
+        let mut config = one_port("dev", 3000, true);
+        // A removed port whose forward is already gone is pruned by the repair.
+        config.mappings.push(Mapping { port: 3001, enabled: false, ..config.mappings[0].clone() });
+        write_config(&paths, &config).unwrap();
+        let (added_tx, added) = std::sync::mpsc::channel();
+        let runtime = slow_runtime(socket_path(&paths, "dev"), 2, Duration::from_millis(300), added_tx);
+        let repair = {
+            let paths = paths.clone();
+            std::thread::spawn(move || reconcile_forwarding(&paths, "dev"))
+        };
+        assert_eq!(added.recv_timeout(Duration::from_secs(5)).unwrap(), 3000);
+        // Another VM saves a port while this VM's repair waits on its runtime.
+        {
+            let _guard = network_lock();
+            let mut current = read_config(&paths).unwrap();
+            current.mappings.extend(one_port("other", 8080, true).mappings);
+            write_config(&paths, &current).unwrap();
+        }
+        assert!(repair.join().unwrap().unwrap().is_empty());
+        runtime.join().unwrap();
+        let saved: Vec<_> = read_config(&paths)
+            .unwrap()
+            .mappings
+            .into_iter()
+            .map(|m| (m.workspace, m.port))
+            .collect();
+        assert_eq!(saved, vec![("dev".to_string(), 3000), ("other".to_string(), 8080)]);
+    }
+
     #[test]
     fn loopback_ipv6_is_not_reported_as_ipv4_reachable() {
         let input="sl local_address rem_address st\n0: 00000000000000000000000001000000:0BB8 00000000:0000 0A\n";
         assert_eq!(parse_listeners(input).unwrap().get(&3000), Some(&false));
     }
-}
-
-/// Internal desktop publications live until the VM stops. Closing one viewer must
-/// not revoke a mapping used by another viewer or an explicit user configuration.
-pub(crate) fn desktop_endpoint(paths: &RuntimePaths, workspace: &str, guest_port: u16) -> Result<u16, String> {
-    if guest_port == 0 { return Err("Invalid desktop port.".into()); }
-    let _guard = network_lock();
-    let running = configured_vm(paths, workspace)?.is_some_and(|inspected| inspected.status == "Running");
-    if !running { return Err(format!("Start {workspace} first.")); }
-    desktop_port(&socket_path(paths, workspace), guest_port)
-}
-
-fn desktop_port(socket: &Path, guest_port: u16) -> Result<u16, String> {
-    let ports = control(socket, json!({"op":"ports_list"}))?;
-    if let Some(existing) = ports.into_iter().find(|p| p.guest_port == guest_port) {
-        return Ok(existing.host_port);
-    }
-    let ports = control(socket, json!({"op":"port_add","guest_port":guest_port,"host_port":0}))?;
-    ports.into_iter().find(|p| p.guest_port == guest_port).map(|p| p.host_port).ok_or_else(|| "Desktop forwarding is unavailable.".into())
 }
