@@ -318,11 +318,13 @@ function OverviewTab({ workspace, source, actions, active, onEdit, onNavigate }:
   </div>
 }
 
-export function SandboxDetailPage({ workspace, source, actions, controls }: {
+export function SandboxDetailPage({ workspace, source, actions, controls, active = true }: {
   workspace: ApplicationWorkspace
   source: ApplicationSource
   actions: ApplicationActions
   controls: SandboxDetailControls
+  /** Whether the page's panel is visible; background polling pauses while it is hidden. */
+  active?: boolean
 }) {
   const { machine } = workspace
   const target = workspaceTarget(workspace)
@@ -442,7 +444,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="pt-4">
-            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview"} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
+            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={active && activeTab === "overview"} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
               <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
             </TabsContent>}

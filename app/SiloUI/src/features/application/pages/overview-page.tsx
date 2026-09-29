@@ -562,7 +562,7 @@ export function OverviewPage({ active = true, readOnly = false,
         <OperationQueueToast queue={source.operationQueue} onCancel={readOnly ? undefined : actions.cancelOperation} />
         {detailWorkspace ? (
           // Keyed per sandbox so edit drafts, delete confirmations and panel state never carry over.
-          <SandboxDetailPage key={workspaceTarget(detailWorkspace)} workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />
+          <SandboxDetailPage key={workspaceTarget(detailWorkspace)} workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} active={active} />
         ) : (
           <>
             {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
