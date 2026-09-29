@@ -222,13 +222,17 @@ fn update(controller: &Controller, change: impl FnOnce(&mut Journal)) -> Result<
     Ok(())
 }
 pub(super) fn unresolved(controller: &Controller) -> Result<bool, String> {
-    Ok(!controller.busy.load(Ordering::Acquire)
-        && controller
-            .journal
-            .lock()
-            .map_err(|_| "Saved operation unavailable.")?
-            .as_ref()
-            .is_some_and(Journal::is_pending))
+    Ok(!controller.busy.load(Ordering::Acquire) && pending(controller)?)
+}
+/// Whether the saved journal still describes an unfinished operation,
+/// regardless of whether this process currently holds the worker slot.
+pub(super) fn pending(controller: &Controller) -> Result<bool, String> {
+    Ok(controller
+        .journal
+        .lock()
+        .map_err(|_| "Saved operation unavailable.")?
+        .as_ref()
+        .is_some_and(Journal::is_pending))
 }
 pub(super) fn token(controller: &Controller) -> Result<Option<String>, String> {
     Ok(controller

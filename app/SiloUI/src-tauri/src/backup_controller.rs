@@ -1517,16 +1517,22 @@ pub(crate) fn cancel_backup_operation(
     controller: State<'_, Arc<Controller>>,
 ) -> Result<(), String> {
     require_main(&window)?;
-    let view = controller
+    cancel_operation(&controller)
+}
+
+fn cancel_operation(controller: &Controller) -> Result<(), String> {
+    let cancellation = controller
         .view
         .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?;
-    let cancellation = view
+        .map_err(|_| "Backup state is unavailable.".to_string())?
         .cancellation
-        .as_ref()
+        .clone()
         .ok_or("No export or import is running.")?;
-    recovery::cancel(&controller)?;
+    // Cancel in process first: a journal write failure (full disk, permissions)
+    // must not leave the running operation uncancellable. The persisted flag
+    // only matters for a later relaunch.
     cancellation.cancel();
+    let _ = recovery::cancel(controller);
     Ok(())
 }
 
@@ -1663,6 +1669,43 @@ mod tests {
             destination: "/backups".into(),
             sandboxes: vec!["dev".into()],
         }
+    }
+
+    #[test]
+    fn update_guard_refuses_while_an_interrupted_operation_is_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "restored".into(), Some("dev".into())),
+        )
+        .unwrap();
+        let error = update_guard_for(controller.clone())
+            .err()
+            .expect("a pending journal must block updates");
+        assert!(error.contains("interrupted export or import"), "{error}");
+        assert!(!controller.busy.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn cancel_sets_the_in_process_flag_even_when_the_journal_cannot_be_saved() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = directory.path().join("storage");
+        let controller = history_controller(storage.join("backup-history.json"));
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "restored".into(), Some("dev".into())),
+        )
+        .unwrap();
+        let cancellation = backup::Cancellation::default();
+        controller.view.lock().unwrap().cancellation = Some(cancellation.clone());
+        // Make every later journal write fail.
+        fs::remove_dir_all(&storage).unwrap();
+        fs::write(&storage, b"not a directory").unwrap();
+        cancel_operation(&controller).unwrap();
+        assert!(cancellation.cancelled());
     }
 
     fn completed_operation(archive: Archive, outcome: &'static str) -> Operation {
@@ -2862,13 +2905,17 @@ impl Drop for UpdateGuard {
     }
 }
 pub(crate) fn update_guard(app: &AppHandle) -> Result<UpdateGuard, String> {
-    let controller = app.state::<Arc<Controller>>().inner().clone();
+    update_guard_for(app.state::<Arc<Controller>>().inner().clone())
+}
+fn update_guard_for(controller: Arc<Controller>) -> Result<UpdateGuard, String> {
     controller
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Wait for the export or import to finish before updating.")?;
     let guard = UpdateGuard(controller);
-    if recovery::unresolved(&guard.0)? {
+    // The guard now owns `busy`, so check the saved journal directly;
+    // `recovery::unresolved` treats a busy controller as resolved.
+    if recovery::pending(&guard.0)? {
         return Err("An interrupted export or import must finish before updating.".into());
     }
     Ok(guard)
