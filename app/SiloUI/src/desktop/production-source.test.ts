@@ -8,6 +8,9 @@ import type { BackupState } from "@/features/application/model/backup-source"
 import { createProductionSource, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
 import { siloProgressEventSchema } from "@/contracts/silo"
 
+const toasts = vi.hoisted(() => ({ showOperationFailure: vi.fn() }))
+vi.mock("@/lib/operation-toast", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/operation-toast")>(), showOperationFailure: toasts.showOperationFailure }))
+
 const source = applicationSourceForScenario("running")
 const backup: BackupState = {
   snapshotId: "one",
@@ -333,8 +336,10 @@ describe("production application bridge", () => {
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
     await store.initialize()
     const before = store.getSnapshot().source?.workspaces
+    toasts.showOperationFailure.mockClear()
     await store.applicationActions.openDesktop!("dev")
-    expect(store.getSnapshot().error).toContain("Owning computer unavailable")
+    expect(toasts.showOperationFailure).toHaveBeenCalledWith("open-desktop:dev", "Could not open the desktop", { description: expect.stringContaining("Owning computer unavailable") })
+    expect(store.getSnapshot().error).toBeNull()
     expect(store.getSnapshot().source?.workspaces).toEqual(before)
     store.dispose()
   })

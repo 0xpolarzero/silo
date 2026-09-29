@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { useSyncExternalStore } from "react"
 import { z } from "zod"
+import { showOperationFailure } from "@/lib/operation-toast"
 
 import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
@@ -616,6 +617,14 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return native.invoke<void>(remote ? "remote_open_network_port" : "open_network_port", remote ? { ...remote, port } : { workspace, port })
   }
 
+  // Once the application has loaded, `snapshot.error` is no longer rendered, so an
+  // action failure becomes a keyed failure notice (a repeat replaces the earlier one,
+  // and it is mirrored to the system while Silo is in the background).
+  function reportActionFailure(key: string, title: string, message: string) {
+    if (!snapshot.source) { publish({ ...snapshot, error: message }); return }
+    showOperationFailure(key, title, { description: message })
+  }
+
   function reportUnavailable(message: string) {
     void native.invoke("show_integration_error", { message }).catch((cause) => {
       console.error("Silo request failure:", message, errorMessage(cause))
@@ -685,7 +694,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         // One VM's failure (e.g. insufficient memory) belongs on that VM's row. Whether
         // the computer itself is reachable is decided by the next transport check.
         if (lifecycle) { setWorkspaceFailure(action, name, cause); void refreshComputers(); return }
-        publish({ ...snapshot, error: errorMessage(cause) })
+        reportActionFailure(key, `Could not ${action.replace(/-/g, " ")}`, errorMessage(cause))
       })
       .finally(() => {
         pendingWorkspaceActions.delete(key)
@@ -1204,7 +1213,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     dismissWorkspaceError: (name) => workspaceAction("dismiss-error", name),
     openDesktop: async (workspace) => {
       try { await native.invoke("open_desktop", { workspace }) }
-      catch (cause) { publish({ ...snapshot, error: errorMessage(cause) }) }
+      catch (cause) { reportActionFailure(`open-desktop:${workspace}`, "Could not open the desktop", errorMessage(cause)) }
     },
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
@@ -1215,14 +1224,14 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     reopenGitHubAuthorization: () => {
       const sequence = githubMutationSequence
       void native.invoke("reopen_github_authorization").catch((cause: unknown) => {
-        if (sequence === githubMutationSequence) publish({ ...snapshot, error: `Could not reopen GitHub authorization: ${errorMessage(cause)}` })
+        if (sequence === githubMutationSequence) reportActionFailure("github-reopen-authorization", "Could not reopen GitHub authorization", errorMessage(cause))
       })
     },
     manageGitHubRepositories: () => {
       refreshRepositoriesOnReturn = true
       void native.invoke("manage_github_repositories").catch((cause: unknown) => {
         refreshRepositoriesOnReturn = false
-        publish({ ...snapshot, error: `Could not open GitHub repository access: ${errorMessage(cause)}` })
+        reportActionFailure("github-manage-repositories", "Could not open GitHub repository access", errorMessage(cause))
       })
     },
     disconnectGitHub: () => { void githubMutation("disconnect_github").catch(() => {}) },
