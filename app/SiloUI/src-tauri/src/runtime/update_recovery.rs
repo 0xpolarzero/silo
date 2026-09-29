@@ -108,7 +108,25 @@ fn running(
     }
     let metadata = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
     let mut result = vec![];
+    let mut listed: Option<HashSet<String>> = None;
     for m in metadata.machines.iter().filter(|m| m.is_vm()) {
+        // Unstarted forks, restores and imports have no runtime VM yet, so they
+        // cannot be running and must not block updates.
+        if checkpoints::pending_view(paths, m.id(), false).map_err(|e| e.to_string())? {
+            if listed.is_none() {
+                listed = Some(
+                    list_managed(runner, paths)
+                        .map_err(|e| e.to_string())?
+                        .into_iter()
+                        .map(|entry| entry.name)
+                        .collect(),
+                );
+            }
+            let exists = listed.as_ref().is_some_and(|names| names.contains(m.name()));
+            if checkpoints::pending_view(paths, m.id(), exists).map_err(|e| e.to_string())? {
+                continue;
+            }
+        }
         let machine = RunningMachine {
             id: m.id().into(),
             name: m.name().into(),
@@ -169,13 +187,33 @@ pub(crate) fn restore_locked(app: &AppHandle) -> Result<(), String> {
     let paths = runtime_paths(app)?;
     let host = host_resources().map_err(|e| e.to_string())?;
     restore_pending(&paths, |machine| {
-        let inspected = inspect_exact(&ProcessRunner, &paths, machine)?;
-        if !inspected.status.eq_ignore_ascii_case("running") {
-            workspace_action_with(&ProcessRunner, &paths, &host, "start", &machine.name)
-                .map_err(|e| safe_activity_error(&e))?;
-        }
-        Ok(())
+        resume_unless_removed(&paths, machine, |machine| {
+            let inspected = inspect_exact(&ProcessRunner, &paths, machine)?;
+            if !inspected.status.eq_ignore_ascii_case("running") {
+                workspace_action_with(&ProcessRunner, &paths, &host, "start", &machine.name)
+                    .map_err(|e| safe_activity_error(&e))?;
+            }
+            Ok(())
+        })
     })
+}
+/// A sandbox deleted after an update stopped it has nothing left to resume. Treat
+/// it as resolved so a stale entry cannot block startup and every later update.
+fn resume_unless_removed(
+    paths: &RuntimePaths,
+    machine: &RunningMachine,
+    resume: impl FnOnce(&RunningMachine) -> Result<(), String>,
+) -> Result<(), String> {
+    let configured = paths.metadata.exists()
+        && read_metadata(&paths.metadata)
+            .map_err(|e| e.to_string())?
+            .machines
+            .iter()
+            .any(|m| m.is_vm() && m.id() == machine.id);
+    if !configured {
+        return Ok(());
+    }
+    resume(machine)
 }
 fn restore_pending(
     paths: &RuntimePaths,
@@ -291,6 +329,52 @@ mod tests {
         .is_err());
         assert_eq!(calls, vec!["first", "second"]);
         assert_eq!(load(&paths).unwrap().unwrap().machines, vec![first]);
+    }
+
+    #[test]
+    fn removed_sandbox_entries_are_resolved_instead_of_blocking_every_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let kept = uuid::Uuid::new_v4().to_string();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":kept,"name":"kept","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        write_metadata(&paths.metadata, &request).unwrap();
+        let removed = RunningMachine { id: uuid::Uuid::new_v4().to_string(), name: "removed".into() };
+        let kept = RunningMachine { id: kept, name: "kept".into() };
+        save(&paths, &[removed, kept]).unwrap();
+        let mut resumed = vec![];
+        restore_pending(&paths, |machine| {
+            resume_unless_removed(&paths, machine, |machine| {
+                resumed.push(machine.name.clone());
+                Ok(())
+            })
+        })
+        .unwrap();
+        assert_eq!(resumed, vec!["kept"]);
+        assert!(!path(&paths).exists());
+    }
+
+    #[test]
+    fn unstarted_pending_sandbox_does_not_block_updates() {
+        struct NoRuntime;
+        impl RuntimeRunner for NoRuntime {
+            fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+                assert_eq!(args[0], "list", "a pending sandbox has no runtime VM to inspect");
+                Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let id = uuid::Uuid::new_v4().to_string();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":id,"name":"fork","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        write_metadata(&paths.metadata, &request).unwrap();
+        let mut record = checkpoints::Record::default();
+        record.pending_checkpoint_restore = Some(checkpoints::PendingRestore {
+            checkpoint_id: "c000000000000000000000000000000".into(),
+            source_workspace: "dev".into(),
+            state: "full".into(),
+        });
+        checkpoints::save(&paths, &id, &record).unwrap();
+        assert!(running(&NoRuntime, &paths).unwrap().is_empty());
     }
 
     #[test]
