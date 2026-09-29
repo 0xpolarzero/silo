@@ -102,36 +102,39 @@ fn applied() -> &'static Mutex<HashMap<String, String>> {
 pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result<(), String> {
     // The credential store can wait on a permission prompt; never read it under STATE.
     let token = value();
-    let _state = serialize(&STATE);
-    let d = load(app)?;
-    if d.revision != revision {
-        return Err("GitHub access changed. Applying your latest choices.".into());
-    }
-    // Narrowing has already detached the token; never attach it while access is disabled.
-    if !d.access_enabled {
-        return Ok(());
-    }
-    let token = token?;
-    let profile = json!({"version":2,"owners":[],"personalToken":token});
-    if crate::runtime::github_policy_is_cached(app, name, &profile)?
-        && applied()
-            .lock()
-            .map_err(|_| "GitHub token state is unavailable.")?
-            .get(&active_key(app, name)?)
-            == Some(&fingerprint(&token))
-    {
-        return Ok(());
-    }
-    crate::runtime::apply_github_policy(app, name, revision, &profile)?;
-    applied()
-        .lock()
-        .map_err(|_| "GitHub token state is unavailable.")?
-        .insert(active_key(app, name)?, fingerprint(&token));
-    active()
-        .lock()
-        .map_err(|_| "GitHub state is unavailable.")?
-        .remove(&active_key(app, name)?);
-    Ok(())
+    let key = active_key(app, name)?;
+    outside_state(
+        || {
+            let d = load(app)?;
+            if d.revision != revision {
+                return Err("GitHub access changed. Applying your latest choices.".into());
+            }
+            // Narrowing has already detached the token; never attach it while access is disabled.
+            if !d.access_enabled {
+                return Ok(None);
+            }
+            let token = token?;
+            let profile = json!({"version":2,"owners":[],"personalToken":token});
+            let mut applied = applied()
+                .lock()
+                .map_err(|_| "GitHub token state is unavailable.")?;
+            if crate::runtime::github_policy_is_cached(app, name, &profile)?
+                && applied.get(&key) == Some(&fingerprint(&token))
+            {
+                return Ok(None);
+            }
+            // Record the attachment before `msb modify` runs without STATE, so a narrowing
+            // meanwhile (a switch, removal or Disable access) detaches the token after it.
+            applied.insert(key.clone(), fingerprint(&token));
+            active()
+                .lock()
+                .map_err(|_| "GitHub state is unavailable.")?
+                .remove(&key);
+            Ok(Some(profile))
+        },
+        |profile| crate::runtime::apply_github_policy(app, name, revision, &profile),
+    )?
+    .unwrap_or(Ok(()))
 }
 
 /// Disable access is a global kill switch: no VM keeps the personal token while it is off.

@@ -37,6 +37,22 @@ fn try_serialize(lock: &'static Mutex<()>) -> Option<MutexGuard<'static, ()>> {
         Err(TryLockError::WouldBlock) => None,
     }
 }
+/// Runtime work that can take minutes (a guest command that may boot the VM, or
+/// `msb modify`) never holds STATE, so saves, Disable access, disconnect, cancel and
+/// forks are not held behind it. `check` runs under STATE and returns `None` when the
+/// work is no longer current; the caller re-takes STATE and re-checks before recording
+/// the result. The runtime's per-VM revision lock rejects an older attach that arrives
+/// after a newer one.
+fn outside_state<P, W>(
+    check: impl FnOnce() -> Result<Option<P>, String>,
+    work: impl FnOnce(P) -> W,
+) -> Result<Option<W>, String> {
+    let prepared = {
+        let _state = serialize(&STATE);
+        check()?
+    };
+    Ok(prepared.map(work))
+}
 static ACTIVE: OnceLock<Mutex<std::collections::HashMap<String, Vec<RuntimeGrant>>>> =
     OnceLock::new();
 #[derive(Clone)]
@@ -362,7 +378,7 @@ struct Document {
 /// Copy the source's current GitHub assignment for a stopped checkpoint fork.
 /// The child obtains its own runtime identity and resolves credentials at Start.
 pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str) -> Result<(), String> {
-    let _state = try_serialize(&STATE).ok_or("GitHub settings are busy. Retry the fork.")?;
+    let _state = serialize(&STATE);
     let mut document = load(app)?;
     if let Some(mut assignment) = document.workspaces.iter()
         .find(|value| value["workspace"].as_str() == Some(source)).cloned() {
@@ -382,7 +398,7 @@ pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str
 }
 
 pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Result<(), String> {
-    let _state = try_serialize(&STATE).ok_or("GitHub settings are busy.")?;
+    let _state = serialize(&STATE);
     let mut document = load(app)?;
     document.workspaces.retain(|value| value["workspace"].as_str() != Some(target));
     document.access_pending.retain(|name| name != target);
@@ -858,6 +874,12 @@ fn access_update_due(d: &Document, name: &str, at: u64, restored: bool, previous
     let verified = d.operations.iter().any(|op| op["workspace"].as_str() == Some(name) && op["status"] == "succeeded");
     !verified || previous.iter().any(|g| g.expires_at.saturating_sub(120) <= at)
 }
+/// Whether `identity` is still the saved Git identity for this sandbox.
+fn identity_is_current(d: &Document, name: &str, identity: &Value) -> bool {
+    d.workspaces
+        .iter()
+        .any(|w| w["workspace"].as_str() == Some(name) && w["identity"] == *identity)
+}
 fn worker_due(d: &Document, pending: Option<Instant>, at: u64, instant: Instant) -> bool {
     match pending {
         Some(deadline) => instant >= deadline,
@@ -906,23 +928,33 @@ fn apply(
         // Identity changes are independent of token issuance, including offline edits.
         let identity_requested = apply_identity || d.identity_pending.iter().any(|n| n == name);
         if identity_requested {
-            let _state = serialize(&STATE);
-            if load(app)?.revision != d.revision {
+            let identity = &w["identity"];
+            let Some(result) = outside_state(
+                || Ok((load(app)?.revision == d.revision).then_some(())),
+                |()| crate::runtime::apply_github_identity(app, name, identity),
+            )?
+            else {
                 schedule(Duration::from_millis(500));
                 return Ok(());
-            }
-            let result = crate::runtime::apply_github_identity(app, name, &w["identity"]);
+            };
+            let _state = serialize(&STATE);
             let mut current = load(app)?;
-            current.identity_pending.retain(|n| n != name);
-            match result {
-                Ok(()) => {
-                    current.identity_errors.remove(name);
+            // Record only the identity that is still requested; a newer edit made during
+            // the guest command stays pending and is applied next.
+            if identity_is_current(&current, name, identity) {
+                current.identity_pending.retain(|n| n != name);
+                match result {
+                    Ok(()) => {
+                        current.identity_errors.remove(name);
+                    }
+                    Err(error) => {
+                        current.identity_errors.insert(name.into(), error);
+                    }
                 }
-                Err(error) => {
-                    current.identity_errors.insert(name.into(), error);
-                }
+                save(app, &current)?;
+            } else {
+                schedule(Duration::from_millis(500));
             }
-            save(app, &current)?;
         }
         let key = active_key(app, name)?;
         let previous = active()
@@ -941,22 +973,30 @@ fn apply(
             let result = if let Some(error) = narrowing_error.for_workspace(name) { Err(error.clone()) } else if personal_token::selected(w) {
                 personal_token::apply(app, name, d.revision)
             } else { runtime_grants_for(app, &d, w, &previous).and_then(|grants| {
-                let _state = serialize(&STATE);
-                if load(app)?.revision != d.revision {
-                    return Err("GitHub access changed. Applying your latest choices.".into());
-                }
-                if let Some(expiry) = grants.iter().map(|g| g.expires_at).min() {
-                    refresh_at = refresh_at.min(expiry.saturating_sub(120));
-                }
-                // Comparing credentials too avoids reconnecting unchanged sessions.
-                if grants != previous || d.session != session() || !crate::runtime::github_policy_is_cached(app, name, &profile(&grants))? {
-                    crate::runtime::apply_github_policy(app, name, d.revision, &profile(&grants))?;
-                    active()
-                        .lock()
-                        .map_err(|_| "GitHub state is unavailable.")?
-                        .insert(key, grants);
-                }
-                Ok(())
+                outside_state(
+                    || {
+                        if load(app)?.revision != d.revision {
+                            return Err("GitHub access changed. Applying your latest choices.".into());
+                        }
+                        if let Some(expiry) = grants.iter().map(|g| g.expires_at).min() {
+                            refresh_at = refresh_at.min(expiry.saturating_sub(120));
+                        }
+                        let attached = profile(&grants);
+                        // Comparing credentials too avoids reconnecting unchanged sessions.
+                        if grants == previous && d.session == session() && crate::runtime::github_policy_is_cached(app, name, &attached)? {
+                            return Ok(None);
+                        }
+                        // Record the grants before attaching them: a save that narrows
+                        // meanwhile (under STATE) must see, and remove, what this attach adds.
+                        active()
+                            .lock()
+                            .map_err(|_| "GitHub state is unavailable.")?
+                            .insert(key.clone(), grants.clone());
+                        Ok(Some(attached))
+                    },
+                    |attached| crate::runtime::apply_github_policy(app, name, d.revision, &attached),
+                )?
+                .unwrap_or(Ok(()))
             })
             };
             let retirement = if d.grants_issued || load(app)?.grants_issued {
@@ -2592,6 +2632,32 @@ mod tests {
                 "second applied"
             );
         });
+    }
+    #[test]
+    fn runtime_work_runs_without_the_state_lock_after_a_checked_revision() {
+        let result = outside_state(
+            || {
+                assert!(STATE.try_lock().is_err(), "the revision check must hold STATE");
+                Ok(Some(7))
+            },
+            // A guest command or `msb modify` here can take minutes.
+            |value| (value, STATE.try_lock().is_ok()),
+        )
+        .unwrap();
+        assert_eq!(result, Some((7, true)), "runtime work held STATE");
+        assert_eq!(outside_state(|| Ok(None::<()>), |()| panic!("stale work ran")).unwrap(), None);
+        assert!(outside_state(|| Err::<Option<()>, _>("changed".into()), |()| panic!("stale work ran")).is_err());
+    }
+    #[test]
+    fn identity_written_during_a_newer_edit_is_not_recorded_as_applied() {
+        let old = json!({"name":"Old","email":"old@example.test","apply":true});
+        let new = json!({"name":"New","email":"new@example.test","apply":true});
+        let mut d = Document { workspaces: vec![json!({"workspace":"dev","identity":old.clone()})], ..Default::default() };
+        assert!(identity_is_current(&d, "dev", &old));
+        d.workspaces[0]["identity"] = new.clone();
+        assert!(!identity_is_current(&d, "dev", &old));
+        assert!(identity_is_current(&d, "dev", &new));
+        assert!(!identity_is_current(&d, "other", &new));
     }
     #[test]
     fn a_panic_under_a_github_lock_does_not_disable_github_or_block_updates() {
