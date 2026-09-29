@@ -1683,34 +1683,75 @@ fn verify_guest_identity(
         == "silo-identity-verified")
 }
 
-/// Host-only retirement material; never serialize this result to the frontend.
+/// GitHub tokens a VM's cached access profile still uses. Host-only retirement
+/// material: the type is deliberately not `Serialize`, and `Debug` never prints a
+/// token, so it cannot reach the frontend, a log or an error message by accident.
+#[derive(Default)]
+pub(crate) struct ScopedTokens(Vec<String>);
+
+impl ScopedTokens {
+    pub(crate) fn contains(&self, token: &str) -> bool {
+        self.0.iter().any(|existing| existing == token)
+    }
+}
+
+impl Extend<String> for ScopedTokens {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, tokens: I) {
+        for token in tokens {
+            if !self.contains(&token) {
+                self.0.push(token);
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for ScopedTokens {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "ScopedTokens([{} redacted])", self.0.len())
+    }
+}
+
+/// Compile-time guard: this fails to build if `ScopedTokens` ever implements
+/// `Serialize`, because the call below then matches two impls.
+const _: fn() = || {
+    trait AmbiguousIfSerialize<Marker> {
+        fn check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSerialize<()> for T {}
+    impl<T: ?Sized + Serialize> AmbiguousIfSerialize<u8> for T {}
+    <ScopedTokens as AmbiguousIfSerialize<_>>::check();
+};
+
+fn scoped_tokens_of(raw: &str) -> Result<ScopedTokens, String> {
+    let profile: Value = serde_json::from_str(raw).map_err(|_| "Invalid cached GitHub state.")?;
+    let mut tokens = ScopedTokens::default();
+    for owner in profile["owners"]
+        .as_array()
+        .ok_or("Invalid cached GitHub grants.")?
+    {
+        tokens.extend(
+            ["readToken", "writeToken"]
+                .into_iter()
+                .filter_map(|key| owner[key].as_str().map(str::to_owned)),
+        );
+    }
+    Ok(tokens)
+}
+
+/// Host-only retirement material; see `ScopedTokens`.
 pub(crate) fn scoped_cached_tokens(
     app: &AppHandle,
     workspace: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<ScopedTokens, String> {
     let paths = runtime_paths(app)?;
     let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
     let profiles = cache
         .lock()
         .map_err(|_| "GitHub runtime state is unavailable.")?;
-    let Some(raw) = profiles.get(&(paths.home, workspace.into())) else {
-        return Ok(Vec::new());
-    };
-    let profile: Value = serde_json::from_str(raw).map_err(|_| "Invalid cached GitHub state.")?;
-    let mut tokens = Vec::new();
-    for owner in profile["owners"]
-        .as_array()
-        .ok_or("Invalid cached GitHub grants.")?
-    {
-        for key in ["readToken", "writeToken"] {
-            if let Some(token) = owner[key].as_str() {
-                if !tokens.iter().any(|existing| existing == token) {
-                    tokens.push(token.into());
-                }
-            }
-        }
+    match profiles.get(&(paths.home, workspace.into())) {
+        Some(raw) => scoped_tokens_of(raw),
+        None => Ok(ScopedTokens::default()),
     }
-    Ok(tokens)
 }
 
 /// Check the attachment cache as well as the grant cache. Failed updates clear this cache.
@@ -5373,6 +5414,20 @@ esac
     fn bundled_image_preparation_reports_its_actual_stage() {
         let event = machine_progress("attempt", "workspace-image-preparation", "dev", 0);
         assert_eq!(event.message, "Preparing the bundled VM image…");
+    }
+
+    #[test]
+    fn scoped_tokens_are_deduplicated_and_never_printed() {
+        let mut tokens = scoped_tokens_of(
+            r#"{"version":1,"owners":[{"readToken":"ghs_read","writeToken":"ghs_write"},{"readToken":"ghs_read"}]}"#,
+        )
+        .unwrap();
+        tokens.extend(["ghs_write".to_string(), "ghs_retained".to_string()]);
+        assert!(tokens.contains("ghs_read") && tokens.contains("ghs_write") && tokens.contains("ghs_retained"));
+        assert_eq!(tokens.0.len(), 3);
+        let printed = format!("{tokens:?}");
+        assert!(!printed.contains("ghs_"), "{printed}");
+        assert!(scoped_tokens_of("not json").is_err());
     }
 
     #[test]
