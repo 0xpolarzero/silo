@@ -1130,7 +1130,7 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("clears stale application state when an authoritative refresh fails", async () => {
+  it("keeps the loaded application, marked stale, when an authoritative refresh fails", async () => {
     const mock = native()
     const store = createProductionSource(mock.bridge)
     await store.initialize()
@@ -1141,8 +1141,10 @@ describe("production application bridge", () => {
       return undefined
     })
     await store.refresh()
-    expect(store.getSnapshot().source).toBeNull()
-    expect(store.getSnapshot().error).toBe("Silo could not read application state: runtime state unavailable")
+    const message = "Silo could not read application state: runtime state unavailable"
+    expect(store.getSnapshot().source?.vmOperationsUnavailable).toBe(message)
+    expect(store.getSnapshot().source?.workspaces.every(({ freshness, attention }) => freshness === "stale" && attention?.message === message)).toBe(true)
+    expect(store.getSnapshot().error).toBe(message)
     store.dispose()
   })
 

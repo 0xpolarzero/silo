@@ -489,8 +489,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function unavailableLocalSource(message: string): Promise<ApplicationSource | null> {
-    if (remoteComputers.length === 0) return null
+    // A transient read failure never replaces a loaded application with the
+    // full-screen error: keep the previous source, marked stale with the error.
     if (!snapshot.source) {
+      if (remoteComputers.length === 0) return null
       if (!remoteComputers.some(computer => computer.connected && remoteSnapshots.has(computer.id))) return null
       try { return parseApplicationSource(await native.invoke("read_application_shell", { error: message })) }
       catch { return null }
