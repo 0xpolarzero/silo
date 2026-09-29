@@ -14,6 +14,16 @@ use tauri::{AppHandle, Emitter};
 
 static NETWORK_LOCK: Mutex<()> = Mutex::new(());
 const FAILED: &str = "Could not read network services. Try again.";
+
+/// The short data lock around the saved port table. It guards no in-memory state:
+/// every holder re-reads `network.json` (written atomically) and the runtime's live
+/// forwards, so a panic while holding it leaves nothing to repair. Recover instead
+/// of failing every network read and save until restart (C-25, K-24 policy).
+fn network_lock() -> std::sync::MutexGuard<'static, ()> {
+    NETWORK_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 const LIMIT: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -334,13 +344,7 @@ fn observe(
     // Hold the short data lock only to read a consistent snapshot of the desired
     // settings and the live forwards. It is dropped before the slow guest probes,
     // and this read never mutates the forwarding table or the settings file.
-    let guard = match NETWORK_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            result.error = Some(FAILED.into());
-            return result;
-        }
-    };
+    let guard = network_lock();
     // Read the current desired revision only after obtaining the data lock.
     // An older refresh must never observe against access removed by another window.
     let config = match read_config(paths) {
@@ -488,34 +492,32 @@ fn observe(
     result.ports = rows.into_values().collect();
     // Guest probes run without blocking mutations. Never publish their result
     // against settings or endpoints that changed while those probes were running.
-    let latest = NETWORK_LOCK
-        .lock()
-        .map_err(|_| FAILED.to_string())
-        .and_then(|_guard| {
-            let current = read_config(paths)?;
-            let current: Vec<_> = current
-                .mappings
-                .iter()
-                .filter(|m| m.workspace == workspace)
-                .cloned()
-                .collect();
-            let previous: Vec<_> = config
-                .mappings
-                .iter()
-                .filter(|m| {
-                    m.workspace == workspace
-                        && (m.enabled || published.iter().any(|p| p.guest_port == m.port))
-                })
-                .cloned()
-                .collect();
-            if current != previous {
-                return Err("Network settings changed. Refresh to check the current ports.".into());
-            }
-            if control(&socket, json!({"op":"ports_list"}))? != published {
-                return Err("Port forwarding changed. Refresh to check the current ports.".into());
-            }
-            Ok(())
-        });
+    let latest = (|| -> Result<(), String> {
+        let _guard = network_lock();
+        let current = read_config(paths)?;
+        let current: Vec<_> = current
+            .mappings
+            .iter()
+            .filter(|m| m.workspace == workspace)
+            .cloned()
+            .collect();
+        let previous: Vec<_> = config
+            .mappings
+            .iter()
+            .filter(|m| {
+                m.workspace == workspace
+                    && (m.enabled || published.iter().any(|p| p.guest_port == m.port))
+            })
+            .cloned()
+            .collect();
+        if current != previous {
+            return Err("Network settings changed. Refresh to check the current ports.".into());
+        }
+        if control(&socket, json!({"op":"ports_list"}))? != published {
+            return Err("Port forwarding changed. Refresh to check the current ports.".into());
+        }
+        Ok(())
+    })();
     if let Err(error) = latest {
         for port in &mut result.ports {
             port.state = "unknown";
@@ -531,29 +533,32 @@ fn observe(
 /// It never takes the gate itself (that would be `GateError::Nested`): the write
 /// commands hold `OPERATIONS.vm`, the background scheduler holds `OPERATIONS.try_vm`,
 /// and `reconcile_started` runs while the VM lifecycle caller holds the VM guard.
-/// Returns per-port failure messages so a write path can surface them. Nothing is
-/// published when the VM is not running; the missing forwards reconcile on retry
-/// or on the next start.
-fn reconcile_forwarding(paths: &RuntimePaths, workspace: &str) -> BTreeMap<u16, String> {
+/// Returns per-port failure messages so a write path can surface them, and an
+/// error when the saved settings cannot be read. When the runtime's controls cannot
+/// be reached every saved port of the VM carries that failure; a write path shows it
+/// only while the VM runs (a stopped VM's ports read as waiting and reconcile on the
+/// next start). Nothing is published when the VM is not running.
+fn reconcile_forwarding(
+    paths: &RuntimePaths,
+    workspace: &str,
+) -> Result<BTreeMap<u16, String>, String> {
     let mut failures = BTreeMap::new();
-    let Ok(guard) = NETWORK_LOCK.lock() else {
-        return failures;
-    };
-    let Ok(config) = read_config(paths) else {
-        return failures;
-    };
+    let guard = network_lock();
+    let config = read_config(paths)?;
     let desired: Vec<_> = config
         .mappings
         .iter()
         .filter(|m| m.workspace == workspace)
         .collect();
     if desired.is_empty() {
-        return failures;
+        return Ok(failures);
     }
     let socket = socket_path(paths, workspace);
     let mut published = match control(&socket, json!({"op":"ports_list"})) {
         Ok(ports) => ports,
-        Err(_) => return failures,
+        Err(e) => {
+            return Ok(desired.iter().map(|m| (m.port, e.clone())).collect());
+        }
     };
     for mapping in &desired {
         let exists = published.iter().find(|p| p.guest_port == mapping.port);
@@ -592,7 +597,7 @@ fn reconcile_forwarding(paths: &RuntimePaths, workspace: &str) -> BTreeMap<u16, 
         let _ = write_config(paths, &cleaned);
     }
     drop(guard);
-    failures
+    Ok(failures)
 }
 /// Reconcile the affected VM's forwards on a background thread, skipping it when
 /// that VM is busy, so a read can return immediately while repair converges. Each
@@ -671,6 +676,25 @@ fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, Str
     Ok(State { workspaces })
 }
 
+/// Apply one VM's just-saved intent under the caller's VM gate and return the new
+/// state, with any failure from that repair shown on the VM's ports. Every window is
+/// told to refresh even when the repair could not run, because the intent was saved.
+fn apply_saved(app: &AppHandle, paths: &RuntimePaths, workspace: &str) -> Result<State, String> {
+    let result = reconcile_forwarding(paths, workspace).and_then(|failures| {
+        let config = read_config(paths)?;
+        let mut state = state_with(paths, &config)?;
+        if !failures.is_empty() {
+            let repaired = observe(paths, workspace, &config, &failures);
+            if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
+                *slot = repaired;
+            }
+        }
+        Ok(state)
+    });
+    let _ = app.emit("silo://network-state-changed", ());
+    result
+}
+
 #[tauri::command]
 pub(crate) async fn read_network_state(app: AppHandle) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -715,7 +739,7 @@ pub(crate) async fn save_network_port(
         };
         validate(&mapping)?;
         {
-            let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+            let _guard = network_lock();
             let mut config = read_config(&paths)?;
             if config
                 .mappings
@@ -735,19 +759,7 @@ pub(crate) async fn save_network_port(
             }
             write_config(&paths, &config)?;
         }
-        let failures = reconcile_forwarding(&paths, &workspace);
-        let config = read_config(&paths)?;
-        let result = state_with(&paths, &config).map(|mut state| {
-            if !failures.is_empty() {
-                let repaired = observe(&paths, &workspace, &config, &failures);
-                if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
-                    *slot = repaired;
-                }
-            }
-            state
-        });
-        let _ = app.emit("silo://network-state-changed", ());
-        result
+        apply_saved(&app, &paths, &workspace)
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -771,7 +783,7 @@ pub(crate) async fn remove_network_port(
         runtime::shutdown::ensure_accepting_operations()?;
         configured_vm(&paths, &workspace)?;
         {
-            let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+            let _guard = network_lock();
             let mut config = read_config(&paths)?;
             // Persist removal intent before touching the live listener. Failed removals
             // remain visible and reconcile on retry/relaunch, never silently reopen.
@@ -784,19 +796,7 @@ pub(crate) async fn remove_network_port(
             }
             write_config(&paths, &config)?;
         }
-        let failures = reconcile_forwarding(&paths, &workspace);
-        let config = read_config(&paths)?;
-        let result = state_with(&paths, &config).map(|mut state| {
-            if !failures.is_empty() {
-                let repaired = observe(&paths, &workspace, &config, &failures);
-                if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
-                    *slot = repaired;
-                }
-            }
-            state
-        });
-        let _ = app.emit("silo://network-state-changed", ());
-        result
+        apply_saved(&app, &paths, &workspace)
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -1019,6 +1019,54 @@ mod tests {
         );
     }
 
+    fn temp_paths(temp: &tempfile::TempDir) -> RuntimePaths {
+        RuntimePaths {
+            guest_image: temp.path().join("image"),
+            executable: temp.path().join("msb"),
+            home: temp.path().into(),
+            storage_home: None,
+            library: temp.path().join("lib"),
+            metadata: temp.path().join("machines.json"),
+            volumes: temp.path().join("volumes"),
+        }
+    }
+
+    fn one_port(workspace: &str, port: u16, enabled: bool) -> Configuration {
+        Configuration {
+            mappings: vec![Mapping {
+                workspace: workspace.into(),
+                port,
+                host_port: None,
+                scheme: Some("http".into()),
+                enabled,
+            }],
+        }
+    }
+
+    #[test]
+    fn poisoned_network_lock_is_recovered_and_reconcile_failures_are_reported() {
+        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let paths = temp_paths(&temp);
+        write_config(&paths, &one_port("dev", 3000, true)).unwrap();
+        let _ = std::thread::spawn(|| {
+            let _guard = NETWORK_LOCK.lock();
+            panic!("poison the network lock for this test");
+        })
+        .join();
+        assert!(NETWORK_LOCK.is_poisoned());
+        // No control socket exists, so the runtime cannot be reached: that is a
+        // failure for every saved port of the VM, never an empty (successful) result.
+        let failures = reconcile_forwarding(&paths, "dev").unwrap();
+        assert!(
+            failures.get(&3000).is_some_and(|e| e.contains("Network controls are unavailable")),
+            "{failures:?}"
+        );
+        // Unreadable settings are an error, not "nothing to repair".
+        fs::write(config_path(&paths), "broken").unwrap();
+        assert!(reconcile_forwarding(&paths, "dev").is_err());
+        NETWORK_LOCK.clear_poison();
+    }
+
     #[test]
     fn loopback_ipv6_is_not_reported_as_ipv4_reachable() {
         let input="sl local_address rem_address st\n0: 00000000000000000000000001000000:0BB8 00000000:0000 0A\n";
@@ -1030,7 +1078,7 @@ mod tests {
 /// not revoke a mapping used by another viewer or an explicit user configuration.
 pub(crate) fn desktop_endpoint(paths: &RuntimePaths, workspace: &str, guest_port: u16) -> Result<u16, String> {
     if guest_port == 0 { return Err("Invalid desktop port.".into()); }
-    let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+    let _guard = network_lock();
     let running = configured_vm(paths, workspace)?.is_some_and(|inspected| inspected.status == "Running");
     if !running { return Err(format!("Start {workspace} first.")); }
     desktop_port(&socket_path(paths, workspace), guest_port)

@@ -23,6 +23,14 @@ const VERSION: u32 = 1;
 const LIMIT: usize = 4 * 1024 * 1024;
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 static REQUEST_LOCK: Mutex<()> = Mutex::new(());
+/// Serializes `config.json` reads and writes. Every holder reloads the file (written
+/// atomically) after locking, so a panic under the lock leaves no in-memory state to
+/// distrust: recover instead of reporting "Settings unavailable" until restart (C-25).
+fn config_lock() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 static REMOTE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,12 +110,12 @@ fn status(config: &Config) -> ManagementStatus {
 }
 #[tauri::command]
 pub fn remote_management_status() -> Result<ManagementStatus, String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     Ok(status(&read_config()?))
 }
 #[tauri::command]
 pub fn set_remote_management(enabled: bool) -> Result<ManagementStatus, String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     if enabled {
         let path = PathBuf::from(std::env::var_os("HOME").ok_or("Home unavailable.")?)
             .join(".local/bin/silo-remote");
@@ -138,12 +146,12 @@ pub fn set_remote_management(enabled: bool) -> Result<ManagementStatus, String> 
 }
 #[tauri::command]
 pub fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     Ok(read_config()?.hosts)
 }
 #[tauri::command]
 pub fn remove_remote_host(host_id: String) -> Result<(), String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     let mut config = read_config()?;
     config.hosts.retain(|h| h.id != host_id);
     save_config(&config)?;
@@ -552,7 +560,7 @@ pub(crate) fn call_remote(
 ) -> Result<Value, String> {
     crate::runtime::shutdown::ensure_accepting_operations()?;
     let host = {
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = config_lock();
         read_config()?
             .hosts
             .into_iter()
@@ -635,7 +643,7 @@ pub async fn connect_remote_host(address: String) -> Result<RemoteHost, String> 
             name: name.into(),
             address,
         };
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = config_lock();
         let mut config = read_config()?;
         if config.host_id == host.id {
             return Err(
@@ -930,14 +938,14 @@ pub(crate) fn start(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 pub(crate) fn ensure_management_enabled() -> Result<(), String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     if !read_config()?.enabled { return Err("Remote management is disabled on this computer.".into()); }
     Ok(())
 }
 
 fn authorize(request: &Value) -> Result<Config, String> {
     let config = {
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = config_lock();
         read_config()?
     };
     validate_authorization(&config, request)?;
@@ -1010,6 +1018,18 @@ fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn poisoned_settings_lock_is_recovered() {
+        let _ = std::thread::spawn(|| {
+            let _guard = CONFIG_LOCK.lock();
+            panic!("poison the remote settings lock for this test");
+        })
+        .join();
+        assert!(CONFIG_LOCK.is_poisoned());
+        // Taking the lock again succeeds; callers then reload config.json.
+        drop(config_lock());
+        CONFIG_LOCK.clear_poison();
+    }
     #[test]
     fn sandbox_name_is_read_from_a_remote_snapshot() {
         let state = json!({"workspaces":[{"machine":{"id":"a","name":"one"}},{"machine":{"id":"b","name":"two"}}]});
@@ -1575,6 +1595,6 @@ mod ssh_authorization_tests {
 }
 
 pub(crate) fn log_identity() -> Result<(String, String), String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     Ok((read_config()?.host_id, name()))
 }
