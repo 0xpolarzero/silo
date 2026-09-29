@@ -220,8 +220,15 @@ fn settle(
     runtime_activity::resume(paths, &mut intent.event, &intent.machine_id).map_err(error)?;
     let result = advance(runner, paths, host, intent, initial);
     runtime_activity::finish(paths, &mut intent.event, &result).map_err(error)?;
-    if result.is_ok() {
-        fs::remove_file(path(paths, &intent.machine_id)).map_err(|_| error("The sandbox action completed, but its saved progress could not be cleared. Retry to verify it."))?;
+    // A user cancel retires the intent: the next launch must not resume an
+    // action the user explicitly abandoned.
+    let cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
+    if result.is_ok() || cancelled {
+        fs::remove_file(path(paths, &intent.machine_id)).map_err(|_| error(if cancelled {
+            "The sandbox action was cancelled, but its saved progress could not be cleared."
+        } else {
+            "The sandbox action completed, but its saved progress could not be cleared. Retry to verify it."
+        }))?;
         File::open(directory(paths))
             .and_then(|f| f.sync_all())
             .map_err(|_| error("Completed sandbox action progress could not be synced."))?;
@@ -356,11 +363,19 @@ fn recover_with(
         {
             continue;
         }
-        let Some(mut intent) = load(&entry.path())? else {
-            continue;
+        // One unreadable or mismatched intent must not block the others;
+        // it is preserved and reported with the other failures.
+        let mut intent = match load(&entry.path()) {
+            Ok(Some(intent)) => intent,
+            Ok(None) => continue,
+            Err(failure) => {
+                failures.push(safe_activity_error(&failure));
+                continue;
+            }
         };
         if entry.path() != path(paths, &intent.machine_id) {
-            return Err(error("Saved sandbox action identity is invalid."));
+            failures.push(format!("{}: Saved sandbox action identity is invalid.", intent.name));
+            continue;
         }
         let result = inspect(runner, paths, &intent)
             .and_then(|initial| settle(runner, paths, host, &mut intent, initial));
@@ -393,6 +408,7 @@ mod tests {
         state: Mutex<String>,
         calls: Mutex<Vec<String>>,
         fail_start: bool,
+        cancel_start: bool,
         start_wins: bool,
         replaced: bool,
     }
@@ -402,6 +418,7 @@ mod tests {
                 state: Mutex::new(state.into()),
                 calls: Mutex::new(vec![]),
                 fail_start: false,
+                cancel_start: false,
                 start_wins: false,
                 replaced: false,
             }
@@ -425,6 +442,9 @@ mod tests {
         ) -> Result<CommandOutput, RuntimeError> {
             let action = args[0].as_str();
             self.calls.lock().unwrap().push(action.into());
+            if action == "start" && self.cancel_start {
+                return Err(RuntimeError::Cancelled { operation: "start dev".into() });
+            }
             if action == "start" {
                 if !self.fail_start || self.start_wins {
                     *self.state.lock().unwrap() = "Running".into();
@@ -571,6 +591,31 @@ mod tests {
         let history = runtime_activity::read(&paths).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0]["tone"], "success");
+    }
+    #[test]
+    fn cancelled_start_retires_its_intent_so_launch_does_not_resume_it() {
+        let (_dir, paths, _) = setup();
+        let mut runner = Fake::new("Stopped");
+        runner.cancel_start = true;
+        assert!(matches!(
+            perform(&runner, &paths, &host(), "start", "dev"),
+            Err(RuntimeError::Cancelled { .. })
+        ));
+        assert!(!path(&paths, ID).exists());
+        let relaunch = Fake::new("Stopped");
+        assert!(recover_with(&relaunch, &paths, &host()).unwrap().is_empty());
+        assert!(relaunch.mutations().is_empty());
+    }
+    #[test]
+    fn one_invalid_intent_does_not_block_recovery_of_the_others() {
+        let (_dir, paths, _) = setup();
+        pending(&paths, "stop", Phase::StopPending);
+        fs::write(directory(&paths).join("broken.json"), "{not json").unwrap();
+        let runner = Fake::new("Running");
+        assert!(recover_with(&runner, &paths, &host()).is_err());
+        assert_eq!(runner.mutations(), vec!["stop"]);
+        assert!(!path(&paths, ID).exists());
+        assert!(directory(&paths).join("broken.json").exists());
     }
     #[test]
     fn surviving_detached_start_can_win_without_being_restarted() {
