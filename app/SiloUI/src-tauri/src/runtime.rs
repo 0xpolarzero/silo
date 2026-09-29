@@ -1835,7 +1835,7 @@ fn read_application_snapshot_once(
 /// metadata change. No sandbox is created, started, or changed here.
 pub(crate) fn health_observations(
     app: &AppHandle,
-) -> Option<crate::notifications::HealthObservations> {
+) -> Option<crate::health_watch::HealthObservations> {
     if !OPERATIONS.is_idle() { return None; }
     struct HealthRunner(Instant);
     impl RuntimeRunner for HealthRunner {

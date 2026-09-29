@@ -66,11 +66,34 @@ impl std::fmt::Display for GateError {
 
 impl std::error::Error for GateError {}
 
+/// What an operation is, so observers never parse its display label.
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationKind {
+    /// Start, stop, restart, or dismiss-error on one sandbox, or a host-wide start.
+    Lifecycle,
+    CheckpointCapture,
+    CheckpointRestore,
+    CheckpointFork,
+    Export,
+    Import,
+    StorageReclaim,
+    GithubApply,
+    Push,
+    PortPublish,
+    PortRemove,
+    /// Stopping local VMs for quit or update.
+    Shutdown,
+    #[default]
+    Other,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationEntry {
     pub id: u64,
     pub label: String,
+    pub kind: OperationKind,
     /// Stable VM id this operation is scoped to; `None` for computer-wide operations.
     pub vm_id: Option<String>,
     /// VM display name captured when the operation was admitted; `None` for
@@ -105,6 +128,7 @@ struct Entry {
     /// VM display name for per-VM entries; `None` for computer-wide entries.
     vm_name: Option<String>,
     label: String,
+    kind: OperationKind,
     key: Option<String>,
     since: Instant,
     since_ms: u64,
@@ -127,6 +151,7 @@ impl Entry {
         OperationEntry {
             id: self.id,
             label: self.label.clone(),
+            kind: self.kind,
             vm_id: match &self.scope {
                 Scope::Computer => None,
                 Scope::Vm { id } => Some(id.clone()),
@@ -169,6 +194,7 @@ impl State {
             scope,
             vm_name,
             label: label.to_owned(),
+            kind: OperationKind::Other,
             key,
             since: Instant::now(),
             since_ms: now_ms(),

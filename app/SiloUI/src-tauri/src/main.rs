@@ -30,6 +30,7 @@ mod host_push_cache;
 mod host_push_transport;
 mod host_push_operations;
 mod network;
+mod health_watch;
 mod notifications;
 mod runtime;
 mod runtime_migration;
@@ -166,6 +167,8 @@ fn main() {
             system_integrations::read_system_integrations,
             system_integrations::set_login_item,
             system_integrations::request_notification_authorization,
+            notifications::deliver_notice,
+            notifications::clear_sandbox_notices,
             system_integrations::open_integration_settings,
             system_integrations::show_integration_error,
             applications::list_applications,

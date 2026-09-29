@@ -64,6 +64,8 @@ fn main() {
             "read_system_integrations",
             "set_login_item",
             "request_notification_authorization",
+            "deliver_notice",
+            "clear_sandbox_notices",
             "open_integration_settings",
             "show_integration_error",
             "list_applications",

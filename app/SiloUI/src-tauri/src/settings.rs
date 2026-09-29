@@ -238,6 +238,9 @@ fn valid_setting(key: &str, value: &Value) -> Option<bool> {
         | "notifyHealth"
         | "notifyActions"
         | "notifyBackup"
+        | "notifyFailures"
+        | "notifyChanges"
+        | "notifyCompletions"
         | "terminalUseSystemDefault"
         | "editorUseSystemDefault"
         | "browserUseSystemDefault" => value.is_boolean(),

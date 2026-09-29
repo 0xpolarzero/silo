@@ -31,6 +31,8 @@
     "allow-read-system-integrations",
     "allow-set-login-item",
     "allow-request-notification-authorization",
+    "allow-deliver-notice",
+    "allow-clear-sandbox-notices",
     "allow-open-integration-settings",
     "allow-show-integration-error",
     "allow-list-applications",

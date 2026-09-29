@@ -1,102 +1,147 @@
-//! Notifications follow real operation results and health transitions, never UI refreshes.
-use std::collections::HashMap;
-use std::time::Duration;
-
+//! One router for everything Silo tells the user outside a direct UI response.
+//!
+//! Ownership (who produces a notice for what):
+//! - The frontend toast layer owns results of commands it awaited (push, GitHub apply,
+//!   ports, checkpoints, storage reclaim, log export). It mirrors failures and long
+//!   successes to the system through `deliver_notice`; it already shows its own toast.
+//! - The backend owns background work and lifecycle results (sandbox start/stop/restart,
+//!   export/import, sandbox setup, startup, updates) through `notify_native`: the
+//!   frontend shows toasts for those from backend state.
+//! - The backend owns events nobody asked for (unexpected sandbox changes, startup
+//!   failures without a UI owner) through `notify`: an in-app toast plus a system notice.
+//!
+//! Policy lives here: category preferences, OS authorization, and focus. A system
+//! notification is never shown while the main window is focused; the in-app toast
+//! already covers it.
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
-#[derive(Clone, Copy, Debug)]
+/// In-app toast event for backend-originated notices. Payload: `Notice`.
+pub(crate) const NOTICE_EVENT: &str = "silo://notice";
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) enum Category {
-    Health,
-    Actions,
-    Backup,
+    /// Something the user started, or background work, failed.
+    Failures,
+    /// A sandbox changed state without a Silo operation causing it.
+    Changes,
+    /// Work that ran for at least `LONG_OPERATION` finished successfully.
+    Completions,
 }
 
-fn enabled(settings: &Map<String, Value>, category: Category) -> bool {
-    // Match the persisted settings defaults. OS authorization is checked separately.
-    let flag = |key| settings.get(key).and_then(Value::as_bool).unwrap_or(true);
-    flag("notificationsEnabled")
-        && flag(match category {
-            Category::Health => "notifyHealth",
-            Category::Actions => "notifyActions",
-            Category::Backup => "notifyBackup",
-        })
+/// A successful operation this long or longer is worth a completion notice. Matches the
+/// frontend `LONG_OPERATION_MS`.
+pub(crate) const LONG_OPERATION: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NoticeSandbox {
+    /// Stable VM id (local or remote). Groups notices and clears them on deletion.
+    pub id: String,
+    /// Display name, shown in text and used to open the sandbox on click.
+    pub name: String,
 }
 
-// The first observation establishes a baseline. Disabled notifications still advance it,
-// so enabling notifications never replays historical problems.
-pub(crate) type HealthObservations = HashMap<String, (String, &'static str)>;
-#[derive(Default)]
-struct HealthState {
-    previous: Option<HealthObservations>,
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Notice {
+    pub category: Category,
+    /// Stable identity. A newer notice with the same key replaces the older one, both
+    /// as a system notification and as an in-app toast.
+    pub key: String,
+    pub title: String,
+    pub body: String,
+    pub sandbox: Option<NoticeSandbox>,
 }
-impl HealthState {
-    fn observe(&mut self, observations: HealthObservations) -> Vec<String> {
-        let mut changes = Vec::new();
-        if let Some(previous) = &self.previous {
-            for (id, (name, state)) in &observations {
-                if previous.get(id).is_some_and(|(_, old)| old != state) {
-                    changes.push(format!("{name}: {state}"));
-                }
-            }
-        }
-        changes.sort();
-        self.previous = Some(observations);
-        changes
+
+fn flag(settings: &Map<String, Value>, key: &str, legacy: &[&str]) -> bool {
+    // New keys win; before they are saved, the legacy per-area switches decide.
+    if let Some(value) = settings.get(key).and_then(Value::as_bool) {
+        return value;
     }
-}
-
-fn health_message(changes: &[String]) -> String {
-    let mut message = changes
+    legacy
         .iter()
-        .take(3)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(". ");
-    if changes.len() > 3 {
-        message.push_str(&format!(
-            ". {} more {}",
-            changes.len() - 3,
-            if changes.len() == 4 {
-                "change"
-            } else {
-                "changes"
-            }
-        ));
-    }
-    message.push_str(". Open Silo to review sandbox status.");
-    message
+        .all(|key| settings.get(*key).and_then(Value::as_bool).unwrap_or(true))
+}
+
+pub(crate) fn enabled(settings: &Map<String, Value>, category: Category) -> bool {
+    // Match the persisted settings defaults. OS authorization is checked separately.
+    flag(settings, "notificationsEnabled", &[])
+        && match category {
+            Category::Failures => flag(settings, "notifyFailures", &["notifyActions", "notifyBackup"]),
+            Category::Changes => flag(settings, "notifyChanges", &["notifyHealth"]),
+            Category::Completions => flag(settings, "notifyCompletions", &[]),
+        }
 }
 
 pub(crate) fn install(app: &AppHandle) {
     crate::system_integrations::install_notifications();
-    let app = app.clone();
-    std::thread::spawn(move || {
-        let mut health = HealthState::default();
-        loop {
-            // One bounded read at a time, including while the main window is hidden.
-            if let Some(observations) = crate::runtime::health_observations(&app) {
-                let changes = health.observe(observations);
-                if !changes.is_empty() {
-                    deliver(
-                        &app,
-                        Category::Health,
-                        "Sandbox status changed",
-                        &health_message(&changes),
-                    );
-                }
-            }
-            std::thread::sleep(Duration::from_secs(30));
-        }
-    });
+    crate::health_watch::install(app);
 }
 
+/// A notice with no other UI owner: in-app toast and, when unfocused, a system notification.
+pub(crate) fn notify(app: &AppHandle, notice: Notice) {
+    let _ = app.emit(NOTICE_EVENT, &notice);
+    notify_native(app, notice);
+}
+
+/// A system notification only, for notices whose toast another owner already shows.
+/// Delivery runs off the calling thread and never changes the caller's result.
+pub(crate) fn notify_native(app: &AppHandle, notice: Notice) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || deliver(&app, &notice));
+}
+
+/// Remove delivered system notifications about one sandbox (for example, after deletion).
+pub(crate) fn clear_sandbox(_app: &AppHandle, _sandbox_id: &str) {}
+
+fn main_window_focused(app: &AppHandle) -> bool {
+    use tauri::Manager;
+    app.get_webview_window("main").is_some_and(|window| {
+        window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
+    })
+}
+
+fn deliver(app: &AppHandle, notice: &Notice) {
+    if main_window_focused(app) {
+        return;
+    }
+    let Ok(settings) = crate::settings::current_settings(app) else {
+        return;
+    };
+    if !enabled(&settings, notice.category) {
+        return;
+    }
+    // A delivery failure must not change the result of the sandbox/backup operation.
+    if crate::system_integrations::deliver_notification(&notice.title, &notice.body).is_err() {
+        eprintln!("Silo could not deliver a system notification.");
+    }
+}
+
+/// Frontend mirror of a toast it already shows. System notification only.
+#[tauri::command]
+pub(crate) fn deliver_notice(app: AppHandle, notice: Notice) {
+    notify_native(&app, notice);
+}
+
+#[tauri::command]
+pub(crate) fn clear_sandbox_notices(app: AppHandle, sandbox_id: String) {
+    clear_sandbox(&app, &sandbox_id);
+}
+
+// Legacy entry points, replaced by `Notice`s with sandbox names at each call site.
 pub(crate) fn action_failed(app: &AppHandle, title: &'static str) {
-    enqueue(
+    notify_native(
         app,
-        Category::Actions,
-        title,
-        "The operation did not complete. Open Silo to review the error and retry.",
+        Notice {
+            category: Category::Failures,
+            key: title.into(),
+            title: title.into(),
+            body: "The operation did not complete. Open Silo to review the error and retry.".into(),
+            sandbox: None,
+        },
     );
 }
 
@@ -113,30 +158,16 @@ pub(crate) fn backup_result(app: &AppHandle, operation: &str, outcome: &str) {
     let Some(title) = backup_title(operation, outcome) else {
         return;
     };
-    enqueue(
+    notify_native(
         app,
-        Category::Backup,
-        title,
-        "Open Silo to review the result.",
+        Notice {
+            category: Category::Failures,
+            key: format!("transfer:{operation}"),
+            title: title.into(),
+            body: "Open Silo to review the result.".into(),
+            sandbox: None,
+        },
     );
-}
-
-fn enqueue(app: &AppHandle, category: Category, title: &'static str, body: &'static str) {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || deliver(&app, category, title, body));
-}
-
-fn deliver(app: &AppHandle, category: Category, title: &str, body: &str) {
-    let Ok(settings) = crate::settings::current_settings(app) else {
-        return;
-    };
-    if !enabled(&settings, category) {
-        return;
-    }
-    // A delivery failure must not change the result of the sandbox/backup operation.
-    if crate::system_integrations::deliver_notification(title, body).is_err() {
-        eprintln!("Silo could not deliver a system notification.");
-    }
 }
 
 #[cfg(test)]
@@ -146,55 +177,43 @@ mod tests {
     fn settings(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
     }
+    const ALL: [Category; 3] = [Category::Failures, Category::Changes, Category::Completions];
     #[test]
     fn master_and_each_category_preference_gate_delivery() {
-        for category in [Category::Health, Category::Actions, Category::Backup] {
+        for category in ALL {
             assert!(enabled(&settings(json!({})), category));
-            assert!(!enabled(
-                &settings(json!({"notificationsEnabled": false})),
-                category
-            ));
+            assert!(!enabled(&settings(json!({"notificationsEnabled": false})), category));
         }
-        let preferences =
-            settings(json!({"notifyHealth": false,"notifyActions": false,"notifyBackup": false}));
-        for category in [Category::Health, Category::Actions, Category::Backup] {
+        let preferences = settings(
+            json!({"notifyFailures": false, "notifyChanges": false, "notifyCompletions": false}),
+        );
+        for category in ALL {
             assert!(!enabled(&preferences, category));
         }
+        assert!(enabled(&settings(json!({"notifyChanges": false})), Category::Failures));
+    }
+    #[test]
+    fn legacy_switches_apply_until_new_keys_are_saved() {
+        assert!(!enabled(&settings(json!({"notifyHealth": false})), Category::Changes));
+        assert!(!enabled(&settings(json!({"notifyBackup": false})), Category::Failures));
         assert!(enabled(
-            &settings(json!({"notifyBackup": false})),
-            Category::Actions
+            &settings(json!({"notifyBackup": false, "notifyFailures": true})),
+            Category::Failures
         ));
     }
     #[test]
-    fn health_baseline_and_unchanged_errors_never_alert() {
-        let mut state = HealthState::default();
-        let failed = HashMap::from([("vm".into(), ("dev".into(), "Failed"))]);
-        let healthy = HashMap::from([("vm".into(), ("dev".into(), "Running"))]);
-        assert!(state.observe(failed.clone()).is_empty());
-        assert!(state.observe(failed.clone()).is_empty());
-        assert_eq!(state.observe(healthy.clone()), vec!["dev: Running"]);
-        assert_eq!(state.observe(failed.clone()), vec!["dev: Failed"]);
-        assert!(state.observe(failed).is_empty());
-        assert_eq!(state.observe(healthy), vec!["dev: Running"]);
-        assert!(state
-            .observe(HashMap::from([(
-                "new".into(),
-                ("personal".into(), "Failed")
-            )]))
-            .is_empty());
-    }
-    #[test]
-    fn health_batch_is_bounded_and_shows_actual_states() {
-        let message = health_message(&[
-            "dev: Running".into(),
-            "playgrounds: Stopped".into(),
-            "personal: Failed".into(),
-            "other: Failed".into(),
-        ]);
-        assert!(message.contains("dev: Running"));
-        assert!(message.contains("personal: Failed"));
-        assert!(message.contains("1 more change"));
-        assert!(!message.contains("other:"));
+    fn notice_wire_shape_is_camel_case() {
+        let notice = Notice {
+            category: Category::Completions,
+            key: "vm:1:lifecycle".into(),
+            title: "dev is running".into(),
+            body: "".into(),
+            sandbox: Some(NoticeSandbox { id: "1".into(), name: "dev".into() }),
+        };
+        assert_eq!(
+            serde_json::to_value(&notice).unwrap(),
+            json!({"category": "completions", "key": "vm:1:lifecycle", "title": "dev is running", "body": "", "sandbox": {"id": "1", "name": "dev"}})
+        );
     }
     #[test]
     fn backup_failures_and_partial_restart_failures_alert_but_cancel_does_not() {
