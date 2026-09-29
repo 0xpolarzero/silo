@@ -15,8 +15,10 @@ class DownloadTests(unittest.TestCase):
     def download(self, latest='v0.2.0', tamper=False):
         releases = [dict(tag_name=v, draft=d, prerelease=False) for v, d in [('v0.3.0', True), ('v0.1.0', False), ('v0.2.0', False)]]
         def gh(*args):
+            self.assertTrue(args[-1].startswith('repos/example/fork/releases'))
             return json.dumps({'tag_name': latest} if args[-1].endswith('/latest') else [releases])
         def fetch(args, **kwargs):
+            self.assertEqual(args[args.index('--repo') + 1], 'example/fork')
             directory = Path(args[args.index('--dir') + 1])
             sums = []
             for name in ('Silo-linux-x64.deb', 'Silo-linux-arm64.deb'):
@@ -28,7 +30,7 @@ class DownloadTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         output = Path(tmp.name) / 'packages'
         with patch.object(module, 'gh', side_effect=gh), patch.object(module.subprocess, 'run', side_effect=fetch):
-            module.download(output)
+            module.download(output, 'example/fork')
         return output
 
     def test_downloads_only_two_latest_public_stable_releases(self):

@@ -1,21 +1,20 @@
 """Fetch the latest published stable release and its predecessor, checking all bytes."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
-
-REPOSITORY = '0xpolarzero/silo'
 
 
 def gh(*args):
     return subprocess.check_output(['gh', *args], text=True)
 
 
-def download(output):
-    latest = json.loads(gh('api', f'repos/{REPOSITORY}/releases/latest'))
-    pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{REPOSITORY}/releases'))
+def download(output, repository):
+    latest = json.loads(gh('api', f'repos/{repository}/releases/latest'))
+    pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/releases'))
     stable = [r for page in pages for r in page if not r['draft'] and not r['prerelease'] and re.fullmatch(r'v\d+\.\d+\.\d+', r['tag_name'])]
     stable.sort(key=lambda r: tuple(map(int, r['tag_name'][1:].split('.'))), reverse=True)
     if not stable or stable[0]['tag_name'] != latest['tag_name']:
@@ -25,7 +24,7 @@ def download(output):
         version = release['tag_name'][1:]
         target = output / version
         target.mkdir()
-        subprocess.run(['gh', 'release', 'download', release['tag_name'], '--repo', REPOSITORY, '--dir', str(target), '--pattern', 'Silo-linux-*.deb', '--pattern', 'SHA256SUMS'], check=True)
+        subprocess.run(['gh', 'release', 'download', release['tag_name'], '--repo', repository, '--dir', str(target), '--pattern', 'Silo-linux-*.deb', '--pattern', 'SHA256SUMS'], check=True)
         hashes = {}
         for line in (target / 'SHA256SUMS').read_text().splitlines():
             digest, name = line.split('  ', 1)
@@ -40,4 +39,5 @@ def download(output):
 
 
 if __name__ == '__main__':
-    download(Path(sys.argv[1]))
+    # The workflow passes its own repository, so forks publish their own releases.
+    download(Path(sys.argv[1]), os.environ['GH_REPO'])

@@ -34,24 +34,28 @@ jobs:
       - name: Test signed repository generation
         run: python3 -m unittest discover -s app/SiloUI/scripts -p 'test_apt_repository.py'
       - uses: actions/configure-pages@v5
+        id: pages
       - name: Download verified public packages
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: python3 app/SiloUI/scripts/download-apt-releases.py apt-packages
       - name: Sign update repository
         env:
           SILO_APT_SIGNING_KEY: ${{ secrets.SILO_APT_SIGNING_KEY }}
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}
         run: |
           set -eu
           test -n "$SILO_APT_SIGNING_KEY"
           export GNUPGHOME="$(mktemp -d)"
           trap 'rm -rf "$GNUPGHOME"' EXIT
           printf '%s' "$SILO_APT_SIGNING_KEY" | gpg --batch --import
-          python3 app/SiloUI/scripts/apt-repository.py --packages apt-packages --output apt-site --previous-url https://0xpolarzero.github.io/silo/apt --fingerprint "$(cat app/SiloUI/scripts/debian/signing-fingerprint.txt)"
+          python3 app/SiloUI/scripts/apt-repository.py --packages apt-packages --output apt-site --previous-url "${PAGES_URL%/}/apt" --fingerprint "$(cat app/SiloUI/scripts/debian/signing-fingerprint.txt)"
       - name: Reject stale publication
         env:
           GH_TOKEN: ${{ github.token }}
-        run: test "$(cat apt-packages/latest-version)" = "$(gh api repos/0xpolarzero/silo/releases/latest --jq .tag_name)"
+          GH_REPO: ${{ github.repository }}
+        run: test "$(cat apt-packages/latest-version)" = "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)"
       - uses: actions/upload-pages-artifact@v4
         with:
           path: apt-site
