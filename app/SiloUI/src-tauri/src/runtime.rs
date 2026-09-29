@@ -446,6 +446,33 @@ pub struct ApplicationSource {
     secrets: Vec<Value>,
     backup: BackupSummary,
     preferences: Preferences,
+    /// This computer's limits for VM resource ceilings. Absent when the host could not
+    /// be measured (every VM change is then rejected by `validate_host_ceiling`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host_capacity: Option<HostCapacity>,
+}
+
+/// The host limits `validate_host_ceiling` enforces, so editors can clamp defaults and
+/// presets instead of offering ceilings Silo will reject.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostCapacity {
+    /// Logical CPUs; a VM's CPU ceiling may not exceed this.
+    logical_cpus: usize,
+    physical_memory_bytes: u64,
+    /// The largest whole-GiB memory ceiling Silo accepts on this host.
+    max_memory_gib: u64,
+}
+
+impl HostCapacity {
+    fn of(host: &HostResources) -> Option<Self> {
+        let physical_memory_bytes = host.physical_memory_bytes.filter(|bytes| *bytes > 0)?;
+        (host.logical_cpus > 0).then_some(Self {
+            logical_cpus: host.logical_cpus,
+            physical_memory_bytes,
+            max_memory_gib: physical_memory_bytes / (1024 * 1024 * 1024),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3029,6 +3056,7 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
             startup_workspace_ids,
             reduce_motion: false,
         },
+        host_capacity: host_resources().ok().as_ref().and_then(HostCapacity::of),
     })
 }
 
@@ -5480,6 +5508,34 @@ esac
             runner.calls.lock().unwrap()[0],
             vec!["list", "--label", MANAGED_LABEL, "--format", "json"]
         );
+    }
+
+    #[test]
+    fn application_state_reports_the_host_capacity_that_ceilings_are_checked_against() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let encoded = serde_json::to_value(application_source_for_workspaces(&paths, Vec::new()).unwrap()).unwrap();
+        let host = host_resources().unwrap();
+        let capacity = &encoded["hostCapacity"];
+        assert_eq!(capacity["logicalCpus"], json!(host.logical_cpus));
+        assert_eq!(capacity["physicalMemoryBytes"], json!(host.physical_memory_bytes.unwrap()));
+        // The published limits are exactly the largest ceilings the backend accepts.
+        let cpus = u8::try_from(host.logical_cpus).unwrap_or(u8::MAX);
+        let memory = u32::try_from(capacity["maxMemoryGib"].as_u64().unwrap()).unwrap();
+        assert!(validate_host_ceiling("dev", cpus, memory, &host).is_ok());
+        assert!(validate_host_ceiling("dev", cpus, memory + 1, &host).is_err());
+        if host.logical_cpus < usize::from(u8::MAX) {
+            assert!(validate_host_ceiling("dev", cpus + 1, memory, &host).is_err());
+        }
+    }
+
+    #[test]
+    fn host_capacity_rounds_memory_down_and_is_absent_when_unmeasured() {
+        let gib = 1024 * 1024 * 1024;
+        let capacity = HostCapacity::of(&HostResources { logical_cpus: 8, physical_memory_bytes: Some(16 * gib - 1) }).unwrap();
+        assert_eq!((capacity.logical_cpus, capacity.max_memory_gib), (8, 15));
+        assert!(HostCapacity::of(&HostResources { logical_cpus: 8, physical_memory_bytes: None }).is_none());
+        assert!(HostCapacity::of(&HostResources { logical_cpus: 0, physical_memory_bytes: Some(gib) }).is_none());
     }
 
     #[test]
