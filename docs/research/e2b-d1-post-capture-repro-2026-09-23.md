@@ -12,7 +12,7 @@ A disposable copy added an exact-ID diagnostic return after
 `snapshotAndCacheSandbox` succeeded and before template lookup or
 `ResumeSandbox` in `checkpointResumeFresh`. The patch archive SHA-256 was
 `a23c5b9019c1685a5f7b46462db6ac8b249025cd6605c0dd5ecad83f9be04e3e`;
-the [reproducible patch](../../experiments/e2b-local/patches/d1-post-capture-exact-id.patch)
+the [reproducible patch](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/patches/d1-post-capture-exact-id.patch)
 is kept with the PoC;
 the bounded Go 1.26.8 build produced binary SHA-256
 `44b6aa54bd0d884db46151f3c2ce20e30e7e7b29e521691c4b4f27c1acc2e172`.

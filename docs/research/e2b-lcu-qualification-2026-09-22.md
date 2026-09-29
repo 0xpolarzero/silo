@@ -214,7 +214,7 @@ before proposing an installed footprint or a minimum machine specification.
 
 ## Reproduce and inspect
 
-Use [the PoC README](../../experiments/e2b-local/README.md) for setup and commands.
+Use [the PoC README](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/README.md) for setup and commands.
 `poc.py test` now runs the LCU/SSH/checkpoint suite and credential suite. The old
 xdotool-based acceptance runner and its one-off handoff verifier were removed;
 useful isolation, browser and metadata checks were ported to the current suite.

@@ -51,7 +51,7 @@ controlled causal reproduction. No upstream bug report is ready. Read
 [release-source mapping](research/e2b-release-source-mapping-2026-09-23.md)
 before opening an issue. A narrower exact-ID D1 `ResumeSandbox` call-boundary
 patch exists at
-[`d1-resume-allocation-exact-id.patch`](../experiments/e2b-local/patches/d1-resume-allocation-exact-id.patch)
+[`d1-resume-allocation-exact-id.patch`](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/patches/d1-resume-allocation-exact-id.patch)
 but has not been built or run in the VM. It substitutes an error before real
 allocation and cannot by itself prove the historical allocator failure.
 
@@ -235,7 +235,9 @@ Read `AGENTS.md`, the user instructions and this brief. Existing context:
   provenance and evidence corrections in this brief.
 - `docs/research/e2b-local-poc-2026-09-22.md`: earlier template baseline; do not
   combine its successes with the later incident into one release verdict.
-- `experiments/e2b-local/README.md` and the experiment sources.
+- `experiments/e2b-local/README.md` and the experiment sources, removed from `main`
+  and preserved on the `archive/media-and-experiments` branch and at
+  [`c122a49`](https://github.com/0xpolarzero/silo/tree/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local).
 - `app/SiloUI/src-tauri/src/github.rs`, `github_tokens.rs`,
   `github_personal_token.rs`, `github_http.rs`, `github_live_tests.rs`,
   `secrets.rs`, `secrets_runtime.rs`: current product authorization contract.

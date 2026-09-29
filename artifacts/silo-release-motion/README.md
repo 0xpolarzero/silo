@@ -3,6 +3,11 @@
 33.75-second release film. 1920 × 1080, 60 fps, H.264, stereo AAC, and optional
 English captions. Play `output/silo-computers-directed.mp4` or `preview.html`.
 
+The rendered media (the three `output/silo-computers-*.mp4` cuts and storyboards) was removed from `main` to keep clones small.
+It is preserved on the `archive/media-and-experiments` branch and in
+[this directory at `df8efdd`](https://github.com/0xpolarzero/silo/tree/df8efdd6ac31b6e5805a58cb2735b9675003a6ba/artifacts/silo-release-motion/output); the recorded verification files and
+checksums remain here.
+
 This version follows one project through a continuous workspace. Configure its
 repository and credential access on the hosting computer, start its VM from a
 laptop, connect an editor and terminal, forward its development server, then let

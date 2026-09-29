@@ -55,9 +55,9 @@ assembles Ubuntu 22.04, Xfce/Xvfb, x11vnc, an E2B noVNC fork and websockify.
 Its Chrome and VS Code repository entries target AMD64. This is useful upstream
 integration, but it is not the unchanged ARM64 image used by our PoC.
 
-Our [template](../../experiments/e2b-local/template.py) instead builds Debian
+Our [template](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/template.py) instead builds Debian
 trixie with distribution desktop packages, Firefox, OpenSSH and LCU. Our
-[desktop launcher](../../experiments/e2b-local/start-desktop.sh) starts the
+[desktop launcher](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/start-desktop.sh) starts the
 display, session, control/observer servers and bridges. The distinction matters:
 the successful Mac trial does not show that E2B has assumed maintenance of our
 complete desktop appliance.

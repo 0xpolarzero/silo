@@ -13,7 +13,7 @@ The disposable D2 copy differs in five files: `sandbox.go`,
 `build/local_diff.go`, its focused test, and one new hook plus its focused
 test. Archive SHA-256 is
 `5285ba3a569fc0b2b5ffe59fa3a07c25fda1199ce6391855486c7a2e1aa773d6`.
-The [reproducible patch](../../experiments/e2b-local/patches/d2-rootfs-sync-eio-exact-id.patch)
+The [reproducible patch](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/patches/d2-rootfs-sync-eio-exact-id.patch)
 is kept with the PoC.
 The Linux Go 1.26.8 candidate binary SHA-256 is
 `29470ef6d74a2b7055003442cbe347f573ae16ce32e947cfd090df8e5557d819`.
