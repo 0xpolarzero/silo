@@ -339,6 +339,25 @@ fn remote_page(outcome: Result<Value, String>) -> Result<Page, String> {
         Err(message) => Err(message),
     }
 }
+/// Retention truncates and unlinks segments, which is safe only while no runtime
+/// writer can start. Hold this VM's gate across the stopped check and the cleanup
+/// so a Start cannot be admitted in between. Reading logs observes only: when the
+/// VM is busy, skip the opportunistic cleanup rather than wait.
+fn clean_up_if_stopped(
+    gate: &operation_gate::OperationGate,
+    id: &str,
+    name: &str,
+    stopped: impl FnOnce() -> bool,
+    enforce: impl FnOnce() -> std::io::Result<()>,
+) -> Result<(), String> {
+    let Ok(_guard) = gate.try_vm_hidden(id, name, "Cleaning up expired logs") else {
+        return Ok(());
+    };
+    if stopped() {
+        enforce().map_err(|_| "Expired logs could not be cleaned up.")?;
+    }
+    Ok(())
+}
 pub(super) fn query_local(
     paths: &RuntimePaths,
     request: Query,
@@ -357,14 +376,17 @@ pub(super) fn query_local(
         .join("sandboxes")
         .join(machine.name())
         .join("logs");
-    if request.cursor.is_none()
-        // Reading logs observes only; skip opportunistic cleanup when this VM is busy.
-        && OPERATIONS.is_vm_idle(machine.id())
-        && inspect_workspace(&ProcessRunner, paths, machine.name())
-            .is_ok_and(|sandbox| is_stopped(&sandbox.status))
-    {
-        crate::log_retention::enforce(&directory)
-            .map_err(|_| "Expired logs could not be cleaned up.")?;
+    if request.cursor.is_none() {
+        clean_up_if_stopped(
+            &OPERATIONS,
+            machine.id(),
+            machine.name(),
+            || {
+                inspect_workspace(&ProcessRunner, paths, machine.name())
+                    .is_ok_and(|sandbox| is_stopped(&sandbox.status))
+            },
+            || crate::log_retention::enforce(&directory),
+        )?;
     }
     read(
         &directory,
@@ -668,6 +690,36 @@ fn read(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retention_runs_only_while_holding_the_vm_gate() {
+        let gate = super::operation_gate::OperationGate::new();
+        // Admission from another thread: this thread's own guard would be a nesting error.
+        let start_admitted = || {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| gate.try_vm("vm-1", "dev", "Starting dev").is_ok())
+                    .join()
+                    .unwrap()
+            })
+        };
+        let busy = gate.try_vm("vm-1", "dev", "Starting dev").unwrap();
+        super::clean_up_if_stopped(&gate, "vm-1", "dev", || panic!("a busy VM is not inspected"), || {
+            panic!("a busy VM's logs are not cleaned")
+        })
+        .unwrap();
+        drop(busy);
+        let mut cleaned = false;
+        super::clean_up_if_stopped(&gate, "vm-1", "dev", || !start_admitted(), || {
+            // A Start cannot be admitted between the stopped check and the cleanup.
+            assert!(!start_admitted());
+            cleaned = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(cleaned);
+        assert!(start_admitted(), "the gate is released after cleanup");
+        super::clean_up_if_stopped(&gate, "vm-1", "dev", || false, || panic!("a running VM's logs are not cleaned")).unwrap();
+    }
     #[test]
     fn unsupported_remote_request_becomes_a_structured_outcome() {
         let page = super::remote_page(Err("Unsupported remote request.".into())).unwrap();
