@@ -19,7 +19,6 @@ the requirement.
 
 - `app/SiloUI/src/`: UI, production data sources, deterministic fixtures, and frontend tests.
 - `app/SiloUI/src-tauri/src/`: runtime management, remote computers, native integrations, and backend tests.
-- `app/SiloUI/src-tauri/tests/`: Rust integration tests.
 - `app/SiloUI/src-tauri/`: guest scripts, runtime inputs, capabilities, and Tauri packaging configuration.
 - `app/SiloUI/scripts/`: runtime preparation and release tooling.
 - `app/SiloUI/docs/`: bundled application help.
@@ -30,7 +29,7 @@ Preserve bundled MicroSandbox and Git tools, guest scripts, the Rust vendor patc
 
 ## Setup and commands
 
-Use Node.js 24, Python 3.11 or newer, Rust, and the host's Tauri prerequisites. Runtime preparation requires Rust 1.94.0 for the pinned MicroSandbox build and network access on a cold cache. Supported packages target Apple Silicon macOS 14+ and Linux x86-64/ARM64 on Ubuntu 24.04-compatible systems; Linux VMs require KVM.
+Use Node.js 24, Python 3.11 or newer, Rust, and the host's Tauri prerequisites. Runtime preparation (`npm --prefix app/SiloUI run runtime:prepare`, also run by `desktop`) requires Rust 1.94.0 for the pinned MicroSandbox build, Go 1.25, and network access on a cold cache. Supported packages target Apple Silicon macOS 14+ and Linux x86-64/ARM64 on Ubuntu 24.04-compatible systems; Linux VMs require KVM.
 
 Native builds and Rust tests require GitHub App configuration. Follow `docs/SiloUI-RELEASES.md#local-setup`; do not print `github-build.local.json`, signing credentials, or verbose build output containing configuration. For native unit tests only, the release guide permits explicit synthetic GitHub configuration. Never distribute those test executables.
 
@@ -47,11 +46,11 @@ Run checks appropriate to the change:
 npm --prefix app/SiloUI run typecheck
 npm --prefix app/SiloUI run lint
 npm --prefix app/SiloUI test
-cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -- --test-threads=1
 npm --prefix app/SiloUI run test:release
 ```
 
-Frontend tests use Vitest. Use test file arguments to focus a frontend run and a Cargo test filter to focus backend behavior. Keep opt-in live tests separate from ordinary unit tests. Release-tooling changes also need the relevant script tests and workflow checks.
+Frontend tests use Vitest. Use test file arguments to focus a frontend run and a Cargo test filter to focus backend behavior. Rust tests live beside the code in `app/SiloUI/src-tauri/src/` and share process-wide state, so the suite passes only with `--test-threads=1`. `.github/workflows/ci.yml` runs these checks on every push to `main` and every pull request. Keep opt-in live tests separate from ordinary unit tests. Release-tooling changes also need the relevant script tests and workflow checks.
 
 For a local macOS debug bundle:
 
