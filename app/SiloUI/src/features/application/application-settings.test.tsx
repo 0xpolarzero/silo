@@ -39,13 +39,13 @@ it("keeps every General and Notifications choice after source replacement and re
 
   const navigation = within(screen.getByRole("navigation", { name: "Silo navigation" }))
   await user.click(navigation.getByRole("button", { name: "Notifications" }))
-  await user.click(settings.getByRole("switch", { name: "Sandbox health" }))
-  await user.click(settings.getByRole("switch", { name: "Action failures" }))
-  await user.click(settings.getByRole("switch", { name: "Action failures" }))
-  await user.click(settings.getByRole("switch", { name: "Export and import failures" }))
+  await user.click(settings.getByRole("switch", { name: "Unexpected sandbox changes" }))
+  await user.click(settings.getByRole("switch", { name: "Failures" }))
+  await user.click(settings.getByRole("switch", { name: "Failures" }))
+  await user.click(settings.getByRole("switch", { name: "Long tasks finished" }))
   await user.click(settings.getByRole("switch", { name: "Enable notifications" }))
-  expect(settings.getByRole("switch", { name: "Action failures" })).toBeChecked()
-  expect(settings.getByRole("switch", { name: "Action failures" })).toBeDisabled()
+  expect(settings.getByRole("switch", { name: "Failures" })).toBeChecked()
+  expect(settings.getByRole("switch", { name: "Failures" })).toBeDisabled()
   expect(store.getSnapshot().settings).toMatchObject({
     theme: "dark",
     launchAtLogin: false,
@@ -56,9 +56,9 @@ it("keeps every General and Notifications choice after source replacement and re
     browser: "Firefox",
     reduceMotion: true,
     notificationsEnabled: false,
-    notifyHealth: false,
-    notifyActions: true,
-    notifyBackup: false,
+    notifyChanges: false,
+    notifyFailures: true,
+    notifyCompletions: false,
   })
 
   view.rerender(application(store, { ...source, preferences: { ...source.preferences, browser: "Google Chrome" } }))
@@ -81,13 +81,13 @@ it("keeps every General and Notifications choice after source replacement and re
 
   await user.click(within(screen.getByRole("navigation", { name: "Silo navigation" })).getByRole("button", { name: "Notifications" }))
   expect(restored.getByRole("switch", { name: "Enable notifications" })).not.toBeChecked()
-  expect(restored.getByRole("switch", { name: "Sandbox health" })).not.toBeChecked()
-  expect(restored.getByRole("switch", { name: "Action failures" })).toBeChecked()
-  expect(restored.getByRole("switch", { name: "Export and import failures" })).not.toBeChecked()
+  expect(restored.getByRole("switch", { name: "Unexpected sandbox changes" })).not.toBeChecked()
+  expect(restored.getByRole("switch", { name: "Failures" })).toBeChecked()
+  expect(restored.getByRole("switch", { name: "Long tasks finished" })).not.toBeChecked()
   await user.click(restored.getByRole("switch", { name: "Enable notifications" }))
-  expect(restored.getByRole("switch", { name: "Sandbox health" })).not.toBeChecked()
-  expect(restored.getByRole("switch", { name: "Action failures" })).toBeEnabled()
-  expect(restored.getByRole("switch", { name: "Export and import failures" })).not.toBeChecked()
+  expect(restored.getByRole("switch", { name: "Unexpected sandbox changes" })).not.toBeChecked()
+  expect(restored.getByRole("switch", { name: "Failures" })).toBeEnabled()
+  expect(restored.getByRole("switch", { name: "Long tasks finished" })).not.toBeChecked()
 })
 
 it("retains saved startup IDs absent from telemetry and preserves an explicitly empty selection", async () => {

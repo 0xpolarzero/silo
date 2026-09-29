@@ -25,9 +25,9 @@ describe("settings synchronization", () => {
 
   it("keeps explicit false and empty selections across a new store session", async () => {
     const first = createMemorySettingsStore()
-    await first.updateSettings({ launchAtLogin: false, startupWorkspaceIds: [], notifyHealth: false, editor: "Cursor" })
+    await first.updateSettings({ launchAtLogin: false, startupWorkspaceIds: [], notifyChanges: false, editor: "Cursor" })
     const second = createMemorySettingsStore(first.getSnapshot().settings)
-    expect(second.getSnapshot().settings).toMatchObject({ launchAtLogin: false, startupWorkspaceIds: [], notifyHealth: false, editor: "Cursor" })
+    expect(second.getSnapshot().settings).toMatchObject({ launchAtLogin: false, startupWorkspaceIds: [], notifyChanges: false, editor: "Cursor" })
   })
 
   it("subscribes before reading and ignores an older initial read", async () => {

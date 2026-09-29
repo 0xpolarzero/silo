@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
+import type { OperationQueue } from "../model/operation-queue"
 import { Toaster } from "@/components/ui/sonner"
 import { OverviewPage } from "./overview-page"
 import type { ApplicationWorkspace } from "../model/application-source"
@@ -145,7 +146,7 @@ it("moves Cancel for a running checkpoint capture into its progress notification
   let finish!: () => void
   void runCheckpointOperation({ id: "checkpoint:dev:capture", kind: "capture", target: workspace.machine.name, sandbox: workspace.machine.name, title: "Creating checkpoint “A”", run: () => new Promise<void>(resolve => { finish = resolve }), success: { title: "Checkpoint created" }, failureTitle: "Could not create checkpoint" })
   workspace.checkpointOperation = { kind: "capture", status: "running", stage: "Saving disk copies" }
-  const queue = { running: [{ id: 42, label: "Creating checkpoint", vmId: workspace.machine.id, vmName: workspace.machine.name, sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  const queue: OperationQueue = { running: [{ id: 42, label: "Creating checkpoint", kind: "checkpointCapture", vmId: workspace.machine.id, vmName: workspace.machine.name, sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
   act(() => syncCheckpointProgress(source.workspaces, { queue, cancel }))
   const button = await screen.findByRole("button", { name: "Cancel" })
   await userEvent.setup().click(button)

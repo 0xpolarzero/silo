@@ -61,7 +61,7 @@ it("resolves the same exact default in both windows while retaining legacy name-
 })
 
 it("follows changed native defaults in both windows when no application or mode was saved", async () => {
-  const persisted = persistedSettings({ notifyActions: false })
+  const persisted = persistedSettings({ notifyFailures: false })
   const main = createSettingsStore(persisted.backend)
   const status = createSettingsStore(persisted.backend)
   await Promise.all([main.initialize(), status.initialize()])

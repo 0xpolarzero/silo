@@ -1,9 +1,32 @@
 import { z } from "zod"
 
+/**
+ * What an operation is, as classified by the backend gate (`OperationKind` in
+ * `runtime/operation_gate.rs`). The UI decides from the kind, never from the label text.
+ */
+export const operationKinds = [
+  "lifecycle",
+  "checkpointCapture",
+  "checkpointRestore",
+  "checkpointFork",
+  "export",
+  "import",
+  "storageReclaim",
+  "githubApply",
+  "push",
+  "portPublish",
+  "portRemove",
+  "shutdown",
+  "other",
+] as const
+export type OperationKind = (typeof operationKinds)[number]
+
 /** A single VM-changing operation reported by the runtime operation gate. */
 export interface OperationEntry {
   id: number
   label: string
+  /** What the operation is; see {@link OperationKind}. Unknown or missing reads as `other`. */
+  kind: OperationKind
   /** Stable VM id this operation is scoped to; `null` for computer-wide operations. */
   vmId: string | null
   /** VM display name captured when the operation was admitted; `null` for
@@ -32,6 +55,7 @@ export interface OperationQueue {
 export const operationEntrySchema = z.object({
   id: z.number().int().nonnegative(),
   label: z.string(),
+  kind: z.enum(operationKinds).catch("other").default("other"),
   vmId: z.string().nullable(),
   vmName: z.string().nullable(),
   sinceMs: z.number().int().nonnegative(),
@@ -47,60 +71,29 @@ export const operationQueueSchema = z.object({
 
 export const emptyOperationQueue: OperationQueue = { running: [], waiting: [] }
 
-/**
- * Gate labels for sandbox export and import. These operations already surface as their
- * own progress toast (see `sandbox-transfer.tsx`), so they are excluded from the general
- * operation-queue toast to avoid a duplicate notification. Kept in sync with the backend
- * labels in `src-tauri/src/backup_controller.rs` ("Exporting sandbox", "Importing sandbox").
- */
-export const TRANSFER_OPERATION_LABELS = ["Exporting sandbox", "Importing sandbox"] as const
-
-/**
- * Exact gate labels for operations that already show their own progress or result
- * notification (checkpoints, storage reclaim, host-wide lifecycle start). Kept in sync with the
- * backend labels in `src-tauri/src/runtime/checkpoints.rs` and `runtime/storage.rs`.
- */
-export const CHECKPOINT_CAPTURE_LABEL = "Creating checkpoint"
-
-export const SELF_NOTIFIED_OPERATION_LABELS = [
-  CHECKPOINT_CAPTURE_LABEL,
-  "Restoring checkpoint",
-  "Forking checkpoint",
-  "Reclaiming sandbox storage",
-  "Starting sandbox",
-] as const
-
-/**
- * Gate label prefixes (labels embed the sandbox name) for operations with their own toast:
- * lifecycle start/stop/restart (`lifecycle_label` in `runtime.rs`), GitHub apply, host pushes
- * (`host_push.rs`), and port publish/remove (`network.rs`).
- */
-export const SELF_NOTIFIED_OPERATION_PREFIXES = [
-  "Starting ",
-  "Stopping ",
-  "Restarting ",
-  "Dismissing error for ",
-  "Applying GitHub access to ",
-  "Pushing from ",
-  "Publishing a port on ",
-  "Removing a port on ",
-] as const
-
-/** Labels that look like a lifecycle prefix but are internal and must stay visible to the queue UI. */
-const ALWAYS_LISTED_LABELS = ["Stopping local VMs"] as const
+/** Kinds that already show their own progress or result notification, so the queue toast skips them. */
+const SELF_NOTIFIED_KINDS: ReadonlySet<OperationKind> = new Set([
+  "lifecycle",
+  "checkpointCapture",
+  "checkpointRestore",
+  "checkpointFork",
+  "export",
+  "import",
+  "storageReclaim",
+  "githubApply",
+  "push",
+  "portPublish",
+  "portRemove",
+])
 
 /** True when an entry already has its own notification and needs no queue toast. */
 export function hasOwnNotification(entry: OperationEntry): boolean {
-  const label = entry.label
-  if ((ALWAYS_LISTED_LABELS as readonly string[]).includes(label)) return false
-  return (TRANSFER_OPERATION_LABELS as readonly string[]).includes(label)
-    || (SELF_NOTIFIED_OPERATION_LABELS as readonly string[]).includes(label)
-    || SELF_NOTIFIED_OPERATION_PREFIXES.some((prefix) => label.startsWith(prefix))
+  return SELF_NOTIFIED_KINDS.has(entry.kind)
 }
 
 /** True when an entry is an export/import operation shown by its own transfer toast. */
 export function isTransferOperation(entry: OperationEntry): boolean {
-  return (TRANSFER_OPERATION_LABELS as readonly string[]).includes(entry.label)
+  return entry.kind === "export" || entry.kind === "import"
 }
 
 /** The queue with entries that have their own notification removed. */
@@ -167,14 +160,14 @@ export function cancelledActionLabel(action: "start" | "stop" | "restart" | "dis
 
 /** Running operations that a quitting overlay is waiting on, joined for display. */
 export function shutdownWaitingLabel(queue: OperationQueue): string | undefined {
-  const running = queue.running.filter((entry) => entry.label !== "Stopping local VMs")
+  const running = queue.running.filter((entry) => entry.kind !== "shutdown")
   if (running.length === 0) return undefined
   return `Waiting for ${joinLabels(running.map((entry) => entry.label))}…`
 }
 
 /** The running operations a quitting overlay could offer to cancel (opted-in cancellable). */
 export function cancellableRunning(queue: OperationQueue): OperationEntry[] {
-  return queue.running.filter((entry) => entry.cancellable && entry.label !== "Stopping local VMs")
+  return queue.running.filter((entry) => entry.cancellable && entry.kind !== "shutdown")
 }
 
 function joinLabels(labels: string[]): string {

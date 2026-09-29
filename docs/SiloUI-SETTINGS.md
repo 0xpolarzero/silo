@@ -245,9 +245,9 @@ exists.
 | `browser` | Browser | Safari |
 | `reduceMotion` | Reduce motion | Off |
 | `notificationsEnabled` | Silo notification preference | On; effective only with current OS/service authorization |
-| `notifyHealth` | Sandbox health | On |
-| `notifyActions` | Action failures | On |
-| `notifyBackup` | Backup failures | On |
+| `notifyChanges` | Unexpected sandbox changes (migrated from `notifyHealth`) | On |
+| `notifyFailures` | Failures (migrated from `notifyActions` and `notifyBackup`) | On |
+| `notifyCompletions` | Long tasks finished | On |
 
 Defaults are applied in TypeScript and are not written on mount. The startup
 default follows the current sandbox list until the user enables startup or saves

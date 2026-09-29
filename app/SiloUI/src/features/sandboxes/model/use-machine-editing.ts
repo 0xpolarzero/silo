@@ -119,7 +119,7 @@ export function useMachineEditing({
     if (outcome && typeof (outcome as Promise<void>).then === "function") {
       void (outcome as Promise<void>).catch((cause) => {
         if (editor?.originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
-        else showActionFailure("Couldn't save changes", cause)
+        else showActionFailure("Couldn't save changes", cause, undefined, { native: false })
       })
     }
   }
@@ -127,7 +127,7 @@ export function useMachineEditing({
   async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetComputerId = computerId) {
     if (disabled) return
     const blocked = validateOperation?.(machine, !originalID, targetComputerId)
-    if (blocked) { showActionFailure(`Couldn't save ${machine.name}`, blocked); return }
+    if (blocked) { showActionFailure(`Couldn't save ${machine.name}`, blocked, undefined, { native: false }); return }
     const baseline = baselineRef.current ?? undefined
     if (onCommitMachine) {
       setCommitting(true)
@@ -138,7 +138,7 @@ export function useMachineEditing({
         // A stale-baseline rejection keeps the editor open with the user's edits so they
         // can review the latest values or discard; other failures surface as before.
         if (originalID && isStaleConfigurationError(cause)) setEditorConflict(true)
-        else showActionFailure(`Couldn't save ${machine.name}`, cause)
+        else showActionFailure(`Couldn't save ${machine.name}`, cause, undefined, { native: false })
       }
       finally { setCommitting(false) }
       return
@@ -175,7 +175,7 @@ export function useMachineEditing({
     if (onDeleteMachine) {
       setCommitting(true)
       try { await onDeleteMachine(machine, baseline) }
-      catch (cause) { showActionFailure(`Couldn't delete ${machine.name}`, cause) }
+      catch (cause) { showActionFailure(`Couldn't delete ${machine.name}`, cause, undefined, { native: false }) }
       finally { setCommitting(false) }
       return
     }
@@ -202,7 +202,7 @@ export function useMachineEditing({
   async function deleteWithNotice(machine: SetupMachineConfiguration): Promise<boolean> {
     // The popover may have been opened while the sandbox was stopped; never delete a running VM.
     if (machine.kind === "vm" && isMachineRunning?.(machine)) {
-      showActionFailure(`Couldn't delete ${machine.name}`, "Stop the sandbox before deleting it.")
+      showActionFailure(`Couldn't delete ${machine.name}`, "Stop the sandbox before deleting it.", undefined, { native: false })
       return false
     }
     try {
@@ -210,7 +210,7 @@ export function useMachineEditing({
       showOperationNotice(`sandbox-deleted:${machine.id}`, `Deleted ${machine.name}`)
       return true
     } catch (cause) {
-      showActionFailure(`Couldn't delete ${machine.name}`, cause)
+      showActionFailure(`Couldn't delete ${machine.name}`, cause, undefined, { native: false })
       return false
     }
   }

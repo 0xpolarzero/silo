@@ -40,7 +40,7 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
     setExporting(true)
     showOperationProgress(id, {
       title: "Exporting logs…",
-      cancel: actions.cancelLogExport ? { onCancel: () => void actions.cancelLogExport?.().catch(cause => showActionFailure("Cancellation failed", cause)) } : undefined,
+      cancel: actions.cancelLogExport ? { onCancel: () => void actions.cancelLogExport?.().catch(cause => showActionFailure("Cancellation failed", cause, undefined, { native: false })) } : undefined,
     })
     try {
       if (await actions.exportLogs(results.map(result => result.request))) showOperationSuccess(id, "Logs saved")

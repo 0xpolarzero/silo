@@ -188,6 +188,8 @@ export function GitHubPage({
 
   const retryRef = useRef(retryWorkspace)
   retryRef.current = retryWorkspace
+  const workspacesRef = useRef(source.workspaces)
+  workspacesRef.current = source.workspaces
   const announced = useRef(new Map<string, string>(Object.entries(workspaceOperations).map(([name, operation]) => [name, `${operation.status}|${operation.message}`])))
 
   // Only operations the user started here notify. Background verification and renewal update
@@ -202,13 +204,16 @@ export function GitHubPage({
       if (!userInitiated.current.has(name)) continue
       if (operation.status !== "applying") userInitiated.current.delete(name)
       const id = `github-apply:${name}`
+      const machine = workspacesRef.current.find((workspace) => !workspace.computer && workspace.machine.name === name)?.machine
+      const noticeSandbox = machine ? { id: machine.id, name: machine.name } : undefined
       if (operation.status === "applying") showOperationProgress(id, { title: operation.message, step: name, sandbox: name })
-      else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name, sandbox: name, persist: true })
+      else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name, sandbox: name, persist: true, noticeSandbox })
       else {
         const failure = githubFailure(operation.message)
         showOperationFailure(id, failure.message, {
           description: `${name}: ${firstLine(failure.details)}`,
           sandbox: name,
+          noticeSandbox,
           retry: failure.canRetry ? () => retryRef.current(name) : undefined,
         })
       }

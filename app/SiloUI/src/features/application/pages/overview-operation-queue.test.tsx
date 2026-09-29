@@ -14,7 +14,7 @@ import { OverviewPage } from "./overview-page"
 const actions = {} as ApplicationActions
 
 function entry(overrides: Partial<OperationEntry> & Pick<OperationEntry, "id" | "label">): OperationEntry {
-  return { vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false, ...overrides }
+  return { kind: "other", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false, ...overrides }
 }
 
 /** Renders the toast driver with a mounted Toaster so the notification appears in the DOM. */
@@ -48,14 +48,19 @@ describe("operation-queue toast", () => {
   it("lists an otherwise-invisible waiting entry behind a running one", async () => {
     const queue: OperationQueue = {
       running: [entry({ id: 1, label: "Backing up sandboxes", sinceMs: Date.now() - 1000 })],
-      waiting: [entry({ id: 2, label: "Saving Git identities" }), entry({ id: 3, label: "Restarting dev", vmId: "dev" })],
+      waiting: [entry({ id: 2, label: "Saving Git identities" }), entry({ id: 3, label: "Restarting dev", kind: "lifecycle", vmId: "dev" })],
     }
     render(<ToastHarness queue={queue} />)
     expect(await screen.findByText(/Saving Git identities — Waiting for Backing up sandboxes…/)).toBeInTheDocument()
   })
 
-  it.each(["Creating checkpoint", "Restoring checkpoint", "Forking checkpoint", "Starting dev", "Stopping dev", "Restarting dev", "Applying GitHub access to dev", "Pushing from dev", "Publishing a port on dev", "Removing a port on dev", "Reclaiming sandbox storage"])("does not show a queue toast for %s, which has its own notification", async (label) => {
-    const queue: OperationQueue = { running: [entry({ id: 1, label, vmId: "dev", cancellable: true, sinceMs: Date.now() - 60_000 })], waiting: [] }
+  it.each([
+    ["Creating checkpoint", "checkpointCapture"], ["Restoring checkpoint", "checkpointRestore"], ["Forking checkpoint", "checkpointFork"],
+    ["Starting dev", "lifecycle"], ["Stopping dev", "lifecycle"], ["Restarting dev", "lifecycle"],
+    ["Applying GitHub access to dev", "githubApply"], ["Pushing from dev", "push"],
+    ["Publishing a port on dev", "portPublish"], ["Removing a port on dev", "portRemove"], ["Reclaiming sandbox storage", "storageReclaim"],
+  ] as const)("does not show a queue toast for %s (%s), which has its own notification", async (label, kind) => {
+    const queue: OperationQueue = { running: [entry({ id: 1, label, kind, vmId: "dev", cancellable: true, sinceMs: Date.now() - 60_000 })], waiting: [] }
     render(<ToastHarness queue={queue} onCancel={vi.fn()} />)
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 700)) })
     expect(screen.queryByText(label)).not.toBeInTheDocument()
@@ -103,8 +108,8 @@ describe("operation-queue toast", () => {
 
   it("excludes export and import entries, which have their own transfer toast", async () => {
     const queue: OperationQueue = {
-      running: [entry({ id: 1, label: "Exporting sandbox", cancellable: true }), entry({ id: 2, label: "Applying the sandbox configuration", vmId: "dev", sinceMs: Date.now() - 60_000 })],
-      waiting: [entry({ id: 3, label: "Importing sandbox" })],
+      running: [entry({ id: 1, label: "Exporting sandbox", kind: "export", cancellable: true }), entry({ id: 2, label: "Applying the sandbox configuration", vmId: "dev", sinceMs: Date.now() - 60_000 })],
+      waiting: [entry({ id: 3, label: "Importing sandbox", kind: "import" })],
     }
     render(<ToastHarness queue={queue} />)
     // Only the non-transfer entry drives the toast title.

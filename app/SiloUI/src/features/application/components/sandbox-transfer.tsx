@@ -99,12 +99,12 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
   async function exportSandbox(sandboxName: string, checkpoint?: { id: string; name: string }) {
     const controller = backupRef.current
     if (controller.state.availability === "unavailable") {
-      showOperationFailure(TRANSFER_TOAST_ID, "Export is unavailable", { description: controller.state.availabilityMessage ?? "Export is not available in this Silo build. No sandbox data was changed." })
+      showOperationFailure(TRANSFER_TOAST_ID, "Export is unavailable", { description: controller.state.availabilityMessage ?? "Export is not available in this Silo build. No sandbox data was changed.", native: false })
       return
     }
     let destination: string | null
     try { destination = await controller.actions.chooseDestination() }
-    catch (error) { showOperationFailure(TRANSFER_TOAST_ID, "Could not choose a folder", { description: `${errorText(error)} No export was created.` }); return }
+    catch (error) { showOperationFailure(TRANSFER_TOAST_ID, "Could not choose a folder", { description: `${errorText(error)} No export was created.`, native: false }); return }
     if (!destination) return
     checkpointRef.current = checkpoint?.name
     retryRef.current = () => { void exportSandbox(sandboxName, checkpoint) }
@@ -168,7 +168,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
       const title = isExport ? (checkpointRef.current ? "Checkpoint exported" : "Exported") : `Imported ${operation.targetName ?? archive.sandboxes[0] ?? "sandbox"}`
       const action = isExport
         ? { label: revealLabel(), onClick: () => {
-            backupRef.current.actions.revealArchive(archive).catch((error) => showActionFailure("Could not reveal the export", errorText(error)))
+            backupRef.current.actions.revealArchive(archive).catch((error) => showActionFailure("Could not reveal the export", errorText(error), undefined, { native: false }))
           } }
         : (() => {
             const name = operation.targetName
@@ -176,7 +176,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
             const open = optionsRef.current.openSandbox
             return match && open ? { label: "Open", onClick: () => open(match.machine.id) } : undefined
           })()
-      showOperationSuccess(TRANSFER_TOAST_ID, title, { description: isExport ? `${archive.name} · ${archive.size}` : "Stopped and verified.", action, persist: true, sandbox: isExport ? undefined : operation.targetName ?? archive.sandboxes[0], onDismiss: dismiss })
+      showOperationSuccess(TRANSFER_TOAST_ID, title, { description: isExport ? `${archive.name} · ${archive.size}` : "Stopped and verified.", action, persist: true, native: false, sandbox: isExport ? undefined : operation.targetName ?? archive.sandboxes[0], onDismiss: dismiss })
       return
     }
 
@@ -192,7 +192,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
       : retryRef.current
       ? { label: "Retry", onClick: () => retryRef.current?.() }
       : undefined
-    showOperationFailure(TRANSFER_TOAST_ID, operation.title, { description, action: retry, onDismiss: dismiss, tone: operation.outcome === "restart-required" ? "warning" : "error" })
+    showOperationFailure(TRANSFER_TOAST_ID, operation.title, { description, action: retry, onDismiss: dismiss, tone: operation.outcome === "restart-required" ? "warning" : "error", native: false })
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [backup.state.operation])
 

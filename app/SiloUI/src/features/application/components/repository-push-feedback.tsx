@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { commitLabel } from "@/features/application/model/repository-push"
 import type { RepositoryPushOperation } from "@/features/application/model/application-source"
+import type { NoticeSandbox } from "@/desktop/notices"
 import { dismissOperationToast, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 
 const pushToastId = (operation: RepositoryPushOperation) => `repository-push:${operation.workspace}:${operation.repositoryPath}`
@@ -17,11 +18,16 @@ const repositoryName = (path: string) => path.split("/").filter(Boolean).at(-1) 
  */
 export function useRepositoryPushToasts(
   operations: RepositoryPushOperation[],
-  { onPush, onDismiss }: { onPush: (workspace: string, repositoryPath: string, commitCount: number) => void; onDismiss: (workspace: string, repositoryPath: string) => void },
+  { onPush, onDismiss, resolveSandbox }: {
+    onPush: (workspace: string, repositoryPath: string, commitCount: number) => void
+    onDismiss: (workspace: string, repositoryPath: string) => void
+    /** Resolves the sandbox a push target belongs to, for the system notification. */
+    resolveSandbox?: (workspace: string) => NoticeSandbox | undefined
+  },
 ) {
   const seen = useRef<Map<string, RepositoryPushOperation["status"]> | null>(null)
-  const callbacks = useRef({ onPush, onDismiss })
-  callbacks.current = { onPush, onDismiss }
+  const callbacks = useRef({ onPush, onDismiss, resolveSandbox })
+  callbacks.current = { onPush, onDismiss, resolveSandbox }
   useEffect(() => {
     const initial = seen.current === null
     const previous = seen.current ?? new Map<string, RepositoryPushOperation["status"]>()
@@ -36,7 +42,7 @@ export function useRepositoryPushToasts(
         showOperationProgress(id, { title: `Pushing ${commitLabel(operation.commitCount)}`, step: operation.message ? `${name} · ${operation.message}` : name, sandbox: operation.workspace })
       } else if (operation.status === "succeeded") {
         // Nothing stays inline for a finished push, so clear it; only announce one that finished while watching.
-        if (!initial) showOperationSuccess(id, `Pushed ${commitLabel(operation.commitCount)} · ${name}`, { sandbox: operation.workspace, persist: true })
+        if (!initial) showOperationSuccess(id, `Pushed ${commitLabel(operation.commitCount)} · ${name}`, { sandbox: operation.workspace, persist: true, noticeSandbox: callbacks.current.resolveSandbox?.(operation.workspace) })
         callbacks.current.onDismiss(operation.workspace, operation.repositoryPath)
       } else if (initial) {
         continue
@@ -44,6 +50,7 @@ export function useRepositoryPushToasts(
         showOperationFailure(id, `Push failed · ${name}`, {
           description: operation.message,
           sandbox: operation.workspace,
+          noticeSandbox: callbacks.current.resolveSandbox?.(operation.workspace),
           retry: () => callbacks.current.onPush(operation.workspace, operation.repositoryPath, operation.commitCount),
         })
       } else {

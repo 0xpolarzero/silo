@@ -9,6 +9,8 @@ import {
   operationQueueSchema,
   STUCK_OPERATION_MS,
   toastableQueue,
+  cancellableRunning,
+  shutdownWaitingLabel,
   waitingOperationForVm,
   waitingStatusText,
   type OperationEntry,
@@ -17,7 +19,7 @@ import {
 
 function entry(overrides: Partial<OperationEntry> & Pick<OperationEntry, "id">): OperationEntry {
   const vmId = overrides.vmId ?? null
-  return { label: `op-${overrides.id}`, vmId: null, vmName: vmId, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false, ...overrides }
+  return { label: `op-${overrides.id}`, kind: "other", vmId: null, vmName: vmId, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false, ...overrides }
 }
 
 describe("blockingOperations", () => {
@@ -126,24 +128,37 @@ describe("waitingStatusText", () => {
 })
 
 describe("toastableQueue", () => {
-  it("drops export/import and lifecycle entries, which have their own notifications", () => {
+  it("drops kinds that have their own notification, whatever their label says", () => {
+    const owned = ["lifecycle", "checkpointCapture", "checkpointRestore", "checkpointFork", "export", "import", "storageReclaim", "githubApply", "push", "portPublish", "portRemove"] as const
     const queue: OperationQueue = {
-      running: [entry({ id: 1, label: "Exporting sandbox" }), entry({ id: 2, label: "Restarting dev", vmId: "dev" })],
-      waiting: [entry({ id: 3, label: "Importing sandbox" }), entry({ id: 4, label: "Stopping api", vmId: "api" })],
+      running: owned.slice(0, 6).map((kind, index) => entry({ id: index, label: "Anything", kind })),
+      waiting: owned.slice(6).map((kind, index) => entry({ id: 10 + index, label: "Anything", kind })),
     }
     const toastable = toastableQueue(queue)
-    expect(toastable.running.map((e) => e.label)).toEqual([])
-    expect(toastable.waiting.map((e) => e.label)).toEqual([])
+    expect(toastable.running).toEqual([])
+    expect(toastable.waiting).toEqual([])
   })
 
-  it("keeps operations that have no notification of their own", () => {
+  it("keeps operations that have no notification of their own, including a label that looks like a lifecycle one", () => {
     const queue: OperationQueue = {
-      running: [entry({ id: 1, label: "Creating checkpoint", vmId: "dev" }), entry({ id: 2, label: "Applying the sandbox configuration" })],
-      waiting: [entry({ id: 3, label: "Saving Git identities" }), entry({ id: 4, label: "Stopping local VMs" })],
+      running: [entry({ id: 1, label: "Applying the sandbox configuration" }), entry({ id: 2, label: "Starting to look like a lifecycle label", kind: "other" })],
+      waiting: [entry({ id: 3, label: "Saving Git identities" }), entry({ id: 4, label: "Stopping local VMs", kind: "shutdown" })],
     }
     const toastable = toastableQueue(queue)
-    expect(toastable.running.map((e) => e.label)).toEqual(["Applying the sandbox configuration"])
-    expect(toastable.waiting.map((e) => e.label)).toEqual(["Saving Git identities", "Stopping local VMs"])
+    expect(toastable.running.map((e) => e.id)).toEqual([1, 2])
+    expect(toastable.waiting.map((e) => e.id)).toEqual([3, 4])
+  })
+})
+
+describe("shutdown helpers", () => {
+  it("ignores the shutdown entry itself when listing what Quit waits on or can cancel", () => {
+    const queue: OperationQueue = {
+      running: [entry({ id: 1, label: "Stopping local VMs", kind: "shutdown", cancellable: true }), entry({ id: 2, label: "Backing up sandboxes", cancellable: true }), entry({ id: 3, label: "Installing update", cancellable: false })],
+      waiting: [],
+    }
+    expect(shutdownWaitingLabel(queue)).toBe("Waiting for Backing up sandboxes and Installing update…")
+    expect(cancellableRunning(queue).map((e) => e.id)).toEqual([2])
+    expect(shutdownWaitingLabel({ running: [queue.running[0]], waiting: [] })).toBeUndefined()
   })
 })
 
@@ -155,6 +170,10 @@ describe("operationQueueSchema", () => {
     })
     // blockedByHidden defaults to false when the backend omits it.
     expect(parsed.waiting[0].blockedByHidden).toBe(false)
+    // kind defaults to "other" when absent or not recognized, so a newer backend never breaks the queue.
+    expect(parsed.waiting[0].kind).toBe("other")
+    expect(operationQueueSchema.parse({ running: [{ ...parsed.running[0], kind: "somethingNew" }], waiting: [] }).running[0].kind).toBe("other")
+    expect(operationQueueSchema.parse({ running: [{ ...parsed.running[0], kind: "push" }], waiting: [] }).running[0].kind).toBe("push")
     expect(parsed.running[0].vmId).toBeNull()
     expect(parsed.running[0].cancellable).toBe(true)
     expect(parsed.running[0].expectedMs).toBe(3_600_000)

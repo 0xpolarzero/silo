@@ -36,7 +36,7 @@ export function RemoteComputersSettings({ source, actions }: { source: Applicati
   const [copied, setCopied] = useState(false)
   async function perform(operation: () => Promise<void>) {
     setBusy(true)
-    try { await operation() } catch (cause) { showActionFailure("Computer setting not changed", cause, () => { void perform(operation) }) }
+    try { await operation() } catch (cause) { showActionFailure("Computer setting not changed", cause, () => { void perform(operation) }, { native: false }) }
     finally { setBusy(false) }
   }
   if (!actions.connectComputer) return null

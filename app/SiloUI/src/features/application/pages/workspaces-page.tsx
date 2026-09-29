@@ -86,7 +86,7 @@ function Files({
     if (!onRefreshRepositories || refreshing) return
     setRefreshing(true)
     try { await onRefreshRepositories() }
-    catch (error) { showActionFailure("Could not refresh repositories", error, () => void refreshRepositories()) }
+    catch (error) { showActionFailure("Could not refresh repositories", error, () => void refreshRepositories(), { native: false }) }
     finally { setRefreshing(false) }
   }
   const [repositoriesOpen, setRepositoriesOpen] = useState(true)
@@ -347,7 +347,14 @@ export function WorkspacesPage({
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
 }) {
   const [logWindow, setLogWindow] = useState<LogWindow>()
-  useRepositoryPushToasts(repositoryPushOperations, { onPush: onPushRepository, onDismiss: onDismissRepositoryPush })
+  useRepositoryPushToasts(repositoryPushOperations, {
+    onPush: onPushRepository,
+    onDismiss: onDismissRepositoryPush,
+    resolveSandbox: (target) => {
+      const machine = workspaces.find((workspace) => workspaceTarget(workspace) === target)?.machine
+      return machine ? { id: machine.id, name: machine.name } : undefined
+    },
+  })
   const visibleWorkspaces = useMemo(
     () => selectedWorkspaceIds.size === 0 ? workspaces : workspaces.filter(({ machine }) => selectedWorkspaceIds.has(machine.id)),
     [workspaces, selectedWorkspaceIds],

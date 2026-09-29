@@ -1397,7 +1397,7 @@ describe("operation queue bridge", () => {
 
       mock.setQueue({
         running: [{ id: 1, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 1000, cancellable: true, expectedMs: null, blockedByHidden: false }],
-        waiting: [{ id: 2, label: "Restarting dev", vmId: "id-dev", vmName: "dev", sinceMs: 2000, cancellable: true, expectedMs: null, blockedByHidden: false }],
+        waiting: [{ id: 2, label: "Restarting dev", kind: "lifecycle", vmId: "id-dev", vmName: "dev", sinceMs: 2000, cancellable: true, expectedMs: null, blockedByHidden: false }],
       })
       mock.emit()
       await vi.waitFor(() => expect(store.getSnapshot().source?.operationQueue?.waiting[0].label).toBe("Restarting dev"))

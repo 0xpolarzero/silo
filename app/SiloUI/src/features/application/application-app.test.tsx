@@ -1924,7 +1924,7 @@ describe("application", () => {
     await user.click(settingsNavigation.getByRole("button", { name: "Notifications" }))
     const settings = within(appPanel("Settings"))
     await user.click(settings.getByRole("switch", { name: "Enable notifications" }))
-    expect(settings.getByRole("switch", { name: "Sandbox health" })).toBeDisabled()
+    expect(settings.getByRole("switch", { name: "Unexpected sandbox changes" })).toBeDisabled()
 
     await user.click(settingsNavigation.getByRole("button", { name: "General" }))
     await user.click(settings.getByRole("switch", { name: "Reduce motion" }))
