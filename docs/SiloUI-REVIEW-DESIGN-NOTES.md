@@ -181,22 +181,43 @@ capture before creation, removes an incomplete member on failure or relaunch, an
 keeps a verified capture while a sandbox uses it as its lineage parent. Import
 records its new group before load, removes indexed unfinished members even before
 allocating a sandbox identity, and keeps ownership journaled when removal fails.
-A normal failed or cancelled load also removes its new snapshot and cache stages
-from the before/after census of that running operation, preserving older stages.
-There is no age-based startup sweep. Deleting checkpoints of a sandbox on another
-computer is done in Silo on that computer.
+A failed, cancelled, timed-out, or killed load removes exactly the stages named by
+that journal. There is no age-based startup sweep. Deleting checkpoints of a
+sandbox on another computer is done in Silo on that computer.
 
-**Remaining runtime gap.** The
-[pinned archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs#L263)
-creates random `.msb-snapshot-import-*` folders under the native snapshot store
-and `snapshot-import-*` folders in `cache/tmp`. Neither name identifies the
-chosen group or Silo operation, and the CLI does not expose the exact paths.
-A crash during unpacking before member publication therefore leaves unindexed
-stages that Silo cannot attribute to its journal. Startup preserves those stages;
-it never prefix-sweeps or uses age to infer ownership. Full E-03 crash cleanup
-requires an upstream runtime journal or a supported API that lets Silo choose
-and journal those paths before the runtime writes them. The indexed import-group
-cleanup required by E-24 is implemented.
+**E-03 import crash gap closed.** The bundled
+[operation-stage patch](../app/SiloUI/patches/microsandbox-import-stage-id-0.7.2.patch)
+extends the pinned
+[archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs)
+with `snapshot load --stage-id <32 lowercase hex digits>` and Rust
+`LoadOpts.stage_id`. Before opening an archive, the loader exclusively creates
+`snapshots/.msb-snapshot-load-<id>` and `cache/tmp/snapshot-load-<id>` under the
+configured runtime home. Archive unpacking, external-base unpacking, and batch
+publication all stay inside these two roots. Separate roots preserve the
+snapshot/cache filesystem placement required by rename-based publication.
+Existing roots, including symlinks, are refused, never adopted. Normal return or
+failure drops the temporary-directory guards; process death leaves deterministic
+paths. The patch adds no database, scheduler, or age/prefix collection policy;
+it extends the existing Apache-2.0 loader and tempfile ownership mechanism.
+
+Silo chooses `silo-import-<id>`, checks that both the group and stage paths are
+absent, then fsync-saves the group in its existing operation journal before
+passing its suffix as `--stage-id`. This saved group is also the durable stage
+identity; a second independently mutable field would permit mismatches. Cleanup
+validates the group, removes only the two derived stage paths, then removes that
+group's indexed members without `--force`. Missing stages are harmless, including
+a crash between saving the journal and spawning load. The existing inherited snapshot-worker lock prevents removal while a child
+from the previous Silo process is still writing. Cleanup errors preserve
+the journal for the next launch. Symlinked stage paths or parent components fail
+closed. Older random stages and stages from other operations stay untouched.
+
+The patch fixes a reusable upstream API gap. Upstream source creates random
+per-archive snapshot/cache paths and random publication paths; recording only the
+chosen snapshot group cannot identify them before publication. The smallest fix
+is caller-owned deterministic stage roots, rather than a new Silo staging
+subsystem or sweeping names. Runtime patch pins and capability checks must move
+together. See [runtime packaging](SiloUI-RUNTIME-PACKAGING.md) for fixture-only
+build and killed-load evidence; this proof does not qualify live VMs or packages.
 
 ---
 

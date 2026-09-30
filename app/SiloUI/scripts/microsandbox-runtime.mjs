@@ -127,7 +127,7 @@ async function buildPatchedExecutable({
     const createHelp = runBuildTool(cachedExecutable, ["create", "--help"])
     const execHelp = runBuildTool(cachedExecutable, ["exec", "--help"])
     const sshHelp = runBuildTool(cachedExecutable, ["ssh", "serve", "--help"])
-    if (sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && hasSiloProtocolProbes(cachedExecutable) && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--mount-owned") && createHelp.includes("--no-start") && createHelp.includes("--progress-json") && ["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => runBuildTool(cachedExecutable, ["snapshot", "create", "--help"]).includes(flag)) && ["--forked", "--name"].every(flag => runBuildTool(cachedExecutable, ["restore", "--help"]).includes(flag))) {
+    if (runBuildTool(cachedExecutable, ["snapshot", "load", "--help"]).includes("--stage-id") && sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && hasSiloProtocolProbes(cachedExecutable) && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--mount-owned") && createHelp.includes("--no-start") && createHelp.includes("--progress-json") && ["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => runBuildTool(cachedExecutable, ["snapshot", "create", "--help"]).includes(flag)) && ["--forked", "--name"].every(flag => runBuildTool(cachedExecutable, ["restore", "--help"]).includes(flag))) {
       return readFile(cachedExecutable)
     }
   }
@@ -172,6 +172,9 @@ async function buildPatchedExecutable({
   }
   if (!hasSiloProtocolProbes(built)) {
     throw new Error("The built MicroSandbox is missing one or more required Silo protocol boundaries")
+  }
+  if (!runBuildTool(built, ["snapshot", "load", "--help"]).includes("--stage-id")) {
+    throw new Error("The built MicroSandbox is missing operation-owned snapshot staging")
   }
   const bytes = await readFile(built)
   await mkdir(buildRoot, { recursive: true })
@@ -273,8 +276,9 @@ export async function stageRuntime({
     const execHelp = runBuildTool(executableTemporary, ["exec", "--help"], { env: environment })
     const sshHelp = runBuildTool(executableTemporary, ["ssh", "serve", "--help"], { env: environment })
     const snapshotHelp = runBuildTool(executableTemporary, ["snapshot", "create", "--help"])
+    const loadHelp = runBuildTool(executableTemporary, ["snapshot", "load", "--help"])
     const restoreHelp = runBuildTool(executableTemporary, ["restore", "--help"])
-    if (!["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => snapshotHelp.includes(flag)) || !restoreHelp.includes("--forked") || !restoreHelp.includes("--name") || !sshHelp.includes("--no-start") || !sshHelp.includes("--authorized-keys") || !sshHelp.includes("--exit-on-stdin-close") || !sshHelp.includes("--expected-machine-id") || !execHelp.includes("--no-start") || version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--mount-owned") || !createHelp.includes("--no-start") || !createHelp.includes("--progress-json")) {
+    if (!loadHelp.includes("--stage-id") || !["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => snapshotHelp.includes(flag)) || !restoreHelp.includes("--forked") || !restoreHelp.includes("--name") || !sshHelp.includes("--no-start") || !sshHelp.includes("--authorized-keys") || !sshHelp.includes("--exit-on-stdin-close") || !sshHelp.includes("--expected-machine-id") || !execHelp.includes("--no-start") || version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--mount-owned") || !createHelp.includes("--no-start") || !createHelp.includes("--progress-json")) {
       throw new Error("Patched MicroSandbox executable failed its version, stopped-create, or managed SSH capability check")
     }
     await rm(isolatedHome, { recursive: true, force: true })

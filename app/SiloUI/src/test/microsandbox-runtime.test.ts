@@ -25,7 +25,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 describe("bundled MicroSandbox release staging", () => {
   it("pins the runtime patch and shares retention rules with stopped sandboxes", () => {
     const inputs = JSON.parse(readFileSync("runtime-inputs.json", "utf8"))
-    expect(MICROSANDBOX_PATCHES).toHaveLength(10)
+    expect(MICROSANDBOX_PATCHES).toHaveLength(11)
     for (const patch of inputs.patches) {
       expect(sha256(readFileSync(patch.path))).toBe(patch.sha256)
     }
@@ -178,6 +178,7 @@ describe("bundled MicroSandbox release staging", () => {
     let outdatedCachedSsh = false
     let outdatedCachedAccount = false
     let outdatedCachedStdin = false
+    let outdatedCachedStaging = false
     const sourceArtifact = { url: "https://example.test/source.tar.gz", sha256: sha256(source) }
     const selected = {
       ...runtimeTargets[targetTriple],
@@ -219,9 +220,10 @@ describe("bundled MicroSandbox release staging", () => {
         if (outdatedCachedStdin && !command.includes("cargo-target") && args[0] === "--silo-secret-values-protocol") return "0"
         if (["--silo-storage-protocol", "--silo-desktop-protocol", "--silo-github-token-protocol", "--silo-github-protocol", "--silo-working-account-protocol", "--silo-secret-values-protocol"].includes(args[0])) return "1"
         if (args[0] === "--version") return `msb ${MICRO_SANDBOX_VERSION}`
+        if (outdatedCachedStaging && !command.includes("cargo-target") && args[0] === "snapshot" && args[1] === "load") return "--group"
         if (args.includes("--help")) {
           const oldFlags = "--mount-owned --no-start --progress-json"
-          if (args[0] === "snapshot") return "--from-sandbox --group --dest-dir --full --guest-flush --integrity"
+          if (args[0] === "snapshot") return "--from-sandbox --group --dest-dir --full --guest-flush --integrity --stage-id"
           if (args[0] === "restore") return "--forked --name"
           return outdatedCachedSsh && !command.includes("cargo-target") && args[0] === "ssh"
             ? oldFlags
@@ -257,11 +259,16 @@ describe("bundled MicroSandbox release staging", () => {
         expect(compilations).toBe(4)
         outdatedCachedStdin = false
 
+        outdatedCachedStaging = true
+        await stage()
+        expect(compilations).toBe(5)
+        outdatedCachedStaging = false
+
         agentd = Buffer.from("agent revision two")
         selected.agentdSha256 = sha256(agentd)
         const changed = await stage()
         expect(await readFile(changed.executablePath, "utf8")).toBe("compiled runtime:agent revision two")
-        expect(compilations).toBe(5)
+        expect(compilations).toBe(6)
         const manifest = JSON.parse(await readFile(changed.manifestPath, "utf8"))
         expect(manifest.executable.embeddedAgentdReleaseSha256).toBe(sha256(agentd))
         expect(manifest.executable.sha256).toBe(sha256(await readFile(changed.executablePath)))
