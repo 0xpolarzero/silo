@@ -1,7 +1,7 @@
-import { useState } from "react"
+import { useEffect, useEffectEvent, useState } from "react"
 import { History, ShieldCheck } from "lucide-react"
 import { ActionsMenu } from "@/components/actions-menu"
-import { ConfirmPopover, FormPopover } from "@/components/confirm-popover"
+import { ConfirmBody, ConfirmPopover, FormPopover } from "@/components/confirm-popover"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,7 +10,8 @@ import { formatAbsoluteTime, formatRelativeTime } from "@/lib/relative-time"
 import { runCheckpointOperation } from "@/features/application/model/checkpoint-operation-toast"
 import { ForkBody } from "./fork-popover"
 import type { ApplicationActions, ApplicationWorkspace } from "@/features/application/model/application-source"
-import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
+import type { CheckpointUsage, WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
+import { formatStorageBytes } from "@/features/application/model/workspace-storage"
 
 function suggestedName(now = new Date()) {
   // Always English: the UI copy is English, so the system locale must not leak month names.
@@ -20,6 +21,14 @@ function suggestedName(now = new Date()) {
 function checkpointTag(checkpoint: WorkspaceCheckpoint) {
   if (checkpoint.reason === "before-restore") return "Recovery"
   return checkpoint.scope === "full" ? "Includes memory" : "Disks only"
+}
+
+type CheckpointUsageEntry = CheckpointUsage["checkpoints"][number]
+
+function deleteDescription(checkpoint: WorkspaceCheckpoint, info: CheckpointUsageEntry | undefined) {
+  const recovery = checkpoint.reason === "before-restore" ? "This is the recovery point saved before a Restore; you can no longer undo the Restore it was saved for. " : ""
+  const freed = info?.sizeBytes != null ? `, freeing up to ${formatStorageBytes(info.sizeBytes)}` : ""
+  return `${recovery}Its saved state is removed from this computer${freed}. This can’t be undone.`
 }
 
 export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false, forkedAction, restoredAction, takenNames }: {
@@ -49,6 +58,23 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
   const isLocal = !workspace.computer
   const sandbox = workspace.machine.name
   const noticeSandbox = { id: workspace.machine.id, name: sandbox }
+
+  // Sizes and Delete availability come from the native store, so they are read on demand
+  // for checkpoints on this computer and again after every checkpoint change.
+  const [usage, setUsage] = useState<ReadonlyMap<string, CheckpointUsageEntry>>(new Map())
+  const [usageRequest, setUsageRequest] = useState(0)
+  const canReadUsage = isLocal && Boolean(actions.readCheckpointUsage)
+  const usageKey = `${workspace.machine.id}:${checkpoints.map(checkpoint => checkpoint.id).join(",")}:${running}:${usageRequest}`
+  const readUsage = useEffectEvent(() => actions.readCheckpointUsage!(workspace.machine.id))
+  useEffect(() => {
+    if (!canReadUsage || running) return
+    let current = true
+    void readUsage().then(
+      value => { if (current) setUsage(new Map(value.checkpoints.map(entry => [entry.id, entry]))) },
+      () => { if (current) setUsage(new Map()) },
+    )
+    return () => { current = false }
+  }, [canReadUsage, running, usageKey])
 
   async function run(spec: Parameters<typeof runCheckpointOperation>[0]) {
     setPending(true)
@@ -102,6 +128,21 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
     })
   }
 
+  function remove(checkpoint: WorkspaceCheckpoint) {
+    if (locked || !actions.deleteCheckpoint) return
+    void run({
+      id: `checkpoint:${target}:delete`,
+      kind: "delete",
+      target,
+      sandbox,
+      noticeSandbox,
+      title: `Deleting “${checkpoint.name}”`,
+      run: () => actions.deleteCheckpoint!(target, checkpoint.id),
+      success: { title: "Checkpoint deleted", description: checkpoint.name },
+      failureTitle: `Could not delete “${checkpoint.name}”`,
+    }).finally(() => setUsageRequest(request => request + 1))
+  }
+
   // A failure that predates this session is only noted quietly; failures of operations started here are notified.
   const staleFailure = operation?.status === "failed" && !started ? operation.error ?? operation.stage : null
 
@@ -139,6 +180,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
         <ListCard divided aria-label="Checkpoint history">
           {checkpoints.map(checkpoint => {
             const Icon = checkpoint.reason === "before-restore" ? ShieldCheck : History
+            const info = usage.get(checkpoint.id)
             return <ListRow
               key={checkpoint.id}
               data-checkpoint-name={checkpoint.name}
@@ -147,6 +189,8 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
               detail={<>
                 <time dateTime={checkpoint.createdAt} title={formatAbsoluteTime(checkpoint.createdAt)}>{formatRelativeTime(checkpoint.createdAt) || formatAbsoluteTime(checkpoint.createdAt)}</time>
                 {" · "}{checkpointTag(checkpoint)}
+                {info?.sizeBytes != null && <>{" · "}{formatStorageBytes(info.sizeBytes)}</>}
+                {info?.usedBy?.length ? <>{" · "}Used by {info.usedBy.join(", ")}</> : null}
               </>}
               actions={<div className="flex shrink-0 items-center gap-1">
                 <ConfirmPopover
@@ -163,10 +207,15 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                 <ActionsMenu
                   label={`Checkpoint actions for ${checkpoint.name}`}
                   disabled={locked}
-                  popovers={{ fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox from this checkpoint. Select Start when ready." disabled={locked} takenNames={takenNames} onFork={newName => fork(checkpoint, newName)} onClose={close} /> }}
+                  popovers={{
+                    fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox from this checkpoint. Select Start when ready." disabled={locked} takenNames={takenNames} onFork={newName => fork(checkpoint, newName)} onClose={close} />,
+                    delete: close => <ConfirmBody tone="destructive" title={`Delete “${checkpoint.name}”?`} description={deleteDescription(checkpoint, info)} confirmLabel="Delete" onConfirm={() => remove(checkpoint)} onClose={close} />,
+                  }}
                   items={[
                     ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
                     ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),
+                    // Delete runs on this computer only; a pinned checkpoint says what still needs it.
+                    ...(isLocal && actions.deleteCheckpoint ? [{ label: "Delete…", accessibleLabel: `Delete ${checkpoint.name}`, destructive: true, separatorBefore: true, disabled: locked || Boolean(info?.deleteBlocker), tooltip: info?.deleteBlocker, popover: "delete" }] : []),
                   ]}
                 />
               </div>}

@@ -55,6 +55,12 @@ export function useApplicationFixture(source: ApplicationSource) {
       : workspace))
   }, [])
 
+  const deleteCheckpoint = useCallback(async (target: string, checkpointId: string) => {
+    setWorkspaces((current) => current.map((workspace) => workspace.machine.kind === "vm" && workspace.machine.name === target
+      ? { ...workspace, checkpoints: (workspace.checkpoints ?? []).filter((point) => point.id !== checkpointId) }
+      : workspace))
+  }, [])
+
   const saveSecret = useCallback((request: SecretConfigurationRequest) => {
     // The preview retains metadata only; entered values are deliberately discarded.
     const secret: ApplicationSecret = {
@@ -69,5 +75,5 @@ export function useApplicationFixture(source: ApplicationSource) {
       : [...current, secret])
   }, [])
 
-  return { source: { ...source, workspaces, secrets }, saveSecret, removeSecret, onRestoreComplete, onRestartRequired, createCheckpoint, forkCheckpoint, restoreCheckpoint }
+  return { source: { ...source, workspaces, secrets }, saveSecret, removeSecret, onRestoreComplete, onRestartRequired, createCheckpoint, forkCheckpoint, restoreCheckpoint, deleteCheckpoint }
 }

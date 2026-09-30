@@ -1,6 +1,6 @@
 import type { OperationQueue } from "./operation-queue"
 import type { WorkspaceStorageState } from "./workspace-storage"
-import type { PendingCheckpointRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
+import type { CheckpointUsage, PendingCheckpointRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
 import type { LogLoader, LogQuery } from "./logs"
 import type { RemoteComputer, RemoteManagement, WorkspaceComputer } from "./remote-computers"
 import type { DirectoryLoader } from "./directory-store"
@@ -278,6 +278,10 @@ export interface ApplicationActions {
   createCheckpoint?: (workspace: string, name: string) => Promise<void>
   forkCheckpoint?: (workspace: string, checkpointId: string | null, newName: string) => Promise<void>
   restoreCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
+  /** Delete one checkpoint of a sandbox on this computer. */
+  deleteCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
+  /** Checkpoint sizes and Delete availability for a sandbox on this computer, by its ID. */
+  readCheckpointUsage?: (workspaceId: string) => Promise<CheckpointUsage>
   readWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   reclaimWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   refreshRepositories?: () => Promise<void>

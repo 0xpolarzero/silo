@@ -60,6 +60,8 @@
     "allow-create-checkpoint",
     "allow-fork-checkpoint",
     "allow-restore-checkpoint",
+    "allow-delete-checkpoint",
+    "allow-read-checkpoint-usage",
     "allow-remote-checkpoint-action",
     "allow-query-sandbox-logs",
     "allow-export-workspace-logs",

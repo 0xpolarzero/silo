@@ -80,6 +80,7 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
       createCheckpoint: fixture.createCheckpoint,
       forkCheckpoint: fixture.forkCheckpoint,
       restoreCheckpoint: fixture.restoreCheckpoint,
+      deleteCheckpoint: fixture.deleteCheckpoint,
       listWorkspaceDirectory,
       queryLogs,
       ...actions,

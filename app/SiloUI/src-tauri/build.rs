@@ -95,6 +95,8 @@ fn main() {
             "create_checkpoint",
             "fork_checkpoint",
             "restore_checkpoint",
+            "delete_checkpoint",
+            "read_checkpoint_usage",
             "remote_checkpoint_action",
             "list_workspace_directory",
             "remote_ssh_access_state",

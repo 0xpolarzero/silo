@@ -1,7 +1,9 @@
 //! Silo's durable names and lifecycle intent for upstream MicroSandbox snapshots.
 //! Snapshot data and its reference graph remain owned by MicroSandbox.
 use super::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+mod native;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -599,6 +601,10 @@ fn capture_with(
             if let Err(failure) =
                 snapshot_ready(runner, paths, &snapshot_group, &checkpoint_id, scope)
             {
+                // An unverified member is not kept as a checkpoint (E-03).
+                if discard_failed_capture(runner, paths, id, (snapshot_group.clone(), checkpoint_id.clone())) {
+                    record.inflight_checkpoint = None;
+                }
                 record.checkpoint_operation = Some(Operation {
                     kind: "capture".into(),
                     status: "failed".into(),
@@ -613,6 +619,12 @@ fn capture_with(
             save(paths, id, &record)
         }
         Err(failure) => {
+            // A failed or cancelled capture may still have published its member. Remove it
+            // unless something builds on it; otherwise the in-flight entry keeps it
+            // reachable and the next capture reconciles it (E-03, E-10).
+            if discard_failed_capture(runner, paths, id, (snapshot_group.clone(), checkpoint_id.clone())) {
+                record.inflight_checkpoint = None;
+            }
             record.checkpoint_operation = Some(Operation {
                 kind: "capture".into(),
                 status: "failed".into(),
@@ -1492,7 +1504,16 @@ fn abandon_capture(
             .run(paths, &["resume".into(), vm_name.into()], MUTATION_TIMEOUT)
             .is_ok()
     {
-        record.restore_journal = None;
+        // The recovery point was never recorded; remove it if the capture published it.
+        if let Some(journal) = record.restore_journal.take() {
+            let group = record.snapshot_group.clone().unwrap_or_else(|| vm_name.to_owned());
+            discard_failed_capture(
+                runner,
+                paths,
+                workspace_id,
+                (group, journal.recovery_checkpoint.native_id().to_owned()),
+            );
+        }
     }
     record.checkpoint_operation = Some(Operation {
         kind: "restore".into(),
@@ -1843,6 +1864,410 @@ pub async fn restore_checkpoint(
     })
     .await
     .map_err(|_| "Checkpoint Restore worker failed.".to_string())?
+}
+
+/// Everything a deletion decision reads, gathered once.
+struct Survey {
+    uses: HashMap<native::Key, Vec<native::Use>>,
+    inventory: Vec<native::Member>,
+    positions: HashMap<String, String>,
+}
+
+fn survey(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Survey, RuntimeError> {
+    let metadata = read_metadata(&paths.metadata)?;
+    let uses = native::uses(paths, &metadata)?;
+    let inventory = native::inventory(runner, paths)?;
+    let positions = native::lineage_positions(runner, paths)?;
+    Ok(Survey { uses, inventory, positions })
+}
+
+/// What deleting one checkpoint entry does to native data.
+enum Deletion {
+    /// Only the entry goes: another entry of the same sandbox shares its member, or the
+    /// member is already gone.
+    EntryOnly,
+    /// The entry goes and this member is removed.
+    Remove(native::Member),
+}
+
+fn quoted_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, second] => format!("{first} and {second}"),
+        [first, rest @ ..] => format!("{first}, {}", quoted_list(rest)),
+    }
+}
+
+fn use_description(sandbox: &str, purpose: &native::Purpose) -> String {
+    match purpose {
+        native::Purpose::Checkpoint(_, label) => format!("{sandbox}’s checkpoint “{label}” shares the same saved state."),
+        native::Purpose::PendingStart => format!("{sandbox} starts from it the next time it starts."),
+        native::Purpose::Capturing | native::Purpose::RestoreRecovery => {
+            format!("{sandbox} is using it for an unfinished operation.")
+        }
+    }
+}
+
+/// The reason a checkpoint cannot be deleted, in Silo's words.
+fn blocker_message(survey: &Survey, workspace_id: &str, sandbox: &str, blocker: &native::Blocker) -> String {
+    match blocker {
+        native::Blocker::Used(uses) => {
+            let mut names: Vec<String> = uses.iter().map(|used| used.sandbox.clone()).collect();
+            names.sort();
+            names.dedup();
+            format!("Used by {}. {}", quoted_list(&names), use_description(&uses[0].sandbox, &uses[0].purpose))
+        }
+        native::Blocker::Lineage(owner) if owner == sandbox => format!(
+            "{sandbox}’s next checkpoint and export build on this one, so it can’t be deleted while it is the latest state {sandbox} builds on."
+        ),
+        native::Blocker::Lineage(owner) => format!(
+            "Used by {owner}. {owner} was started from this checkpoint and still builds on it."
+        ),
+        native::Blocker::Children(children) => {
+            let mut own = Vec::new();
+            let mut others = Vec::new();
+            for child in children {
+                let Some(key) = child.key() else { continue };
+                for used in survey.uses.get(&key).into_iter().flatten() {
+                    if let native::Purpose::Checkpoint(_, label) = &used.purpose {
+                        if used.workspace_id == workspace_id {
+                            own.push(format!("“{label}”"));
+                        } else {
+                            others.push(format!("{}’s checkpoint “{label}”", used.sandbox));
+                        }
+                    }
+                }
+            }
+            own.sort();
+            own.dedup();
+            others.sort();
+            others.dedup();
+            if !own.is_empty() {
+                format!("{} was saved after this checkpoint and builds on it. Delete {} first.", quoted_list(&own), if own.len() == 1 { "it" } else { "them" })
+            } else if !others.is_empty() {
+                format!("{} builds on this checkpoint. Delete {} first.", quoted_list(&others), if others.len() == 1 { "it" } else { "them" })
+            } else {
+                "A later saved state, such as an export, builds on this checkpoint, so it can’t be deleted yet.".into()
+            }
+        }
+    }
+}
+
+/// Decide what deleting `checkpoint` from `record` would do, or why it is not allowed.
+fn deletion(
+    survey: &Survey,
+    workspace_id: &str,
+    sandbox: &str,
+    record: &Record,
+    checkpoint: &Checkpoint,
+) -> Result<Deletion, String> {
+    if record.restore_journal.is_some() {
+        return Err("Finish or abandon the unfinished Restore before deleting a checkpoint.".into());
+    }
+    let group = record.snapshot_group.clone().unwrap_or_else(|| sandbox.to_owned());
+    let key: native::Key = (group, checkpoint.native_id().to_owned());
+    if record
+        .pending_checkpoint_restore
+        .as_ref()
+        .is_some_and(|pending| pending.source_workspace == key.0 && pending.checkpoint_id == key.1)
+    {
+        return Err(format!("{sandbox} starts from this checkpoint the next time it starts. Start {sandbox} first."));
+    }
+    let this_entry = native::Purpose::Checkpoint(checkpoint.id.clone(), checkpoint.name.clone());
+    let others: Vec<native::Use> = survey
+        .uses
+        .get(&key)
+        .into_iter()
+        .flatten()
+        .filter(|used| !(used.workspace_id == workspace_id && used.purpose == this_entry))
+        .cloned()
+        .collect();
+    let elsewhere: Vec<native::Use> = others.iter().filter(|used| used.workspace_id != workspace_id).cloned().collect();
+    if !elsewhere.is_empty() {
+        return Err(blocker_message(survey, workspace_id, sandbox, &native::Blocker::Used(elsewhere)));
+    }
+    if !others.is_empty() {
+        return Ok(Deletion::EntryOnly);
+    }
+    let Some(member) = survey.inventory.iter().find(|member| member.key().as_ref() == Some(&key)) else {
+        return Ok(Deletion::EntryOnly);
+    };
+    let mut uses = survey.uses.clone();
+    uses.remove(&key);
+    let plan = native::plan(&survey.inventory, &HashSet::from([key]), &uses, &survey.positions);
+    if let Some((_, blocker)) = plan.kept.first() {
+        return Err(blocker_message(survey, workspace_id, sandbox, blocker));
+    }
+    Ok(Deletion::Remove(member.clone()))
+}
+
+/// Delete one checkpoint: remove its native member unless something still needs it,
+/// then drop the entry. Never passes `--force`; MicroSandbox's own guards stay in force.
+fn delete_checkpoint_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    checkpoint_id: &str,
+) -> Result<(), RuntimeError> {
+    let machine = machine(paths, workspace_id)?;
+    let _ = ensure_snapshot_group(paths, workspace_id, machine.name())?;
+    let mut record = load(paths, workspace_id)?;
+    let checkpoint = record
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.id == checkpoint_id)
+        .ok_or_else(|| RuntimeError::Invalid("The selected checkpoint no longer exists.".into()))?
+        .clone();
+    let survey = survey(runner, paths)?;
+    match deletion(&survey, workspace_id, machine.name(), &record, &checkpoint).map_err(RuntimeError::Invalid)? {
+        Deletion::EntryOnly => {}
+        Deletion::Remove(member) => {
+            if let Some((_, failure)) = native::execute(runner, paths, &survey.inventory, &[member]).into_iter().next() {
+                return Err(error(&format!(
+                    "The checkpoint could not be deleted; it was kept. {}",
+                    safe_activity_error(&failure)
+                )));
+            }
+        }
+    }
+    record.checkpoints.retain(|entry| entry.id != checkpoint_id);
+    if record.checkpoint_operation.as_ref().is_some_and(|operation| operation.status == "failed") {
+        record.checkpoint_operation = None;
+    }
+    save(paths, workspace_id, &record)
+}
+
+#[tauri::command]
+pub async fn delete_checkpoint(
+    app: AppHandle,
+    workspace_id: String,
+    checkpoint_id: String,
+) -> Result<ApplicationSource, String> {
+    crate::runtime_migration::ensure_ready(&app)?;
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&worker_app)?;
+        // Deletion changes only this VM's checkpoint record and snapshot members; exports and
+        // forks that could read them hold a conflicting lane.
+        let vm_name = machine(&paths, &workspace_id)
+            .map_err(|error| error.to_string())?
+            .name()
+            .to_owned();
+        let guard = OPERATIONS
+            .kind(super::operation_gate::OperationKind::CheckpointDelete)
+            .vm(&workspace_id, &vm_name, "Deleting checkpoint")
+            .map_err(|error| error.to_string())?;
+        guard.expect_within(std::time::Duration::from_secs(5 * 60));
+        let _guard = guard;
+        shutdown::ensure_accepting_operations()?;
+        let result = delete_checkpoint_with(&ProcessRunner, &paths, &workspace_id, &checkpoint_id)
+            .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+        let _ = worker_app.emit("silo://application-state-changed", ());
+        result.map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Checkpoint delete worker failed.".to_string())?
+}
+
+/// Per-checkpoint storage and whether Delete is possible, for the Checkpoints panel.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointUsage {
+    /// Host allocation of this sandbox's checkpoints, each member counted once; `None`
+    /// when any of them could not be measured.
+    total_bytes: Option<u64>,
+    checkpoints: Vec<CheckpointUsageEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointUsageEntry {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size_bytes: Option<u64>,
+    /// Other sandboxes that depend on this checkpoint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    used_by: Vec<String>,
+    /// Why Delete is unavailable; absent when the checkpoint can be deleted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delete_blocker: Option<String>,
+}
+
+fn usage_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+) -> Result<CheckpointUsage, RuntimeError> {
+    let machine = machine(paths, workspace_id)?;
+    let record = load(paths, workspace_id)?;
+    let survey = survey(runner, paths)?;
+    let group = record.snapshot_group.clone().unwrap_or_else(|| machine.name().to_owned());
+    let mut counted = HashSet::new();
+    let mut total = Some(0u64);
+    let mut checkpoints = Vec::with_capacity(record.checkpoints.len());
+    for checkpoint in &record.checkpoints {
+        let key: native::Key = (group.clone(), checkpoint.native_id().to_owned());
+        let member = survey.inventory.iter().find(|member| member.key().as_ref() == Some(&key));
+        let size_bytes = member.and_then(|member| native::artifact_bytes(paths, member));
+        if counted.insert(key.clone()) {
+            total = match (total, member, size_bytes) {
+                (Some(sum), Some(_), Some(size)) => Some(sum.saturating_add(size)),
+                (sum, None, _) => sum,
+                _ => None,
+            };
+        }
+        let mut used_by: Vec<String> = survey
+            .uses
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter(|used| used.workspace_id != workspace_id)
+            .map(|used| used.sandbox.clone())
+            .chain(
+                member
+                    .and_then(|member| survey.positions.get(&member.snapshot_id))
+                    .filter(|owner| owner.as_str() != machine.name())
+                    .cloned(),
+            )
+            .collect();
+        used_by.sort();
+        used_by.dedup();
+        checkpoints.push(CheckpointUsageEntry {
+            id: checkpoint.id.clone(),
+            size_bytes,
+            used_by,
+            delete_blocker: deletion(&survey, workspace_id, machine.name(), &record, checkpoint).err(),
+        });
+    }
+    Ok(CheckpointUsage { total_bytes: total, checkpoints })
+}
+
+#[tauri::command]
+pub async fn read_checkpoint_usage(app: AppHandle, workspace_id: String) -> Result<CheckpointUsage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        usage_with(&ProcessRunner, &paths, &workspace_id).map_err(|error| safe_activity_error(&error))
+    })
+    .await
+    .map_err(|_| "Checkpoint usage worker failed.".to_string())?
+}
+
+/// Host allocation of one sandbox's checkpoints and how many it has, for the Storage tab.
+/// Only lists snapshots: no sandbox is inspected. `None` bytes when not measurable.
+pub(super) fn storage_totals(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    sandbox: &str,
+) -> (Option<u64>, usize) {
+    let Ok(record) = load(paths, workspace_id) else { return (None, 0) };
+    let count = record.checkpoints.len();
+    if count == 0 {
+        return (Some(0), 0);
+    }
+    let Ok(inventory) = native::inventory(runner, paths) else { return (None, count) };
+    let keys: HashSet<native::Key> = native::record_uses(&record, sandbox)
+        .into_iter()
+        .filter(|(_, purpose)| matches!(purpose, native::Purpose::Checkpoint(..)))
+        .map(|(key, _)| key)
+        .collect();
+    let mut total = 0u64;
+    for member in inventory.iter().filter(|member| member.key().is_some_and(|key| keys.contains(&key))) {
+        let Some(size) = native::artifact_bytes(paths, member) else { return (None, count) };
+        total = total.saturating_add(size);
+    }
+    (Some(total), count)
+}
+
+/// After a sandbox is deleted, remove the native members only it used, plus unreferenced
+/// Silo members of its snapshot groups. Members a fork or another sandbox still needs are
+/// kept (a later sweep removes them once nothing needs them). Best effort: the sandbox is
+/// already gone, so a failure here must not fail the deletion.
+pub(crate) fn remove_deleted_snapshots(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    sandbox: &str,
+) {
+    let result = (|| -> Result<usize, RuntimeError> {
+        let record = load(paths, workspace_id)?;
+        let referenced: Vec<native::Key> = native::record_uses(&record, sandbox).into_iter().map(|(key, _)| key).collect();
+        if referenced.is_empty() {
+            return Ok(0);
+        }
+        let survey = survey(runner, paths)?;
+        let groups: HashSet<&str> = referenced.iter().map(|(group, _)| group.as_str()).collect();
+        let mut candidates: HashSet<native::Key> = referenced.iter().cloned().collect();
+        for member in &survey.inventory {
+            if let Some(key) = member.key() {
+                if groups.contains(key.0.as_str()) && native::silo_member(&key) && !survey.uses.contains_key(&key) {
+                    candidates.insert(key);
+                }
+            }
+        }
+        let plan = native::plan(&survey.inventory, &candidates, &survey.uses, &survey.positions);
+        let failures = native::execute(runner, paths, &survey.inventory, &plan.remove);
+        for (member, failure) in &failures {
+            eprintln!("Kept checkpoint data {:?} of deleted sandbox {sandbox}: {failure}", member.key());
+        }
+        Ok(plan.remove.len() - failures.len())
+    })();
+    if let Err(failure) = result {
+        eprintln!("Kept checkpoint data of deleted sandbox {sandbox}: {failure}");
+    }
+}
+
+/// Remove the member a failed capture may have published, unless something already
+/// builds on it. Returns true when it is gone. Runs even after a cancel.
+fn discard_failed_capture(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    key: native::Key,
+) -> bool {
+    super::operation_gate::uncancellable(|| {
+        let Ok(inventory) = native::inventory(runner, paths) else { return false };
+        if !inventory.iter().any(|member| member.key().as_ref() == Some(&key)) {
+            return true;
+        }
+        let Ok(mut survey) = survey(runner, paths) else { return false };
+        // This capture's own in-progress reference is the one being discarded.
+        if let Some(uses) = survey.uses.get_mut(&key) {
+            uses.retain(|used| {
+                !(used.workspace_id == workspace_id
+                    && matches!(used.purpose, native::Purpose::Capturing | native::Purpose::RestoreRecovery))
+            });
+        }
+        let plan = native::plan(&survey.inventory, &HashSet::from([key]), &survey.uses, &survey.positions);
+        !plan.remove.is_empty()
+            && plan.kept.is_empty()
+            && native::execute(runner, paths, &survey.inventory, &plan.remove).is_empty()
+    })
+}
+
+const ORPHAN_AGE: u64 = 24 * 60 * 60;
+
+/// Remove Silo-created members no sandbox references any longer: data of deleted
+/// sandboxes, failed captures and failed imports. Only members older than a day, so an
+/// operation interrupted at the last launch is never raced; never a checkpoint a
+/// sandbox still lists. Returns how many were removed.
+pub(crate) fn sweep_orphans(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<usize, RuntimeError> {
+    let survey = survey(runner, paths)?;
+    let now = SystemTime::now();
+    let candidates: HashSet<native::Key> = survey
+        .inventory
+        .iter()
+        .filter(|member| native::age_seconds(member, now).is_some_and(|age| age >= ORPHAN_AGE))
+        .filter_map(native::Member::key)
+        .filter(|key| native::silo_member(key) && !survey.uses.contains_key(key))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    let plan = native::plan(&survey.inventory, &candidates, &survey.uses, &survey.positions);
+    let failures = native::execute(runner, paths, &survey.inventory, &plan.remove);
+    Ok(plan.remove.len() - failures.len())
 }
 
 #[cfg(test)]
@@ -3425,5 +3850,317 @@ mod tests {
         assert_eq!(last.1, None, "the inventory write holds the computer-wide lane");
         assert!(!last.2);
         assert!(read_metadata(&paths.metadata).unwrap().machines.iter().any(|machine| machine.name() == "branch"));
+    }
+
+    /// A fake native store that enforces MicroSandbox's children and head guards.
+    struct Store {
+        members: Mutex<Vec<(String, String, String, Option<String>)>>,
+        heads: Mutex<HashMap<String, String>>,
+        sandboxes: Vec<(&'static str, Option<&'static str>)>,
+        fail_create_after_publish: bool,
+        fail_remove: bool,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+    impl Store {
+        fn new(sandboxes: Vec<(&'static str, Option<&'static str>)>) -> Self {
+            Self {
+                members: Mutex::new(Vec::new()),
+                heads: Mutex::new(HashMap::new()),
+                sandboxes,
+                fail_create_after_publish: false,
+                fail_remove: false,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        fn with(self, group: &str, name: &str, id: &str, parent: Option<&str>) -> Self {
+            self.members.lock().unwrap().push((group.into(), name.into(), id.into(), parent.map(str::to_owned)));
+            self.heads.lock().unwrap().insert(group.into(), id.into());
+            self
+        }
+        fn names(&self) -> Vec<String> {
+            self.members.lock().unwrap().iter().map(|member| member.1.clone()).collect()
+        }
+        fn removals(&self) -> Vec<String> {
+            self.calls.lock().unwrap().iter().filter(|call| call[0] == "snapshot" && call[1] == "remove").map(|call| call[2].clone()).collect()
+        }
+    }
+    impl RuntimeRunner for Store {
+        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            let ok = |stdout: String| Ok(CommandOutput { stdout, stderr: String::new() });
+            match (args[0].as_str(), args.get(1).map(String::as_str)) {
+                ("list", _) => ok(serde_json::Value::Array(self.sandboxes.iter().map(|(name, _)| serde_json::json!({"name": name})).collect()).to_string()),
+                ("inspect", Some(name)) => {
+                    let parent = self.sandboxes.iter().find(|(listed, _)| listed == &name).and_then(|(_, parent)| *parent);
+                    ok(serde_json::json!({"name": name, "status": "Running", "config": {
+                        "labels": {"silo.managed": "true", "silo.machine-id": ID},
+                        "mounts": [{"guest": "/workspace", "type": "Owned", "storage": {"kind": "disk", "capacity_mib": 1024}}],
+                        "network": {"policy": {"default_egress": "deny", "default_ingress": "allow", "rules": []}},
+                        "snapshot_parent": parent,
+                    }}).to_string())
+                }
+                ("snapshot", Some("list")) => ok(serde_json::Value::Array(self.members.lock().unwrap().iter().map(|(group, name, id, parent)| serde_json::json!({
+                    "snapshot_id": id, "name": name, "group": group, "parent_digest": parent,
+                    "scope": "full", "availability": "ready", "created_at": "2026-01-01T00:00:00+00:00",
+                })).collect()).to_string()),
+                ("snapshot", Some("head")) => {
+                    let selector = &args[2];
+                    if let Some((group, id)) = selector.split_once(':') {
+                        self.heads.lock().unwrap().insert(group.into(), id.into());
+                    }
+                    let group = selector.split(':').next().unwrap();
+                    ok(serde_json::json!({"group": group, "head": self.heads.lock().unwrap().get(group)}).to_string())
+                }
+                ("snapshot", Some("remove")) => {
+                    let (group, name) = args[2].split_once(':').unwrap();
+                    let mut members = self.members.lock().unwrap();
+                    let index = members.iter().position(|member| member.0 == group && member.1 == name)
+                        .ok_or_else(|| RuntimeError::Unavailable("snapshot not found".into()))?;
+                    let id = members[index].2.clone();
+                    if self.fail_remove {
+                        return Err(RuntimeError::Unavailable("permission denied".into()));
+                    }
+                    if members.iter().any(|member| member.3.as_deref() == Some(id.as_str())) {
+                        return Err(RuntimeError::Unavailable("snapshot has indexed children; pass --force".into()));
+                    }
+                    let mut heads = self.heads.lock().unwrap();
+                    if heads.get(group) == Some(&id) {
+                        if members.iter().filter(|member| member.0 == group).count() > 1 {
+                            return Err(RuntimeError::Unavailable("cannot remove current head".into()));
+                        }
+                        heads.remove(group);
+                    }
+                    members.remove(index);
+                    ok(String::new())
+                }
+                ("snapshot", Some("create")) => {
+                    let group = args[args.iter().position(|arg| arg == "--group").unwrap() + 1].clone();
+                    let id = format!("snap_{:032x}", self.members.lock().unwrap().len() + 100);
+                    self.members.lock().unwrap().push((group.clone(), args[2].clone(), id.clone(), None));
+                    self.heads.lock().unwrap().entry(group).or_insert(id);
+                    if self.fail_create_after_publish {
+                        return Err(RuntimeError::Cancelled { operation: "snapshot create".into() });
+                    }
+                    ok(String::new())
+                }
+                _ => ok(String::new()),
+            }
+        }
+    }
+
+    const A: &str = "c000000000000000000000000000000";
+    const B: &str = "c111111111111111111111111111111";
+    const C: &str = "c222222222222222222222222222222";
+    const FORK_ID: &str = "00000000-0000-4000-8000-000000000009";
+
+    fn entry(id: &str, name: &str, reason: &str) -> Checkpoint {
+        Checkpoint { id: id.into(), native_id: None, name: name.into(), created_at: 1, scope: "full".into(), reason: reason.into() }
+    }
+
+    /// `dev` with checkpoints; `fork` adds a second configured sandbox and its record.
+    fn delete_fixture(directory: &tempfile::TempDir, entries: Vec<Checkpoint>, fork: Option<Record>) -> RuntimePaths {
+        let paths = paths(directory);
+        let mut machines = vec![machine()];
+        if let Some(record) = &fork {
+            let MachineConfiguration::Vm { cpus, max_cpus, memory_gib, max_memory_gib, workspace_storage_gib, runtime_storage_gib, desktop, .. } = machine() else { unreachable!() };
+            machines.push(MachineConfiguration::Vm { id: FORK_ID.into(), name: "branch".into(), cpus, max_cpus, memory_gib, max_memory_gib, workspace_storage_gib, runtime_storage_gib, desktop });
+            save(&paths, FORK_ID, record).unwrap();
+        }
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines }).unwrap();
+        let mut record = Record::default();
+        record.snapshot_group = Some("dev".into());
+        record.checkpoints = entries;
+        save(&paths, ID, &record).unwrap();
+        paths
+    }
+
+    fn cursor(paths: &RuntimePaths, sandbox: &str, snapshot: &str) {
+        let directory = paths.home.join("sandboxes").join(sandbox);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("snapshot-lineage.json"), serde_json::json!({"sandbox_id": 7, "snapshot_id": snapshot}).to_string()).unwrap();
+    }
+
+    #[test]
+    fn removal_plan_goes_leaves_first_and_keeps_used_positioned_and_parent_members() {
+        let member = |name: &str, id: &str, parent: Option<&str>| native::Member {
+            snapshot_id: id.into(), name: Some(name.into()), group: Some("dev".into()),
+            parent_digest: parent.map(str::to_owned), ..Default::default()
+        };
+        let inventory = vec![member(A, "snap_a", None), member(B, "snap_b", Some("snap_a")), member(C, "snap_c", Some("snap_b"))];
+        let all: HashSet<native::Key> = inventory.iter().filter_map(native::Member::key).collect();
+        let order = |plan: native::Plan| plan.remove.into_iter().map(|member| member.snapshot_id).collect::<Vec<_>>();
+        assert_eq!(order(native::plan(&inventory, &all, &HashMap::new(), &HashMap::new())), ["snap_c", "snap_b", "snap_a"]);
+
+        let positioned = native::plan(&inventory, &all, &HashMap::new(), &HashMap::from([("snap_c".to_owned(), "dev".to_owned())]));
+        assert!(positioned.remove.is_empty());
+        assert_eq!(positioned.kept.len(), 3);
+
+        let used = HashMap::from([(("dev".to_owned(), B.to_owned()), vec![native::Use { workspace_id: FORK_ID.into(), sandbox: "branch".into(), purpose: native::Purpose::PendingStart }])]);
+        let plan = native::plan(&inventory, &all, &used, &HashMap::new());
+        assert_eq!(order(plan), ["snap_c"]);
+    }
+
+    #[test]
+    fn deleting_a_recovery_checkpoint_moves_the_head_removes_its_member_and_drops_the_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(B, "Before restore", "before-restore"), entry(A, "Selected", "manual")], None);
+        // dev was restored from A; B was its previous instance's last capture and the group head.
+        let store = Store::new(vec![("dev", Some("snap_a"))]).with("dev", A, "snap_a", None).with("dev", B, "snap_b", Some("snap_a"));
+        delete_checkpoint_with(&store, &paths, ID, B).unwrap();
+        assert_eq!(store.names(), [A]);
+        let calls = store.calls.lock().unwrap().clone();
+        let moved = calls.iter().position(|call| call[1] == "head" && call[2] == "dev:snap_a").expect("the head moved first");
+        let removed = calls.iter().position(|call| call[1] == "remove").unwrap();
+        assert!(moved < removed);
+        assert!(!calls.iter().any(|call| call.iter().any(|arg| arg == "--force")));
+        let record = load(&paths, ID).unwrap();
+        assert_eq!(record.checkpoints.iter().map(|checkpoint| checkpoint.id.as_str()).collect::<Vec<_>>(), [A]);
+
+        // The checkpoint dev was restored from is what its next capture builds on.
+        let failure = delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string();
+        assert!(failure.contains("dev’s next checkpoint and export build on this one"), "{failure}");
+        assert_eq!(store.names(), [A]);
+        assert_eq!(load(&paths, ID).unwrap().checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn checkpoints_that_forks_later_checkpoints_or_pending_starts_depend_on_are_refused() {
+        // A later checkpoint builds on this one.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(B, "After deploy", "manual"), entry(A, "Before deploy", "manual")], None);
+        let store = Store::new(vec![("dev", None)]).with("dev", A, "snap_a", None).with("dev", B, "snap_b", Some("snap_a"));
+        cursor(&paths, "dev", "snap_b");
+        let failure = delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string();
+        assert!(failure.contains("“After deploy” was saved after this checkpoint and builds on it. Delete it first."), "{failure}");
+        // The latest capture is what dev's next capture names as its parent.
+        let failure = delete_checkpoint_with(&store, &paths, ID, B).unwrap_err().to_string();
+        assert!(failure.contains("next checkpoint and export build on this one"), "{failure}");
+        assert!(store.removals().is_empty());
+
+        // A fork that has not started yet starts from it.
+        let directory = tempfile::tempdir().unwrap();
+        let mut fork = Record::default();
+        fork.snapshot_group = Some("dev".into());
+        fork.pending_checkpoint_restore = Some(PendingRestore { checkpoint_id: A.into(), source_workspace: "dev".into(), state: "full".into() });
+        let paths = delete_fixture(&directory, vec![entry(A, "Before deploy", "manual")], Some(fork));
+        let store = Store::new(vec![]).with("dev", A, "snap_a", None);
+        let failure = delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string();
+        assert_eq!(failure, "Used by branch. branch starts from it the next time it starts.");
+
+        // A started fork still builds on the checkpoint it was restored from.
+        let directory = tempfile::tempdir().unwrap();
+        let mut started = Record::default();
+        started.snapshot_group = Some("dev".into());
+        let paths = delete_fixture(&directory, vec![entry(A, "Before deploy", "manual")], Some(started));
+        let store = Store::new(vec![("branch", Some("snap_a"))]).with("dev", A, "snap_a", None);
+        let failure = delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string();
+        assert!(failure.starts_with("Used by branch. branch was started from this checkpoint"), "{failure}");
+
+        // This sandbox restarts from it, or a Restore is unfinished.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(A, "Before deploy", "manual")], None);
+        let mut record = load(&paths, ID).unwrap();
+        record.pending_checkpoint_restore = Some(PendingRestore { checkpoint_id: A.into(), source_workspace: "dev".into(), state: "full".into() });
+        save(&paths, ID, &record).unwrap();
+        let store = Store::new(vec![]).with("dev", A, "snap_a", None);
+        assert!(delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string().contains("dev starts from this checkpoint the next time it starts"));
+        assert!(store.removals().is_empty());
+        assert_eq!(load(&paths, ID).unwrap().checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_native_removal_keeps_the_checkpoint_and_says_why() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(B, "Before restore", "before-restore"), entry(A, "Selected", "manual")], None);
+        let mut store = Store::new(vec![("dev", Some("snap_a"))]).with("dev", A, "snap_a", None).with("dev", B, "snap_b", None);
+        store.fail_remove = true;
+        let failure = delete_checkpoint_with(&store, &paths, ID, B).unwrap_err().to_string();
+        assert!(failure.starts_with("The checkpoint could not be deleted; it was kept."), "{failure}");
+        assert_eq!(load(&paths, ID).unwrap().checkpoints.len(), 2);
+    }
+
+    #[test]
+    fn a_shared_or_missing_member_drops_only_the_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut alias = entry(C, "Alias", "manual");
+        alias.native_id = Some(A.into());
+        let paths = delete_fixture(&directory, vec![alias, entry(A, "Before deploy", "manual"), entry(B, "Gone", "manual")], None);
+        let store = Store::new(vec![("dev", None)]).with("dev", A, "snap_a", None);
+        delete_checkpoint_with(&store, &paths, ID, C).unwrap();
+        delete_checkpoint_with(&store, &paths, ID, B).unwrap();
+        assert!(store.removals().is_empty());
+        assert_eq!(store.names(), [A]);
+        assert_eq!(load(&paths, ID).unwrap().checkpoints.iter().map(|checkpoint| checkpoint.id.as_str()).collect::<Vec<_>>(), [A]);
+    }
+
+    #[test]
+    fn checkpoint_usage_reports_sizes_users_and_blockers() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut started = Record::default();
+        started.snapshot_group = Some("dev".into());
+        let paths = delete_fixture(&directory, vec![entry(B, "Before restore", "before-restore"), entry(A, "Selected", "manual")], Some(started));
+        let store = Store::new(vec![("dev", Some("snap_a")), ("branch", Some("snap_a"))]).with("dev", A, "snap_a", None).with("dev", B, "snap_b", None);
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        let json = serde_json::to_value(&usage).unwrap();
+        let find = |id: &str| json["checkpoints"].as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
+        assert!(find(B).get("deleteBlocker").is_none());
+        assert_eq!(find(A)["usedBy"], serde_json::json!(["branch"]));
+        assert!(find(A)["deleteBlocker"].as_str().unwrap().starts_with("Used by branch."));
+    }
+
+    #[test]
+    fn deleting_a_sandbox_removes_members_only_it_used_and_keeps_what_a_fork_builds_on() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut started = Record::default();
+        started.snapshot_group = Some("dev".into());
+        let paths = delete_fixture(&directory, vec![entry(B, "Later", "manual"), entry(A, "Base", "manual")], Some(started));
+        // dev is deleted: the inventory no longer lists it; its record is removed afterwards.
+        let metadata = read_metadata(&paths.metadata).unwrap();
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: metadata.machines.into_iter().filter(|machine| machine.id() != ID).collect() }).unwrap();
+        let store = Store::new(vec![("branch", Some("snap_a"))])
+            .with("dev", A, "snap_a", None)
+            .with("dev", B, "snap_b", Some("snap_a"))
+            .with("dev", "silo-backup-0-1-2", "snap_x", Some("snap_b"))
+            .with("elsewhere", C, "snap_c", None);
+        remove_deleted_snapshots(&store, &paths, ID, "dev");
+        assert_eq!(store.removals(), ["dev:silo-backup-0-1-2", "dev:c111111111111111111111111111111"]);
+        assert_eq!(store.names(), [A, C]);
+    }
+
+    #[test]
+    fn a_failed_capture_removes_its_published_member_unless_the_sandbox_builds_on_it() {
+        for builds_on_it in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = delete_fixture(&directory, Vec::new(), None);
+            let mut store = Store::new(vec![("dev", None)]);
+            store.fail_create_after_publish = true;
+            if builds_on_it {
+                cursor(&paths, "dev", "snap_00000000000000000000000000000064");
+            }
+            capture_with(&store, &paths, ID, "Interrupted", "manual").unwrap_err();
+            let record = load(&paths, ID).unwrap();
+            if builds_on_it {
+                assert_eq!(store.names().len(), 1, "a member dev builds on is kept");
+                assert!(record.inflight_checkpoint.is_some(), "and stays reachable for reconciliation");
+            } else {
+                assert!(store.names().is_empty());
+                assert!(record.inflight_checkpoint.is_none());
+            }
+            assert_eq!(record.checkpoint_operation.unwrap().status, "failed");
+        }
+    }
+
+    #[test]
+    fn the_sweep_removes_only_old_unreferenced_silo_members() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(A, "Kept", "manual")], None);
+        let store = Store::new(vec![("dev", None)])
+            .with("dev", A, "snap_a", None)
+            // Silo names captures `c` + 31 hex digits.
+            .with("gone", "c1111111111111111111111111111111", "snap_b", None)
+            .with("dev", "user-made", "snap_u", None)
+            .with("silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9", "silo-backup-0-1-2", "snap_i", None);
+        assert_eq!(sweep_orphans(&store, &paths).unwrap(), 2);
+        assert_eq!(store.names(), [A, "user-made"]);
     }
 }

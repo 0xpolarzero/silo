@@ -223,6 +223,25 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
+  it("deletes a local checkpoint by VM ID, reads checkpoint usage, and refuses remote deletes", async () => {
+    const mock = native()
+    const usage = { totalBytes: 4096, checkpoints: [{ id: "point-1", sizeBytes: 4096, usedBy: ["experiment"], deleteBlocker: "Used by experiment." }] }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "delete_checkpoint") return structuredClone(source)
+      if (command === "read_checkpoint_usage") return usage
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await store.applicationActions.deleteCheckpoint!("dev", "point-1")
+      expect(invoke).toHaveBeenCalledWith("delete_checkpoint", { workspaceId: source.workspaces[0].machine.id, checkpointId: "point-1" })
+      expect(await store.applicationActions.readCheckpointUsage!(source.workspaces[0].machine.id)).toEqual(usage)
+      await expect(store.applicationActions.deleteCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-1")).rejects.toThrow("on its own computer")
+      expect(invoke.mock.calls.some(([command, args]) => command === "remote_checkpoint_action" && (args as Record<string, unknown>)?.action === "delete")).toBe(false)
+    } finally { store.dispose() }
+  })
+
   it("recognizes the updating sentinel whether bare or wrapped by a remote bridge", () => {
     expect(isUpdateInProgress(new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS"))).toBe(true)
     expect(isUpdateInProgress("remote request failed: SILO_SANDBOX_UPDATE_IN_PROGRESS")).toBe(true)

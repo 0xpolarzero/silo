@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useId, useRef, useState, type ReactNode } from 'react'
-import type { WorkspaceStorageState } from '../model/workspace-storage'
-import { HardDrive, Database, Folder, Gauge, RefreshCw, Sparkles, History, ChevronDown, Check, CircleAlert, Clock, type LucideIcon } from 'lucide-react'
+import { formatStorageBytes as formatBytes, type WorkspaceStorageState } from '../model/workspace-storage'
+import { HardDrive, Database, Folder, Gauge, RefreshCw, Sparkles, History, ChevronDown, Check, CircleAlert, Clock, Layers, type LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { dismissOperationToast, errorMessage, showOperationFailure, showOperationProgress, showOperationSuccess } from '@/lib/operation-toast'
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip'
@@ -9,10 +9,6 @@ type ReclaimEntry = WorkspaceStorageState['history'][number]
 
 function date(at: number) { return new Date(at * 1000).toLocaleString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) }
 function trigger(value: string) { return ({ manual: 'Manual', scheduled: 'Scheduled', beforeStop: 'Before stop', afterStart: 'After start', legacy: 'Previous reclaim' } as Record<string, string>)[value] ?? 'Automatic' }
-function formatBytes(bytes: number) {
-  if (bytes === 0) return "0 B"
-  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`
-}
 
 interface StoragePanelProps {
   workspaceId: string
@@ -96,6 +92,15 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
     { icon: Folder, label: 'Workspace files', value: guest(storage?.workspaceUsedBytes), help: 'Used inside the sandbox, including filesystem overhead.' },
     { icon: Gauge, label: 'Workspace capacity', value: guest(storage?.workspaceCapacityBytes), help: `The most the workspace can hold. This is a limit, not space used ${where}.` },
   ]
+  const checkpointCount = storage?.checkpointCount ?? 0
+  const checkpointMetric: StorageMetricProps = {
+    icon: Layers,
+    label: 'Checkpoints',
+    value: host(storage?.checkpointHostBytes),
+    help: checkpointCount === 0
+      ? `No checkpoints are saved ${where}.`
+      : `${checkpointCount === 1 ? '1 checkpoint' : `${checkpointCount} checkpoints`} saved ${where}, each counted in full; copies that share blocks can use less. Delete ones you no longer need in Checkpoints.`,
+  }
 
   return <TooltipProvider delayDuration={150}>
     <section aria-label="Sandbox storage" className="@container grid gap-3 text-xs" aria-busy={busy}>
@@ -113,6 +118,7 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
 
       <div className="grid grid-cols-2 gap-2 @min-[640px]:grid-cols-4">
         {metrics.map(metric => <StorageMetric key={metric.label} {...metric} loading={loading} />)}
+        <StorageMetric {...checkpointMetric} loading={loading} className="col-span-2 @min-[640px]:col-span-4" />
       </div>
 
       <ReclaimControls
@@ -137,8 +143,8 @@ interface StorageMetricProps {
   help: string
 }
 
-function StorageMetric({ icon: Icon, label, value, help, loading }: StorageMetricProps & { loading: boolean }) {
-  return <div className="grid content-start gap-1 rounded-md border border-border bg-background/40 p-3">
+function StorageMetric({ icon: Icon, label, value, help, loading, className }: StorageMetricProps & { loading: boolean; className?: string }) {
+  return <div className={`grid content-start gap-1 rounded-md border border-border bg-background/40 p-3 ${className ?? ''}`}>
     <div className="flex items-center gap-2 text-muted-foreground"><Icon aria-hidden="true" className="size-3.5" /><span>{label}</span></div>
     <div className="mt-1 text-lg font-medium tabular-nums tracking-tight">
       {loading ? <span aria-hidden="true" className="inline-block h-6 w-16 animate-pulse rounded bg-muted" /> : value}

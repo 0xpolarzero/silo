@@ -48,6 +48,9 @@ pub struct StorageState {
     workspace_host_bytes: Option<u64>,
     /// Host allocation of the runtime root disks; `None` when the sandbox directory is missing.
     runtime_host_bytes: Option<u64>,
+    /// Host allocation of the sandbox's checkpoints; `None` when it could not be measured.
+    checkpoint_host_bytes: Option<u64>,
+    checkpoint_count: usize,
     workspace_used_bytes: Option<u64>,
     workspace_capacity_bytes: Option<u64>,
     last_reclaimed_bytes: Option<u64>,
@@ -206,7 +209,9 @@ fn state(runner: &dyn RuntimeRunner, paths: &RuntimePaths, machine: &MachineConf
     observed: &InspectedSandbox) -> Result<StorageState, RuntimeError> {
     verify(machine, observed)?;
     let record = load(paths, machine.id())?;
+    let (checkpoint_host_bytes, checkpoint_count) = checkpoints::storage_totals(runner, paths, machine.id(), machine.name());
     let mut state = StorageState {
+        checkpoint_host_bytes, checkpoint_count,
         history: record.history,
         workspace_host_bytes: workspace_host_bytes(paths, machine)?,
         runtime_host_bytes: runtime_allocated(paths, machine.name())?,
@@ -352,18 +357,35 @@ fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, Ru
     }
     Ok(false)
 }
+/// Ticks after launch before the once-per-launch orphan sweep, so startup recovery and
+/// launch-time starts settle first.
+const SWEEP_AFTER_TICKS: u32 = 5;
+
 pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();
-    thread::spawn(move || loop {
-        // Periodic background trim skips whenever any operation is active or waiting.
-        if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
-            if shutdown::ensure_accepting_operations().is_ok() {
-                if let Ok(paths) = runtime_paths(&app) {
-                    let _ = periodic(&ProcessRunner, &paths);
+    thread::spawn(move || {
+        let mut ticks = 0u32;
+        let mut swept = false;
+        loop {
+            ticks = ticks.saturating_add(1);
+            // Periodic background work skips whenever any operation is active or waiting.
+            if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
+                if shutdown::ensure_accepting_operations().is_ok() {
+                    if let Ok(paths) = runtime_paths(&app) {
+                        if !swept && ticks > SWEEP_AFTER_TICKS && !crate::runtime_migration::blocks_operations(&app) {
+                            // Checkpoint data that no sandbox references any longer (E-03).
+                            swept = true;
+                            if let Err(failure) = checkpoints::sweep_orphans(&ProcessRunner, &paths) {
+                                eprintln!("Unused checkpoint data was kept: {failure}");
+                            }
+                        } else {
+                            let _ = periodic(&ProcessRunner, &paths);
+                        }
+                    }
                 }
             }
+            thread::sleep(Duration::from_secs(60));
         }
-        thread::sleep(Duration::from_secs(60));
     });
 }
 
@@ -397,7 +419,9 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
                 // No runtime sandbox or disk exists until the user starts it.
                 if reclaim { return Err(failure(&format!("Start {} first.", machine.name()))); }
                 let record = load(&paths, machine.id())?;
+                let (checkpoint_host_bytes, checkpoint_count) = checkpoints::storage_totals(&ProcessRunner, &paths, machine.id(), machine.name());
                 return Ok(StorageState {
+                    checkpoint_host_bytes, checkpoint_count,
                     history: record.history, workspace_host_bytes: Some(0), runtime_host_bytes: Some(0),
                     workspace_used_bytes: None, workspace_capacity_bytes: None,
                     last_reclaimed_bytes: record.last_reclaimed_bytes, last_trim_at: record.last_trim_at,

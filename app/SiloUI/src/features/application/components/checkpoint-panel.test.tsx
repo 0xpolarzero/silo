@@ -207,3 +207,73 @@ it("suggests an English checkpoint name regardless of the system locale", async 
     expect(seen).toContain("en")
   } finally { Date.prototype.toLocaleString = original }
 })
+
+const gib = 1024 ** 3
+const usage = {
+  totalBytes: 6 * gib,
+  checkpoints: [
+    { id: "point-1", sizeBytes: 4 * gib, usedBy: ["experiment"], deleteBlocker: "Used by experiment. experiment was started from this checkpoint and still builds on it." },
+    { id: "point-2", sizeBytes: gib },
+    { id: "point-3", sizeBytes: gib },
+  ],
+}
+
+it("confirms Delete in destructive style, deletes in a notification, and refreshes sizes", async () => {
+  const deleteCheckpoint = vi.fn().mockResolvedValue(undefined)
+  const readCheckpointUsage = vi.fn().mockResolvedValue(usage)
+  const user = userEvent.setup()
+  render(withToaster(<CheckpointPanel workspace={workspace} target="dev" actions={{ deleteCheckpoint, readCheckpointUsage } as unknown as ApplicationActions} disabled={false} />))
+  const row = within(screen.getByText("Before restore").closest("[data-checkpoint-name]")!)
+  expect(await row.findByText(/1\.00 GiB/)).toBeVisible()
+  expect(readCheckpointUsage).toHaveBeenCalledWith("vm-dev")
+
+  await user.click(row.getByRole("button", { name: "Checkpoint actions for Before restore" }))
+  await user.click(screen.getByRole("menuitem", { name: "Delete Before restore" }))
+  expect(screen.getByText("Delete “Before restore”?")).toBeVisible()
+  expect(screen.getByText(/freeing up to 1\.00 GiB/)).toBeVisible()
+  expect(screen.getByText(/can no longer undo the Restore/)).toBeVisible()
+  const confirm = confirmButton("Delete")
+  expect(confirm).toHaveAttribute("data-variant", "destructive")
+  await user.click(confirm)
+
+  await waitFor(() => expect(deleteCheckpoint).toHaveBeenCalledWith("dev", "point-3"))
+  expect(await screen.findByText("Checkpoint deleted")).toBeVisible()
+  await waitFor(() => expect(readCheckpointUsage).toHaveBeenCalledTimes(2))
+})
+
+it("shows who uses a pinned checkpoint and keeps its Delete unavailable with the reason", async () => {
+  const deleteCheckpoint = vi.fn()
+  const user = userEvent.setup()
+  render(<CheckpointPanel workspace={workspace} target="dev" actions={{ deleteCheckpoint, readCheckpointUsage: vi.fn().mockResolvedValue(usage) } as unknown as ApplicationActions} disabled={false} />)
+  const row = within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!)
+  expect(await row.findByText(/Used by experiment/)).toBeVisible()
+  await user.click(row.getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  const item = screen.getByRole("menuitem", { name: "Delete Before refactor" })
+  expect(item).toHaveAttribute("data-disabled")
+  expect(screen.getByLabelText(/experiment was started from this checkpoint/)).toBeInTheDocument()
+  expect(deleteCheckpoint).not.toHaveBeenCalled()
+})
+
+it("reports a refused delete and keeps the checkpoint", async () => {
+  const deleteCheckpoint = vi.fn().mockRejectedValue(new Error("“After deploy” was saved after this checkpoint and builds on it. Delete it first."))
+  const user = userEvent.setup()
+  render(withToaster(<CheckpointPanel workspace={workspace} target="dev" actions={{ deleteCheckpoint } as unknown as ApplicationActions} disabled={false} />))
+  const row = within(screen.getByText("Disk snapshot").closest("[data-checkpoint-name]")!)
+  await user.click(row.getByRole("button", { name: "Checkpoint actions for Disk snapshot" }))
+  await user.click(screen.getByRole("menuitem", { name: "Delete Disk snapshot" }))
+  expect(screen.getByText(/This can’t be undone/)).toBeVisible()
+  await user.click(confirmButton("Delete"))
+  expect(await screen.findByText("Could not delete “Disk snapshot”")).toBeVisible()
+  expect(screen.getByText(/Delete it first/)).toBeVisible()
+  expect(screen.getByText("Disk snapshot")).toBeVisible()
+})
+
+it("offers Delete only for checkpoints on this computer", async () => {
+  const remote = { ...workspace, computer: { id: "mac", name: "Ada’s Mac mini", connected: true } } as ApplicationWorkspace
+  const readCheckpointUsage = vi.fn()
+  const user = userEvent.setup()
+  render(<CheckpointPanel workspace={remote} target="dev" actions={{ forkCheckpoint: vi.fn(), deleteCheckpoint: vi.fn(), readCheckpointUsage } as unknown as ApplicationActions} disabled={false} />)
+  await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  expect(screen.queryByRole("menuitem", { name: "Delete Before refactor" })).toBeNull()
+  expect(readCheckpointUsage).not.toHaveBeenCalled()
+})

@@ -145,6 +145,37 @@ Also a `mac` live run for storage reclamation.
 - Should "Before restore" and "Fork point" members be auto-collected after N
   days?
 
+**Implementation findings (2026-09-30).** Verified by reading the pinned
+MicroSandbox source (`crates/cli/lib/commands/snapshot.rs`,
+`sdk/rust/lib/backend/local/snapshot/{store,group,lineage,create,archive}.rs`):
+
+- Each capture's parent is the sandbox's lineage cursor
+  (`sandboxes/<name>/snapshot-lineage.json`), or the snapshot it was restored
+  from. Successive checkpoints of one sandbox therefore form a parent chain, and
+  the children guard refuses every checkpoint that has a later capture.
+- `--force` only bypasses that children guard. Artifacts copy their own layers,
+  so restores survive a removed parent, but `snapshot save --with-parents`
+  (Silo's export) fails when any ancestor is missing. Never passing `--force`
+  is therefore required, not only cautious.
+- For the same reason Silo also keeps a sandbox's *lineage position* (its
+  cursor, or the snapshot it was restored from): removing it would break that
+  sandbox's next export. The newest checkpoint of a sandbox can be deleted only
+  after it no longer builds on it (for example after a Restore to another one).
+- `snapshot list --format json` reports `snapshot_id` and `parent_digest` (the
+  parent's snapshot id); `size_bytes` is the disk's virtual size, so Silo
+  measures artifact directories instead.
+
+Implemented: Delete checkpoint refuses pinned checkpoints with the reason
+(another record, a pending start, a later capture, a lineage position);
+sandbox deletion removes the members only it used; a failed capture removes a
+published member it no longer needs; a sweep five minutes after launch removes
+Silo-named members no record references that are older than 24 hours. Answer to
+the first open question: a started fork keeps the checkpoint it was restored
+from (it is the fork's lineage position); the sweep removes it after the fork no
+longer builds on it. Import-failure cleanup of `silo-import-*` groups is left to
+E-23; the sweep collects them after 24 hours. Deleting checkpoints of a sandbox
+on another computer is done in Silo on that computer.
+
 ---
 
 ## F-02 + F-20: graceful quit on macOS Dock/logout and on Linux logout/shutdown

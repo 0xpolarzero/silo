@@ -3452,6 +3452,7 @@ fn apply_whole_configuration_with_progress(
             crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             forget_github_state(&paths.home, machine.name());
             remove_machine_volumes(paths, machine)?;
+            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name());
             checkpoints::forget_removed(paths, machine.id())?;
             progress("workspace-removal", machine.name(), 1);
         }

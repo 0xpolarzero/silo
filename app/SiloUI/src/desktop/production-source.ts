@@ -12,7 +12,7 @@ import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActio
 import { operationQueueSchema, isCancelledError, type OperationQueue } from "@/features/application/model/operation-queue"
 import { deriveMachineChanges, isStaleConfigurationError, type MachineConfigurationChange } from "@/features/application/model/machine-change"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
-import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
+import { checkpointUsageSchema, type WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 
 import { remoteComputerSchema, remoteManagementSchema, remoteWorkspaceTarget, parseRemoteWorkspaceTarget, workspaceTarget, type RemoteComputer, type RemoteManagement } from "@/features/application/model/remote-computers"
@@ -1009,11 +1009,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (pendingCheckpointOperations.has(checkpointTarget) || ownerWorkspace?.checkpointOperation?.status === "running") {
       throw new Error("A checkpoint operation is already running for this sandbox.")
     }
-    const kind: WorkspaceCheckpointOperation["kind"] = command === "create_checkpoint" ? "capture" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : (() => { throw new Error("Unsupported checkpoint operation.") })()
+    const kind: WorkspaceCheckpointOperation["kind"] = command === "create_checkpoint" ? "capture" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : command === "delete_checkpoint" ? "delete" : (() => { throw new Error("Unsupported checkpoint operation.") })()
+    if (remote && kind === "delete") throw new Error("Delete checkpoints of this sandbox in Silo on its own computer.")
     const operation: WorkspaceCheckpointOperation = {
       kind,
       status: "running",
-      stage: kind === "capture" ? "Creating checkpoint…" : kind === "fork" ? "Creating stopped fork…" : "Saving recovery checkpoint and restoring…",
+      stage: kind === "capture" ? "Creating checkpoint…" : kind === "fork" ? "Creating stopped fork…" : kind === "delete" ? "Deleting checkpoint…" : "Saving recovery checkpoint and restoring…",
     }
     pendingCheckpointOperations.set(checkpointTarget, operation)
     checkpointOperationBases.set(checkpointTarget, ownerWorkspace?.checkpointOperation)
@@ -1061,6 +1062,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     createCheckpoint: (workspace, name) => checkpointAction("create_checkpoint", workspace, { name }),
     forkCheckpoint: (workspace, checkpointId, newName) => checkpointAction("fork_checkpoint", workspace, { checkpointId, newName }),
     restoreCheckpoint: (workspace, checkpointId) => checkpointAction("restore_checkpoint", workspace, { checkpointId }),
+    deleteCheckpoint: (workspace, checkpointId) => checkpointAction("delete_checkpoint", workspace, { checkpointId }),
+    readCheckpointUsage: async workspaceId => checkpointUsageSchema.parse(await native.invoke("read_checkpoint_usage", { workspaceId })),
     refreshRepositories: async () => {
       await refresh(true)
       await refreshComputers(true)

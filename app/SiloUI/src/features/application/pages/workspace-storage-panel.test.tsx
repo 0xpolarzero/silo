@@ -14,7 +14,7 @@ afterEach(() => { toast.dismiss() })
 function Panel(props: React.ComponentProps<typeof WorkspaceStoragePanel>) { return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster /><WorkspaceStoragePanel {...props} /></SettingsProvider> }
 
 const gib = 1024 ** 3
-const storage: WorkspaceStorageState = { history: [], workspaceHostBytes: 36 * gib, runtimeHostBytes: 5 * gib, workspaceUsedBytes: gib, workspaceCapacityBytes: 64 * gib, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
+const storage: WorkspaceStorageState = { history: [], workspaceHostBytes: 36 * gib, runtimeHostBytes: 5 * gib, checkpointHostBytes: 3 * gib, checkpointCount: 2, workspaceUsedBytes: gib, workspaceCapacityBytes: 64 * gib, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
 
 it("distinguishes host allocation from guest usage and reports measured recovery", async () => {
   const read = vi.fn().mockResolvedValue(storage)
@@ -150,6 +150,14 @@ it("shows a disk Silo could not find as unknown instead of 0 B", async () => {
   render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, workspaceHostBytes: null, runtimeHostBytes: null })} />)
   expect(await screen.findAllByText("Unknown")).toHaveLength(2)
   expect(screen.queryByText("0 B")).not.toBeInTheDocument()
+})
+
+it("shows how much space the sandbox's checkpoints use and where to delete them", async () => {
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue(storage)} />)
+  expect(await screen.findByText("3.00 GiB")).toBeVisible()
+  expect(screen.getByText("Checkpoints")).toBeVisible()
+  expect(screen.getByText(/2 checkpoints saved on this computer/)).toBeVisible()
+  expect(screen.getByText(/Delete ones you no longer need in Checkpoints/)).toBeVisible()
 })
 
 it("explains each measurement and the automatic reclaim policy in visible text", async () => {
