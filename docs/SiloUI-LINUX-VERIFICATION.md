@@ -6,7 +6,7 @@ not prove the WebKit UI, desktop services, or hardware virtualization works.
 | Layer | Command | What it proves |
 | --- | --- | --- |
 | Frontend | `npm test -- --maxWorkers=2` | Component behavior and bridge contracts on Linux; test adapters remain outside production. |
-| Native | `cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1` | Linux application discovery, login entries, settings, resource checks, files, network, GitHub boundary behavior, secrets, and backup validation. |
+| Native | `cargo test --manifest-path src-tauri/Cargo.toml --locked` | Linux application discovery, login entries, settings, resource checks, files, network, GitHub boundary behavior, secrets, and backup validation. |
 | Desktop | `xvfb-run -a dbus-run-session -- python3 scripts/test-linux-desktop.py` | Real production WebKit, native IPC, dependency failure gating, page navigation, inline validation and persisted settings. |
 | GNOME integration | `sh scripts/test-linux-gnome.sh` | Real GNOME Wayland, tray reopen/quit, native backup picker and visible notification delivery. |
 | Hardware | `python3 scripts/test-linux-runtime.py` | Real KVM creation, bundled image import/cache reuse, guest tools/identity, backup/restore data round trips, live secret changes and interrupted restart recovery. |

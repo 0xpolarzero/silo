@@ -290,6 +290,11 @@ settings backends:
 - `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --bin silo-ui startup::tests`: all 7 passed after the missing-selection regression failed before the fix. Native runs used explicit synthetic GitHub build configuration as described in the release guide.
 - `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml -- --test-threads=1`: 473 passed, 12 ignored outside the execution sandbox. The restricted parallel run hit socket/process permissions; an unrestricted parallel run left two storage lock failures. All 16 non-live storage tests passed separately, and the full serial run passed. Opt-in live tests remained disabled.
 
+K-18 subsequently qualified ten consecutive full runs with the default parallel
+thread count. The historical serial result above remains a record of that earlier
+verification. Current checks use `cargo test --locked`; see
+[native test support](SiloUI-RUST-TEST-SUPPORT.md) for isolation and timings.
+
 The existing valid `silo-theme` browser value is imported only when the native
 document lacks a theme, and its original key is retained.
 
