@@ -134,6 +134,8 @@ export interface ApplicationActivity {
   workspace?: string
   progress?: number
   progressLabel?: string
+  /** A start, stop or restart the user cancelled: neither a failure nor a success. */
+  cancelled?: boolean
 }
 
 export interface ApplicationWorkspace {

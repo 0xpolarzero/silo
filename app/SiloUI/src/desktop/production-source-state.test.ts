@@ -644,6 +644,53 @@ describe("result and job identity", () => {
   })
 })
 
+describe("cancelled lifecycle actions", () => {
+  const lifecycle = (id: string, title: string, occurredAt: string, extra: Record<string, unknown> = {}) => ({ id, category: "sandbox" as const, title, detail: "", occurredAt, time: occurredAt, tone: "neutral" as const, status: "completed" as const, workspace: "dev", ...extra })
+
+  it("shows a cancellation the runtime recorded as neutral after a reload (H-34)", async () => {
+    let activities = [lifecycle("lifecycle-1-2", "Start cancelled", "2026-09-30T10:00:00.000Z", { cancelled: true, detail: "The action was cancelled." })]
+    const mock = bridge(command => command === "read_application_state" ? { ...structuredClone(source), activities } : undefined)
+    const store = createProductionSource(mock.native)
+    const dev = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.name === "dev")
+    try {
+      await store.initialize()
+      expect(dev()).toMatchObject({ lifecycleFailureCancelled: true, lifecycleFailureAction: "start" })
+      // A later start supersedes it.
+      activities = [lifecycle("lifecycle-1-3", "Sandbox started", "2026-09-30T10:05:00.000Z", { tone: "success" }), ...activities]
+      await store.refresh()
+      expect(dev()?.lifecycleFailure).toBeUndefined()
+      expect(dev()?.lifecycleFailureCancelled).toBeUndefined()
+    } finally { store.dispose() }
+  })
+
+  it("shows an older computer's cancelled action as neutral instead of a failure (H-34)", async () => {
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return remoteSource({ state: "stopped", lifecycleFailure: "Stop failed: stop dev was cancelled." })
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))).toMatchObject({
+        lifecycleFailure: "stop dev was cancelled.", lifecycleFailureAction: "stop", lifecycleFailureCancelled: true,
+      })
+    } finally { store.dispose() }
+  })
+
+  it("keeps a real reported failure red (H-34)", async () => {
+    const failed = structuredClone(source)
+    failed.workspaces[0] = { ...failed.workspaces[0], lifecycleFailure: "Start failed: not enough memory" }
+    const mock = bridge(command => command === "read_application_state" ? structuredClone(failed) : undefined)
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const dev = store.getSnapshot().source?.workspaces[0]
+      expect(dev?.lifecycleFailure).toBe("Start failed: not enough memory")
+      expect(dev?.lifecycleFailureCancelled).toBeUndefined()
+    } finally { store.dispose() }
+  })
+})
+
 describe("GitHub state from full reads", () => {
   it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
     let failed = false

@@ -8,8 +8,8 @@ import { showOperationFailure } from "@/lib/operation-toast"
 
 import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
-import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationPort, ApplicationSource, ApplicationWorkspace, SecretConfigurationRequest } from "@/features/application/model/application-source"
-import { operationQueueSchema, isCancelledError, type OperationQueue } from "@/features/application/model/operation-queue"
+import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationActivity, ApplicationPort, ApplicationSource, ApplicationWorkspace, SecretConfigurationRequest } from "@/features/application/model/application-source"
+import { operationQueueSchema, isCancelledError, cancelledActionLabel, type OperationQueue } from "@/features/application/model/operation-queue"
 import { deriveMachineChanges, isStaleConfigurationError, type MachineConfigurationChange } from "@/features/application/model/machine-change"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
 import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
@@ -187,6 +187,13 @@ export interface ProductionSnapshot {
 }
 
 type RemoteHost = z.infer<typeof remoteComputerSchema>
+type LifecycleAction = "start" | "stop" | "restart"
+const lifecycleActions: LifecycleAction[] = ["start", "stop", "restart"]
+
+/** Runtime lifecycle activity ids, bare or wrapped by the remote activity prefix. */
+function isLifecycleActivity(id: string) {
+  return id.startsWith("lifecycle-") || /^silo-remote-activity:[^:]*:lifecycle-/.test(id)
+}
 
 /** How long a caller waits for one computer's snapshot before showing its last known state as stale. */
 const REMOTE_READ_WAIT_MS = 15_000
@@ -403,6 +410,34 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     listeners.forEach((listener) => listener())
   }
 
+  // A cancelled start, stop or restart is recorded by the runtime (D-26) as a
+  // lifecycle activity with `cancelled: true`, not as a failure; older computers
+  // still report it as "<Action> failed: … was cancelled.". Both render as the
+  // neutral cancelled state the action itself shows, after a reload or on a peer.
+  function lastCancelledLifecycle(activities: ApplicationActivity[]) {
+    const latest = new Map<string, ApplicationActivity>()
+    for (const activity of activities) {
+      if (activity.category !== "sandbox" || !activity.workspace || !isLifecycleActivity(activity.id)) continue
+      const known = latest.get(activity.workspace)
+      if (!known || activity.occurredAt > known.occurredAt) latest.set(activity.workspace, activity)
+    }
+    const cancelled = new Map<string, LifecycleAction>()
+    for (const [target, activity] of latest) {
+      const action = activity.cancelled ? lifecycleActions.find(candidate => cancelledActionLabel(candidate) === activity.title) : undefined
+      if (action) cancelled.set(target, action)
+    }
+    return cancelled
+  }
+
+  function reportedCancellation(workspace: ApplicationWorkspace, cancelledAction: LifecycleAction | undefined): Partial<ApplicationWorkspace> {
+    if (workspace.lifecycleFailure) {
+      if (!isCancelledError(workspace.lifecycleFailure)) return {}
+      const prefix = /^(Start|Stop|Restart) failed: /.exec(workspace.lifecycleFailure)
+      return { lifecycleFailure: workspace.lifecycleFailure.slice(prefix?.[0].length ?? 0), lifecycleFailureAction: (prefix?.[1].toLowerCase() ?? "start") as LifecycleAction, lifecycleFailureCancelled: true }
+    }
+    return cancelledAction ? { lifecycleFailure: "The action was cancelled.", lifecycleFailureAction: cancelledAction, lifecycleFailureCancelled: true } : {}
+  }
+
   /** Stable identity of an export/import result: the runtime's operation id, else its defining fields. */
   function backupResultKey(state: BackupState, operation: BackupOperation) {
     if (state.operationId) return `operation:${state.operationId}`
@@ -482,6 +517,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         ...unconfirmedPushes.values(),
       ]
     }
+    const cancelledActions = lastCancelledLifecycle(activities)
     return { ...next, source: { ...base.source,
       remoteComputers, remoteManagement, remoteManagementError, remoteComputersError, network, networkError, sshAccess, sshAccessError, operationQueue,
       repositoryPushOperations: pushes,
@@ -492,7 +528,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const action = pendingLifecycle.get(target)
         // A resubmitted lifecycle action supersedes the last failure or cancellation
         // until it reports its own result.
-        const current = action ? { ...workspace, lifecycleFailure: undefined, lifecycleFailureAction: undefined, lifecycleFailureCancelled: undefined } : workspace
+        const current = action ? { ...workspace, lifecycleFailure: undefined, lifecycleFailureAction: undefined, lifecycleFailureCancelled: undefined } : { ...workspace, ...reportedCancellation(workspace, cancelledActions.get(target)) }
         return { ...current,
           ...(failure?.machineId === workspace.machine.id && { lifecycleFailure: failure.message, lifecycleFailureAction: failure.action as "start" | "stop" | "restart" | "dismiss-error", lifecycleFailureCancelled: failure.cancelled }),
           ...(action && { lifecycleAction: action }),
