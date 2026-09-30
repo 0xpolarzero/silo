@@ -27,3 +27,12 @@ live VM health or installed-app behavior.
 `Serialize`, and `Debug` prints only its redacted count. The production
 compile-time guard was checked by temporarily adding `Serialize`; compilation
 failed with E0283 at that guard. The temporary derive was removed.
+
+D-20 removes the native snapshot's legacy `preferences` and `backup`
+presentation fields. The current local adapter supplies centralized settings
+defaults and an empty legacy backup summary; the remote adapter also tolerates
+the missing fields. Strict older snapshot adapters reject that payload, as the
+before-fix regression demonstrated. This contract cleanup therefore carries a
+minor changeset under the pre-1.0 release policy. Preferences and actual export
+state continue to come from their respective stores. Legacy SSH entries retain
+their configuration but report unavailable state rather than a guessed stop.
