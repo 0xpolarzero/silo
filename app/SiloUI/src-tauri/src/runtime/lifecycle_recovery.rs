@@ -357,6 +357,39 @@ pub(super) fn forget_removed(
     }
     Ok(())
 }
+/// Retire every saved action except those for the VMs in `resuming`. Update
+/// preparation promises to restore exactly the pre-update running set, so a failed
+/// start kept for Retry must not start its VM at the next launch (D-22). An
+/// unfinished activity entry is settled as cancelled; a finished one keeps its
+/// outcome. Unreadable files are left for startup recovery to report.
+pub(crate) fn retire_except(paths: &RuntimePaths, resuming: &HashSet<String>) -> Result<(), RuntimeError> {
+    let entries = match fs::read_dir(directory(paths)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(error("Saved sandbox actions could not be read.")),
+    };
+    let mut retired = false;
+    for entry in entries {
+        let file = entry.map_err(|_| error("Saved sandbox actions could not be read."))?.path();
+        if file.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let Ok(Some(mut intent)) = load(&file) else { continue };
+        if file != path(paths, &intent.machine_id) || resuming.contains(&intent.machine_id) {
+            continue;
+        }
+        runtime_activity::retire(paths, &mut intent.event).map_err(error)?;
+        fs::remove_file(&file).map_err(|_| error("A saved sandbox action could not be retired."))?;
+        retired = true;
+    }
+    if retired {
+        File::open(directory(paths))
+            .and_then(|f| f.sync_all())
+            .map_err(|_| error("Retired sandbox actions could not be synced."))?;
+    }
+    Ok(())
+}
+
 /// The outcome of launch recovery. Per-action failures never hide the rest (D-23).
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Recovered {
@@ -722,6 +755,33 @@ mod tests {
         assert!(history.iter().any(|event| event["detail"]
             .as_str()
             .is_some_and(|detail| detail.contains("Replaced by"))));
+    }
+    #[test]
+    fn update_preparation_retires_actions_for_vms_it_will_not_resume() {
+        let (_dir, paths, _) = setup();
+        // A failed start kept for Retry: its activity already records the failure.
+        let mut runner = Fake::new("Stopped");
+        runner.fail_start = true;
+        assert!(perform(&runner, &paths, &host(), "start", "dev").is_err());
+        assert!(path(&paths, ID).exists());
+        let failed = runtime_activity::read(&paths).unwrap();
+        // A VM that the update will resume keeps its saved action.
+        retire_except(&paths, &HashSet::from([ID.into()])).unwrap();
+        assert!(path(&paths, ID).exists());
+        retire_except(&paths, &HashSet::new()).unwrap();
+        assert!(!path(&paths, ID).exists());
+        assert_eq!(runtime_activity::read(&paths).unwrap(), failed, "a finished outcome is kept");
+        let relaunch = Fake::new("Stopped");
+        assert_eq!(recover_with(&relaunch, &paths, &host()).unwrap(), Recovered::default());
+        assert!(relaunch.mutations().is_empty(), "the next launch does not start it");
+        // An unfinished action is settled as cancelled; unreadable files stay for recovery.
+        pending(&paths, "restart", Phase::StartPending);
+        fs::write(directory(&paths).join("broken.json"), "{not json").unwrap();
+        retire_except(&paths, &HashSet::new()).unwrap();
+        assert!(!path(&paths, ID).exists());
+        assert!(directory(&paths).join("broken.json").exists());
+        let history = runtime_activity::read(&paths).unwrap();
+        assert!(history.iter().any(|event| event["title"] == "Restart cancelled"));
     }
     #[test]
     fn timed_out_stop_that_never_settles_is_not_retried_as_transient() {

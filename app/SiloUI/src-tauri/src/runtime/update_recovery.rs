@@ -164,7 +164,11 @@ pub(crate) fn prepare(app: &AppHandle, consent: bool) -> Result<(), String> {
         inspect_exact(&ProcessRunner, &paths, machine)?;
         workspace_action_with(&ProcessRunner, &paths, &host, "stop", &machine.name)
             .map_err(|e| safe_activity_error(&e))
-    })
+    })?;
+    // Only the saved running set resumes after the update; a saved action for any
+    // other VM (for example a failed start kept for Retry) must not start it (D-22).
+    let resuming = machines.into_iter().map(|machine| machine.id).collect();
+    lifecycle_recovery::retire_except(&paths, &resuming).map_err(|e| e.to_string())
 }
 fn stop_selected(
     paths: &RuntimePaths,
