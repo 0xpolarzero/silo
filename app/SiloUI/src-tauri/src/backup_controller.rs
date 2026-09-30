@@ -243,10 +243,12 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         revision: AtomicU64::new(1),
     });
     app.manage(controller.clone());
+    // Settle an interrupted operation even while the runtime migration blocks
+    // sandbox operations: recovery runs no runtime command and only removes
+    // this operation's own output, and the migration refuses to start while
+    // the journal is pending (E-50).
     if let Some(journal) = journal {
-        if !crate::runtime_migration::blocks_operations(app) {
-            recovery::resume(app.clone(), controller, journal)?;
-        }
+        recovery::resume(app.clone(), controller, journal)?;
     }
     Ok(())
 }

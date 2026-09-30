@@ -698,6 +698,27 @@ mod tests {
     }
 
     #[test]
+    fn recovery_settles_a_journal_from_before_a_runtime_migration_without_the_runtime() {
+        // While the runtime migration blocks sandbox operations, the saved
+        // settings may be unreadable and msb unusable. Recovery must still
+        // settle the journal, since migration refuses to run while one is
+        // pending (E-50). Older builds never journaled an import's identity.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        fs::create_dir_all(&paths.metadata).unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        for journal in [
+            Journal::backup(export_to(directory.path()), vec!["dev".into()], None),
+            Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        ] {
+            let recovered =
+                recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default())
+                    .unwrap();
+            assert_eq!(result_of(&recovered).0, "failed");
+        }
+    }
+
+    #[test]
     fn only_an_interrupted_import_holds_back_startup() {
         assert!(!Journal::backup(completed_archive(), vec!["dev".into()], None).blocks_startup());
         assert!(Journal::restore(completed_archive(), "copy".into(), None).blocks_startup());
