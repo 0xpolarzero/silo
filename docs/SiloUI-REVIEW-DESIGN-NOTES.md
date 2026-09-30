@@ -287,9 +287,11 @@ local method once a tao release that Tauri uses carries it.
 - Session end never cancels the exit: a failed or late stop is logged and Silo
   exits. `RunEvent::Exit` without an approved Quit (and not an update restart)
   runs a bounded stop as a backstop.
-- Gap: `runtime::shutdown::stop_local_vms` (WP-D) still stops VMs one at a
-  time, so several running VMs may not all stop inside logind's default 5 s
-  delay. Stopping them in parallel is a WP-D follow-up.
+- Shutdown dispatches local VM stops concurrently under the computer gate.
+  The parent shares one worker flock with scoped stop workers so child stops
+  overlap without admitting another process's runtime mutation. Slow enumeration
+  or inspection and individual stop latency can still exceed logind's default
+  5 s delay; live logout verification remains required.
 
 ---
 
