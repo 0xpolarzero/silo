@@ -478,23 +478,7 @@ fn prepare_configuration(
         &known_hosts,
         format!("{alias} {}\n", public_key(&host_key)?).as_bytes(),
     )?;
-    let proxy = [
-        "/usr/bin/env".to_owned(),
-        format!("MSB_HOME={}", paths.home.display()),
-        format!("MSB_PATH={}", paths.executable.display()),
-        format!("MSB_LIBKRUNFW_PATH={}", paths.library.display()),
-        paths.executable.to_string_lossy().into_owned(),
-        "ssh".into(),
-        "serve".into(),
-        name.into(),
-        "--stdio".into(),
-        "--no-start".into(),
-        "--no-inactivity-timeout".into(),
-    ]
-    .iter()
-    .map(|part| quote(&part.replace('%', "%%")))
-    .collect::<Vec<_>>()
-    .join(" ");
+    let proxy = local_proxy(paths, name)?;
     let content = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, content.as_bytes())?;
     Ok(alias)
@@ -589,14 +573,143 @@ pub(crate) fn prepare_remote_private(app: &AppHandle, host: &str, vm: &str, path
     let alias = format!("silo-remote-{host}-{vm}");
     let known_hosts = root.join(format!("{host}-{vm}.known_hosts"));
     write_private(&known_hosts, format!("{alias} {host_public}\n").as_bytes())?;
-    let executable = std::env::current_exe().map_err(|_| FAILED)?;
-    let executable = executable.to_str().ok_or(FAILED)?;
-    let proxy = [executable, "--remote-guest", host, vm].iter()
-        .map(|value| quote(&value.replace('%', "%%"))).collect::<Vec<_>>().join(" ");
+    let proxy = remote_proxy(host, vm)?;
     let config = root.join(format!("{host}-{vm}.conf"));
     let contents = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, contents.as_bytes())?;
     Ok((alias, config))
+}
+
+fn proxy_command<S: AsRef<str>>(parts: &[S]) -> String {
+    parts
+        .iter()
+        .map(|part| quote(&part.as_ref().replace('%', "%%")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The ProxyCommand for a local sandbox. An AppImage's bundled tools live in a
+/// mount that changes on every start, so editor configurations that outlive
+/// Silo call the AppImage file itself instead (G-12).
+fn local_proxy(paths: &RuntimePaths, name: &str) -> Result<String, String> {
+    runtime::validate_name(name).map_err(|error| error.to_string())?;
+    let home = paths.home.to_str().ok_or(FAILED)?;
+    if applications::launch::tools_are_temporary() {
+        let silo = applications::launch::stable_executable()?;
+        return Ok(proxy_command(&[silo.to_str().ok_or(FAILED)?, TRANSPORT_MODE, home, name]));
+    }
+    let executable = paths.executable.to_str().ok_or(FAILED)?;
+    Ok(proxy_command(&[
+        "/usr/bin/env",
+        &format!("MSB_HOME={home}"),
+        &format!("MSB_PATH={executable}"),
+        &format!("MSB_LIBKRUNFW_PATH={}", paths.library.to_str().ok_or(FAILED)?),
+        executable,
+        "ssh",
+        "serve",
+        name,
+        "--stdio",
+        "--no-start",
+        "--no-inactivity-timeout",
+    ]))
+}
+
+/// The ProxyCommand for a sandbox on another computer, through this Silo.
+fn remote_proxy(host: &str, vm: &str) -> Result<String, String> {
+    uuid::Uuid::parse_str(host).map_err(|_| FAILED)?;
+    uuid::Uuid::parse_str(vm).map_err(|_| FAILED)?;
+    let silo = applications::launch::stable_executable()?;
+    Ok(proxy_command(&[silo.to_str().ok_or(FAILED)?, "--remote-guest", host, vm]))
+}
+
+/// `silo --msb-ssh-serve <runtime home> <sandbox>`: the local editor transport
+/// run from an AppImage, whose bundled runtime has no stable path (G-12).
+pub(crate) const TRANSPORT_MODE: &str = "--msb-ssh-serve";
+
+/// Runs the bundled `msb ssh serve` in this AppImage's mount for an editor.
+pub(crate) fn run_transport(args: &[String]) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let [home, name] = args else {
+        return Err("Expected a runtime home and a sandbox name.".into());
+    };
+    runtime::validate_name(name).map_err(|error| error.to_string())?;
+    let home = Path::new(home);
+    if !home.is_absolute() {
+        return Err("Expected an absolute runtime home.".into());
+    }
+    let executable = std::env::current_exe().map_err(|_| FAILED)?;
+    let bundle = tauri::utils::platform::bundle_type();
+    let appimage = std::env::var_os("APPDIR").map(PathBuf::from);
+    let msb = crate::bundled_tools::resolve(&executable, Path::new(""), bundle.clone(), appimage.as_deref())?
+        .join("msb");
+    let library = runtime::bundled_runtime_library(&msb, Path::new(""), bundle);
+    let error = Command::new(&msb)
+        .args(["ssh", "serve", name, "--stdio", "--no-start", "--no-inactivity-timeout"])
+        .env("MSB_HOME", home)
+        .env("MSB_PATH", &msb)
+        .env("MSB_LIBKRUNFW_PATH", &library)
+        .exec();
+    Err(format!("Could not start the sandbox connection: {error}"))
+}
+
+/// Replaces the ProxyCommand of a configuration Silo wrote.
+fn with_proxy(contents: &str, proxy: &str) -> Option<String> {
+    let mut found = false;
+    let lines: Vec<String> = contents
+        .split('\n')
+        .map(|line| {
+            if line.starts_with("  ProxyCommand ") {
+                found = true;
+                format!("  ProxyCommand {proxy}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    found.then(|| lines.join("\n"))
+}
+
+/// Rewrites the ProxyCommand of every `*.conf` Silo wrote in `root`, where
+/// `proxy_for` maps a file stem to its current command.
+fn refresh_configs(root: &Path, proxy_for: &dyn Fn(&str) -> Option<String>) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "conf") {
+            continue;
+        }
+        let Some(proxy) = path.file_stem().and_then(|stem| stem.to_str()).and_then(proxy_for) else {
+            continue;
+        };
+        let Ok(bytes) = read_regular(&path) else { continue };
+        let Ok(contents) = String::from_utf8(bytes) else { continue };
+        if let Some(updated) = with_proxy(&contents, &proxy).filter(|updated| *updated != contents) {
+            let _ = write_private(&path, updated.as_bytes());
+        }
+    }
+}
+
+/// At startup under an AppImage, points editor configurations written by an
+/// earlier run at the AppImage file instead of that run's mount (G-12, with
+/// C-19). Editors reconnecting after a restart then find the transport.
+pub(crate) fn refresh_transports(app: &AppHandle) {
+    if !applications::launch::tools_are_temporary() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _guard = files_lock();
+        if let Ok(paths) = runtime::runtime_paths(&app) {
+            refresh_configs(&paths.home.join("ssh"), &|name| local_proxy(&paths, name).ok());
+        }
+        if let Ok(home) = app.path().home_dir() {
+            refresh_configs(&home.join(".silo/desktop-remote/ssh"), &|stem| {
+                let (host, vm) = (stem.get(..36)?, stem.get(37..)?);
+                (stem.as_bytes().get(36) == Some(&b'-')).then_some(())?;
+                remote_proxy(host, vm).ok()
+            });
+        }
+    });
 }
 
 pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) -> Result<(String, PathBuf), String> {
@@ -678,6 +791,54 @@ mod tests {
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(write_private(&link, b"replace").is_err());
         assert_eq!(fs::read(&file).unwrap(), b"Host existing\n  User user\n");
+    }
+
+    #[test]
+    fn editor_configurations_get_a_fresh_proxy_command_at_startup() {
+        let root = tempfile::tempdir().unwrap();
+        let config = "Host silo-abc-dev\n  HostName silo-abc-dev\n  User silo\n  ProxyCommand '/tmp/.mount_old/usr/libexec/silo/tools/msb' 'ssh' 'serve' 'dev'\n\nHost *\n";
+        fs::write(root.path().join("dev.conf"), config).unwrap();
+        fs::write(root.path().join("dev.known_hosts"), "unchanged").unwrap();
+        fs::write(root.path().join("bad name.conf"), config).unwrap();
+        refresh_configs(root.path(), &|name| {
+            runtime::validate_name(name).ok()?;
+            Some(proxy_command(&["/home/me/Silo.AppImage", TRANSPORT_MODE, "/home/me/.silo/abc", name]))
+        });
+        let updated = fs::read_to_string(root.path().join("dev.conf")).unwrap();
+        assert_eq!(
+            updated,
+            config.replace(
+                "'/tmp/.mount_old/usr/libexec/silo/tools/msb' 'ssh' 'serve' 'dev'",
+                "'/home/me/Silo.AppImage' '--msb-ssh-serve' '/home/me/.silo/abc' 'dev'"
+            )
+        );
+        assert_eq!(fs::read_to_string(root.path().join("bad name.conf")).unwrap(), config);
+        assert_eq!(fs::read_to_string(root.path().join("dev.known_hosts")).unwrap(), "unchanged");
+        assert_eq!(with_proxy("Host x\n", "p"), None);
+    }
+
+    #[test]
+    fn proxy_commands_outside_an_appimage_keep_their_direct_form() {
+        let paths = RuntimePaths {
+            guest_image: PathBuf::new(),
+            executable: "/Applications/Silo.app/Contents/MacOS/msb".into(),
+            home: "/Users/me/.silo/abc".into(),
+            storage_home: None,
+            library: "/Applications/Silo.app/Contents/Frameworks/libkrunfw.5.dylib".into(),
+            metadata: PathBuf::new(),
+            volumes: PathBuf::new(),
+        };
+        assert_eq!(
+            local_proxy(&paths, "dev").unwrap(),
+            "'/usr/bin/env' 'MSB_HOME=/Users/me/.silo/abc' 'MSB_PATH=/Applications/Silo.app/Contents/MacOS/msb' 'MSB_LIBKRUNFW_PATH=/Applications/Silo.app/Contents/Frameworks/libkrunfw.5.dylib' '/Applications/Silo.app/Contents/MacOS/msb' 'ssh' 'serve' 'dev' '--stdio' '--no-start' '--no-inactivity-timeout'"
+        );
+        let host = "0b6a1c9e-9f55-4d8e-9d2c-3f0a4b5c6d7e";
+        let vm = "1c7b2d0f-0a66-4e9f-8e3d-4a1b5c6d7e8f";
+        let remote = remote_proxy(host, vm).unwrap();
+        assert!(remote.ends_with(&format!("'--remote-guest' '{host}' '{vm}'")));
+        assert!(remote_proxy("not-a-uuid", vm).is_err());
+        assert!(run_transport(&["relative".into(), "dev".into()]).is_err());
+        assert!(run_transport(&["/home".into(), "bad;name".into()]).is_err());
     }
 
     fn vscode(program: &str) -> applications::launch::EditorCommand {
