@@ -89,6 +89,25 @@ fn schedule(delay: Duration) {
     if let Ok(mut pending) = PENDING.get_or_init(|| Mutex::new(None)).lock() {
         *pending = Some(Instant::now() + delay);
     }
+    wake_worker();
+}
+// The worker sleeps until its next deadline instead of polling; `schedule` wakes it.
+static WORKER_WOKEN: Mutex<bool> = Mutex::new(false);
+static WORKER_WAKE: Condvar = Condvar::new();
+/// Longest worker sleep: bounds deadlines measured on the wall clock (which can jump,
+/// for example after the computer sleeps) and ones not announced by `schedule`.
+const WORKER_MAX_SLEEP: Duration = Duration::from_secs(60);
+const WORKER_MIN_SLEEP: Duration = Duration::from_millis(100);
+fn wake_worker() {
+    *WORKER_WOKEN.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    WORKER_WAKE.notify_all();
+}
+fn worker_sleep(timeout: Duration) {
+    let woken = WORKER_WOKEN.lock().unwrap_or_else(PoisonError::into_inner);
+    let (mut woken, _) = WORKER_WAKE
+        .wait_timeout_while(woken, timeout, |woken| !*woken)
+        .unwrap_or_else(PoisonError::into_inner);
+    *woken = false;
 }
 static RESTORED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// A sandbox just started from a checkpoint; its GitHub settings must be applied once.
@@ -978,6 +997,21 @@ fn identity_is_current(d: &Document, name: &str, identity: &Value) -> bool {
     d.workspaces
         .iter()
         .any(|w| w["workspace"].as_str() == Some(name) && w["identity"] == *identity)
+}
+/// How long the worker can sleep before `worker_due` can next become true for `d`.
+fn worker_wait(d: &Document, pending: Option<Instant>, at: u64, instant: Instant) -> Duration {
+    let wait = match pending {
+        Some(deadline) => deadline.saturating_duration_since(instant),
+        None if d.session != session() => Duration::ZERO,
+        None => {
+            let mut next = d.refresh_at;
+            if d.access_enabled && d.account.is_some() && !d.disconnect_pending {
+                next = next.min(d.catalog_refresh_at);
+            }
+            Duration::from_secs(next.saturating_sub(at))
+        }
+    };
+    wait.clamp(WORKER_MIN_SLEEP, WORKER_MAX_SLEEP)
 }
 fn worker_due(d: &Document, pending: Option<Instant>, at: u64, instant: Instant) -> bool {
     match pending {
@@ -2063,6 +2097,8 @@ pub fn install(app: &tauri::AppHandle) {
         let pending_due = pending_deadline.is_some_and(|time| Instant::now() >= time);
         personal_token::check(&app);
         flush_account_credential();
+        // Another GitHub operation holds the network lock: look again shortly.
+        let mut wait = Duration::from_secs(1);
         if let Some(_network) = try_serialize(&OPERATION) {
             let observed = {
                 let _state = serialize(&STATE);
@@ -2198,10 +2234,18 @@ pub fn install(app: &tauri::AppHandle) {
                             let _ = save(&app, &current);
                         }
                     }
+                    // Re-evaluate promptly against the document this pass saved.
+                    wait = WORKER_MIN_SLEEP;
+                } else {
+                    wait = worker_wait(&d, pending_deadline, now(), Instant::now());
                 }
+            } else {
+                wait = Duration::from_secs(5);
             }
         }
-        std::thread::sleep(Duration::from_millis(100));
+        // Sleep until the next deadline (not a 100 ms poll that re-read the whole
+        // document for the app's lifetime); `schedule` wakes the worker early.
+        worker_sleep(wait.min(personal_token::next_check()).max(WORKER_MIN_SLEEP));
     });
 }
 
@@ -2688,6 +2732,46 @@ mod tests {
             100,
             first + Duration::from_millis(900)
         ));
+    }
+    #[test]
+    fn idle_worker_sleeps_until_its_next_deadline_instead_of_polling() {
+        let instant = Instant::now();
+        let mut d = Document { session: session().into(), refresh_at: 1_000 + 3_600, ..Default::default() };
+        // Nothing due for an hour: sleep the longest bounded interval, not 100 ms.
+        assert_eq!(worker_wait(&d, None, 1_000, instant), WORKER_MAX_SLEEP);
+        d.refresh_at = 1_010;
+        assert_eq!(worker_wait(&d, None, 1_000, instant), Duration::from_secs(10));
+        // A connected account also wakes for its catalog refresh.
+        d.access_enabled = true;
+        d.account = Some("owner".into());
+        d.catalog_refresh_at = 1_003;
+        assert_eq!(worker_wait(&d, None, 1_000, instant), Duration::from_secs(3));
+        // A scheduled edit wakes at its (debounced) deadline.
+        let deadline = instant + Duration::from_millis(500);
+        assert_eq!(worker_wait(&d, Some(deadline), 1_000, instant), Duration::from_millis(500));
+        // A new app session is due at once (never faster than the minimum sleep).
+        d.session = "older".into();
+        assert_eq!(worker_wait(&d, None, 1_000, instant), WORKER_MIN_SLEEP);
+    }
+    #[test]
+    fn scheduling_wakes_a_sleeping_worker() {
+        // Other tests schedule work without a worker; start from a consumed wake-up.
+        *WORKER_WOKEN.lock().unwrap() = false;
+        let (done, finished) = std::sync::mpsc::channel();
+        let sleeper = std::thread::spawn(move || {
+            let started = Instant::now();
+            worker_sleep(Duration::from_secs(30));
+            done.send(started.elapsed()).unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        schedule(Duration::ZERO);
+        assert!(finished.recv_timeout(Duration::from_secs(5)).unwrap() < Duration::from_secs(5));
+        sleeper.join().unwrap();
+        // The wake-up was consumed: the next sleep waits for its timeout.
+        let started = Instant::now();
+        worker_sleep(Duration::from_millis(50));
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        *PENDING.get_or_init(|| Mutex::new(None)).lock().unwrap() = None;
     }
     #[test]
     fn identity_only_edit_does_not_request_access_or_postpone_renewal() {

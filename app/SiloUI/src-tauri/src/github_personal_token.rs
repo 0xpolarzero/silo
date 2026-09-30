@@ -232,6 +232,10 @@ fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String>
     result
 }
 
+/// Time until `check` validates the token again, so the worker can sleep until then.
+pub(super) fn next_check() -> Duration {
+    Duration::from_secs(CHECK_AT.load(Ordering::SeqCst).saturating_sub(now()))
+}
 /// Called by the existing serialized worker. Snapshot reads never touch secure storage.
 pub(super) fn check(app: &tauri::AppHandle) {
     let Some(_operation) = try_serialize(&TOKEN_OPERATION) else {
