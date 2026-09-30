@@ -282,6 +282,7 @@ mod tests {
 
     #[test]
     fn remote_start_retries_a_transient_failure_in_the_vm_lane() {
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths) = configured();
         let runtime = Runtime::stopped();
         runtime.timeouts.store(1, std::sync::atomic::Ordering::SeqCst);
@@ -297,6 +298,7 @@ mod tests {
 
     #[test]
     fn a_repeated_remote_request_is_handed_to_the_one_already_waiting() {
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths) = configured();
         let runtime = std::sync::Arc::new(Runtime::stopped());
         let blocker = OPERATIONS.vm(ID, "dev", "Creating checkpoint").unwrap();
@@ -322,6 +324,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_remote_start_is_not_retried_or_resumed() {
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths) = configured();
         let runtime = std::sync::Arc::new(Runtime::stopped());
         let (started, running) = std::sync::mpsc::channel();
@@ -343,6 +346,7 @@ mod tests {
 
     #[test]
     fn remote_actions_reject_unknown_actions_and_vms_before_queueing() {
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths) = configured();
         let runtime = Runtime::stopped();
         for params in [json!({"vmId": ID, "action": "remove"}), json!({"vmId": "missing", "action": "start"}), json!({"action": "start"})] {
@@ -353,6 +357,7 @@ mod tests {
 
     #[test]
     fn targeted_change_preserves_other_vms_and_rejects_stale_configuration() {
+        let _test_state = crate::test_support::global_state();
         let a = vm("a");
         let b = vm("b");
         let mut machines = vec![a.clone(), b.clone()];
