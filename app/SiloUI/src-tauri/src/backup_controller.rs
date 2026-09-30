@@ -1519,7 +1519,9 @@ fn run_restore(
     let started = std::time::Instant::now();
     let mut archive = archive;
     let result = (|| {
-        let inspection = controller.service.inspect_archive(&path, &cancellation)?;
+        // The review already hashed the whole file and the import verifies
+        // the selected payload as it unpacks, so read only the manifest (E-26).
+        let inspection = controller.service.describe_archive(&path, &cancellation)?;
         let selected = select_archive_source(&inspection.sandboxes, source_name.as_deref())?;
         archive = archive_from(&path, &inspection);
         if let Ok(mut view) = controller.view.lock() {

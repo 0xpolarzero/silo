@@ -784,17 +784,33 @@ impl<R: MsbRunner> BackupService<R> {
         Ok(path)
     }
 
+    /// Check the whole archive, hashing every payload (the review before an import).
     pub(crate) fn inspect_archive(
         &self,
         archive: &Path,
         cancellation: &Cancellation,
     ) -> Result<ArchiveInspection, BackupError> {
-        let package = read_and_verify_package(
-            archive,
-            self.max_archive_bytes,
-            cancellation,
-            PayloadMode::VerifyAll,
-        )?;
+        self.read_inspection(archive, cancellation, PayloadMode::VerifyAll)
+    }
+
+    /// Read the archive's header and manifest without reading any payload.
+    /// The import itself verifies the selected payload while extracting it,
+    /// so it needs no second full inspection (E-26).
+    pub(crate) fn describe_archive(
+        &self,
+        archive: &Path,
+        cancellation: &Cancellation,
+    ) -> Result<ArchiveInspection, BackupError> {
+        self.read_inspection(archive, cancellation, PayloadMode::Describe)
+    }
+
+    fn read_inspection(
+        &self,
+        archive: &Path,
+        cancellation: &Cancellation,
+        mode: PayloadMode<'_>,
+    ) -> Result<ArchiveInspection, BackupError> {
+        let package = read_and_verify_package(archive, self.max_archive_bytes, cancellation, mode)?;
         Ok(ArchiveInspection {
             created_at_ms: package.manifest.created_at_ms,
             size_bytes: package.size_bytes,
@@ -1461,6 +1477,8 @@ struct SpaceBudget {
 }
 
 enum PayloadMode<'a> {
+    /// Validate the header, manifest and length only; read no payload.
+    Describe,
     /// Hash every payload: the review inspection and the export's final check.
     VerifyAll,
     /// Verify, pre-scan and extract only the selected sandbox's payload; skip
@@ -1532,6 +1550,13 @@ fn read_and_verify_package(
     }
 
     let extract = match mode {
+        PayloadMode::Describe => {
+            return Ok(VerifiedPackage {
+                manifest,
+                extracted: None,
+                size_bytes: metadata.len(),
+            });
+        }
         PayloadMode::VerifyAll => None,
         PayloadMode::Extract { dir, source, space } => {
             Some((dir, select_restore_source(&manifest, source)?, space))
@@ -4635,6 +4660,32 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert_eq!(staged, ["snapshot-1.tar.zst"]);
+    }
+
+    #[test]
+    fn describing_an_archive_reads_its_manifest_but_no_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("two.silo-backup");
+        let service = service(&temp, FakeRunner::default());
+        create_two(&service, archive.clone());
+        let mut bytes = fs::read(&archive).unwrap();
+        let offset = first_payload_offset(&bytes);
+        bytes[offset + 5] ^= 0xff;
+        fs::write(&archive, &bytes).unwrap();
+        // A damaged payload is only found by hashing it.
+        assert!(service.inspect_archive(&archive, &Cancellation::default()).is_err());
+        let described = service
+            .describe_archive(&archive, &Cancellation::default())
+            .unwrap();
+        assert_eq!(described.sandboxes, ["dev", "second"]);
+        assert_eq!(described.size_bytes, bytes.len() as u64);
+        // The header, manifest and length are still checked.
+        bytes.truncate(bytes.len() - 1);
+        fs::write(&archive, &bytes).unwrap();
+        assert!(matches!(
+            service.describe_archive(&archive, &Cancellation::default()),
+            Err(BackupError::InvalidArchive(_))
+        ));
     }
 
     #[test]
