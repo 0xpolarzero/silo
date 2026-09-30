@@ -353,11 +353,21 @@ fn validate_address(address: &str) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-pub fn remote_authorize_ssh(app: AppHandle, address: String) -> Result<(), String> {
-    let address = address.trim();
+pub async fn remote_authorize_ssh(app: AppHandle, address: String) -> Result<(), String> {
+    // Resolving and launching the terminal can take seconds (application lookup, an
+    // AppleScript for Ghostty), so it runs off the main thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let command = authorize_command(address.trim())?;
+        let application = crate::applications::selected_terminal(&app)?;
+        crate::applications::open_terminal(&app, &application, &command)
+    })
+    .await
+    .map_err(|_| "Could not open the terminal.".to_string())?
+}
+/// The terminal command that lets the user trust the host key and unlock their SSH key.
+fn authorize_command(address: &str) -> Result<String, String> {
     validate_address(address)?;
-    let application = crate::applications::selected_terminal(&app)?;
-    let command = [
+    Ok([
         "/usr/bin/ssh",
         "-o",
         "StrictHostKeyChecking=ask",
@@ -374,8 +384,7 @@ pub fn remote_authorize_ssh(app: AppHandle, address: String) -> Result<(), Strin
     .iter()
     .map(|arg| crate::terminal::quote(arg))
     .collect::<Vec<_>>()
-    .join(" ");
-    crate::applications::open_terminal(&app, &application, &command)
+    .join(" "))
 }
 
 fn write_frame(mut writer: impl Write, value: &Value) -> Result<(), String> {
@@ -563,10 +572,25 @@ pub(crate) fn ssh_tunnel_command(
 }
 
 #[tauri::command]
-pub fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(), String> {
-    let address = address.trim();
+pub async fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(), String> {
+    // ssh-keygen and the terminal launch run off the main thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let address = address.trim();
+        let command = key_setup_command(&directory()?, address)?;
+        let application = crate::applications::selected_terminal(&app)?;
+        crate::applications::open_terminal(&app, &application, &command)?;
+        // Offer Silo's key alone again once it is installed there.
+        remember_identity(address, Identity::SiloOnly);
+        Ok(())
+    })
+    .await
+    .map_err(|_| "Could not open the terminal.".to_string())?
+}
+/// Creates Silo's key in `dir` if needed and returns the terminal command that installs
+/// its restricted `authorized_keys` line for the account at `address`.
+fn key_setup_command(dir: &Path, address: &str) -> Result<String, String> {
     validate_address(address)?;
-    let key = directory()?.join("id_ed25519");
+    let key = dir.join("id_ed25519");
     if !key.exists() {
         let status = Command::new("/usr/bin/ssh-keygen")
             .args([
@@ -608,16 +632,14 @@ pub fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(), Strin
         address,
         INSTALL_PUBLIC_KEY,
     ];
-    let command = format!(
+    Ok(format!(
         "printf '%s\n' {} | {}",
         crate::terminal::quote(&line),
         args.iter()
             .map(|arg| crate::terminal::quote(arg))
             .collect::<Vec<_>>()
             .join(" ")
-    );
-    let application = crate::applications::selected_terminal(&app)?;
-    crate::applications::open_terminal(&app, &application, &command)
+    ))
 }
 fn silo_key_blob(public: &str) -> Result<&str, String> {
     let mut parts = public.split_whitespace();
@@ -1786,6 +1808,44 @@ mod setup_tests {
             "{}",
             shell.display()
         );
+    }
+    #[test]
+    fn key_setup_creates_silos_key_once_and_installs_its_restricted_line() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(key_setup_command(dir.path(), "-oProxyCommand=evil").is_err());
+        assert!(!dir.path().join("id_ed25519").exists());
+        let command = key_setup_command(dir.path(), "me@office").unwrap();
+        let key = dir.path().join("id_ed25519");
+        assert_eq!(fs::metadata(&key).unwrap().permissions().mode() & 0o077, 0);
+        let public = fs::read_to_string(key.with_extension("pub")).unwrap();
+        assert!(command.starts_with("printf '%s\n' "));
+        assert!(command.contains(&authorized_key_line(&public).unwrap()));
+        assert!(command.contains("sh -c"));
+        assert!(command.contains("me@office"));
+        // A second setup reuses the key.
+        let again = key_setup_command(dir.path(), "me@office").unwrap();
+        assert_eq!(again, command);
+        let authorize = authorize_command("me@office").unwrap();
+        assert!(authorize.contains("StrictHostKeyChecking=ask") && authorize.ends_with(&format!("{} {}", crate::terminal::quote("me@office"), crate::terminal::quote("true"))));
+        assert!(authorize_command("$(whoami)").is_err());
+    }
+    #[test]
+    fn commands_that_launch_processes_stay_off_the_main_thread() {
+        // Tauri runs a synchronous command on the main thread; only quick settings reads
+        // and writes may be synchronous here.
+        let quick = ["remote_management_status", "set_remote_management", "remote_host_list", "remove_remote_host"];
+        let source = include_str!("remote.rs");
+        let mut commands = 0;
+        for block in source.split("#[tauri::command]").skip(1) {
+            let signature = block.trim_start().lines().next().unwrap();
+            if !signature.starts_with("pub") {
+                continue;
+            }
+            let name = signature.split("fn ").nth(1).unwrap().split('(').next().unwrap();
+            commands += 1;
+            assert!(signature.contains("async fn") || quick.contains(&name), "{name} must be async");
+        }
+        assert!(commands >= 10);
     }
     #[test]
     fn public_key_install_preserves_existing_unterminated_line_and_is_idempotent() {
