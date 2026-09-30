@@ -1,0 +1,442 @@
+[
+  {
+    "activities": [
+      {
+        "category": "sandbox",
+        "detail": "The sandbox could not start.",
+        "diagnostic": "Runtime startup failed.",
+        "id": "contract-lifecycle-1",
+        "occurredAt": "2026-01-01T00:00:00.000Z",
+        "status": "completed",
+        "time": "2026-01-01T00:00:00.000Z",
+        "title": "Starting sandbox failed",
+        "tone": "danger",
+        "workspace": "dev"
+      }
+    ],
+    "github": {
+      "state": "disconnected"
+    },
+    "hostCapacity": {
+      "logicalCpus": 8,
+      "maxMemoryGib": 16,
+      "physicalMemoryBytes": 17179869184
+    },
+    "repositoryPushOperations": [],
+    "runtimeRepair": null,
+    "sandboxConfigurationOperation": null,
+    "secrets": [],
+    "workspaces": [
+      {
+        "canDismissError": false,
+        "checkpointOperation": {
+          "error": "Checkpoint storage is unavailable.",
+          "kind": "capture",
+          "stage": "Saving checkpoint",
+          "status": "failed"
+        },
+        "checkpoints": [
+          {
+            "createdAt": 1767225600000,
+            "id": "point-1",
+            "name": "Before change",
+            "nativeId": "native-1",
+            "reason": "manual",
+            "scope": "full"
+          }
+        ],
+        "files": [],
+        "freshness": "fresh",
+        "githubRepositories": [],
+        "host": "127.0.0.1",
+        "lifecycleFailure": "Start failed: The sandbox could not start.",
+        "lifecycleFailureDiagnostic": "Runtime startup failed.",
+        "logs": [],
+        "machine": {
+          "cpus": 2,
+          "id": "00000000-0000-4000-8000-000000000001",
+          "kind": "vm",
+          "maxCPUs": 4,
+          "maxMemoryGiB": 8,
+          "memoryGiB": 4,
+          "name": "dev",
+          "runtimeStorageGiB": 20,
+          "workspaceStorageGiB": 10
+        },
+        "pendingCheckpointRestore": {
+          "checkpointId": "native-1",
+          "sourceWorkspace": "dev",
+          "state": "full"
+        },
+        "ports": [],
+        "purpose": "Local MicroSandbox",
+        "repositories": [],
+        "secretNames": [],
+        "state": "running",
+        "stateDetail": "Running",
+        "unfinishedRestore": {
+          "checkpointId": "point-1",
+          "checkpointName": "Before change",
+          "phase": "secured"
+        }
+      },
+      {
+        "attention": {
+          "level": "warning",
+          "message": "Legacy SSH sandbox connections are unavailable. Add this computer in Computers to manage its Silo sandboxes."
+        },
+        "canDismissError": false,
+        "files": [],
+        "freshness": "stale",
+        "githubRepositories": [],
+        "host": "legacy.example.test",
+        "logs": [],
+        "machine": {
+          "host": "legacy.example.test",
+          "id": "00000000-0000-4000-8000-000000000002",
+          "kind": "ssh",
+          "name": "legacy",
+          "port": 22,
+          "user": "silo"
+        },
+        "ports": [],
+        "purpose": "SSH sandbox",
+        "repositories": [],
+        "secretNames": [],
+        "state": "failed",
+        "stateDetail": "State unavailable"
+      }
+    ]
+  },
+  {
+    "activities": [
+      {
+        "category": "sandbox",
+        "detail": "The sandbox could not start.",
+        "diagnostic": "Runtime startup failed.",
+        "id": "contract-lifecycle-1",
+        "occurredAt": "2026-01-01T00:00:00.000Z",
+        "status": "completed",
+        "time": "2026-01-01T00:00:00.000Z",
+        "title": "Starting sandbox failed",
+        "tone": "danger",
+        "workspace": "dev"
+      }
+    ],
+    "github": {
+      "state": "disconnected"
+    },
+    "hostCapacity": {
+      "logicalCpus": 8,
+      "maxMemoryGib": 16,
+      "physicalMemoryBytes": 17179869184
+    },
+    "repositoryPushOperations": [],
+    "runtimeRepair": null,
+    "sandboxConfigurationOperation": null,
+    "secrets": [],
+    "workspaces": [
+      {
+        "canDismissError": false,
+        "checkpointOperation": {
+          "error": "Checkpoint storage is unavailable.",
+          "kind": "capture",
+          "stage": "Saving checkpoint",
+          "status": "failed"
+        },
+        "checkpoints": [
+          {
+            "createdAt": 1767225600000,
+            "id": "point-1",
+            "name": "Before change",
+            "nativeId": "native-1",
+            "reason": "manual",
+            "scope": "full"
+          }
+        ],
+        "files": [],
+        "freshness": "fresh",
+        "githubRepositories": [],
+        "host": "127.0.0.1",
+        "lifecycleFailure": "Start failed: The sandbox could not start.",
+        "lifecycleFailureDiagnostic": "Runtime startup failed.",
+        "logs": [],
+        "machine": {
+          "cpus": 2,
+          "id": "00000000-0000-4000-8000-000000000001",
+          "kind": "vm",
+          "maxCPUs": 4,
+          "maxMemoryGiB": 8,
+          "memoryGiB": 4,
+          "name": "dev",
+          "runtimeStorageGiB": 20,
+          "workspaceStorageGiB": 10
+        },
+        "pendingCheckpointRestore": {
+          "checkpointId": "native-1",
+          "sourceWorkspace": "dev",
+          "state": "full"
+        },
+        "ports": [],
+        "purpose": "Local MicroSandbox",
+        "repositories": [],
+        "secretNames": [],
+        "state": "starting",
+        "stateDetail": "Starting",
+        "unfinishedRestore": {
+          "checkpointId": "point-1",
+          "checkpointName": "Before change",
+          "phase": "secured"
+        }
+      },
+      {
+        "attention": {
+          "level": "warning",
+          "message": "Legacy SSH sandbox connections are unavailable. Add this computer in Computers to manage its Silo sandboxes."
+        },
+        "canDismissError": false,
+        "files": [],
+        "freshness": "stale",
+        "githubRepositories": [],
+        "host": "legacy.example.test",
+        "logs": [],
+        "machine": {
+          "host": "legacy.example.test",
+          "id": "00000000-0000-4000-8000-000000000002",
+          "kind": "ssh",
+          "name": "legacy",
+          "port": 22,
+          "user": "silo"
+        },
+        "ports": [],
+        "purpose": "SSH sandbox",
+        "repositories": [],
+        "secretNames": [],
+        "state": "failed",
+        "stateDetail": "State unavailable"
+      }
+    ]
+  },
+  {
+    "activities": [
+      {
+        "category": "sandbox",
+        "detail": "The sandbox could not start.",
+        "diagnostic": "Runtime startup failed.",
+        "id": "contract-lifecycle-1",
+        "occurredAt": "2026-01-01T00:00:00.000Z",
+        "status": "completed",
+        "time": "2026-01-01T00:00:00.000Z",
+        "title": "Starting sandbox failed",
+        "tone": "danger",
+        "workspace": "dev"
+      }
+    ],
+    "github": {
+      "state": "disconnected"
+    },
+    "hostCapacity": {
+      "logicalCpus": 8,
+      "maxMemoryGib": 16,
+      "physicalMemoryBytes": 17179869184
+    },
+    "repositoryPushOperations": [],
+    "runtimeRepair": null,
+    "sandboxConfigurationOperation": null,
+    "secrets": [],
+    "workspaces": [
+      {
+        "canDismissError": false,
+        "checkpointOperation": {
+          "error": "Checkpoint storage is unavailable.",
+          "kind": "capture",
+          "stage": "Saving checkpoint",
+          "status": "failed"
+        },
+        "checkpoints": [
+          {
+            "createdAt": 1767225600000,
+            "id": "point-1",
+            "name": "Before change",
+            "nativeId": "native-1",
+            "reason": "manual",
+            "scope": "full"
+          }
+        ],
+        "files": [],
+        "freshness": "fresh",
+        "githubRepositories": [],
+        "host": "127.0.0.1",
+        "lifecycleFailure": "Start failed: The sandbox could not start.",
+        "lifecycleFailureDiagnostic": "Runtime startup failed.",
+        "logs": [],
+        "machine": {
+          "cpus": 2,
+          "id": "00000000-0000-4000-8000-000000000001",
+          "kind": "vm",
+          "maxCPUs": 4,
+          "maxMemoryGiB": 8,
+          "memoryGiB": 4,
+          "name": "dev",
+          "runtimeStorageGiB": 20,
+          "workspaceStorageGiB": 10
+        },
+        "pendingCheckpointRestore": {
+          "checkpointId": "native-1",
+          "sourceWorkspace": "dev",
+          "state": "full"
+        },
+        "ports": [],
+        "purpose": "Local MicroSandbox",
+        "repositories": [],
+        "secretNames": [],
+        "state": "stopped",
+        "stateDetail": "Stopped",
+        "unfinishedRestore": {
+          "checkpointId": "point-1",
+          "checkpointName": "Before change",
+          "phase": "secured"
+        }
+      },
+      {
+        "attention": {
+          "level": "warning",
+          "message": "Legacy SSH sandbox connections are unavailable. Add this computer in Computers to manage its Silo sandboxes."
+        },
+        "canDismissError": false,
+        "files": [],
+        "freshness": "stale",
+        "githubRepositories": [],
+        "host": "legacy.example.test",
+        "logs": [],
+        "machine": {
+          "host": "legacy.example.test",
+          "id": "00000000-0000-4000-8000-000000000002",
+          "kind": "ssh",
+          "name": "legacy",
+          "port": 22,
+          "user": "silo"
+        },
+        "ports": [],
+        "purpose": "SSH sandbox",
+        "repositories": [],
+        "secretNames": [],
+        "state": "failed",
+        "stateDetail": "State unavailable"
+      }
+    ]
+  },
+  {
+    "activities": [
+      {
+        "category": "sandbox",
+        "detail": "The sandbox could not start.",
+        "diagnostic": "Runtime startup failed.",
+        "id": "contract-lifecycle-1",
+        "occurredAt": "2026-01-01T00:00:00.000Z",
+        "status": "completed",
+        "time": "2026-01-01T00:00:00.000Z",
+        "title": "Starting sandbox failed",
+        "tone": "danger",
+        "workspace": "dev"
+      }
+    ],
+    "github": {
+      "state": "disconnected"
+    },
+    "hostCapacity": {
+      "logicalCpus": 8,
+      "maxMemoryGib": 16,
+      "physicalMemoryBytes": 17179869184
+    },
+    "repositoryPushOperations": [],
+    "runtimeRepair": null,
+    "sandboxConfigurationOperation": null,
+    "secrets": [],
+    "workspaces": [
+      {
+        "attention": {
+          "level": "error",
+          "message": "The sandbox runtime crashed. Restart it to retry."
+        },
+        "canDismissError": true,
+        "checkpointOperation": {
+          "error": "Checkpoint storage is unavailable.",
+          "kind": "capture",
+          "stage": "Saving checkpoint",
+          "status": "failed"
+        },
+        "checkpoints": [
+          {
+            "createdAt": 1767225600000,
+            "id": "point-1",
+            "name": "Before change",
+            "nativeId": "native-1",
+            "reason": "manual",
+            "scope": "full"
+          }
+        ],
+        "files": [],
+        "freshness": "fresh",
+        "githubRepositories": [],
+        "host": "127.0.0.1",
+        "lifecycleFailure": "Start failed: The sandbox could not start.",
+        "lifecycleFailureDiagnostic": "Runtime startup failed.",
+        "logs": [],
+        "machine": {
+          "cpus": 2,
+          "id": "00000000-0000-4000-8000-000000000001",
+          "kind": "vm",
+          "maxCPUs": 4,
+          "maxMemoryGiB": 8,
+          "memoryGiB": 4,
+          "name": "dev",
+          "runtimeStorageGiB": 20,
+          "workspaceStorageGiB": 10
+        },
+        "pendingCheckpointRestore": {
+          "checkpointId": "native-1",
+          "sourceWorkspace": "dev",
+          "state": "full"
+        },
+        "ports": [],
+        "purpose": "Local MicroSandbox",
+        "repositories": [],
+        "secretNames": [],
+        "state": "failed",
+        "stateDetail": "The MicroSandbox runtime reported a crash.",
+        "unfinishedRestore": {
+          "checkpointId": "point-1",
+          "checkpointName": "Before change",
+          "phase": "secured"
+        }
+      },
+      {
+        "attention": {
+          "level": "warning",
+          "message": "Legacy SSH sandbox connections are unavailable. Add this computer in Computers to manage its Silo sandboxes."
+        },
+        "canDismissError": false,
+        "files": [],
+        "freshness": "stale",
+        "githubRepositories": [],
+        "host": "legacy.example.test",
+        "logs": [],
+        "machine": {
+          "host": "legacy.example.test",
+          "id": "00000000-0000-4000-8000-000000000002",
+          "kind": "ssh",
+          "name": "legacy",
+          "port": 22,
+          "user": "silo"
+        },
+        "ports": [],
+        "purpose": "SSH sandbox",
+        "repositories": [],
+        "secretNames": [],
+        "state": "failed",
+        "stateDetail": "State unavailable"
+      }
+    ]
+  }
+]

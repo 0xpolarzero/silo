@@ -45,6 +45,7 @@ above for current behavior and build commands.
 
 ### Runtime, checkpoints and network
 
+- [Native bridge contract audit](research/native-bridge-contract-2026-09-30.md): Rust-emitted state fixtures, typed error codes, remote compatibility, and verification limits.
 - [Runtime failure contract](SiloUI-RUNTIME-ERRORS.md): summary, diagnostic and partial-change fields for setup, lifecycle and Activity failures.
 
 - [Checkpoint and desktop direction](research/checkpoints-desktop-direction-2026-09-24.md): newer MicroSandbox snapshot/fork support, the upstream-upgrade alternative, Btrfs limits, desktop candidate fit, LCU boundaries and qualification requirements.

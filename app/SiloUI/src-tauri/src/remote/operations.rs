@@ -7,6 +7,7 @@
 //! whose controller disconnected, never starts. A retry of a known change attaches to it
 //! and receives its result instead of running it again. Results stay in memory for an
 //! hour; a small marker per change on disk keeps a restart from replaying it.
+use crate::bridge_error::BridgeError;
 use crate::runtime::operation_gate::StartCondition;
 use serde_json::{json, Value};
 use std::{
@@ -37,7 +38,7 @@ pub(super) type Probe = Arc<dyn Fn() -> bool + Send + Sync>;
 
 enum Status {
     Pending,
-    Done(Result<Value, String>),
+    Done(Result<Value, BridgeError>),
     Expired,
 }
 
@@ -111,8 +112,8 @@ impl Registry {
     pub(super) fn submit(
         &'static self,
         submission: Submission<'_>,
-        execute: impl FnOnce() -> Result<Value, String>,
-    ) -> Result<Value, String> {
+        execute: impl FnOnce() -> Result<Value, BridgeError>,
+    ) -> Result<Value, BridgeError> {
         let fingerprint = json!({"method": submission.method, "params": submission.params});
         let role = self.accept(&submission, fingerprint)?;
         match role {
@@ -122,7 +123,7 @@ impl Registry {
     }
 
     /// The short acceptance step: record the change, or find the existing one.
-    fn accept(&self, submission: &Submission<'_>, fingerprint: Value) -> Result<Role, String> {
+    fn accept(&self, submission: &Submission<'_>, fingerprint: Value) -> Result<Role, BridgeError> {
         let now = Instant::now();
         let mut state = self.lock();
         state.prune(now, submission.journal);
@@ -185,8 +186,8 @@ impl Registry {
     fn run(
         &'static self,
         submission: &Submission<'_>,
-        execute: impl FnOnce() -> Result<Value, String>,
-    ) -> Result<Value, String> {
+        execute: impl FnOnce() -> Result<Value, BridgeError>,
+    ) -> Result<Value, BridgeError> {
         let id = submission.id.to_owned();
         let allowed = submission.allowed.clone();
         let marker = submission.journal.join(format!("{id}.json"));
@@ -223,20 +224,20 @@ impl Registry {
     }
 
     /// A retry waits for the change it names, while its own connection stays open.
-    fn attach(&self, id: &str, connection: u64, submission: &Submission<'_>) -> Result<Value, String> {
+    fn attach(&self, id: &str, connection: u64, submission: &Submission<'_>) -> Result<Value, BridgeError> {
         let until = Instant::now() + submission.wait;
         let mut state = self.lock();
         let outcome = loop {
             let Some(operation) = state.operations.get(id) else {
-                break Err(UNCERTAIN.to_owned());
+                break Err(BridgeError::from(UNCERTAIN));
             };
             match &operation.status {
                 Status::Done(result) => break result.clone(),
-                Status::Expired => break Err(EXPIRED.to_owned()),
+                Status::Expired => break Err(BridgeError::from(EXPIRED)),
                 Status::Pending => {}
             }
             if Instant::now() >= until || !(submission.connection)() {
-                break Err(STILL_RUNNING.to_owned());
+                break Err(BridgeError::from(STILL_RUNNING));
             }
             state = self
                 .finished
@@ -382,7 +383,7 @@ mod tests {
         OPERATIONS.snapshot().waiting.iter().any(|entry| entry.vm_id.as_deref() == Some(vm))
     }
     /// Runs like a remote change: takes the VM's gate on this thread, then works.
-    fn change_on(vm: String, runs: &'static AtomicUsize) -> impl FnOnce() -> Result<Value, String> {
+    fn change_on(vm: String, runs: &'static AtomicUsize) -> impl FnOnce() -> Result<Value, BridgeError> {
         move || {
             let _guard = OPERATIONS.vm(&vm, "vm", "Remote change").map_err(|e| e.to_string())?;
             runs.fetch_add(1, Ordering::SeqCst);

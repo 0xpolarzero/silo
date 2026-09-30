@@ -1,3 +1,4 @@
+import { bridgeErrorMessage, hasBridgeErrorCode } from "@/contracts/bridge-error"
 import { defaultSettings } from "@/features/preferences/model/settings"
 import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
 import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
@@ -31,7 +32,7 @@ const bridge: ProductionBridge = {
 }
 
 const sshAccessShape = z.object({ workspaces: z.array(z.object({
-  workspace: z.string(), enabled: z.boolean(), port: z.number().int(), bindAddress: z.string(), keys: z.array(z.string()),
+  workspace: z.string(), user: z.string().optional(), enabled: z.boolean(), port: z.number().int(), bindAddress: z.string(), keys: z.array(z.string()),
   state: z.enum(["disabled", "waiting", "listening", "error"]), message: z.string().nullable(), fingerprint: z.string().nullable(), computerName: z.string(), addresses: z.array(z.string()),
 })) })
 
@@ -255,6 +256,14 @@ const networkStateShape = z.object({ workspaces: z.array(z.object({
   })),
 })) })
 
+export function parseSshAccessState(input: unknown): SshAccessState {
+  return sshAccessShape.parse(input)
+}
+
+export function parseNetworkState(input: unknown): NetworkState {
+  return networkStateShape.parse(input)
+}
+
 export function parseApplicationSource(input: unknown): ApplicationSource {
   return applicationSourceShape.parse(input) as ApplicationSource
 }
@@ -269,6 +278,8 @@ export function parseBackupState(input: unknown): BackupState {
 }
 
 function errorMessage(error: unknown): string {
+  const message = bridgeErrorMessage(error)
+  if (message) return message
   if (error instanceof Error && error.message.trim()) return error.message
   const text = String(error).trim()
   return text || "The desktop bridge returned an unknown error."
@@ -323,9 +334,9 @@ const PUSH_STATUS_INTERVAL_MS = 2_000
 const PUSH_STATUS_MAX_INTERVAL_MS = 30_000
 const PUSH_STATUS_ATTEMPTS = 8
 
-/** The runtime's "configuration is updating" sentinel, bare or wrapped by a remote bridge. */
+/** Defers a state read while the owning computer changes sandbox configuration. */
 export function isUpdateInProgress(cause: unknown) {
-  return errorMessage(cause).includes("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+  return hasBridgeErrorCode(cause, "update_in_progress")
 }
 
 export function createProductionSource(native: ProductionBridge = bridge) {
@@ -428,13 +439,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     sshRequest = (async () => {
       const results = await Promise.allSettled([
         native.invoke("read_ssh_access_state").then(value => {
-          const state = sshAccessShape.parse(value)
+          const state = parseSshAccessState(value)
           if (state.workspaces.some(row => sshOwner(row.workspace) !== "")) throw new Error("SSH response belongs to another computer.")
           return state
         }),
         ...computers.map(async computer => {
           if (!computer.connected) throw new Error("Computer is offline.")
-          const state = sshAccessShape.parse(await native.invoke("remote_ssh_access_state", { hostId: computer.id }))
+          const state = parseSshAccessState(await native.invoke("remote_ssh_access_state", { hostId: computer.id }))
           if (state.workspaces.some(row => sshOwner(row.workspace) !== computer.id)) throw new Error("SSH response belongs to another computer.")
           return state
         }),
@@ -466,12 +477,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       networkDirty = false
       const revision = networkRevision
       try {
-        const local = networkStateShape.parse(await native.invoke("read_network_state"))
+        const local = parseNetworkState(await native.invoke("read_network_state"))
         const remotes = await Promise.all(remoteComputers.map(async computer => {
           const unavailable = (error: string) => (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
           // An offline computer would only cost a connection timeout on every poll.
           if (!computer.connected) return unavailable(`${computer.name} is unavailable. Reconnect to see network services.`)
-          try { return networkStateShape.parse(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
+          try { return parseNetworkState(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
           catch (cause) {
             return unavailable(isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : errorMessage(cause))
           }
@@ -507,7 +518,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const revision = ++networkRevision
     const remote = typeof arguments_.workspace === "string" ? parseRemoteWorkspaceTarget(arguments_.workspace) : undefined
     const { workspace: _workspace, ...rest } = arguments_
-    const result = networkStateShape.parse(await native.invoke(remote ? `remote_${command}` : command, remote ? { ...rest, ...remote } : arguments_))
+    const result = parseNetworkState(await native.invoke(remote ? `remote_${command}` : command, remote ? { ...rest, ...remote } : arguments_))
     if (revision !== networkRevision || disposed) return
     const retained = network?.workspaces.filter(row => remote ? !row.workspace.startsWith(`silo-remote:${remote.hostId}:`) : row.workspace.startsWith("silo-remote:")) ?? []
     network = { workspaces: [...retained, ...result.workspaces] }; networkError = null
@@ -553,11 +564,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function reportedCancellation(workspace: ApplicationWorkspace, cancelledAction: LifecycleAction | undefined): Partial<ApplicationWorkspace> {
-    if (workspace.lifecycleFailure) {
-      if (!isCancelledError(workspace.lifecycleFailure)) return {}
-      const prefix = /^(Start|Stop|Restart) failed: /.exec(workspace.lifecycleFailure)
-      return { lifecycleFailure: workspace.lifecycleFailure.slice(prefix?.[0].length ?? 0), lifecycleFailureAction: (prefix?.[1].toLowerCase() ?? "start") as LifecycleAction, lifecycleFailureCancelled: true }
-    }
+    if (workspace.lifecycleFailure) return {}
     return cancelledAction ? { lifecycleFailure: "The action was cancelled.", lifecycleFailureAction: cancelledAction, lifecycleFailureCancelled: true } : {}
   }
 
@@ -1022,7 +1029,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const message = errorMessage(cause)
     // A user-requested cancellation is not a failure: record it as a neutral,
     // retryable state so the row shows "<Action> cancelled", not a red error.
-    const cancelled = isCancelledError(message)
+    const cancelled = isCancelledError(cause)
     const label = `${action[0].toUpperCase()}${action.slice(1)}`
     workspaceFailures.set(name, { machineId: workspace.machine.id, action, message: cancelled ? message : `${label} failed: ${message}`, cancelled })
     publish({ ...snapshot, source: snapshot.source ? { ...snapshot.source,
@@ -1528,7 +1535,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const revision = ++sshRevision
       sshSaveRevisions.set(owner, revision)
       const { workspace: _workspace, ...settings } = request
-      const result = sshAccessShape.parse(await native.invoke(remote ? "remote_save_ssh_access" : "save_ssh_access", remote ? { ...remote, ...settings } : { ...request }))
+      const result = parseSshAccessState(await native.invoke(remote ? "remote_save_ssh_access" : "save_ssh_access", remote ? { ...remote, ...settings } : { ...request }))
       if (result.workspaces.some(row => sshOwner(row.workspace) !== owner)) throw new Error("SSH response belongs to another computer.")
       if (disposed || sshSaveRevisions.get(owner) !== revision) return
       if (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected) return

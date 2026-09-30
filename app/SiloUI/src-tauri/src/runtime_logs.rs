@@ -1,4 +1,5 @@
 //! Bounded, rotation-aware queries over all retained diagnostic files.
+use crate::bridge_error::{BridgeError, ErrorCode};
 use super::*;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::MetadataExt;
@@ -478,14 +479,14 @@ fn keep(entries: &mut Vec<Entry>, entry: Entry, limit: usize, ascending: bool) {
 pub(super) fn is_stopped(status: &str) -> bool {
     status.eq_ignore_ascii_case("stopped") || status.eq_ignore_ascii_case("created")
 }
-pub(crate) fn query(app: &AppHandle, request: Query) -> Result<Page, String> {
+pub(crate) fn query(app: &AppHandle, request: Query) -> Result<Page, BridgeError> {
     let (computer_id, computer_name) = crate::remote::log_identity()?;
     if let Some(owner) = request
         .computer_id
         .as_deref()
         .filter(|id| *id != computer_id && *id != "local")
     {
-        let outcome = crate::remote::call_remote(
+        let outcome = crate::remote::call_remote_typed(
             app,
             owner,
             "runtime.logs",
@@ -494,22 +495,16 @@ pub(crate) fn query(app: &AppHandle, request: Query) -> Result<Page, String> {
         return remote_page(outcome);
     }
     let paths = runtime_paths(app)?;
-    query_local(&paths, request, &computer_id, &computer_name)
+    query_local(&paths, request, &computer_id, &computer_name).map_err(BridgeError::from)
 }
 /// A computer running an older Silo rejects `runtime.logs` as an unknown request. That is
 /// an expected, structured outcome (an empty page marked unsupported), not a failure.
-pub(crate) fn is_unsupported_remote(message: &str) -> bool {
-    matches!(
-        message,
-        "Unsupported remote request." | "This Silo version does not support that remote operation."
-    )
-}
-fn remote_page(outcome: Result<Value, String>) -> Result<Page, String> {
+fn remote_page(outcome: Result<Value, BridgeError>) -> Result<Page, BridgeError> {
     match outcome {
         Ok(value) => serde_json::from_value(value).map_err(|_| {
             "The remote computer returned invalid logs. Update Silo on both computers.".into()
         }),
-        Err(message) if is_unsupported_remote(&message) => Ok(Page {
+        Err(error) if error.code == ErrorCode::UnsupportedRemoteOperation => Ok(Page {
             entries: Vec::new(),
             next_cursor: None,
             oldest_available_timestamp: None,
@@ -582,7 +577,7 @@ pub(super) fn query_local(
     )
 }
 #[tauri::command]
-pub(crate) async fn query_sandbox_logs(app: AppHandle, request: Query) -> Result<Page, String> {
+pub(crate) async fn query_sandbox_logs(app: AppHandle, request: Query) -> Result<Page, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || query(&app, request))
         .await
         .map_err(|e| e.to_string())?
@@ -965,10 +960,10 @@ mod tests {
     }
     #[test]
     fn unsupported_remote_request_becomes_a_structured_outcome() {
-        let page = super::remote_page(Err("Unsupported remote request.".into())).unwrap();
+        let page = super::remote_page(Err(BridgeError::unsupported())).unwrap();
         assert!(page.unsupported && page.entries.is_empty());
-        assert!(super::remote_page(Err("This Silo version does not support that remote operation.".into())).unwrap().unsupported);
-        assert_eq!(super::remote_page(Err("Connection refused.".into())).err().unwrap(), "Connection refused.");
+        assert!(super::remote_page(Err(BridgeError::new(ErrorCode::UnsupportedRemoteOperation, "Owner cannot serve logs."))).unwrap().unsupported);
+        assert_eq!(super::remote_page(Err("Connection refused.".into())).err().unwrap(), BridgeError::from("Connection refused."));
     }
     use super::*;
     #[test]

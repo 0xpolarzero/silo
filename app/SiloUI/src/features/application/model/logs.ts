@@ -1,3 +1,4 @@
+import { hasBridgeErrorCode } from "@/contracts/bridge-error"
 import { z } from "zod"
 import type { ApplicationWorkspace } from "./application-source"
 
@@ -33,8 +34,7 @@ export const logPageSchema = z.object({
   snapshot: z.string().nullish(),
 })
 export function isUnsupportedRemote(reason: unknown): boolean {
-  const message = String(reason)
-  return message.includes("Unsupported remote request") || message.includes("does not support that remote operation")
+  return hasBridgeErrorCode(reason, "unsupported_remote_operation")
 }
 export type LogEntry = z.infer<typeof logEntrySchema>
 export type LogPage = z.infer<typeof logPageSchema>

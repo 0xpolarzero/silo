@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub(crate) mod contract_tests;
 pub(crate) mod remote_ops;
 pub(crate) mod operation_gate;
 pub(crate) mod shutdown;
@@ -16,6 +18,7 @@ pub(crate) mod configuration_recovery;
 pub(crate) mod lifecycle_recovery;
 mod crash_acknowledgement;
 use serde::{Deserialize, Serialize};
+use crate::bridge_error::{BridgeError, ErrorCode};
 #[cfg(test)]
 use serde_json::json;
 use serde_json::Value;
@@ -57,8 +60,8 @@ pub fn read_operation_queue() -> operation_gate::OperationQueue {
 /// Ask to cancel a queued or running operation by its queue id. A waiting operation
 /// leaves the queue; a running operation is stopped only when it opted in as cancellable.
 #[tauri::command]
-pub fn cancel_operation(id: u64) -> Result<(), String> {
-    OPERATIONS.cancel(id).map_err(|error| error.to_string())
+pub fn cancel_operation(id: u64) -> Result<(), BridgeError> {
+    OPERATIONS.cancel(id).map_err(BridgeError::from)
 }
 const DISABLED_GITHUB_PROFILE: &str = r#"{"version":1,"owners":[]}"#;
 static GITHUB_PROFILES: OnceLock<Mutex<HashMap<(PathBuf, String), String>>> = OnceLock::new();
@@ -186,6 +189,7 @@ pub(crate) struct CommandOutput {
 #[derive(Debug)]
 pub(crate) enum RuntimeError {
     Busy,
+    Admission(operation_gate::GateError),
     Invalid(String),
     Unavailable(String),
     /// The bundled runtime process could not be started at this moment. Retrying may
@@ -207,6 +211,7 @@ pub(crate) enum RuntimeError {
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Admission(error) => write!(formatter, "{error}"),
             Self::Busy => formatter.write_str("Another sandbox operation is still running."),
             Self::Invalid(message)
             | Self::Unavailable(message)
@@ -232,9 +237,6 @@ impl std::fmt::Display for RuntimeError {
 const PARTIAL_CHANGES_KEPT: &str =
     "Completed changes were kept; reload the sandbox list before retrying.";
 
-/// Returned instead of a snapshot while sandbox configuration changes, so readers retry.
-pub(crate) const SANDBOX_UPDATE_IN_PROGRESS: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
-
 impl From<operation_gate::GateError> for RuntimeError {
     fn from(error: operation_gate::GateError) -> Self {
         match error {
@@ -242,7 +244,7 @@ impl From<operation_gate::GateError> for RuntimeError {
             operation_gate::GateError::Cancelled => RuntimeError::Cancelled {
                 operation: "The operation".into(),
             },
-            other => RuntimeError::Unavailable(other.to_string()),
+            other => RuntimeError::Admission(other),
         }
     }
 }
@@ -2099,7 +2101,7 @@ pub async fn read_machine_configuration(
 }
 
 #[tauri::command]
-pub async fn read_application_state(app: AppHandle, refresh_repositories: Option<bool>) -> Result<ApplicationSource, String> {
+pub async fn read_application_state(app: AppHandle, refresh_repositories: Option<bool>) -> Result<ApplicationSource, BridgeError> {
     crate::runtime_migration::ensure_ready(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
@@ -2119,7 +2121,7 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
         Ok(source)
     })
     .await
-    .map_err(|_| internal_failure("reading sandbox state"))?
+    .map_err(|_| BridgeError::from(internal_failure("reading sandbox state")))?
 }
 
 /// Expired logs of a stopped VM are cleaned at most this often, off the state-read path.
@@ -2298,27 +2300,26 @@ fn application_shell(paths: &RuntimePaths, error: &str) -> Result<ApplicationSou
 }
 
 /// The user-facing state read. Visible computer-wide work (it can add or remove
-/// sandboxes) defers the whole read with the UPDATING sentinel; work on one VM only
+/// sandboxes) defers the whole read with `update_in_progress`; work on one VM only
 /// settles that VM's row (`settle_rows`), and hidden housekeeping never affects it.
 fn read_application_snapshot(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     gate: &operation_gate::OperationGate,
-) -> Result<ApplicationSource, String> {
-    const UPDATING: &str = SANDBOX_UPDATE_IN_PROGRESS;
+) -> Result<ApplicationSource, BridgeError> {
     const MAX_ATTEMPTS: usize = 2;
     const RETRY_DELAY: Duration = Duration::from_millis(100);
     for attempt in 0..MAX_ATTEMPTS {
         // Configuration recovery is durable work in progress. Keep its immediate
-        // sentinel distinct from transient lock contention below.
+        // code distinct from transient lock contention below.
         if configuration_recovery::pending(paths)? {
-            return Err(UPDATING.into());
+            return Err(BridgeError::updating());
         }
         match read_application_snapshot_once(runner, paths, gate) {
             Ok(source) => return Ok(source),
-            Err(error) if error == UPDATING => {
+            Err(error) if error.code == ErrorCode::UpdateInProgress => {
                 if configuration_recovery::pending(paths)? {
-                    return Err(UPDATING.into());
+                    return Err(BridgeError::updating());
                 }
                 if attempt + 1 < MAX_ATTEMPTS {
                     thread::sleep(RETRY_DELAY);
@@ -2336,13 +2337,12 @@ fn read_application_snapshot_once(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     gate: &operation_gate::OperationGate,
-) -> Result<ApplicationSource, String> {
-    const UPDATING: &str = SANDBOX_UPDATE_IN_PROGRESS;
+) -> Result<ApplicationSource, BridgeError> {
     // Runtime creation and metadata publication are separate steps. Discard
     // observations overlapping a mutation, without blocking progress updates.
-    if configuration_recovery::pending(paths)? { return Err(UPDATING.into()); }
-    let check_idle = || -> Result<(), String> {
-        if gate.is_computer_idle() { Ok(()) } else { Err(UPDATING.into()) }
+    if configuration_recovery::pending(paths)? { return Err(BridgeError::updating()); }
+    let check_idle = || -> Result<(), BridgeError> {
+        if gate.is_computer_idle() { Ok(()) } else { Err(BridgeError::updating()) }
     };
     check_idle()?;
     let started = gate.generations();
@@ -2350,13 +2350,13 @@ fn read_application_snapshot_once(
     let rows = read_rows(runner, paths);
     check_idle()?;
     if before != fs::read(&paths.metadata).ok() {
-        return Err(UPDATING.into());
+        return Err(BridgeError::updating());
     }
     // Decided after the read: a VM is settled only if nothing touched it meanwhile.
     let settled = |id: &str| gate.is_vm_quiet(id) && gate.generation(id) == started.of(id);
     rows.and_then(|rows| settle_rows(paths, rows, &settled))
         .and_then(|workspaces| application_source_for_workspaces(paths, workspaces))
-        .map_err(|error| error.to_string())
+        .map_err(BridgeError::from)
 }
 
 /// Longest a single health-check runtime call may take.
@@ -2613,7 +2613,7 @@ pub async fn workspace_action(
     action: String,
     name: String,
     path: Option<String>,
-) -> Result<ApplicationSource, String> {
+) -> Result<ApplicationSource, BridgeError> {
     crate::runtime_migration::ensure_ready(&app)?;
     if matches!(action.as_str(), "open-editor" | "open-terminal") {
         shutdown::ensure_accepting_operations()?;
@@ -2621,10 +2621,10 @@ pub async fn workspace_action(
             if action == "open-terminal" { crate::terminal::open(&app, &name)?; }
             else { crate::editor::open(&app, &name, path.as_deref())?; }
             let paths = runtime_paths(&app)?;
-            application_state_response(&app, &paths).map_err(|error| error.to_string())
+            application_state_response(&app, &paths).map_err(BridgeError::from)
         })
         .await
-        .map_err(|_| "The application launcher failed.".to_string())?;
+        .map_err(|_| BridgeError::from("The application launcher failed."))?;
     }
     let worker_app = app.clone();
     // Elapsed time counts from the command, including any wait for the operation gate: it
@@ -2632,15 +2632,15 @@ pub async fn workspace_action(
     let started = std::time::Instant::now();
     let notice_action = action.clone();
     let notice_name = name.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(String, ApplicationSource, bool), (Option<String>, LifecycleFailure, String)> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(String, ApplicationSource, bool), (Option<String>, LifecycleFailure, BridgeError)> {
         let app = worker_app;
         // Setup failures before the operation runs are genuine faults worth notifying about.
-        let paths = runtime_paths(&app).map_err(|error| (None, LifecycleFailure::Failed, error))?;
+        let paths = runtime_paths(&app).map_err(|error| (None, LifecycleFailure::Failed, error.into()))?;
         // Start/stop/restart change only this VM's runtime; resource admission is
         // against host totals, not other VMs, so per-VM ordering is sufficient. The
         // key collapses double-clicked lifecycle requests into one queued action.
         // Resolve the stable id before acquiring so ordering survives a rename.
-        let vm_id = resolve_vm_id(&paths, &name).map_err(|error| (None, LifecycleFailure::Failed, error.to_string()))?;
+        let vm_id = resolve_vm_id(&paths, &name).map_err(|error| (None, LifecycleFailure::Failed, error.into()))?;
         let base_label = lifecycle_label(&action, &name);
         let key = format!("vm:{vm_id}:{action}");
         // Start/restart may be cancelled while running; stop may not. Expected durations
@@ -2709,10 +2709,10 @@ pub async fn workspace_action(
             Err(error) => Err((
                 Some(vm_id),
                 lifecycle_failure(&error),
-                safe_activity_error(&error),
+                BridgeError::from(error),
             )),
         }
-    }).await.map_err(|_| internal_failure("running the sandbox action"))?;
+    }).await.map_err(|_| BridgeError::from(internal_failure("running the sandbox action")))?;
     let elapsed = started.elapsed();
     let notify = |vm_id: Option<String>, outcome: crate::notifications::Outcome<'_>| {
         let sandbox = vm_id.map(|id| crate::notifications::NoticeSandbox { id, name: notice_name.clone() });
@@ -2730,7 +2730,7 @@ pub async fn workspace_action(
             Ok(state)
         }
         Err((vm_id, failure, message)) => {
-            notify(vm_id, failure.outcome(&message));
+            notify(vm_id, failure.outcome(&message.message));
             Err(message)
         }
     }
@@ -2769,11 +2769,7 @@ fn hand_off_duplicate(result: Result<(), RuntimeError>) -> (Result<(), RuntimeEr
 fn lifecycle_failure(error: &RuntimeError) -> LifecycleFailure {
     match error {
         RuntimeError::Cancelled { .. } => LifecycleFailure::Cancelled,
-        RuntimeError::Unavailable(message)
-            if *message == operation_gate::GateError::AlreadyQueued.to_string() =>
-        {
-            LifecycleFailure::AlreadyQueued
-        }
+        RuntimeError::Admission(operation_gate::GateError::AlreadyQueued) => LifecycleFailure::AlreadyQueued,
         _ => LifecycleFailure::Failed,
     }
 }
@@ -3009,7 +3005,7 @@ pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
             let inner = failure_report(inner);
             FailureReport { summary: format!("{} {PARTIAL_CHANGES_KEPT}", inner.summary), partial: true, ..inner }
         }
-        RuntimeError::Busy | RuntimeError::TimedOut { .. } | RuntimeError::Cancelled { .. } => {
+        RuntimeError::Admission(_) | RuntimeError::Busy | RuntimeError::TimedOut { .. } | RuntimeError::Cancelled { .. } => {
             let summary = error.to_string();
             let code = match (failure_category(&summary), error) {
                 (_, RuntimeError::Busy) => "configuration",
@@ -3108,7 +3104,7 @@ fn persist_activity(path: &Path, events: &impl Serialize) -> Result<(), String> 
 }
 
 /// The one-line, user-facing text for a runtime error. See `failure_report`.
-fn safe_activity_error(error: &RuntimeError) -> String {
+pub(crate) fn safe_activity_error(error: &RuntimeError) -> String {
     failure_report(error).summary
 }
 
@@ -6683,9 +6679,9 @@ esac
         let runner = StubRunner::successful_json(vec![json!([])]);
         let gate = operation_gate::OperationGate::new();
         let change = gate.computer("Applying sandbox changes").unwrap();
-        assert_eq!(read_application_snapshot(&runner, &paths, &gate).unwrap_err(), "SILO_SANDBOX_UPDATE_IN_PROGRESS");
+        assert_eq!(read_application_snapshot(&runner, &paths, &gate).unwrap_err().code, ErrorCode::UpdateInProgress);
         drop(change);
-        assert!(read_application_snapshot(&runner, &paths, &gate).unwrap_err().contains("does not match"));
+        assert!(read_application_snapshot(&runner, &paths, &gate).unwrap_err().message.contains("does not match"));
     }
 
     fn leaked_gate() -> &'static operation_gate::OperationGate {
@@ -7075,7 +7071,7 @@ esac
         let runner = FailedRead { calls: Mutex::new(Vec::new()) };
         assert_eq!(
             read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap_err(),
-            "synthetic runtime read failure",
+            BridgeError::from("synthetic runtime read failure"),
         );
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
     }
@@ -7089,8 +7085,8 @@ esac
         configuration_recovery::begin(&paths, &configuration).unwrap();
         let runner = StubRunner::successful_json(Vec::new());
         assert_eq!(
-            read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap_err(),
-            "SILO_SANDBOX_UPDATE_IN_PROGRESS",
+            read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap_err().code,
+            ErrorCode::UpdateInProgress,
         );
         assert!(runner.calls.lock().unwrap().is_empty());
     }

@@ -6,6 +6,7 @@
 //! computer publishes the port on a new endpoint, it is opened again in the background on
 //! the same local port. Failed polls close live tunnels only when the computer failed
 //! repeatedly or no longer admits this one (`remote::close_after_failed_poll`).
+use crate::bridge_error::{BridgeError, ErrorCode};
 use crate::{remote, runtime};
 use serde_json::{json, Value};
 use std::{
@@ -117,19 +118,19 @@ fn read_host_state(app: &AppHandle) -> Result<Value, String> {
     Ok(value)
 }
 
-fn read(app: &AppHandle, host: &str) -> Result<Value, String> {
+fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
     // A computer that just failed repeatedly is answered at once; its snapshot poll
     // (or this read, shortly) tries again.
     if let Some(error) = remote::offline(host) {
-        return Err(error);
+        return Err(error.into());
     }
-    let value = match remote::call_remote(app, host, "network.state", json!({})) {
+    let value = match remote::call_remote_typed(app, host, "network.state", json!({})) {
         Ok(value) => {
             remote::poll_succeeded(host);
             value
         }
         Err(error) => {
-            remote::close_after_failed_poll(host, &error);
+            if error.code != ErrorCode::UnsupportedRemoteOperation { remote::close_after_failed_poll(host, &error.message); }
             return Err(error);
         }
     };
@@ -354,7 +355,7 @@ fn save_tunnel(
 }
 
 #[tauri::command]
-pub async fn remote_network_state(app: AppHandle, host_id: String) -> Result<Value, String> {
+pub async fn remote_network_state(app: AppHandle, host_id: String) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || read(&app, &host_id))
         .await
         .map_err(|e| e.to_string())?
@@ -367,7 +368,7 @@ pub async fn remote_save_network_port(
     port: u16,
     host_port: Option<u16>,
     scheme: Option<String>,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         if port == 0
             || host_port == Some(0)
@@ -375,7 +376,7 @@ pub async fn remote_save_network_port(
         {
             return Err("Invalid port configuration.".into());
         }
-        let state = remote::call_remote(
+        let state = remote::call_remote_typed(
             &app,
             &host_id,
             "network.publish",
@@ -410,9 +411,9 @@ pub async fn remote_remove_network_port(
     host_id: String,
     vm_id: String,
     port: u16,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
-        remote::call_remote(&app, &host_id, "network.unpublish", json!({"vmId":vm_id,"port":port}))?;
+        remote::call_remote_typed(&app, &host_id, "network.unpublish", json!({"vmId":vm_id,"port":port}))?;
         let closed = {
             let mut tunnels = tunnels();
             let key = (host_id.clone(), vm_id, port);
@@ -433,7 +434,7 @@ pub async fn remote_open_network_port(
     port: u16,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let state = read(&app, &host_id)?;
+        let state = read(&app, &host_id).map_err(|error| error.message)?;
         let target = format!("silo-remote:{host_id}:{vm_id}");
         let endpoint = state["workspaces"]
             .as_array()

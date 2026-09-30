@@ -1,23 +1,23 @@
 //! Targeted changes against the owner's current inventory, ordered by the operation gate.
 use super::*;
 
-pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<Value, String> {
+pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<Value, BridgeError> {
     let paths = runtime_paths(app)?;
     if method == "runtime.snapshot" {
         return serde_json::to_value(tauri::async_runtime::block_on(read_application_state(
             app.clone(),
             params.get("refreshRepositories").and_then(Value::as_bool),
         ))?)
-        .map_err(|e| e.to_string());
+        .map_err(|e| BridgeError::from(e.to_string()));
     }
     if method == "runtime.logs" {
         let request = serde_json::from_value(params).map_err(|_| "Invalid log query.")?;
         let (id, name) = crate::remote::log_identity()?;
-        return serde_json::to_value(runtime_logs::query_local(&paths, request, &id, &name)?).map_err(|e| e.to_string());
+        return serde_json::to_value(runtime_logs::query_local(&paths, request, &id, &name)?).map_err(|e| BridgeError::from(e.to_string()));
     }
     if method == "runtime.configuration" {
-        return serde_json::to_value(read_metadata(&paths.metadata).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string());
+        return serde_json::to_value(read_metadata(&paths.metadata).map_err(BridgeError::from)?)
+            .map_err(|e| BridgeError::from(e.to_string()));
     }
     // A remote lifecycle action changes only one VM's runtime, so it shares that VM's
     // lane (keyed by stable id, with the same dedupe key as the local lifecycle command)
@@ -28,16 +28,16 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     }
     // Anything else is unknown: refuse it before taking the gate or announcing a change.
     if !matches!(method, "runtime.upsert" | "runtime.delete") {
-        return Err("This Silo version does not support that remote operation.".into());
+        return Err(BridgeError::unsupported());
     }
     // Inventory changes (upsert/delete) stay computer-scoped: they rewrite the shared
     // metadata file. They run once, holding the gate for the whole operation.
     let _guard = OPERATIONS
         .computer("Applying remote change")
-        .map_err(|e| e.to_string())?;
+        .map_err(BridgeError::from)?;
     shutdown::ensure_accepting_operations()?;
-    let mut request = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
-    let resources = host_resources().map_err(|e| e.to_string())?;
+    let mut request = read_metadata(&paths.metadata).map_err(BridgeError::from)?;
+    let resources = host_resources().map_err(BridgeError::from)?;
     let _ = app.emit("silo://application-state-changed", ());
     let result = (|| {
         match method {
@@ -70,15 +70,15 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
                             "This VM changed on its computer. Refresh before trying again.".to_string()
                         }
                     })?;
-                validate_request(&request).map_err(|e| e.to_string())?;
-                validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
+                validate_request(&request).map_err(BridgeError::from)?;
+                validate_requested_resources(&request, &resources).map_err(BridgeError::from)?;
                 // A remote change must not silently replace a local change
                 // that is waiting for Retry on this computer.
-                if configuration_recovery::pending_request(&paths).map_err(|e| e.to_string())?.is_some() {
+                if configuration_recovery::pending_request(&paths).map_err(BridgeError::from)?.is_some() {
                     return Err("A sandbox change on this computer is waiting to be retried. Retry or correct it there first.".into());
                 }
                 configuration_recovery::prepare_retry(&ProcessRunner, &paths, Some(&request))
-                    .map_err(|e| e.to_string())?;
+                    .map_err(BridgeError::from)?;
                 apply_whole_configuration_with_progress(
                     &ProcessRunner,
                     &paths,
@@ -89,15 +89,15 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
                         let _ = app.emit("silo://application-state-changed", ());
                     },
                 )
-                .map_err(|e| safe_activity_error(&e))?;
-                configuration_recovery::finish(&paths).map_err(|e| e.to_string())?;
+                .map_err(BridgeError::from)?;
+                configuration_recovery::finish(&paths).map_err(BridgeError::from)?;
             }
-            _ => return Err("Unsupported remote request.".into()),
+            _ => return Err(BridgeError::unsupported()),
         }
         serde_json::to_value(
-            application_state_response(app, &paths).map_err(|e| e.to_string())?,
+            application_state_response(app, &paths).map_err(BridgeError::from)?,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| BridgeError::from(e.to_string()))
     })();
     let _ = app.emit("silo://application-state-changed", ());
     result
@@ -108,13 +108,13 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
 /// re-acquires this VM's gate per attempt (released between attempts) with the same lane,
 /// dedupe key, labels, cancellability, and expected durations as the local command;
 /// dismiss-error runs once. `silo://application-state-changed` is emitted after the work.
-fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Result<Value, String> {
+fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Result<Value, BridgeError> {
     let changed = || {
         let _ = app.emit("silo://application-state-changed", ());
     };
     run_remote_action(&ProcessRunner, paths, params, &AUTO_RETRY_DELAYS, &host_resources, &changed)?;
-    serde_json::to_value(application_state_response(app, paths).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    serde_json::to_value(application_state_response(app, paths).map_err(BridgeError::from)?)
+        .map_err(|e| BridgeError::from(e.to_string()))
 }
 
 /// The lifecycle part of `remote_action`, before the state read. A duplicate of a
@@ -127,7 +127,7 @@ fn run_remote_action(
     delays: &[Duration],
     resources: &dyn Fn() -> Result<HostResources, RuntimeError>,
     changed: &dyn Fn(),
-) -> Result<(), String> {
+) -> Result<(), BridgeError> {
     let vm_id = params["vmId"].as_str().ok_or("Missing VM identity.")?.to_owned();
     let action = params["action"].as_str().ok_or("Missing VM action.")?.to_owned();
     if !matches!(action.as_str(), "start" | "stop" | "restart" | "dismiss-error") {
@@ -136,7 +136,7 @@ fn run_remote_action(
     // Resolve the display name from fresh metadata before acquiring; the work re-reads and
     // re-checks the VM still exists once each attempt's turn arrives.
     let name = read_metadata(&paths.metadata)
-        .map_err(|e| e.to_string())?
+        .map_err(BridgeError::from)?
         .machines
         .into_iter()
         .find(|m| m.id() == vm_id && m.is_vm())
@@ -195,7 +195,7 @@ fn run_remote_action(
         }
     };
     changed();
-    hand_off_duplicate(result).0.map_err(|e| safe_activity_error(&e))
+    hand_off_duplicate(result).0.map_err(BridgeError::from)
 }
 
 #[cfg(test)]
@@ -335,7 +335,7 @@ mod tests {
         assert!(entry.cancellable);
         OPERATIONS.cancel(entry.id).unwrap();
         let error = action.join().unwrap().unwrap_err();
-        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(error.code, ErrorCode::Cancelled);
         assert_eq!(runtime.mutations(), vec!["start"]);
         assert!(!lifecycle_recovery::has_intent(&paths, ID), "launch will not resume it");
         assert!(OPERATIONS.is_vm_idle(ID));

@@ -1,9 +1,20 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
 import { createProductionSource, type ProductionBridge } from "./production-source"
 
+import { assertNativeBridgeMocksHandled, nativeBridgeMock } from "@/test/native-bridge-mock"
+
+afterEach(assertNativeBridgeMocksHandled)
+
 const pushTarget = { repository: "owner/repo", branch: "main", commit: "a".repeat(40) }
+
+function initializationHandlers() {
+  return {
+    read_backup_state: () => ({ snapshotId: "remote-fixture", availability: "available", requiredSpaceGB: 0, availableSpaceGB: 40, archives: [], operation: null }),
+    read_operation_queue: () => ({ running: [], waiting: [] }),
+  }
+}
 
 describe("remote computer ownership", () => {
   it("keeps same-name VMs distinct and directs a remote lifecycle action to its owner", async () => {
@@ -14,15 +25,15 @@ describe("remote computer ownership", () => {
     remote.workspaces[0].logs = [{ line: "Remote VM log", occurredAt: "now" }]
     remote.workspaces.push({ ...remote.workspaces[0], machine: { id: "00000000-0000-4000-8000-000000000099", kind: "ssh", name: "legacy-ssh", host: "legacy.example", user: "developer", port: 22 } })
     const computer = { id: "office", name: "Office Mac", address: "developer@office" }
-    const invoke = vi.fn(async (command: string) => {
-      if (command === "read_application_state") return local
-      if (command === "remote_host_list") return [computer]
-      if (command === "remote_host_snapshot") return remote
-      if (command === "remote_workspace_action") return { ...remote, workspaces: remote.workspaces.map(workspace => ({ ...workspace, logs: [] })) }
-      if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }
-      if (command === "read_setup_activity") return []
-      if (command === "read_network_state") return { workspaces: [] }
-      return undefined
+    const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => local,
+      remote_host_list: () => [computer],
+      remote_host_snapshot: () => remote,
+      remote_workspace_action: () => ({ ...remote, workspaces: remote.workspaces.map(workspace => ({ ...workspace, logs: [] })) }),
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }),
+      read_setup_activity: () => [],
+      read_network_state: () => ({ workspaces: [] }),
     })
     const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
     try {
@@ -46,7 +57,12 @@ describe("remote computer ownership", () => {
   it("strips UI-qualified identities from optimistic remote edit and deletion requests", async () => {
     const local = applicationSourceForScenario("running")
     const machine = local.workspaces[0].machine
-    const invoke = vi.fn(async () => local)
+    const invoke = nativeBridgeMock({
+      remote_upsert_machine: () => local,
+      remote_delete_machine: () => local,
+      remote_host_list: () => [],
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }),
+    })
     const store = createProductionSource({ invoke, listen: async () => () => {} } as unknown as ProductionBridge)
     const displayed = { ...machine, id: remoteWorkspaceTarget("office", machine.id) }
     try {
@@ -65,17 +81,17 @@ it("keeps local state fresh after remote lifecycle failure and launches editors 
   const computer = { id: "office", name: "Office Mac", address: "user@office" }
   const target = remoteWorkspaceTarget(computer.id, remote.workspaces[0].machine.id)
   let disconnected = false
-  const invoke = vi.fn(async (command: string) => {
-    if (command === "read_application_state") return local
-    if (command === "remote_host_list") return [computer]
-    if (command === "remote_host_snapshot") { if (disconnected) throw new Error("Connection lost"); return remote }
-    if (command === "remote_workspace_action") { disconnected = true; throw new Error("Connection lost") }
-    if (command === "workspace_action") return local
-    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
-    if (command === "read_network_state") return { workspaces: [] }
-    if (command === "read_setup_activity") return []
-    return undefined
-  })
+  const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => local,
+      remote_host_list: () => [computer],
+      remote_host_snapshot: async () => { if (disconnected) throw new Error("Connection lost"); return remote },
+      remote_workspace_action: async () => { disconnected = true; throw new Error("Connection lost") },
+      workspace_action: () => local,
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      read_network_state: () => ({ workspaces: [] }),
+      read_setup_activity: () => [],
+    })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()
@@ -95,19 +111,21 @@ it("uses qualified remote port mappings and revokes reachability after a failed 
   remote.workspaces = [remote.workspaces[0]]
   const target = remoteWorkspaceTarget("office", remote.workspaces[0].machine.id)
   let networkFailure = false
-  const invoke = vi.fn(async (command: string) => {
-    if (command === "read_application_state") return local
-    if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-    if (command === "remote_host_snapshot") return remote
-    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
-    if (command === "read_network_state") {
+  const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => local,
+      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      remote_host_snapshot: () => remote,
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      read_network_state: async () => {
       if (networkFailure) throw new Error("Network check failed")
       return { workspaces: [{ workspace: local.workspaces[0].machine.name, error: null, ports: [{ port: 3000, hostPort: 3000, scheme: "http", configured: true, state: "reachable" }] }] }
-    }
-    if (command === "remote_network_state" || command === "remote_save_network_port" || command === "remote_remove_network_port") return { workspaces: [{ workspace: target, error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", configured: true, state: "reachable" }] }] }
-    if (command === "read_setup_activity") return []
-    return undefined
-  })
+    },
+      remote_network_state: () => ({ workspaces: [{ workspace: target, error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", configured: true, state: "reachable" }] }] }),
+      remote_save_network_port: () => ({ workspaces: [{ workspace: target, error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", configured: true, state: "reachable" }] }] }),
+      remote_remove_network_port: () => ({ workspaces: [{ workspace: target, error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", configured: true, state: "reachable" }] }] }),
+      read_setup_activity: () => [],
+    })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()
@@ -129,18 +147,19 @@ it("uses qualified remote port mappings and revokes reachability after a failed 
 it("keeps a reachable computer connected while its VM configuration is busy", async () => {
   const local = applicationSourceForScenario("running")
   let busy = false
-  const invoke = vi.fn(async (command: string) => {
-    if (command === "read_application_state") return local
-    if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-    if (command === "remote_host_snapshot") {
-      if (busy) throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+  const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => local,
+      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      remote_host_snapshot: async () => {
+      if (busy) throw { code: "update_in_progress", message: "Please wait for configuration." }
       return local
-    }
-    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
-    if (command === "read_network_state" || command === "remote_network_state") return { workspaces: [] }
-    if (command === "read_setup_activity") return []
-    return undefined
-  })
+    },
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      read_network_state: () => ({ workspaces: [] }),
+      remote_network_state: () => ({ workspaces: [] }),
+      read_setup_activity: () => [],
+    })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()
@@ -157,15 +176,17 @@ it("keeps a reachable computer connected while its VM configuration is busy", as
 it("preserves connected remote VMs when later local state reads fail", async () => {
   const local = applicationSourceForScenario("running")
   let failLocal = false
-  const invoke = vi.fn(async (command: string) => {
-    if (command === "read_application_state") { if (failLocal) throw new Error("Local runtime unavailable"); return local }
-    if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-    if (command === "remote_host_snapshot" || command === "remote_workspace_action") return local
-    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
-    if (command === "read_network_state" || command === "remote_network_state") return { workspaces: [] }
-    if (command === "read_setup_activity") return []
-    return undefined
-  })
+  const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: async () => { if (failLocal) throw new Error("Local runtime unavailable"); return local },
+      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      remote_host_snapshot: () => local,
+      remote_workspace_action: () => local,
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      read_network_state: () => ({ workspaces: [] }),
+      remote_network_state: () => ({ workspaces: [] }),
+      read_setup_activity: () => [],
+    })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()
@@ -184,16 +205,17 @@ it("preserves connected remote VMs when later local state reads fail", async () 
 it("uses native local metadata to display verified remote VMs when local runtime fails at startup", async () => {
   const remote = applicationSourceForScenario("running")
   const shell = { ...remote, workspaces: [], runtimeRepair: { status: "unavailable", reason: "Local runtime unavailable" } }
-  const invoke = vi.fn(async (command: string) => {
-    if (command === "read_application_state") throw new Error("Local runtime unavailable")
-    if (command === "read_application_shell") return shell
-    if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-    if (command === "remote_host_snapshot") return remote
-    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
-    if (command === "read_network_state" || command === "remote_network_state") return { workspaces: [] }
-    if (command === "read_setup_activity") return []
-    return undefined
-  })
+  const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: async () => { throw new Error("Local runtime unavailable") },
+      read_application_shell: () => shell,
+      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      remote_host_snapshot: () => remote,
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      read_network_state: () => ({ workspaces: [] }),
+      remote_network_state: () => ({ workspaces: [] }),
+      read_setup_activity: () => [],
+    })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()
@@ -215,15 +237,17 @@ it("merges remote repository results and activity idempotently without same-name
   remote.activities = [{ ...local.activities[0], workspace: name, title: "Remote start" }]
   remote.github.account = "remote-owner"
   remote.secrets = []
-  const invoke = vi.fn(async (command: string) => {
-    if (command === "read_application_state") return local
-    if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-    if (command === "remote_host_snapshot") return remote
-    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
-    if (command === "read_network_state" || command === "remote_network_state") return { workspaces: [] }
-    if (command === "read_setup_activity") return []
-    return undefined
-  })
+  const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => local,
+      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      remote_host_snapshot: () => remote,
+      start_repository_push: () => remote.repositoryPushOperations![0],
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      read_network_state: () => ({ workspaces: [] }),
+      remote_network_state: () => ({ workspaces: [] }),
+      read_setup_activity: () => [],
+    })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()
@@ -251,16 +275,17 @@ it.each(["succeeded", "failed"] as const)("keeps a remote push loading across re
   const pending = new Promise(resolve => { finishPush = resolve })
   let finishStaleRead: ((result: unknown) => void) | undefined
   let holdRemoteRead = false
-  const invoke = vi.fn(async (command: string) => {
-    if (command === "read_application_state") return local
-    if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-    if (command === "remote_host_snapshot") return holdRemoteRead ? new Promise(resolve => { finishStaleRead = resolve }) : remote
-    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
-    if (command === "read_network_state" || command === "remote_network_state") return { workspaces: [] }
-    if (command === "read_setup_activity") return []
-    if (command === "start_repository_push") return pending
-    return undefined
-  })
+  const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => local,
+      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      remote_host_snapshot: () => holdRemoteRead ? new Promise(resolve => { finishStaleRead = resolve }) : remote,
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      read_network_state: () => ({ workspaces: [] }),
+      remote_network_state: () => ({ workspaces: [] }),
+      read_setup_activity: () => [],
+      start_repository_push: () => pending,
+    })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()
@@ -297,24 +322,25 @@ it.each([true, false])("reconciles a lost start reply without another push (host
   const repositoryPath = remote.workspaces[0].repositories[0].path
   let attempts = 0
   const success = { workspace: remote.workspaces[0].machine.name, repositoryPath, status: "succeeded" as const, commitCount: 2 }
-  const invoke = vi.fn(async (command: string) => {
-    if (command === "read_application_state") return local
-    if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-    if (command === "remote_host_snapshot") return remote
-    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
-    if (command === "read_network_state" || command === "remote_network_state") return { workspaces: [] }
-    if (command === "read_setup_activity") return []
-    if (command === "start_repository_push") {
+  const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => local,
+      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      remote_host_snapshot: () => remote,
+      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      read_network_state: () => ({ workspaces: [] }),
+      remote_network_state: () => ({ workspaces: [] }),
+      read_setup_activity: () => [],
+      start_repository_push: async () => {
       if (++attempts === 1) throw new Error("SSH connection closed")
       remote.repositoryPushOperations = [success]
       return success
-    }
-    if (command === "repository_push_status") {
+    },
+      repository_push_status: async () => {
       if (accepted) remote.repositoryPushOperations = [success]
       return accepted ? success : null
-    }
-    return undefined
-  })
+    },
+    })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()

@@ -1,3 +1,4 @@
+import { hasBridgeErrorCode } from "@/contracts/bridge-error"
 import { z } from "zod"
 
 /**
@@ -149,15 +150,9 @@ export function hasPendingOperationForVm(queue: OperationQueue, vmId: string): b
   return [...queue.running, ...queue.waiting].some((entry) => operationMatchesVm(entry, vmId))
 }
 
-/**
- * True when a runtime error message reports a user-requested cancellation rather
- * than a genuine failure. The backend renders both cancellation paths with the
- * stable suffix "was cancelled." — `RuntimeError::Cancelled` (`"<operation> was
- * cancelled."`) and `GateError::Cancelled` (`"The operation was cancelled."`).
- * Matching that suffix keeps cancellations out of the error-styled failure UI.
- */
-export function isCancelledError(message: string): boolean {
-  return /was cancelled\.?\s*$/i.test(message.trim())
+/** User-requested cancellation is classified independently of display text. */
+export function isCancelledError(cause: unknown): boolean {
+  return hasBridgeErrorCode(cause, "cancelled")
 }
 
 /** Human-readable neutral label for a cancelled lifecycle action, e.g. "Stop cancelled". */
