@@ -112,7 +112,9 @@ fn execute(
             "refreshing" => status("Refreshing Silo’s package list…"),
             "downloading" => status("Downloading the Silo package…"),
             "ready" => {
-                let Some(prepare) = prepare.take() else { continue };
+                let Some(prepare) = prepare.take() else {
+                    continue;
+                };
                 status("Preparing to install. Running sandboxes stop now…");
                 if let Err(error) = prepare() {
                     if let Some(mut input) = input.take() {
@@ -211,15 +213,26 @@ mod tests {
     #[test]
     fn real_subprocess_progress_and_cancelled_authentication_are_reported() {
         let mut stages = vec![];
-        execute(&mut shell(INSTALLS_ON_GO_AHEAD), |stage| stages.push(stage.to_string()), PATIENT, || Ok(())).unwrap();
+        execute(
+            &mut shell(INSTALLS_ON_GO_AHEAD),
+            |stage| stages.push(stage.to_string()),
+            PATIENT,
+            || Ok(()),
+        )
+        .unwrap();
         assert_eq!(stages.len(), 5);
         assert!(stages[1].contains("Refreshing"));
         assert!(execute(&mut shell("exit 126"), |_| {}, PATIENT, || Ok(()))
             .unwrap_err()
             .contains("cancelled"));
-        assert!(execute(&mut shell("printf 'Package lock is busy' >&2; exit 1"), |_| {}, PATIENT, || Ok(()))
-            .unwrap_err()
-            .contains("Package lock is busy"));
+        assert!(execute(
+            &mut shell("printf 'Package lock is busy' >&2; exit 1"),
+            |_| {},
+            PATIENT,
+            || Ok(())
+        )
+        .unwrap_err()
+        .contains("Package lock is busy"));
     }
     #[test]
     fn sandboxes_stop_only_after_authentication_refresh_and_download_succeed() {
@@ -235,9 +248,16 @@ mod tests {
         )
         .unwrap();
         let events = events.into_inner();
-        let stopped = events.iter().position(|event| event == "stop sandboxes").unwrap();
-        assert!(events[..stopped].iter().any(|event| event.contains("Downloading")));
-        assert!(events[stopped..].iter().any(|event| event.contains("Installing")));
+        let stopped = events
+            .iter()
+            .position(|event| event == "stop sandboxes")
+            .unwrap();
+        assert!(events[..stopped]
+            .iter()
+            .any(|event| event.contains("Downloading")));
+        assert!(events[stopped..]
+            .iter()
+            .any(|event| event.contains("Installing")));
     }
     #[test]
     fn failures_before_the_install_stage_never_stop_sandboxes() {
@@ -264,19 +284,31 @@ mod tests {
             "printf 'ready\\n'; read reply; [ \"$reply\" = install ] && touch '{}'; exit 1",
             installed.display()
         );
-        let error = execute(&mut shell(&script), |_| {}, PATIENT, || Err("stop failed".into())).unwrap_err();
+        let error = execute(
+            &mut shell(&script),
+            |_| {},
+            PATIENT,
+            || Err("stop failed".into()),
+        )
+        .unwrap_err();
         assert_eq!(error, "stop failed");
         assert!(!installed.exists());
     }
     #[test]
     fn a_stalled_authentication_or_download_times_out_without_stopping_sandboxes() {
         let started = std::time::Instant::now();
-        let error = execute(&mut shell("printf 'refreshing\\n'; exec sleep 30"), |_| {}, Duration::from_millis(300), || {
-            panic!("sandboxes must keep running")
-        })
+        let error = execute(
+            &mut shell("printf 'refreshing\\n'; exec sleep 30"),
+            |_| {},
+            Duration::from_millis(300),
+            || panic!("sandboxes must keep running"),
+        )
         .unwrap_err();
         assert!(error.contains("No sandboxes were stopped"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(10));
-        assert_eq!(failure_message(&error), "The system update took too long. No sandboxes were stopped. Try again.");
+        assert_eq!(
+            failure_message(&error),
+            "The system update took too long. No sandboxes were stopped. Try again."
+        );
     }
 }

@@ -29,7 +29,10 @@ pub(crate) fn lock_or_recover<'a, T: ?Sized>(mutex: &'a Mutex<T>, name: &str) ->
 
 /// Like `lock_or_recover` without waiting: `None` only while another thread holds
 /// the lock, never because an earlier holder panicked.
-pub(crate) fn try_lock_or_recover<'a, T: ?Sized>(mutex: &'a Mutex<T>, name: &str) -> Option<MutexGuard<'a, T>> {
+pub(crate) fn try_lock_or_recover<'a, T: ?Sized>(
+    mutex: &'a Mutex<T>,
+    name: &str,
+) -> Option<MutexGuard<'a, T>> {
     match mutex.try_lock() {
         Ok(guard) => Some(guard),
         Err(TryLockError::Poisoned(poisoned)) => {
@@ -70,7 +73,9 @@ mod tests {
         assert!(try_lock_or_recover(&LOCK, "test").is_some());
         assert!(!LOCK.is_poisoned());
         let held = LOCK.lock().unwrap();
-        let busy = std::thread::spawn(|| try_lock_or_recover(&LOCK, "test").is_none()).join().unwrap();
+        let busy = std::thread::spawn(|| try_lock_or_recover(&LOCK, "test").is_none())
+            .join()
+            .unwrap();
         assert!(busy);
         drop(held);
     }

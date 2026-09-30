@@ -111,9 +111,11 @@ pub(super) fn install(window: &WebviewWindow) -> tauri::Result<()> {
         glib::Propagation::Proceed
     });
     gtk_window.connect_key_release_event(move |_, event| {
-        let action = alt_pending
-            .borrow_mut()
-            .release(menu_key(event.keyval()), focus.bar.is_visible(), event.time());
+        let action = alt_pending.borrow_mut().release(
+            menu_key(event.keyval()),
+            focus.bar.is_visible(),
+            event.time(),
+        );
         if let Some(show) = action {
             if show {
                 focus.show();

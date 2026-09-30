@@ -62,7 +62,10 @@ struct Tunnels {
 static TUNNELS: OnceLock<Mutex<Tunnels>> = OnceLock::new();
 /// A short data lock: never held while ssh starts or a port is probed.
 fn tunnels() -> MutexGuard<'static, Tunnels> {
-    crate::sync::lock_or_recover(TUNNELS.get_or_init(|| Mutex::new(Tunnels::default())), "remote tunnels")
+    crate::sync::lock_or_recover(
+        TUNNELS.get_or_init(|| Mutex::new(Tunnels::default())),
+        "remote tunnels",
+    )
 }
 const TUNNEL_LIMIT: usize = 128;
 /// How long a new tunnel may take to accept connections.
@@ -130,13 +133,19 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
             value
         }
         Err(error) => {
-            if error.code != ErrorCode::UnsupportedRemoteOperation { remote::close_after_failed_poll(host, &error.message); }
+            if error.code != ErrorCode::UnsupportedRemoteOperation {
+                remote::close_after_failed_poll(host, &error.message);
+            }
             return Err(error);
         }
     };
     let hosts = crate::network::uses_sandbox_hosts(app);
     let projection = project_ports(value, host, &mut tunnels(), hosts)?;
-    let Projection { value, closed, reconnect } = projection;
+    let Projection {
+        value,
+        closed,
+        reconnect,
+    } = projection;
     drop(closed);
     for (key, intent, remote_port) in reconnect {
         reconnect_in_background(app.clone(), key, intent, remote_port);
@@ -155,7 +164,12 @@ struct Projection {
 /// computer's tunnel (never the owner's loopback endpoint), and with `hosts` each sandbox
 /// gets the host name its websites open at here (C-24; the owner's own host choice is
 /// ignored). Dead or outdated tunnels with an intent are reopened.
-fn project_ports(mut value: Value, host: &str, tunnels: &mut Tunnels, hosts: bool) -> Result<Projection, String> {
+fn project_ports(
+    mut value: Value,
+    host: &str,
+    tunnels: &mut Tunnels,
+    hosts: bool,
+) -> Result<Projection, String> {
     let mut observed = HashSet::new();
     let mut closed = Vec::new();
     let mut reconnect = Vec::new();
@@ -201,7 +215,11 @@ fn project_ports(mut value: Value, host: &str, tunnels: &mut Tunnels, hosts: boo
                     port["configuredHostPort"] = json!(tunnel.local_port);
                     port["configured"] = json!(true);
                     port["scheme"] = json!(intent.and_then(|intent| intent.scheme));
-                    port["hostPort"] = if endpoint.is_some() { json!(tunnel.local_port) } else { Value::Null };
+                    port["hostPort"] = if endpoint.is_some() {
+                        json!(tunnel.local_port)
+                    } else {
+                        Value::Null
+                    };
                 }
                 (None, Some(intent)) => {
                     port["configuredHostPort"] = json!(intent.local_port);
@@ -237,7 +255,11 @@ fn project_ports(mut value: Value, host: &str, tunnels: &mut Tunnels, hosts: boo
         closed.extend(tunnels.live.remove(&key));
         tunnels.intents.remove(&key);
     }
-    Ok(Projection { value, closed, reconnect })
+    Ok(Projection {
+        value,
+        closed,
+        reconnect,
+    })
 }
 
 /// Starts ssh forwarding `local` (or any free port) to the owner's `remote_port` and waits
@@ -259,12 +281,18 @@ fn open_tunnel(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| "Could not open the SSH tunnel.")?;
-    let mut tunnel = Tunnel { child, local_port: local, remote_port };
+    let mut tunnel = Tunnel {
+        child,
+        local_port: local,
+        remote_port,
+    };
     // Probe the local listener; process creation alone does not mean forwarding succeeded.
     let until = Instant::now() + ready_within;
     loop {
         if !tunnel.alive() {
-            return Err("SSH could not open this port. Check access and local port availability.".into());
+            return Err(
+                "SSH could not open this port. Check access and local port availability.".into(),
+            );
         }
         if std::net::TcpStream::connect_timeout(
             &std::net::SocketAddr::from(([127, 0, 0, 1], local)),
@@ -296,7 +324,10 @@ fn reconnect_in_background(app: AppHandle, key: Key, intent: Intent, remote_port
             tunnels.connecting.remove(&key);
             match opened {
                 // Only while the user still wants this port and nothing else reopened it.
-                Ok(tunnel) if tunnels.intents.get(&key) == Some(&intent) && !tunnels.live.contains_key(&key) => {
+                Ok(tunnel)
+                    if tunnels.intents.get(&key) == Some(&intent)
+                        && !tunnels.live.contains_key(&key) =>
+                {
                     tunnels.live.insert(key, tunnel);
                     None
                 }
@@ -327,17 +358,30 @@ fn save_tunnel(
             return Err("Close an unused connection before opening another port.".into());
         }
         // Automatic keeps the port this computer used before, so bookmarks keep working.
-        let requested = host_port.or_else(|| tunnels.intents.get(&key).map(|intent| intent.local_port));
+        let requested =
+            host_port.or_else(|| tunnels.intents.get(&key).map(|intent| intent.local_port));
         let unchanged = tunnels.live.get_mut(&key).is_some_and(|tunnel| {
-            tunnel.alive() && tunnel.remote_port == endpoint && requested.is_none_or(|port| port == tunnel.local_port)
+            tunnel.alive()
+                && tunnel.remote_port == endpoint
+                && requested.is_none_or(|port| port == tunnel.local_port)
         });
         if unchanged {
             let local_port = tunnels.live[&key].local_port;
             tunnels.intents.insert(key, Intent { local_port, scheme });
             return Ok(());
         }
-        let occupies = tunnels.live.get(&key).is_some_and(|tunnel| Some(tunnel.local_port) == requested);
-        (requested, if occupies { tunnels.live.remove(&key) } else { None })
+        let occupies = tunnels
+            .live
+            .get(&key)
+            .is_some_and(|tunnel| Some(tunnel.local_port) == requested);
+        (
+            requested,
+            if occupies {
+                tunnels.live.remove(&key)
+            } else {
+                None
+            },
+        )
     };
     drop(blocking);
     let tunnel = open(requested)?;
@@ -346,7 +390,13 @@ fn save_tunnel(
         if runtime::shutdown::ensure_accepting_operations().is_err() {
             return Err("Silo is quitting.".into());
         }
-        tunnels.intents.insert(key.clone(), Intent { local_port: tunnel.local_port, scheme });
+        tunnels.intents.insert(
+            key.clone(),
+            Intent {
+                local_port: tunnel.local_port,
+                scheme,
+            },
+        );
         tunnels.connecting.remove(&key);
         tunnels.live.insert(key, tunnel)
     };
@@ -391,14 +441,20 @@ pub async fn remote_save_network_port(
             .and_then(|p| u16::try_from(p).ok())
             .ok_or("The remote VM port is not available yet. Check the VM service and retry.")?;
         let host = host_id.clone();
-        save_tunnel((host_id.clone(), vm_id, port), host_port, scheme, endpoint, |local| {
-            open_tunnel(
-                |local| remote::ssh_tunnel_command(&host, local, endpoint),
-                local,
-                endpoint,
-                READY_WITHIN,
-            )
-        })?;
+        save_tunnel(
+            (host_id.clone(), vm_id, port),
+            host_port,
+            scheme,
+            endpoint,
+            |local| {
+                open_tunnel(
+                    |local| remote::ssh_tunnel_command(&host, local, endpoint),
+                    local,
+                    endpoint,
+                    READY_WITHIN,
+                )
+            },
+        )?;
         read(&app, &host_id)
     })
     .await
@@ -413,7 +469,12 @@ pub async fn remote_remove_network_port(
     port: u16,
 ) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
-        remote::call_remote_typed(&app, &host_id, "network.unpublish", json!({"vmId":vm_id,"port":port}))?;
+        remote::call_remote_typed(
+            &app,
+            &host_id,
+            "network.unpublish",
+            json!({"vmId":vm_id,"port":port}),
+        )?;
         let closed = {
             let mut tunnels = tunnels();
             let key = (host_id.clone(), vm_id, port);
@@ -477,8 +538,15 @@ pub(crate) fn close_all() {
 pub(crate) fn disconnect_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
-        let keys: Vec<Key> = tunnels.live.keys().filter(|key| key.0 == host).cloned().collect();
-        keys.iter().filter_map(|key| tunnels.live.remove(key)).collect()
+        let keys: Vec<Key> = tunnels
+            .live
+            .keys()
+            .filter(|key| key.0 == host)
+            .cloned()
+            .collect();
+        keys.iter()
+            .filter_map(|key| tunnels.live.remove(key))
+            .collect()
     };
     drop(closed);
 }
@@ -488,8 +556,15 @@ pub(crate) fn close_host(host: &str) {
         let mut tunnels = tunnels();
         tunnels.intents.retain(|key, _| key.0 != host);
         tunnels.connecting.retain(|key| key.0 != host);
-        let keys: Vec<Key> = tunnels.live.keys().filter(|key| key.0 == host).cloned().collect();
-        keys.iter().filter_map(|key| tunnels.live.remove(key)).collect()
+        let keys: Vec<Key> = tunnels
+            .live
+            .keys()
+            .filter(|key| key.0 == host)
+            .cloned()
+            .collect();
+        keys.iter()
+            .filter_map(|key| tunnels.live.remove(key))
+            .collect()
     };
     drop(closed);
 }
@@ -508,10 +583,17 @@ mod tests {
             .unwrap()
     }
     fn tunnel(local_port: u16, remote_port: u16) -> Tunnel {
-        Tunnel { child: child(), local_port, remote_port }
+        Tunnel {
+            child: child(),
+            local_port,
+            remote_port,
+        }
     }
     fn intent(local_port: u16) -> Intent {
-        Intent { local_port, scheme: Some("http".into()) }
+        Intent {
+            local_port,
+            scheme: Some("http".into()),
+        }
     }
     fn key(host: &str) -> Key {
         (host.into(), "vm".into(), 3000)
@@ -524,7 +606,10 @@ mod tests {
     fn owner_loopback_is_not_a_controller_endpoint_until_a_tunnel_exists() {
         let mut tunnels = Tunnels::default();
         let result = project_ports(observed(Some(32000)), "office", &mut tunnels, false).unwrap();
-        assert_eq!(result.value["workspaces"][0]["workspace"], "silo-remote:office:vm");
+        assert_eq!(
+            result.value["workspaces"][0]["workspace"],
+            "silo-remote:office:vm"
+        );
         assert!(port(&result)["hostPort"].is_null());
         assert_eq!(port(&result)["configured"], false);
         tunnels.live.insert(key("office"), tunnel(43000, 32000));
@@ -540,8 +625,17 @@ mod tests {
         let mut tunnels = Tunnels::default();
         let value = json!({"workspaces":[{"workspace":"dev","vmId":"1a2b3c4d-0000-4000-8000-000000000001","host":"owner-choice.localhost","ports":[]}]});
         let result = project_ports(value.clone(), "office", &mut tunnels, true).unwrap();
-        assert_eq!(result.value["workspaces"][0]["host"], "dev-1a2b3c4d.localhost");
-        assert_eq!(row_host(&result.value, "silo-remote:office:1a2b3c4d-0000-4000-8000-000000000001"), Some("dev-1a2b3c4d.localhost"));
+        assert_eq!(
+            result.value["workspaces"][0]["host"],
+            "dev-1a2b3c4d.localhost"
+        );
+        assert_eq!(
+            row_host(
+                &result.value,
+                "silo-remote:office:1a2b3c4d-0000-4000-8000-000000000001"
+            ),
+            Some("dev-1a2b3c4d.localhost")
+        );
         // This computer's browser decides, not the owner's.
         let result = project_ports(value, "office", &mut tunnels, false).unwrap();
         assert!(result.value["workspaces"][0]["host"].is_null());
@@ -559,7 +653,12 @@ mod tests {
         assert_eq!(port(&result)["configuredHostPort"], 43000);
         assert_eq!(port(&result)["state"], "waiting");
         // A reconnect already under way is not started twice.
-        assert!(project_ports(observed(Some(32001)), "office", &mut tunnels, false).unwrap().reconnect.is_empty());
+        assert!(
+            project_ports(observed(Some(32001)), "office", &mut tunnels, false)
+                .unwrap()
+                .reconnect
+                .is_empty()
+        );
         tunnels.connecting.clear();
         // A tunnel that died (sleep) is reopened too.
         let mut dead = tunnel(43000, 32001);
@@ -592,10 +691,16 @@ mod tests {
             tunnels.live.insert(key(host), tunnel(43000, 32000));
             tunnels.intents.insert(key(host), intent(43000));
         }
-        let result = project_ports(json!({"workspaces":[]}), "office", &mut tunnels, false).unwrap();
+        let result =
+            project_ports(json!({"workspaces":[]}), "office", &mut tunnels, false).unwrap();
         assert_eq!(result.closed.len(), 1);
-        assert!(!tunnels.live.contains_key(&key("office")) && !tunnels.intents.contains_key(&key("office")));
-        assert!(tunnels.live.contains_key(&key("other")) && tunnels.intents.contains_key(&key("other")));
+        assert!(
+            !tunnels.live.contains_key(&key("office"))
+                && !tunnels.intents.contains_key(&key("office"))
+        );
+        assert!(
+            tunnels.live.contains_key(&key("other")) && tunnels.intents.contains_key(&key("other"))
+        );
     }
 
     #[test]
@@ -603,7 +708,10 @@ mod tests {
         let host = uuid::Uuid::new_v4().to_string();
         let key = key(&host);
         save_tunnel(key.clone(), None, Some("http".into()), 32000, |requested| {
-            assert!(TUNNELS.get().unwrap().try_lock().is_ok(), "the tunnels lock is held during the probe");
+            assert!(
+                TUNNELS.get().unwrap().try_lock().is_ok(),
+                "the tunnels lock is held during the probe"
+            );
             assert_eq!(requested, None);
             Ok(tunnel(43100, 32000))
         })
@@ -611,21 +719,39 @@ mod tests {
         // Moving to another local port fails: the working tunnel stays.
         let failed = save_tunnel(key.clone(), Some(43101), None, 32000, |requested| {
             assert_eq!(requested, Some(43101));
-            assert!(tunnels().live.contains_key(&key), "replaced before the new tunnel worked");
+            assert!(
+                tunnels().live.contains_key(&key),
+                "replaced before the new tunnel worked"
+            );
             Err("This local port is already in use.".into())
         });
         assert!(failed.is_err());
         assert_eq!(tunnels().live[&key].local_port, 43100);
         // Automatic reuses the intended local port after the tunnel died.
         tunnels().live.remove(&key);
-        save_tunnel(key.clone(), None, Some("https".into()), 32005, |requested| {
-            assert_eq!(requested, Some(43100));
-            Ok(tunnel(43100, 32005))
+        save_tunnel(
+            key.clone(),
+            None,
+            Some("https".into()),
+            32005,
+            |requested| {
+                assert_eq!(requested, Some(43100));
+                Ok(tunnel(43100, 32005))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            tunnels().intents[&key],
+            Intent {
+                local_port: 43100,
+                scheme: Some("https".into())
+            }
+        );
+        // An unchanged save only updates the scheme.
+        save_tunnel(key.clone(), None, Some("http".into()), 32005, |_| {
+            panic!("must not reopen")
         })
         .unwrap();
-        assert_eq!(tunnels().intents[&key], Intent { local_port: 43100, scheme: Some("https".into()) });
-        // An unchanged save only updates the scheme.
-        save_tunnel(key.clone(), None, Some("http".into()), 32005, |_| panic!("must not reopen")).unwrap();
         assert_eq!(tunnels().intents[&key].scheme.as_deref(), Some("http"));
         disconnect_host(&host);
         assert!(!tunnels().live.contains_key(&key) && tunnels().intents.contains_key(&key));
@@ -663,13 +789,27 @@ mod tests {
         .unwrap();
         assert_ne!(tunnel.local_port, 0);
         assert_eq!(tunnel.remote_port, 32000);
-        let exited = open_tunnel(|_| Ok(Command::new("/usr/bin/false")), None, 32000, Duration::from_secs(5));
+        let exited = open_tunnel(
+            |_| Ok(Command::new("/usr/bin/false")),
+            None,
+            32000,
+            Duration::from_secs(5),
+        );
         assert!(exited.unwrap_err().contains("could not open"));
         let silent = open_tunnel(|_| Ok(sleeper()), None, 32000, Duration::from_millis(300));
         assert_eq!(silent.unwrap_err(), "Timed out opening the SSH tunnel.");
         let taken = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = taken.local_addr().unwrap().port();
-        assert_eq!(open_tunnel(|_| Ok(sleeper()), Some(port), 32000, Duration::from_millis(300)).unwrap_err(), "This local port is already in use.");
+        assert_eq!(
+            open_tunnel(
+                |_| Ok(sleeper()),
+                Some(port),
+                32000,
+                Duration::from_millis(300)
+            )
+            .unwrap_err(),
+            "This local port is already in use."
+        );
     }
 
     #[test]
@@ -677,11 +817,24 @@ mod tests {
         let cache = Mutex::new(None);
         let mut reads = 0;
         for _ in 0..3 {
-            let value = cached(&cache, Duration::from_secs(60), || { reads += 1; Ok(json!(reads)) }).unwrap();
+            let value = cached(&cache, Duration::from_secs(60), || {
+                reads += 1;
+                Ok(json!(reads))
+            })
+            .unwrap();
             assert_eq!(value, json!(1));
         }
-        assert_eq!(cached(&cache, Duration::ZERO, || Ok(json!("fresh"))).unwrap(), json!("fresh"));
+        assert_eq!(
+            cached(&cache, Duration::ZERO, || Ok(json!("fresh"))).unwrap(),
+            json!("fresh")
+        );
         assert!(cached(&cache, Duration::ZERO, || Err("failed".into())).is_err());
-        assert_eq!(cached(&cache, Duration::from_secs(60), || panic!("an error is not stored")).unwrap(), json!("fresh"));
+        assert_eq!(
+            cached(&cache, Duration::from_secs(60), || panic!(
+                "an error is not stored"
+            ))
+            .unwrap(),
+            json!("fresh")
+        );
     }
 }

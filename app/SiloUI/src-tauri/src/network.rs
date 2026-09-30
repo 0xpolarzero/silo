@@ -124,8 +124,20 @@ fn resolves_localhost_names(browser: Option<&str>) -> bool {
         return false;
     };
     const ENGINES: &[&str] = &[
-        "chrome", "chromium", "edgemac", "microsoft-edge", "brave", "vivaldi", "opera",
-        "thebrowser", "firefox", "mozilla", "librewolf", "waterfox", "floorp", "zen-browser",
+        "chrome",
+        "chromium",
+        "edgemac",
+        "microsoft-edge",
+        "brave",
+        "vivaldi",
+        "opera",
+        "thebrowser",
+        "firefox",
+        "mozilla",
+        "librewolf",
+        "waterfox",
+        "floorp",
+        "zen-browser",
     ];
     const WEBKIT: &[&str] = &["safari", "epiphany", "orion", "kagi", "duckduckgo"];
     !WEBKIT.iter().any(|name| browser.contains(name))
@@ -339,14 +351,36 @@ fn socket_path(paths: &RuntimePaths, workspace: &str) -> std::path::PathBuf {
 }
 /// Observe one workspace's saved forwards with a single enabled mapping for `port`.
 #[cfg(test)]
-pub(crate) fn observe_saved_port_for_test(paths: &RuntimePaths, workspace: &str, port: u16) -> (Option<String>, Vec<(&'static str, Option<String>)>) {
-    let config = Configuration { mappings: vec![Mapping { workspace: workspace.into(), port, host_port: None, scheme: Some("http".into()), enabled: true }] };
+pub(crate) fn observe_saved_port_for_test(
+    paths: &RuntimePaths,
+    workspace: &str,
+    port: u16,
+) -> (Option<String>, Vec<(&'static str, Option<String>)>) {
+    let config = Configuration {
+        mappings: vec![Mapping {
+            workspace: workspace.into(),
+            port,
+            host_port: None,
+            scheme: Some("http".into()),
+            enabled: true,
+        }],
+    };
     let observed = observe(paths, workspace, &config, &BTreeMap::new());
-    (observed.error, observed.ports.into_iter().map(|port| (port.state, port.message)).collect())
+    (
+        observed.error,
+        observed
+            .ports
+            .into_iter()
+            .map(|port| (port.state, port.message))
+            .collect(),
+    )
 }
 
 /// A Silo VM's runtime state, or `None` when it is stopped with no runtime sandbox yet.
-fn configured_vm(paths: &RuntimePaths, name: &str) -> Result<Option<runtime::InspectedSandbox>, String> {
+fn configured_vm(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<Option<runtime::InspectedSandbox>, String> {
     let metadata = runtime::read_metadata(&paths.metadata)
         .map_err(|_| "Could not read sandbox configuration.")?;
     if !metadata
@@ -639,7 +673,10 @@ fn reconcile_forwarding(
     paths: &RuntimePaths,
     workspace: &str,
 ) -> Result<BTreeMap<u16, String>, String> {
-    debug_assert!(runtime::operation_gate::held(), "port reconciliation requires the VM operation gate");
+    debug_assert!(
+        runtime::operation_gate::held(),
+        "port reconciliation requires the VM operation gate"
+    );
     let mut failures = BTreeMap::new();
     let forwarding = forwarding_lock(workspace);
     let _forwarding = hold(&forwarding);
@@ -740,9 +777,11 @@ fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
             let Ok(vm_id) = runtime::resolve_vm_id(&paths, &workspace) else {
                 continue;
             };
-            if let Ok(_gate) = runtime::OPERATIONS
-                .try_vm_hidden(&vm_id, &workspace, &format!("Reconciling ports on {workspace}"))
-            {
+            if let Ok(_gate) = runtime::OPERATIONS.try_vm_hidden(
+                &vm_id,
+                &workspace,
+                &format!("Reconciling ports on {workspace}"),
+            ) {
                 let _ = reconcile_forwarding(&paths, &workspace);
             }
         }
@@ -793,7 +832,11 @@ fn apply_saved(app: &AppHandle, paths: &RuntimePaths, workspace: &str) -> Result
         let mut state = state_with(paths, &config, uses_sandbox_hosts(app))?;
         if !failures.is_empty() {
             let mut repaired = observe(paths, workspace, &config, &failures);
-            if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
+            if let Some(slot) = state
+                .workspaces
+                .iter_mut()
+                .find(|w| w.workspace == workspace)
+            {
                 repaired.host = slot.host.take();
                 *slot = repaired;
             }
@@ -835,7 +878,11 @@ pub(crate) async fn save_network_port(
         let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
         let _gate = runtime::OPERATIONS
             .kind(runtime::operation_gate::OperationKind::PortPublish)
-            .vm(&vm_id, &workspace, &format!("Publishing a port on {workspace}"))
+            .vm(
+                &vm_id,
+                &workspace,
+                &format!("Publishing a port on {workspace}"),
+            )
             .map_err(|e| e.to_string())?;
         runtime::shutdown::ensure_accepting_operations()?;
         configured_vm(&paths, &workspace)?;
@@ -887,7 +934,11 @@ pub(crate) async fn remove_network_port(
         let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
         let _gate = runtime::OPERATIONS
             .kind(runtime::operation_gate::OperationKind::PortRemove)
-            .vm(&vm_id, &workspace, &format!("Removing a port on {workspace}"))
+            .vm(
+                &vm_id,
+                &workspace,
+                &format!("Removing a port on {workspace}"),
+            )
             .map_err(|e| e.to_string())?;
         runtime::shutdown::ensure_accepting_operations()?;
         configured_vm(&paths, &workspace)?;
@@ -969,8 +1020,13 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = String::new();
-            BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
-            assert_eq!(serde_json::from_str::<Value>(&request).unwrap()["op"], "ports_list");
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&request).unwrap()["op"],
+                "ports_list"
+            );
             stream.write_all(response.as_bytes()).unwrap();
         });
         let result = control(&path, json!({"op":"ports_list"}));
@@ -982,9 +1038,16 @@ mod tests {
     #[cfg(unix)]
     fn runtime_errors_are_short_and_do_not_expose_raw_details() {
         let _test_state = crate::test_support::global_state();
-        let conflict = control_reply("{\"ok\":false,\"error\":\"Address already in use: private runtime diagnostics\"}\n").unwrap_err();
-        assert_eq!(conflict, "This local port is already in use. Choose another or use Automatic.");
-        let unknown = control_reply("{\"ok\":false,\"error\":\"private runtime diagnostics\"}\n").unwrap_err();
+        let conflict = control_reply(
+            "{\"ok\":false,\"error\":\"Address already in use: private runtime diagnostics\"}\n",
+        )
+        .unwrap_err();
+        assert_eq!(
+            conflict,
+            "This local port is already in use. Choose another or use Automatic."
+        );
+        let unknown = control_reply("{\"ok\":false,\"error\":\"private runtime diagnostics\"}\n")
+            .unwrap_err();
         assert!(!unknown.contains("private runtime diagnostics"));
         assert!(unknown.contains("Could not update port forwarding"));
     }
@@ -1042,7 +1105,8 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let temp = tempfile::tempdir().unwrap();
         let paths = RuntimePaths {
-            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image"),
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
             executable: temp.path().join("msb"),
             home: temp.path().into(),
             storage_home: None,
@@ -1098,7 +1162,11 @@ mod tests {
         let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
         let holder = std::thread::spawn(move || {
             let _guard = runtime::OPERATIONS
-                .vm("00000000-0000-4000-8000-000000000001", "dev", "Blocking network read test")
+                .vm(
+                    "00000000-0000-4000-8000-000000000001",
+                    "dev",
+                    "Blocking network read test",
+                )
                 .unwrap();
             held_tx.send(()).unwrap();
             release_rx.recv().unwrap();
@@ -1111,7 +1179,10 @@ mod tests {
         holder.join().unwrap();
         let state = state.expect("read state");
         assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].host.as_deref(), Some("dev-00000000.localhost"));
+        assert_eq!(
+            state.workspaces[0].host.as_deref(),
+            Some("dev-00000000.localhost")
+        );
         assert!(
             elapsed < Duration::from_secs(5),
             "network read waited for the operation gate: {elapsed:?}"
@@ -1124,19 +1195,37 @@ mod tests {
         let id = "1A2B3C4D-0000-4000-8000-000000000001";
         assert_eq!(sandbox_host("dev", id), "dev-1a2b3c4d.localhost");
         // Same name, different sandbox: a different host, so no shared cookies.
-        assert_ne!(sandbox_host("dev", id), sandbox_host("dev", "99999999-0000-4000-8000-000000000001"));
+        assert_ne!(
+            sandbox_host("dev", id),
+            sandbox_host("dev", "99999999-0000-4000-8000-000000000001")
+        );
         // Names from another computer are sanitised into one DNS label.
         assert_eq!(sandbox_host("My App_2!", id), "my-app-2-1a2b3c4d.localhost");
         assert_eq!(sandbox_host("--", id), "sandbox-1a2b3c4d.localhost");
         assert_eq!(sandbox_host("dev", ""), "dev.localhost");
-        for name in ["a".repeat(80), format!("{}-b", "a".repeat(53)), "ünïcode.évil/../x".into()] {
+        for name in [
+            "a".repeat(80),
+            format!("{}-b", "a".repeat(53)),
+            "ünïcode.évil/../x".into(),
+        ] {
             let host = sandbox_host(&name, id);
             let label = host.strip_suffix(".localhost").unwrap();
             assert!(label.len() <= 63, "{host}");
-            assert!(!label.starts_with('-') && !label.ends_with('-') && !label.contains("--"), "{host}");
-            assert!(label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'), "{host}");
+            assert!(
+                !label.starts_with('-') && !label.ends_with('-') && !label.contains("--"),
+                "{host}"
+            );
+            assert!(
+                label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                "{host}"
+            );
         }
-        assert_eq!(website_url("http", Some("dev-1a2b3c4d.localhost"), 43000), "http://dev-1a2b3c4d.localhost:43000");
+        assert_eq!(
+            website_url("http", Some("dev-1a2b3c4d.localhost"), 43000),
+            "http://dev-1a2b3c4d.localhost:43000"
+        );
         assert_eq!(website_url("https", None, 43000), "https://127.0.0.1:43000");
     }
 
@@ -1144,15 +1233,26 @@ mod tests {
     fn safari_and_unknown_browsers_keep_the_loopback_address() {
         let _test_state = crate::test_support::global_state();
         for browser in [
-            "com.google.Chrome", "com.microsoft.edgemac", "com.brave.Browser", "company.thebrowser.Browser",
-            "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "firefox_firefox.desktop",
-            "google-chrome.desktop", "chromium_chromium.desktop", "org.mozilla.firefox.desktop",
+            "com.google.Chrome",
+            "com.microsoft.edgemac",
+            "com.brave.Browser",
+            "company.thebrowser.Browser",
+            "org.mozilla.firefox",
+            "org.mozilla.firefoxdeveloperedition",
+            "firefox_firefox.desktop",
+            "google-chrome.desktop",
+            "chromium_chromium.desktop",
+            "org.mozilla.firefox.desktop",
         ] {
             assert!(resolves_localhost_names(Some(browser)), "{browser}");
         }
         for browser in [
-            "com.apple.Safari", "com.apple.SafariTechnologyPreview", "com.kagi.kagimacOS",
-            "com.duckduckgo.macos.browser", "org.gnome.Epiphany.desktop", "com.example.unknown",
+            "com.apple.Safari",
+            "com.apple.SafariTechnologyPreview",
+            "com.kagi.kagimacOS",
+            "com.duckduckgo.macos.browser",
+            "org.gnome.Epiphany.desktop",
+            "com.example.unknown",
         ] {
             assert!(!resolves_localhost_names(Some(browser)), "{browser}");
         }
@@ -1201,7 +1301,9 @@ mod tests {
         // failure for every saved port of the VM, never an empty (successful) result.
         let failures = reconcile_forwarding(&paths, "dev").unwrap();
         assert!(
-            failures.get(&3000).is_some_and(|e| e.contains("Network controls are unavailable")),
+            failures
+                .get(&3000)
+                .is_some_and(|e| e.contains("Network controls are unavailable")),
             "{failures:?}"
         );
         // Unreadable settings are an error, not "nothing to repair".
@@ -1228,13 +1330,17 @@ mod tests {
             for _ in 0..connections {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = String::new();
-                BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
                 let request: Value = serde_json::from_str(&request).unwrap();
                 if request["op"] == "port_add" {
                     let port = request["guest_port"].as_u64().unwrap() as u16;
                     added.send(port).unwrap();
                     std::thread::sleep(delay);
-                    published.push(json!({"guest_port":port,"host_port":40000 + port,"host_bind":"127.0.0.1"}));
+                    published.push(
+                        json!({"guest_port":port,"host_port":40000 + port,"host_bind":"127.0.0.1"}),
+                    );
                 }
                 let reply = json!({"ok":true,"ports":published});
                 stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
@@ -1249,11 +1355,19 @@ mod tests {
         let temp = tempfile::tempdir_in("/tmp").unwrap();
         let paths = temp_paths(&temp);
         let mut config = one_port("dev", 3000, true);
-        config.mappings.push(Mapping { port: 3001, ..config.mappings[0].clone() });
+        config.mappings.push(Mapping {
+            port: 3001,
+            ..config.mappings[0].clone()
+        });
         write_config(&paths, &config).unwrap();
         let (added_tx, added) = std::sync::mpsc::channel();
         // ports_list, then two slow port_add calls.
-        let runtime = slow_runtime(socket_path(&paths, "dev"), 3, Duration::from_millis(800), added_tx);
+        let runtime = slow_runtime(
+            socket_path(&paths, "dev"),
+            3,
+            Duration::from_millis(800),
+            added_tx,
+        );
         let repair = {
             let paths = paths.clone();
             std::thread::spawn(move || {
@@ -1270,7 +1384,10 @@ mod tests {
         let failures = repair.join().unwrap().unwrap();
         runtime.join().unwrap();
         assert!(failures.is_empty(), "{failures:?}");
-        assert!(waited < Duration::from_millis(400), "waited {waited:?} behind runtime calls");
+        assert!(
+            waited < Duration::from_millis(400),
+            "waited {waited:?} behind runtime calls"
+        );
     }
 
     #[test]
@@ -1281,10 +1398,19 @@ mod tests {
         let paths = temp_paths(&temp);
         let mut config = one_port("dev", 3000, true);
         // A removed port whose forward is already gone is pruned by the repair.
-        config.mappings.push(Mapping { port: 3001, enabled: false, ..config.mappings[0].clone() });
+        config.mappings.push(Mapping {
+            port: 3001,
+            enabled: false,
+            ..config.mappings[0].clone()
+        });
         write_config(&paths, &config).unwrap();
         let (added_tx, added) = std::sync::mpsc::channel();
-        let runtime = slow_runtime(socket_path(&paths, "dev"), 2, Duration::from_millis(300), added_tx);
+        let runtime = slow_runtime(
+            socket_path(&paths, "dev"),
+            2,
+            Duration::from_millis(300),
+            added_tx,
+        );
         let repair = {
             let paths = paths.clone();
             std::thread::spawn(move || {
@@ -1298,7 +1424,9 @@ mod tests {
         {
             let _guard = network_lock();
             let mut current = read_config(&paths).unwrap();
-            current.mappings.extend(one_port("other", 8080, true).mappings);
+            current
+                .mappings
+                .extend(one_port("other", 8080, true).mappings);
             write_config(&paths, &current).unwrap();
         }
         assert!(repair.join().unwrap().unwrap().is_empty());
@@ -1309,7 +1437,10 @@ mod tests {
             .into_iter()
             .map(|m| (m.workspace, m.port))
             .collect();
-        assert_eq!(saved, vec![("dev".to_string(), 3000), ("other".to_string(), 8080)]);
+        assert_eq!(
+            saved,
+            vec![("dev".to_string(), 3000), ("other".to_string(), 8080)]
+        );
     }
 
     #[test]

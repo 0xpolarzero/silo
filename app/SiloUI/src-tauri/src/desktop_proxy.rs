@@ -186,7 +186,12 @@ fn forward_body(
         to.shutdown_write();
     }
 }
-fn relay(mut from: impl Stream, mut to: impl Stream, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>) {
+fn relay(
+    mut from: impl Stream,
+    mut to: impl Stream,
+    stop: Arc<AtomicBool>,
+    ended: Arc<AtomicBool>,
+) {
     let _ = from.read_timeout(Some(Duration::from_millis(250)));
     let _ = to.write_timeout(Some(Duration::from_secs(5)));
     let mut bytes = [0; 32 * 1024];
@@ -550,14 +555,19 @@ mod tests {
                     match upstream.accept() {
                         Ok(connection) => break connection,
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            assert!(Instant::now() < deadline, "proxy did not connect to stub upstream");
+                            assert!(
+                                Instant::now() < deadline,
+                                "proxy did not connect to stub upstream"
+                            );
                             thread::sleep(Duration::from_millis(5));
                         }
                         Err(error) => panic!("upstream accept failed: {error}"),
                     }
                 };
                 stream.set_nonblocking(false).unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
                 let mut request = Vec::new();
                 let mut byte = [0];
                 while !request.ends_with(b"\r\n\r\n") {
@@ -576,7 +586,9 @@ mod tests {
 
                 // Model the observed server behavior: a write-half-close before
                 // the response causes an early close; otherwise it responds.
-                stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
                 match stream.read(&mut byte) {
                     Ok(0) => continue,
                     Ok(_) => panic!("unexpected bytes after the declared request body"),
@@ -598,7 +610,9 @@ mod tests {
         let proxy = Proxy::start(socket, 6901, "silo", "password").unwrap();
         for (method, body) in [("GET", &b""[..]), ("POST", &b"body"[..])] {
             let mut client = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
-            client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
             write!(
                 client,
                 "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\nContent-Length: {}\r\n\r\n",
@@ -611,7 +625,10 @@ mod tests {
             client.write_all(body).unwrap();
             let mut response = String::new();
             client.read_to_string(&mut response).unwrap();
-            assert!(response.starts_with("HTTP/1.1 200 OK"), "{method} response: {response:?}");
+            assert!(
+                response.starts_with("HTTP/1.1 200 OK"),
+                "{method} response: {response:?}"
+            );
         }
         upstream_worker.join().unwrap();
     }

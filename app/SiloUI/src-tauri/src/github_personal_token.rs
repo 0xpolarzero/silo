@@ -177,10 +177,17 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
         .filter(|(key, _)| key.starts_with(&prefix))
         .filter_map(|(key, attached)| {
             let name = &key[prefix.len()..];
-            (!keeps_token(d, name, current.as_ref(), attached)).then(|| (name.to_owned(), key.clone()))
+            (!keeps_token(d, name, current.as_ref(), attached))
+                .then(|| (name.to_owned(), key.clone()))
         })
         .collect();
-    each_workspace(stale.iter().map(|(name, key)| (name.as_str(), key.as_str())), errors, |name, key| detach(name, key));
+    each_workspace(
+        stale
+            .iter()
+            .map(|(name, key)| (name.as_str(), key.as_str())),
+        errors,
+        |name, key| detach(name, key),
+    );
     // A surviving runtime may still hold a token from the preceding app process.
     if d.session != session() {
         let mut restored = Vec::new();
@@ -194,14 +201,20 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
                 Err(error) => errors.record(name, error),
             }
         }
-        each_workspace(restored.iter().map(|(name, key)| (name.as_str(), key.as_str())), errors, |name, key| {
-            applied()
-                .lock()
-                .map_err(|_| "GitHub token state is unavailable.")?
-                .entry(key.to_owned())
-                .or_insert_with(|| "unverified".into());
-            detach(name, key)
-        });
+        each_workspace(
+            restored
+                .iter()
+                .map(|(name, key)| (name.as_str(), key.as_str())),
+            errors,
+            |name, key| {
+                applied()
+                    .lock()
+                    .map_err(|_| "GitHub token state is unavailable.")?
+                    .entry(key.to_owned())
+                    .or_insert_with(|| "unverified".into());
+                detach(name, key)
+            },
+        );
     }
 }
 fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String> {
@@ -234,7 +247,10 @@ fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String>
 
 /// A deleted sandbox no longer holds the token; forget its attachment.
 pub(super) fn forget(key: &str) {
-    applied().lock().unwrap_or_else(PoisonError::into_inner).remove(key);
+    applied()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(key);
 }
 /// Time until `check` validates the token again, so the worker can sleep until then.
 pub(super) fn next_check() -> Duration {

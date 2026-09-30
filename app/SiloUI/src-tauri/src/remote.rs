@@ -73,7 +73,10 @@ pub struct ManagementAddress {
 /// `user@…` candidates: the host name (as `.local` when it has no domain, which Bonjour and
 /// Avahi resolve), then Tailscale addresses, then other interface addresses.
 fn management_addresses(user: &str, name: &str, interfaces: &[String]) -> Vec<ManagementAddress> {
-    let entry = |host: &str, kind| ManagementAddress { address: format!("{user}@{host}"), kind };
+    let entry = |host: &str, kind| ManagementAddress {
+        address: format!("{user}@{host}"),
+        kind,
+    };
     let mut list = Vec::new();
     if !name.is_empty() {
         if name.contains('.') {
@@ -86,12 +89,24 @@ fn management_addresses(user: &str, name: &str, interfaces: &[String]) -> Vec<Ma
     let usable: Vec<std::net::Ipv4Addr> = interfaces
         .iter()
         .filter_map(|ip| ip.parse().ok())
-        .filter(|ip: &std::net::Ipv4Addr| !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified())
+        .filter(|ip: &std::net::Ipv4Addr| {
+            !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified()
+        })
         .collect();
     // Tailscale assigns addresses from the carrier-grade NAT range 100.64.0.0/10.
     let tailscale = |ip: &std::net::Ipv4Addr| ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64;
-    list.extend(usable.iter().filter(|ip| tailscale(ip)).map(|ip| entry(&ip.to_string(), "tailscale")));
-    list.extend(usable.iter().filter(|ip| !tailscale(ip)).map(|ip| entry(&ip.to_string(), "network")));
+    list.extend(
+        usable
+            .iter()
+            .filter(|ip| tailscale(ip))
+            .map(|ip| entry(&ip.to_string(), "tailscale")),
+    );
+    list.extend(
+        usable
+            .iter()
+            .filter(|ip| !tailscale(ip))
+            .map(|ip| entry(&ip.to_string(), "network")),
+    );
     list
 }
 fn directory() -> Result<PathBuf, String> {
@@ -241,7 +256,10 @@ fn select_bridge_target(app_image: Option<PathBuf>, current: PathBuf) -> Result<
         return Ok(app_image);
     }
     // macOS runs a quarantined app from a random read-only copy until it is moved.
-    if current.components().any(|part| part.as_os_str() == "AppTranslocation") {
+    if current
+        .components()
+        .any(|part| part.as_os_str() == "AppTranslocation")
+    {
         return Err("Move Silo to the Applications folder and open it again before using remote management.".into());
     }
     Ok(current)
@@ -258,8 +276,11 @@ fn link_bridge(home: &Path, target: &Path) -> Result<(), String> {
             && previous.as_deref().is_some_and(|previous| {
                 !previous.exists()
                     || previous.file_name() == target.file_name()
-                    || std::env::current_exe().is_ok_and(|current| previous.file_name() == current.file_name())
-                    || previous.extension().is_some_and(|extension| extension == "AppImage")
+                    || std::env::current_exe()
+                        .is_ok_and(|current| previous.file_name() == current.file_name())
+                    || previous
+                        .extension()
+                        .is_some_and(|extension| extension == "AppImage")
             });
         if !ours {
             return Err("~/.local/bin/silo-remote already exists. Choose a different name for that file before enabling remote management.".into());
@@ -292,7 +313,11 @@ pub fn set_remote_management(app: AppHandle, enabled: bool) -> Result<Management
     REMOTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
     if enabled {
         // The link is in place now; a launch that could not serve remote management tries again.
-        let listening = if LISTENING.load(std::sync::atomic::Ordering::Acquire) { Ok(()) } else { listen(app) };
+        let listening = if LISTENING.load(std::sync::atomic::Ordering::Acquire) {
+            Ok(())
+        } else {
+            listen(app)
+        };
         record_start_error(listening.err());
     }
     Ok(status(&config))
@@ -430,13 +455,17 @@ fn error_reply(error: &BridgeError) -> Value {
 }
 
 fn write_reply(mut writer: impl Write, value: &Value) -> Result<(), String> {
-    writer.write_all(REPLY_PREAMBLE).map_err(|error| error.to_string())?;
+    writer
+        .write_all(REPLY_PREAMBLE)
+        .map_err(|error| error.to_string())?;
     write_frame(&mut writer, value)?;
     writer.flush().map_err(|error| error.to_string())
 }
 /// Reads the bridge's reply from ssh output, skipping anything printed before it.
 fn read_reply(mut reader: impl std::io::BufRead) -> Result<Value, String> {
-    let ended = || "The remote Silo connection ended. Check that Silo is running and remote management is enabled.".to_string();
+    let ended = || {
+        "The remote Silo connection ended. Check that Silo is running and remote management is enabled.".to_string()
+    };
     let (mut matched, mut skipped) = (0, 0);
     while matched < REPLY_PREAMBLE.len() {
         let available = reader.fill_buf().map_err(|_| ended())?;
@@ -501,8 +530,13 @@ fn silo_key() -> Option<PathBuf> {
         .filter(|key| key.is_file())
 }
 fn preferred_identity(address: &str) -> Identity {
-    let any = crate::sync::lock_or_recover(&ANY_KEY_ADDRESSES, "remote SSH identities").contains(address);
-    if any { Identity::AnyKey } else { Identity::SiloOnly }
+    let any =
+        crate::sync::lock_or_recover(&ANY_KEY_ADDRESSES, "remote SSH identities").contains(address);
+    if any {
+        Identity::AnyKey
+    } else {
+        Identity::SiloOnly
+    }
 }
 fn remember_identity(address: &str, identity: Identity) {
     let mut addresses = crate::sync::lock_or_recover(&ANY_KEY_ADDRESSES, "remote SSH identities");
@@ -514,7 +548,11 @@ fn remember_identity(address: &str, identity: Identity) {
 fn ssh_for_address(address: &str) -> Result<Command, String> {
     ssh_with_identity(address, silo_key().as_deref(), preferred_identity(address))
 }
-fn ssh_with_identity(address: &str, key: Option<&Path>, identity: Identity) -> Result<Command, String> {
+fn ssh_with_identity(
+    address: &str,
+    key: Option<&Path>,
+    identity: Identity,
+) -> Result<Command, String> {
     validate_address(address)?;
     let mut command = Command::new("/usr/bin/ssh");
     command.args([
@@ -547,9 +585,7 @@ fn with_identity_fallback(
 ) -> Result<Value, Failure> {
     let first = preferred_identity(address);
     let result = attempt(first);
-    let refused = |result: &Result<Value, Failure>| {
-        matches!(result, Err(Failure::Failed(message)) if message == AUTHENTICATION_FAILED)
-    };
+    let refused = |result: &Result<Value, Failure>| matches!(result, Err(Failure::Failed(message)) if message == AUTHENTICATION_FAILED);
     if !has_silo_key {
         return result;
     }
@@ -681,7 +717,9 @@ fn silo_key_blob(public: &str) -> Result<&str, String> {
 /// The `authorized_keys` line Silo installs for its remote-management key.
 fn authorized_key_line(public: &str) -> Result<String, String> {
     let blob = silo_key_blob(public)?;
-    Ok(format!("{AUTHORIZED_KEY_OPTIONS} ssh-ed25519 {blob} {SILO_KEY_COMMENT}"))
+    Ok(format!(
+        "{AUTHORIZED_KEY_OPTIONS} ssh-ed25519 {blob} {SILO_KEY_COMMENT}"
+    ))
 }
 /// Rewrites the unrestricted line earlier Silo versions installed; other lines are untouched.
 fn restrict_authorized_keys(contents: &str, blob: &str) -> Option<String> {
@@ -747,9 +785,15 @@ fn silo_public_key() -> Option<String> {
     Some(public.trim().to_owned())
 }
 fn request_timeout(request: &Value) -> Duration {
-    if (request["method"] == "runtime.upsert" && request.pointer("/params/machine/desktop").is_some_and(|v| !v.is_null()))
+    if (request["method"] == "runtime.upsert"
+        && request
+            .pointer("/params/machine/desktop")
+            .is_some_and(|v| !v.is_null()))
         || (request["method"] == "desktop.action"
-            && matches!(request["params"]["action"].as_str(), Some("setup-tools" | "update-streamer" | "setup-lcu")))
+            && matches!(
+                request["params"]["action"].as_str(),
+                Some("setup-tools" | "update-streamer" | "setup-lcu")
+            ))
     {
         Duration::from_secs(2100)
     } else {
@@ -808,7 +852,9 @@ impl Failure {
             Self::Lost(message) | Self::Failed(message) => message.into(),
         }
     }
-    fn message(self) -> String { self.error().message }
+    fn message(self) -> String {
+        self.error().message
+    }
 }
 /// An ssh failure that sending the request again may overcome: the connection dropped or
 /// could not be made, not a host key, authentication, name or refused-connection problem.
@@ -831,13 +877,18 @@ fn exchange(address: &str, request: &Value, deadline: Instant) -> Result<Value, 
     // An authentication failure means the request never reached the bridge, so sending
     // it again with other keys cannot repeat a change.
     with_identity_fallback(address, key.is_some(), |identity| {
-        let mut command = ssh_with_identity(address, key.as_deref(), identity).map_err(Failure::Failed)?;
+        let mut command =
+            ssh_with_identity(address, key.as_deref(), identity).map_err(Failure::Failed)?;
         command.args(["--", address, BRIDGE_COMMAND]);
         run_exchange(command, request, deadline)
     })
 }
 /// Sends one framed request through `command` (ssh running the bridge) and reads the reply.
-fn run_exchange(mut command: Command, request: &Value, deadline: Instant) -> Result<Value, Failure> {
+fn run_exchange(
+    mut command: Command,
+    request: &Value,
+    deadline: Instant,
+) -> Result<Value, Failure> {
     use std::io::{Seek, SeekFrom};
     let failed = |error: std::io::Error| Failure::Failed(error.to_string());
     let stdout = tempfile::tempfile().map_err(failed)?;
@@ -851,7 +902,10 @@ fn run_exchange(mut command: Command, request: &Value, deadline: Instant) -> Res
     // Input stays open until the reply: the bridge takes its end to mean this computer left.
     // A write error means ssh already failed; its exit status and output say why.
     let mut input = child.stdin.take();
-    if input.as_mut().is_some_and(|input| write_frame(input, request).is_err()) {
+    if input
+        .as_mut()
+        .is_some_and(|input| write_frame(input, request).is_err())
+    {
         input = None;
     }
     let exit = loop {
@@ -872,9 +926,11 @@ fn run_exchange(mut command: Command, request: &Value, deadline: Instant) -> Res
     if !exit.success() {
         let mut stderr = stderr;
         let mut text = String::new();
-        let _ = stderr
-            .seek(SeekFrom::Start(0))
-            .and_then(|_| Read::by_ref(&mut stderr).take(65536).read_to_string(&mut text));
+        let _ = stderr.seek(SeekFrom::Start(0)).and_then(|_| {
+            Read::by_ref(&mut stderr)
+                .take(65536)
+                .read_to_string(&mut text)
+        });
         let message = connection_failure(exit.code(), &text);
         return Err(if lost_connection(exit.code(), &text) {
             Failure::Lost(message)
@@ -891,7 +947,12 @@ fn run_exchange(mut command: Command, request: &Value, deadline: Instant) -> Res
     Ok(response["result"].clone())
 }
 /// Legacy adapter for callers whose command error contract has not migrated yet.
-pub(crate) fn call_remote(app: &AppHandle, host_id: &str, method: &str, params: Value) -> Result<Value, String> {
+pub(crate) fn call_remote(
+    app: &AppHandle,
+    host_id: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
     call_remote_typed(app, host_id, method, params).map_err(|error| error.message)
 }
 pub(crate) fn call_remote_typed(
@@ -955,9 +1016,18 @@ fn checkpoint_remote_request(
 ) -> Result<(&'static str, Value), String> {
     uuid::Uuid::parse_str(vm_id).map_err(|_| "Invalid sandbox identity.")?;
     let params = match action {
-        "create" => ("checkpoint.create", json!({"vmId":vm_id,"name":name.ok_or("Missing checkpoint name.")?})),
-        "fork" => ("checkpoint.fork", json!({"vmId":vm_id,"checkpointId":checkpoint_id,"newName":new_name.ok_or("Missing fork name.")?})),
-        "restore" => ("checkpoint.restore", json!({"vmId":vm_id,"checkpointId":checkpoint_id.ok_or("Missing checkpoint identity.")?})),
+        "create" => (
+            "checkpoint.create",
+            json!({"vmId":vm_id,"name":name.ok_or("Missing checkpoint name.")?}),
+        ),
+        "fork" => (
+            "checkpoint.fork",
+            json!({"vmId":vm_id,"checkpointId":checkpoint_id,"newName":new_name.ok_or("Missing fork name.")?}),
+        ),
+        "restore" => (
+            "checkpoint.restore",
+            json!({"vmId":vm_id,"checkpointId":checkpoint_id.ok_or("Missing checkpoint identity.")?}),
+        ),
         _ => return Err("Unsupported checkpoint operation.".into()),
     };
     Ok(params)
@@ -988,7 +1058,10 @@ pub async fn remote_checkpoint_action(
 }
 
 #[tauri::command]
-pub async fn connect_remote_host(address: String, replace: Option<bool>) -> Result<RemoteHost, String> {
+pub async fn connect_remote_host(
+    address: String,
+    replace: Option<bool>,
+) -> Result<RemoteHost, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let address = address.trim().to_owned();
         let handshake = json!({"version": VERSION, "method": "handshake", "params": {"sshKey": silo_public_key()}});
@@ -1024,7 +1097,12 @@ const ALREADY_SAVED: &str = "is already saved at";
 /// Saves the computer that answered at `host.address`. The identity is reported by that
 /// computer, so it never silently takes over another saved entry: a known identity at a new
 /// address is saved only when the user confirmed (`replace`).
-fn save_connected_host(dir: &Path, host: RemoteHost, local_name: &str, replace: bool) -> Result<RemoteHost, String> {
+fn save_connected_host(
+    dir: &Path,
+    host: RemoteHost,
+    local_name: &str,
+    replace: bool,
+) -> Result<RemoteHost, String> {
     let mut config = read_config_in(dir)?;
     if config.host_id == host.id {
         return Err(if host.name == local_name {
@@ -1048,9 +1126,18 @@ fn save_connected_host(dir: &Path, host: RemoteHost, local_name: &str, replace: 
 }
 
 #[tauri::command]
-pub async fn remote_host_snapshot(app: AppHandle, host_id: String, refresh_repositories: Option<bool>) -> Result<Value, BridgeError> {
+pub async fn remote_host_snapshot(
+    app: AppHandle,
+    host_id: String,
+    refresh_repositories: Option<bool>,
+) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
-        let result = call_remote_typed(&app, &host_id, "runtime.snapshot", json!({"refreshRepositories": refresh_repositories.unwrap_or(false)}));
+        let result = call_remote_typed(
+            &app,
+            &host_id,
+            "runtime.snapshot",
+            json!({"refreshRepositories": refresh_repositories.unwrap_or(false)}),
+        );
         match &result {
             Ok(_) => poll_succeeded(&host_id),
             Err(error) if error.code == ErrorCode::UpdateInProgress => {}
@@ -1102,7 +1189,11 @@ pub(crate) fn poll_succeeded(host: &str) {
 }
 pub(crate) fn poll_failed(host: &str, error: &str) -> PollFailure {
     let mut health = crate::sync::lock_or_recover(&HEALTH, "remote computer health");
-    let entry = health.entry(host.to_owned()).or_insert(Health { failures: 0, last_error: String::new(), at: Instant::now() });
+    let entry = health.entry(host.to_owned()).or_insert(Health {
+        failures: 0,
+        last_error: String::new(),
+        at: Instant::now(),
+    });
     entry.failures += 1;
     entry.last_error = error.to_owned();
     entry.at = Instant::now();
@@ -1123,7 +1214,9 @@ fn offline_at(host: &str, now: Instant) -> Option<String> {
     let health = crate::sync::lock_or_recover(&HEALTH, "remote computer health");
     health
         .get(host)
-        .filter(|entry| entry.failures >= CLOSE_AFTER_FAILURES && now.duration_since(entry.at) < OFFLINE_FOR)
+        .filter(|entry| {
+            entry.failures >= CLOSE_AFTER_FAILURES && now.duration_since(entry.at) < OFFLINE_FOR
+        })
         .map(|entry| entry.last_error.clone())
 }
 /// Applies a failed poll: one blip closes nothing; repeated failures close live tunnels
@@ -1166,13 +1259,25 @@ pub async fn remote_workspace_action(
     // The owning computer reports only a state snapshot; the caller's name (or the
     // snapshot) names the sandbox. Without either, the notice says "this sandbox".
     let name = name
-        .or_else(|| result.as_ref().ok().and_then(|state| sandbox_name(state, &notice_id)))
+        .or_else(|| {
+            result
+                .as_ref()
+                .ok()
+                .and_then(|state| sandbox_name(state, &notice_id))
+        })
         .unwrap_or_else(|| "this sandbox".into());
-    let sandbox = crate::notifications::NoticeSandbox { id: notice_id, name: name.clone() };
+    let sandbox = crate::notifications::NoticeSandbox {
+        id: notice_id,
+        name: name.clone(),
+    };
     let outcome = match &result {
         Ok(_) => crate::notifications::Outcome::Succeeded,
-        Err(error) if error.code == ErrorCode::Cancelled => crate::notifications::Outcome::Cancelled,
-        Err(error) if error.code == ErrorCode::AlreadyQueued => crate::notifications::Outcome::AlreadyQueued,
+        Err(error) if error.code == ErrorCode::Cancelled => {
+            crate::notifications::Outcome::Cancelled
+        }
+        Err(error) if error.code == ErrorCode::AlreadyQueued => {
+            crate::notifications::Outcome::AlreadyQueued
+        }
         Err(message) => crate::notifications::Outcome::Failed(&message.message),
     };
     if let Some(notice) = crate::notifications::lifecycle_notice(
@@ -1244,11 +1349,16 @@ pub(crate) fn run_bridge() -> Result<(), String> {
     let mut socket = UnixStream::connect(directory()?.join("control.sock"))
         .map_err(|_| "Silo is not running on this computer.".to_string())?;
     let request = read_frame(std::io::stdin().lock())?;
-    socket.set_read_timeout(Some(request_timeout(&request))).map_err(|e| e.to_string())?;
+    socket
+        .set_read_timeout(Some(request_timeout(&request)))
+        .map_err(|e| e.to_string())?;
     let streaming = request["method"] == "guest.ssh";
     write_frame(&mut socket, &request)?;
     if !streaming {
-        watch_controller(std::io::stdin(), socket.try_clone().map_err(|e| e.to_string())?);
+        watch_controller(
+            std::io::stdin(),
+            socket.try_clone().map_err(|e| e.to_string())?,
+        );
     }
     let response = read_frame(&mut socket)?;
     write_reply(std::io::stdout().lock(), &response)?;
@@ -1296,7 +1406,8 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
         .map_err(|e| e.to_string())?;
     let result = (|| {
         let mut input = child.stdin.take().ok_or("SSH input unavailable.")?;
-        let mut output = std::io::BufReader::new(child.stdout.take().ok_or("SSH output unavailable.")?);
+        let mut output =
+            std::io::BufReader::new(child.stdout.take().ok_or("SSH output unavailable.")?);
         write_frame(
             &mut input,
             &json!({"version":VERSION,"hostId":host.id,"method":method,"params":params}),
@@ -1384,7 +1495,11 @@ pub(crate) fn start(app: AppHandle) {
     };
     REMOTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
     // Re-point the bridge link every launch: an AppImage mount or a moved app leaves it stale.
-    let linked = if enabled { link_bridge_for_this_account() } else { Ok(()) };
+    let linked = if enabled {
+        link_bridge_for_this_account()
+    } else {
+        Ok(())
+    };
     let listening = listen(app);
     record_start_error(listening.err().or(linked.err()));
 }
@@ -1407,28 +1522,34 @@ fn listen(app: AppHandle) -> Result<(), String> {
                 let _permit = permit;
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
                 let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-                let result = read_frame(&mut stream).map_err(BridgeError::from).and_then(|request| {
-                    if request["method"] == "guest.ssh" {
-                        authorize(&request)?;
-                        let mut child = crate::remote_access::spawn_stream(
-                            &app,
-                            "guest.ssh",
-                            &request["params"],
-                        )?;
-                        if let Err(error) = write_frame(&mut stream, &json!({"result":{}})) {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            return Err(error.into());
-                        }
-                        relay_child(&stream, &mut child, || {
-                            REMOTE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
-                                && crate::runtime::shutdown::ensure_accepting_operations().is_ok()
-                        })?;
-                        return Ok(None);
-                    }
-                    let peer = stream.try_clone().map_err(|e| e.to_string())?;
-                    dispatch(&app, request, Arc::new(move || connection_open(&peer))).map(Some)
-                });
+                let result =
+                    read_frame(&mut stream)
+                        .map_err(BridgeError::from)
+                        .and_then(|request| {
+                            if request["method"] == "guest.ssh" {
+                                authorize(&request)?;
+                                let mut child = crate::remote_access::spawn_stream(
+                                    &app,
+                                    "guest.ssh",
+                                    &request["params"],
+                                )?;
+                                if let Err(error) = write_frame(&mut stream, &json!({"result":{}}))
+                                {
+                                    let _ = child.kill();
+                                    let _ = child.wait();
+                                    return Err(error.into());
+                                }
+                                relay_child(&stream, &mut child, || {
+                                    REMOTE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
+                                        && crate::runtime::shutdown::ensure_accepting_operations()
+                                            .is_ok()
+                                })?;
+                                return Ok(None);
+                            }
+                            let peer = stream.try_clone().map_err(|e| e.to_string())?;
+                            dispatch(&app, request, Arc::new(move || connection_open(&peer)))
+                                .map(Some)
+                        });
                 match result {
                     Ok(Some(result)) => {
                         let _ = write_frame(&mut stream, &json!({"result":result}));
@@ -1445,7 +1566,9 @@ fn listen(app: AppHandle) -> Result<(), String> {
 }
 pub(crate) fn ensure_management_enabled() -> Result<(), String> {
     let _guard = config_lock();
-    if !read_config()?.enabled { return Err("Remote management is disabled on this computer.".into()); }
+    if !read_config()?.enabled {
+        return Err("Remote management is disabled on this computer.".into());
+    }
     Ok(())
 }
 
@@ -1478,10 +1601,18 @@ fn validate_authorization(config: &Config, request: &Value) -> Result<(), String
     Ok(())
 }
 
-fn dispatch(app: &AppHandle, request: Value, connection: operations::Probe) -> Result<Value, BridgeError> {
-    handle(&directory()?, &request, connection, Arc::new(changes_allowed), |method, params| {
-        execute(app, method, params)
-    })
+fn dispatch(
+    app: &AppHandle,
+    request: Value,
+    connection: operations::Probe,
+) -> Result<Value, BridgeError> {
+    handle(
+        &directory()?,
+        &request,
+        connection,
+        Arc::new(changes_allowed),
+        |method, params| execute(app, method, params),
+    )
 }
 /// Runs one authorized, classified request against this computer.
 fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, BridgeError> {
@@ -1524,7 +1655,9 @@ fn handle(
         None | Some(Access::Stream) => Err(BridgeError::unsupported()),
         Some(Access::Read) if method == "handshake" => {
             execute(method, params)?;
-            Ok(json!({"hostId":config.host_id,"name":name(),"version":VERSION,"capabilities":capabilities()}))
+            Ok(
+                json!({"hostId":config.host_id,"name":name(),"version":VERSION,"capabilities":capabilities()}),
+            )
         }
         Some(Access::Read) => execute(method, params),
         Some(Access::Change) => {
@@ -1613,23 +1746,57 @@ mod tests {
     fn checkpoint_actions_build_owner_routed_requests_with_vm_identity() {
         let _test_state = crate::test_support::global_state();
         let vm = "11111111-1111-4111-8111-111111111111";
-        assert_eq!(checkpoint_remote_request(vm, "create", Some("Point"), None, None).unwrap(),
-            ("checkpoint.create", json!({"vmId":vm,"name":"Point"})));
-        assert_eq!(checkpoint_remote_request(vm, "fork", None, Some("checkpoint-id"), Some("Branch")).unwrap(),
-            ("checkpoint.fork", json!({"vmId":vm,"checkpointId":"checkpoint-id","newName":"Branch"})));
-        assert_eq!(checkpoint_remote_request(vm, "restore", None, Some("checkpoint-id"), None).unwrap(),
-            ("checkpoint.restore", json!({"vmId":vm,"checkpointId":"checkpoint-id"})));
-        assert!(checkpoint_remote_request("not-an-id", "create", Some("Point"), None, None).is_err());
+        assert_eq!(
+            checkpoint_remote_request(vm, "create", Some("Point"), None, None).unwrap(),
+            ("checkpoint.create", json!({"vmId":vm,"name":"Point"}))
+        );
+        assert_eq!(
+            checkpoint_remote_request(vm, "fork", None, Some("checkpoint-id"), Some("Branch"))
+                .unwrap(),
+            (
+                "checkpoint.fork",
+                json!({"vmId":vm,"checkpointId":"checkpoint-id","newName":"Branch"})
+            )
+        );
+        assert_eq!(
+            checkpoint_remote_request(vm, "restore", None, Some("checkpoint-id"), None).unwrap(),
+            (
+                "checkpoint.restore",
+                json!({"vmId":vm,"checkpointId":"checkpoint-id"})
+            )
+        );
+        assert!(
+            checkpoint_remote_request("not-an-id", "create", Some("Point"), None, None).is_err()
+        );
     }
 
     #[test]
     fn desktop_tools_setup_has_time_to_install_over_remote_connection() {
         let _test_state = crate::test_support::global_state();
-        assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-tools"}})), Duration::from_secs(2100));
-        assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"update-streamer"}})), Duration::from_secs(2100));
-        assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-lcu"}})), Duration::from_secs(2100));
-        assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"restart-streamer"}})), Duration::from_secs(600));
-        assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"start"}})), Duration::from_secs(600));
+        assert_eq!(
+            request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-tools"}})),
+            Duration::from_secs(2100)
+        );
+        assert_eq!(
+            request_timeout(
+                &json!({"method":"desktop.action","params":{"action":"update-streamer"}})
+            ),
+            Duration::from_secs(2100)
+        );
+        assert_eq!(
+            request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-lcu"}})),
+            Duration::from_secs(2100)
+        );
+        assert_eq!(
+            request_timeout(
+                &json!({"method":"desktop.action","params":{"action":"restart-streamer"}})
+            ),
+            Duration::from_secs(600)
+        );
+        assert_eq!(
+            request_timeout(&json!({"method":"desktop.action","params":{"action":"start"}})),
+            Duration::from_secs(600)
+        );
     }
 
     #[test]
@@ -1754,18 +1921,26 @@ mod stream_tests {
         let result = output_reader.read_exact(&mut observed);
         drop(source_writer);
         worker.join().unwrap();
-        assert!(result.is_ok(), "raw bytes remained buffered while input was open: {result:?}");
+        assert!(
+            result.is_ok(),
+            "raw bytes remained buffered while input was open: {result:?}"
+        );
         assert_eq!(&observed, payload);
     }
     #[test]
     fn stream_reply_arrives_before_client_sends_ssh_bytes() {
         let _test_state = crate::test_support::global_state();
         let (mut client, server) = UnixStream::pair().unwrap();
-        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
         let worker = thread::spawn(move || {
             let mut output = std::io::BufWriter::new(server);
             write_reply(&mut output, &json!({"result":{}})).unwrap();
-            output.get_mut().set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            output
+                .get_mut()
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             let mut banner = [0; 4];
             output.get_mut().read_exact(&mut banner).map(|_| banner)
         });
@@ -1949,7 +2124,12 @@ mod setup_tests {
                 .write_all(public.as_bytes())
                 .unwrap();
             let output = child.wait_with_output().unwrap();
-            assert!(output.status.success(), "{}: {}", shell.display(), String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "{}: {}",
+                shell.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         assert_eq!(
             fs::read_to_string(authorized).unwrap(),
@@ -1976,7 +2156,14 @@ mod setup_tests {
         let again = key_setup_command(dir.path(), "me@office").unwrap();
         assert_eq!(again, command);
         let authorize = authorize_command("me@office").unwrap();
-        assert!(authorize.contains("StrictHostKeyChecking=ask") && authorize.ends_with(&format!("{} {}", crate::terminal::quote("me@office"), crate::terminal::quote("true"))));
+        assert!(
+            authorize.contains("StrictHostKeyChecking=ask")
+                && authorize.ends_with(&format!(
+                    "{} {}",
+                    crate::terminal::quote("me@office"),
+                    crate::terminal::quote("true")
+                ))
+        );
         assert!(authorize_command("$(whoami)").is_err());
     }
     #[test]
@@ -1984,7 +2171,11 @@ mod setup_tests {
         let _test_state = crate::test_support::global_state();
         // Tauri runs a synchronous command on the main thread; only quick settings reads
         // and writes may be synchronous here.
-        let quick = ["remote_management_status", "set_remote_management", "remote_host_list"];
+        let quick = [
+            "remote_management_status",
+            "set_remote_management",
+            "remote_host_list",
+        ];
         let source = include_str!("remote.rs");
         let mut commands = 0;
         for block in source.split("#[tauri::command]").skip(1) {
@@ -1992,9 +2183,18 @@ mod setup_tests {
             if !signature.starts_with("pub") {
                 continue;
             }
-            let name = signature.split("fn ").nth(1).unwrap().split('(').next().unwrap();
+            let name = signature
+                .split("fn ")
+                .nth(1)
+                .unwrap()
+                .split('(')
+                .next()
+                .unwrap();
             commands += 1;
-            assert!(signature.contains("async fn") || quick.contains(&name), "{name} must be async");
+            assert!(
+                signature.contains("async fn") || quick.contains(&name),
+                "{name} must be async"
+            );
         }
         assert!(commands >= 10);
     }
@@ -2006,21 +2206,37 @@ mod setup_tests {
     #[test]
     fn public_key_install_works_from_any_login_shell() {
         let _test_state = crate::test_support::global_state();
-        let mut shells: Vec<PathBuf> = ["/bin/bash", "/bin/zsh", "/bin/dash", "/bin/ksh", "/bin/csh", "/bin/tcsh"]
-            .into_iter()
-            .map(PathBuf::from)
-            .collect();
+        let mut shells: Vec<PathBuf> = [
+            "/bin/bash",
+            "/bin/zsh",
+            "/bin/dash",
+            "/bin/ksh",
+            "/bin/csh",
+            "/bin/tcsh",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
         // fish and nushell are not POSIX shells; test them where installed.
         for name in ["fish", "nu"] {
             if let Some(found) = std::env::var_os("PATH")
-                .map(|path| std::env::split_paths(&path).map(|dir| dir.join(name)).collect::<Vec<_>>())
+                .map(|path| {
+                    std::env::split_paths(&path)
+                        .map(|dir| dir.join(name))
+                        .collect::<Vec<_>>()
+                })
                 .and_then(|candidates| candidates.into_iter().find(|candidate| candidate.is_file()))
             {
                 shells.push(found);
             }
         }
         let available: Vec<_> = shells.into_iter().filter(|shell| shell.is_file()).collect();
-        assert!(available.iter().any(|shell| shell.ends_with("csh") || shell.ends_with("tcsh") || shell.ends_with("fish")), "no non-POSIX shell to test");
+        assert!(
+            available.iter().any(|shell| shell.ends_with("csh")
+                || shell.ends_with("tcsh")
+                || shell.ends_with("fish")),
+            "no non-POSIX shell to test"
+        );
         for shell in available {
             install_with(&shell);
         }
@@ -2035,17 +2251,50 @@ mod connection_failure_tests {
         let _test_state = crate::test_support::global_state();
         let changed = "@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.\n";
         assert!(connection_failure(Some(255), changed).contains("host key changed"));
-        assert!(connection_failure(Some(255), "Host key verification failed.\n").starts_with("Host key verification failed."));
-        assert!(connection_failure(Some(255), "user@office: Permission denied (publickey).\n").starts_with("SSH authentication failed"));
-        assert!(connection_failure(Some(255), "Received disconnect: Too many authentication failures\n").starts_with("SSH authentication failed"));
-        assert!(connection_failure(Some(255), "ssh: connect to host office port 22: Connection refused\n").contains("refused"));
-        assert!(connection_failure(Some(255), "ssh: connect to host office port 22: Operation timed out\n").contains("timed out"));
-        assert!(connection_failure(Some(255), "ssh: Could not resolve hostname office\n").contains("resolve"));
-        assert_eq!(connection_failure(Some(255), "\x1b[31msecret banner"), CONNECTION_HELP);
+        assert!(
+            connection_failure(Some(255), "Host key verification failed.\n")
+                .starts_with("Host key verification failed.")
+        );
+        assert!(
+            connection_failure(Some(255), "user@office: Permission denied (publickey).\n")
+                .starts_with("SSH authentication failed")
+        );
+        assert!(connection_failure(
+            Some(255),
+            "Received disconnect: Too many authentication failures\n"
+        )
+        .starts_with("SSH authentication failed"));
+        assert!(connection_failure(
+            Some(255),
+            "ssh: connect to host office port 22: Connection refused\n"
+        )
+        .contains("refused"));
+        assert!(connection_failure(
+            Some(255),
+            "ssh: connect to host office port 22: Operation timed out\n"
+        )
+        .contains("timed out"));
+        assert!(
+            connection_failure(Some(255), "ssh: Could not resolve hostname office\n")
+                .contains("resolve")
+        );
+        assert_eq!(
+            connection_failure(Some(255), "\x1b[31msecret banner"),
+            CONNECTION_HELP
+        );
         // Bridge failures exit 1 (or 127 when the link is missing) after authentication succeeded.
-        assert!(connection_failure(Some(1), "Silo is not running on this computer.\n").contains("not running on the other computer"));
-        assert!(connection_failure(Some(127), "sh: /home/u/.local/bin/silo-remote: not found\n").contains("bridge is missing"));
-        assert_eq!(connection_failure(Some(1), "Permission denied"), CONNECTION_HELP);
+        assert!(
+            connection_failure(Some(1), "Silo is not running on this computer.\n")
+                .contains("not running on the other computer")
+        );
+        assert!(
+            connection_failure(Some(127), "sh: /home/u/.local/bin/silo-remote: not found\n")
+                .contains("bridge is missing")
+        );
+        assert_eq!(
+            connection_failure(Some(1), "Permission denied"),
+            CONNECTION_HELP
+        );
     }
 }
 
@@ -2082,10 +2331,13 @@ mod authorized_key_tests {
     #[test]
     fn installed_line_only_allows_the_bridge_and_loopback_tunnels() {
         let _test_state = crate::test_support::global_state();
-        let line = authorized_key_line(&format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}\n")).unwrap();
+        let line =
+            authorized_key_line(&format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}\n")).unwrap();
         assert_eq!(
             line,
-            format!(r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge" ssh-ed25519 {BLOB} Silo remote management"#)
+            format!(
+                r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge" ssh-ed25519 {BLOB} Silo remote management"#
+            )
         );
         for invalid in [
             "",
@@ -2131,7 +2383,10 @@ mod authorized_key_tests {
             fs::read_to_string(&path).unwrap(),
             format!("ssh-ed25519 AAAAother user\n{AUTHORIZED_KEY_OPTIONS} {public}\n")
         );
-        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert!(!restrict_authorized_keys_file(&path, &public).unwrap());
         assert!(!home.path().join(".authorized_keys.silo-restrict").exists());
 
@@ -2153,9 +2408,13 @@ mod health_tests {
     fn one_failed_poll_closes_nothing_and_repeated_failures_disconnect() {
         let _test_state = crate::test_support::global_state();
         let host = uuid::Uuid::new_v4().to_string();
-        let blip = "The SSH connection timed out. Check that the other computer is awake and reachable.";
+        let blip =
+            "The SSH connection timed out. Check that the other computer is awake and reachable.";
         assert_eq!(poll_failed(&host, blip), PollFailure::Transient);
-        assert_eq!(poll_failed(&host, "This computer has too many active Silo connections."), PollFailure::Transient);
+        assert_eq!(
+            poll_failed(&host, "This computer has too many active Silo connections."),
+            PollFailure::Transient
+        );
         assert_eq!(offline(&host), None);
         assert_eq!(poll_failed(&host, blip), PollFailure::Disconnected);
         // Reads answer from the last error for a short while instead of reconnecting.
@@ -2189,10 +2448,19 @@ mod health_tests {
 mod connect_tests {
     use super::*;
     fn host(id: &str, name: &str, address: &str) -> RemoteHost {
-        RemoteHost { id: id.into(), name: name.into(), address: address.into() }
+        RemoteHost {
+            id: id.into(),
+            name: name.into(),
+            address: address.into(),
+        }
     }
     fn saved(dir: &Path) -> Vec<(String, String, String)> {
-        read_config_in(dir).unwrap().hosts.into_iter().map(|h| (h.id, h.name, h.address)).collect()
+        read_config_in(dir)
+            .unwrap()
+            .hosts
+            .into_iter()
+            .map(|h| (h.id, h.name, h.address))
+            .collect()
     }
 
     #[test]
@@ -2201,16 +2469,54 @@ mod connect_tests {
         let home = tempfile::tempdir().unwrap();
         let dir = directory_in(home.path()).unwrap();
         let office = uuid::Uuid::new_v4().to_string();
-        save_connected_host(&dir, host(&office, "Office", "office.local"), "Laptop", false).unwrap();
+        save_connected_host(
+            &dir,
+            host(&office, "Office", "office.local"),
+            "Laptop",
+            false,
+        )
+        .unwrap();
         // Same computer, same address: the name is refreshed.
-        save_connected_host(&dir, host(&office, "Office Mac", "office.local"), "Laptop", false).unwrap();
-        assert_eq!(saved(&dir), [(office.clone(), "Office Mac".into(), "office.local".into())]);
+        save_connected_host(
+            &dir,
+            host(&office, "Office Mac", "office.local"),
+            "Laptop",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            saved(&dir),
+            [(office.clone(), "Office Mac".into(), "office.local".into())]
+        );
         // Another address claims the saved identity: refused until the user confirms.
-        let error = save_connected_host(&dir, host(&office, "Office Mac", "10.0.0.9"), "Laptop", false).unwrap_err();
-        assert!(error.contains(ALREADY_SAVED) && error.contains("office.local") && error.contains("10.0.0.9"), "{error}");
-        assert_eq!(saved(&dir), [(office.clone(), "Office Mac".into(), "office.local".into())]);
-        save_connected_host(&dir, host(&office, "Office Mac", "10.0.0.9"), "Laptop", true).unwrap();
-        assert_eq!(saved(&dir), [(office, "Office Mac".into(), "10.0.0.9".into())]);
+        let error = save_connected_host(
+            &dir,
+            host(&office, "Office Mac", "10.0.0.9"),
+            "Laptop",
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains(ALREADY_SAVED)
+                && error.contains("office.local")
+                && error.contains("10.0.0.9"),
+            "{error}"
+        );
+        assert_eq!(
+            saved(&dir),
+            [(office.clone(), "Office Mac".into(), "office.local".into())]
+        );
+        save_connected_host(
+            &dir,
+            host(&office, "Office Mac", "10.0.0.9"),
+            "Laptop",
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            saved(&dir),
+            [(office, "Office Mac".into(), "10.0.0.9".into())]
+        );
     }
 
     #[test]
@@ -2219,10 +2525,15 @@ mod connect_tests {
         let home = tempfile::tempdir().unwrap();
         let dir = directory_in(home.path()).unwrap();
         let own = read_config_in(&dir).unwrap().host_id;
-        let error = save_connected_host(&dir, host(&own, "Laptop", "localhost"), "Laptop", true).unwrap_err();
+        let error = save_connected_host(&dir, host(&own, "Laptop", "localhost"), "Laptop", true)
+            .unwrap_err();
         assert!(error.contains("points to this computer"));
-        let error = save_connected_host(&dir, host(&own, "Studio", "studio.local"), "Laptop", true).unwrap_err();
-        assert!(error.contains("Studio uses this computer's Silo identity"), "{error}");
+        let error = save_connected_host(&dir, host(&own, "Studio", "studio.local"), "Laptop", true)
+            .unwrap_err();
+        assert!(
+            error.contains("Studio uses this computer's Silo identity"),
+            "{error}"
+        );
         assert!(saved(&dir).is_empty());
     }
 }
@@ -2242,14 +2553,28 @@ mod bridge_link_tests {
         let image = dir.path().join("Silo.AppImage");
         executable(&image);
         let mounted = PathBuf::from("/tmp/.mount_SiloAb12/usr/bin/silo-ui");
-        assert_eq!(select_bridge_target(Some(image.clone()), mounted.clone()).unwrap(), image);
+        assert_eq!(
+            select_bridge_target(Some(image.clone()), mounted.clone()).unwrap(),
+            image
+        );
         let plain = dir.path().join("plain");
         fs::write(&plain, b"").unwrap();
-        for ignored in [dir.path().join("missing.AppImage"), plain, PathBuf::from("Silo.AppImage")] {
-            assert_eq!(select_bridge_target(Some(ignored), mounted.clone()).unwrap(), mounted);
+        for ignored in [
+            dir.path().join("missing.AppImage"),
+            plain,
+            PathBuf::from("Silo.AppImage"),
+        ] {
+            assert_eq!(
+                select_bridge_target(Some(ignored), mounted.clone()).unwrap(),
+                mounted
+            );
         }
-        let translocated = PathBuf::from("/private/var/folders/x/T/AppTranslocation/ABC/d/Silo.app/Contents/MacOS/silo-ui");
-        assert!(select_bridge_target(None, translocated).unwrap_err().contains("Applications"));
+        let translocated = PathBuf::from(
+            "/private/var/folders/x/T/AppTranslocation/ABC/d/Silo.app/Contents/MacOS/silo-ui",
+        );
+        assert!(select_bridge_target(None, translocated)
+            .unwrap_err()
+            .contains("Applications"));
     }
 
     #[test]
@@ -2266,29 +2591,50 @@ mod bridge_link_tests {
         // Links Silo made before: a vanished AppImage mount, an older AppImage, a moved app.
         let older = apps.path().join("Silo_0.5.0_amd64.AppImage");
         executable(&older);
-        for previous in [PathBuf::from("/tmp/.mount_gone/usr/bin/silo-ui"), older, apps.path().join("moved/silo-ui")] {
+        for previous in [
+            PathBuf::from("/tmp/.mount_gone/usr/bin/silo-ui"),
+            older,
+            apps.path().join("moved/silo-ui"),
+        ] {
             fs::remove_file(&link).unwrap();
             symlink(&previous, &link).unwrap();
             link_bridge(home.path(), &target).unwrap();
-            assert_eq!(fs::read_link(&link).unwrap(), target, "{}", previous.display());
+            assert_eq!(
+                fs::read_link(&link).unwrap(),
+                target,
+                "{}",
+                previous.display()
+            );
         }
         // Another program's link or a real file stays untouched.
         let other = apps.path().join("other-tool");
         executable(&other);
         fs::remove_file(&link).unwrap();
         symlink(&other, &link).unwrap();
-        assert!(link_bridge(home.path(), &target).unwrap_err().contains("already exists"));
+        assert!(link_bridge(home.path(), &target)
+            .unwrap_err()
+            .contains("already exists"));
         assert_eq!(fs::read_link(&link).unwrap(), other);
         fs::remove_file(&link).unwrap();
         fs::write(&link, b"mine").unwrap();
-        assert!(link_bridge(home.path(), &target).unwrap_err().contains("already exists"));
+        assert!(link_bridge(home.path(), &target)
+            .unwrap_err()
+            .contains("already exists"));
         assert_eq!(fs::read(&link).unwrap(), b"mine");
     }
 
     #[test]
     fn copyable_addresses_prefer_names_then_tailscale_then_interfaces() {
         let _test_state = crate::test_support::global_state();
-        let interfaces = ["192.168.1.4", "100.101.102.103", "169.254.3.4", "10.0.0.2", "100.128.0.1", "not-an-ip"].map(String::from);
+        let interfaces = [
+            "192.168.1.4",
+            "100.101.102.103",
+            "169.254.3.4",
+            "10.0.0.2",
+            "100.128.0.1",
+            "not-an-ip",
+        ]
+        .map(String::from);
         let list = |name| {
             management_addresses("ana", name, &interfaces)
                 .into_iter()
@@ -2301,18 +2647,42 @@ mod bridge_link_tests {
             ("ana@10.0.0.2", "network"),
             ("ana@100.128.0.1", "network"),
         ];
-        let owned = |pairs: &[(&str, &'static str)]| pairs.iter().map(|(a, k)| (a.to_string(), *k)).collect::<Vec<_>>();
-        assert_eq!(list("studio"), owned(&[[("ana@studio.local", "name"), ("ana@studio", "name")].as_slice(), &expected_ips].concat()));
-        assert_eq!(list("Anas-Mac.local"), owned(&[[("ana@Anas-Mac.local", "name")].as_slice(), &expected_ips].concat()));
+        let owned = |pairs: &[(&str, &'static str)]| {
+            pairs
+                .iter()
+                .map(|(a, k)| (a.to_string(), *k))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            list("studio"),
+            owned(
+                &[
+                    [("ana@studio.local", "name"), ("ana@studio", "name")].as_slice(),
+                    &expected_ips
+                ]
+                .concat()
+            )
+        );
+        assert_eq!(
+            list("Anas-Mac.local"),
+            owned(&[[("ana@Anas-Mac.local", "name")].as_slice(), &expected_ips].concat())
+        );
         assert_eq!(list(""), owned(&expected_ips));
     }
 
     #[test]
     fn a_start_failure_is_reported_in_the_status() {
         let _test_state = crate::test_support::global_state();
-        let config = Config { host_id: uuid::Uuid::new_v4().to_string(), enabled: true, hosts: vec![] };
+        let config = Config {
+            host_id: uuid::Uuid::new_v4().to_string(),
+            enabled: true,
+            hosts: vec![],
+        };
         record_start_error(Some("Another Silo instance owns remote management.".into()));
-        assert_eq!(status(&config).error.as_deref(), Some("Another Silo instance owns remote management."));
+        assert_eq!(
+            status(&config).error.as_deref(),
+            Some("Another Silo instance owns remote management.")
+        );
         record_start_error(None);
         assert_eq!(status(&config).error, None);
     }
@@ -2322,7 +2692,10 @@ mod bridge_link_tests {
 mod identity_tests {
     use super::*;
     fn arguments(command: &Command) -> Vec<String> {
-        command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect()
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
     }
 
     #[test]
@@ -2331,12 +2704,16 @@ mod identity_tests {
         let key = Path::new("/private/key");
         let only = arguments(&ssh_with_identity("office", Some(key), Identity::SiloOnly).unwrap());
         assert!(only.windows(2).any(|pair| pair == ["-i", "/private/key"]));
-        assert!(only.windows(2).any(|pair| pair == ["-o", "IdentitiesOnly=yes"]));
+        assert!(only
+            .windows(2)
+            .any(|pair| pair == ["-o", "IdentitiesOnly=yes"]));
         let any = arguments(&ssh_with_identity("office", Some(key), Identity::AnyKey).unwrap());
         assert!(any.windows(2).any(|pair| pair == ["-i", "/private/key"]));
         assert!(!any.iter().any(|arg| arg.starts_with("IdentitiesOnly")));
         let none = arguments(&ssh_with_identity("office", None, Identity::SiloOnly).unwrap());
-        assert!(!none.iter().any(|arg| arg == "-i" || arg.starts_with("IdentitiesOnly")));
+        assert!(!none
+            .iter()
+            .any(|arg| arg == "-i" || arg.starts_with("IdentitiesOnly")));
     }
 
     #[test]
@@ -2348,17 +2725,31 @@ mod identity_tests {
         let mut tried = Vec::new();
         let result = with_identity_fallback(&address, true, |identity| {
             tried.push(identity);
-            if identity == Identity::SiloOnly { refused() } else { Ok(json!(1)) }
+            if identity == Identity::SiloOnly {
+                refused()
+            } else {
+                Ok(json!(1))
+            }
         });
-        assert_eq!((result, tried), (Ok(json!(1)), vec![Identity::SiloOnly, Identity::AnyKey]));
+        assert_eq!(
+            (result, tried),
+            (Ok(json!(1)), vec![Identity::SiloOnly, Identity::AnyKey])
+        );
         assert_eq!(preferred_identity(&address), Identity::AnyKey);
         // After "Set up Silo SSH key", too many agent keys are refused; Silo's key alone works.
         let mut tried = Vec::new();
         let result = with_identity_fallback(&address, true, |identity| {
             tried.push(identity);
-            if identity == Identity::AnyKey { refused() } else { Ok(json!(2)) }
+            if identity == Identity::AnyKey {
+                refused()
+            } else {
+                Ok(json!(2))
+            }
         });
-        assert_eq!((result, tried), (Ok(json!(2)), vec![Identity::AnyKey, Identity::SiloOnly]));
+        assert_eq!(
+            (result, tried),
+            (Ok(json!(2)), vec![Identity::AnyKey, Identity::SiloOnly])
+        );
         assert_eq!(preferred_identity(&address), Identity::SiloOnly);
         // Other failures and computers without Silo's key are tried once.
         let mut attempts = 0;
@@ -2399,8 +2790,12 @@ mod reply_tests {
             assert_eq!(read_reply(bytes.as_slice()).unwrap(), value, "{noise:?}");
         }
         let flood = [vec![b'x'; REPLY_SEARCH_LIMIT + 1], reply(&value)].concat();
-        assert!(read_reply(flood.as_slice()).unwrap_err().contains("shell startup files"));
-        assert!(read_reply(&b"motd only\n"[..]).unwrap_err().contains("connection ended"));
+        assert!(read_reply(flood.as_slice())
+            .unwrap_err()
+            .contains("shell startup files"));
+        assert!(read_reply(&b"motd only\n"[..])
+            .unwrap_err()
+            .contains("connection ended"));
         // A frame without the preamble (earlier bridges) is never trusted as a reply.
         let mut bare = Vec::new();
         write_frame(&mut bare, &value).unwrap();
@@ -2413,8 +2808,17 @@ mod reply_tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         fs::write(file.path(), reply(&json!({"result":{"ok":true}}))).unwrap();
         let mut command = Command::new("/bin/sh");
-        command.args(["-c", "echo 'Last login: today'; printf 'conda: base\\n'; cat \"$0\""]).arg(file.path());
-        let result = run_exchange(command, &json!({"method":"runtime.snapshot"}), Instant::now() + Duration::from_secs(10));
+        command
+            .args([
+                "-c",
+                "echo 'Last login: today'; printf 'conda: base\\n'; cat \"$0\"",
+            ])
+            .arg(file.path());
+        let result = run_exchange(
+            command,
+            &json!({"method":"runtime.snapshot"}),
+            Instant::now() + Duration::from_secs(10),
+        );
         assert_eq!(result, Ok(json!({"ok":true})));
     }
 }
@@ -2444,23 +2848,36 @@ mod dispatch_tests {
         execute: impl FnOnce(&str, &Value) -> Result<Value, String>,
     ) -> Result<Value, String> {
         let settings = dir.to_owned();
-        let allowed = Arc::new(move || read_config_in(&settings).is_ok_and(|config| config.enabled));
-        handle(dir, request, Arc::new(|| true), allowed, |method, params| execute(method, params).map_err(BridgeError::from)).map_err(|error| error.message)
+        let allowed =
+            Arc::new(move || read_config_in(&settings).is_ok_and(|config| config.enabled));
+        handle(
+            dir,
+            request,
+            Arc::new(|| true),
+            allowed,
+            |method, params| execute(method, params).map_err(BridgeError::from),
+        )
+        .map_err(|error| error.message)
     }
     fn methods(access: Access) -> Vec<&'static str> {
-        METHODS.iter().filter(|(_, a)| *a == access).map(|(m, _)| *m).collect()
+        METHODS
+            .iter()
+            .filter(|(_, a)| *a == access)
+            .map(|(m, _)| *m)
+            .collect()
     }
     /// Quoted `word.word` literals: the method names a dispatcher source matches on.
     fn method_literals(source: &str) -> std::collections::BTreeSet<String> {
         // Only the dispatcher code, not test fixtures (guest labels such as `silo.managed`).
         let code = source.split("#[cfg(test)]").next().unwrap_or(source);
-        code
-            .split('"')
+        code.split('"')
             .skip(1)
             .step_by(2)
             .filter(|text| {
                 text.contains('.')
-                    && text.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase()))
+                    && text.split('.').all(|part| {
+                        !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase())
+                    })
             })
             .map(str::to_owned)
             .collect()
@@ -2472,22 +2889,39 @@ mod dispatch_tests {
         assert_eq!(
             methods(Access::Change),
             [
-                "runtime.action", "runtime.upsert", "runtime.delete", "desktop.action",
-                "ssh.access.save", "guest.prepare", "network.publish", "network.unpublish", "repository.push.start",
-                "repository.push", "repository.dismiss", "checkpoint.create", "checkpoint.fork",
+                "runtime.action",
+                "runtime.upsert",
+                "runtime.delete",
+                "desktop.action",
+                "ssh.access.save",
+                "guest.prepare",
+                "network.publish",
+                "network.unpublish",
+                "repository.push.start",
+                "repository.push",
+                "repository.dismiss",
+                "checkpoint.create",
+                "checkpoint.fork",
                 "checkpoint.restore",
             ]
         );
         assert_eq!(methods(Access::Stream), ["guest.ssh"]);
-        let served: std::collections::BTreeSet<String> = method_literals(include_str!("remote_access.rs"))
-            .into_iter()
-            .chain(method_literals(include_str!("runtime/remote_ops.rs")))
-            .collect();
+        let served: std::collections::BTreeSet<String> =
+            method_literals(include_str!("remote_access.rs"))
+                .into_iter()
+                .chain(method_literals(include_str!("runtime/remote_ops.rs")))
+                .collect();
         for method in &served {
-            assert!(access(method).is_some(), "{method} is dispatched but not classified");
+            assert!(
+                access(method).is_some(),
+                "{method} is dispatched but not classified"
+            );
         }
         for (method, _) in METHODS.iter().filter(|(m, _)| *m != "handshake") {
-            assert!(served.contains(*method), "{method} is classified but never dispatched");
+            assert!(
+                served.contains(*method),
+                "{method} is classified but never dispatched"
+            );
         }
         let mut names = capabilities();
         names.sort_unstable();
@@ -2497,9 +2931,15 @@ mod dispatch_tests {
 
     #[test]
     fn unknown_methods_and_replayed_failures_preserve_the_wire_error_code() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_home, dir, config) = owner();
-        let response = handle(&dir, &request(&config, "runtime.unknown"), Arc::new(|| true), Arc::new(|| true), |_, _| panic!("unknown methods never dispatch"));
+        let response = handle(
+            &dir,
+            &request(&config, "runtime.unknown"),
+            Arc::new(|| true),
+            Arc::new(|| true),
+            |_, _| panic!("unknown methods never dispatch"),
+        );
         let error = response.unwrap_err();
         assert_eq!(error.code, ErrorCode::UnsupportedRemoteOperation);
         assert!(!dir.join("operations").exists());
@@ -2512,13 +2952,25 @@ mod dispatch_tests {
         let reply = error_reply(&updating);
         assert_eq!(reply["error"], "SILO_SANDBOX_UPDATE_IN_PROGRESS");
         assert_eq!(BridgeError::from_remote_reply(&reply).unwrap(), updating);
-        assert_eq!(BridgeError::from_remote_reply(&json!({"code":"future_code","error":"SILO_SANDBOX_UPDATE_IN_PROGRESS"})).unwrap().code, ErrorCode::Internal);
-
+        assert_eq!(
+            BridgeError::from_remote_reply(
+                &json!({"code":"future_code","error":"SILO_SANDBOX_UPDATE_IN_PROGRESS"})
+            )
+            .unwrap()
+            .code,
+            ErrorCode::Internal
+        );
 
         let change = request(&config, "runtime.action");
         let expected = BridgeError::new(ErrorCode::Cancelled, "Stopped at your request.");
         for _ in 0..2 {
-            let outcome = handle(&dir, &change, Arc::new(|| true), Arc::new(|| true), |_, _| Err(expected.clone()));
+            let outcome = handle(
+                &dir,
+                &change,
+                Arc::new(|| true),
+                Arc::new(|| true),
+                |_, _| Err(expected.clone()),
+            );
             assert_eq!(outcome, Err(expected.clone()));
         }
     }
@@ -2539,11 +2991,20 @@ mod dispatch_tests {
                 assert_eq!(result.unwrap(), json!({"ran":method}));
             }
             let id = request["operationId"].as_str().unwrap();
-            assert!(dir.join("operations").join(format!("{id}.json")).is_file(), "{method}");
+            assert!(
+                dir.join("operations").join(format!("{id}.json")).is_file(),
+                "{method}"
+            );
         }
-        assert_eq!(runs.swap(0, Ordering::SeqCst), methods(Access::Change).len());
+        assert_eq!(
+            runs.swap(0, Ordering::SeqCst),
+            methods(Access::Change).len()
+        );
         let recorded = fs::read_dir(dir.join("operations")).unwrap().count();
-        for method in methods(Access::Read).into_iter().filter(|m| *m != "handshake") {
+        for method in methods(Access::Read)
+            .into_iter()
+            .filter(|m| *m != "handshake")
+        {
             let request = request(&config, method);
             for _ in 0..2 {
                 run(&dir, &request, |_, _| {
@@ -2553,8 +3014,14 @@ mod dispatch_tests {
                 .unwrap();
             }
         }
-        assert_eq!(runs.load(Ordering::SeqCst), 2 * (methods(Access::Read).len() - 1));
-        assert_eq!(fs::read_dir(dir.join("operations")).unwrap().count(), recorded);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2 * (methods(Access::Read).len() - 1)
+        );
+        assert_eq!(
+            fs::read_dir(dir.join("operations")).unwrap().count(),
+            recorded
+        );
     }
 
     #[test]
@@ -2614,7 +3081,9 @@ mod dispatch_tests {
         let busy = {
             let vm = vm.clone();
             thread::spawn(move || {
-                let guard = crate::runtime::OPERATIONS.vm(&vm, "vm", "Long local work").unwrap();
+                let guard = crate::runtime::OPERATIONS
+                    .vm(&vm, "vm", "Long local work")
+                    .unwrap();
                 held.0.send(()).unwrap();
                 release.1.recv().unwrap();
                 drop(guard);
@@ -2666,7 +3135,10 @@ mod dispatch_tests {
         drop(controller);
         let until = Instant::now() + Duration::from_secs(5);
         while connection_open(&owner_side) {
-            assert!(Instant::now() < until, "the owner never saw the controller leave");
+            assert!(
+                Instant::now() < until,
+                "the owner never saw the controller leave"
+            );
             thread::sleep(Duration::from_millis(5));
         }
     }
@@ -2678,7 +3150,10 @@ mod dispatch_tests {
         let deadline = || Instant::now() + Duration::from_secs(60);
         let mut sent = Vec::new();
         let result = send_change(&mut request, deadline(), &[Duration::ZERO; 2], |request| {
-            sent.push((request["operationId"].clone(), request["startWithinMs"].as_u64().unwrap()));
+            sent.push((
+                request["operationId"].clone(),
+                request["startWithinMs"].as_u64().unwrap(),
+            ));
             if sent.len() < 3 {
                 Err(Failure::Lost("dropped".into()))
             } else {
@@ -2705,14 +3180,34 @@ mod dispatch_tests {
             });
             assert_eq!(result, Err("no".into()));
         }
-        let reported = BridgeError::new(ErrorCode::AlreadyQueued, "An existing request owns this action.");
-        let outcome = send_change(&mut request, deadline(), &[Duration::ZERO], |_| Err(Failure::Reported(reported.clone())));
+        let reported = BridgeError::new(
+            ErrorCode::AlreadyQueued,
+            "An existing request owns this action.",
+        );
+        let outcome = send_change(&mut request, deadline(), &[Duration::ZERO], |_| {
+            Err(Failure::Reported(reported.clone()))
+        });
         assert_eq!(outcome, Err(reported));
-        assert!(lost_connection(Some(255), "Connection closed by 10.0.0.2 port 22\n"));
-        assert!(lost_connection(Some(255), "Timeout, server office not responding.\n"));
-        assert!(!lost_connection(Some(255), "Host key verification failed.\n"));
-        assert!(!lost_connection(Some(255), "user@office: Permission denied (publickey).\n"));
-        assert!(!lost_connection(Some(1), "Silo is not running on this computer.\n"));
+        assert!(lost_connection(
+            Some(255),
+            "Connection closed by 10.0.0.2 port 22\n"
+        ));
+        assert!(lost_connection(
+            Some(255),
+            "Timeout, server office not responding.\n"
+        ));
+        assert!(!lost_connection(
+            Some(255),
+            "Host key verification failed.\n"
+        ));
+        assert!(!lost_connection(
+            Some(255),
+            "user@office: Permission denied (publickey).\n"
+        ));
+        assert!(!lost_connection(
+            Some(1),
+            "Silo is not running on this computer.\n"
+        ));
     }
 
     #[test]
@@ -2725,10 +3220,14 @@ mod dispatch_tests {
         assert_eq!(mode(&dir), 0o700);
         let lease = lease_control(&dir).unwrap();
         assert_eq!(mode(&dir.join("control.lock")), 0o600);
-        assert!(lease_control(&dir).unwrap_err().contains("Another Silo instance"));
+        assert!(lease_control(&dir)
+            .unwrap_err()
+            .contains("Another Silo instance"));
         let listener = bind_control_socket(&dir).unwrap();
         assert_eq!(mode(&dir.join("control.sock")), 0o600);
-        assert!(bind_control_socket(&dir).unwrap_err().contains("Another Silo instance"));
+        assert!(bind_control_socket(&dir)
+            .unwrap_err()
+            .contains("Another Silo instance"));
         drop(listener);
         // A socket left by a stopped owner is replaced, not treated as a live owner.
         drop(bind_control_socket(&dir).unwrap());
@@ -2743,17 +3242,36 @@ mod ssh_authorization_tests {
     #[test]
     fn ssh_settings_require_management_protocol_and_pinned_owner() {
         let _test_state = crate::test_support::global_state();
-        let mut config = Config { host_id: uuid::Uuid::new_v4().to_string(), enabled: true, hosts: vec![] };
-        for method in ["ssh.access.state", "ssh.access.save", "ssh.access.connection"] {
+        let mut config = Config {
+            host_id: uuid::Uuid::new_v4().to_string(),
+            enabled: true,
+            hosts: vec![],
+        };
+        for method in [
+            "ssh.access.state",
+            "ssh.access.save",
+            "ssh.access.connection",
+        ] {
             let request = json!({"version":VERSION,"hostId":config.host_id,"method":method});
             validate_authorization(&config, &request).unwrap();
             config.enabled = false;
-            assert_eq!(validate_authorization(&config, &request).unwrap_err(), "Remote management is disabled on this computer.");
+            assert_eq!(
+                validate_authorization(&config, &request).unwrap_err(),
+                "Remote management is disabled on this computer."
+            );
             config.enabled = true;
-            let mut changed = request.clone(); changed["hostId"] = json!(uuid::Uuid::new_v4().to_string());
-            assert_eq!(validate_authorization(&config, &changed).unwrap_err(), "This address now belongs to a different Silo computer. Reconnect it explicitly.");
-            changed = request; changed["version"] = json!(VERSION + 1);
-            assert_eq!(validate_authorization(&config, &changed).unwrap_err(), "Silo versions are incompatible. Update Silo on both computers.");
+            let mut changed = request.clone();
+            changed["hostId"] = json!(uuid::Uuid::new_v4().to_string());
+            assert_eq!(
+                validate_authorization(&config, &changed).unwrap_err(),
+                "This address now belongs to a different Silo computer. Reconnect it explicitly."
+            );
+            changed = request;
+            changed["version"] = json!(VERSION + 1);
+            assert_eq!(
+                validate_authorization(&config, &changed).unwrap_err(),
+                "Silo versions are incompatible. Update Silo on both computers."
+            );
         }
     }
 }

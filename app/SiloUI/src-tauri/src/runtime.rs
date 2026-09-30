@@ -1,24 +1,24 @@
+pub(crate) mod checkpoints;
+pub(crate) mod configuration_recovery;
 #[cfg(test)]
 pub(crate) mod contract_tests;
-pub(crate) mod remote_ops;
-pub(crate) mod operation_gate;
-pub(crate) mod shutdown;
-pub(crate) mod storage;
-pub(crate) mod checkpoints;
-pub(crate) mod update_recovery;
+mod crash_acknowledgement;
 #[path = "guest_image.rs"]
 pub(crate) mod guest_image;
+pub(crate) mod lifecycle_recovery;
+pub(crate) mod operation_gate;
+pub(crate) mod remote_ops;
 #[path = "runtime_activity.rs"]
 mod runtime_activity;
 #[path = "runtime_logs.rs"]
 pub(crate) mod runtime_logs;
 #[path = "secrets_runtime.rs"]
 mod secrets_runtime;
-pub(crate) mod configuration_recovery;
-pub(crate) mod lifecycle_recovery;
-mod crash_acknowledgement;
-use serde::{Deserialize, Serialize};
+pub(crate) mod shutdown;
+pub(crate) mod storage;
+pub(crate) mod update_recovery;
 use crate::bridge_error::{BridgeError, ErrorCode};
+use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
 use serde_json::Value;
@@ -109,7 +109,9 @@ fn lock_vm_runtime<'a>(
             Err(std::sync::TryLockError::WouldBlock) => {}
         }
         if runtime_cancel_requested() {
-            return Err(RuntimeError::Cancelled { operation: operation.into() });
+            return Err(RuntimeError::Cancelled {
+                operation: operation.into(),
+            });
         }
         if Instant::now() >= deadline {
             return Err(RuntimeError::Busy);
@@ -122,10 +124,16 @@ fn lock_vm_runtime<'a>(
 /// name never starts with the old one's access profile.
 fn forget_github_state(home: &Path, workspace: &str) {
     let key = (home.to_owned(), workspace.to_owned());
-    if let Ok(mut profiles) = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+    if let Ok(mut profiles) = GITHUB_PROFILES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
         profiles.remove(&key);
     }
-    if let Ok(mut states) = VM_ACCESS_STATES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+    if let Ok(mut states) = VM_ACCESS_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
         states.remove(&key);
     }
 }
@@ -144,7 +152,8 @@ fn github_command_workspace(args: &[String]) -> Option<&str> {
             .get(1)
             .map(String::as_str)
             .filter(|name| validate_name(name).is_ok()),
-        Some("restore") => args.windows(2)
+        Some("restore") => args
+            .windows(2)
             .find(|pair| pair[0] == "--name")
             .map(|pair| pair[1].as_str())
             .filter(|name| validate_name(name).is_ok()),
@@ -195,13 +204,21 @@ pub(crate) enum RuntimeError {
     /// The bundled runtime process could not be started at this moment. Retrying may
     /// succeed, unlike a missing or invalid installation (`Unavailable`).
     Launch(String),
-    TimedOut { operation: String },
-    Cancelled { operation: String },
+    TimedOut {
+        operation: String,
+    },
+    Cancelled {
+        operation: String,
+    },
     /// The runtime ran and reported a failure. `exit_code` is its exit status when it
     /// exited; `detail` is its own explanation with Silo's storage path hidden. The
     /// detail is diagnostic only: `Display` and `failure_report` summaries never show
     /// it, so raw runtime output is never the user-facing error.
-    Failed { operation: String, exit_code: Option<i32>, detail: String },
+    Failed {
+        operation: String,
+        exit_code: Option<i32>,
+        detail: String,
+    },
     Malformed(String),
     /// A configuration batch failed with this error after some of its changes were
     /// applied; the completed changes were kept.
@@ -382,7 +399,12 @@ pub(crate) fn reorder_machines(
     expected_order: &[String],
 ) -> Result<(), ChangeRejection> {
     let current: Vec<&str> = machines.iter().map(MachineConfiguration::id).collect();
-    if current != expected_order.iter().map(String::as_str).collect::<Vec<_>>() {
+    if current
+        != expected_order
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    {
         return Err(ChangeRejection::Stale);
     }
     let mut sorted_new: Vec<&str> = order.iter().map(String::as_str).collect();
@@ -428,7 +450,9 @@ pub enum MachineConfigurationChange {
     /// own optimistic `expected` check; any rejection rejects the whole batch with no
     /// partial save. Nesting is rejected. Used for onboarding's initial set of creates
     /// and any multi-change submission, replacing the old whole-list save.
-    Batch { changes: Vec<MachineConfigurationChange> },
+    Batch {
+        changes: Vec<MachineConfigurationChange>,
+    },
 }
 
 impl MachineConfigurationChange {
@@ -453,7 +477,9 @@ impl MachineConfigurationChange {
     /// Notification title naming the sandbox this change is about, when there is one.
     fn failure_title(&self) -> String {
         match self {
-            Self::Upsert { machine, .. } => format!("Couldn\u{2019}t save changes to {}", machine.name()),
+            Self::Upsert { machine, .. } => {
+                format!("Couldn\u{2019}t save changes to {}", machine.name())
+            }
             Self::Delete { expected, .. } => format!("Couldn\u{2019}t delete {}", expected.name()),
             Self::Batch { changes } if changes.len() == 1 => changes[0].failure_title(),
             _ => "Couldn\u{2019}t save sandbox settings".into(),
@@ -477,10 +503,13 @@ impl MachineConfigurationChange {
             Self::Upsert { machine, expected } => {
                 change_machine(machines, machine.id(), expected.as_ref(), Some(machine))
             }
-            Self::Delete { vm_id, expected } => change_machine(machines, vm_id, Some(expected), None),
-            Self::Reorder { order, expected_order } => {
-                reorder_machines(machines, order, expected_order)
+            Self::Delete { vm_id, expected } => {
+                change_machine(machines, vm_id, Some(expected), None)
             }
+            Self::Reorder {
+                order,
+                expected_order,
+            } => reorder_machines(machines, order, expected_order),
             Self::Batch { .. } => unreachable!("batch handled above"),
         };
         outcome.map_err(|rejection| match (self, rejection) {
@@ -629,7 +658,8 @@ struct HostResources {
 }
 
 pub(crate) fn runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
-    let executable = crate::bundled_tools::directory(app)?.join(if cfg!(windows) { "msb.exe" } else { "msb" });
+    let executable =
+        crate::bundled_tools::directory(app)?.join(if cfg!(windows) { "msb.exe" } else { "msb" });
     let app_data = app
         .path()
         .app_data_dir()
@@ -710,12 +740,20 @@ pub(crate) fn prepare_private_directory(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error),
     }
-    let directory = fs::OpenOptions::new().read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(path)?;
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)?;
     let metadata = directory.metadata()?;
     if metadata.uid() != unsafe { libc::geteuid() } {
-        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,
-            format!("Silo's directory {} is owned by UID {}, not this account.", path.display(), metadata.uid())));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "Silo's directory {} is owned by UID {}, not this account.",
+                path.display(),
+                metadata.uid()
+            ),
+        ));
     }
     if metadata.mode() & 0o022 != 0 {
         directory.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o777 & !0o022))?;
@@ -754,7 +792,10 @@ pub(crate) fn prepare_runtime_home(
                     let conflict = if !metadata.file_type().is_symlink() {
                         Some("is an existing file or directory, not a symbolic link".to_string())
                     } else if metadata.uid() != unsafe { libc::geteuid() } {
-                        Some(format!("is owned by UID {}, not this account", metadata.uid()))
+                        Some(format!(
+                            "is owned by UID {}, not this account",
+                            metadata.uid()
+                        ))
                     } else {
                         let target = fs::read_link(home)?;
                         (target != storage_home).then(|| format!("points to {}", target.display()))
@@ -851,12 +892,22 @@ pub(crate) fn run_msb(
     args: &[String],
     timeout: Duration,
 ) -> Result<CommandOutput, RuntimeError> {
-    if matches!(args.first().map(String::as_str), Some("start" | "restart" | "exec")) {
+    if matches!(
+        args.first().map(String::as_str),
+        Some("start" | "restart" | "exec")
+    ) {
         if let Some(name) = args.get(1) {
-            if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
-                .find(|machine| machine.is_vm() && machine.name() == name) {
+            if let Some(machine) = read_metadata(&paths.metadata)?
+                .machines
+                .into_iter()
+                .find(|machine| machine.is_vm() && machine.name() == name)
+            {
                 if checkpoints::needs_explicit_start(paths, machine.id())? {
-                    return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
+                    return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(
+                        paths,
+                        machine.id(),
+                        machine.name(),
+                    )));
                 }
             }
         }
@@ -888,7 +939,11 @@ fn run_msb_with_progress(
             return run_msb_process(paths, args, timeout, report);
         }
         let access = vm_access_state(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
-        let boot_wait = if args[0] == "exec" { MUTATION_TIMEOUT } else { timeout };
+        let boot_wait = if args[0] == "exec" {
+            MUTATION_TIMEOUT
+        } else {
+            timeout
+        };
         let guard = lock_vm_runtime(&access, boot_wait, &operation_name(args))?;
         if args[0] != "exec" {
             let result = run_msb_process(paths, args, timeout, report);
@@ -912,12 +967,14 @@ fn run_msb_with_progress(
             ) {
                 // A cancelled or failed start may already have booted the VM. The
                 // cleanup stop is not cancellable, so the VM is not left running.
-                let _ = without_cancellation(|| run_msb_process(
-                    paths,
-                    &["stop".into(), workspace.clone()],
-                    STOP_TIMEOUT,
-                    &|_| {},
-                ));
+                let _ = without_cancellation(|| {
+                    run_msb_process(
+                        paths,
+                        &["stop".into(), workspace.clone()],
+                        STOP_TIMEOUT,
+                        &|_| {},
+                    )
+                });
                 drop(guard);
                 crate::ssh_access::reconcile(paths);
                 return Err(error);
@@ -954,7 +1011,10 @@ fn run_msb_with_progress(
         return result;
     }
     let result = run_msb_process(paths, args, timeout, report);
-    if args.first().is_some_and(|command| matches!(command.as_str(), "stop" | "remove")) {
+    if args
+        .first()
+        .is_some_and(|command| matches!(command.as_str(), "stop" | "remove"))
+    {
         crate::ssh_access::reconcile(paths);
     }
     result
@@ -986,16 +1046,25 @@ fn run_msb_process(
 ) -> Result<CommandOutput, RuntimeError> {
     // Tear down client sessions before any runtime command can end or replace
     // their VM. This also covers exec's temporary boot and stop cleanup path.
-    if args.first().is_some_and(|command| matches!(command.as_str(), "stop" | "remove" | "restart")) {
-        if let Some(workspace) = args.iter().skip(1).find(|argument| !argument.starts_with('-')) {
+    if args
+        .first()
+        .is_some_and(|command| matches!(command.as_str(), "stop" | "remove" | "restart"))
+    {
+        if let Some(workspace) = args
+            .iter()
+            .skip(1)
+            .find(|argument| !argument.starts_with('-'))
+        {
             crate::ssh_access::close_workspace(workspace);
         }
     }
     ensure_runtime_files(paths)?;
     let mut secret_revision = None;
     let general_secrets = if let Some(workspace) = github_command_workspace(args) {
-        secret_revision = Some(crate::secrets::workspace_revision(workspace).map_err(RuntimeError::Unavailable)?);
-        let material = crate::secrets::runtime_material(workspace).map_err(RuntimeError::Unavailable)?;
+        secret_revision =
+            Some(crate::secrets::workspace_revision(workspace).map_err(RuntimeError::Unavailable)?);
+        let material =
+            crate::secrets::runtime_material(workspace).map_err(RuntimeError::Unavailable)?;
         secrets_runtime::validate_material(&material).map_err(RuntimeError::Invalid)?;
         if matches!(args[0].as_str(), "start" | "restart") {
             secrets_runtime::apply(paths, workspace, &material, true).map_err(|attempt| {
@@ -1011,21 +1080,35 @@ fn run_msb_process(
             })?;
         }
         material
-    } else { Vec::new() };
-    let output = spawn_runtime(paths, RuntimeLaunch {
-        args,
-        timeout,
-        material: &general_secrets,
-        github_profile: &github_environment(paths, args),
-        capture: true,
-        report,
-    })?;
-    if let Some(workspace) = github_command_workspace(args).filter(|_| matches!(args[0].as_str(), "start" | "restart")) {
+    } else {
+        Vec::new()
+    };
+    let output = spawn_runtime(
+        paths,
+        RuntimeLaunch {
+            args,
+            timeout,
+            material: &general_secrets,
+            github_profile: &github_environment(paths, args),
+            capture: true,
+            report,
+        },
+    )?;
+    if let Some(workspace) =
+        github_command_workspace(args).filter(|_| matches!(args[0].as_str(), "start" | "restart"))
+    {
         record_start_refresh(paths, workspace, || {
             let inspected = inspect_workspace(&ProcessRunner, paths, workspace)?;
             if inspected.status == "Running" {
-                crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default())
-                    .map_err(|_| RuntimeError::Unavailable("Silo could not record the sandbox's applied secret revision.".into()))?;
+                crate::secrets::workspace_started(
+                    workspace,
+                    secret_revision.as_deref().unwrap_or_default(),
+                )
+                .map_err(|_| {
+                    RuntimeError::Unavailable(
+                        "Silo could not record the sandbox's applied secret revision.".into(),
+                    )
+                })?;
             }
             Ok(())
         });
@@ -1038,13 +1121,21 @@ fn run_msb_process(
 type StartRefreshWarnings = HashMap<(PathBuf, String), String>;
 static START_REFRESH_WARNINGS: OnceLock<Mutex<StartRefreshWarnings>> = OnceLock::new();
 
-fn record_start_refresh(paths: &RuntimePaths, workspace: &str, refresh: impl FnOnce() -> Result<(), RuntimeError>) {
+fn record_start_refresh(
+    paths: &RuntimePaths,
+    workspace: &str,
+    refresh: impl FnOnce() -> Result<(), RuntimeError>,
+) {
     let result = refresh();
-    let mut warnings = START_REFRESH_WARNINGS.get_or_init(|| Mutex::new(HashMap::new()))
-        .lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut warnings = START_REFRESH_WARNINGS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = (paths.home.clone(), workspace.to_owned());
     match result {
-        Ok(()) => { warnings.remove(&key); }
+        Ok(()) => {
+            warnings.remove(&key);
+        }
         Err(error) => {
             warnings.insert(key, format!("The sandbox started, but Silo could not refresh its state or secret status. {}", safe_activity_error(&error)));
         }
@@ -1052,10 +1143,16 @@ fn record_start_refresh(paths: &RuntimePaths, workspace: &str, refresh: impl FnO
 }
 
 fn start_refresh_attention(paths: &RuntimePaths, workspace: &str) -> Option<WorkspaceAttention> {
-    START_REFRESH_WARNINGS.get_or_init(|| Mutex::new(HashMap::new()))
-        .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&(paths.home.clone(), workspace.to_owned())).cloned()
-        .map(|message| WorkspaceAttention { level: AttentionLevel::Warning, message })
+    START_REFRESH_WARNINGS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(paths.home.clone(), workspace.to_owned()))
+        .cloned()
+        .map(|message| WorkspaceAttention {
+            level: AttentionLevel::Warning,
+            message,
+        })
 }
 
 fn ensure_runtime_files(paths: &RuntimePaths) -> Result<(), RuntimeError> {
@@ -1098,12 +1195,20 @@ const SECRET_VALUES_STDIN_FLAG: &str = "MSB_SECRET_VALUES_STDIN";
 /// The secret source values one runtime child may resolve, as the JSON object it reads
 /// on standard input: the GitHub access profile under `SILO_GITHUB` and each general
 /// secret under a generated source name (guest names never become host variables).
-fn secret_values_document(material: &secrets_runtime::Material, github_profile: &str) -> Result<Vec<u8>, RuntimeError> {
+fn secret_values_document(
+    material: &secrets_runtime::Material,
+    github_profile: &str,
+) -> Result<Vec<u8>, RuntimeError> {
     let mut values = serde_json::Map::new();
     values.insert("SILO_GITHUB".into(), github_profile.into());
     for (name, value, _) in material {
-        if values.insert(secrets_runtime::source_name(name), value.as_str().into()).is_some() {
-            return Err(RuntimeError::Invalid("Sandbox secret source names conflict. Rename one secret and retry.".into()));
+        if values
+            .insert(secrets_runtime::source_name(name), value.as_str().into())
+            .is_some()
+        {
+            return Err(RuntimeError::Invalid(
+                "Sandbox secret source names conflict. Rename one secret and retry.".into(),
+            ));
         }
     }
     serde_json::to_vec(&Value::Object(values))
@@ -1113,7 +1218,12 @@ fn secret_values_document(material: &secrets_runtime::Material, github_profile: 
 /// Commands that change runtime state hold the worker lock for the child's lifetime,
 /// so they never overlap another Silo process's runtime mutation.
 fn takes_worker_lock(args: &[String]) -> bool {
-    args.first().is_some_and(|command| matches!(command.as_str(), "create" | "modify" | "remove" | "stop" | "restore" | "adopt-disk"))
+    args.first().is_some_and(|command| {
+        matches!(
+            command.as_str(),
+            "create" | "modify" | "remove" | "stop" | "restore" | "adopt-disk"
+        )
+    })
 }
 
 thread_local! {
@@ -1122,30 +1232,58 @@ thread_local! {
     static SHUTDOWN_WORKER_LOCK: std::cell::RefCell<Option<configuration_recovery::CommandLock>> = const { std::cell::RefCell::new(None) };
 }
 
-fn with_shutdown_worker_lock<T>(lock: configuration_recovery::CommandLock, work: impl FnOnce() -> T) -> T {
+fn with_shutdown_worker_lock<T>(
+    lock: configuration_recovery::CommandLock,
+    work: impl FnOnce() -> T,
+) -> T {
     struct Clear;
     impl Drop for Clear {
-        fn drop(&mut self) { SHUTDOWN_WORKER_LOCK.with(|slot| { slot.borrow_mut().take(); }); }
+        fn drop(&mut self) {
+            SHUTDOWN_WORKER_LOCK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
     }
     SHUTDOWN_WORKER_LOCK.with(|slot| {
-        assert!(slot.borrow().is_none(), "shutdown worker lock cannot be nested");
+        assert!(
+            slot.borrow().is_none(),
+            "shutdown worker lock cannot be nested"
+        );
         *slot.borrow_mut() = Some(lock);
     });
     let _clear = Clear;
     work()
 }
 
-fn runtime_worker_lock(paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<configuration_recovery::CommandLock, RuntimeError> {
+fn runtime_worker_lock(
+    paths: &RuntimePaths,
+    args: &[String],
+    timeout: Duration,
+) -> Result<configuration_recovery::CommandLock, RuntimeError> {
     if args.first().is_some_and(|command| command == "stop") {
-        if let Some(lock) = SHUTDOWN_WORKER_LOCK.with(|slot| slot.borrow().as_ref().map(configuration_recovery::CommandLock::duplicate_for_shutdown)) {
+        if let Some(lock) = SHUTDOWN_WORKER_LOCK.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map(configuration_recovery::CommandLock::duplicate_for_shutdown)
+        }) {
             return lock;
         }
     }
     configuration_recovery::command_lock(paths, timeout)
 }
 
-fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<CommandOutput, RuntimeError> {
-    let RuntimeLaunch { args, timeout, material, github_profile, capture, report } = launch;
+fn spawn_runtime(
+    paths: &RuntimePaths,
+    launch: RuntimeLaunch<'_>,
+) -> Result<CommandOutput, RuntimeError> {
+    let RuntimeLaunch {
+        args,
+        timeout,
+        material,
+        github_profile,
+        capture,
+        report,
+    } = launch;
     ensure_runtime_files(paths)?;
     let captures = if capture {
         let stdout = tempfile::NamedTempFile::new().map_err(|error| {
@@ -1160,23 +1298,30 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
     };
     let mut worker_lock = if takes_worker_lock(args) {
         Some(runtime_worker_lock(paths, args, timeout)?)
-    } else { None };
+    } else {
+        None
+    };
     let mut command = Command::new(&paths.executable);
     if let Some(lock) = &worker_lock {
         use std::os::{fd::AsRawFd, unix::process::CommandExt};
         let fd = lock.as_raw_fd();
         // SAFETY: only async-signal-safe fcntl runs between fork and exec.
-        unsafe { command.pre_exec(move || {
-            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 { return Err(std::io::Error::last_os_error()); }
-            Ok(())
-        }); }
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     // Secret values never enter the runtime's environment (readable by other processes
     // of this user, and where a secret named like a host variable could change the
     // runtime's behaviour). The runtime reads them from standard input instead, and
     // then resolves secret sources only from them (D-45, B-28).
     let secret_values = secret_values_document(material, github_profile)?;
-    command.args(args)
+    command
+        .args(args)
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)
         .env("MSB_LIBKRUNFW_PATH", &paths.library)
@@ -1184,12 +1329,20 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
         .stdin(Stdio::piped());
     if let Some((stdout, stderr)) = &captures {
         command
-            .stdout(Stdio::from(stdout.as_file().try_clone().map_err(|error| {
-                RuntimeError::Unavailable(format!("Silo could not capture runtime output: {error}"))
-            })?))
-            .stderr(Stdio::from(stderr.as_file().try_clone().map_err(|error| {
-                RuntimeError::Unavailable(format!("Silo could not capture runtime errors: {error}"))
-            })?));
+            .stdout(Stdio::from(stdout.as_file().try_clone().map_err(
+                |error| {
+                    RuntimeError::Unavailable(format!(
+                        "Silo could not capture runtime output: {error}"
+                    ))
+                },
+            )?))
+            .stderr(Stdio::from(stderr.as_file().try_clone().map_err(
+                |error| {
+                    RuntimeError::Unavailable(format!(
+                        "Silo could not capture runtime errors: {error}"
+                    ))
+                },
+            )?));
     } else {
         command.stdout(Stdio::null()).stderr(Stdio::null());
     }
@@ -1211,7 +1364,9 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
     let mut stop_child = |child: &mut std::process::Child| {
         let _ = child.kill();
         if child.wait().is_ok() {
-            if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
+            if let Some(lock) = worker_lock.as_mut() {
+                lock.mark_child_exited();
+            }
         }
     };
     let deadline = Instant::now() + timeout;
@@ -1239,7 +1394,9 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
                         while let Some(end) = progress_pending.find('\n') {
                             let line: String = progress_pending.drain(..=end).collect();
                             if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                                if value.get("type").and_then(Value::as_str) == Some("silo-progress") {
+                                if value.get("type").and_then(Value::as_str)
+                                    == Some("silo-progress")
+                                {
                                     // Keep phase boundaries; collapse repeated chunk updates within this poll.
                                     if latest.as_ref().is_some_and(|old: &Value| {
                                         old.get("phase") != value.get("phase")
@@ -1264,7 +1421,11 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
                 }
             }
             let too_large = |file: &tempfile::NamedTempFile| {
-                file.as_file().metadata().map(|value| value.len()).unwrap_or(0) > MAX_OUTPUT_BYTES
+                file.as_file()
+                    .metadata()
+                    .map(|value| value.len())
+                    .unwrap_or(0)
+                    > MAX_OUTPUT_BYTES
             };
             if too_large(stdout_file) || too_large(stderr_file) {
                 stop_child(&mut child);
@@ -1307,9 +1468,14 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
             }
         }
     };
-    if let Some(lock) = worker_lock.as_mut() { lock.mark_child_exited(); }
+    if let Some(lock) = worker_lock.as_mut() {
+        lock.mark_child_exited();
+    }
     let (stdout, stderr) = match captures {
-        Some((stdout_file, stderr_file)) => (read_capture(stdout_file.into_file())?, read_capture(stderr_file.into_file())?),
+        Some((stdout_file, stderr_file)) => (
+            read_capture(stdout_file.into_file())?,
+            read_capture(stderr_file.into_file())?,
+        ),
         None => (String::new(), String::new()),
     };
     if !status.success() {
@@ -1573,7 +1739,10 @@ pub async fn verify_workspace_identities(
 /// Holds one VM's lane while its Git identity is checked or written. Returns `None` when
 /// the caller already holds the gate (and in tests).
 type IdentityLane<'a> =
-    &'a dyn Fn(&MachineConfiguration, &str) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError>;
+    &'a dyn Fn(
+        &MachineConfiguration,
+        &str,
+    ) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError>;
 
 /// Identity work on one VM: its own, cancellable queue entry naming the sandbox.
 fn identity_lane(
@@ -1636,7 +1805,10 @@ fn verify_workspace_identities_in(
         else {
             return Ok(false);
         };
-        let _lane = lane(machine, &format!("Checking Git identity for {}", machine.name()))?;
+        let _lane = lane(
+            machine,
+            &format!("Checking Git identity for {}", machine.name()),
+        )?;
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
         ensure_managed(&inspected)?;
         if !identity.apply {
@@ -1650,7 +1822,8 @@ fn verify_workspace_identities_in(
         if inspected.status != "Running" {
             return Ok(false);
         }
-        let user = crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Malformed)?;
+        let user = crate::working_account::working_user(&inspected.config)
+            .map_err(RuntimeError::Malformed)?;
         if !verify_guest_identity(runner, paths, identity, user, GuestBoot::Never)? {
             return Ok(false);
         }
@@ -1664,13 +1837,17 @@ pub async fn configure_workspace_identities(
     identities: Vec<WorkspaceIdentity>,
 ) -> Result<(), String> {
     let notify_app = app.clone();
-    let names: Vec<String> = identities.iter().map(|identity| identity.workspace.clone()).collect();
+    let names: Vec<String> = identities
+        .iter()
+        .map(|identity| identity.workspace.clone())
+        .collect();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         shutdown::ensure_accepting_operations()?;
         // Every request is validated first; then each VM is written in its own lane, one
         // at a time, cancellable, and named in the queue.
-        let result = configure_workspace_identities_in(&ProcessRunner, &paths, &identities, &identity_lane);
+        let result =
+            configure_workspace_identities_in(&ProcessRunner, &paths, &identities, &identity_lane);
         result.map_err(|error| error.to_string())
     })
     .await
@@ -1733,11 +1910,15 @@ fn configure_workspace_identities_in(
         };
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
         ensure_managed(&inspected)?;
-        let user = crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Malformed)?;
+        let user = crate::working_account::working_user(&inspected.config)
+            .map_err(RuntimeError::Malformed)?;
         changed.push((identity, user, machine));
     }
     for (identity, user, machine) in changed {
-        let _lane = lane(machine, &format!("Saving Git identity for {}", machine.name()))?;
+        let _lane = lane(
+            machine,
+            &format!("Saving Git identity for {}", machine.name()),
+        )?;
         // Remove old boot overrides: normal Git/jj configuration must own defaults.
         let mut args = vec!["modify".into(), identity.workspace.clone()];
         for key in [
@@ -1792,9 +1973,12 @@ fn run_identity_script(
     let mut args: Vec<String> = vec![
         "exec".into(),
         identity.workspace.clone(),
-        "--user".into(), user.into(),
-        "--env".into(), format!("USER={user}"),
-        "--env".into(), format!("LOGNAME={user}"),
+        "--user".into(),
+        user.into(),
+        "--env".into(),
+        format!("USER={user}"),
+        "--env".into(),
+        format!("LOGNAME={user}"),
         "--no-tty".into(),
         "--workdir".into(),
         "/".into(),
@@ -1836,10 +2020,12 @@ fn verify_guest_identity(
    [ "$(jj config get user.email)" = "$2" ] || exit 0
  fi
  printf '%s' silo-identity-verified"#;
-    Ok(run_identity_script(runner, paths, identity, script, user, boot)?
-        .stdout
-        .trim()
-        == "silo-identity-verified")
+    Ok(
+        run_identity_script(runner, paths, identity, script, user, boot)?
+            .stdout
+            .trim()
+            == "silo-identity-verified",
+    )
 }
 
 /// GitHub tokens a VM's cached access profile still uses. Host-only retirement
@@ -1914,12 +2100,19 @@ pub(crate) fn scoped_cached_tokens(
 }
 
 /// Check the attachment cache as well as the grant cache. Failed updates clear this cache.
-pub(crate) fn github_policy_is_cached(app: &AppHandle, workspace: &str, profile: &Value) -> Result<bool, String> {
+pub(crate) fn github_policy_is_cached(
+    app: &AppHandle,
+    workspace: &str,
+    profile: &Value,
+) -> Result<bool, String> {
     let paths = runtime_paths(app)?;
     let serialized = serde_json::to_string(profile).map_err(|_| "Invalid GitHub profile.")?;
-    Ok(GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock()
+    Ok(GITHUB_PROFILES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
         .map_err(|_| "GitHub runtime state is unavailable.")?
-        .get(&(paths.home, workspace.into())) == Some(&serialized))
+        .get(&(paths.home, workspace.into()))
+        == Some(&serialized))
 }
 
 /// A managed VM receives credentials through a host-only secret source reference.
@@ -1976,7 +2169,12 @@ fn apply_github_policy_with(
             .map_err(|_| "GitHub runtime state is unavailable.")?
             .remove(&profile_key);
     }
-    let superseded = || access.revision.lock().map_or(true, |current| *current > revision);
+    let superseded = || {
+        access
+            .revision
+            .lock()
+            .map_or(true, |current| *current > revision)
+    };
     let deadline = Instant::now() + timeout;
     let _guard = match OPERATIONS
         .kind(operation_gate::OperationKind::GithubApply)
@@ -2010,10 +2208,16 @@ fn apply_github_policy_with(
     }
     let capability = run_msb(
         paths,
-        &[if token_protocol { "--silo-github-token-protocol".into() } else { "--silo-github-protocol".into() }],
+        &[if token_protocol {
+            "--silo-github-token-protocol".into()
+        } else {
+            "--silo-github-protocol".into()
+        }],
         READ_TIMEOUT,
     )
-    .map_err(|_| "This Silo runtime must be updated before GitHub access can be enabled.".to_string())?;
+    .map_err(|_| {
+        "This Silo runtime must be updated before GitHub access can be enabled.".to_string()
+    })?;
     if capability.stdout.trim() != "1" {
         return Err("This runtime does not support Silo GitHub permissions.".into());
     }
@@ -2048,14 +2252,17 @@ fn apply_github_policy_with(
         if superseded() {
             return Err(GITHUB_UPDATE_REPLACED.into());
         }
-        spawn_runtime(paths, RuntimeLaunch {
-            args: &args,
-            timeout,
-            material: &general_secrets,
-            github_profile: &profile,
-            capture: false,
-            report: &ignore_progress,
-        })
+        spawn_runtime(
+            paths,
+            RuntimeLaunch {
+                args: &args,
+                timeout,
+                material: &general_secrets,
+                github_profile: &profile,
+                capture: false,
+                report: &ignore_progress,
+            },
+        )
     };
     applied.map_err(|error| github_update_error(error, token_protocol))?;
     let current = access
@@ -2139,7 +2346,10 @@ pub async fn read_machine_configuration(
 }
 
 #[tauri::command]
-pub async fn read_application_state(app: AppHandle, refresh_repositories: Option<bool>) -> Result<ApplicationSource, BridgeError> {
+pub async fn read_application_state(
+    app: AppHandle,
+    refresh_repositories: Option<bool>,
+) -> Result<ApplicationSource, BridgeError> {
     crate::runtime_migration::ensure_ready(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
@@ -2152,9 +2362,18 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
         let due = plan_log_cleanup(&paths, &mut source.workspaces, Instant::now());
         if !due.is_empty() {
             let cleanup_paths = paths.clone();
-            thread::spawn(move || clean_expired_logs(&ProcessRunner, &cleanup_paths, &OPERATIONS, &due));
+            thread::spawn(move || {
+                clean_expired_logs(&ProcessRunner, &cleanup_paths, &OPERATIONS, &due)
+            });
         }
-        enrich_application_state(&app, &paths, &mut source, Repositories::Discover { refresh: refresh_repositories.unwrap_or(false) });
+        enrich_application_state(
+            &app,
+            &paths,
+            &mut source,
+            Repositories::Discover {
+                refresh: refresh_repositories.unwrap_or(false),
+            },
+        );
         remember_settled(&paths, &source.workspaces);
         Ok(source)
     })
@@ -2192,11 +2411,25 @@ fn vm_logs(paths: &RuntimePaths, name: &str) -> PathBuf {
 /// Flag rows whose last log cleanup failed, and return the fresh, stopped VMs whose
 /// logs are due for cleanup (at most hourly each). Returning names starts a pass, so
 /// only one runs at a time; `clean_expired_logs` ends it.
-fn plan_log_cleanup(paths: &RuntimePaths, workspaces: &mut [ApplicationWorkspace], now: Instant) -> Vec<String> {
+fn plan_log_cleanup(
+    paths: &RuntimePaths,
+    workspaces: &mut [ApplicationWorkspace],
+    now: Instant,
+) -> Vec<String> {
     let mut state = log_cleanup();
-    for workspace in workspaces.iter_mut().filter(|workspace| workspace.machine.is_vm()) {
-        if workspace.attention.is_none() && state.failed.contains(&vm_logs(paths, workspace.machine.name())) {
-            workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message: "Expired logs could not be cleaned up.".into() });
+    for workspace in workspaces
+        .iter_mut()
+        .filter(|workspace| workspace.machine.is_vm())
+    {
+        if workspace.attention.is_none()
+            && state
+                .failed
+                .contains(&vm_logs(paths, workspace.machine.name()))
+        {
+            workspace.attention = Some(WorkspaceAttention {
+                level: AttentionLevel::Warning,
+                message: "Expired logs could not be cleaned up.".into(),
+            });
         }
     }
     if state.running {
@@ -2231,7 +2464,9 @@ fn clean_expired_logs(
 ) {
     if let Ok(_guard) = gate.try_computer_hidden("Cleaning up expired logs") {
         for name in names {
-            if !inspect_workspace(runner, paths, name).is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status)) {
+            if !inspect_workspace(runner, paths, name)
+                .is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status))
+            {
                 continue;
             }
             let logs = vm_logs(paths, name);
@@ -2282,14 +2517,17 @@ fn enrich_application_state(
     source: &mut ApplicationSource,
     repositories: Repositories,
 ) {
-    source.repository_push_operations = crate::host_push_operations::merge(app, crate::host_push::operations())
-        .unwrap_or_else(|_| crate::host_push::operations());
+    source.repository_push_operations =
+        crate::host_push_operations::merge(app, crate::host_push::operations())
+            .unwrap_or_else(|_| crate::host_push::operations());
     match repositories {
         Repositories::LastKnown => keep_last_known_repositories(paths, &mut source.workspaces),
         Repositories::Discover { refresh } => {
             for workspace in &mut source.workspaces {
-                if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running)
-                    && !workspace.settling && workspace.freshness == Freshness::Fresh
+                if workspace.machine.is_vm()
+                    && matches!(workspace.state, WorkspaceState::Running)
+                    && !workspace.settling
+                    && workspace.freshness == Freshness::Fresh
                 {
                     let name = workspace.machine.name();
                     let key = format!("{}:{name}", paths.home.display());
@@ -2297,7 +2535,10 @@ fn enrich_application_state(
                         Ok(repositories) => workspace.repositories = repositories,
                         Err(message) => {
                             if workspace.attention.is_none() {
-                                workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message });
+                                workspace.attention = Some(WorkspaceAttention {
+                                    level: AttentionLevel::Warning,
+                                    message,
+                                });
                             }
                         }
                     }
@@ -2315,7 +2556,10 @@ fn enrich_application_state(
 /// The controller UI can remain usable when local VM inspection fails. This is
 /// never used for a remote owner's snapshot and never invents local VM states.
 #[tauri::command]
-pub async fn read_application_shell(app: AppHandle, error: String) -> Result<ApplicationSource, String> {
+pub async fn read_application_shell(
+    app: AppHandle,
+    error: String,
+) -> Result<ApplicationSource, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         let mut source = application_shell(&paths, &error)?;
@@ -2329,7 +2573,8 @@ pub async fn read_application_shell(app: AppHandle, error: String) -> Result<App
 }
 
 fn application_shell(paths: &RuntimePaths, error: &str) -> Result<ApplicationSource, String> {
-    let mut source = application_source_for_workspaces(paths, Vec::new()).map_err(|error| error.to_string())?;
+    let mut source =
+        application_source_for_workspaces(paths, Vec::new()).map_err(|error| error.to_string())?;
     source.runtime_repair = Some(serde_json::json!({
         "status": "unavailable", "reason": error.chars().take(1024).collect::<String>(),
         "recovery": "Check this computer’s runtime and retry. Connected computers remain available."
@@ -2378,9 +2623,15 @@ fn read_application_snapshot_once(
 ) -> Result<ApplicationSource, BridgeError> {
     // Runtime creation and metadata publication are separate steps. Discard
     // observations overlapping a mutation, without blocking progress updates.
-    if configuration_recovery::pending(paths)? { return Err(BridgeError::updating()); }
+    if configuration_recovery::pending(paths)? {
+        return Err(BridgeError::updating());
+    }
     let check_idle = || -> Result<(), BridgeError> {
-        if gate.is_computer_idle() { Ok(()) } else { Err(BridgeError::updating()) }
+        if gate.is_computer_idle() {
+            Ok(())
+        } else {
+            Err(BridgeError::updating())
+        }
     };
     check_idle()?;
     let started = gate.generations();
@@ -2446,8 +2697,14 @@ pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Readi
     // no operation touched the VM during the read.
     let started = OPERATIONS.generations();
     let source = paths.as_ref().map_err(Clone::clone).and_then(|paths| {
-        read_application_state_with(&HealthRunner { inner: &ProcessRunner, budget: HEALTH_CALL_BUDGET }, paths)
-            .map_err(|error| error.to_string())
+        read_application_state_with(
+            &HealthRunner {
+                inner: &ProcessRunner,
+                budget: HEALTH_CALL_BUDGET,
+            },
+            paths,
+        )
+        .map_err(|error| error.to_string())
     });
     let after = paths
         .as_ref()
@@ -2510,7 +2767,10 @@ const AUTO_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from
 /// runtime that could not be spawned at that moment. Deliberately excludes `Busy`,
 /// `Cancelled`, and validation/configuration errors, which retrying cannot fix.
 pub(crate) fn transient_runtime_error(error: &RuntimeError) -> bool {
-    matches!(error, RuntimeError::TimedOut { .. } | RuntimeError::Launch(_))
+    matches!(
+        error,
+        RuntimeError::TimedOut { .. } | RuntimeError::Launch(_)
+    )
 }
 
 /// Run a gated operation with automatic retries for transient failures.
@@ -2656,8 +2916,11 @@ pub async fn workspace_action(
     if matches!(action.as_str(), "open-editor" | "open-terminal") {
         shutdown::ensure_accepting_operations()?;
         return tauri::async_runtime::spawn_blocking(move || {
-            if action == "open-terminal" { crate::terminal::open(&app, &name)?; }
-            else { crate::editor::open(&app, &name, path.as_deref())?; }
+            if action == "open-terminal" {
+                crate::terminal::open(&app, &name)?;
+            } else {
+                crate::editor::open(&app, &name, path.as_deref())?;
+            }
             let paths = runtime_paths(&app)?;
             application_state_response(&app, &paths).map_err(BridgeError::from)
         })
@@ -2753,18 +3016,30 @@ pub async fn workspace_action(
     }).await.map_err(|_| BridgeError::from(internal_failure("running the sandbox action")))?;
     let elapsed = started.elapsed();
     let notify = |vm_id: Option<String>, outcome: crate::notifications::Outcome<'_>| {
-        let sandbox = vm_id.map(|id| crate::notifications::NoticeSandbox { id, name: notice_name.clone() });
-        if let Some(notice) = crate::notifications::lifecycle_notice(&notice_action, &notice_name, sandbox, elapsed, outcome) {
+        let sandbox = vm_id.map(|id| crate::notifications::NoticeSandbox {
+            id,
+            name: notice_name.clone(),
+        });
+        if let Some(notice) = crate::notifications::lifecycle_notice(
+            &notice_action,
+            &notice_name,
+            sandbox,
+            elapsed,
+            outcome,
+        ) {
             crate::notifications::notify_native(&app, notice);
         }
     };
     match result {
         Ok((vm_id, state, handed_off)) => {
-            notify(Some(vm_id), if handed_off {
-                crate::notifications::Outcome::AlreadyQueued
-            } else {
-                crate::notifications::Outcome::Succeeded
-            });
+            notify(
+                Some(vm_id),
+                if handed_off {
+                    crate::notifications::Outcome::AlreadyQueued
+                } else {
+                    crate::notifications::Outcome::Succeeded
+                },
+            );
             Ok(state)
         }
         Err((vm_id, failure, message)) => {
@@ -2797,7 +3072,9 @@ impl LifecycleFailure {
 /// the caller returns current state without an error row or notification (D-13).
 fn hand_off_duplicate(result: Result<(), RuntimeError>) -> (Result<(), RuntimeError>, bool) {
     match result {
-        Err(error) if lifecycle_failure(&error) == LifecycleFailure::AlreadyQueued => (Ok(()), true),
+        Err(error) if lifecycle_failure(&error) == LifecycleFailure::AlreadyQueued => {
+            (Ok(()), true)
+        }
         other => (other, false),
     }
 }
@@ -2807,7 +3084,9 @@ fn hand_off_duplicate(result: Result<(), RuntimeError>) -> (Result<(), RuntimeEr
 fn lifecycle_failure(error: &RuntimeError) -> LifecycleFailure {
     match error {
         RuntimeError::Cancelled { .. } => LifecycleFailure::Cancelled,
-        RuntimeError::Admission(operation_gate::GateError::AlreadyQueued) => LifecycleFailure::AlreadyQueued,
+        RuntimeError::Admission(operation_gate::GateError::AlreadyQueued) => {
+            LifecycleFailure::AlreadyQueued
+        }
         _ => LifecycleFailure::Failed,
     }
 }
@@ -2884,7 +3163,10 @@ fn machine_progress(
         fraction: (!step.starts_with("setup-")
             && matches!(
                 step,
-                "desktop-installation" | "workspace-configuration" | "workspace-verification" | "workspace-removal"
+                "desktop-installation"
+                    | "workspace-configuration"
+                    | "workspace-verification"
+                    | "workspace-removal"
             ))
         .then_some(fraction),
         message,
@@ -2977,8 +3259,17 @@ fn failure_reason(code: &str) -> &'static str {
 fn setup_failure_message(code: &str) -> Option<String> {
     matches!(
         code,
-        "auth" | "access" | "disk" | "permission" | "network" | "timeout" | "integrity"
-            | "resources" | "configuration" | "unavailable" | "runtime"
+        "auth"
+            | "access"
+            | "disk"
+            | "permission"
+            | "network"
+            | "timeout"
+            | "integrity"
+            | "resources"
+            | "configuration"
+            | "unavailable"
+            | "runtime"
     )
     .then(|| format!("Sandbox setup failed: {}", failure_reason(code)))
 }
@@ -3023,8 +3314,12 @@ pub(crate) struct FailureReport {
 
 pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
     match error {
-        RuntimeError::Failed { exit_code, detail, .. } => {
-            let mut diagnostic = exit_code.map(|code| format!("Exit code {code}")).unwrap_or_default();
+        RuntimeError::Failed {
+            exit_code, detail, ..
+        } => {
+            let mut diagnostic = exit_code
+                .map(|code| format!("Exit code {code}"))
+                .unwrap_or_default();
             if let Some(text) = diagnostic_text(detail) {
                 if !diagnostic.is_empty() {
                     diagnostic.push('\n');
@@ -3041,15 +3336,28 @@ pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
         }
         RuntimeError::Partial(inner) => {
             let inner = failure_report(inner);
-            FailureReport { summary: format!("{} {PARTIAL_CHANGES_KEPT}", inner.summary), partial: true, ..inner }
+            FailureReport {
+                summary: format!("{} {PARTIAL_CHANGES_KEPT}", inner.summary),
+                partial: true,
+                ..inner
+            }
         }
-        RuntimeError::Admission(_) | RuntimeError::Busy | RuntimeError::TimedOut { .. } | RuntimeError::Cancelled { .. } => {
+        RuntimeError::Admission(_)
+        | RuntimeError::Busy
+        | RuntimeError::TimedOut { .. }
+        | RuntimeError::Cancelled { .. } => {
             let summary = error.to_string();
             let code = match (failure_category(&summary), error) {
                 (_, RuntimeError::Busy) => "configuration",
                 (code, _) => code,
             };
-            FailureReport { code, summary, exit_code: None, diagnostic: None, partial: false }
+            FailureReport {
+                code,
+                summary,
+                exit_code: None,
+                diagnostic: None,
+                partial: false,
+            }
         }
         RuntimeError::Launch(message) => FailureReport {
             code: "unavailable",
@@ -3060,10 +3368,11 @@ pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
         },
         RuntimeError::Invalid(message)
         | RuntimeError::Malformed(message)
-        | RuntimeError::Unavailable(message)
-        => {
+        | RuntimeError::Unavailable(message) => {
             let code = match (failure_category(message), error) {
-                ("runtime", RuntimeError::Invalid(_) | RuntimeError::Malformed(_)) => "configuration",
+                ("runtime", RuntimeError::Invalid(_) | RuntimeError::Malformed(_)) => {
+                    "configuration"
+                }
                 ("runtime", _) => "unavailable",
                 (code, _) => code,
             };
@@ -3086,7 +3395,13 @@ pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
                 .chars()
                 .take(800)
                 .collect();
-            FailureReport { code, summary, exit_code: None, diagnostic: None, partial: false }
+            FailureReport {
+                code,
+                summary,
+                exit_code: None,
+                diagnostic: None,
+                partial: false,
+            }
         }
     }
 }
@@ -3099,7 +3414,9 @@ static LIVE_SETUP_JOURNALS: std::sync::atomic::AtomicUsize = std::sync::atomic::
 static SETUP_ACTIVITY_FILE: Mutex<()> = Mutex::new(());
 
 fn setup_activity_file() -> std::sync::MutexGuard<'static, ()> {
-    SETUP_ACTIVITY_FILE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SETUP_ACTIVITY_FILE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Held by a live journal; see `LIVE_SETUP_JOURNALS`.
@@ -3149,7 +3466,8 @@ pub(crate) fn safe_activity_error(error: &RuntimeError) -> String {
 /// A background task of a command ended unexpectedly (a panic). The message says what
 /// Silo was doing and what to try, without naming internals.
 fn internal_failure(activity: &str) -> String {
-    format!("Silo ran into an internal error while {activity}. Retry; if it keeps happening, quit and reopen Silo.")}
+    format!("Silo ran into an internal error while {activity}. Retry; if it keeps happening, quit and reopen Silo.")
+}
 
 struct ActivityJournal {
     path: PathBuf,
@@ -3207,7 +3525,11 @@ impl ActivityJournal {
         self.unsaved = true;
         // A repeated update within one stage is saved at most every few seconds (and when
         // the journal ends); a new stage, a boundary or an outcome is saved immediately.
-        if repeated && self.persisted_at.is_some_and(|at| at.elapsed() < ACTIVITY_PERSIST_INTERVAL) {
+        if repeated
+            && self
+                .persisted_at
+                .is_some_and(|at| at.elapsed() < ACTIVITY_PERSIST_INTERVAL)
+        {
             return event;
         }
         if self.persist().is_err() {
@@ -3324,18 +3646,26 @@ fn read_activity(
 }
 
 fn pending_verification_workspace(events: &[MachineConfigurationProgress]) -> Option<String> {
-    let last = events.iter().rev().find(|event| event.step != "activity-storage-warning")?;
+    let last = events
+        .iter()
+        .rev()
+        .find(|event| event.step != "activity-storage-warning")?;
     if last.step == "setup-completed" {
         return None;
     }
-    events.iter().rev().find(|event| {
-        event.step == "workspace-verification" && event.request_id == last.request_id
-    }).filter(|event| event.fraction == Some(0)).map(|event| event.workspace.clone())
+    events
+        .iter()
+        .rev()
+        .find(|event| event.step == "workspace-verification" && event.request_id == last.request_id)
+        .filter(|event| event.fraction == Some(0))
+        .map(|event| event.workspace.clone())
 }
 
 /// Reading may rewrite (and fsync) the journal, so it runs off the main thread.
 #[tauri::command]
-pub async fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurationProgress>, String> {
+pub async fn read_setup_activity(
+    app: AppHandle,
+) -> Result<Vec<MachineConfigurationProgress>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         read_setup_activity_at(&paths)
@@ -3347,7 +3677,9 @@ pub async fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurat
 /// An unfinished last attempt was interrupted only when no setup journal is being
 /// written in this process. Unrelated work (launch auto-start, hidden housekeeping, other
 /// sandboxes) does not make an interrupted setup look in progress.
-fn read_setup_activity_at(paths: &RuntimePaths) -> Result<Vec<MachineConfigurationProgress>, String> {
+fn read_setup_activity_at(
+    paths: &RuntimePaths,
+) -> Result<Vec<MachineConfigurationProgress>, String> {
     let _file = setup_activity_file();
     read_activity(paths, LIVE_SETUP_JOURNALS.load(Ordering::SeqCst) == 0)
 }
@@ -3372,25 +3704,39 @@ fn apply_configuration_with_progress(
     request_id: &str,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    debug_assert!(operation_gate::held(), "configuration changes require the operation gate");
+    debug_assert!(
+        operation_gate::held(),
+        "configuration changes require the operation gate"
+    );
     let resources = host_resources().map_err(|e| e.to_string())?;
     validate_request(&request).map_err(|e| e.to_string())?;
     validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
-    configuration_recovery::prepare_retry(&ProcessRunner, paths, Some(&request)).map_err(|e| e.to_string())?;
+    configuration_recovery::prepare_retry(&ProcessRunner, paths, Some(&request))
+        .map_err(|e| e.to_string())?;
     let retry_workspace = retry_workspace.or_else(|| {
         // A no-change retry after relaunch resumes the failed verification only.
         // A fresh add, edit or removal must not replay another sandbox's work.
         if read_metadata(&paths.metadata).ok().as_ref() != Some(&request) {
             return None;
         }
-        pending_verification_workspace(&read_activity(paths, false).unwrap_or_default())
-            .filter(|name| request.machines.iter().any(|machine| machine.name() == name))
+        pending_verification_workspace(&read_activity(paths, false).unwrap_or_default()).filter(
+            |name| {
+                request
+                    .machines
+                    .iter()
+                    .any(|machine| machine.name() == name)
+            },
+        )
     });
     let journal = Mutex::new(ActivityJournal::start(paths, request_id)?);
     let publish = |event: MachineConfigurationProgress| {
         let mut journal = journal.lock().unwrap_or_else(|error| error.into_inner());
         let event = journal.append(event);
-        if let Some(warning) = journal.events.back().filter(|entry| entry.step == "activity-storage-warning") {
+        if let Some(warning) = journal
+            .events
+            .back()
+            .filter(|entry| entry.step == "activity-storage-warning")
+        {
             let _ = app.emit_to("main", "silo://machine-configuration-progress", warning);
         }
         let _ = app.emit_to("main", "silo://machine-configuration-progress", &event);
@@ -3471,9 +3817,10 @@ pub async fn retry_machine_configuration(
     crate::runtime_migration::ensure_ready(&app)?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
-    let failure_title = retry_workspace
-        .as_deref()
-        .map_or_else(|| "Couldn\u{2019}t finish sandbox setup".to_string(), |name| format!("Couldn\u{2019}t finish setting up {name}"));
+    let failure_title = retry_workspace.as_deref().map_or_else(
+        || "Couldn\u{2019}t finish sandbox setup".to_string(),
+        |name| format!("Couldn\u{2019}t finish setting up {name}"),
+    );
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         // Changes the shared VM inventory/metadata; computer-wide.
@@ -3483,14 +3830,16 @@ pub async fn retry_machine_configuration(
         shutdown::ensure_accepting_operations()?;
         // Resume the configuration the interrupted attempt recorded. With no pending
         // attempt, re-verify the committed inventory (an idempotent no-op on success).
-        let request = match configuration_recovery::pending_request(&paths).map_err(|e| e.to_string())? {
-            Some(request) => request,
-            None => read_metadata(&paths.metadata).map_err(|e| e.to_string())?,
-        };
+        let request =
+            match configuration_recovery::pending_request(&paths).map_err(|e| e.to_string())? {
+                Some(request) => request,
+                None => read_metadata(&paths.metadata).map_err(|e| e.to_string())?,
+            };
         apply_configuration_with_progress(&app, &paths, request, &request_id, retry_workspace)
     })
     .await
-    .map_err(|_| internal_failure("changing sandbox settings")).and_then(|result| result);
+    .map_err(|_| internal_failure("changing sandbox settings"))
+    .and_then(|result| result);
     if let Err(message) = &result {
         notify_configuration_failure(&notify_app, &failure_title, message);
     }
@@ -3539,11 +3888,14 @@ pub async fn change_machine_configuration(
         apply_configuration_with_progress(&app, &paths, request, &request_id, retry_workspace)
     })
     .await
-    .map_err(|_| internal_failure("changing sandbox settings")).and_then(|result| result);
+    .map_err(|_| internal_failure("changing sandbox settings"))
+    .and_then(|result| result);
     match &result {
         Err(message) => notify_configuration_failure(&notify_app, &failure_title, message),
         // A deleted sandbox has nothing left to open: withdraw its delivered notices.
-        Ok(_) => deleted.iter().for_each(|id| crate::notifications::clear_sandbox(&notify_app, id)),
+        Ok(_) => deleted
+            .iter()
+            .for_each(|id| crate::notifications::clear_sandbox(&notify_app, id)),
     }
     result
 }
@@ -3584,9 +3936,16 @@ fn read_rows(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Vec<Row
     let metadata = read_metadata(&paths.metadata)?;
     let listed = if metadata.machines.iter().any(MachineConfiguration::is_vm) {
         list_managed(runner, paths)?
-    } else { Vec::new() };
+    } else {
+        Vec::new()
+    };
     let listed_names: HashSet<&str> = listed.iter().map(|entry| entry.name.as_str()).collect();
-    let configured: HashSet<&str> = metadata.machines.iter().filter(|machine| machine.is_vm()).map(MachineConfiguration::name).collect();
+    let configured: HashSet<&str> = metadata
+        .machines
+        .iter()
+        .filter(|machine| machine.is_vm())
+        .map(MachineConfiguration::name)
+        .collect();
     if listed_names.iter().any(|name| !configured.contains(name)) {
         return Err(RuntimeError::Malformed(INVENTORY_MISMATCH.into()));
     }
@@ -3600,20 +3959,37 @@ fn read_rows(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Vec<Row
     let mut rows = Vec::with_capacity(metadata.machines.len());
     for machine in metadata.machines.iter().cloned() {
         if !machine.is_vm() {
-            rows.push(Row { workspace: ssh_workspace(machine), unread: None });
+            rows.push(Row {
+                workspace: ssh_workspace(machine),
+                unread: None,
+            });
             continue;
         }
         let listed = listed_names.contains(machine.name());
         let row = match (from_record(&machine), listed) {
-            (true, false) => Row { workspace: checkpoints::pending_workspace(machine)?, unread: None },
-            (true, true) | (false, false) => Row { workspace: unread_workspace(machine), unread: Some(Unread::Mismatch) },
-            (false, true) => match inspect_workspace(runner, paths, machine.name()).and_then(|inspected| {
-                ensure_managed(&inspected)?;
-                Ok(inspected)
-            }) {
-                Ok(inspected) => Row { workspace: vm_workspace(paths, machine, &inspected), unread: None },
-                Err(error) => Row { workspace: unread_workspace(machine), unread: Some(Unread::Failed(error)) },
+            (true, false) => Row {
+                workspace: checkpoints::pending_workspace(machine)?,
+                unread: None,
             },
+            (true, true) | (false, false) => Row {
+                workspace: unread_workspace(machine),
+                unread: Some(Unread::Mismatch),
+            },
+            (false, true) => {
+                match inspect_workspace(runner, paths, machine.name()).and_then(|inspected| {
+                    ensure_managed(&inspected)?;
+                    Ok(inspected)
+                }) {
+                    Ok(inspected) => Row {
+                        workspace: vm_workspace(paths, machine, &inspected),
+                        unread: None,
+                    },
+                    Err(error) => Row {
+                        workspace: unread_workspace(machine),
+                        unread: Some(Unread::Failed(error)),
+                    },
+                }
+            }
         };
         rows.push(row);
     }
@@ -3635,39 +4011,49 @@ fn settle_rows(
 ) -> Result<Vec<ApplicationWorkspace>, RuntimeError> {
     let last = last_settled(paths);
     rows.into_iter()
-        .map(|Row { mut workspace, unread }| {
-            if !workspace.machine.is_vm() {
-                return Ok(workspace);
-            }
-            let previous = last.get(workspace.machine.id());
-            if !settled(workspace.machine.id()) {
-                match (previous, &unread) {
-                    (Some(previous), _) => keep_runtime_fields(&mut workspace, previous),
-                    (None, Some(_)) => {
-                        workspace.state = WorkspaceState::Starting;
-                        workspace.state_detail = "Updating".into();
-                    }
-                    (None, None) => {}
+        .map(
+            |Row {
+                 mut workspace,
+                 unread,
+             }| {
+                if !workspace.machine.is_vm() {
+                    return Ok(workspace);
                 }
-                workspace.settling = true;
-                return Ok(workspace);
-            }
-            match unread {
-                None => Ok(workspace),
-                Some(Unread::Mismatch) => Err(RuntimeError::Malformed(INVENTORY_MISMATCH.into())),
-                Some(Unread::Failed(error)) => {
-                    if let Some(previous) = previous {
-                        keep_runtime_fields(&mut workspace, previous);
+                let previous = last.get(workspace.machine.id());
+                if !settled(workspace.machine.id()) {
+                    match (previous, &unread) {
+                        (Some(previous), _) => keep_runtime_fields(&mut workspace, previous),
+                        (None, Some(_)) => {
+                            workspace.state = WorkspaceState::Starting;
+                            workspace.state_detail = "Updating".into();
+                        }
+                        (None, None) => {}
                     }
-                    workspace.freshness = Freshness::Stale;
-                    workspace.attention = Some(WorkspaceAttention {
-                        level: AttentionLevel::Warning,
-                        message: format!("Silo could not refresh this sandbox's state. {}", safe_activity_error(&error)),
-                    });
-                    Ok(workspace)
+                    workspace.settling = true;
+                    return Ok(workspace);
                 }
-            }
-        })
+                match unread {
+                    None => Ok(workspace),
+                    Some(Unread::Mismatch) => {
+                        Err(RuntimeError::Malformed(INVENTORY_MISMATCH.into()))
+                    }
+                    Some(Unread::Failed(error)) => {
+                        if let Some(previous) = previous {
+                            keep_runtime_fields(&mut workspace, previous);
+                        }
+                        workspace.freshness = Freshness::Stale;
+                        workspace.attention = Some(WorkspaceAttention {
+                            level: AttentionLevel::Warning,
+                            message: format!(
+                                "Silo could not refresh this sandbox's state. {}",
+                                safe_activity_error(&error)
+                            ),
+                        });
+                        Ok(workspace)
+                    }
+                }
+            },
+        )
         .collect()
 }
 
@@ -3703,12 +4089,22 @@ fn last_settled(paths: &RuntimePaths) -> HashMap<String, ApplicationWorkspace> {
 
 /// Remember the fresh, settled VM rows of a published source, and forget removed VMs.
 fn remember_settled(paths: &RuntimePaths, workspaces: &[ApplicationWorkspace]) {
-    let present: HashSet<&str> = workspaces.iter().map(|workspace| workspace.machine.id()).collect();
+    let present: HashSet<&str> = workspaces
+        .iter()
+        .map(|workspace| workspace.machine.id())
+        .collect();
     let mut readings = settled_readings();
-    readings.retain(|(metadata, id), _| *metadata != paths.metadata || present.contains(id.as_str()));
+    readings
+        .retain(|(metadata, id), _| *metadata != paths.metadata || present.contains(id.as_str()));
     for workspace in workspaces {
-        if workspace.machine.is_vm() && !workspace.settling && workspace.freshness == Freshness::Fresh {
-            readings.insert((paths.metadata.clone(), workspace.machine.id().to_owned()), workspace.clone());
+        if workspace.machine.is_vm()
+            && !workspace.settling
+            && workspace.freshness == Freshness::Fresh
+        {
+            readings.insert(
+                (paths.metadata.clone(), workspace.machine.id().to_owned()),
+                workspace.clone(),
+            );
         }
     }
 }
@@ -3739,16 +4135,23 @@ fn state_after_change(
 ) -> Result<ApplicationSource, RuntimeError> {
     let started = gate.generations();
     let settled = |id: &str| gate.is_vm_quiet(id) && gate.generation(id) == started.of(id);
-    let workspaces = match read_rows(runner, paths).and_then(|rows| settle_rows(paths, rows, &settled)) {
-        Ok(workspaces) => workspaces,
-        Err(error) => last_known_workspaces(paths, &error)?,
-    };
+    let workspaces =
+        match read_rows(runner, paths).and_then(|rows| settle_rows(paths, rows, &settled)) {
+            Ok(workspaces) => workspaces,
+            Err(error) => last_known_workspaces(paths, &error)?,
+        };
     application_source_for_workspaces(paths, workspaces)
 }
 
-fn last_known_workspaces(paths: &RuntimePaths, error: &RuntimeError) -> Result<Vec<ApplicationWorkspace>, RuntimeError> {
+fn last_known_workspaces(
+    paths: &RuntimePaths,
+    error: &RuntimeError,
+) -> Result<Vec<ApplicationWorkspace>, RuntimeError> {
     let last = last_settled(paths);
-    let message = format!("The change finished, but Silo could not refresh sandbox states. {}", safe_activity_error(error));
+    let message = format!(
+        "The change finished, but Silo could not refresh sandbox states. {}",
+        safe_activity_error(error)
+    );
     Ok(read_metadata(&paths.metadata)?
         .machines
         .into_iter()
@@ -3761,7 +4164,10 @@ fn last_known_workspaces(paths: &RuntimePaths, error: &RuntimeError) -> Result<V
                 keep_runtime_fields(&mut workspace, previous);
             }
             workspace.freshness = Freshness::Stale;
-            workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message: message.clone() });
+            workspace.attention = Some(WorkspaceAttention {
+                level: AttentionLevel::Warning,
+                message: message.clone(),
+            });
             workspace
         })
         .collect())
@@ -3772,7 +4178,10 @@ fn last_known_workspaces(paths: &RuntimePaths, error: &RuntimeError) -> Result<V
 fn keep_last_known_repositories(paths: &RuntimePaths, workspaces: &mut [ApplicationWorkspace]) {
     let last = last_settled(paths);
     for workspace in workspaces {
-        if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running) && workspace.repositories.is_empty() {
+        if workspace.machine.is_vm()
+            && matches!(workspace.state, WorkspaceState::Running)
+            && workspace.repositories.is_empty()
+        {
             if let Some(previous) = last.get(workspace.machine.id()) {
                 workspace.repositories = previous.repositories.clone();
             }
@@ -3825,16 +4234,24 @@ fn ssh_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
 
 /// A persisted running checkpoint operation is interrupted only when no operation
 /// currently holds its VM; otherwise it is live and keeps its running stage.
-fn checkpoint_operation_view(mut operation: checkpoints::Operation, live: bool) -> checkpoints::Operation {
+fn checkpoint_operation_view(
+    mut operation: checkpoints::Operation,
+    live: bool,
+) -> checkpoints::Operation {
     if operation.status == "running" && !live {
         operation.status = "failed".into();
         operation.stage = "Interrupted operation".into();
-        operation.error = Some("Silo closed during this operation. Retry to reconcile its saved checkpoint.".into());
+        operation.error = Some(
+            "Silo closed during this operation. Retry to reconcile its saved checkpoint.".into(),
+        );
     }
     operation
 }
 
-fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<ApplicationWorkspace>) -> Result<ApplicationSource, RuntimeError> {
+fn application_source_for_workspaces(
+    paths: &RuntimePaths,
+    mut workspaces: Vec<ApplicationWorkspace>,
+) -> Result<ApplicationSource, RuntimeError> {
     let secrets = crate::secrets::snapshot().map_err(RuntimeError::Unavailable)?;
     // Journal read failures are reported as an Activity warning by read() below.
     let mut failures = runtime_activity::failures(paths).unwrap_or_default();
@@ -3843,11 +4260,15 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
             workspace.lifecycle_failure = failures.remove(workspace.machine.id());
             match checkpoints::load(paths, workspace.machine.id()) {
                 Ok(checkpoint) => {
-                    workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
-                    workspace.unfinished_restore = checkpoints::view_unfinished_restore(&checkpoint);
+                    workspace.pending_checkpoint_restore =
+                        checkpoints::view_pending(&checkpoint, workspace.machine.name());
+                    workspace.unfinished_restore =
+                        checkpoints::view_unfinished_restore(&checkpoint);
                     workspace.checkpoints = checkpoint.checkpoints;
                     let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
-                    workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
+                    workspace.checkpoint_operation = checkpoint
+                        .checkpoint_operation
+                        .map(|operation| checkpoint_operation_view(operation, live));
                 }
                 // One unreadable record must not fail every sandbox: flag only this one.
                 Err(error) => {
@@ -3862,12 +4283,22 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
                 }
             }
         }
-        workspace.secret_names = secrets.iter().filter(|secret| secret["removing"] != true && secret["workspaces"].as_array().is_some_and(|names| names.iter().any(|name| name.as_str() == Some(workspace.machine.name()))))
-            .filter_map(|secret| secret["name"].as_str().map(str::to_owned)).collect();
+        workspace.secret_names = secrets
+            .iter()
+            .filter(|secret| {
+                secret["removing"] != true
+                    && secret["workspaces"].as_array().is_some_and(|names| {
+                        names
+                            .iter()
+                            .any(|name| name.as_str() == Some(workspace.machine.name()))
+                    })
+            })
+            .filter_map(|secret| secret["name"].as_str().map(str::to_owned))
+            .collect();
     }
     let mut activities = runtime_activity::read(paths)?;
     activities.extend(crate::secrets::activities().map_err(RuntimeError::Unavailable)?);
-    activities.sort_by(|a,b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
+    activities.sort_by(|a, b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
     activities.truncate(200);
     Ok(ApplicationSource {
         runtime_repair: None,
@@ -3935,7 +4366,9 @@ fn is_missing_sandbox(error: &RuntimeError) -> bool {
     match error {
         RuntimeError::Failed { detail, .. } => {
             let detail = detail.to_ascii_lowercase();
-            detail.contains("not found") || detail.contains("no such sandbox") || detail.contains("does not exist")
+            detail.contains("not found")
+                || detail.contains("no such sandbox")
+                || detail.contains("does not exist")
         }
         _ => false,
     }
@@ -4004,7 +4437,9 @@ fn vm_workspace(
         ),
         "Paused" => (WorkspaceState::Stopped, "Paused".into(), None),
         "Crashed" if crash_acknowledgement::is_acknowledged(paths, &machine, inspected) => (
-            WorkspaceState::Stopped, "Stopped".into(), configuration_attention(paths, &machine, inspected),
+            WorkspaceState::Stopped,
+            "Stopped".into(),
+            configuration_attention(paths, &machine, inspected),
         ),
         "Crashed" => (
             WorkspaceState::Failed,
@@ -4028,7 +4463,12 @@ fn vm_workspace(
         purpose: "Local MicroSandbox".into(),
         state,
         state_detail,
-        can_dismiss_error: inspected.status == "Crashed" && inspected.updated_at.as_ref().is_some_and(|value| !value.is_empty()) && matches!(state, WorkspaceState::Failed),
+        can_dismiss_error: inspected.status == "Crashed"
+            && inspected
+                .updated_at
+                .as_ref()
+                .is_some_and(|value| !value.is_empty())
+            && matches!(state, WorkspaceState::Failed),
         lifecycle_failure: None,
         attention,
         freshness: Freshness::Fresh,
@@ -4093,7 +4533,10 @@ fn configuration_attention(
             .and_then(Value::as_u64),
     );
     let workspace_storage_gib = match machine {
-        MachineConfiguration::Vm { workspace_storage_gib, .. } => *workspace_storage_gib,
+        MachineConfiguration::Vm {
+            workspace_storage_gib,
+            ..
+        } => *workspace_storage_gib,
         _ => return None,
     };
     let mounts_match = inspected
@@ -4101,11 +4544,18 @@ fn configuration_attention(
         .get("mounts")
         .and_then(Value::as_array)
         .is_some_and(|mounts| {
-            mounts.iter().filter(|mount| mount["guest"] == WORKSPACE_MOUNT).count() == 1
+            mounts
+                .iter()
+                .filter(|mount| mount["guest"] == WORKSPACE_MOUNT)
+                .count()
+                == 1
                 && mounts.iter().any(|mount| {
-                    mount["guest"] == WORKSPACE_MOUNT && mount["type"] == "Owned"
+                    mount["guest"] == WORKSPACE_MOUNT
+                        && mount["type"] == "Owned"
                         && mount.pointer("/storage/kind").and_then(Value::as_str) == Some("disk")
-                        && mount.pointer("/storage/capacity_mib").and_then(Value::as_u64)
+                        && mount
+                            .pointer("/storage/capacity_mib")
+                            .and_then(Value::as_u64)
                             == Some(u64::from(workspace_storage_gib) * 1024)
                 })
         });
@@ -4132,7 +4582,9 @@ pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
     let paths = runtime_paths(app)?;
     // A launch start changes only its VM, so it takes that VM's lane like a user Start:
     // other sandboxes' actions and state are not held behind each boot.
-    let guard = match launch_start_guard(&OPERATIONS, &paths, id).map_err(|error| safe_activity_error(&error))? {
+    let guard = match launch_start_guard(&OPERATIONS, &paths, id)
+        .map_err(|error| safe_activity_error(&error))?
+    {
         LaunchAdmission::Admitted(guard) => Some(guard),
         LaunchAdmission::Unguarded => None,
         LaunchAdmission::Skipped => return Ok(()),
@@ -4141,7 +4593,8 @@ pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
     if crate::startup::is_cancelled(app) {
         return Ok(());
     }
-    let outcome = host_resources().and_then(|host| start_at_launch_with(&ProcessRunner, &paths, &host, id));
+    let outcome =
+        host_resources().and_then(|host| start_at_launch_with(&ProcessRunner, &paths, &host, id));
     drop(guard);
     match outcome {
         Ok(LaunchStart::Done) => Ok(()),
@@ -4171,7 +4624,11 @@ fn launch_start_guard<'a>(
     id: &str,
 ) -> Result<LaunchAdmission<'a>, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
-    let Some(machine) = metadata.machines.iter().find(|machine| machine.id() == id && machine.is_vm()) else {
+    let Some(machine) = metadata
+        .machines
+        .iter()
+        .find(|machine| machine.id() == id && machine.is_vm())
+    else {
         return Ok(LaunchAdmission::Unguarded);
     };
     let guard = gate.kind(operation_gate::OperationKind::Lifecycle).acquire(
@@ -4186,7 +4643,9 @@ fn launch_start_guard<'a>(
             guard.expect_within(Duration::from_secs(180));
             Ok(LaunchAdmission::Admitted(guard))
         }
-        Err(operation_gate::GateError::AlreadyQueued | operation_gate::GateError::Cancelled) => Ok(LaunchAdmission::Skipped),
+        Err(operation_gate::GateError::AlreadyQueued | operation_gate::GateError::Cancelled) => {
+            Ok(LaunchAdmission::Skipped)
+        }
         Err(error) => Err(RuntimeError::from(error)),
     }
 }
@@ -4224,9 +4683,7 @@ fn start_at_launch_with(
         crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Invalid)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
-            "created" | "stopped" => {
-                workspace_action_with(runner, paths, host, "start", name)
-            }
+            "created" | "stopped" => workspace_action_with(runner, paths, host, "start", name),
             _ => Err(RuntimeError::Invalid(format!(
                 "{name} is not stopped or running. Check its status before starting it."
             ))),
@@ -4235,7 +4692,10 @@ fn start_at_launch_with(
     match result {
         Ok(()) => Ok(LaunchStart::Done),
         Err(error @ RuntimeError::Cancelled { .. }) => Err(error),
-        Err(error) => Err(RuntimeError::Invalid(format!("{name}: {}", safe_activity_error(&error)))),
+        Err(error) => Err(RuntimeError::Invalid(format!(
+            "{name}: {}",
+            safe_activity_error(&error)
+        ))),
     }
 }
 
@@ -4249,7 +4709,9 @@ fn explicit_workspace_action_with(
     name: &str,
 ) -> Result<(), RuntimeError> {
     if action == "start" {
-        if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
+        if let Some(machine) = read_metadata(&paths.metadata)?
+            .machines
+            .into_iter()
             .find(|machine| machine.is_vm() && machine.name() == name)
         {
             if checkpoints::needs_explicit_start(paths, machine.id())? {
@@ -4270,10 +4732,17 @@ fn workspace_action_with(
     name: &str,
 ) -> Result<(), RuntimeError> {
     if matches!(action, "start" | "stop" | "restart") {
-        if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
-            .find(|machine| machine.is_vm() && machine.name() == name) {
+        if let Some(machine) = read_metadata(&paths.metadata)?
+            .machines
+            .into_iter()
+            .find(|machine| machine.is_vm() && machine.name() == name)
+        {
             if checkpoints::needs_explicit_start(paths, machine.id())? {
-                return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
+                return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(
+                    paths,
+                    machine.id(),
+                    machine.name(),
+                )));
             }
         }
     }
@@ -4308,9 +4777,15 @@ fn apply_whole_configuration_with_progress(
     validate_request(&request)?;
     let previous = read_metadata(&paths.metadata)?;
     if retry_workspace.is_some_and(|name| {
-        !request.machines.iter().chain(&previous.machines).any(|machine| machine.name() == name)
+        !request
+            .machines
+            .iter()
+            .chain(&previous.machines)
+            .any(|machine| machine.name() == name)
     }) {
-        return Err(RuntimeError::Invalid("The sandbox selected for retry is not in this configuration.".into()));
+        return Err(RuntimeError::Invalid(
+            "The sandbox selected for retry is not in this configuration.".into(),
+        ));
     }
     validate_requested_resources(&request, host)?;
     let previous_by_id: HashMap<&str, &MachineConfiguration> = previous
@@ -4404,10 +4879,14 @@ fn apply_whole_configuration_with_progress(
         write_metadata(&paths.metadata, &request)?;
         configuration_recovery::finish(paths)
     })();
-    result.map_err(|error| if changed {
-        // Keep the typed error so its precise text and category survive (D-16).
-        RuntimeError::Partial(Box::new(error))
-    } else { error })
+    result.map_err(|error| {
+        if changed {
+            // Keep the typed error so its precise text and category survive (D-16).
+            RuntimeError::Partial(Box::new(error))
+        } else {
+            error
+        }
+    })
 }
 
 fn verify_machine_configuration(
@@ -4427,8 +4906,12 @@ fn validate_machine_update(
     previous: &MachineConfiguration,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
-    if crate::desktop::configuration(previous).is_some() && crate::desktop::configuration(machine).is_none() {
-        return Err(RuntimeError::Invalid("Desktop removal is not supported. Turn off automatic startup instead.".into()));
+    if crate::desktop::configuration(previous).is_some()
+        && crate::desktop::configuration(machine).is_none()
+    {
+        return Err(RuntimeError::Invalid(
+            "Desktop removal is not supported. Turn off automatic startup instead.".into(),
+        ));
     }
     if previous.name() != machine.name() {
         return Err(RuntimeError::Invalid(format!("Bundled MicroSandbox cannot rename sandbox '{}'. Keep its name or create a new sandbox.", previous.name())));
@@ -4446,7 +4929,11 @@ fn verify_guest_tools(
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<(), RuntimeError> {
-    let script = format!("{}\n{}", include_str!("../guest/verify-tools.sh"), include_str!("../guest/setup-working-account.sh"));
+    let script = format!(
+        "{}\n{}",
+        include_str!("../guest/verify-tools.sh"),
+        include_str!("../guest/setup-working-account.sh")
+    );
     runner.run(
         paths,
         &[
@@ -4531,7 +5018,11 @@ fn create_machine_with_progress(
                 "The bundled runtime does not support secure GitHub access. Repair Silo before creating sandboxes.".into(),
             ));
         }
-        let protocol = runner.run(paths, &["--silo-working-account-protocol".into()], READ_TIMEOUT)?;
+        let protocol = runner.run(
+            paths,
+            &["--silo-working-account-protocol".into()],
+            READ_TIMEOUT,
+        )?;
         if protocol.stdout.trim() != "1" {
             return Err(RuntimeError::Unavailable(
                 "The bundled runtime does not support normal working accounts. Repair or update Silo before creating sandboxes.".into(),
@@ -4663,9 +5154,12 @@ pub(crate) fn start_disposable_test_import(
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<(), RuntimeError> {
-    let _guard = OPERATIONS.computer("Starting disposable imported sandbox")
+    let _guard = OPERATIONS
+        .computer("Starting disposable imported sandbox")
         .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-    let machine = read_metadata(&paths.metadata)?.machines.into_iter()
+    let machine = read_metadata(&paths.metadata)?
+        .machines
+        .into_iter()
         .find(|machine| machine.is_vm() && machine.name() == name)
         .ok_or_else(|| RuntimeError::Invalid("Imported test sandbox is missing.".into()))?;
     checkpoints::start_pending(&ProcessRunner, paths, &machine)
@@ -4779,7 +5273,14 @@ fn update_machine(
     // Renames, storage resizes, VM/SSH switches and desktop removal are rejected here.
     validate_machine_update(previous, machine)?;
     if crate::desktop::only_desktop_changed(previous, machine) {
-        return crate::desktop::configure_with(runner, paths, machine.name(), crate::desktop::configuration(previous), crate::desktop::configuration(machine).ok_or_else(|| RuntimeError::Invalid("Desktop removal is not supported.".into()))?);
+        return crate::desktop::configure_with(
+            runner,
+            paths,
+            machine.name(),
+            crate::desktop::configuration(previous),
+            crate::desktop::configuration(machine)
+                .ok_or_else(|| RuntimeError::Invalid("Desktop removal is not supported.".into()))?,
+        );
     }
     match (previous, machine) {
         (
@@ -4842,7 +5343,13 @@ fn update_machine(
             )?;
             if let Some(desktop) = crate::desktop::configuration(machine) {
                 if crate::desktop::configuration(previous) != Some(desktop) {
-                    crate::desktop::configure_with(runner, paths, name, crate::desktop::configuration(previous), desktop)?;
+                    crate::desktop::configure_with(
+                        runner,
+                        paths,
+                        name,
+                        crate::desktop::configuration(previous),
+                        desktop,
+                    )?;
                 }
             }
             Ok(())
@@ -4878,15 +5385,29 @@ fn preflight_removal(
     let pending = checkpoints::is_pending(paths, machine.id()).ok();
     let inspected = match inspect_workspace(runner, paths, name) {
         Ok(inspected) => inspected,
-        Err(error) if pending != Some(false) && is_missing_sandbox(&error) => return Ok(RemovalTarget::Nothing),
+        Err(error) if pending != Some(false) && is_missing_sandbox(&error) => {
+            return Ok(RemovalTarget::Nothing)
+        }
         Err(error) => return Err(error),
     };
     ensure_managed(&inspected)?;
-    if inspected.name != *name || inspected.config.pointer("/labels/silo.machine-id").and_then(Value::as_str) != Some(machine.id()) {
-        return Err(RuntimeError::Invalid("The sandbox selected for deletion changed identity. It was preserved.".into()));
+    if inspected.name != *name
+        || inspected
+            .config
+            .pointer("/labels/silo.machine-id")
+            .and_then(Value::as_str)
+            != Some(machine.id())
+    {
+        return Err(RuntimeError::Invalid(
+            "The sandbox selected for deletion changed identity. It was preserved.".into(),
+        ));
     }
     let stopped = matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed");
-    let attempt = inspected.config.pointer("/labels/silo.restore-attempt").and_then(Value::as_str).is_some();
+    let attempt = inspected
+        .config
+        .pointer("/labels/silo.restore-attempt")
+        .and_then(Value::as_str)
+        .is_some();
     if pending != Some(false) && attempt {
         return Ok(RemovalTarget::RestoreAttempt { running: !stopped });
     }
@@ -4913,7 +5434,11 @@ fn remove_machine_runtime(
         RemovalTarget::Nothing => return Ok(()),
         RemovalTarget::Stopped | RemovalTarget::RestoreAttempt { running: false } => {}
         RemovalTarget::RestoreAttempt { running: true } => {
-            runner.run(paths, &["stop".into(), name.into(), "--quiet".into()], STOP_TIMEOUT)?;
+            runner.run(
+                paths,
+                &["stop".into(), name.into(), "--quiet".into()],
+                STOP_TIMEOUT,
+            )?;
         }
     }
     runner.run(
@@ -5132,7 +5657,9 @@ mod tests {
             |_guard| {},
             || {
                 if attempts.fetch_add(1, Ordering::SeqCst) < 2 {
-                    Err(RuntimeError::TimedOut { operation: "Starting retry-transient".into() })
+                    Err(RuntimeError::TimedOut {
+                        operation: "Starting retry-transient".into(),
+                    })
                 } else {
                     Ok(())
                 }
@@ -5146,22 +5673,36 @@ mod tests {
     #[test]
     fn cancelled_and_deduplicated_actions_are_not_notified_but_other_failures_are() {
         let _test_state = crate::test_support::global_state();
-        assert_eq!(lifecycle_failure(&RuntimeError::Cancelled {
-            operation: "Starting dev".into(),
-        }), LifecycleFailure::Cancelled);
         assert_eq!(
-            lifecycle_failure(&RuntimeError::from(operation_gate::GateError::AlreadyQueued)),
+            lifecycle_failure(&RuntimeError::Cancelled {
+                operation: "Starting dev".into(),
+            }),
+            LifecycleFailure::Cancelled
+        );
+        assert_eq!(
+            lifecycle_failure(&RuntimeError::from(
+                operation_gate::GateError::AlreadyQueued
+            )),
             LifecycleFailure::AlreadyQueued
         );
-        assert_eq!(lifecycle_failure(&RuntimeError::Failed {
-            operation: "Starting dev".into(),
-            exit_code: Some(1),
-            detail: "boot failed".into(),
-        }), LifecycleFailure::Failed);
-        assert_eq!(lifecycle_failure(&RuntimeError::TimedOut {
-            operation: "Starting dev".into(),
-        }), LifecycleFailure::Failed);
-        assert_eq!(lifecycle_failure(&RuntimeError::Busy), LifecycleFailure::Failed);
+        assert_eq!(
+            lifecycle_failure(&RuntimeError::Failed {
+                operation: "Starting dev".into(),
+                exit_code: Some(1),
+                detail: "boot failed".into(),
+            }),
+            LifecycleFailure::Failed
+        );
+        assert_eq!(
+            lifecycle_failure(&RuntimeError::TimedOut {
+                operation: "Starting dev".into(),
+            }),
+            LifecycleFailure::Failed
+        );
+        assert_eq!(
+            lifecycle_failure(&RuntimeError::Busy),
+            LifecycleFailure::Failed
+        );
         assert_eq!(
             lifecycle_failure(&RuntimeError::from(operation_gate::GateError::Nested)),
             LifecycleFailure::Failed
@@ -5178,15 +5719,26 @@ mod tests {
         let result: Result<(), RuntimeError> = gated_auto_retry_classified(
             &delays,
             "Stopping since-dev",
-            |label| gate.vm("since-dev-id", "since-dev", label).map_err(RuntimeError::from),
+            |label| {
+                gate.vm("since-dev-id", "since-dev", label)
+                    .map_err(RuntimeError::from)
+            },
             |_guard| {},
             || {
                 let mut seen = seen.lock().unwrap();
                 seen.push(gate.snapshot().running[0].since_ms);
-                if seen.len() < 3 { Err(RuntimeError::TimedOut { operation: "Stopping since-dev".into() }) } else { Ok(()) }
+                if seen.len() < 3 {
+                    Err(RuntimeError::TimedOut {
+                        operation: "Stopping since-dev".into(),
+                    })
+                } else {
+                    Ok(())
+                }
             },
             transient_runtime_error,
-            || RuntimeError::Cancelled { operation: "Stopping since-dev".into() },
+            || RuntimeError::Cancelled {
+                operation: "Stopping since-dev".into(),
+            },
         );
         assert!(result.is_ok());
         let seen = seen.into_inner().unwrap();
@@ -5200,7 +5752,9 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct Reopen;
         impl Drop for Reopen {
-            fn drop(&mut self) { shutdown::cancel(); }
+            fn drop(&mut self) {
+                shutdown::cancel();
+            }
         }
         let gate: &'static operation_gate::OperationGate =
             Box::leak(Box::new(operation_gate::OperationGate::new()));
@@ -5209,7 +5763,10 @@ mod tests {
         let result: Result<(), RuntimeError> = gated_auto_retry_classified(
             &delays,
             "Starting quit-dev",
-            |label| gate.vm("quit-dev-id", "quit-dev", label).map_err(RuntimeError::from),
+            |label| {
+                gate.vm("quit-dev-id", "quit-dev", label)
+                    .map_err(RuntimeError::from)
+            },
             |_guard| {},
             || {
                 if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -5221,12 +5778,19 @@ mod tests {
                         shutdown::begin();
                     });
                 }
-                Err(RuntimeError::TimedOut { operation: "Starting quit-dev".into() })
+                Err(RuntimeError::TimedOut {
+                    operation: "Starting quit-dev".into(),
+                })
             },
             transient_runtime_error,
-            || RuntimeError::Cancelled { operation: "Starting quit-dev".into() },
+            || RuntimeError::Cancelled {
+                operation: "Starting quit-dev".into(),
+            },
         );
-        assert!(matches!(result, Err(RuntimeError::Cancelled { .. })), "{result:?}");
+        assert!(
+            matches!(result, Err(RuntimeError::Cancelled { .. })),
+            "{result:?}"
+        );
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert!(shutdown::ensure_accepting_operations().is_ok());
     }
@@ -5287,7 +5851,9 @@ mod tests {
             |_guard| {},
             || {
                 if attempts.fetch_add(1, Ordering::SeqCst) < 2 {
-                    Err(Attempt::Transient("Updating sandbox secrets timed out.".into()))
+                    Err(Attempt::Transient(
+                        "Updating sandbox secrets timed out.".into(),
+                    ))
                 } else {
                     Ok(())
                 }
@@ -5319,7 +5885,9 @@ mod tests {
             |_guard| {},
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
-                Err(Attempt::Final("The sandbox rejected the secret update.".into()))
+                Err(Attempt::Final(
+                    "The sandbox rejected the secret update.".into(),
+                ))
             },
             Attempt::is_transient,
             || Attempt::Cancelled("Saving secrets was cancelled.".into()),
@@ -5359,7 +5927,9 @@ mod tests {
                     while Instant::now() < deadline && !operation_gate::cancel_requested() {
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    Err(Attempt::Transient("Updating sandbox secrets timed out.".into()))
+                    Err(Attempt::Transient(
+                        "Updating sandbox secrets timed out.".into(),
+                    ))
                 },
                 Attempt::is_transient,
                 || Attempt::Cancelled("Saving secrets was cancelled.".into()),
@@ -5434,7 +6004,10 @@ mod tests {
         fs::create_dir_all(&paths.home).unwrap();
         fs::write(&paths.library, b"test").unwrap();
         fs::write(paths.home.join("state"), "Stopped").unwrap();
-        crate::test_support::write_shell_script(&paths.executable, format!(r#"#!/bin/sh
+        crate::test_support::write_shell_script(
+            &paths.executable,
+            format!(
+                r#"#!/bin/sh
 printf '%s\n' "$1" >> "$MSB_HOME/calls"
 case "$1" in
   inspect) state=$(cat "$MSB_HOME/state"); printf '{{"name":"cleanup","status":"%s","config":{{"labels":{{"silo.managed":"true"}}}},"active_config":{{}}}}\n' "$state" ;;
@@ -5442,7 +6015,9 @@ case "$1" in
   stop) printf Stopped > "$MSB_HOME/state" ;;
 esac
 if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
-"#));
+"#
+            ),
+        );
     }
 
     #[test]
@@ -5452,21 +6027,37 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
             fake_lifecycle_msb(&paths, block_on);
-            let guard = OPERATIONS.vm("cleanup-id", "cleanup", "Running a guest command").unwrap();
+            let guard = OPERATIONS
+                .vm("cleanup-id", "cleanup", "Running a guest command")
+                .unwrap();
             guard.allow_cancel();
             let token = guard.cancel_token();
             let blocked = paths.home.join("blocked");
             let canceller = thread::spawn(move || {
-                while !blocked.exists() { thread::sleep(Duration::from_millis(10)); }
+                while !blocked.exists() {
+                    thread::sleep(Duration::from_millis(10));
+                }
                 token.store(true, Ordering::SeqCst);
             });
-            let result = run_msb_with_progress(&paths, &["exec".into(), "cleanup".into(), "--".into(), "true".into()], Duration::from_secs(20), &|_| {});
+            let result = run_msb_with_progress(
+                &paths,
+                &["exec".into(), "cleanup".into(), "--".into(), "true".into()],
+                Duration::from_secs(20),
+                &|_| {},
+            );
             canceller.join().unwrap();
             drop(guard);
-            assert!(matches!(result, Err(RuntimeError::Cancelled { .. })), "{block_on}: {result:?}");
+            assert!(
+                matches!(result, Err(RuntimeError::Cancelled { .. })),
+                "{block_on}: {result:?}"
+            );
             let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
             assert_eq!(calls.lines().last(), Some("stop"), "{block_on}: {calls}");
-            assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), "Stopped", "{block_on}");
+            assert_eq!(
+                fs::read_to_string(paths.home.join("state")).unwrap(),
+                "Stopped",
+                "{block_on}"
+            );
         }
     }
 
@@ -5494,14 +6085,32 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
             );
             fs::write(&paths.executable, script).unwrap();
             crate::secrets::use_test_store(Some(secrets_directory.join("secrets.json")));
-            let result = run_msb_with_progress(&paths, &["start".into(), "cleanup".into()], Duration::from_secs(20), &|_| {});
+            let result = run_msb_with_progress(
+                &paths,
+                &["start".into(), "cleanup".into()],
+                Duration::from_secs(20),
+                &|_| {},
+            );
             crate::secrets::use_test_store(None);
             fs::set_permissions(&secrets_directory, fs::Permissions::from_mode(0o700)).unwrap();
-            assert!(result.is_ok(), "{failure}: the successful start was reported as a failure: {result:?}");
+            assert!(
+                result.is_ok(),
+                "{failure}: the successful start was reported as a failure: {result:?}"
+            );
             let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
-            assert!(!calls.lines().any(|command| command == "stop"), "{failure}: {calls}");
-            assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), "Running", "{failure}");
-            assert!(start_refresh_attention(&paths, "cleanup").is_some(), "{failure}: missing post-boot warning");
+            assert!(
+                !calls.lines().any(|command| command == "stop"),
+                "{failure}: {calls}"
+            );
+            assert_eq!(
+                fs::read_to_string(paths.home.join("state")).unwrap(),
+                "Running",
+                "{failure}"
+            );
+            assert!(
+                start_refresh_attention(&paths, "cleanup").is_some(),
+                "{failure}: missing post-boot warning"
+            );
         }
     }
 
@@ -5516,7 +6125,18 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
         let worker_paths = paths.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         thread::spawn(move || {
-            let result = run_msb_with_progress(&worker_paths, &["exec".into(), "cleanup".into(), "--no-start".into(), "--".into(), "true".into()], Duration::from_secs(5), &|_| {});
+            let result = run_msb_with_progress(
+                &worker_paths,
+                &[
+                    "exec".into(),
+                    "cleanup".into(),
+                    "--no-start".into(),
+                    "--".into(),
+                    "true".into(),
+                ],
+                Duration::from_secs(5),
+                &|_| {},
+            );
             let _ = sender.send(result.is_ok());
         });
         assert_eq!(receiver.recv_timeout(Duration::from_secs(5)), Ok(true));
@@ -5533,8 +6153,14 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
                     let paths = paths(&directory);
                     fs::create_dir_all(&paths.home).unwrap();
                     fs::write(&paths.library, b"test").unwrap();
-                    fs::write(paths.home.join("state"), if running { "Running" } else { "Stopped" }).unwrap();
-                    if guest_fails { fs::write(paths.home.join("fail"), b"1").unwrap(); }
+                    fs::write(
+                        paths.home.join("state"),
+                        if running { "Running" } else { "Stopped" },
+                    )
+                    .unwrap();
+                    if guest_fails {
+                        fs::write(paths.home.join("fail"), b"1").unwrap();
+                    }
                     fs::write(&paths.executable, r#"#!/bin/sh
 set -eu
 printf '%s\n' "$1" >> "$MSB_HOME/calls"
@@ -5547,16 +6173,38 @@ case "$1" in
   *) echo 'Unexpected runtime operation' >&2; exit 1 ;;
 esac
 "#).unwrap();
-                    fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
-                    let old = crate::desktop::DesktopConfiguration { start_with_sandbox: true };
-                    let desired = crate::desktop::DesktopConfiguration { start_with_sandbox: false };
-                    let result = crate::desktop::configure_with(&ProcessRunner, &paths, "desktop-preserve-test", installed.then_some(&old), &desired);
+                    fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                    let old = crate::desktop::DesktopConfiguration {
+                        start_with_sandbox: true,
+                    };
+                    let desired = crate::desktop::DesktopConfiguration {
+                        start_with_sandbox: false,
+                    };
+                    let result = crate::desktop::configure_with(
+                        &ProcessRunner,
+                        &paths,
+                        "desktop-preserve-test",
+                        installed.then_some(&old),
+                        &desired,
+                    );
                     assert_eq!(result.is_err(), guest_fails, "{result:?}");
-                    assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), if running { "Running" } else { "Stopped" });
+                    assert_eq!(
+                        fs::read_to_string(paths.home.join("state")).unwrap(),
+                        if running { "Running" } else { "Stopped" }
+                    );
                     let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
-                    assert_eq!(calls.lines().filter(|v| *v == "start").count(), usize::from(!running));
-                    assert_eq!(calls.lines().filter(|v| *v == "stop").count(), usize::from(!running));
-                    if !installed { assert_eq!(calls.lines().nth(1), Some("--silo-desktop-protocol")); }
+                    assert_eq!(
+                        calls.lines().filter(|v| *v == "start").count(),
+                        usize::from(!running)
+                    );
+                    assert_eq!(
+                        calls.lines().filter(|v| *v == "stop").count(),
+                        usize::from(!running)
+                    );
+                    if !installed {
+                        assert_eq!(calls.lines().nth(1), Some("--silo-desktop-protocol"));
+                    }
                 }
             }
         }
@@ -5569,14 +6217,23 @@ esac
         let previous = vm();
         let mut desired = previous.clone();
         if let MachineConfiguration::Vm { desktop, .. } = &mut desired {
-            *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: true });
+            *desktop = Some(crate::desktop::DesktopConfiguration {
+                start_with_sandbox: true,
+            });
         }
-        let runner = StubRunner::successful_json(vec![inspect(&paths(&dir), "Running"), json!(1), json!({})]);
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths(&dir), "Running"),
+            json!(1),
+            json!({}),
+        ]);
         update_machine(&runner, &paths(&dir), &previous, &desired).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[2][0], "exec");
-        assert!(calls[2].last().unwrap().contains("silo-desktop autostart true"));
+        assert!(calls[2]
+            .last()
+            .unwrap()
+            .contains("silo-desktop autostart true"));
     }
 
     #[test]
@@ -5586,10 +6243,15 @@ esac
         let desired = vm();
         let mut previous = desired.clone();
         if let MachineConfiguration::Vm { desktop, .. } = &mut previous {
-            *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: true });
+            *desktop = Some(crate::desktop::DesktopConfiguration {
+                start_with_sandbox: true,
+            });
         }
         let runner = StubRunner::successful_json(vec![]);
-        assert!(update_machine(&runner, &paths(&dir), &previous, &desired).unwrap_err().to_string().contains("removal"));
+        assert!(update_machine(&runner, &paths(&dir), &previous, &desired)
+            .unwrap_err()
+            .to_string()
+            .contains("removal"));
         assert!(runner.calls.lock().unwrap().is_empty());
     }
 
@@ -5613,7 +6275,10 @@ esac
             "config":{"labels":{"silo.managed":"true","silo.machine-id":machine.id()}}});
         let runner = StubRunner::successful_json(vec![crash.clone()]);
         let inspected: InspectedSandbox = serde_json::from_value(crash.clone()).unwrap();
-        assert!(matches!(vm_workspace(&paths, machine.clone(), &inspected).state, WorkspaceState::Failed));
+        assert!(matches!(
+            vm_workspace(&paths, machine.clone(), &inspected).state,
+            WorkspaceState::Failed
+        ));
         workspace_action_with(&runner, &paths, &generous_host(), "dismiss-error", "dev").unwrap();
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
         assert_eq!(runner.calls.lock().unwrap()[0][0], "inspect");
@@ -5623,11 +6288,17 @@ esac
         let mut new_crash = crash.clone();
         new_crash["updated_at"] = json!("2026-09-16T00:00:00.456Z");
         let inspected = serde_json::from_value(new_crash).unwrap();
-        assert!(matches!(vm_workspace(&paths, machine.clone(), &inspected).state, WorkspaceState::Failed));
+        assert!(matches!(
+            vm_workspace(&paths, machine.clone(), &inspected).state,
+            WorkspaceState::Failed
+        ));
         // Clearing before a new lifecycle attempt also prevents masking same-timestamp failures.
         crash_acknowledgement::clear(&paths, "dev").unwrap();
         let inspected = serde_json::from_value(crash).unwrap();
-        assert!(matches!(vm_workspace(&paths, machine, &inspected).state, WorkspaceState::Failed));
+        assert!(matches!(
+            vm_workspace(&paths, machine, &inspected).state,
+            WorkspaceState::Failed
+        ));
     }
 
     #[test]
@@ -5637,10 +6308,24 @@ esac
         let paths = paths(&dir);
         let machine = vm();
         write_metadata(&paths.metadata, &request(vec![machine.clone()])).unwrap();
-        for (status, id, timestamp) in [("Running", machine.id(), Some("now")), ("Unknown", machine.id(), Some("now")), ("Crashed", "replacement", Some("now")), ("Crashed", machine.id(), None)] {
-            let runner = StubRunner::successful_json(vec![json!({"name":"dev", "status":status, "updated_at":timestamp,
-                "config":{"labels":{"silo.managed":"true","silo.machine-id":id}}})]);
-            assert!(workspace_action_with(&runner, &paths, &generous_host(), "dismiss-error", "dev").is_err());
+        for (status, id, timestamp) in [
+            ("Running", machine.id(), Some("now")),
+            ("Unknown", machine.id(), Some("now")),
+            ("Crashed", "replacement", Some("now")),
+            ("Crashed", machine.id(), None),
+        ] {
+            let runner = StubRunner::successful_json(vec![
+                json!({"name":"dev", "status":status, "updated_at":timestamp,
+                "config":{"labels":{"silo.managed":"true","silo.machine-id":id}}}),
+            ]);
+            assert!(workspace_action_with(
+                &runner,
+                &paths,
+                &generous_host(),
+                "dismiss-error",
+                "dev"
+            )
+            .is_err());
             assert_eq!(runner.calls.lock().unwrap().len(), 1);
         }
     }
@@ -5660,7 +6345,11 @@ esac
         )
         .unwrap();
         tokens.extend(["ghs_write".to_string(), "ghs_retained".to_string()]);
-        assert!(tokens.contains("ghs_read") && tokens.contains("ghs_write") && tokens.contains("ghs_retained"));
+        assert!(
+            tokens.contains("ghs_read")
+                && tokens.contains("ghs_write")
+                && tokens.contains("ghs_retained")
+        );
         assert_eq!(tokens.0.len(), 3);
         let printed = format!("{tokens:?}");
         assert!(!printed.contains("ghs_"), "{printed}");
@@ -5692,7 +6381,10 @@ esac
         assert!(b.runtime.try_lock().is_ok());
         // Waiting for runtime access is bounded instead of blocking a thread forever.
         let started = Instant::now();
-        assert!(matches!(lock_vm_runtime(&same, Duration::from_millis(60), "Test"), Err(RuntimeError::Busy)));
+        assert!(matches!(
+            lock_vm_runtime(&same, Duration::from_millis(60), "Test"),
+            Err(RuntimeError::Busy)
+        ));
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
@@ -5725,20 +6417,32 @@ esac
     }
 
     fn cached_github_profile(paths: &RuntimePaths) -> Option<String> {
-        GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
-            .get(&(paths.home.clone(), "dev".into())).cloned()
+        GITHUB_PROFILES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .get(&(paths.home.clone(), "dev".into()))
+            .cloned()
     }
 
     fn wait_for(path: &Path) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !path.exists() {
-            assert!(Instant::now() < deadline, "{} never appeared", path.display());
+            assert!(
+                Instant::now() < deadline,
+                "{} never appeared",
+                path.display()
+            );
             thread::sleep(Duration::from_millis(10));
         }
     }
 
     fn process_alive(pid_file: &Path) -> bool {
-        let pid: i32 = fs::read_to_string(pid_file).unwrap().trim().parse().unwrap();
+        let pid: i32 = fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
@@ -5751,22 +6455,39 @@ esac
         let store = directory.path().join("secrets.json");
         fs::write(&store, r#"{"secrets":[{"id":"s1","name":"API_TOKEN","valueId":"v1","workspaces":["dev"],"allowedDomains":["api.example.com"]}]}"#).unwrap();
         crate::secrets::use_test_store(Some(store));
-        crate::secrets::use_test_vault(Some([("v1".to_string(), "secret-value".to_string())].into()));
+        crate::secrets::use_test_vault(Some(
+            [("v1".to_string(), "secret-value".to_string())].into(),
+        ));
         let profile = github_profile("ghs_scoped");
         let result = apply_github_policy_with(&paths, "dev", 1, &profile, Duration::from_secs(10));
         crate::secrets::use_test_store(None);
         crate::secrets::use_test_vault(None);
         result.unwrap();
         let args = fs::read_to_string(paths.home.join("modify-args")).unwrap();
-        assert_eq!(args.trim(), format!("modify dev --secret {} --format json", secrets_runtime::SILO_GITHUB_SECRET_SPEC));
+        assert_eq!(
+            args.trim(),
+            format!(
+                "modify dev --secret {} --format json",
+                secrets_runtime::SILO_GITHUB_SECRET_SPEC
+            )
+        );
         assert!(!args.contains("ghs_scoped") && !args.contains("secret-value"));
-        let values: Value = serde_json::from_str(&fs::read_to_string(paths.home.join("modify-values")).unwrap()).unwrap();
-        assert_eq!(values, json!({"SILO_GITHUB": profile.to_string(), secrets_runtime::source_name("API_TOKEN"): "secret-value"}));
+        let values: Value =
+            serde_json::from_str(&fs::read_to_string(paths.home.join("modify-values")).unwrap())
+                .unwrap();
+        assert_eq!(
+            values,
+            json!({"SILO_GITHUB": profile.to_string(), secrets_runtime::source_name("API_TOKEN"): "secret-value"})
+        );
         // Neither the profile nor a secret, nor any secret-named variable, is in the environment.
         let environment = fs::read_to_string(paths.home.join("modify-env")).unwrap();
-        assert!(environment.lines().any(|line| line == "MSB_SECRET_VALUES_STDIN=1"));
+        assert!(environment
+            .lines()
+            .any(|line| line == "MSB_SECRET_VALUES_STDIN=1"));
         assert!(!environment.contains("ghs_scoped") && !environment.contains("secret-value"));
-        assert!(!environment.lines().any(|line| line.starts_with("SILO_GITHUB=") || line.starts_with("API_TOKEN=")));
+        assert!(!environment
+            .lines()
+            .any(|line| line.starts_with("SILO_GITHUB=") || line.starts_with("API_TOKEN=")));
         assert_eq!(cached_github_profile(&paths), Some(profile.to_string()));
         forget_github_state(&paths.home, "dev");
     }
@@ -5774,9 +6495,19 @@ esac
     #[test]
     fn secret_values_document_carries_the_profile_and_each_secret_by_source_name() {
         let _test_state = crate::test_support::global_state();
-        let material = vec![("API_KEY".to_string(), "value \"quoted\"".to_string(), vec!["api.example.com".to_string()])];
-        let document: Value = serde_json::from_slice(&secret_values_document(&material, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
-        assert_eq!(document, json!({"SILO_GITHUB": DISABLED_GITHUB_PROFILE, secrets_runtime::source_name("API_KEY"): "value \"quoted\""}));
+        let material = vec![(
+            "API_KEY".to_string(),
+            "value \"quoted\"".to_string(),
+            vec!["api.example.com".to_string()],
+        )];
+        let document: Value = serde_json::from_slice(
+            &secret_values_document(&material, DISABLED_GITHUB_PROFILE).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            document,
+            json!({"SILO_GITHUB": DISABLED_GITHUB_PROFILE, secrets_runtime::source_name("API_KEY"): "value \"quoted\""})
+        );
     }
 
     #[test]
@@ -5785,25 +6516,53 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_github_msb(&paths);
-        GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
-            .insert((paths.home.clone(), "dev".into()), github_profile("ghs_old").to_string());
+        GITHUB_PROFILES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert(
+                (paths.home.clone(), "dev".into()),
+                github_profile("ghs_old").to_string(),
+            );
         fs::write(paths.home.join("modify-block"), "").unwrap();
         let (older, newer) = (github_profile("ghs_four"), github_profile("ghs_five"));
         let worker_paths = paths.clone();
-        let first = thread::spawn(move || apply_github_policy_with(&worker_paths, "dev", 4, &older, Duration::from_secs(20)));
+        let first = thread::spawn(move || {
+            apply_github_policy_with(&worker_paths, "dev", 4, &older, Duration::from_secs(20))
+        });
         wait_for(&paths.home.join("modify.pid"));
         // While the update runs, a boot of this VM can only get the disabled profile.
-        assert_eq!(github_environment(&paths, &["start".into(), "dev".into()]), DISABLED_GITHUB_PROFILE);
+        assert_eq!(
+            github_environment(&paths, &["start".into(), "dev".into()]),
+            DISABLED_GITHUB_PROFILE
+        );
         // An older revision is rejected at once, without waiting for the running update.
         let started = Instant::now();
-        assert_eq!(apply_github_policy_with(&paths, "dev", 3, &github_profile("ghs_three"), Duration::from_secs(20)).unwrap_err(), GITHUB_UPDATE_REPLACED);
+        assert_eq!(
+            apply_github_policy_with(
+                &paths,
+                "dev",
+                3,
+                &github_profile("ghs_three"),
+                Duration::from_secs(20)
+            )
+            .unwrap_err(),
+            GITHUB_UPDATE_REPLACED
+        );
         assert!(started.elapsed() < Duration::from_secs(2));
         // A newer revision is accepted at once and applies after the running update.
         let worker_paths = paths.clone();
         let expected = newer.clone();
-        let second = thread::spawn(move || apply_github_policy_with(&worker_paths, "dev", 5, &newer, Duration::from_secs(20)));
+        let second = thread::spawn(move || {
+            apply_github_policy_with(&worker_paths, "dev", 5, &newer, Duration::from_secs(20))
+        });
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !OPERATIONS.snapshot().waiting.iter().any(|entry| entry.kind == operation_gate::OperationKind::GithubApply) {
+        while !OPERATIONS
+            .snapshot()
+            .waiting
+            .iter()
+            .any(|entry| entry.kind == operation_gate::OperationKind::GithubApply)
+        {
             assert!(Instant::now() < deadline, "the newer update never queued");
             thread::sleep(Duration::from_millis(10));
         }
@@ -5812,7 +6571,13 @@ esac
         assert_eq!(first.join().unwrap().unwrap_err(), GITHUB_UPDATE_REPLACED);
         second.join().unwrap().unwrap();
         assert_eq!(cached_github_profile(&paths), Some(expected.to_string()));
-        assert_eq!(fs::read_to_string(paths.home.join("modify-args")).unwrap().lines().count(), 2);
+        assert_eq!(
+            fs::read_to_string(paths.home.join("modify-args"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
         forget_github_state(&paths.home, "dev");
     }
 
@@ -5822,11 +6587,27 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_github_msb(&paths);
-        GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
-            .insert((paths.home.clone(), "dev".into()), github_profile("ghs_old").to_string());
+        GITHUB_PROFILES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert(
+                (paths.home.clone(), "dev".into()),
+                github_profile("ghs_old").to_string(),
+            );
         fs::write(paths.home.join("modify-fail"), "").unwrap();
-        let error = apply_github_policy_with(&paths, "dev", 1, &github_profile("ghs_new"), Duration::from_secs(10)).unwrap_err();
-        assert!(error.contains("rejected the GitHub access update"), "{error}");
+        let error = apply_github_policy_with(
+            &paths,
+            "dev",
+            1,
+            &github_profile("ghs_new"),
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("rejected the GitHub access update"),
+            "{error}"
+        );
         assert!(!error.contains("ghs_"));
         assert_eq!(cached_github_profile(&paths), None);
         forget_github_state(&paths.home, "dev");
@@ -5840,7 +6621,14 @@ esac
         fake_github_msb(&paths);
         fs::write(paths.home.join("modify-block"), "").unwrap();
         let started = Instant::now();
-        let error = apply_github_policy_with(&paths, "dev", 1, &github_profile("ghs_slow"), Duration::from_secs(2)).unwrap_err();
+        let error = apply_github_policy_with(
+            &paths,
+            "dev",
+            1,
+            &github_profile("ghs_slow"),
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
         assert!(error.contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(15));
         assert!(!process_alive(&paths.home.join("modify.pid")));
@@ -5848,12 +6636,24 @@ esac
         fs::remove_file(paths.home.join("modify.pid")).unwrap();
         // Inside a cancellable operation (for example a caller already holding the gate),
         // a cancel kills the runtime child as well.
-        let outer = OPERATIONS.vm("github-cancel-outer", "outer", "Outer operation").unwrap();
+        let outer = OPERATIONS
+            .vm("github-cancel-outer", "outer", "Outer operation")
+            .unwrap();
         outer.allow_cancel();
         let token = outer.cancel_token();
         let pid_file = paths.home.join("modify.pid");
-        let canceller = thread::spawn(move || { wait_for(&pid_file); token.store(true, Ordering::SeqCst); });
-        let error = apply_github_policy_with(&paths, "dev", 2, &github_profile("ghs_cancel"), Duration::from_secs(20)).unwrap_err();
+        let canceller = thread::spawn(move || {
+            wait_for(&pid_file);
+            token.store(true, Ordering::SeqCst);
+        });
+        let error = apply_github_policy_with(
+            &paths,
+            "dev",
+            2,
+            &github_profile("ghs_cancel"),
+            Duration::from_secs(20),
+        )
+        .unwrap_err();
         canceller.join().unwrap();
         drop(outer);
         assert_eq!(error, "Applying GitHub access was cancelled.");
@@ -5870,23 +6670,49 @@ esac
         let (release, released) = std::sync::mpsc::channel::<()>();
         let (held, holding) = std::sync::mpsc::channel();
         let holder = thread::spawn(move || {
-            let _guard = OPERATIONS.vm("00000000-0000-4000-8000-000000000001", "dev", "Creating checkpoint").unwrap();
+            let _guard = OPERATIONS
+                .vm(
+                    "00000000-0000-4000-8000-000000000001",
+                    "dev",
+                    "Creating checkpoint",
+                )
+                .unwrap();
             held.send(()).unwrap();
             released.recv().unwrap();
         });
         holding.recv().unwrap();
         let worker_paths = paths.clone();
-        let update = thread::spawn(move || apply_github_policy_with(&worker_paths, "dev", 1, &github_profile("ghs_wait"), Duration::from_secs(20)));
+        let update = thread::spawn(move || {
+            apply_github_policy_with(
+                &worker_paths,
+                "dev",
+                1,
+                &github_profile("ghs_wait"),
+                Duration::from_secs(20),
+            )
+        });
         thread::sleep(Duration::from_millis(300));
-        assert!(!paths.home.join("modify-args").exists(), "the update ran during another operation on its VM");
-        assert!(OPERATIONS.snapshot().waiting.iter().any(|entry| entry.kind == operation_gate::OperationKind::GithubApply && entry.vm_name.as_deref() == Some("dev")));
+        assert!(
+            !paths.home.join("modify-args").exists(),
+            "the update ran during another operation on its VM"
+        );
+        assert!(OPERATIONS.snapshot().waiting.iter().any(|entry| entry.kind
+            == operation_gate::OperationKind::GithubApply
+            && entry.vm_name.as_deref() == Some("dev")));
         release.send(()).unwrap();
         holder.join().unwrap();
         update.join().unwrap().unwrap();
         // Another runtime mutation holds the worker lock: the update never overlaps it.
         let lock = configuration_recovery::command_lock(&paths, Duration::from_secs(1)).unwrap();
         fs::remove_file(paths.home.join("modify-args")).unwrap();
-        assert!(apply_github_policy_with(&paths, "dev", 2, &github_profile("ghs_locked"), Duration::from_secs(1)).is_err());
+        assert!(apply_github_policy_with(
+            &paths,
+            "dev",
+            2,
+            &github_profile("ghs_locked"),
+            Duration::from_secs(1)
+        )
+        .is_err());
         assert!(!paths.home.join("modify-args").exists());
         drop(lock);
         forget_github_state(&paths.home, "dev");
@@ -5940,30 +6766,50 @@ esac
         let other = super::tests::paths(&other_directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
-        cache
-            .lock()
-            .unwrap()
-            .insert((paths.home.clone(), "dev".into()), "source-write-profile".into());
+        cache.lock().unwrap().insert(
+            (paths.home.clone(), "dev".into()),
+            "source-write-profile".into(),
+        );
         cache
             .lock()
             .unwrap()
             .insert((paths.home.clone(), "other".into()), "other-profile".into());
-        cache
-            .lock()
-            .unwrap()
-            .insert((paths.home.clone(), "fork".into()), "fork-read-only-profile".into());
+        cache.lock().unwrap().insert(
+            (paths.home.clone(), "fork".into()),
+            "fork-read-only-profile".into(),
+        );
         // Restore selects the fork's current host-side policy, never the
         // source VM's cached profile or a token captured in checkpoint RAM.
         assert_eq!(
-            github_environment(&paths, &["restore".into(), "dev:c000000000000000000000000000000".into(), "--name".into(), "fork".into()]),
+            github_environment(
+                &paths,
+                &[
+                    "restore".into(),
+                    "dev:c000000000000000000000000000000".into(),
+                    "--name".into(),
+                    "fork".into()
+                ]
+            ),
             "fork-read-only-profile"
         );
         assert_eq!(
-            github_environment(&paths, &["restore".into(), "dev:c000000000000000000000000000000".into(), "--name".into(), "unassigned-fork".into()]),
+            github_environment(
+                &paths,
+                &[
+                    "restore".into(),
+                    "dev:c000000000000000000000000000000".into(),
+                    "--name".into(),
+                    "unassigned-fork".into()
+                ]
+            ),
             DISABLED_GITHUB_PROFILE
         );
         for action in ["start", "restart"] {
-            let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null), inspect(&paths, "Running")]);
+            let runner = StubRunner::successful_json(vec![
+                inspect(&paths, "Stopped"),
+                json!(null),
+                inspect(&paths, "Running"),
+            ]);
             workspace_action_with(&runner, &paths, &generous_host(), action, "dev").unwrap();
             let calls = runner.calls.lock().unwrap();
             let command = &calls[1];
@@ -6012,14 +6858,21 @@ esac
         let paths = paths(&directory);
         let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
         journal.append(machine_progress("attempt", "setup-started", "", 0));
-        journal.append(machine_progress("attempt", "workspace-configuration", "dev", 0));
+        journal.append(machine_progress(
+            "attempt",
+            "workspace-configuration",
+            "dev",
+            0,
+        ));
         // While the setup runs, its unfinished history is current, not interrupted.
         let running = read_setup_activity_at(&paths).unwrap();
         assert_eq!(running.last().unwrap().step, "workspace-configuration");
         drop(journal);
         // Unrelated work, such as a launch auto-start on another sandbox, does not make an
         // interrupted setup look in progress.
-        let _launch = OPERATIONS.vm("setup-activity-other-id", "other", "Starting other").unwrap();
+        let _launch = OPERATIONS
+            .vm("setup-activity-other-id", "other", "Starting other")
+            .unwrap();
         let recovered = read_setup_activity_at(&paths).unwrap();
         assert_eq!(recovered.last().unwrap().step, "setup-interrupted");
         assert_eq!(read_activity(&paths, false).unwrap().len(), 3);
@@ -6038,22 +6891,49 @@ esac
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let saved_bytes = || read_activity(&paths, false).unwrap().iter().rev()
-            .find(|event| event.step == "image-download").and_then(|event| event.downloaded_bytes);
+        let saved_bytes = || {
+            read_activity(&paths, false)
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|event| event.step == "image-download")
+                .and_then(|event| event.downloaded_bytes)
+        };
         let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
         journal.append(machine_progress("attempt", "setup-started", "", 0));
         journal.append(download_progress(1));
         assert_eq!(saved_bytes(), Some(1), "a new stage is saved immediately");
         journal.append(download_progress(2));
         journal.append(download_progress(3));
-        assert_eq!(saved_bytes(), Some(1), "repeated progress within a stage is throttled");
-        assert_eq!(journal.events.len(), 2, "repeated progress replaces the previous update");
-        journal.append(machine_progress("attempt", "workspace-configuration", "dev", 1));
-        assert_eq!(saved_bytes(), Some(3), "a boundary saves the latest progress with it");
+        assert_eq!(
+            saved_bytes(),
+            Some(1),
+            "repeated progress within a stage is throttled"
+        );
+        assert_eq!(
+            journal.events.len(),
+            2,
+            "repeated progress replaces the previous update"
+        );
+        journal.append(machine_progress(
+            "attempt",
+            "workspace-configuration",
+            "dev",
+            1,
+        ));
+        assert_eq!(
+            saved_bytes(),
+            Some(3),
+            "a boundary saves the latest progress with it"
+        );
         journal.append(download_progress(4));
         journal.append(download_progress(5));
         drop(journal);
-        assert_eq!(saved_bytes(), Some(5), "the last update is saved when the journal ends");
+        assert_eq!(
+            saved_bytes(),
+            Some(5),
+            "the last update is saved when the journal ends"
+        );
     }
 
     #[test]
@@ -6064,12 +6944,20 @@ esac
         journal.append(machine_progress("attempt", "setup-started", "", 0));
         for index in 0..MAX_ACTIVITY_EVENTS {
             let name = format!("vm{index}");
-            journal.append(machine_progress("attempt", "workspace-configuration", &name, 0));
+            journal.append(machine_progress(
+                "attempt",
+                "workspace-configuration",
+                &name,
+                0,
+            ));
         }
         assert_eq!(journal.events.len(), MAX_ACTIVITY_EVENTS);
         assert_eq!(journal.events[0].step, "setup-started");
         assert_eq!(journal.events[1].workspace, "vm1");
-        assert_eq!(journal.events.back().unwrap().workspace, format!("vm{}", MAX_ACTIVITY_EVENTS - 1));
+        assert_eq!(
+            journal.events.back().unwrap().workspace,
+            format!("vm{}", MAX_ACTIVITY_EVENTS - 1)
+        );
     }
 
     #[test]
@@ -6229,7 +7117,11 @@ esac
             // The one-line message never carries an exit code; the diagnostic does.
             assert!(!event.message.contains("exit code"), "{}", event.message);
             if let Some(code) = exit_code {
-                assert!(event.diagnostic.as_deref().unwrap().starts_with(&format!("Exit code {code}")));
+                assert!(event
+                    .diagnostic
+                    .as_deref()
+                    .unwrap()
+                    .starts_with(&format!("Exit code {code}")));
             } else {
                 assert!(event.diagnostic.is_none());
             }
@@ -6269,15 +7161,23 @@ esac
         let history = read_activity(&paths, false).unwrap();
         assert!(history[0].message.ends_with(PARTIAL_CHANGES_KEPT));
         let activities = runtime_activity::read(&paths).unwrap();
-        assert_eq!(activities[0]["diagnostic"], "Exit code 13\nPermission denied");
+        assert_eq!(
+            activities[0]["diagnostic"],
+            "Exit code 13\nPermission denied"
+        );
         assert_eq!(activities[0]["partial"], true);
-        assert!(!activities[0]["title"].as_str().unwrap().contains("Exit code"));
+        assert!(!activities[0]["title"]
+            .as_str()
+            .unwrap()
+            .contains("Exit code"));
     }
 
     #[test]
     fn partial_configuration_failure_keeps_the_precise_error_and_guidance() {
         let _test_state = crate::test_support::global_state();
-        let precise = RuntimeError::Invalid("Sandbox 'second' is not owned by Silo. No sandbox operation was performed.".into());
+        let precise = RuntimeError::Invalid(
+            "Sandbox 'second' is not owned by Silo. No sandbox operation was performed.".into(),
+        );
         let report = failure_report(&RuntimeError::Partial(Box::new(precise)));
         assert_eq!(report.code, "configuration");
         assert_eq!(report.summary, format!("Sandbox 'second' is not owned by Silo. No sandbox operation was performed. {PARTIAL_CHANGES_KEPT}"));
@@ -6288,23 +7188,43 @@ esac
         }));
         let report = failure_report(&runtime);
         assert_eq!(report.code, "disk");
-        assert!(report.summary.contains("Not enough free disk space") && report.summary.ends_with(PARTIAL_CHANGES_KEPT));
+        assert!(
+            report.summary.contains("Not enough free disk space")
+                && report.summary.ends_with(PARTIAL_CHANGES_KEPT)
+        );
         assert_eq!(report.exit_code, Some(7));
         assert_eq!(runtime.to_string(), report.summary);
         // One classifier: a spawn failure is transient and is reported as unavailable.
         let launch = RuntimeError::Launch("Silo could not start its bundled runtime: busy".into());
         assert!(transient_runtime_error(&launch));
         assert_eq!(failure_report(&launch).code, "unavailable");
-        assert!(!transient_runtime_error(&RuntimeError::Unavailable("Silo could not start its bundled runtime".into())));
+        assert!(!transient_runtime_error(&RuntimeError::Unavailable(
+            "Silo could not start its bundled runtime".into()
+        )));
     }
 
     #[test]
     fn user_facing_failures_never_name_exit_codes_or_workers() {
         let _test_state = crate::test_support::global_state();
-        let error = RuntimeError::Failed { operation: "Starting the sandbox".into(), exit_code: Some(3), detail: "boom".into() };
-        for text in [error.to_string(), safe_activity_error(&error), setup_failure_message("runtime").unwrap(), internal_failure("reading sandbox state"), safe_activity_error(&RuntimeError::Launch("could not launch: worker failure (exit code 2)".into()))] {
+        let error = RuntimeError::Failed {
+            operation: "Starting the sandbox".into(),
+            exit_code: Some(3),
+            detail: "boom".into(),
+        };
+        for text in [
+            error.to_string(),
+            safe_activity_error(&error),
+            setup_failure_message("runtime").unwrap(),
+            internal_failure("reading sandbox state"),
+            safe_activity_error(&RuntimeError::Launch(
+                "could not launch: worker failure (exit code 2)".into(),
+            )),
+        ] {
             let lower = text.to_lowercase();
-            assert!(!lower.contains("exit code") && !lower.contains("worker") && !text.contains('\n'), "{text}");
+            assert!(
+                !lower.contains("exit code") && !lower.contains("worker") && !text.contains('\n'),
+                "{text}"
+            );
         }
     }
 
@@ -6449,12 +7369,27 @@ esac
         configuration_recovery::claim(&paths, &vm()).unwrap();
         let mut actual = inspect(&paths, "Created");
         actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
-        let runner = StubRunner::successful_json(vec![json!([{"name":"dev","status":"Created","image":"ubuntu"}]), actual.clone(), actual.clone(), json!(null), actual]);
-        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {}).unwrap();
+        let runner = StubRunner::successful_json(vec![
+            json!([{"name":"dev","status":"Created","image":"ubuntu"}]),
+            actual.clone(),
+            actual.clone(),
+            json!(null),
+            actual,
+        ]);
+        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {})
+            .unwrap();
         assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
-        assert!(!paths.metadata.with_file_name("configuration-operation.json").exists());
+        assert!(!paths
+            .metadata
+            .with_file_name("configuration-operation.json")
+            .exists());
         assert!(!paths.volumes.join("dev/.silo-configuration-owner").exists());
-        assert!(!runner.calls.lock().unwrap().iter().any(|args| args[0] == "create" || args[0] == "remove"));
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args[0] == "create" || args[0] == "remove"));
     }
 
     #[test]
@@ -6466,28 +7401,68 @@ esac
         let paths = paths(&directory);
         let mut machine = vm();
         if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
-            *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: false });
+            *desktop = Some(crate::desktop::DesktopConfiguration {
+                start_with_sandbox: false,
+            });
         }
         let candidate = request(vec![machine.clone()]);
         configuration_recovery::begin(&paths, &candidate).unwrap();
         configuration_recovery::claim(&paths, &machine).unwrap();
         let mut actual = inspect(&paths, "Stopped");
         actual["config"]["labels"]["silo.machine-id"] = json!(machine.id());
-        let outputs = || vec![json!([{"name":"dev","status":"Stopped","image":"ubuntu"}]), actual.clone(), actual.clone(), json!(null), actual.clone(), actual.clone(), json!(1)];
-        let mut failure_outputs: Vec<_> = outputs().into_iter().map(|v| Ok(CommandOutput { stdout: v.to_string(), stderr: String::new() })).collect();
-        failure_outputs.push(Err(RuntimeError::Unavailable("Desktop download interrupted".into())));
+        let outputs = || {
+            vec![
+                json!([{"name":"dev","status":"Stopped","image":"ubuntu"}]),
+                actual.clone(),
+                actual.clone(),
+                json!(null),
+                actual.clone(),
+                actual.clone(),
+                json!(1),
+            ]
+        };
+        let mut failure_outputs: Vec<_> = outputs()
+            .into_iter()
+            .map(|v| {
+                Ok(CommandOutput {
+                    stdout: v.to_string(),
+                    stderr: String::new(),
+                })
+            })
+            .collect();
+        failure_outputs.push(Err(RuntimeError::Unavailable(
+            "Desktop download interrupted".into(),
+        )));
         let interrupted = StubRunner::new(failure_outputs);
-        assert!(configuration_recovery::recover_at_paths(&interrupted, &paths, &generous_host(), &|_, _, _| {}).is_err());
+        assert!(configuration_recovery::recover_at_paths(
+            &interrupted,
+            &paths,
+            &generous_host(),
+            &|_, _, _| {}
+        )
+        .is_err());
         assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
-        assert!(paths.metadata.with_file_name("configuration-operation.json").exists());
+        assert!(paths
+            .metadata
+            .with_file_name("configuration-operation.json")
+            .exists());
         let mut success = outputs();
         success.push(json!(null));
         success.push(actual);
         let retry = StubRunner::successful_json(success);
-        configuration_recovery::recover_at_paths(&retry, &paths, &generous_host(), &|_, _, _| {}).unwrap();
+        configuration_recovery::recover_at_paths(&retry, &paths, &generous_host(), &|_, _, _| {})
+            .unwrap();
         assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
-        assert!(!paths.metadata.with_file_name("configuration-operation.json").exists());
-        assert!(!retry.calls.lock().unwrap().iter().any(|args| matches!(args[0].as_str(), "create" | "remove")));
+        assert!(!paths
+            .metadata
+            .with_file_name("configuration-operation.json")
+            .exists());
+        assert!(!retry
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| matches!(args[0].as_str(), "create" | "remove")));
     }
 
     #[test]
@@ -6500,24 +7475,48 @@ esac
             let paths = paths(&directory);
             write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
             let mut edited = vm();
-            if let MachineConfiguration::Vm { cpus, .. } = &mut edited { *cpus = 5; }
+            if let MachineConfiguration::Vm { cpus, .. } = &mut edited {
+                *cpus = 5;
+            }
             let candidate = request(vec![edited]);
             configuration_recovery::begin(&paths, &candidate).unwrap();
             // Simulate termination between writing metadata and verifying runtime.
             write_metadata(&paths.metadata, &candidate).unwrap();
             let mut actual = inspect(&paths, "Stopped");
             actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
-            if valid { actual["config"]["resources"]["cpus"] = json!(5); }
-            let runner = StubRunner::successful_json(vec![json!([{"name":"dev","status":"Stopped","image":"ubuntu"}]), actual.clone(), actual]);
+            if valid {
+                actual["config"]["resources"]["cpus"] = json!(5);
+            }
+            let runner = StubRunner::successful_json(vec![
+                json!([{"name":"dev","status":"Stopped","image":"ubuntu"}]),
+                actual.clone(),
+                actual,
+            ]);
             let result = if retry {
                 configuration_recovery::prepare_retry(&runner, &paths, Some(&candidate))
             } else {
-                configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {})
+                configuration_recovery::recover_at_paths(
+                    &runner,
+                    &paths,
+                    &generous_host(),
+                    &|_, _, _| {},
+                )
             };
             assert_eq!(result.is_ok(), valid);
-            assert_eq!(paths.metadata.with_file_name("configuration-operation.json").exists(), retry || !valid);
+            assert_eq!(
+                paths
+                    .metadata
+                    .with_file_name("configuration-operation.json")
+                    .exists(),
+                retry || !valid
+            );
             assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
-            assert!(!runner.calls.lock().unwrap().iter().any(|args| matches!(args[0].as_str(), "create" | "modify" | "remove")));
+            assert!(!runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|args| matches!(args[0].as_str(), "create" | "modify" | "remove")));
         }
     }
 
@@ -6526,22 +7525,44 @@ esac
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
+        let remote = MachineConfiguration::Ssh {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "remote".into(),
+            host: "host".into(),
+            user: "user".into(),
+            port: 22,
+        };
         configuration_recovery::begin(&paths, &request(vec![remote.clone(), vm()])).unwrap();
         // The first addition committed; the VM failed while preparing its disk.
         write_metadata(&paths.metadata, &request(vec![remote.clone()])).unwrap();
         configuration_recovery::claim(&paths, &vm()).unwrap();
         fs::write(disk_path(&paths, "dev", "workspace"), b"incomplete").unwrap();
         let mut corrected = vm();
-        if let MachineConfiguration::Vm { memory_gib, .. } = &mut corrected { *memory_gib = 8; }
+        if let MachineConfiguration::Vm { memory_gib, .. } = &mut corrected {
+            *memory_gib = 8;
+        }
         let revised = request(vec![remote.clone(), corrected]);
         let runner = StubRunner::successful_json(vec![json!([])]);
         configuration_recovery::prepare_retry(&runner, &paths, Some(&revised)).unwrap();
-        assert_eq!(read_metadata(&paths.metadata).unwrap(), request(vec![remote]));
+        assert_eq!(
+            read_metadata(&paths.metadata).unwrap(),
+            request(vec![remote])
+        );
         assert!(!paths.volumes.join("dev").exists());
-        let journal: Value = serde_json::from_slice(&fs::read(paths.metadata.with_file_name("configuration-operation.json")).unwrap()).unwrap();
+        let journal: Value = serde_json::from_slice(
+            &fs::read(
+                paths
+                    .metadata
+                    .with_file_name("configuration-operation.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(journal["request"], serde_json::to_value(&revised).unwrap());
-        assert_eq!(journal["previous"], serde_json::to_value(read_metadata(&paths.metadata).unwrap()).unwrap());
+        assert_eq!(
+            journal["previous"],
+            serde_json::to_value(read_metadata(&paths.metadata).unwrap()).unwrap()
+        );
         // No relaunch is needed and the replaced durable request is accepted.
         configuration_recovery::begin(&paths, &revised).unwrap();
     }
@@ -6553,7 +7574,12 @@ esac
         let _guard = gate.computer("Recovering test configuration").unwrap();
         struct LockAwareRunner(StubRunner);
         impl RuntimeRunner for LockAwareRunner {
-            fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
                 if args[0] == "exec" {
                     // Real guest verification may perform a temporary start/stop.
                     // It must be able to acquire the runtime child lock itself.
@@ -6570,14 +7596,32 @@ esac
             configuration_recovery::claim(&paths, &vm()).unwrap();
             let mut actual = inspect(&paths, "Created");
             actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
-            let runner = LockAwareRunner(StubRunner::successful_json(vec![json!([{"name":"dev","status":"Created","image":"ubuntu"}]), actual.clone(), actual.clone(), json!(null), actual]));
+            let runner = LockAwareRunner(StubRunner::successful_json(vec![
+                json!([{"name":"dev","status":"Created","image":"ubuntu"}]),
+                actual.clone(),
+                actual.clone(),
+                json!(null),
+                actual,
+            ]));
             if retry {
                 configuration_recovery::prepare_retry(&runner, &paths, Some(&candidate)).unwrap();
             } else {
-                configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {}).unwrap();
+                configuration_recovery::recover_at_paths(
+                    &runner,
+                    &paths,
+                    &generous_host(),
+                    &|_, _, _| {},
+                )
+                .unwrap();
             }
             assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
-            assert!(runner.0.calls.lock().unwrap().iter().any(|args| args[0] == "exec"));
+            assert!(runner
+                .0
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|args| args[0] == "exec"));
         }
     }
 
@@ -6590,7 +7634,9 @@ esac
         let paths = paths(&directory);
         fs::create_dir_all(&paths.home).unwrap();
         fs::write(&paths.library, b"test library").unwrap();
-        fs::write(&paths.executable, r#"#!/bin/sh
+        fs::write(
+            &paths.executable,
+            r#"#!/bin/sh
 printf '%s\n' "$1" >> "$MSB_HOME/commands"
 case "$1" in
   inspect)
@@ -6598,14 +7644,25 @@ case "$1" in
     printf '{"name":"dev","status":"Stopped","config":{"labels":{"silo.managed":"true"}}}\n' ;;
   start) cat >/dev/null; touch "$MSB_HOME/started" ;;
 esac
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let output = run_msb_process(&paths, &["start".into(), "dev".into()], Duration::from_secs(5), &|_| {});
+        let output = run_msb_process(
+            &paths,
+            &["start".into(), "dev".into()],
+            Duration::from_secs(5),
+            &|_| {},
+        );
         assert!(output.is_ok(), "{output:?}");
         let commands = fs::read_to_string(paths.home.join("commands")).unwrap();
         assert!(commands.ends_with("start\ninspect\n"), "{commands}");
         assert!(!commands.lines().any(|command| command == "stop"));
-        let row = vm_workspace(&paths, vm(), &serde_json::from_value(inspect(&paths, "Running")).unwrap());
+        let row = vm_workspace(
+            &paths,
+            vm(),
+            &serde_json::from_value(inspect(&paths, "Running")).unwrap(),
+        );
         assert!(matches!(row.state, WorkspaceState::Running));
         assert!(row.attention.unwrap().message.contains("sandbox started"));
     }
@@ -6615,8 +7672,15 @@ esac
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        record_start_refresh(&paths, "dev", || Err(RuntimeError::Unavailable("Applied secret revision could not be saved.".into())));
-        assert!(start_refresh_attention(&paths, "dev").unwrap().message.contains("secret status"));
+        record_start_refresh(&paths, "dev", || {
+            Err(RuntimeError::Unavailable(
+                "Applied secret revision could not be saved.".into(),
+            ))
+        });
+        assert!(start_refresh_attention(&paths, "dev")
+            .unwrap()
+            .message
+            .contains("secret status"));
         record_start_refresh(&paths, "dev", || Ok(()));
         assert!(start_refresh_attention(&paths, "dev").is_none());
     }
@@ -6630,7 +7694,9 @@ esac
         let paths = paths(&directory);
         fs::create_dir_all(&paths.home).unwrap();
         fs::write(&paths.library, b"test library").unwrap();
-        fs::write(&paths.executable, r#"#!/bin/sh
+        fs::write(
+            &paths.executable,
+            r#"#!/bin/sh
 cat >/dev/null
 touch "$MSB_HOME/$2-entered"
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -6638,18 +7704,32 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.1
 done
 exit 9
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         let parent = configuration_recovery::command_lock(&paths, Duration::ZERO).unwrap();
         thread::scope(|scope| {
-            let workers: Vec<_> = ["first", "second"].into_iter().map(|workspace| {
-                let shared = parent.duplicate_for_shutdown().unwrap();
-                let paths = &paths;
-                scope.spawn(move || with_shutdown_worker_lock(shared, || {
-                    run_msb_process(paths, &["stop".into(), workspace.into()], Duration::from_secs(5), &|_| {})
-                }))
-            }).collect();
-            for worker in workers { worker.join().unwrap().unwrap(); }
+            let workers: Vec<_> = ["first", "second"]
+                .into_iter()
+                .map(|workspace| {
+                    let shared = parent.duplicate_for_shutdown().unwrap();
+                    let paths = &paths;
+                    scope.spawn(move || {
+                        with_shutdown_worker_lock(shared, || {
+                            run_msb_process(
+                                paths,
+                                &["stop".into(), workspace.into()],
+                                Duration::from_secs(5),
+                                &|_| {},
+                            )
+                        })
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().unwrap().unwrap();
+            }
         });
         // A child that finished first must not unlock the parent's shared flock.
         assert!(configuration_recovery::command_lock(&paths, Duration::ZERO).is_err());
@@ -6688,11 +7768,20 @@ exit 9
             // SAFETY: fifo is a valid NUL-terminated path in this test directory.
             assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         }
-        fs::write(&paths.executable, b"#!/bin/sh\nprintf x > \"$MSB_HOME/ready\"\nread line < \"$MSB_HOME/release\"\n").unwrap();
+        fs::write(
+            &paths.executable,
+            b"#!/bin/sh\nprintf x > \"$MSB_HOME/ready\"\nread line < \"$MSB_HOME/release\"\n",
+        )
+        .unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         let worker_paths = paths.clone();
         let worker = thread::spawn(move || {
-            run_msb_process(&worker_paths, &["create".into()], Duration::from_secs(5), &|_| {})
+            run_msb_process(
+                &worker_paths,
+                &["create".into()],
+                Duration::from_secs(5),
+                &|_| {},
+            )
         });
         let _ready = File::open(paths.home.join("ready")).unwrap();
         assert!(configuration_recovery::command_lock(&paths, Duration::ZERO).is_err());
@@ -6711,12 +7800,29 @@ exit 9
         configuration_recovery::begin(&paths, &request(vec![vm()])).unwrap();
         let mut actual = inspect(&paths, "Created");
         actual["config"]["labels"]["silo.machine-id"] = json!("someone-else");
-        let runner = StubRunner::successful_json(vec![json!([{"name":"dev","status":"Created","image":"ubuntu"}]), actual]);
-        let error = configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {}).unwrap_err();
+        let runner = StubRunner::successful_json(vec![
+            json!([{"name":"dev","status":"Created","image":"ubuntu"}]),
+            actual,
+        ]);
+        let error = configuration_recovery::recover_at_paths(
+            &runner,
+            &paths,
+            &generous_host(),
+            &|_, _, _| {},
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("different sandbox"));
-        assert!(paths.metadata.with_file_name("configuration-operation.json").exists());
+        assert!(paths
+            .metadata
+            .with_file_name("configuration-operation.json")
+            .exists());
         assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
-        assert!(!runner.calls.lock().unwrap().iter().any(|args| args[0] == "remove"));
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args[0] == "remove"));
     }
 
     #[test]
@@ -6733,7 +7839,10 @@ exit 9
         assert!(!paths.volumes.join("dev").exists());
         configuration_recovery::claim(&paths, &vm()).unwrap();
         assert!(paths.volumes.join("dev/.silo-configuration-owner").exists());
-        assert!(paths.metadata.with_file_name("configuration-operation.json").exists());
+        assert!(paths
+            .metadata
+            .with_file_name("configuration-operation.json")
+            .exists());
     }
 
     #[test]
@@ -6747,8 +7856,14 @@ exit 9
         fs::write(disk_path(&paths, "dev", "workspace"), b"saved-data").unwrap();
         write_metadata(&paths.metadata, &candidate).unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
-        assert!(configuration_recovery::prepare_retry(&runner, &paths, None).unwrap_err().to_string().contains("missing from the runtime"));
-        assert_eq!(fs::read(disk_path(&paths, "dev", "workspace")).unwrap(), b"saved-data");
+        assert!(configuration_recovery::prepare_retry(&runner, &paths, None)
+            .unwrap_err()
+            .to_string()
+            .contains("missing from the runtime"));
+        assert_eq!(
+            fs::read(disk_path(&paths, "dev", "workspace")).unwrap(),
+            b"saved-data"
+        );
     }
 
     #[test]
@@ -6758,14 +7873,24 @@ exit 9
         let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
+        let remote = MachineConfiguration::Ssh {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "remote".into(),
+            host: "host".into(),
+            user: "user".into(),
+            port: 22,
+        };
         write_metadata(&paths.metadata, &request(vec![vm(), remote.clone()])).unwrap();
         fs::create_dir_all(paths.volumes.join("dev")).unwrap();
         fs::write(disk_path(&paths, "dev", "workspace"), b"deleted-vm-disk").unwrap();
         configuration_recovery::begin(&paths, &request(vec![remote.clone()])).unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
-        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {}).unwrap();
-        assert_eq!(read_metadata(&paths.metadata).unwrap(), request(vec![remote]));
+        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {})
+            .unwrap();
+        assert_eq!(
+            read_metadata(&paths.metadata).unwrap(),
+            request(vec![remote])
+        );
         assert!(!paths.volumes.join("dev").exists());
     }
 
@@ -6791,8 +7916,14 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
-            .insert((paths.home.clone(), "dev".into()), r#"{"version":1,"owners":["old"]}"#.into());
+        GITHUB_PROFILES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert(
+                (paths.home.clone(), "dev".into()),
+                r#"{"version":1,"owners":["old"]}"#.into(),
+            );
         let args = ["start".to_string(), "dev".to_string()];
         assert_ne!(github_environment(&paths, &args), DISABLED_GITHUB_PROFILE);
         forget_github_state(&paths.home, "dev");
@@ -6816,14 +7947,20 @@ exit 9
         crate::github::use_test_document(None);
         result.unwrap();
         let saved: Value = serde_json::from_slice(&std::fs::read(&document).unwrap()).unwrap();
-        assert_eq!(saved["workspaces"], json!([]), "a new sandbox named dev would inherit write access");
+        assert_eq!(
+            saved["workspaces"],
+            json!([]),
+            "a new sandbox named dev would inherit write access"
+        );
         assert_eq!(saved["accessPending"], json!([]));
     }
 
     #[test]
     fn duplicate_lifecycle_request_is_handed_off_not_failed() {
         let _test_state = crate::test_support::global_state();
-        let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::from(operation_gate::GateError::AlreadyQueued)));
+        let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::from(
+            operation_gate::GateError::AlreadyQueued,
+        )));
         assert!(result.is_ok() && handed_off);
         let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::Busy));
         assert!(result.is_err() && !handed_off);
@@ -6834,9 +7971,17 @@ exit 9
     #[test]
     fn running_checkpoint_operation_is_interrupted_only_when_its_vm_is_idle() {
         let _test_state = crate::test_support::global_state();
-        let running = || checkpoints::Operation { kind: "create".into(), status: "running".into(), stage: "Saving disk".into(), error: None };
+        let running = || checkpoints::Operation {
+            kind: "create".into(),
+            status: "running".into(),
+            stage: "Saving disk".into(),
+            error: None,
+        };
         let live = checkpoint_operation_view(running(), true);
-        assert_eq!((live.status.as_str(), live.stage.as_str(), live.error), ("running", "Saving disk", None));
+        assert_eq!(
+            (live.status.as_str(), live.stage.as_str(), live.error),
+            ("running", "Saving disk", None)
+        );
         let interrupted = checkpoint_operation_view(running(), false);
         assert_eq!(interrupted.status, "failed");
         assert!(interrupted.error.unwrap().contains("Silo closed"));
@@ -6847,12 +7992,20 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let gate = operation_gate::OperationGate::new();
         assert!(gate.is_computer_idle());
-        let housekeeping = gate.try_computer_hidden("Cleaning up expired logs").unwrap();
+        let housekeeping = gate
+            .try_computer_hidden("Cleaning up expired logs")
+            .unwrap();
         assert!(!gate.is_idle());
-        assert!(gate.is_computer_idle(), "hidden housekeeping must not freeze state reads");
+        assert!(
+            gate.is_computer_idle(),
+            "hidden housekeeping must not freeze state reads"
+        );
         drop(housekeeping);
         let checkpoint = gate.vm("a-id", "a", "Creating checkpoint").unwrap();
-        assert!(gate.is_computer_idle(), "work on one VM must not freeze every sandbox");
+        assert!(
+            gate.is_computer_idle(),
+            "work on one VM must not freeze every sandbox"
+        );
         drop(checkpoint);
         let change = gate.computer("Applying sandbox changes").unwrap();
         assert!(!gate.is_computer_idle());
@@ -6868,9 +8021,17 @@ exit 9
         let runner = StubRunner::successful_json(vec![json!([])]);
         let gate = operation_gate::OperationGate::new();
         let change = gate.computer("Applying sandbox changes").unwrap();
-        assert_eq!(read_application_snapshot(&runner, &paths, &gate).unwrap_err().code, ErrorCode::UpdateInProgress);
+        assert_eq!(
+            read_application_snapshot(&runner, &paths, &gate)
+                .unwrap_err()
+                .code,
+            ErrorCode::UpdateInProgress
+        );
         drop(change);
-        assert!(read_application_snapshot(&runner, &paths, &gate).unwrap_err().message.contains("does not match"));
+        assert!(read_application_snapshot(&runner, &paths, &gate)
+            .unwrap_err()
+            .message
+            .contains("does not match"));
     }
 
     fn leaked_gate() -> &'static operation_gate::OperationGate {
@@ -6880,7 +8041,11 @@ exit 9
     /// Hold the guard `acquire` takes on another thread until the sender is dropped.
     fn hold_elsewhere(
         gate: &'static operation_gate::OperationGate,
-        acquire: impl FnOnce(&'static operation_gate::OperationGate) -> operation_gate::OperationGuard<'static> + Send + 'static,
+        acquire: impl FnOnce(
+                &'static operation_gate::OperationGate,
+            ) -> operation_gate::OperationGuard<'static>
+            + Send
+            + 'static,
     ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
         let (release, released) = std::sync::mpsc::channel::<()>();
         let (held, holding) = std::sync::mpsc::channel::<()>();
@@ -6902,7 +8067,12 @@ exit 9
     }
 
     fn row<'a>(source: &'a Value, name: &str) -> &'a Value {
-        source["workspaces"].as_array().unwrap().iter().find(|row| row["machine"]["name"] == name).unwrap()
+        source["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["machine"]["name"] == name)
+            .unwrap()
     }
 
     fn published(source: &ApplicationSource) -> Value {
@@ -6916,23 +8086,41 @@ exit 9
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
         let gate = leaked_gate();
-        let first = read_application_snapshot(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate).unwrap();
+        let first =
+            read_application_snapshot(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate)
+                .unwrap();
         remember_settled(&paths, &first.workspaces);
         // A checkpoint pauses dev while work is started outside it.
-        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm(vm().id(), "dev", "Creating checkpoint").unwrap());
-        let busy = read_application_snapshot(&two_vm_reading(&paths, "Paused", "Running"), &paths, gate).unwrap();
+        let (release, holder) = hold_elsewhere(gate, |gate| {
+            gate.vm(vm().id(), "dev", "Creating checkpoint").unwrap()
+        });
+        let busy =
+            read_application_snapshot(&two_vm_reading(&paths, "Paused", "Running"), &paths, gate)
+                .unwrap();
         let encoded = published(&busy);
-        assert_eq!((row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["settling"].as_bool()), (Some("running"), Some(true)));
+        assert_eq!(
+            (
+                row(&encoded, "dev")["state"].as_str(),
+                row(&encoded, "dev")["settling"].as_bool()
+            ),
+            (Some("running"), Some(true))
+        );
         assert_eq!(row(&encoded, "dev")["freshness"], "fresh");
         assert_eq!(row(&encoded, "work")["state"], "running");
         assert!(row(&encoded, "work").get("settling").is_none());
         // A settling row never replaces the remembered reading.
         remember_settled(&paths, &busy.workspaces);
-        assert!(matches!(last_settled(&paths)[vm().id()].state, WorkspaceState::Running));
+        assert!(matches!(
+            last_settled(&paths)[vm().id()].state,
+            WorkspaceState::Running
+        ));
         drop(release);
         holder.join().unwrap();
         // Once nothing touches dev during a read, its row is fresh again.
-        let settled = published(&read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate).unwrap());
+        let settled = published(
+            &read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate)
+                .unwrap(),
+        );
         assert_eq!(row(&settled, "dev")["state"], "stopped");
         assert!(row(&settled, "dev").get("settling").is_none());
     }
@@ -6944,30 +8132,61 @@ exit 9
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
         let gate = leaked_gate();
-        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate).unwrap().workspaces);
-        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm(vm().id(), "dev", "Restoring checkpoint").unwrap());
+        remember_settled(
+            &paths,
+            &read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate)
+                .unwrap()
+                .workspaces,
+        );
+        let (release, holder) = hold_elsewhere(gate, |gate| {
+            gate.vm(vm().id(), "dev", "Restoring checkpoint").unwrap()
+        });
         // A restore has removed dev's runtime VM and not yet recreated it.
-        let removed = StubRunner::successful_json(vec![json!([{"name": "work"}]), inspect_named(&paths, &second_vm(), "Running")]);
+        let removed = StubRunner::successful_json(vec![
+            json!([{"name": "work"}]),
+            inspect_named(&paths, &second_vm(), "Running"),
+        ]);
         let encoded = published(&read_application_snapshot(&removed, &paths, gate).unwrap());
-        assert_eq!((row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["settling"].as_bool()), (Some("stopped"), Some(true)));
+        assert_eq!(
+            (
+                row(&encoded, "dev")["state"].as_str(),
+                row(&encoded, "dev")["settling"].as_bool()
+            ),
+            (Some("stopped"), Some(true))
+        );
         assert_eq!(row(&encoded, "work")["state"], "running");
         // Its inspection fails while the restore finishes.
         let unreadable = StubRunner::new(vec![
             identity_output(&json!([{"name": "dev"}, {"name": "work"}]).to_string()),
-            Err(RuntimeError::TimedOut { operation: "inspect dev".into() }),
+            Err(RuntimeError::TimedOut {
+                operation: "inspect dev".into(),
+            }),
             identity_output(&inspect_named(&paths, &second_vm(), "Running").to_string()),
         ]);
         let encoded = published(&read_application_snapshot(&unreadable, &paths, gate).unwrap());
-        assert_eq!((row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["settling"].as_bool()), (Some("stopped"), Some(true)));
+        assert_eq!(
+            (
+                row(&encoded, "dev")["state"].as_str(),
+                row(&encoded, "dev")["settling"].as_bool()
+            ),
+            (Some("stopped"), Some(true))
+        );
         assert!(row(&encoded, "dev").get("attention").is_none());
         // With no earlier reading, a busy unreadable VM shows a neutral updating row.
         let fresh_directory = tempfile::tempdir().unwrap();
         let fresh_paths = super::tests::paths(&fresh_directory);
         write_metadata(&fresh_paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
-        let removed = StubRunner::successful_json(vec![json!([{"name": "work"}]), inspect_named(&fresh_paths, &second_vm(), "Running")]);
+        let removed = StubRunner::successful_json(vec![
+            json!([{"name": "work"}]),
+            inspect_named(&fresh_paths, &second_vm(), "Running"),
+        ]);
         let encoded = published(&read_application_snapshot(&removed, &fresh_paths, gate).unwrap());
         assert_eq!(
-            (row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["stateDetail"].as_str(), row(&encoded, "dev")["settling"].as_bool()),
+            (
+                row(&encoded, "dev")["state"].as_str(),
+                row(&encoded, "dev")["stateDetail"].as_str(),
+                row(&encoded, "dev")["settling"].as_bool()
+            ),
             (Some("starting"), Some("Updating"), Some(true)),
         );
         drop(release);
@@ -6981,18 +8200,37 @@ exit 9
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
         let gate = leaked_gate();
-        let (release, holder) = hold_elsewhere(gate, |gate| gate.try_computer_hidden("Cleaning up expired logs").unwrap());
-        let encoded = published(&read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate).unwrap());
-        assert!(encoded["workspaces"].as_array().unwrap().iter().all(|row| row.get("settling").is_none()));
+        let (release, holder) = hold_elsewhere(gate, |gate| {
+            gate.try_computer_hidden("Cleaning up expired logs")
+                .unwrap()
+        });
+        let encoded = published(
+            &read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate)
+                .unwrap(),
+        );
+        assert!(encoded["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row.get("settling").is_none()));
         drop(release);
         holder.join().unwrap();
         // The first read at launch succeeds while a selected sandbox boots.
         let launch_paths = paths.clone();
-        let (release, holder) = hold_elsewhere(gate, move |gate| match launch_start_guard(gate, &launch_paths, vm().id()).unwrap() {
-            LaunchAdmission::Admitted(guard) => guard,
-            _ => panic!("the launch start was not admitted"),
+        let (release, holder) = hold_elsewhere(gate, move |gate| {
+            match launch_start_guard(gate, &launch_paths, vm().id()).unwrap() {
+                LaunchAdmission::Admitted(guard) => guard,
+                _ => panic!("the launch start was not admitted"),
+            }
         });
-        let encoded = published(&read_application_snapshot(&two_vm_reading(&paths, "Starting", "Running"), &paths, gate).unwrap());
+        let encoded = published(
+            &read_application_snapshot(
+                &two_vm_reading(&paths, "Starting", "Running"),
+                &paths,
+                gate,
+            )
+            .unwrap(),
+        );
         assert_eq!(row(&encoded, "dev")["settling"], true);
         assert!(row(&encoded, "work").get("settling").is_none());
         drop(release);
@@ -7006,26 +8244,50 @@ exit 9
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
         let gate = leaked_gate();
-        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate).unwrap().workspaces);
-        let unreadable = || StubRunner::new(vec![
-            identity_output(&json!([{"name": "dev"}, {"name": "work"}]).to_string()),
-            Err(RuntimeError::TimedOut { operation: "inspect dev".into() }),
-            identity_output(&inspect_named(&paths, &second_vm(), "Stopped").to_string()),
-        ]);
+        remember_settled(
+            &paths,
+            &read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate)
+                .unwrap()
+                .workspaces,
+        );
+        let unreadable = || {
+            StubRunner::new(vec![
+                identity_output(&json!([{"name": "dev"}, {"name": "work"}]).to_string()),
+                Err(RuntimeError::TimedOut {
+                    operation: "inspect dev".into(),
+                }),
+                identity_output(&inspect_named(&paths, &second_vm(), "Stopped").to_string()),
+            ])
+        };
         for source in [
             read_application_snapshot(&unreadable(), &paths, gate).unwrap(),
             read_application_state_with(&unreadable(), &paths).unwrap(),
         ] {
             let encoded = published(&source);
             let dev = row(&encoded, "dev");
-            assert_eq!((dev["state"].as_str(), dev["freshness"].as_str()), (Some("running"), Some("stale")));
+            assert_eq!(
+                (dev["state"].as_str(), dev["freshness"].as_str()),
+                (Some("running"), Some("stale"))
+            );
             assert_eq!(dev["attention"]["level"], "warning");
-            assert!(dev["attention"]["message"].as_str().unwrap().contains("could not refresh"));
+            assert!(dev["attention"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("could not refresh"));
             assert!(dev.get("settling").is_none());
-            assert_eq!((row(&encoded, "work")["state"].as_str(), row(&encoded, "work")["freshness"].as_str()), (Some("stopped"), Some("fresh")));
+            assert_eq!(
+                (
+                    row(&encoded, "work")["state"].as_str(),
+                    row(&encoded, "work")["freshness"].as_str()
+                ),
+                (Some("stopped"), Some("fresh"))
+            );
             // A stale row is never remembered as a settled reading.
             remember_settled(&paths, &source.workspaces);
-            assert!(matches!(last_settled(&paths)[vm().id()].freshness, Freshness::Fresh));
+            assert!(matches!(
+                last_settled(&paths)[vm().id()].freshness,
+                Freshness::Fresh
+            ));
         }
     }
     #[test]
@@ -7035,23 +8297,51 @@ exit 9
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
         let gate = leaked_gate();
-        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate).unwrap().workspaces);
+        remember_settled(
+            &paths,
+            &read_application_snapshot(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate)
+                .unwrap()
+                .workspaces,
+        );
         // One VM's inspection times out after the change: only its row is stale.
         let unreadable = StubRunner::new(vec![
             identity_output(&json!([{"name": "dev"}, {"name": "work"}]).to_string()),
-            Err(RuntimeError::TimedOut { operation: "inspect dev".into() }),
+            Err(RuntimeError::TimedOut {
+                operation: "inspect dev".into(),
+            }),
             identity_output(&inspect_named(&paths, &second_vm(), "Running").to_string()),
         ]);
         let encoded = published(&state_after_change(&unreadable, &paths, gate).unwrap());
-        assert_eq!((row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["freshness"].as_str()), (Some("running"), Some("stale")));
-        assert_eq!((row(&encoded, "work")["state"].as_str(), row(&encoded, "work")["freshness"].as_str()), (Some("running"), Some("fresh")));
+        assert_eq!(
+            (
+                row(&encoded, "dev")["state"].as_str(),
+                row(&encoded, "dev")["freshness"].as_str()
+            ),
+            (Some("running"), Some("stale"))
+        );
+        assert_eq!(
+            (
+                row(&encoded, "work")["state"].as_str(),
+                row(&encoded, "work")["freshness"].as_str()
+            ),
+            (Some("running"), Some("fresh"))
+        );
         // The whole read fails: every VM keeps its last known state with the reason.
-        let failed = StubRunner::new(vec![Err(RuntimeError::Unavailable("synthetic runtime read failure".into()))]);
+        let failed = StubRunner::new(vec![Err(RuntimeError::Unavailable(
+            "synthetic runtime read failure".into(),
+        ))]);
         let encoded = published(&state_after_change(&failed, &paths, gate).unwrap());
         for (name, state) in [("dev", "running"), ("work", "stopped")] {
             let stale = row(&encoded, name);
-            assert_eq!((stale["state"].as_str(), stale["freshness"].as_str()), (Some(state), Some("stale")), "{name}");
-            assert!(stale["attention"]["message"].as_str().unwrap().contains("The change finished"));
+            assert_eq!(
+                (stale["state"].as_str(), stale["freshness"].as_str()),
+                (Some(state), Some("stale")),
+                "{name}"
+            );
+            assert!(stale["attention"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("The change finished"));
         }
     }
 
@@ -7062,15 +8352,32 @@ exit 9
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
         let gate = leaked_gate();
-        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate).unwrap().workspaces);
-        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm(second_vm().id(), "work", "Creating checkpoint").unwrap());
+        remember_settled(
+            &paths,
+            &read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate)
+                .unwrap()
+                .workspaces,
+        );
+        let (release, holder) = hold_elsewhere(gate, |gate| {
+            gate.vm(second_vm().id(), "work", "Creating checkpoint")
+                .unwrap()
+        });
         // The caller still holds dev's lane while it reads its own result.
         let own = gate.vm(vm().id(), "dev", "Stopping dev").unwrap();
-        let encoded = published(&state_after_change(&two_vm_reading(&paths, "Stopped", "Paused"), &paths, gate).unwrap());
+        let encoded = published(
+            &state_after_change(&two_vm_reading(&paths, "Stopped", "Paused"), &paths, gate)
+                .unwrap(),
+        );
         drop(own);
         assert_eq!(row(&encoded, "dev")["state"], "stopped");
         assert!(row(&encoded, "dev").get("settling").is_none());
-        assert_eq!((row(&encoded, "work")["state"].as_str(), row(&encoded, "work")["settling"].as_bool()), (Some("running"), Some(true)));
+        assert_eq!(
+            (
+                row(&encoded, "work")["state"].as_str(),
+                row(&encoded, "work")["settling"].as_bool()
+            ),
+            (Some("running"), Some(true))
+        );
         drop(release);
         holder.join().unwrap();
     }
@@ -7082,22 +8389,39 @@ exit 9
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
         let gate = leaked_gate();
-        let mut first = read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate).unwrap();
-        let repositories = vec![json!({"path": "/workspace/app", "branch": "main", "ahead": 0, "behind": 0, "dirty": false})];
+        let mut first =
+            read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate)
+                .unwrap();
+        let repositories = vec![
+            json!({"path": "/workspace/app", "branch": "main", "ahead": 0, "behind": 0, "dirty": false}),
+        ];
         first.workspaces[0].repositories = repositories.clone();
         remember_settled(&paths, &first.workspaces);
-        let mut response = state_after_change(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate).unwrap();
+        let mut response =
+            state_after_change(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate)
+                .unwrap();
         keep_last_known_repositories(&paths, &mut response.workspaces);
         assert_eq!(response.workspaces[0].repositories, repositories);
-        assert!(response.workspaces[1].repositories.is_empty(), "a stopped VM lists no repositories");
+        assert!(
+            response.workspaces[1].repositories.is_empty(),
+            "a stopped VM lists no repositories"
+        );
     }
 
     #[test]
     fn health_checks_budget_each_runtime_call_instead_of_the_whole_reading() {
         let _test_state = crate::test_support::global_state();
-        struct SlowRunner { timeouts: Mutex<Vec<Duration>>, inner: StubRunner }
+        struct SlowRunner {
+            timeouts: Mutex<Vec<Duration>>,
+            inner: StubRunner,
+        }
         impl RuntimeRunner for SlowRunner {
-            fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
                 self.timeouts.lock().unwrap().push(timeout);
                 std::thread::sleep(Duration::from_millis(30));
                 self.inner.run(paths, args, timeout)
@@ -7107,14 +8431,26 @@ exit 9
         let paths = paths(&directory);
         fs::create_dir_all(&paths.home).unwrap();
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
-        let slow = SlowRunner { timeouts: Mutex::new(Vec::new()), inner: two_vm_reading(&paths, "Running", "Stopped") };
+        let slow = SlowRunner {
+            timeouts: Mutex::new(Vec::new()),
+            inner: two_vm_reading(&paths, "Running", "Stopped"),
+        };
         // Three calls take about 90 ms together; each still gets its own 50 ms budget.
-        let health = HealthRunner { inner: &slow, budget: Duration::from_millis(50) };
+        let health = HealthRunner {
+            inner: &slow,
+            budget: Duration::from_millis(50),
+        };
         let encoded = published(&read_application_state_with(&health, &paths).unwrap());
-        assert!(encoded["workspaces"].as_array().unwrap().iter().all(|row| row["freshness"] == "fresh"));
+        assert!(encoded["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["freshness"] == "fresh"));
         let timeouts = slow.timeouts.lock().unwrap();
         assert_eq!(timeouts.len(), 3);
-        assert!(timeouts.iter().all(|timeout| *timeout == Duration::from_millis(50)));
+        assert!(timeouts
+            .iter()
+            .all(|timeout| *timeout == Duration::from_millis(50)));
     }
 
     #[test]
@@ -7123,15 +8459,24 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let inner = StubRunner::successful_json(vec![]);
-        let health = HealthRunner { inner: &inner, budget: HEALTH_CALL_BUDGET };
-        assert!(matches!(health.run(&paths, &["list".into()], READ_TIMEOUT), Err(RuntimeError::Unavailable(_))));
+        let health = HealthRunner {
+            inner: &inner,
+            budget: HEALTH_CALL_BUDGET,
+        };
+        assert!(matches!(
+            health.run(&paths, &["list".into()], READ_TIMEOUT),
+            Err(RuntimeError::Unavailable(_))
+        ));
         assert!(inner.calls.lock().unwrap().is_empty());
     }
 
     fn stopped_dev(paths: &RuntimePaths) -> Vec<ApplicationWorkspace> {
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let runner = StubRunner::successful_json(vec![json!([{"name": "dev"}]), inspect(paths, "Stopped")]);
-        read_application_state_with(&runner, paths).unwrap().workspaces
+        let runner =
+            StubRunner::successful_json(vec![json!([{"name": "dev"}]), inspect(paths, "Stopped")]);
+        read_application_state_with(&runner, paths)
+            .unwrap()
+            .workspaces
     }
 
     #[test]
@@ -7144,18 +8489,40 @@ exit 9
         let now = Instant::now();
         let due = plan_log_cleanup(&paths, &mut workspaces, now);
         assert_eq!(due, vec!["dev".to_string()]);
-        assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty(), "one pass at a time");
+        assert!(
+            plan_log_cleanup(&paths, &mut workspaces, now).is_empty(),
+            "one pass at a time"
+        );
         let gate = operation_gate::OperationGate::new();
         let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped")]);
         clean_expired_logs(&runner, &paths, &gate, &due);
-        assert_eq!(runner.calls.lock().unwrap().len(), 1, "the pass re-checks the VM is stopped");
-        assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty(), "cleaned within the hour");
-        assert_eq!(plan_log_cleanup(&paths, &mut workspaces, Instant::now() + LOG_CLEANUP_INTERVAL), vec!["dev".to_string()]);
+        assert_eq!(
+            runner.calls.lock().unwrap().len(),
+            1,
+            "the pass re-checks the VM is stopped"
+        );
+        assert!(
+            plan_log_cleanup(&paths, &mut workspaces, now).is_empty(),
+            "cleaned within the hour"
+        );
+        assert_eq!(
+            plan_log_cleanup(
+                &paths,
+                &mut workspaces,
+                Instant::now() + LOG_CLEANUP_INTERVAL
+            ),
+            vec!["dev".to_string()]
+        );
         clean_expired_logs(&StubRunner::successful_json(vec![]), &paths, &gate, &[]);
         assert!(workspaces[0].attention.is_none());
         // Running, settling or stale rows are never cleaned from a read.
         workspaces[0].settling = true;
-        assert!(plan_log_cleanup(&paths, &mut workspaces, Instant::now() + 2 * LOG_CLEANUP_INTERVAL).is_empty());
+        assert!(plan_log_cleanup(
+            &paths,
+            &mut workspaces,
+            Instant::now() + 2 * LOG_CLEANUP_INTERVAL
+        )
+        .is_empty());
     }
 
     #[test]
@@ -7169,17 +8536,34 @@ exit 9
         fs::write(vm_logs(&paths, "dev"), b"not a directory").unwrap();
         let now = Instant::now();
         let gate = leaked_gate();
-        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm("other-id", "other", "Starting other").unwrap());
+        let (release, holder) = hold_elsewhere(gate, |gate| {
+            gate.vm("other-id", "other", "Starting other").unwrap()
+        });
         let due = plan_log_cleanup(&paths, &mut workspaces, now);
         let idle = StubRunner::successful_json(vec![]);
         clean_expired_logs(&idle, &paths, gate, &due);
-        assert!(idle.calls.lock().unwrap().is_empty(), "busy: nothing was inspected");
-        assert_eq!(plan_log_cleanup(&paths, &mut workspaces, now), due, "still due after a postponed pass");
+        assert!(
+            idle.calls.lock().unwrap().is_empty(),
+            "busy: nothing was inspected"
+        );
+        assert_eq!(
+            plan_log_cleanup(&paths, &mut workspaces, now),
+            due,
+            "still due after a postponed pass"
+        );
         drop(release);
         holder.join().unwrap();
-        clean_expired_logs(&StubRunner::successful_json(vec![inspect(&paths, "Stopped")]), &paths, gate, &due);
+        clean_expired_logs(
+            &StubRunner::successful_json(vec![inspect(&paths, "Stopped")]),
+            &paths,
+            gate,
+            &due,
+        );
         assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty());
-        assert_eq!(workspaces[0].attention.as_ref().unwrap().message, "Expired logs could not be cleaned up.");
+        assert_eq!(
+            workspaces[0].attention.as_ref().unwrap().message,
+            "Expired logs could not be cleaned up."
+        );
     }
 
     #[test]
@@ -7202,7 +8586,9 @@ exit 9
                 })
             })
             .collect();
-        callers.into_iter().for_each(|caller| caller.join().unwrap());
+        callers
+            .into_iter()
+            .for_each(|caller| caller.join().unwrap());
         assert_eq!(overlapped.load(Ordering::SeqCst), 0);
     }
 
@@ -7222,7 +8608,9 @@ exit 9
             ) -> Result<CommandOutput, RuntimeError> {
                 self.calls.lock().unwrap().push(args.to_vec());
                 let stdout = match args[0].as_str() {
-                    "list" => json!([{"name":"dev","status":"Running","image":"ubuntu"}]).to_string(),
+                    "list" => {
+                        json!([{"name":"dev","status":"Running","image":"ubuntu"}]).to_string()
+                    }
                     "inspect" => {
                         let mut changed = self.changed.lock().unwrap();
                         if !*changed {
@@ -7240,14 +8628,22 @@ exit 9
                     }
                     _ => panic!("unexpected runtime command: {args:?}"),
                 };
-                Ok(CommandOutput { stdout, stderr: String::new() })
+                Ok(CommandOutput {
+                    stdout,
+                    stderr: String::new(),
+                })
             }
         }
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let runner = ChangeMetadataOnce { calls: Mutex::new(Vec::new()), changed: Mutex::new(false) };
-        let source = read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap();
+        let runner = ChangeMetadataOnce {
+            calls: Mutex::new(Vec::new()),
+            changed: Mutex::new(false),
+        };
+        let source =
+            read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new())
+                .unwrap();
         assert_eq!(source.workspaces.len(), 1);
         assert_eq!(source.workspaces[0].machine.name(), "remote");
         assert_eq!(runner.calls.lock().unwrap().len(), 2);
@@ -7263,10 +8659,12 @@ exit 9
             crate::test_support::runner::ExpectedCommand::error(
                 ["list", "--label", "silo.managed=true", "--format", "json"],
                 RuntimeError::Unavailable("synthetic runtime read failure".into()),
-            ).with_timeout(READ_TIMEOUT),
+            )
+            .with_timeout(READ_TIMEOUT),
         ]);
         assert_eq!(
-            read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap_err(),
+            read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new())
+                .unwrap_err(),
             BridgeError::from("synthetic runtime read failure"),
         );
         runner.assert_finished();
@@ -7282,7 +8680,9 @@ exit 9
         configuration_recovery::begin(&paths, &configuration).unwrap();
         let runner = StubRunner::successful_json(Vec::new());
         assert_eq!(
-            read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap_err().code,
+            read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new())
+                .unwrap_err()
+                .code,
             ErrorCode::UpdateInProgress,
         );
         assert!(runner.calls.lock().unwrap().is_empty());
@@ -7319,11 +8719,16 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let encoded = serde_json::to_value(application_source_for_workspaces(&paths, Vec::new()).unwrap()).unwrap();
+        let encoded =
+            serde_json::to_value(application_source_for_workspaces(&paths, Vec::new()).unwrap())
+                .unwrap();
         let host = host_resources().unwrap();
         let capacity = &encoded["hostCapacity"];
         assert_eq!(capacity["logicalCpus"], json!(host.logical_cpus));
-        assert_eq!(capacity["physicalMemoryBytes"], json!(host.physical_memory_bytes.unwrap()));
+        assert_eq!(
+            capacity["physicalMemoryBytes"],
+            json!(host.physical_memory_bytes.unwrap())
+        );
         // The published limits are exactly the largest ceilings the backend accepts.
         let cpus = u8::try_from(host.logical_cpus).unwrap_or(u8::MAX);
         let memory = u32::try_from(capacity["maxMemoryGib"].as_u64().unwrap()).unwrap();
@@ -7338,10 +8743,22 @@ exit 9
     fn host_capacity_rounds_memory_down_and_is_absent_when_unmeasured() {
         let _test_state = crate::test_support::global_state();
         let gib = 1024 * 1024 * 1024;
-        let capacity = HostCapacity::of(&HostResources { logical_cpus: 8, physical_memory_bytes: Some(16 * gib - 1) }).unwrap();
+        let capacity = HostCapacity::of(&HostResources {
+            logical_cpus: 8,
+            physical_memory_bytes: Some(16 * gib - 1),
+        })
+        .unwrap();
         assert_eq!((capacity.logical_cpus, capacity.max_memory_gib), (8, 15));
-        assert!(HostCapacity::of(&HostResources { logical_cpus: 8, physical_memory_bytes: None }).is_none());
-        assert!(HostCapacity::of(&HostResources { logical_cpus: 0, physical_memory_bytes: Some(gib) }).is_none());
+        assert!(HostCapacity::of(&HostResources {
+            logical_cpus: 8,
+            physical_memory_bytes: None
+        })
+        .is_none());
+        assert!(HostCapacity::of(&HostResources {
+            logical_cpus: 0,
+            physical_memory_bytes: Some(gib)
+        })
+        .is_none());
     }
 
     fn second_vm() -> MachineConfiguration {
@@ -7364,7 +8781,11 @@ exit 9
         let directory = paths.metadata.with_file_name("checkpoints");
         fs::create_dir_all(&directory).unwrap();
         // For example, written by a newer Silo before a downgrade.
-        fs::write(directory.join(format!("{}.json", machine.id())), json!({"version": 2, "checkpoints": []}).to_string()).unwrap();
+        fs::write(
+            directory.join(format!("{}.json", machine.id())),
+            json!({"version": 2, "checkpoints": []}).to_string(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -7389,8 +8810,14 @@ exit 9
             let encoded = serde_json::to_value(&source).unwrap();
             let damaged = &encoded["workspaces"][0];
             assert_eq!(damaged["attention"]["level"], "error", "{listed}");
-            assert!(damaged["attention"]["message"].as_str().unwrap().contains("Checkpoint history is invalid"));
-            assert!(damaged.get("checkpoints").is_none() && damaged.get("pendingCheckpointRestore").is_none());
+            assert!(damaged["attention"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Checkpoint history is invalid"));
+            assert!(
+                damaged.get("checkpoints").is_none()
+                    && damaged.get("pendingCheckpointRestore").is_none()
+            );
             let healthy = &encoded["workspaces"][1];
             assert_eq!(healthy["state"], "running");
             assert!(healthy.get("attention").is_none());
@@ -7403,30 +8830,69 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let missing = || Err(RuntimeError::Failed { operation: "Reading sandbox state".into(), exit_code: Some(1), detail: "sandbox 'dev' not found".into() });
-        let unavailable = || Err(RuntimeError::Unavailable("The managed runtime is unavailable.".into()));
+        let missing = || {
+            Err(RuntimeError::Failed {
+                operation: "Reading sandbox state".into(),
+                exit_code: Some(1),
+                detail: "sandbox 'dev' not found".into(),
+            })
+        };
+        let unavailable = || {
+            Err(RuntimeError::Unavailable(
+                "The managed runtime is unavailable.".into(),
+            ))
+        };
         // No longer a configured VM: nothing can hold the value, and nothing is inspected.
-        assert!(vm_holds_no_secret_material(&StubRunner::new(Vec::new()), &paths, "deleted"));
+        assert!(vm_holds_no_secret_material(
+            &StubRunner::new(Vec::new()),
+            &paths,
+            "deleted"
+        ));
         for (output, expected) in [
-            (StubRunner::successful_json(vec![inspect(&paths, "Stopped")]), true),
-            (StubRunner::successful_json(vec![inspect(&paths, "Crashed")]), true),
+            (
+                StubRunner::successful_json(vec![inspect(&paths, "Stopped")]),
+                true,
+            ),
+            (
+                StubRunner::successful_json(vec![inspect(&paths, "Crashed")]),
+                true,
+            ),
             (StubRunner::new(vec![missing()]), true),
-            (StubRunner::successful_json(vec![inspect(&paths, "Running")]), false),
-            (StubRunner::successful_json(vec![inspect(&paths, "Starting")]), false),
+            (
+                StubRunner::successful_json(vec![inspect(&paths, "Running")]),
+                false,
+            ),
+            (
+                StubRunner::successful_json(vec![inspect(&paths, "Starting")]),
+                false,
+            ),
             (StubRunner::new(vec![unavailable()]), false),
         ] {
-            assert_eq!(vm_holds_no_secret_material(&output, &paths, "dev"), expected);
+            assert_eq!(
+                vm_holds_no_secret_material(&output, &paths, "dev"),
+                expected
+            );
         }
         // While another operation (for example a start) holds the VM, it is never assumed revoked.
         let (release, released) = std::sync::mpsc::channel::<()>();
         let (held, holding) = std::sync::mpsc::channel();
         let holder = thread::spawn(move || {
-            let _guard = OPERATIONS.vm("00000000-0000-4000-8000-000000000001", "dev", "Starting dev").unwrap();
+            let _guard = OPERATIONS
+                .vm(
+                    "00000000-0000-4000-8000-000000000001",
+                    "dev",
+                    "Starting dev",
+                )
+                .unwrap();
             held.send(()).unwrap();
             released.recv().unwrap();
         });
         holding.recv().unwrap();
-        assert!(!vm_holds_no_secret_material(&StubRunner::successful_json(vec![inspect(&paths, "Stopped")]), &paths, "dev"));
+        assert!(!vm_holds_no_secret_material(
+            &StubRunner::successful_json(vec![inspect(&paths, "Stopped")]),
+            &paths,
+            "dev"
+        ));
         release.send(()).unwrap();
         holder.join().unwrap();
     }
@@ -7436,18 +8902,28 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let ssh = MachineConfiguration::Ssh { id: "00000000-0000-4000-8000-000000000009".into(), name: "remote".into(), host: "example.test".into(), user: "me".into(), port: 22 };
+        let ssh = MachineConfiguration::Ssh {
+            id: "00000000-0000-4000-8000-000000000009".into(),
+            name: "remote".into(),
+            host: "example.test".into(),
+            user: "me".into(),
+            port: 22,
+        };
         write_metadata(&paths.metadata, &request(vec![ssh, vm()])).unwrap();
         let runner = StubRunner::successful_json(vec![
             json!([{"name":"dev","status":"Running","image":"ubuntu"}]),
             inspect(&paths, "Running"),
         ]);
-        let encoded = serde_json::to_value(read_application_state_with(&runner, &paths).unwrap()).unwrap();
+        let encoded =
+            serde_json::to_value(read_application_state_with(&runner, &paths).unwrap()).unwrap();
         assert!(encoded.get("preferences").is_none());
         assert!(encoded.get("backup").is_none());
         assert_eq!(encoded["workspaces"][0]["state"], "failed");
         assert_eq!(encoded["workspaces"][0]["freshness"], "stale");
-        assert!(encoded["workspaces"][0]["attention"]["message"].as_str().unwrap().contains("Computers"));
+        assert!(encoded["workspaces"][0]["attention"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Computers"));
     }
 
     #[test]
@@ -7488,12 +8964,12 @@ exit 9
             .windows(2)
             .any(|pair| pair == ["--root-disk", "80G"]));
         assert!(!disk_path(&paths, "dev", "runtime").exists());
-        assert!(calls[3].windows(2).any(|pair| pair == [
-            "--mount-owned", "/workspace:kind=disk,size=60G"
-        ]));
-        assert!(calls[3].windows(2).any(|pair| pair == [
-            "--secret", secrets_runtime::SILO_GITHUB_SECRET_SPEC
-        ]));
+        assert!(calls[3]
+            .windows(2)
+            .any(|pair| pair == ["--mount-owned", "/workspace:kind=disk,size=60G"]));
+        assert!(calls[3]
+            .windows(2)
+            .any(|pair| pair == ["--secret", secrets_runtime::SILO_GITHUB_SECRET_SPEC]));
         assert!(!calls[3].iter().any(|arg| arg == "--mount-disk"));
         assert!(calls[3]
             .windows(2)
@@ -7503,7 +8979,10 @@ exit 9
             .any(|pair| pair == ["--label", "silo.working-account=1"]));
         let setup = &calls[5];
         assert!(setup.windows(2).any(|pair| pair == ["--user", "root"]));
-        assert!(setup.last().unwrap().contains("/var/lib/silo/working-account.json"));
+        assert!(setup
+            .last()
+            .unwrap()
+            .contains("/var/lib/silo/working-account.json"));
     }
 
     #[test]
@@ -7514,14 +8993,31 @@ exit 9
             let paths = paths(&directory);
             let mut machine = vm();
             if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
-                *desktop = Some(crate::desktop::DesktopConfiguration { start_with_sandbox: true });
+                *desktop = Some(crate::desktop::DesktopConfiguration {
+                    start_with_sandbox: true,
+                });
             }
-            let runner = StubRunner::successful_json(vec![json!([]), json!(1), json!(1), json!(null), inspect(&paths, "Created"), json!(null), inspect(&paths, "Stopped"), inspect(&paths, "Stopped"), json!(1), json!(null), inspect(&paths, final_state)]);
+            let runner = StubRunner::successful_json(vec![
+                json!([]),
+                json!(1),
+                json!(1),
+                json!(null),
+                inspect(&paths, "Created"),
+                json!(null),
+                inspect(&paths, "Stopped"),
+                inspect(&paths, "Stopped"),
+                json!(1),
+                json!(null),
+                inspect(&paths, final_state),
+            ]);
             let result = create_machine(&runner, &paths, &machine);
             assert_eq!(result.is_ok(), final_state == "Stopped");
             let calls = runner.calls.lock().unwrap();
             assert_eq!(calls[9][0], "exec");
-            assert!(calls[9].last().unwrap().contains("silo-desktop autostart true"));
+            assert!(calls[9]
+                .last()
+                .unwrap()
+                .contains("silo-desktop autostart true"));
             assert!(calls[3].contains(&"--no-start".into()));
         }
     }
@@ -7617,15 +9113,22 @@ exit 9
         let paths = paths(&directory);
         let previous = vm();
         let mut changed = previous.clone();
-        if let MachineConfiguration::Vm { cpus, .. } = &mut changed { *cpus = 2; }
+        if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+            *cpus = 2;
+        }
         let runner = StubRunner::successful_json(vec![
-            inspect(&paths, "Running"), json!(null), inspect(&paths, "Stopped"), json!(null),
+            inspect(&paths, "Running"),
+            json!(null),
+            inspect(&paths, "Stopped"),
+            json!(null),
         ]);
         update_machine(&runner, &paths, &previous, &changed).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[1], vec!["stop", "dev", "--quiet"]);
         assert_eq!(calls[3][0], "modify");
-        assert!(!calls.iter().any(|call| matches!(call[0].as_str(), "start" | "restart")));
+        assert!(!calls
+            .iter()
+            .any(|call| matches!(call[0].as_str(), "start" | "restart")));
     }
 
     #[test]
@@ -7635,17 +9138,30 @@ exit 9
         let paths = paths(&directory);
         let previous = vm();
         let runner = StubRunner::successful_json(vec![
-            inspect(&paths, "Running"), json!(null), inspect(&paths, "Running"),
+            inspect(&paths, "Running"),
+            json!(null),
+            inspect(&paths, "Running"),
         ]);
         let error = update_machine(&runner, &paths, &previous, &previous).unwrap_err();
         assert!(error.to_string().contains("did not stop"));
-        assert!(!runner.calls.lock().unwrap().iter().any(|call| call[0] == "modify"));
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call[0] == "modify"));
     }
 
-    fn wait_for_queue(gate: &operation_gate::OperationGate, ready: impl Fn(&operation_gate::OperationQueue) -> bool) {
+    fn wait_for_queue(
+        gate: &operation_gate::OperationGate,
+        ready: impl Fn(&operation_gate::OperationQueue) -> bool,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !ready(&gate.snapshot()) {
-            assert!(Instant::now() < deadline, "operation queue did not reach the expected state");
+            assert!(
+                Instant::now() < deadline,
+                "operation queue did not reach the expected state"
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
     }
@@ -7656,22 +9172,41 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let gate: &'static operation_gate::OperationGate = Box::leak(Box::new(operation_gate::OperationGate::new()));
-        let LaunchAdmission::Admitted(guard) = launch_start_guard(gate, &paths, vm().id()).unwrap() else {
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let LaunchAdmission::Admitted(guard) = launch_start_guard(gate, &paths, vm().id()).unwrap()
+        else {
             panic!("the launch start was not admitted");
         };
         let queue = gate.snapshot();
         let entry = &queue.running[0];
         assert_eq!(
-            (entry.label.as_str(), entry.vm_id.as_deref(), entry.kind, entry.cancellable),
-            ("Starting dev", Some(vm().id()), operation_gate::OperationKind::Lifecycle, true),
+            (
+                entry.label.as_str(),
+                entry.vm_id.as_deref(),
+                entry.kind,
+                entry.cancellable
+            ),
+            (
+                "Starting dev",
+                Some(vm().id()),
+                operation_gate::OperationKind::Lifecycle,
+                true
+            ),
         );
         assert_eq!(entry.expected_ms, Some(180_000));
         // Other sandboxes' actions and state reads are not held behind this boot.
         assert!(gate.is_computer_idle());
-        std::thread::spawn(move || drop(gate.try_vm("other-id", "other", "Starting other").unwrap())).join().unwrap();
+        std::thread::spawn(move || {
+            drop(gate.try_vm("other-id", "other", "Starting other").unwrap())
+        })
+        .join()
+        .unwrap();
         drop(guard);
-        assert!(matches!(launch_start_guard(gate, &paths, "deleted").unwrap(), LaunchAdmission::Unguarded));
+        assert!(matches!(
+            launch_start_guard(gate, &paths, "deleted").unwrap(),
+            LaunchAdmission::Unguarded
+        ));
     }
 
     #[test]
@@ -7680,7 +9215,8 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let gate: &'static operation_gate::OperationGate = Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
         let (release, released) = std::sync::mpsc::channel::<()>();
         let holder = std::thread::spawn(move || {
             let _checkpoint = gate.vm(vm().id(), "dev", "Creating checkpoint").unwrap();
@@ -7689,13 +9225,26 @@ exit 9
         wait_for_queue(gate, |queue| queue.running.len() == 1);
         let user = std::thread::spawn(move || {
             gate.kind(operation_gate::OperationKind::Lifecycle)
-                .acquire(operation_gate::Scope::Vm { id: vm().id().into() }, Some("dev".into()), "Starting dev", Some(format!("vm:{}:start", vm().id())))
+                .acquire(
+                    operation_gate::Scope::Vm {
+                        id: vm().id().into(),
+                    },
+                    Some("dev".into()),
+                    "Starting dev",
+                    Some(format!("vm:{}:start", vm().id())),
+                )
                 .map(drop)
         });
         wait_for_queue(gate, |queue| queue.waiting.len() == 1);
         let launch_paths = paths.clone();
-        let skipped = std::thread::spawn(move || matches!(launch_start_guard(gate, &launch_paths, vm().id()), Ok(LaunchAdmission::Skipped)))
-            .join().unwrap();
+        let skipped = std::thread::spawn(move || {
+            matches!(
+                launch_start_guard(gate, &launch_paths, vm().id()),
+                Ok(LaunchAdmission::Skipped)
+            )
+        })
+        .join()
+        .unwrap();
         assert!(skipped);
         release.send(()).unwrap();
         holder.join().unwrap();
@@ -7829,7 +9378,11 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null), inspect(&paths, "Running")]);
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Stopped"),
+            json!(null),
+            inspect(&paths, "Running"),
+        ]);
 
         workspace_action_with(&runner, &paths, &generous_host(), "start", "dev").unwrap();
 
@@ -7844,9 +9397,18 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let runner = StubRunner::successful_json(vec![inspect(&paths, "Running"), json!(null), inspect(&paths, "Stopped"), json!(null), inspect(&paths, "Stopped")]);
-        let error = workspace_action_with(&runner, &paths, &generous_host(), "restart", "dev").unwrap_err();
-        assert!(error.to_string().contains("did not reach the Running state"));
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Running"),
+            json!(null),
+            inspect(&paths, "Stopped"),
+            json!(null),
+            inspect(&paths, "Stopped"),
+        ]);
+        let error =
+            workspace_action_with(&runner, &paths, &generous_host(), "restart", "dev").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("did not reach the Running state"));
     }
 
     #[test]
@@ -7972,15 +9534,33 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![]);
-        let request = MachineConfigurationRequest { schema_version: 1, machines: vec![] };
-        apply_whole_configuration_with_progress(&runner, &paths, &generous_host(), request.clone(), None, &|_, _, _| {}).unwrap();
+        let request = MachineConfigurationRequest {
+            schema_version: 1,
+            machines: vec![],
+        };
+        apply_whole_configuration_with_progress(
+            &runner,
+            &paths,
+            &generous_host(),
+            request.clone(),
+            None,
+            &|_, _, _| {},
+        )
+        .unwrap();
         configure_workspace_identities_with(&runner, &paths, &[]).unwrap();
         assert!(verify_workspace_identities_with(&runner, &paths, &[]).unwrap());
         read_application_state_with(&runner, &paths).unwrap();
         assert_eq!(read_metadata(&paths.metadata).unwrap(), request);
         assert!(!paths.home.exists());
         // Empty identity input must not verify a configured VM's identity.
-        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![vm()] }).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![vm()],
+            },
+        )
+        .unwrap();
         assert!(!verify_workspace_identities_with(&runner, &paths, &[]).unwrap());
     }
 
@@ -8024,7 +9604,10 @@ exit 9
             let paths = paths(&directory);
             write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
             let mut old_vm = inspect(&paths, "Stopped");
-            old_vm["config"]["labels"].as_object_mut().unwrap().remove(crate::working_account::LABEL);
+            old_vm["config"]["labels"]
+                .as_object_mut()
+                .unwrap()
+                .remove(crate::working_account::LABEL);
             let runner = StubRunner::successful_json(vec![old_vm]);
             let result = if action == "launch" {
                 start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).map(drop)
@@ -8032,7 +9615,12 @@ exit 9
                 workspace_action_with(&runner, &paths, &generous_host(), action, "dev")
             };
             assert!(result.unwrap_err().to_string().contains("Migrate"));
-            assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+            assert!(runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args[0] == "inspect"));
         }
     }
 
@@ -8090,9 +9678,16 @@ exit 9
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         // A stopped VM's identity is unknown without booting it: not verified, no exec.
-        let stopped = StubRunner::new(vec![identity_output(&inspect(&paths, "Stopped").to_string())]);
+        let stopped = StubRunner::new(vec![identity_output(
+            &inspect(&paths, "Stopped").to_string(),
+        )]);
         assert!(!verify_workspace_identities_with(&stopped, &paths, &[test_identity()]).unwrap());
-        assert!(stopped.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        assert!(stopped
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|args| args[0] == "inspect"));
         // A running VM is checked in place, never through exec's temporary boot.
         let running = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
@@ -8100,7 +9695,11 @@ exit 9
         ]);
         assert!(verify_workspace_identities_with(&running, &paths, &[test_identity()]).unwrap());
         let calls = running.calls.lock().unwrap();
-        let options: Vec<&str> = calls[1].iter().take_while(|arg| *arg != "--").map(String::as_str).collect();
+        let options: Vec<&str> = calls[1]
+            .iter()
+            .take_while(|arg| *arg != "--")
+            .map(String::as_str)
+            .collect();
         assert!(options.contains(&"--no-start"), "{options:?}");
     }
 
@@ -8119,8 +9718,15 @@ exit 9
         let lane = |machine: &MachineConfiguration, label: &str| {
             let guard = identity_lane(machine, label)?;
             let queue = OPERATIONS.snapshot();
-            assert!(OPERATIONS.is_computer_idle(), "identity work must not take the whole computer");
-            let entry = queue.running.iter().find(|entry| entry.vm_id.as_deref() == Some(machine.id())).unwrap();
+            assert!(
+                OPERATIONS.is_computer_idle(),
+                "identity work must not take the whole computer"
+            );
+            let entry = queue
+                .running
+                .iter()
+                .find(|entry| entry.vm_id.as_deref() == Some(machine.id()))
+                .unwrap();
             assert!(entry.cancellable);
             lanes.lock().unwrap().push(entry.label.clone());
             Ok(guard)
@@ -8135,8 +9741,17 @@ exit 9
         ]);
         let mut work = test_identity();
         work.workspace = "work".into();
-        assert!(verify_workspace_identities_in(&runner, &paths, &[test_identity(), work], &lane).unwrap());
-        assert_eq!(*lanes.lock().unwrap(), vec!["Checking Git identity for dev", "Checking Git identity for work"]);
+        assert!(
+            verify_workspace_identities_in(&runner, &paths, &[test_identity(), work], &lane)
+                .unwrap()
+        );
+        assert_eq!(
+            *lanes.lock().unwrap(),
+            vec![
+                "Checking Git identity for dev",
+                "Checking Git identity for work"
+            ]
+        );
         assert!(OPERATIONS.is_vm_idle(vm().id()) && OPERATIONS.is_vm_idle(other.id()));
         lanes.lock().unwrap().clear();
         let writer = StubRunner::new(vec![
@@ -8249,7 +9864,10 @@ exit 9
         let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
-        let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
+        let directory = tempfile::Builder::new()
+            .prefix("silo")
+            .tempdir_in("/tmp")
+            .unwrap();
         let storage = directory.path().join("storage");
         let alias = runtime_home_alias(directory.path(), &storage);
         let parent = alias.parent().unwrap();
@@ -8267,7 +9885,10 @@ exit 9
         let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
-        let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
+        let directory = tempfile::Builder::new()
+            .prefix("silo")
+            .tempdir_in("/tmp")
+            .unwrap();
         let other = directory.path().join("other");
         fs::create_dir(&other).unwrap();
         fs::set_permissions(&other, fs::Permissions::from_mode(0o775)).unwrap();
@@ -8284,12 +9905,17 @@ exit 9
     fn runtime_alias_reports_existing_directory_and_preserves_data() {
         let _test_state = crate::test_support::global_state();
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
-        let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
+        let directory = tempfile::Builder::new()
+            .prefix("silo")
+            .tempdir_in("/tmp")
+            .unwrap();
         let storage = directory.path().join("storage");
         let alias = runtime_home_alias(directory.path(), &storage);
         fs::create_dir_all(&alias).unwrap();
         fs::write(alias.join("data"), b"preserved").unwrap();
-        let error = prepare_runtime_home(&alias, Some(&storage)).unwrap_err().to_string();
+        let error = prepare_runtime_home(&alias, Some(&storage))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("not a symbolic link"));
         assert!(error.contains(&alias.display().to_string()));
         assert!(error.contains(&storage.display().to_string()));
@@ -8302,7 +9928,10 @@ exit 9
     fn runtime_alias_is_prepared_before_configuration_lock_on_first_run() {
         let _test_state = crate::test_support::global_state();
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
-        let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
+        let directory = tempfile::Builder::new()
+            .prefix("silo")
+            .tempdir_in("/tmp")
+            .unwrap();
         let mut paths = paths(&directory);
         let storage = directory.path().join("storage");
         paths.home = runtime_home_alias(directory.path(), &storage);
@@ -8342,7 +9971,11 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("Silo.app/Contents/MacOS/msb");
         let resource_dir = directory.path().join("Silo.app/Contents/Resources");
-        let library = bundled_runtime_library(&executable, &resource_dir, Some(tauri::utils::config::BundleType::App));
+        let library = bundled_runtime_library(
+            &executable,
+            &resource_dir,
+            Some(tauri::utils::config::BundleType::App),
+        );
         assert!(!library.exists());
         #[cfg(target_os = "macos")]
         assert_eq!(
@@ -8460,7 +10093,10 @@ exit 9
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let source = application_shell(&paths, "Local runtime could not be reached.").unwrap();
         assert!(source.workspaces.is_empty());
-        assert_eq!(source.runtime_repair.unwrap()["reason"], "Local runtime could not be reached.");
+        assert_eq!(
+            source.runtime_repair.unwrap()["reason"],
+            "Local runtime could not be reached."
+        );
         assert!(!paths.executable.exists());
         assert_eq!(read_metadata(&paths.metadata).unwrap(), request(vec![vm()]));
     }
@@ -8496,22 +10132,59 @@ exit 9
             other_inspect["name"] = json!("work");
             other_inspect["config"]["name"] = json!("work");
             other_inspect["config"]["labels"]["silo.machine-id"] = json!(other.id());
-            let previous = if removing { request(vec![vm(), other.clone()]) } else { request(vec![vm()]) };
-            let requested = if removing { request(vec![vm()]) } else { request(vec![vm(), other]) };
+            let previous = if removing {
+                request(vec![vm(), other.clone()])
+            } else {
+                request(vec![vm()])
+            };
+            let requested = if removing {
+                request(vec![vm()])
+            } else {
+                request(vec![vm(), other])
+            };
             write_metadata(&paths.metadata, &previous).unwrap();
             let runner = StubRunner::successful_json(if removing {
                 vec![other_inspect.clone(), other_inspect, json!(null)]
             } else {
-                vec![json!([]), json!(1), json!(1), json!(null), other_inspect.clone(), json!(null), other_inspect.clone(), other_inspect]
+                vec![
+                    json!([]),
+                    json!(1),
+                    json!(1),
+                    json!(null),
+                    other_inspect.clone(),
+                    json!(null),
+                    other_inspect.clone(),
+                    other_inspect,
+                ]
             });
             let events = Mutex::new(Vec::new());
-            apply_whole_configuration_with_progress(&runner, &paths, &generous_host(), requested.clone(), retry_workspace, &|step, name, fraction| {
-                events.lock().unwrap().push((step.to_string(), name.to_string(), fraction));
-            }).unwrap();
+            apply_whole_configuration_with_progress(
+                &runner,
+                &paths,
+                &generous_host(),
+                requested.clone(),
+                retry_workspace,
+                &|step, name, fraction| {
+                    events
+                        .lock()
+                        .unwrap()
+                        .push((step.to_string(), name.to_string(), fraction));
+                },
+            )
+            .unwrap();
             assert_eq!(read_metadata(&paths.metadata).unwrap(), requested);
             assert!(!events.lock().unwrap().is_empty());
-            assert!(events.lock().unwrap().iter().all(|(_, name, _)| name == "work"));
-            assert!(runner.calls.lock().unwrap().iter().all(|args| !args.iter().any(|arg| arg == "dev")));
+            assert!(events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, name, _)| name == "work"));
+            assert!(runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| !args.iter().any(|arg| arg == "dev")));
         }
     }
 
@@ -8520,9 +10193,15 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let started = machine_progress("request-1", "workspace-verification", "dev", 0);
         let failed = machine_progress("request-1", "setup-failed", "dev", 0);
-        assert_eq!(pending_verification_workspace(&[started.clone(), failed]), Some("dev".into()));
+        assert_eq!(
+            pending_verification_workspace(&[started.clone(), failed]),
+            Some("dev".into())
+        );
         let done = machine_progress("request-1", "workspace-verification", "dev", 1);
-        assert_eq!(pending_verification_workspace(&[started.clone(), done]), None);
+        assert_eq!(
+            pending_verification_workspace(&[started.clone(), done]),
+            None
+        );
         let completed = machine_progress("request-1", "setup-completed", "", 0);
         assert_eq!(pending_verification_workspace(&[started, completed]), None);
     }
@@ -8537,8 +10216,15 @@ exit 9
         let mut mismatch = inspect(&paths, "Stopped");
         mismatch["config"]["resources"]["cpus"] = json!(1);
         let runner = StubRunner::successful_json(vec![mismatch]);
-        let error = apply_whole_configuration_with_progress(&runner, &paths, &generous_host(), configured, Some("dev"), &|_, _, _| {})
-            .unwrap_err();
+        let error = apply_whole_configuration_with_progress(
+            &runner,
+            &paths,
+            &generous_host(),
+            configured,
+            Some("dev"),
+            &|_, _, _| {},
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("do not match"));
         assert!(runner
             .calls
@@ -8725,7 +10411,9 @@ exit 9
 
         assert!(matches!(error, RuntimeError::Partial(_)));
         assert!(!error.to_string().contains("image pull failed"));
-        assert!(failure_report(&error).diagnostic.is_some_and(|text| text.contains("image pull failed")));
+        assert!(failure_report(&error)
+            .diagnostic
+            .is_some_and(|text| text.contains("image pull failed")));
         assert!(!runner
             .calls
             .lock()
@@ -8752,7 +10440,11 @@ exit 9
             record["restoreAttempted"] = json!(true);
             record["restoreAttemptId"] = json!(ATTEMPT_ID);
         }
-        fs::write(directory.join(format!("{}.json", vm().id())), record.to_string()).unwrap();
+        fs::write(
+            directory.join(format!("{}.json", vm().id())),
+            record.to_string(),
+        )
+        .unwrap();
     }
 
     fn restore_attempt(paths: &RuntimePaths, status: &str) -> Value {
@@ -8762,7 +10454,11 @@ exit 9
     }
 
     fn missing_sandbox() -> Result<CommandOutput, RuntimeError> {
-        Err(RuntimeError::Failed { operation: "inspect dev".into(), exit_code: Some(1), detail: "sandbox not found".into() })
+        Err(RuntimeError::Failed {
+            operation: "inspect dev".into(),
+            exit_code: Some(1),
+            detail: "sandbox not found".into(),
+        })
     }
 
     #[test]
@@ -8779,22 +10475,39 @@ exit 9
                 ExpectedCommand::ok(["inspect", "dev", "--format", "json"], attempt.to_string()),
                 ExpectedCommand::ok(["inspect", "dev", "--format", "json"], attempt.to_string()),
             ];
-            if stops { commands.push(ExpectedCommand::ok(["stop", "dev", "--quiet"], "")); }
+            if stops {
+                commands.push(ExpectedCommand::ok(["stop", "dev", "--quiet"], ""));
+            }
             let inventory = json!([{"snapshot_id": "restore-snapshot", "group": "dev", "name": "c000000000000000000000000000000"}]).to_string();
             commands.extend([
                 ExpectedCommand::ok(["remove", "--quiet", "dev"], ""),
                 ExpectedCommand::ok(["snapshot", "list", "--format", "json"], inventory.clone()),
                 ExpectedCommand::ok(["snapshot", "list", "--format", "json"], inventory),
                 ExpectedCommand::ok(["list", "--format", "json"], "[]"),
-                ExpectedCommand::ok(["snapshot", "head", "dev", "--format", "json"], json!({"head": "restore-snapshot"}).to_string()),
-                ExpectedCommand::ok(["snapshot", "remove", "dev:c000000000000000000000000000000", "--quiet"], ""),
+                ExpectedCommand::ok(
+                    ["snapshot", "head", "dev", "--format", "json"],
+                    json!({"head": "restore-snapshot"}).to_string(),
+                ),
+                ExpectedCommand::ok(
+                    [
+                        "snapshot",
+                        "remove",
+                        "dev:c000000000000000000000000000000",
+                        "--quiet",
+                    ],
+                    "",
+                ),
             ]);
             let runner = ScriptedRunner::new(commands);
             apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
             runner.assert_finished();
             // The runtime VM is removed before Silo forgets the sandbox and its record.
             assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
-            assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{}.json", vm().id())).exists());
+            assert!(!paths
+                .metadata
+                .with_file_name("checkpoints")
+                .join(format!("{}.json", vm().id()))
+                .exists());
         }
     }
 
@@ -8807,8 +10520,14 @@ exit 9
         pending_restore_record(&paths, false);
         use crate::test_support::runner::{ExpectedCommand, ScriptedRunner};
         let runner = ScriptedRunner::new([
-            ExpectedCommand::error(["inspect", "dev", "--format", "json"], missing_sandbox().unwrap_err()),
-            ExpectedCommand::error(["inspect", "dev", "--format", "json"], missing_sandbox().unwrap_err()),
+            ExpectedCommand::error(
+                ["inspect", "dev", "--format", "json"],
+                missing_sandbox().unwrap_err(),
+            ),
+            ExpectedCommand::error(
+                ["inspect", "dev", "--format", "json"],
+                missing_sandbox().unwrap_err(),
+            ),
             ExpectedCommand::ok(["snapshot", "list", "--format", "json"], "[]"),
         ]);
         apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
@@ -8824,9 +10543,15 @@ exit 9
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         pending_restore_record(&paths, true);
         let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped")]);
-        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap_err();
+        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+            .unwrap_err();
         assert!(error.to_string().contains("preserved"), "{error}");
-        assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        assert!(runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|args| args[0] == "inspect"));
         assert_eq!(read_metadata(&paths.metadata).unwrap().machines, vec![vm()]);
     }
 
@@ -8848,18 +10573,23 @@ exit 9
 mod github_integration_tests;
 
 /// Apply secret policy under the same per-VM lock as GitHub updates and boot.
-pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(String,String,Vec<String>)>) -> Result<Vec<String>,String> {
+pub(crate) fn apply_secrets(
+    app: &AppHandle,
+    workspace: &str,
+    desired: Vec<(String, String, Vec<String>)>,
+) -> Result<Vec<String>, String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
     // Applies secret policy inside one VM's guest only.
     let paths = runtime_paths(app)?;
     let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
     let base_label = format!("Saving secrets for {workspace}");
-    let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, secrets_runtime::Attempt> {
-        OPERATIONS
-            .vm(&vm_id, workspace, label)
-            // Gate rejections (busy, already queued, cancelled) are never transient.
-            .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))
-    };
+    let acquire =
+        |label: &str| -> Result<operation_gate::OperationGuard<'static>, secrets_runtime::Attempt> {
+            OPERATIONS
+                .vm(&vm_id, workspace, label)
+                // Gate rejections (busy, already queued, cancelled) are never transient.
+                .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))
+        };
     // Applying secrets to a running guest is cancellable through the current-operation token.
     let prepare = |guard: &operation_gate::OperationGuard<'static>| {
         guard.allow_cancel();
@@ -8867,12 +10597,21 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(Stri
     };
     let work = || -> Result<Vec<String>, secrets_runtime::Attempt> {
         shutdown::ensure_accepting_operations().map_err(secrets_runtime::Attempt::Final)?;
-        let access = vm_access_state(&paths.home, workspace).map_err(secrets_runtime::Attempt::Final)?;
-        let _guard = lock_vm_runtime(&access, MUTATION_TIMEOUT, "Saving secrets").map_err(|error| match error {
-            RuntimeError::Cancelled { .. } => secrets_runtime::Attempt::Cancelled("Saving secrets was cancelled.".into()),
-            // Another change to this VM is still finishing; a later attempt may proceed.
-            _ => secrets_runtime::Attempt::Transient("Another change to this sandbox is still running. Retry after it finishes.".into()),
-        })?;
+        let access =
+            vm_access_state(&paths.home, workspace).map_err(secrets_runtime::Attempt::Final)?;
+        let _guard =
+            lock_vm_runtime(&access, MUTATION_TIMEOUT, "Saving secrets").map_err(|error| {
+                match error {
+                    RuntimeError::Cancelled { .. } => {
+                        secrets_runtime::Attempt::Cancelled("Saving secrets was cancelled.".into())
+                    }
+                    // Another change to this VM is still finishing; a later attempt may proceed.
+                    _ => secrets_runtime::Attempt::Transient(
+                        "Another change to this sandbox is still running. Retry after it finishes."
+                            .into(),
+                    ),
+                }
+            })?;
         secrets_runtime::apply(&paths, workspace, &desired, false)
     };
     // Re-applying the same desired secrets is idempotent, so a timed-out runtime command
@@ -8898,17 +10637,27 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(Stri
 /// passed to the runtime). A running, transitional or unreadable VM is never assumed
 /// revoked. The VM's turn is held while it is read so no boot can begin meanwhile.
 pub(crate) fn secret_revoked_without_runtime(app: &AppHandle, workspace: &str) -> bool {
-    runtime_paths(app).is_ok_and(|paths| vm_holds_no_secret_material(&ProcessRunner, &paths, workspace))
+    runtime_paths(app)
+        .is_ok_and(|paths| vm_holds_no_secret_material(&ProcessRunner, &paths, workspace))
 }
 
-fn vm_holds_no_secret_material(runner: &dyn RuntimeRunner, paths: &RuntimePaths, workspace: &str) -> bool {
+fn vm_holds_no_secret_material(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace: &str,
+) -> bool {
     let Ok(metadata) = read_metadata(&paths.metadata) else {
         return false;
     };
-    let Some(machine) = metadata.machines.iter().find(|machine| machine.is_vm() && machine.name() == workspace) else {
+    let Some(machine) = metadata
+        .machines
+        .iter()
+        .find(|machine| machine.is_vm() && machine.name() == workspace)
+    else {
         return true;
     };
-    let Ok(_turn) = OPERATIONS.try_vm_hidden(machine.id(), workspace, "Checking secret revocation") else {
+    let Ok(_turn) = OPERATIONS.try_vm_hidden(machine.id(), workspace, "Checking secret revocation")
+    else {
         return false;
     };
     match observe_vm(runner, paths, workspace) {
@@ -8922,28 +10671,49 @@ fn vm_holds_no_secret_material(runner: &dyn RuntimeRunner, paths: &RuntimePaths,
 }
 
 #[cfg(test)]
-pub(crate) fn validate_secret_material_for_tests(material: &[(String, String, Vec<String>)]) -> Result<(), String> {
+pub(crate) fn validate_secret_material_for_tests(
+    material: &[(String, String, Vec<String>)],
+) -> Result<(), String> {
     secrets_runtime::validate_material(&material.to_vec())
 }
 
-pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String]) -> Result<(),String> {
+pub(crate) fn validate_secret_workspaces(
+    app: &AppHandle,
+    workspaces: &[String],
+) -> Result<(), String> {
     let paths = runtime_paths(app)?;
-    let metadata = read_metadata(&paths.metadata).map_err(|_| "Sandbox settings could not be read.".to_string())?;
+    let metadata = read_metadata(&paths.metadata)
+        .map_err(|_| "Sandbox settings could not be read.".to_string())?;
     for workspace in workspaces {
         validate_name(workspace).map_err(|_| "Invalid sandbox selection.".to_string())?;
-        if !metadata.machines.iter().any(|machine| machine.is_vm() && machine.name() == workspace) {
+        if !metadata
+            .machines
+            .iter()
+            .any(|machine| machine.is_vm() && machine.name() == workspace)
+        {
             return Err("Secrets can only be assigned to local Silo sandboxes.".into());
         }
-        let inspected = inspect_workspace(&ProcessRunner,&paths,workspace).map_err(|_| "Could not verify the selected sandbox.".to_string())?;
-        ensure_managed(&inspected).map_err(|_| "Secrets can only be assigned to managed Silo sandboxes.".to_string())?;
+        let inspected = inspect_workspace(&ProcessRunner, &paths, workspace)
+            .map_err(|_| "Could not verify the selected sandbox.".to_string())?;
+        ensure_managed(&inspected)
+            .map_err(|_| "Secrets can only be assigned to managed Silo sandboxes.".to_string())?;
     }
     Ok(())
 }
 
 /// Caller holds the operation gate for this VM and has verified the stable VM identity.
 pub(crate) fn start_for_desktop(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeError> {
-    debug_assert!(operation_gate::held(), "a desktop start requires the VM's operation gate");
-    workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", workspace)
+    debug_assert!(
+        operation_gate::held(),
+        "a desktop start requires the VM's operation gate"
+    );
+    workspace_action_with(
+        &ProcessRunner,
+        paths,
+        &host_resources()?,
+        "start",
+        workspace,
+    )
 }
 
 #[cfg(test)]
@@ -8964,7 +10734,10 @@ mod change_configuration_tests {
         }
     }
 
-    fn upsert(machine: &MachineConfiguration, expected: Option<&MachineConfiguration>) -> MachineConfigurationChange {
+    fn upsert(
+        machine: &MachineConfiguration,
+        expected: Option<&MachineConfiguration>,
+    ) -> MachineConfigurationChange {
         MachineConfigurationChange::Upsert {
             machine: machine.clone(),
             expected: expected.cloned(),
@@ -8979,8 +10752,13 @@ mod change_configuration_tests {
         // The user edited from a two-CPU baseline, but the VM now has four CPUs.
         let stale_expected = vm("a", "dev", 4);
         let edited = vm("a", "dev", 3);
-        let error = upsert(&edited, Some(&stale_expected)).apply(&mut machines).unwrap_err();
-        assert!(error.contains("changed while your edit was waiting"), "{error}");
+        let error = upsert(&edited, Some(&stale_expected))
+            .apply(&mut machines)
+            .unwrap_err();
+        assert!(
+            error.contains("changed while your edit was waiting"),
+            "{error}"
+        );
         // Nothing is mutated on rejection.
         assert_eq!(machines, vec![current, vm("b", "web", 2)]);
     }
@@ -8995,7 +10773,10 @@ mod change_configuration_tests {
         };
         // Current config for "a" is absent, so it never equals the expected snapshot.
         let error = change.apply(&mut machines).unwrap_err();
-        assert!(error.contains("changed while your edit was waiting"), "{error}");
+        assert!(
+            error.contains("changed while your edit was waiting"),
+            "{error}"
+        );
         assert_eq!(machines, vec![vm("b", "web", 2)]);
     }
 
@@ -9036,8 +10817,13 @@ mod change_configuration_tests {
     fn edit_preserves_position_instead_of_appending() {
         let _test_state = crate::test_support::global_state();
         let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2), vm("c", "db", 2)];
-        upsert(&vm("a", "dev", 3), Some(&vm("a", "dev", 2))).apply(&mut machines).unwrap();
-        assert_eq!(machines, vec![vm("a", "dev", 3), vm("b", "web", 2), vm("c", "db", 2)]);
+        upsert(&vm("a", "dev", 3), Some(&vm("a", "dev", 2)))
+            .apply(&mut machines)
+            .unwrap();
+        assert_eq!(
+            machines,
+            vec![vm("a", "dev", 3), vm("b", "web", 2), vm("c", "db", 2)]
+        );
     }
 
     #[test]
@@ -9050,7 +10836,10 @@ mod change_configuration_tests {
         };
         change.apply(&mut machines).unwrap();
         assert_eq!(
-            machines.iter().map(MachineConfiguration::id).collect::<Vec<_>>(),
+            machines
+                .iter()
+                .map(MachineConfiguration::id)
+                .collect::<Vec<_>>(),
             vec!["c", "a", "b"]
         );
 
@@ -9060,7 +10849,10 @@ mod change_configuration_tests {
             expected_order: vec!["a".into(), "b".into(), "c".into()],
         };
         let error = stale.apply(&mut machines).unwrap_err();
-        assert!(error.contains("changed while your edit was waiting"), "{error}");
+        assert!(
+            error.contains("changed while your edit was waiting"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -9069,8 +10861,13 @@ mod change_configuration_tests {
         // A create carries `expected: null` meaning "must not already exist". An id that
         // is already present makes the current value differ from the expected absence.
         let mut machines = vec![vm("a", "dev", 2)];
-        let error = upsert(&vm("a", "dev", 3), None).apply(&mut machines).unwrap_err();
-        assert!(error.contains("changed while your edit was waiting"), "{error}");
+        let error = upsert(&vm("a", "dev", 3), None)
+            .apply(&mut machines)
+            .unwrap_err();
+        assert!(
+            error.contains("changed while your edit was waiting"),
+            "{error}"
+        );
         assert_eq!(machines, vec![vm("a", "dev", 2)]);
     }
 
@@ -9086,7 +10883,10 @@ mod change_configuration_tests {
             ],
         };
         batch.apply(&mut machines).unwrap();
-        assert_eq!(machines, vec![vm("a", "dev", 3), vm("b", "web", 2), vm("c", "db", 2)]);
+        assert_eq!(
+            machines,
+            vec![vm("a", "dev", 3), vm("b", "web", 2), vm("c", "db", 2)]
+        );
     }
 
     #[test]
@@ -9102,7 +10902,10 @@ mod change_configuration_tests {
             ],
         };
         let error = batch.apply(&mut machines).unwrap_err();
-        assert!(error.contains("changed while your edit was waiting"), "{error}");
+        assert!(
+            error.contains("changed while your edit was waiting"),
+            "{error}"
+        );
         // No change survives: neither the new "b" nor the edit to "a".
         assert_eq!(machines, vec![vm("a", "dev", 2)]);
     }

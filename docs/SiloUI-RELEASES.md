@@ -259,6 +259,7 @@ Run the checks relevant to the change from the repository root:
 npm --prefix app/SiloUI run typecheck
 npm --prefix app/SiloUI run lint
 npm --prefix app/SiloUI test
+cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check
 cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -- --test-threads=1
 npm --prefix app/SiloUI run test:release
 python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*.py'
@@ -266,7 +267,9 @@ python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*.py'
 
 Continuous integration runs the same checks. `.github/workflows/ci.yml` runs on
 every push to `main` and every pull request: frontend, script, website and demo
-checks; the Rust suite with synthetic GitHub configuration; and a relative-link
+checks; a blocking [Rust formatting check](https://github.com/rust-lang/rustfmt#verifying-code-is-formatted)
+using the pinned toolchain; the Rust
+suite with synthetic GitHub configuration; and a relative-link
 check of the Markdown documentation with [lychee](https://github.com/lycheeverse/lychee)
 in offline mode. To run that check locally, install lychee and run from the
 repository root:
@@ -288,6 +291,51 @@ version as a comment (`scripts/test_workflow_pins.py` enforces it).
 Native tests require the configuration described above. Frontend fixtures and
 unit tests do not prove installed-app behavior, live VM health, or two-computer
 operation. Keep opt-in live tests separate from ordinary tests.
+
+### Clippy baseline (K-19)
+
+Clippy remains advisory and is not a blocking CI check. On 2026-09-30, Rust
+1.94.0 on `aarch64-apple-darwin`, after the formatting sweep, produced the
+following baseline from `app/SiloUI/src-tauri` with synthetic GitHub values:
+
+```sh
+SILO_GITHUB_APP_SLUG=silo-test SILO_GITHUB_CLIENT_ID=test-client \
+  SILO_GITHUB_CLIENT_SECRET=test-secret cargo clippy --locked --all-targets --message-format=json
+```
+
+The command exited 101: one `clippy::unused_io_amount` error at
+`src/github_http.rs:462` ignores a test server's read length. This lint is
+[denied by default](https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unused_io_amount).
+The 106 emitted warnings below include repeats across binary and test targets;
+deduplicating by lint, message and source spans gives 69 distinct warnings.
+No lint fixes or suppressions were applied. Linux-only code needs a separate
+baseline. See [Clippy usage](https://doc.rust-lang.org/clippy/usage.html) for
+target selection.
+
+| Lint | Emitted warnings |
+| --- | ---: |
+| `clippy::blocks_in_conditions` | 2 |
+| `clippy::bool_assert_comparison` | 1 |
+| `clippy::cloned_ref_to_slice_refs` | 2 |
+| `clippy::field_reassign_with_default` | 23 |
+| `clippy::items_after_test_module` | 4 |
+| `clippy::let_and_return` | 8 |
+| `clippy::manual_contains` | 2 |
+| `clippy::manual_is_multiple_of` | 2 |
+| `clippy::manual_range_contains` | 2 |
+| `clippy::manual_try_fold` | 2 |
+| `clippy::needless_borrow` | 12 |
+| `clippy::needless_return` | 4 |
+| `clippy::nonminimal_bool` | 6 |
+| `clippy::redundant_closure` | 2 |
+| `clippy::too_many_arguments` | 6 |
+| `clippy::type_complexity` | 10 |
+| `clippy::unnecessary_cast` | 6 |
+| `clippy::unnecessary_map_or` | 2 |
+| `clippy::unnecessary_to_owned` | 2 |
+| `clippy::wrong_self_convention` | 2 |
+| `dead_code` (rustc) | 6 |
+| **Total** | **106** |
 
 ## Versioned distribution and updates
 

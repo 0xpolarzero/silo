@@ -184,7 +184,11 @@ pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
     let bytes = match fs::read(journal_path(history)) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("Silo could not read the interrupted export or import: {e}")),
+        Err(e) => {
+            return Err(format!(
+                "Silo could not read the interrupted export or import: {e}"
+            ))
+        }
     };
     let journal: Journal = serde_json::from_slice(&bytes).map_err(|e| {
         format!("Silo could not read the interrupted export or import. The saved file was preserved: {e}")
@@ -253,10 +257,20 @@ fn validate_import_group(group: &str) -> Result<(), String> {
 }
 fn validate_export_capture(capture: &ExportCapture) -> Result<(), String> {
     uuid::Uuid::parse_str(&capture.workspace_id).map_err(|_| "Invalid export capture identity.")?;
-    runtime::validate_name(&capture.group).map_err(|error| error.to_string())
+    runtime::validate_name(&capture.group)
+        .map_err(|error| error.to_string())
         .or_else(|_| validate_import_group(&capture.group))?;
-    let parts: Vec<_> = capture.member.strip_prefix("silo-backup-").unwrap_or_default().split('-').collect();
-    if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit())) {
+    let parts: Vec<_> = capture
+        .member
+        .strip_prefix("silo-backup-")
+        .unwrap_or_default()
+        .split('-')
+        .collect();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
         return Err("Invalid saved export capture member.".into());
     }
     Ok(())
@@ -270,7 +284,10 @@ pub(super) fn export_capture_intent(
     member: Option<&str>,
 ) -> Result<(), backup::BackupError> {
     let capture = member.map(|member| ExportCapture {
-        workspace_id: source.machine_config["id"].as_str().unwrap_or_default().into(),
+        workspace_id: source.machine_config["id"]
+            .as_str()
+            .unwrap_or_default()
+            .into(),
         group: source.snapshot_group.clone(),
         member: member.into(),
     });
@@ -278,10 +295,14 @@ pub(super) fn export_capture_intent(
         validate_export_capture(capture).map_err(backup::BackupError::InvalidRequest)?;
     }
     update(controller, |journal| {
-        if let Request::Backup { pending_capture, .. } = &mut journal.request {
+        if let Request::Backup {
+            pending_capture, ..
+        } = &mut journal.request
+        {
             *pending_capture = capture;
         }
-    }).map_err(backup::BackupError::InvalidRequest)
+    })
+    .map_err(backup::BackupError::InvalidRequest)
 }
 
 pub(super) fn settle_export_capture(
@@ -289,19 +310,37 @@ pub(super) fn settle_export_capture(
     paths: &runtime::RuntimePaths,
     controller: &Controller,
 ) -> Result<(), String> {
-    let capture = controller.journal.lock().map_err(|_| "Saved operation unavailable.")?
-        .as_ref().and_then(|journal| match &journal.request {
-            Request::Backup { pending_capture, .. } => pending_capture.clone(),
+    let capture = controller
+        .journal
+        .lock()
+        .map_err(|_| "Saved operation unavailable.")?
+        .as_ref()
+        .and_then(|journal| match &journal.request {
+            Request::Backup {
+                pending_capture, ..
+            } => pending_capture.clone(),
             _ => None,
         });
-    let Some(capture) = capture else { return Ok(()) };
+    let Some(capture) = capture else {
+        return Ok(());
+    };
     if !runtime::checkpoints::discard_failed_capture(
-        runner, paths, &capture.workspace_id, (capture.group.clone(), capture.member.clone()),
-    ) && !controller.service.export_capture_ready(&capture.group, &capture.member).map_err(|error| error.to_string())? {
+        runner,
+        paths,
+        &capture.workspace_id,
+        (capture.group.clone(), capture.member.clone()),
+    ) && !controller
+        .service
+        .export_capture_ready(&capture.group, &capture.member)
+        .map_err(|error| error.to_string())?
+    {
         return Err(format!("The incomplete export capture {}:{} could not be removed. Its cleanup progress was kept.", capture.group, capture.member));
     }
     update(controller, |journal| {
-        if let Request::Backup { pending_capture, .. } = &mut journal.request {
+        if let Request::Backup {
+            pending_capture, ..
+        } = &mut journal.request
+        {
             *pending_capture = None;
         }
     })
@@ -393,7 +432,10 @@ fn cleanup_archive_partial(journal: &Journal) -> Result<(), String> {
 
 /// Own the new group before `snapshot load` writes any native data. The new
 /// sandbox's identity is added later, before its checkpoint record is saved.
-pub(super) fn save_restore_group(controller: &Controller, import_group: &str) -> Result<(), String> {
+pub(super) fn save_restore_group(
+    controller: &Controller,
+    import_group: &str,
+) -> Result<(), String> {
     validate_import_group(import_group)?;
     update(controller, |journal| {
         if let Request::Restore { group, .. } = &mut journal.request {
@@ -441,7 +483,9 @@ pub(super) fn discard_uncommitted_import(
         controller
             .service
             .discard_import_group(group)
-            .map_err(|error| format!("Silo could not remove the unfinished import {group}: {error}"))?;
+            .map_err(|error| {
+                format!("Silo could not remove the unfinished import {group}: {error}")
+            })?;
     }
     clear_restore_identity(controller)
 }
@@ -452,18 +496,28 @@ pub(super) fn discard_pending_import(
     paths: &runtime::RuntimePaths,
     controller: &Controller,
 ) -> Result<(), String> {
-    let saved = controller.journal.lock().map_err(|_| "Saved operation unavailable.")?
-        .as_ref().and_then(|journal| match &journal.request {
+    let saved = controller
+        .journal
+        .lock()
+        .map_err(|_| "Saved operation unavailable.")?
+        .as_ref()
+        .and_then(|journal| match &journal.request {
             Request::Restore { id, group, .. } => Some((id.clone(), group.clone())),
             _ => None,
         });
-    let Some((id, group)) = saved else { return Ok(()) };
+    let Some((id, group)) = saved else {
+        return Ok(());
+    };
     if let Some(id) = id {
         return discard_uncommitted_import(paths, controller, &id, group.as_deref());
     }
     if let Some(group) = group {
-        controller.service.discard_import_group(&group)
-            .map_err(|error| format!("Silo could not remove the unfinished import {group}: {error}"))?;
+        controller
+            .service
+            .discard_import_group(&group)
+            .map_err(|error| {
+                format!("Silo could not remove the unfinished import {group}: {error}")
+            })?;
         clear_restore_identity(controller)?;
     }
     Ok(())
@@ -501,7 +555,11 @@ pub(super) fn dismiss(controller: &Controller) -> Result<(), String> {
             .and_then(|dir| dir.sync_all())
             .map_err(|e| e.to_string())?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("Could not dismiss the saved export or import result: {e}")),
+        Err(e) => {
+            return Err(format!(
+                "Could not dismiss the saved export or import result: {e}"
+            ))
+        }
     }
     *saved = None;
     Ok(())
@@ -513,12 +571,17 @@ pub(super) fn complete(controller: &Controller, mut operation: Operation) -> Ope
         .lock()
         .ok()
         .and_then(|journal| {
-            journal
-                .as_ref()
-                .map(|j| matches!(&j.request,
-                    Request::Restore { id: Some(_), .. } | Request::Restore { group: Some(_), .. }
-                        | Request::Backup { pending_capture: Some(_), .. }
-                ))
+            journal.as_ref().map(|j| {
+                matches!(
+                    &j.request,
+                    Request::Restore { id: Some(_), .. }
+                        | Request::Restore { group: Some(_), .. }
+                        | Request::Backup {
+                            pending_capture: Some(_),
+                            ..
+                        }
+                )
+            })
         })
         .unwrap_or(false);
     if cleanup_pending {
@@ -652,7 +715,11 @@ pub(super) fn recover_at_paths(
     // snapshot commands that remove an unfinished import can take it.
     drop(command);
     settle_export_capture(&runtime::ProcessRunner, paths, controller)?;
-    let result = |archive: Archive, outcome: &'static str, title: &str, message: &str, detail: Option<&str>| {
+    let result = |archive: Archive,
+                  outcome: &'static str,
+                  title: &str,
+                  message: &str,
+                  detail: Option<&str>| {
         Operation::Result {
             operation: journal.kind(),
             archive,
@@ -688,7 +755,13 @@ pub(super) fn recover_at_paths(
                 });
             }
             Ok(if journal.cancelled {
-                result(journal.archive.clone(), "cancelled", "Export cancelled", "The export was cancelled.", Some("No export file was saved."))
+                result(
+                    journal.archive.clone(),
+                    "cancelled",
+                    "Export cancelled",
+                    "The export was cancelled.",
+                    Some("No export file was saved."),
+                )
             } else {
                 result(
                     journal.archive.clone(),
@@ -701,17 +774,30 @@ pub(super) fn recover_at_paths(
         }
         Request::Restore { id, group, .. } => {
             if let Some(id) = id {
-                let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
+                let metadata =
+                    runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
                 // Saved settings are the import's commit point.
                 if metadata.machines.iter().any(|machine| machine.id() == id) {
-                    return Ok(result(journal.archive.clone(), "success", "Import complete", "Silo verified this import after relaunching.", None));
+                    return Ok(result(
+                        journal.archive.clone(),
+                        "success",
+                        "Import complete",
+                        "Silo verified this import after relaunching.",
+                        None,
+                    ));
                 }
                 discard_uncommitted_import(paths, controller, id, group.as_deref())?;
             } else if group.is_some() {
                 discard_pending_import(paths, controller)?;
             }
             Ok(if journal.cancelled {
-                result(journal.archive.clone(), "cancelled", "Import cancelled", "The import was cancelled.", Some("No sandbox was added."))
+                result(
+                    journal.archive.clone(),
+                    "cancelled",
+                    "Import cancelled",
+                    "The import was cancelled.",
+                    Some("No sandbox was added."),
+                )
             } else {
                 result(
                     journal.archive.clone(),
@@ -759,9 +845,13 @@ mod tests {
 
     fn result_of(operation: &Operation) -> (&'static str, String, String, Option<String>) {
         match operation {
-            Operation::Result { outcome, title, message, detail, .. } => {
-                (*outcome, title.clone(), message.clone(), detail.clone())
-            }
+            Operation::Result {
+                outcome,
+                title,
+                message,
+                detail,
+                ..
+            } => (*outcome, title.clone(), message.clone(), detail.clone()),
             Operation::Running { .. } => panic!("recovery must report a result"),
         }
     }
@@ -788,15 +878,24 @@ mod tests {
         // Journals from older builds list sandboxes that were running when the
         // export began; relaunch used to start them again.
         let id = uuid::Uuid::new_v4().to_string();
-        if let Request::Backup { machines, running, .. } = &mut journal.request {
+        if let Request::Backup {
+            machines, running, ..
+        } = &mut journal.request
+        {
             *machines = vec![("dev".into(), id.clone())];
             *running = vec![("dev".into(), id)];
         }
-        let partial = Path::new(&journal.archive.destination).join(format!(".silo-backup-{}-partial", journal.id));
+        let partial = Path::new(&journal.archive.destination)
+            .join(format!(".silo-backup-{}-partial", journal.id));
         fs::write(&partial, b"incomplete").unwrap();
         begin(&controller, journal.clone()).unwrap();
-        let recovered =
-            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let recovered = recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
         let (outcome, title, _message, detail) = result_of(&recovered);
         assert_eq!((outcome, title.as_str()), ("failed", "Export interrupted"));
         assert!(detail.unwrap().contains("No export file was saved"));
@@ -814,17 +913,30 @@ mod tests {
         let controller = history_controller(directory.path().join("backup-history.json"));
         let mut journal = Journal::backup(export_to(directory.path()), vec!["dev".into()], None);
         journal.cancelled = true;
-        let recovered =
-            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let recovered = recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
         assert_eq!(result_of(&recovered).0, "cancelled");
 
         fs::write(&journal.archive.archive_path, b"not an export").unwrap();
-        let recovered =
-            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let recovered = recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
         let (outcome, title, message, _) = result_of(&recovered);
         assert_eq!((outcome, title.as_str()), ("failed", "Export interrupted"));
         assert!(message.contains("could not be verified"), "{message}");
-        assert_eq!(fs::read(&journal.archive.archive_path).unwrap(), b"not an export");
+        assert_eq!(
+            fs::read(&journal.archive.archive_path).unwrap(),
+            b"not an export"
+        );
     }
 
     #[test]
@@ -842,17 +954,24 @@ mod tests {
             Journal::backup(export_to(directory.path()), vec!["dev".into()], None),
             Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
         ] {
-            let recovered =
-                recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default())
-                    .unwrap();
+            let recovered = recover_at_paths(
+                &paths,
+                &controller,
+                &journal,
+                &backup::Cancellation::default(),
+            )
+            .unwrap();
             assert_eq!(result_of(&recovered).0, "failed");
         }
     }
 
     fn export_source(id: &str) -> backup::BackupSource {
         backup::BackupSource {
-            name: "dev".into(), snapshot_group: "dev".into(), was_running: false,
-            runtime_config: Value::Null, machine_config: serde_json::json!({"id":id}),
+            name: "dev".into(),
+            snapshot_group: "dev".into(),
+            was_running: false,
+            runtime_config: Value::Null,
+            machine_config: serde_json::json!({"id":id}),
             existing_member: None,
         }
     }
@@ -863,7 +982,12 @@ mod tests {
         live_parent: bool,
     }
     impl runtime::RuntimeRunner for PartialCaptureRuntime {
-        fn run(&self, _: &runtime::RuntimePaths, arguments: &[String], _: Duration) -> Result<runtime::CommandOutput, runtime::RuntimeError> {
+        fn run(
+            &self,
+            _: &runtime::RuntimePaths,
+            arguments: &[String],
+            _: Duration,
+        ) -> Result<runtime::CommandOutput, runtime::RuntimeError> {
             self.calls.lock().unwrap().push(arguments.to_vec());
             let stdout = match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
                 ["snapshot", "list", "--format", "json"] => serde_json::json!([
@@ -879,7 +1003,10 @@ mod tests {
                 ["snapshot", "remove", "dev:silo-backup-0-1-2", "--quiet"] => String::new(),
                 _ => panic!("unexpected cleanup command: {arguments:?}"),
             };
-            Ok(runtime::CommandOutput { stdout, stderr: String::new() })
+            Ok(runtime::CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
         }
     }
 
@@ -889,17 +1016,49 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = history_controller(directory.path().join("backup-history.json"));
-        begin(&controller, Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
+        begin(
+            &controller,
+            Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
         let source = export_source(&uuid::Uuid::new_v4().to_string());
         export_capture_intent(&controller, &source, Some("silo-backup-0-1-2")).unwrap();
-        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
-            Request::Backup { pending_capture: Some(_), .. }));
-        let runner = PartialCaptureRuntime { calls: Mutex::new(Vec::new()), fail_remove: false, live_parent: false };
+        assert!(matches!(
+            load(&controller.history_path).unwrap().unwrap().request,
+            Request::Backup {
+                pending_capture: Some(_),
+                ..
+            }
+        ));
+        let runner = PartialCaptureRuntime {
+            calls: Mutex::new(Vec::new()),
+            fail_remove: false,
+            live_parent: false,
+        };
         settle_export_capture(&runner, &paths, &controller).unwrap();
-        assert_eq!(runner.calls.lock().unwrap().iter().filter(|args| args.get(1).is_some_and(|arg| arg == "remove"))
-            .cloned().collect::<Vec<_>>(), vec![vec!["snapshot", "remove", "dev:silo-backup-0-1-2", "--quiet"]]);
-        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
-            Request::Backup { pending_capture: None, .. }));
+        assert_eq!(
+            runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|args| args.get(1).is_some_and(|arg| arg == "remove"))
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![vec![
+                "snapshot",
+                "remove",
+                "dev:silo-backup-0-1-2",
+                "--quiet"
+            ]]
+        );
+        assert!(matches!(
+            load(&controller.history_path).unwrap().unwrap().request,
+            Request::Backup {
+                pending_capture: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -908,17 +1067,45 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
-        begin(&controller, Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
-        export_capture_intent(&controller, &export_source(&uuid::Uuid::new_v4().to_string()), Some("silo-backup-0-1-2")).unwrap();
-        let runner = PartialCaptureRuntime { calls: Mutex::new(Vec::new()), fail_remove: true, live_parent: false };
+        begin(
+            &controller,
+            Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        export_capture_intent(
+            &controller,
+            &export_source(&uuid::Uuid::new_v4().to_string()),
+            Some("silo-backup-0-1-2"),
+        )
+        .unwrap();
+        let runner = PartialCaptureRuntime {
+            calls: Mutex::new(Vec::new()),
+            fail_remove: true,
+            live_parent: false,
+        };
         assert!(settle_export_capture(&runner, &paths, &controller).is_err());
-        complete(&controller, Operation::Result {
-            operation: "backup", archive: completed_archive(), running_names: vec![], target_name: None,
-            outcome: "failed", title: "Export failed".into(), message: "Interrupted capture".into(), detail: None,
-        });
+        complete(
+            &controller,
+            Operation::Result {
+                operation: "backup",
+                archive: completed_archive(),
+                running_names: vec![],
+                target_name: None,
+                outcome: "failed",
+                title: "Export failed".into(),
+                message: "Interrupted capture".into(),
+                detail: None,
+            },
+        );
         let saved = load(&controller.history_path).unwrap().unwrap();
         assert!(saved.terminal.is_none());
-        assert!(matches!(saved.request, Request::Backup { pending_capture: Some(_), .. }));
+        assert!(matches!(
+            saved.request,
+            Request::Backup {
+                pending_capture: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -927,19 +1114,46 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
-        let artifact = paths.home.join("snapshots/dev/snap_00000000000000000000000000000000");
+        let artifact = paths
+            .home
+            .join("snapshots/dev/snap_00000000000000000000000000000000");
         fs::create_dir_all(&artifact).unwrap();
         fs::write(directory.path().join("snapshots.json"), serde_json::json!([
             {"snapshot_id":"snap_00000000000000000000000000000000", "group":"dev", "name":"silo-backup-0-1-2", "availability":"ready", "artifact_path":artifact}
         ]).to_string()).unwrap();
-        begin(&controller, Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
-        export_capture_intent(&controller, &export_source(&uuid::Uuid::new_v4().to_string()), Some("silo-backup-0-1-2")).unwrap();
-        let runner = PartialCaptureRuntime { calls: Mutex::new(Vec::new()), fail_remove: false, live_parent: true };
+        begin(
+            &controller,
+            Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        export_capture_intent(
+            &controller,
+            &export_source(&uuid::Uuid::new_v4().to_string()),
+            Some("silo-backup-0-1-2"),
+        )
+        .unwrap();
+        let runner = PartialCaptureRuntime {
+            calls: Mutex::new(Vec::new()),
+            fail_remove: false,
+            live_parent: true,
+        };
         settle_export_capture(&runner, &paths, &controller).unwrap();
-        assert!(!runner.calls.lock().unwrap().iter().any(|args| args.get(1).is_some_and(|arg| arg == "remove")));
-        assert!(scripted_calls(directory.path()).iter().any(|call| call.starts_with("snapshot verify")));
-        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
-            Request::Backup { pending_capture: None, .. }));
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args.get(1).is_some_and(|arg| arg == "remove")));
+        assert!(scripted_calls(directory.path())
+            .iter()
+            .any(|call| call.starts_with("snapshot verify")));
+        assert!(matches!(
+            load(&controller.history_path).unwrap().unwrap().request,
+            Request::Backup {
+                pending_capture: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -947,7 +1161,11 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
-        begin(&controller, Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
+        begin(
+            &controller,
+            Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         for (id, group, member) in [
             ("invalid", "dev", "silo-backup-0-1-2"),
@@ -958,8 +1176,13 @@ mod tests {
             source.snapshot_group = group.into();
             assert!(export_capture_intent(&controller, &source, Some(member)).is_err());
         }
-        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
-            Request::Backup { pending_capture: None, .. }));
+        assert!(matches!(
+            load(&controller.history_path).unwrap().unwrap().request,
+            Request::Backup {
+                pending_capture: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -976,16 +1199,30 @@ mod tests {
         let paths = temp_paths(directory.path());
         let controller = history_controller(directory.path().join("backup-history.json"));
         let id = uuid::Uuid::new_v4().to_string();
-        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        )
+        .unwrap();
         save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
-        runtime::checkpoints::import_pending_restore(&paths, &id, IMPORT_GROUP, IMPORT_MEMBER).unwrap();
+        runtime::checkpoints::import_pending_restore(&paths, &id, IMPORT_GROUP, IMPORT_MEMBER)
+            .unwrap();
         save_machine(&paths, "copy", &id);
         let journal = load(&controller.history_path).unwrap().unwrap();
-        let recovered =
-            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let recovered = recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
         let (outcome, title, ..) = result_of(&recovered);
         assert_eq!((outcome, title.as_str()), ("success", "Import complete"));
-        assert!(paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
+        assert!(paths
+            .metadata
+            .with_file_name("checkpoints")
+            .join(format!("{id}.json"))
+            .exists());
         complete(&controller, recovered);
         assert!(!pending(&controller).unwrap());
     }
@@ -997,19 +1234,39 @@ mod tests {
         let paths = temp_paths(directory.path());
         let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
         let id = uuid::Uuid::new_v4().to_string();
-        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        )
+        .unwrap();
         save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
-        runtime::checkpoints::import_pending_restore(&paths, &id, IMPORT_GROUP, IMPORT_MEMBER).unwrap();
+        runtime::checkpoints::import_pending_restore(&paths, &id, IMPORT_GROUP, IMPORT_MEMBER)
+            .unwrap();
         // Another sandbox now uses the requested name; it is not this import's.
         save_machine(&paths, "copy", &uuid::Uuid::new_v4().to_string());
         let journal = load(&controller.history_path).unwrap().unwrap();
-        let recovered =
-            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let recovered = recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
         let (outcome, title, _message, detail) = result_of(&recovered);
         assert_eq!((outcome, title.as_str()), ("failed", "Import interrupted"));
         assert!(detail.unwrap().contains("No sandbox was added"));
-        assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
-        assert_eq!(runtime::read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        assert!(!paths
+            .metadata
+            .with_file_name("checkpoints")
+            .join(format!("{id}.json"))
+            .exists());
+        assert_eq!(
+            runtime::read_metadata(&paths.metadata)
+                .unwrap()
+                .machines
+                .len(),
+            1
+        );
         // The journaled import group was removed from the runtime store,
         // child first and root last, and nothing else was touched.
         let removals = scripted_calls(directory.path())
@@ -1034,34 +1291,59 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
-        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        )
+        .unwrap();
         save_restore_group(&controller, IMPORT_GROUP).unwrap();
         // The current runtime does not put a group identity on these random
         // unpacking stages. Recovery must preserve them, never prefix-sweep.
         let stages = [
             paths.home.join("cache/tmp/snapshot-import-unattributed"),
-            paths.home.join("snapshots/.msb-snapshot-import-unattributed"),
+            paths
+                .home
+                .join("snapshots/.msb-snapshot-import-unattributed"),
         ];
         for stage in &stages {
             fs::create_dir_all(stage).unwrap();
             fs::write(stage.join("payload"), b"unattributed").unwrap();
         }
         let journal = load(&controller.history_path).unwrap().unwrap();
-        assert!(matches!(&journal.request, Request::Restore { id: None, group: Some(group), .. } if group == IMPORT_GROUP));
-        let recovered = recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        assert!(
+            matches!(&journal.request, Request::Restore { id: None, group: Some(group), .. } if group == IMPORT_GROUP)
+        );
+        let recovered = recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
         assert_eq!(result_of(&recovered).1, "Import interrupted");
-        assert_eq!(scripted_calls(directory.path()).into_iter().filter(|call| call.starts_with("snapshot remove"))
-            .collect::<Vec<_>>(), [
+        assert_eq!(
+            scripted_calls(directory.path())
+                .into_iter()
+                .filter(|call| call.starts_with("snapshot remove"))
+                .collect::<Vec<_>>(),
+            [
                 format!("snapshot remove --quiet {IMPORT_GROUP}:imported-member"),
                 format!("snapshot remove --quiet {IMPORT_GROUP}:imported-parent"),
-            ]);
+            ]
+        );
         for stage in stages {
             assert_eq!(fs::read(stage.join("payload")).unwrap(), b"unattributed");
         }
         complete(&controller, recovered);
         assert!(!pending(&controller).unwrap());
-        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
-            Request::Restore { id: None, group: None, .. }));
+        assert!(matches!(
+            load(&controller.history_path).unwrap().unwrap().request,
+            Request::Restore {
+                id: None,
+                group: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1070,18 +1352,39 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
-        begin(&controller, Journal::restore(completed_archive(), "copy".into(), None)).unwrap();
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), None),
+        )
+        .unwrap();
         save_restore_group(&controller, IMPORT_GROUP).unwrap();
         fs::write(directory.path().join("refuse-remove"), b"").unwrap();
         let journal = load(&controller.history_path).unwrap().unwrap();
-        assert!(recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).is_err());
-        complete(&controller, Operation::Result {
-            operation: "restore", archive: completed_archive(), running_names: vec![], target_name: Some("copy".into()),
-            outcome: "failed", title: "Import failed".into(), message: "Cleanup failed".into(), detail: None,
-        });
+        assert!(recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default()
+        )
+        .is_err());
+        complete(
+            &controller,
+            Operation::Result {
+                operation: "restore",
+                archive: completed_archive(),
+                running_names: vec![],
+                target_name: Some("copy".into()),
+                outcome: "failed",
+                title: "Import failed".into(),
+                message: "Cleanup failed".into(),
+                detail: None,
+            },
+        );
         let saved = load(&controller.history_path).unwrap().unwrap();
         assert!(saved.terminal.is_none());
-        assert!(matches!(saved.request, Request::Restore { id: None, group: Some(ref group), .. } if group == IMPORT_GROUP));
+        assert!(
+            matches!(saved.request, Request::Restore { id: None, group: Some(ref group), .. } if group == IMPORT_GROUP)
+        );
     }
 
     #[test]
@@ -1092,11 +1395,20 @@ mod tests {
         let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
         fs::write(directory.path().join("refuse-remove"), b"").unwrap();
         let id = uuid::Uuid::new_v4().to_string();
-        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        )
+        .unwrap();
         save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
         let journal = load(&controller.history_path).unwrap().unwrap();
-        let error =
-            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap_err();
+        let error = recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap_err();
         assert!(error.contains(IMPORT_GROUP), "{error}");
         // The next launch retries the cleanup.
         assert!(matches!(
@@ -1112,13 +1424,23 @@ mod tests {
         let paths = temp_paths(directory.path());
         let controller = history_controller(directory.path().join("backup-history.json"));
         let journal = Journal::restore(completed_archive(), "copy".into(), Some("dev".into()));
-        let recovered =
-            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        let recovered = recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
         assert_eq!(result_of(&recovered).1, "Import interrupted");
         let mut cancelled = journal;
         cancelled.cancelled = true;
-        let recovered =
-            recover_at_paths(&paths, &controller, &cancelled, &backup::Cancellation::default()).unwrap();
+        let recovered = recover_at_paths(
+            &paths,
+            &controller,
+            &cancelled,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
         assert_eq!(result_of(&recovered).0, "cancelled");
     }
 
@@ -1128,7 +1450,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
-        begin(&controller, Journal::restore(completed_archive(), "copy".into(), None)).unwrap();
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), None),
+        )
+        .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
         assert!(matches!(
@@ -1164,7 +1490,11 @@ mod tests {
             assert!(!journal_path(&path).exists());
             assert!(token(&controller).unwrap().is_none());
         }
-        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        )
+        .unwrap();
         assert!(load(&path).unwrap().is_some());
     }
 
@@ -1197,24 +1527,20 @@ mod tests {
         .unwrap();
         complete(&controller, result());
         set_operation(&controller, result()).unwrap();
-        assert!(
-            !super::super::dismiss_finished_operation(
-                &controller,
-                Some(&serde_json::to_value(result()).unwrap()),
-                Some(&old_id)
-            )
-            .unwrap()
-        );
+        assert!(!super::super::dismiss_finished_operation(
+            &controller,
+            Some(&serde_json::to_value(result()).unwrap()),
+            Some(&old_id)
+        )
+        .unwrap());
         assert!(controller.view.lock().unwrap().operation.is_some());
         let current_id = token(&controller).unwrap().unwrap();
-        assert!(
-            super::super::dismiss_finished_operation(
-                &controller,
-                Some(&serde_json::to_value(result()).unwrap()),
-                Some(&current_id)
-            )
-            .unwrap()
-        );
+        assert!(super::super::dismiss_finished_operation(
+            &controller,
+            Some(&serde_json::to_value(result()).unwrap()),
+            Some(&current_id)
+        )
+        .unwrap());
     }
 
     #[test]
@@ -1228,7 +1554,8 @@ mod tests {
             Journal::restore(completed_archive(), "restored".into(), Some("dev".into())),
         )
         .unwrap();
-        save_restore_identity(&controller, &uuid::Uuid::new_v4().to_string(), IMPORT_GROUP).unwrap();
+        save_restore_identity(&controller, &uuid::Uuid::new_v4().to_string(), IMPORT_GROUP)
+            .unwrap();
         let failure = || Operation::Result {
             operation: "restore",
             archive: completed_archive(),
@@ -1246,13 +1573,11 @@ mod tests {
         assert!(load(&path).unwrap().unwrap().terminal.is_none());
         dismiss(&controller).unwrap();
         assert!(load(&path).unwrap().is_some());
-        assert!(
-            begin(
-                &controller,
-                Journal::backup(completed_archive(), vec!["dev".into()], None)
-            )
-            .is_err()
-        );
+        assert!(begin(
+            &controller,
+            Journal::backup(completed_archive(), vec!["dev".into()], None)
+        )
+        .is_err());
         clear_restore_identity(&controller).unwrap();
         complete(&controller, failure());
         assert!(load(&path).unwrap().unwrap().terminal.is_some());
@@ -1353,13 +1678,11 @@ mod tests {
             matches!(reloaded.request, Request::Restore { id: Some(ref saved), ref name, .. } if saved == &id && name == "restored")
         );
         assert!(matches!(reloaded.operation(), Operation::Running { .. }));
-        assert!(
-            begin(
-                &controller,
-                Journal::backup(completed_archive(), vec!["dev".into()], None)
-            )
-            .is_err()
-        );
+        assert!(begin(
+            &controller,
+            Journal::backup(completed_archive(), vec!["dev".into()], None)
+        )
+        .is_err());
     }
 
     #[test]
@@ -1392,7 +1715,10 @@ mod tests {
         );
         assert!(matches!(
             load(&path).unwrap().unwrap().operation(),
-            Operation::Result { outcome: "success", .. }
+            Operation::Result {
+                outcome: "success",
+                ..
+            }
         ));
         begin(
             &controller,

@@ -253,13 +253,18 @@ pub(crate) fn runtime_material(
 pub(crate) fn fork_assignments(source: &str, target: &str) -> Result<(), String> {
     let _operation = try_lock_unit(&OPERATION)
         .ok_or_else(|| "Secret settings are busy. Retry the fork.".to_string())?;
-    update(|document| { copy_assignment_refs(document, source, target); Ok(()) })
+    update(|document| {
+        copy_assignment_refs(document, source, target);
+        Ok(())
+    })
 }
 
 fn copy_assignment_refs(document: &mut Document, source: &str, target: &str) {
     for secret in &mut document.secrets {
-        if !secret.removing && secret.workspaces.iter().any(|name| name == source)
-            && !secret.workspaces.iter().any(|name| name == target) {
+        if !secret.removing
+            && secret.workspaces.iter().any(|name| name == source)
+            && !secret.workspaces.iter().any(|name| name == target)
+        {
             secret.workspaces.push(target.into());
         }
     }
@@ -291,7 +296,11 @@ pub(crate) fn workspace_revision(workspace: &str) -> Result<String, String> {
 /// Per workspace, a counter of verified starts and the secret revision they booted.
 static STARTS: Mutex<BTreeMap<String, (u64, String)>> = Mutex::new(BTreeMap::new());
 fn last_start(workspace: &str) -> Option<(u64, String)> {
-    STARTS.lock().unwrap_or_else(PoisonError::into_inner).get(workspace).cloned()
+    STARTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(workspace)
+        .cloned()
 }
 pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Result<(), String> {
     // Called only after runtime verification. No operation lock: start owns the runtime lock.
@@ -352,7 +361,10 @@ pub(crate) fn reserved_secret_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     let reserved = reserved_secret_names();
     reserved.names.iter().any(|reserved| *reserved == upper)
-        || reserved.prefixes.iter().any(|prefix| upper.starts_with(prefix.as_str()))
+        || reserved
+            .prefixes
+            .iter()
+            .any(|prefix| upper.starts_with(prefix.as_str()))
 }
 
 fn valid_name(name: &str) -> bool {
@@ -502,14 +514,18 @@ fn reconcile_with(
             }
         };
         let result = match result {
-            Err(_) if secret.removing && {
-                // Reading the VM's state can wait on the runtime; do not block other
-                // secret operations meanwhile.
-                *operation = None;
-                let revoked = revoked(&workspace);
-                *operation = Some(lock_unit(&OPERATION));
-                revoked
-            } => Ok(Vec::new()),
+            Err(_)
+                if secret.removing && {
+                    // Reading the VM's state can wait on the runtime; do not block other
+                    // secret operations meanwhile.
+                    *operation = None;
+                    let revoked = revoked(&workspace);
+                    *operation = Some(lock_unit(&OPERATION));
+                    revoked
+                } =>
+            {
+                Ok(Vec::new())
+            }
             other => other,
         };
         update(|document| {
@@ -748,7 +764,10 @@ mod tests {
     #[test]
     fn fork_copies_current_assignment_reference_without_copying_value() {
         let _test_state = crate::test_support::global_state();
-        let mut document = Document { secrets: vec![secret()], activities: Vec::new() };
+        let mut document = Document {
+            secrets: vec![secret()],
+            activities: Vec::new(),
+        };
         copy_assignment_refs(&mut document, "dev", "fork");
         assert_eq!(document.secrets[0].workspaces, ["dev", "fork"]);
         assert_eq!(document.secrets[0].value_id, "private-reference");
@@ -799,12 +818,22 @@ mod tests {
     #[test]
     fn saving_and_applying_secrets_share_one_reserved_name_list() {
         let _test_state = crate::test_support::global_state();
-        assert!(!reserved_secret_names().names.is_empty() && !reserved_secret_names().prefixes.is_empty());
+        assert!(
+            !reserved_secret_names().names.is_empty()
+                && !reserved_secret_names().prefixes.is_empty()
+        );
         for name in ["no_proxy", "Path", "silo_anything", "RUST_LOG"] {
             assert!(reserved_secret_name(name), "{name}");
             // The runtime refuses the same names even if a saved document contained them.
-            let material = vec![(name.to_string(), "value".to_string(), vec!["api.example.com".to_string()])];
-            assert!(crate::runtime::validate_secret_material_for_tests(&material).is_err(), "{name}");
+            let material = vec![(
+                name.to_string(),
+                "value".to_string(),
+                vec!["api.example.com".to_string()],
+            )];
+            assert!(
+                crate::runtime::validate_secret_material_for_tests(&material).is_err(),
+                "{name}"
+            );
         }
         assert!(!reserved_secret_name("API_KEY"));
     }
@@ -837,12 +866,12 @@ mod tests {
     fn allowed_domain_syntax_intent_matches_owner_decision_four() {
         let _test_state = crate::test_support::global_state();
         for accepted in [
-            "*",                     // explicit opt-in to every domain
-            "*.co.uk",               // public-suffix wildcards are allowed by decision
+            "*",       // explicit opt-in to every domain
+            "*.co.uk", // public-suffix wildcards are allowed by decision
             "*.github.io",
             "*.vercel.app",
-            "localhost",             // single-label hosts are allowed
-            "127.0.0.1",             // IPv4 literals parse as numeric labels
+            "localhost", // single-label hosts are allowed
+            "127.0.0.1", // IPv4 literals parse as numeric labels
             "10.0.0.1",
             "xn--bcher-kva.example", // punycode labels
             "a-b.example.com",
@@ -850,15 +879,15 @@ mod tests {
             assert!(valid_domain(accepted), "{accepted} should be accepted");
         }
         for rejected in [
-            "*.com",           // a wildcard needs at least two labels
+            "*.com", // a wildcard needs at least two labels
             "*.xn--p1ai",
-            "example.com.",    // trailing dot: use the name without it
+            "example.com.", // trailing dot: use the name without it
             ".example.com",
             "API.example.com", // names must be entered in lower case
             "*.*.example.com", // only one leading wildcard label
             "a*.example.com",
             "*example.com",
-            "::1",             // IPv6 literals are not supported
+            "::1", // IPv6 literals are not supported
             "[::1]",
             "exa mple.com",
             "b\u{fc}cher.example", // use punycode for internationalized names
@@ -911,7 +940,9 @@ mod tests {
         assert_eq!(public(&secret)["state"], "restart-required");
         secret.affected.push("other".into());
         assert_eq!(public(&secret)["state"], "applying");
-        secret.errors.insert("other".into(), "Could not apply changes.".into());
+        secret
+            .errors
+            .insert("other".into(), "Could not apply changes.".into());
         assert_eq!(public(&secret)["state"], "restart-required");
         assert!(public(&secret)["error"].is_string());
         secret.affected.clear();
@@ -940,9 +971,15 @@ mod tests {
         let failed_at = Instant::now();
         let mut cached: Cached = Some((Err(STORE_ERROR.into()), failed_at));
         expire_failure(&mut cached, failed_at + Duration::from_secs(1));
-        assert!(cached.is_some(), "a fresh failure is not retried in a tight loop");
+        assert!(
+            cached.is_some(),
+            "a fresh failure is not retried in a tight loop"
+        );
         expire_failure(&mut cached, failed_at + STORE_RETRY_AFTER);
-        assert!(cached.is_none(), "an old failure no longer blocks VM starts");
+        assert!(
+            cached.is_none(),
+            "an old failure no longer blocks VM starts"
+        );
         let mut unlocked: Cached = Some((Ok(Vault::new()), failed_at));
         expire_failure(&mut unlocked, failed_at + STORE_RETRY_AFTER * 100);
         assert!(unlocked.is_some(), "successful reads stay cached");
@@ -956,7 +993,11 @@ mod tests {
         assigned.workspaces = vec!["dev".into(), "other".into()];
         assigned.pending_workspaces = vec!["dev".into()];
         assigned.errors.insert("dev".into(), "Retry".into());
-        save(&Document { secrets: vec![assigned], activities: Vec::new() }).unwrap();
+        save(&Document {
+            secrets: vec![assigned],
+            activities: Vec::new(),
+        })
+        .unwrap();
         workspace_removed("dev").unwrap();
         let document = load().unwrap();
         let kept = &document.secrets[0];
@@ -965,7 +1006,10 @@ mod tests {
         assert!(kept.errors.is_empty());
         // A new `dev` selects no secrets, so no credential-store read happens.
         assert!(runtime_material("dev").unwrap().is_empty());
-        assert_eq!(workspace_revision("dev").unwrap(), revision(&Document::default(), "dev"));
+        assert_eq!(
+            workspace_revision("dev").unwrap(),
+            revision(&Document::default(), "dev")
+        );
         use_test_store(None);
     }
     #[test]
@@ -973,7 +1017,11 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
-        save(&Document { secrets: vec![secret()], activities: Vec::new() }).unwrap();
+        save(&Document {
+            secrets: vec![secret()],
+            activities: Vec::new(),
+        })
+        .unwrap();
         let mut operation = Some(lock_unit(&OPERATION));
         let mut applied = Vec::new();
         reconcile_with(
@@ -997,10 +1045,17 @@ mod tests {
             &|| {},
         )
         .unwrap();
-        assert!(operation.is_some(), "the lock is held again when reconcile returns");
+        assert!(
+            operation.is_some(),
+            "the lock is held again when reconcile returns"
+        );
         assert!(try_lock_unit(&OPERATION).is_none());
         drop(operation);
-        assert_eq!(applied, ["dev", "dev"], "the newer desired state is applied again");
+        assert_eq!(
+            applied,
+            ["dev", "dev"],
+            "the newer desired state is applied again"
+        );
         let document = load().unwrap();
         assert_eq!(public(&document.secrets[0])["state"], "active");
         use_test_store(None);
@@ -1013,7 +1068,11 @@ mod tests {
         let mut assigned = secret();
         assigned.workspaces = vec!["restarting".into()];
         assigned.affected = vec!["restarting".into()];
-        save(&Document { secrets: vec![assigned], activities: Vec::new() }).unwrap();
+        save(&Document {
+            secrets: vec![assigned],
+            activities: Vec::new(),
+        })
+        .unwrap();
         let mut operation = Some(lock_unit(&OPERATION));
         reconcile_with(
             "id",
@@ -1040,12 +1099,18 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
-        use_test_vault(Some([("private-reference".to_string(), "private-value".to_string())].into()));
+        use_test_vault(Some(
+            [("private-reference".to_string(), "private-value".to_string())].into(),
+        ));
         let mut removing = secret();
         removing.workspaces = vec!["deleted".into(), "running".into()];
         removing.affected = removing.workspaces.clone();
         removing.removing = true;
-        save(&Document { secrets: vec![removing], activities: Vec::new() }).unwrap();
+        save(&Document {
+            secrets: vec![removing],
+            activities: Vec::new(),
+        })
+        .unwrap();
         let reconcile = |running_revoked: bool| {
             let mut operation = Some(lock_unit(&OPERATION));
             reconcile_with(
@@ -1063,7 +1128,10 @@ mod tests {
         // so the tombstone and the credential remain until it confirms.
         reconcile(false);
         let document = load().unwrap();
-        assert_eq!(document.secrets[0].errors.keys().collect::<Vec<_>>(), ["running"]);
+        assert_eq!(
+            document.secrets[0].errors.keys().collect::<Vec<_>>(),
+            ["running"]
+        );
         assert_eq!(document.secrets[0].affected, ["running"]);
         assert!(read_vault().unwrap().contains_key("private-reference"));
         // Once that VM is stopped as well, removal finishes and the value is deleted.

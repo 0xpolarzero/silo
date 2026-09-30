@@ -161,14 +161,17 @@ fn modify(
     }
     // Runtime output can contain upstream diagnostics; never capture secret
     // update output in logs or temp files. Report a fixed actionable error.
-    let result = spawn_runtime(paths, RuntimeLaunch {
-        args: &args,
-        timeout: MUTATION_TIMEOUT,
-        material,
-        github_profile: &github_environment(paths, &args),
-        capture: false,
-        report: &ignore_progress,
-    });
+    let result = spawn_runtime(
+        paths,
+        RuntimeLaunch {
+            args: &args,
+            timeout: MUTATION_TIMEOUT,
+            material,
+            github_profile: &github_environment(paths, &args),
+            capture: false,
+            report: &ignore_progress,
+        },
+    );
     result.map(|_| ()).map_err(modify_error)
 }
 
@@ -327,7 +330,7 @@ mod tests {
 
     #[test]
     fn attempt_classifies_transient_and_final_and_preserves_the_message() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let transient = Attempt::Transient("timed out".into());
         let final_error = Attempt::Final("rejected".into());
         assert!(transient.is_transient());
@@ -345,7 +348,7 @@ mod tests {
 
     #[test]
     fn modify_child_is_killed_and_reported_cancelled_when_the_operation_is_cancelled() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         // A long-running stand-in child models a `modify` runtime command; cancelling the
         // owning operation must kill it and return a non-transient `Cancelled` so the retry
         // boundary does not re-run the update.
@@ -354,11 +357,17 @@ mod tests {
         let paths = super::super::tests::paths(&directory);
         fs::create_dir_all(&paths.home).unwrap();
         fs::write(&paths.library, b"test").unwrap();
-        fs::write(&paths.executable, "#!/bin/sh\necho $$ > \"$MSB_HOME/modify.pid\"\nexec sleep 30\n").unwrap();
+        fs::write(
+            &paths.executable,
+            "#!/bin/sh\necho $$ > \"$MSB_HOME/modify.pid\"\nexec sleep 30\n",
+        )
+        .unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         let gate: &'static operation_gate::OperationGate =
             Box::leak(Box::new(operation_gate::OperationGate::new()));
-        let guard = gate.vm("secret-cancel-id", "secret-cancel", "Saving secrets").unwrap();
+        let guard = gate
+            .vm("secret-cancel-id", "secret-cancel", "Saving secrets")
+            .unwrap();
         guard.allow_cancel();
         let id = gate.snapshot().running[0].id;
         let token = guard.cancel_token();
@@ -366,16 +375,28 @@ mod tests {
         // Cancel once the runtime child is running; the guard was acquired on this thread,
         // so the shared launcher observes the current-operation token on its next poll.
         let canceller = thread::spawn(move || {
-            while !pid_file.exists() { thread::sleep(Duration::from_millis(10)); }
+            while !pid_file.exists() {
+                thread::sleep(Duration::from_millis(10));
+            }
             token.store(true, Ordering::SeqCst);
         });
         let started = Instant::now();
-        let result = modify(&paths, "secret-cancel", &["--secret-rm".into(), "OLD".into()], &Vec::new(), false);
+        let result = modify(
+            &paths,
+            "secret-cancel",
+            &["--secret-rm".into(), "OLD".into()],
+            &Vec::new(),
+            false,
+        );
         canceller.join().unwrap();
         assert!(matches!(result, Err(Attempt::Cancelled(_))), "{result:?}");
         assert!(started.elapsed() < Duration::from_secs(20));
         // The child was killed and reaped, so its pid no longer names a live process.
-        let pid: i32 = fs::read_to_string(paths.home.join("modify.pid")).unwrap().trim().parse().unwrap();
+        let pid: i32 = fs::read_to_string(paths.home.join("modify.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
         let _ = id;
         drop(guard);
@@ -386,7 +407,7 @@ mod tests {
     }
     #[test]
     fn separates_live_revocation_and_rotation_from_pending_additions() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let inspected = InspectedSandbox {
             runtime_instance_id: None,
             updated_at: None,
@@ -423,7 +444,7 @@ mod tests {
     }
     #[test]
     fn stopped_additions_apply_on_next_boot_without_pending_restart() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let inspected = InspectedSandbox {
             runtime_instance_id: None,
             updated_at: None,
@@ -443,21 +464,34 @@ mod tests {
     }
     #[test]
     fn generated_sources_are_stable_and_distinct_from_guest_names() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         // Same vector as the bundled CLI patch, independent of assignment order.
-        assert_eq!(source_name("API_KEY"), "SILO_SECRET_272068193077316117667065620025266693635");
+        assert_eq!(
+            source_name("API_KEY"),
+            "SILO_SECRET_272068193077316117667065620025266693635"
+        );
         assert_ne!(source_name("API_KEY"), source_name("OTHER"));
-        let all = vec![("OTHER".into(), "other-value".into(), vec!["*".into()]), ("API_KEY".into(), "api-value".into(), vec!["*".into()])];
+        let all = vec![
+            ("OTHER".into(), "other-value".into(), vec!["*".into()]),
+            ("API_KEY".into(), "api-value".into(), vec!["*".into()]),
+        ];
         let one = vec![all[1].clone()];
-        let full: Value = serde_json::from_slice(&secret_values_document(&all, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
-        let reduced: Value = serde_json::from_slice(&secret_values_document(&one, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
-        assert_eq!(full[&source_name("API_KEY")], reduced[&source_name("API_KEY")]);
+        let full: Value =
+            serde_json::from_slice(&secret_values_document(&all, DISABLED_GITHUB_PROFILE).unwrap())
+                .unwrap();
+        let reduced: Value =
+            serde_json::from_slice(&secret_values_document(&one, DISABLED_GITHUB_PROFILE).unwrap())
+                .unwrap();
+        assert_eq!(
+            full[&source_name("API_KEY")],
+            reduced[&source_name("API_KEY")]
+        );
         assert!(reduced.get("API_KEY").is_none());
     }
 
     #[test]
     fn verification_requires_host_reference_tls_and_exact_domains() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let material = vec![(
             "TOKEN".into(),
             "never-durable".into(),
@@ -477,7 +511,7 @@ mod tests {
     }
     #[test]
     fn rejects_host_environment_overrides_and_inline_argument_injection() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         for name in [
             "PATH",
             "MSB_HOME",

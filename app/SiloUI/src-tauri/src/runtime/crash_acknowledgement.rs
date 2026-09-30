@@ -80,7 +80,9 @@ pub(super) fn dismiss(
         file.persist(&target)?;
         File::open(directory)?.sync_all()
     };
-    save().map_err(|_| RuntimeError::Unavailable("The crash could not be dismissed. Retry.".into()))?;
+    save().map_err(|_| {
+        RuntimeError::Unavailable("The crash could not be dismissed. Retry.".into())
+    })?;
     runtime_activity::acknowledge_failure(paths, machine.id())
 }
 pub(super) fn clear(paths: &RuntimePaths, name: &str) -> Result<(), RuntimeError> {
@@ -103,7 +105,14 @@ mod tests {
     fn configured(dir: &tempfile::TempDir, id: &str) -> (RuntimePaths, MachineConfiguration) {
         let paths = super::super::tests::paths(dir);
         let machine: MachineConfiguration = serde_json::from_value(json!({"kind":"vm","id":id,"name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1})).unwrap();
-        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![machine.clone()] }).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine.clone()],
+            },
+        )
+        .unwrap();
         (paths, machine)
     }
     fn report(status: &str, id: &str, updated_at: Option<&str>) -> Value {
@@ -116,9 +125,17 @@ mod tests {
     /// Answers only `inspect`: dismissal must never change the VM.
     struct Inspect(Value);
     impl RuntimeRunner for Inspect {
-        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+        fn run(
+            &self,
+            _: &RuntimePaths,
+            args: &[String],
+            _: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
             assert_eq!(args[0], "inspect");
-            Ok(CommandOutput { stdout: self.0.to_string(), stderr: String::new() })
+            Ok(CommandOutput {
+                stdout: self.0.to_string(),
+                stderr: String::new(),
+            })
         }
     }
 
@@ -129,11 +146,19 @@ mod tests {
         dismiss(&Inspect(report("Crashed", ID, AT)), &paths, "dev").unwrap();
         assert!(is_acknowledged(&paths, &machine, &crash(ID, AT)));
         // A later crash of the same VM is a new crash.
-        assert!(!is_acknowledged(&paths, &machine, &crash(ID, Some("2026-09-16T00:00:00.124Z"))));
+        assert!(!is_acknowledged(
+            &paths,
+            &machine,
+            &crash(ID, Some("2026-09-16T00:00:00.124Z"))
+        ));
         // A crash reported without a timestamp can never match an acknowledgement.
         assert!(!is_acknowledged(&paths, &machine, &crash(ID, None)));
         // Another runtime identity under the same name is not the acknowledged VM.
-        assert!(!is_acknowledged(&paths, &machine, &crash("replacement", AT)));
+        assert!(!is_acknowledged(
+            &paths,
+            &machine,
+            &crash("replacement", AT)
+        ));
     }
 
     #[test]
@@ -153,7 +178,10 @@ mod tests {
         let plain = fingerprint(&machine, &crash(ID, Some("1,2"))).unwrap();
         let quoted = fingerprint(&machine, &crash(ID, Some("1\",\"2"))).unwrap();
         assert_ne!(plain, quoted);
-        assert_eq!(serde_json::from_str::<Vec<String>>(&quoted).unwrap(), vec![ID, "dev", "1\",\"2"]);
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&quoted).unwrap(),
+            vec![ID, "dev", "1\",\"2"]
+        );
     }
 
     #[test]
@@ -171,7 +199,11 @@ mod tests {
     fn dismissal_rejects_a_crash_it_cannot_identify_and_saves_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let (paths, machine) = configured(&dir, ID);
-        for observed in [report("Crashed", ID, None), report("Crashed", "replacement", AT), report("Running", ID, AT)] {
+        for observed in [
+            report("Crashed", ID, None),
+            report("Crashed", "replacement", AT),
+            report("Running", ID, AT),
+        ] {
             assert!(dismiss(&Inspect(observed), &paths, "dev").is_err());
         }
         assert!(!path(&paths, &machine).exists());

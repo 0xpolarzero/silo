@@ -21,7 +21,11 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         WindowEvent::Focused(false) => {
             if let Some(panel) = handle.get_webview_window("status") {
                 if panel.is_visible().unwrap_or(false) {
-                    *handle.state::<PanelState>().blurred_at.lock().unwrap_or_else(|error| error.into_inner()) = Some(Instant::now());
+                    *handle
+                        .state::<PanelState>()
+                        .blurred_at
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = Some(Instant::now());
                     report(panel.hide());
                 }
             }
@@ -56,7 +60,10 @@ pub fn toggle(app: &AppHandle, anchor: PhysicalPosition<f64>) -> tauri::Result<(
     if panel.is_visible()? || just_blurred {
         return panel.hide();
     }
-    *state.anchor.lock().unwrap_or_else(|error| error.into_inner()) = Some(anchor);
+    *state
+        .anchor
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(anchor);
     position(app)?;
     app.emit_to("status", "desktop:status-opened", ())?;
     panel.show()?;
@@ -67,7 +74,12 @@ fn position(app: &AppHandle) -> tauri::Result<()> {
     let Some(panel) = app.get_webview_window("status") else {
         return Ok(());
     };
-    let Some(anchor) = *app.state::<PanelState>().anchor.lock().unwrap_or_else(|error| error.into_inner()) else {
+    let Some(anchor) = *app
+        .state::<PanelState>()
+        .anchor
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+    else {
         return Ok(());
     };
     let monitor = app
@@ -141,7 +153,10 @@ pub fn hide_status(app: AppHandle) -> tauri::Result<()> {
 #[tauri::command]
 pub fn open_main(app: AppHandle, route: Option<serde_json::Value>) -> tauri::Result<()> {
     if let Some(route) = route {
-        *app.state::<PanelState>().route.lock().unwrap_or_else(|error| error.into_inner()) = Some(route);
+        *app.state::<PanelState>()
+            .route
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(route);
         app.emit_to("main", "desktop:route-requested", ())?;
     }
     hide_status(app.clone())?;

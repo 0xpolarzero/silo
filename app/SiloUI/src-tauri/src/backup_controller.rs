@@ -8,8 +8,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -276,7 +276,9 @@ pub(crate) fn wait_for_migration_recovery(app: &AppHandle) -> Result<(), String>
 
 fn wait_for_recovery_with(app: &AppHandle, migration: bool) -> Result<(), String> {
     let controller = app.state::<Arc<Controller>>();
-    wait_for_controller_recovery(&controller, migration, &|| crate::startup::is_cancelled(app))
+    wait_for_controller_recovery(&controller, migration, &|| {
+        crate::startup::is_cancelled(app)
+    })
 }
 
 fn wait_for_controller_recovery(
@@ -287,7 +289,9 @@ fn wait_for_controller_recovery(
     let pending = controller
         .journal
         .lock()
-        .map_err(|_| "Export and import recovery status could not be read. Relaunch Silo and retry.")?
+        .map_err(|_| {
+            "Export and import recovery status could not be read. Relaunch Silo and retry."
+        })?
         .as_ref()
         .filter(|journal| journal.is_pending() && (migration || journal.blocks_startup()))
         .map(|journal| journal.identity().to_string());
@@ -302,7 +306,9 @@ fn wait_for_controller_recovery(
         let pending = controller
             .journal
             .lock()
-            .map_err(|_| "Export and import recovery status could not be read. Relaunch Silo and retry.")?
+            .map_err(|_| {
+                "Export and import recovery status could not be read. Relaunch Silo and retry."
+            })?
             .as_ref()
             .is_some_and(|journal| journal.identity() == identity && journal.is_pending());
         if !pending {
@@ -382,10 +388,9 @@ pub(crate) async fn read_backup_state(
 
 fn backup_state(controller: &Controller) -> Result<BackupState, String> {
     let (journal_error, operation) = {
-        let view = controller
-            .view
-            .lock()
-            .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?;
+        let view = controller.view.lock().map_err(|_| {
+            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+        })?;
         (view.journal_error.clone(), view.operation.clone())
     };
     let availability_message = journal_error.or_else(|| {
@@ -416,7 +421,9 @@ pub(crate) async fn choose_backup_destination(
     let starting_directory = controller
         .view
         .lock()
-        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?
+        .map_err(|_| {
+            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+        })?
         .destination
         .clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -546,7 +553,11 @@ fn finish_inspection(controller: &Controller, request_id: &str) {
         .view
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if view.inspection.as_ref().is_some_and(|(id, _)| id == request_id) {
+    if view
+        .inspection
+        .as_ref()
+        .is_some_and(|(id, _)| id == request_id)
+    {
         view.inspection = None;
     }
 }
@@ -601,7 +612,9 @@ pub(crate) async fn reveal_backup_archive(
     let operation = controller
         .view
         .lock()
-        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?
+        .map_err(|_| {
+            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+        })?
         .operation
         .clone();
     // The file check and the platform file manager can block; neither runs
@@ -645,7 +658,9 @@ fn set_operation(controller: &Controller, operation: Operation) -> Result<(), St
     controller
         .view
         .lock()
-        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?
+        .map_err(|_| {
+            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+        })?
         .operation = Some(operation);
     Ok(())
 }
@@ -712,7 +727,9 @@ fn begin_export(
     let selected_destination = controller
         .view
         .lock()
-        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?
+        .map_err(|_| {
+            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+        })?
         .destination
         .clone();
     let canonical = PathBuf::from(&destination)
@@ -739,7 +756,11 @@ fn begin_export(
             .machines
             .iter()
             .find(|machine| machine.is_vm() && machine.name() == sandbox)
-            .ok_or_else(|| format!("Sandbox '{sandbox}' is not managed by Silo. Choose a Silo sandbox to export."))?;
+            .ok_or_else(|| {
+                format!(
+                    "Sandbox '{sandbox}' is not managed by Silo. Choose a Silo sandbox to export."
+                )
+            })?;
         let (_group, _member, _scope, name) =
             runtime::checkpoints::export_source(&paths, machine.id(), checkpoint_id)
                 .map_err(|error| error.to_string())?;
@@ -842,7 +863,8 @@ fn claim_export(
         },
         None => Phase {
             title: "Capture and verify".into(),
-            detail: "Silo is capturing and verifying the sandbox disks for this export file.".into(),
+            detail: "Silo is capturing and verifying the sandbox disks for this export file."
+                .into(),
             tone: "running",
         },
     };
@@ -1024,8 +1046,16 @@ fn failed_transfer(
         "No sandbox was added. The export file was not changed."
     });
     let (outcome, title, message) = match (error.cancelled, export) {
-        (true, true) => ("cancelled", "Export cancelled", "The export was cancelled.".to_string()),
-        (true, false) => ("cancelled", "Import cancelled", "The import was cancelled.".to_string()),
+        (true, true) => (
+            "cancelled",
+            "Export cancelled",
+            "The export was cancelled.".to_string(),
+        ),
+        (true, false) => (
+            "cancelled",
+            "Import cancelled",
+            "The import was cancelled.".to_string(),
+        ),
         (false, true) => ("failed", "Export failed", error.message),
         (false, false) => ("failed", "Import failed", error.message),
     };
@@ -1051,7 +1081,10 @@ fn show_queued(controller: &Controller) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(Operation::Running { phases, .. }) = view.operation.as_mut() {
-        if phases.first().is_some_and(|phase| phase.title == QUEUED_PHASE) {
+        if phases
+            .first()
+            .is_some_and(|phase| phase.title == QUEUED_PHASE)
+        {
             return;
         }
         for phase in phases.iter_mut() {
@@ -1108,12 +1141,17 @@ fn mutation_guard(
     let queued = std::cell::Cell::new(false);
     let mut guard = runtime::OPERATIONS
         .kind(kind)
-        .acquire_while(runtime::operation_gate::Scope::Computer, None, label, &|| {
-            if !queued.replace(true) {
-                on_queued();
-            }
-            !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
-        })
+        .acquire_while(
+            runtime::operation_gate::Scope::Computer,
+            None,
+            label,
+            &|| {
+                if !queued.replace(true) {
+                    on_queued();
+                }
+                !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
+            },
+        )
         .map_err(|error| match error {
             runtime::operation_gate::GateError::Abandoned if cancellation.cancelled() => {
                 TransferError::cancelled()
@@ -1170,7 +1208,9 @@ fn backup_work(
             .machines
             .iter()
             .find(|machine| machine.is_vm() && machine.name() == name)
-            .ok_or_else(|| format!("Sandbox '{name}' is not managed by Silo. Choose a Silo sandbox to export."))?;
+            .ok_or_else(|| {
+                format!("Sandbox '{name}' is not managed by Silo. Choose a Silo sandbox to export.")
+            })?;
         let mut inspected = inspect(&paths, name)?;
         runtime::ensure_managed(&inspected).map_err(|error| error.to_string())?;
         canonicalize_backup_runtime(&mut inspected.config)?;
@@ -1211,7 +1251,9 @@ fn backup_work(
     let result = match result {
         Ok(result) => result,
         Err(error) => {
-            if let Err(cleanup) = recovery::settle_export_capture(&runtime::ProcessRunner, &paths, controller) {
+            if let Err(cleanup) =
+                recovery::settle_export_capture(&runtime::ProcessRunner, &paths, controller)
+            {
                 return Err(format!("{error} {cleanup}").into());
             }
             return Err(error.into());
@@ -1239,7 +1281,10 @@ fn backup_volumes(
     else {
         return Err("Only local sandboxes have exportable disk storage.".into());
     };
-    if !normalize_backup_root_capacity(&mut inspected.config, u64::from(*runtime_storage_gib) * 1024) {
+    if !normalize_backup_root_capacity(
+        &mut inspected.config,
+        u64::from(*runtime_storage_gib) * 1024,
+    ) {
         return Err(format!(
             "{name} root disk capacity does not match its saved runtime storage."
         ));
@@ -1287,7 +1332,10 @@ fn backup_volumes(
 }
 
 fn normalize_backup_root_capacity(config: &mut Value, expected_mib: u64) -> bool {
-    let Some(root) = config.pointer_mut("/image/Oci/root_disk").and_then(Value::as_object_mut) else {
+    let Some(root) = config
+        .pointer_mut("/image/Oci/root_disk")
+        .and_then(Value::as_object_mut)
+    else {
         return false;
     };
     if let Some(size) = root.get("size_mib") {
@@ -1304,7 +1352,9 @@ fn normalize_backup_root_capacity(config: &mut Value, expected_mib: u64) -> bool
 }
 
 fn canonicalize_backup_runtime(config: &mut Value) -> Result<(), String> {
-    let object = config.as_object_mut().ok_or("The runtime returned invalid sandbox settings.")?;
+    let object = config
+        .as_object_mut()
+        .ok_or("The runtime returned invalid sandbox settings.")?;
     if let Some(policy) = object.remove("external_mount_policy") {
         if policy != "strict" {
             return Err("The sandbox uses an unsupported external mount policy.".into());
@@ -1320,16 +1370,32 @@ fn canonicalize_backup_runtime(config: &mut Value) -> Result<(), String> {
             return Err("The sandbox has invalid checkpoint ancestry.".into());
         }
     }
-    if let Some(interface) = object.get_mut("network").and_then(|network| network.get_mut("interface")).and_then(Value::as_object_mut) {
+    if let Some(interface) = object
+        .get_mut("network")
+        .and_then(|network| network.get_mut("interface"))
+        .and_then(Value::as_object_mut)
+    {
         if !interface.is_empty() {
             let ipv6 = interface.get("ipv6_address");
             let valid = interface.len() == if ipv6.is_some() { 4 } else { 3 }
-                && interface.get("ipv4_address").and_then(Value::as_str)
+                && interface
+                    .get("ipv4_address")
+                    .and_then(Value::as_str)
                     .is_some_and(|address| address.parse::<std::net::Ipv4Addr>().is_ok())
-                && ipv6.is_none_or(|address| address.as_str()
-                    .is_some_and(|address| address.parse::<std::net::Ipv6Addr>().is_ok()))
-                && interface.get("mac").and_then(Value::as_array)
-                    .is_some_and(|mac| mac.len() == 6 && mac.iter().all(|part| part.as_u64().is_some_and(|value| value <= 255)))
+                && ipv6.is_none_or(|address| {
+                    address
+                        .as_str()
+                        .is_some_and(|address| address.parse::<std::net::Ipv6Addr>().is_ok())
+                })
+                && interface
+                    .get("mac")
+                    .and_then(Value::as_array)
+                    .is_some_and(|mac| {
+                        mac.len() == 6
+                            && mac
+                                .iter()
+                                .all(|part| part.as_u64().is_some_and(|value| value <= 255))
+                    })
                 && interface.get("mtu").and_then(Value::as_u64) == Some(1500);
             if !valid {
                 return Err("The sandbox has an unsupported network interface.".into());
@@ -1368,15 +1434,7 @@ pub(crate) async fn start_restore(
     require_main(&window)?;
     // A rejection before the import starts is returned to the caller, which shows it
     // in place; only the background outcome (see `notify_transfer`) reaches the system.
-    start_restore_inner(
-        app,
-        window,
-        controller,
-        archive_path,
-        new_name,
-        source_name,
-    )
-    .await
+    start_restore_inner(app, window, controller, archive_path, new_name, source_name).await
 }
 
 /// Tell the system about a finished export or import. The Backup screen shows the result
@@ -1679,7 +1737,16 @@ fn restore_at_paths(
         return Err(format!("A runtime sandbox named {new_name} already exists.").into());
     }
     progress("Unpacking export");
-    let result = unpack_and_save(paths, controller, archive, source_name, new_name, cancellation, progress, original);
+    let result = unpack_and_save(
+        paths,
+        controller,
+        archive,
+        source_name,
+        new_name,
+        cancellation,
+        progress,
+        original,
+    );
     result.map_err(|error| {
         let mut error = error.after_unpacking();
         if let Err(cleanup) = recovery::discard_pending_import(paths, controller) {
@@ -1700,18 +1767,19 @@ fn unpack_and_save(
     original: runtime::MachineConfigurationRequest,
 ) -> Result<(), TransferError> {
     let group = backup::new_import_group();
-    let prepared = controller
-        .service
-        .prepare_restore_in_group(
-            backup::RestoreRequest {
-                archive: archive.to_path_buf(),
-                source_name: Some(source_name.into()),
-                new_name: new_name.into(),
-            },
-            &group,
-            cancellation,
-            &|| recovery::save_restore_group(controller, &group).map_err(backup::BackupError::InvalidRequest),
-        )?;
+    let prepared = controller.service.prepare_restore_in_group(
+        backup::RestoreRequest {
+            archive: archive.to_path_buf(),
+            source_name: Some(source_name.into()),
+            new_name: new_name.into(),
+        },
+        &group,
+        cancellation,
+        &|| {
+            recovery::save_restore_group(controller, &group)
+                .map_err(backup::BackupError::InvalidRequest)
+        },
+    )?;
     // Until the new sandbox is saved, a failure removes the loaded import
     // group instead of stranding it in the native store (E-23).
     let import_group = controller
@@ -1778,7 +1846,11 @@ fn commit_import(
         // A late failure (after the file was replaced) still saved the sandbox.
         let saved = runtime::read_metadata(&paths.metadata)
             .is_ok_and(|metadata| metadata.machines.iter().any(|machine| machine.id() == id));
-        return if saved { Ok(()) } else { discard(error.to_string()) };
+        return if saved {
+            Ok(())
+        } else {
+            discard(error.to_string())
+        };
     }
     Ok(())
 }
@@ -1798,10 +1870,9 @@ pub(crate) async fn cancel_backup_operation(
 
 fn cancel_operation(controller: &Controller) -> Result<(), String> {
     {
-        let view = controller
-            .view
-            .lock()
-            .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?;
+        let view = controller.view.lock().map_err(|_| {
+            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+        })?;
         if matches!(
             view.operation,
             Some(Operation::Running {
@@ -1877,10 +1948,9 @@ fn dismiss_finished_operation(
     expected: Option<&Value>,
     expected_id: Option<&str>,
 ) -> Result<bool, String> {
-    let mut view = controller
-        .view
-        .lock()
-        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?;
+    let mut view = controller.view.lock().map_err(|_| {
+        "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+    })?;
     if matches!(view.operation, Some(Operation::Running { .. })) {
         return Ok(false);
     }
@@ -2277,21 +2347,37 @@ mod tests {
         let legacy = serde_json::json!({"image":{"Oci":{"root_disk":{"kind":"managed"}}}});
         let mut matching = legacy.clone();
         assert!(normalize_backup_root_capacity(&mut matching, 4096));
-        assert_eq!(matching.pointer("/image/Oci/root_disk/size_mib"), Some(&Value::from(4096)));
+        assert_eq!(
+            matching.pointer("/image/Oci/root_disk/size_mib"),
+            Some(&Value::from(4096))
+        );
 
         let mut wrong_saved_capacity = legacy;
-        assert!(!normalize_backup_root_capacity(&mut wrong_saved_capacity, 8192));
-        assert!(wrong_saved_capacity.pointer("/image/Oci/root_disk/size_mib").is_none());
+        assert!(!normalize_backup_root_capacity(
+            &mut wrong_saved_capacity,
+            8192
+        ));
+        assert!(wrong_saved_capacity
+            .pointer("/image/Oci/root_disk/size_mib")
+            .is_none());
 
-        let mut explicit_mismatch = serde_json::json!({"image":{"Oci":{"root_disk":{"kind":"managed","size_mib":8192}}}});
-        assert!(!normalize_backup_root_capacity(&mut explicit_mismatch, 4096));
-        assert_eq!(explicit_mismatch.pointer("/image/Oci/root_disk/size_mib"), Some(&Value::from(8192)));
+        let mut explicit_mismatch =
+            serde_json::json!({"image":{"Oci":{"root_disk":{"kind":"managed","size_mib":8192}}}});
+        assert!(!normalize_backup_root_capacity(
+            &mut explicit_mismatch,
+            4096
+        ));
+        assert_eq!(
+            explicit_mismatch.pointer("/image/Oci/root_disk/size_mib"),
+            Some(&Value::from(8192))
+        );
     }
 
     #[test]
     fn migrated_native_config_exports_only_the_current_empty_github_policy() {
         let _test_state = crate::test_support::global_state();
-        let network: Value = serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
+        let network: Value =
+            serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
         let mut inspected = serde_json::json!({
             "name":"legacy",
             "image":{"Oci":{"reference":"ubuntu","root_disk":{"kind":"managed"}}},
@@ -2386,7 +2472,10 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(load_saved(&path).destination, Some(PathBuf::from("/backups")));
+        assert_eq!(
+            load_saved(&path).destination,
+            Some(PathBuf::from("/backups"))
+        );
     }
 
     #[test]
@@ -2501,12 +2590,20 @@ mod tests {
                 "Exporting sandbox",
                 true,
                 &|| queued.send(()).unwrap(),
-            ).map(drop);
+            )
+            .map(drop);
             sender.send(result).unwrap();
         });
         waiting.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(runtime::OPERATIONS.snapshot().waiting.iter().any(|entry| entry.label == "Exporting sandbox"));
-        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        assert!(runtime::OPERATIONS
+            .snapshot()
+            .waiting
+            .iter()
+            .any(|entry| entry.label == "Exporting sandbox"));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
 
         let cancellation = backup::Cancellation::default();
         let worker_cancellation = cancellation.clone();
@@ -2519,18 +2616,35 @@ mod tests {
                 "Cancelled export",
                 true,
                 &|| queued.send(()).unwrap(),
-            ).map(drop);
+            )
+            .map(drop);
             cancelled.send(result).unwrap();
         });
         waiting.recv_timeout(Duration::from_secs(5)).unwrap();
         cancellation.cancel();
-        assert!(result.recv_timeout(Duration::from_secs(5)).unwrap().unwrap_err().cancelled);
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap_err()
+                .cancelled
+        );
         cancelled_worker.join().unwrap();
-        assert!(!runtime::OPERATIONS.snapshot().waiting.iter().any(|entry| entry.label == "Cancelled export"));
+        assert!(!runtime::OPERATIONS
+            .snapshot()
+            .waiting
+            .iter()
+            .any(|entry| entry.label == "Cancelled export"));
         // The cancelled waiter must finish while the contending operation still holds its turn.
-        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         drop(guard);
-        receiver.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
         worker.join().unwrap();
     }
 
@@ -2581,7 +2695,8 @@ mod tests {
         // must not touch it (a stalled mount would freeze every refresh).
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
-        controller.view.lock().unwrap().destination = Some(PathBuf::from("/Volumes/Unplugged/Exports"));
+        controller.view.lock().unwrap().destination =
+            Some(PathBuf::from("/Volumes/Unplugged/Exports"));
         let state = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
         assert_eq!(state["availability"], "available");
         for unused in ["destination", "availableSpaceGB", "requiredSpaceGB"] {
@@ -2664,7 +2779,10 @@ mod tests {
         )
         .unwrap();
         uuid::Uuid::parse_str(&claimed.operation_id).unwrap();
-        assert_eq!(recovery::token(&controller).unwrap().as_deref(), Some(claimed.operation_id.as_str()));
+        assert_eq!(
+            recovery::token(&controller).unwrap().as_deref(),
+            Some(claimed.operation_id.as_str())
+        );
         assert!(claimed.archive_path.starts_with(directory.path()));
         assert!(matches!(
             &controller.view.lock().unwrap().operation,
@@ -2678,8 +2796,14 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(second.err().as_deref(), Some("Another export or import is running."));
-        assert_eq!(recovery::token(&controller).unwrap().as_deref(), Some(claimed.operation_id.as_str()));
+        assert_eq!(
+            second.err().as_deref(),
+            Some("Another export or import is running.")
+        );
+        assert_eq!(
+            recovery::token(&controller).unwrap().as_deref(),
+            Some(claimed.operation_id.as_str())
+        );
     }
 
     fn import_paths(directory: &Path) -> runtime::RuntimePaths {
@@ -2708,11 +2832,28 @@ mod tests {
         let paths = import_paths(directory.path());
         fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
-        recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        )
+        .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let original = runtime::read_metadata(&paths.metadata).unwrap();
-        commit_import(&paths, &controller, original, imported_machine(&id), &id, GROUP, MEMBER).unwrap();
-        assert!(runtime::read_metadata(&paths.metadata).unwrap().machines.iter().any(|machine| machine.id() == id));
+        commit_import(
+            &paths,
+            &controller,
+            original,
+            imported_machine(&id),
+            &id,
+            GROUP,
+            MEMBER,
+        )
+        .unwrap();
+        assert!(runtime::read_metadata(&paths.metadata)
+            .unwrap()
+            .machines
+            .iter()
+            .any(|machine| machine.id() == id));
         let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
         assert!(saved.contains(&id) && saved.contains(GROUP), "{saved}");
     }
@@ -2724,13 +2865,30 @@ mod tests {
         let paths = import_paths(directory.path());
         fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
         let controller = controller_with_scripted_msb(directory.path(), &paths, GROUP);
-        recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        )
+        .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let original = runtime::read_metadata(&paths.metadata).unwrap();
         // Settings cannot be written where a directory occupies the file.
         fs::create_dir(&paths.metadata).unwrap();
-        assert!(commit_import(&paths, &controller, original, imported_machine(&id), &id, GROUP, MEMBER).is_err());
-        assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
+        assert!(commit_import(
+            &paths,
+            &controller,
+            original,
+            imported_machine(&id),
+            &id,
+            GROUP,
+            MEMBER
+        )
+        .is_err());
+        assert!(!paths
+            .metadata
+            .with_file_name("checkpoints")
+            .join(format!("{id}.json"))
+            .exists());
         let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
         assert!(!saved.contains(&id), "{saved}");
         // The loaded snapshot group went with it (E-23).
@@ -2743,7 +2901,9 @@ mod tests {
 
     fn outcome_and_detail(operation: &Operation) -> (&'static str, String) {
         match operation {
-            Operation::Result { outcome, detail, .. } => (*outcome, detail.clone().unwrap_or_default()),
+            Operation::Result {
+                outcome, detail, ..
+            } => (*outcome, detail.clone().unwrap_or_default()),
             Operation::Running { .. } => panic!("expected a result"),
         }
     }
@@ -2751,8 +2911,16 @@ mod tests {
     #[test]
     fn transfer_outcomes_come_from_the_error_kind_not_its_text() {
         let _test_state = crate::test_support::global_state();
-        let cancelled = failed_transfer("backup", completed_archive(), None, backup::BackupError::Cancelled.into());
-        assert_eq!(outcome_and_detail(&cancelled), ("cancelled", "No export file was saved.".into()));
+        let cancelled = failed_transfer(
+            "backup",
+            completed_archive(),
+            None,
+            backup::BackupError::Cancelled.into(),
+        );
+        assert_eq!(
+            outcome_and_detail(&cancelled),
+            ("cancelled", "No export file was saved.".into())
+        );
         // A failure whose text happens to read like a cancellation is still a failure.
         let failed = failed_transfer(
             "backup",
@@ -2764,20 +2932,33 @@ mod tests {
         let gate = TransferError::from(runtime::operation_gate::GateError::Cancelled);
         assert!(gate.cancelled);
 
-        let import = failed_transfer("restore", completed_archive(), Some("copy".into()), "Disk full".to_string().into());
+        let import = failed_transfer(
+            "restore",
+            completed_archive(),
+            Some("copy".into()),
+            "Disk full".to_string().into(),
+        );
         let (outcome, detail) = outcome_and_detail(&import);
         assert_eq!(outcome, "failed");
-        assert_eq!(detail, "No sandbox was added. The export file was not changed.");
+        assert_eq!(
+            detail,
+            "No sandbox was added. The export file was not changed."
+        );
         let unpacked = failed_transfer(
             "restore",
             completed_archive(),
             Some("copy".into()),
             TransferError::from("Disk full".to_string()).after_unpacking(),
         );
-        assert!(outcome_and_detail(&unpacked).1.contains("may still use disk space"));
+        assert!(outcome_and_detail(&unpacked)
+            .1
+            .contains("may still use disk space"));
         for operation in [cancelled, failed, import, unpacked] {
             let detail = outcome_and_detail(&operation).1;
-            assert!(!detail.contains("removed") && !detail.contains("replaced"), "{detail}");
+            assert!(
+                !detail.contains("removed") && !detail.contains("replaced"),
+                "{detail}"
+            );
         }
     }
 
@@ -2813,7 +2994,11 @@ mod tests {
         // A cancel that arrived before the commit point wins.
         let cancellation = running_import(&controller);
         cancel_operation(&controller).unwrap();
-        assert!(enter_commit(&controller, &cancellation).unwrap_err().cancelled);
+        assert!(
+            enter_commit(&controller, &cancellation)
+                .unwrap_err()
+                .cancelled
+        );
     }
 
     #[test]
@@ -2841,7 +3026,9 @@ mod tests {
     fn a_queued_export_shows_that_it_waits_and_then_its_own_work() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
-        let controller = Arc::new(history_controller(directory.path().join("backup-history.json")));
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
         let claimed = claim_export(
             &controller,
             directory.path(),
@@ -2858,7 +3045,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             _ => panic!("expected a running export"),
         };
-        let work = vec![("Using checkpoint \u{201c}Before upgrade\u{201d}".to_string(), "running")];
+        let work = vec![(
+            "Using checkpoint \u{201c}Before upgrade\u{201d}".to_string(),
+            "running",
+        )];
         assert_eq!(titles(&controller), work);
 
         let other = runtime::OPERATIONS.computer("Other sandbox work").unwrap();
@@ -2866,10 +3056,16 @@ mod tests {
         let (worker_controller, cancellation) = (controller.clone(), claimed.cancellation.clone());
         let (queued_sender, admitted_sender) = (queued.0, admitted.0);
         let worker = std::thread::spawn(move || {
-            let guard = mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {
-                show_queued(&worker_controller);
-                queued_sender.send(()).unwrap();
-            })
+            let guard = mutation_guard(
+                &cancellation,
+                runtime::operation_gate::OperationKind::Export,
+                "Exporting sandbox",
+                true,
+                &|| {
+                    show_queued(&worker_controller);
+                    queued_sender.send(()).unwrap();
+                },
+            )
             .unwrap();
             show_admitted(&worker_controller);
             admitted_sender.send(()).unwrap();
@@ -2914,22 +3110,38 @@ mod tests {
             None,
         )
         .unwrap();
-        let guard = mutation_guard(&claimed.cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| panic!("not queued")).unwrap();
+        let guard = mutation_guard(
+            &claimed.cancellation,
+            runtime::operation_gate::OperationKind::Export,
+            "Exporting sandbox",
+            true,
+            &|| panic!("not queued"),
+        )
+        .unwrap();
         show_admitted(&controller);
         drop(guard);
         assert!(matches!(
             &controller.view.lock().unwrap().operation,
             Some(Operation::Running { phases, .. }) if phases.len() == 1 && phases[0].tone == "running"
         ));
-        assert!(serde_json::to_value(&claimed.archive).unwrap().get("checkpointName").is_none());
+        assert!(serde_json::to_value(&claimed.archive)
+            .unwrap()
+            .get("checkpointName")
+            .is_none());
     }
 
     #[test]
     fn migration_waits_for_a_pending_export_to_settle_before_conversion() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
-        let controller = Arc::new(history_controller(directory.path().join("backup-history.json")));
-        recovery::begin(&controller, recovery::Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
         controller.busy.store(true, Ordering::Release);
         let (entered, observed) = std::sync::mpsc::channel();
         let release = Arc::new(std::sync::Barrier::new(2));
@@ -2945,13 +3157,23 @@ mod tests {
                 false
             })
         });
-        observed.recv_timeout(Duration::from_secs(5)).expect("migration reached the pending recovery");
+        observed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("migration reached the pending recovery");
         assert!(recovery::pending(&controller).unwrap());
-        recovery::complete(&controller, Operation::Result {
-            operation: "backup", archive: completed_archive(), running_names: vec![],
-            target_name: None, outcome: "failed", title: "Export interrupted".into(),
-            message: "No export file was saved.".into(), detail: None,
-        });
+        recovery::complete(
+            &controller,
+            Operation::Result {
+                operation: "backup",
+                archive: completed_archive(),
+                running_names: vec![],
+                target_name: None,
+                outcome: "failed",
+                title: "Export interrupted".into(),
+                message: "No export file was saved.".into(),
+                detail: None,
+            },
+        );
         controller.busy.store(false, Ordering::Release);
         release.wait();
         waiter.join().unwrap().unwrap();
@@ -2963,8 +3185,13 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
-        recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), None)).unwrap();
-        assert!(wait_for_controller_recovery(&controller, true, &|| false).unwrap_err()
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "copy".into(), None),
+        )
+        .unwrap();
+        assert!(wait_for_controller_recovery(&controller, true, &|| false)
+            .unwrap_err()
             .contains("Dismiss its result"));
         wait_for_controller_recovery(&controller, false, &|| false).unwrap();
         assert!(recovery::pending(&controller).unwrap());
@@ -3143,7 +3370,13 @@ mod tests {
             &backup::Cancellation::default(),
         )
         .unwrap();
-        assert!(matches!(recovered, Operation::Result { outcome: "success", .. }));
+        assert!(matches!(
+            recovered,
+            Operation::Result {
+                outcome: "success",
+                ..
+            }
+        ));
         assert_eq!(inspect(&paths, name).unwrap().status, "Stopped");
         assert_eq!(inspect(&paths, second_name).unwrap().status, "Stopped");
         let _ = (inspected, second_inspected, machine, second_machine);
@@ -3209,7 +3442,13 @@ mod tests {
             &backup::Cancellation::default(),
         )
         .unwrap();
-        assert!(matches!(recovered, Operation::Result { outcome: "failed", .. }));
+        assert!(matches!(
+            recovered,
+            Operation::Result {
+                outcome: "failed",
+                ..
+            }
+        ));
         recovery::complete(
             &controller,
             Operation::Result {
@@ -3252,12 +3491,21 @@ mod tests {
             ]
         );
         assert!(runtime::is_pending_restore(&paths, restored_name));
-        let native: Vec<Value> = serde_json::from_str(&run(&["list", "--format", "json"]).stdout).unwrap();
-        assert!(native.iter().all(|sandbox| sandbox["name"] != restored_name));
+        let native: Vec<Value> =
+            serde_json::from_str(&run(&["list", "--format", "json"]).stdout).unwrap();
+        assert!(native
+            .iter()
+            .all(|sandbox| sandbox["name"] != restored_name));
         // Settings were saved, but process death preceded the success result.
         // Relaunch adopts the import under its journaled identity without booting it.
-        let restored_id = runtime::read_metadata(&paths.metadata).unwrap().machines.into_iter()
-            .find(|machine| machine.name() == restored_name).unwrap().id().to_owned();
+        let restored_id = runtime::read_metadata(&paths.metadata)
+            .unwrap()
+            .machines
+            .into_iter()
+            .find(|machine| machine.name() == restored_name)
+            .unwrap()
+            .id()
+            .to_owned();
         let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
         let recovered = recovery::recover_at_paths(
             &paths,
@@ -3266,7 +3514,13 @@ mod tests {
             &backup::Cancellation::default(),
         )
         .unwrap();
-        assert!(matches!(recovered, Operation::Result { outcome: "success", .. }));
+        assert!(matches!(
+            recovered,
+            Operation::Result {
+                outcome: "success",
+                ..
+            }
+        ));
         assert!(runtime::read_metadata(&paths.metadata)
             .unwrap()
             .machines
@@ -3281,9 +3535,12 @@ mod tests {
             restored.config.get("pull_policy").and_then(Value::as_str),
             Some("Never")
         );
-        assert_eq!(restored.config["network"]["policy"], serde_json::json!({
-            "default_egress":"deny", "default_ingress":"deny", "rules":[]
-        }));
+        assert_eq!(
+            restored.config["network"]["policy"],
+            serde_json::json!({
+                "default_egress":"deny", "default_ingress":"deny", "rules":[]
+            })
+        );
         assert_eq!(restored.config["labels"]["silo.github-protocol"], "1");
         assert_eq!(restored.config["labels"]["silo.working-account"], "1");
         let restored_user = crate::working_account::working_user(&restored.config).unwrap();
@@ -3449,9 +3706,8 @@ mod tests {
         let guest_image =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image");
         let executable = PathBuf::from(std::env::var("SILO_TEST_MSB").expect("packaged msb path"));
-        let library = PathBuf::from(
-            std::env::var("SILO_TEST_LIBKRUNFW").expect("packaged library path"),
-        );
+        let library =
+            PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").expect("packaged library path"));
         let paths = runtime::RuntimePaths {
             guest_image: guest_image.clone(),
             executable: executable.clone(),
@@ -3614,7 +3870,9 @@ mod tests {
             Duration::from_secs(60),
         );
         assert!(
-            proof.stdout.contains("checkpoint-root:checkpoint-workspace"),
+            proof
+                .stdout
+                .contains("checkpoint-root:checkpoint-workspace"),
             "expected checkpoint-time content, got: {}",
             proof.stdout
         );

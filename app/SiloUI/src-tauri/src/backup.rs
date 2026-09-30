@@ -9,8 +9,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -167,7 +167,11 @@ fn run_msb_process(
     let stdout_reader = thread::spawn(move || {
         read_output(
             stdout,
-            if structured { MAX_STRUCTURED_OUTPUT } else { MAX_COMMAND_OUTPUT },
+            if structured {
+                MAX_STRUCTURED_OUTPUT
+            } else {
+                MAX_COMMAND_OUTPUT
+            },
             !structured,
         )
     });
@@ -316,7 +320,10 @@ pub(crate) enum BackupError {
     Busy,
     Cancelled,
     CommandTimeout,
-    CommandFailed { operation: String, detail: String },
+    CommandFailed {
+        operation: String,
+        detail: String,
+    },
     /// A sandbox name is already taken.
     Conflict(String),
     /// A file already exists at the given path.
@@ -537,7 +544,10 @@ impl<R: MsbRunner> BackupService<R> {
     /// Where MicroSandbox unpacks and keeps snapshots (`cache/tmp` and
     /// `snapshots` under the runtime home, which may alias external storage).
     fn native_store_root(&self) -> &Path {
-        self.command.storage_home.as_deref().unwrap_or(&self.command.home)
+        self.command
+            .storage_home
+            .as_deref()
+            .unwrap_or(&self.command.home)
     }
 
     fn begin(&self) -> Result<OperationGuard<'_>, BackupError> {
@@ -629,11 +639,17 @@ impl<R: MsbRunner> BackupService<R> {
                     validate_export_configs(&source.name, &runtime_config, &machine_config)?;
                     snapshot
                 } else {
-                    let entries = self.snapshot_index("Checking export capture limit", cancellation)?;
-                    let captures = entries.iter().filter(|entry| {
-                        entry["group"] == snapshot_group
-                            && entry["name"].as_str().is_some_and(|name| name.starts_with("silo-backup-"))
-                    }).count();
+                    let entries =
+                        self.snapshot_index("Checking export capture limit", cancellation)?;
+                    let captures = entries
+                        .iter()
+                        .filter(|entry| {
+                            entry["group"] == snapshot_group
+                                && entry["name"]
+                                    .as_str()
+                                    .is_some_and(|name| name.starts_with("silo-backup-"))
+                        })
+                        .count();
                     if captures >= MAX_STATE_EXPORT_CAPTURES {
                         return Err(BackupError::InvalidRequest(format!(
                             "{} already has {} state-export captures. Export an existing checkpoint instead. Captures are kept until the sandbox is deleted because later checkpoints depend on them.",
@@ -702,10 +718,17 @@ impl<R: MsbRunner> BackupService<R> {
                 .filter(|size| *size <= self.max_archive_bytes)
                 .ok_or_else(|| {
                     BackupError::InvalidRequest(
-                        "The selected sandbox checkpoints exceed the export size safety limit.".into(),
+                        "The selected sandbox checkpoints exceed the export size safety limit."
+                            .into(),
                     )
                 })?;
-            payloads.push((source, runtime_config, machine_config, payload, payload_size));
+            payloads.push((
+                source,
+                runtime_config,
+                machine_config,
+                payload,
+                payload_size,
+            ));
         }
 
         let mut manifest = PackageManifest {
@@ -719,16 +742,18 @@ impl<R: MsbRunner> BackupService<R> {
             },
             sandboxes: payloads
                 .iter()
-                .map(|(source, runtime_config, machine_config, _, payload_size)| PackageSandbox {
-                    name: source.name.clone(),
-                    runtime_config: runtime_config.clone(),
-                    machine_config: machine_config.clone(),
-                    payload_size: *payload_size,
-                    // Filled in while the payload is copied into the archive.
-                    payload_sha256: pending_digest(),
-                    // Format 3 keeps this field; MicroSandbox's snapshot carries the disks.
-                    volumes: Vec::new(),
-                })
+                .map(
+                    |(source, runtime_config, machine_config, _, payload_size)| PackageSandbox {
+                        name: source.name.clone(),
+                        runtime_config: runtime_config.clone(),
+                        machine_config: machine_config.clone(),
+                        payload_size: *payload_size,
+                        // Filled in while the payload is copied into the archive.
+                        payload_sha256: pending_digest(),
+                        // Format 3 keeps this field; MicroSandbox's snapshot carries the disks.
+                        volumes: Vec::new(),
+                    },
+                )
                 .collect(),
         };
         let archive_payloads = payloads
@@ -770,14 +795,16 @@ impl<R: MsbRunner> BackupService<R> {
             validate_sandbox_name(&source.name)?;
             if source.existing_member.is_none() {
                 capture_bytes = capture_bytes.saturating_add(estimated_tree_bytes(
-                    &store.join("sandboxes").join(&source.name), cancellation,
+                    &store.join("sandboxes").join(&source.name),
+                    cancellation,
                 )?);
             }
         }
         let existing = estimated_tree_bytes(&store.join("snapshots"), cancellation)?
             .saturating_add(estimated_tree_bytes(&store.join("cache"), cancellation)?);
         // Multiple selected sandboxes can include the same ancestors/image.
-        let estimate = existing.saturating_mul(request.sources.len() as u64)
+        let estimate = existing
+            .saturating_mul(request.sources.len() as u64)
             .saturating_add(capture_bytes)
             .saturating_add(MAX_MANIFEST_BYTES);
         let estimate = estimate.saturating_add(estimate / 100); // tar/zstd overhead
@@ -785,14 +812,24 @@ impl<R: MsbRunner> BackupService<R> {
             BackupError::InvalidRequest("The export destination has no parent directory.".into())
         })?;
         let writes = [
-            (self.scratch_root.as_path(), estimate, "Silo's export working copy"),
+            (
+                self.scratch_root.as_path(),
+                estimate,
+                "Silo's export working copy",
+            ),
             (destination, estimate, "the export destination"),
             (store, capture_bytes, "Silo's checkpoint storage"),
         ];
         for (index, (path, _, label)) in writes.iter().enumerate() {
-            let needed = writes.iter().enumerate().filter(|(other, (other_path, _, _))| {
-                *other == index || same_volume(path, other_path)
-            }).fold(FREE_SPACE_RESERVE, |total, (_, (_, bytes, _))| total.saturating_add(*bytes));
+            let needed = writes
+                .iter()
+                .enumerate()
+                .filter(|(other, (other_path, _, _))| {
+                    *other == index || same_volume(path, other_path)
+                })
+                .fold(FREE_SPACE_RESERVE, |total, (_, (_, bytes, _))| {
+                    total.saturating_add(*bytes)
+                });
             let available = (self.free_space)(path)?;
             if available < needed {
                 return Err(BackupError::InsufficientSpace(format!(
@@ -814,11 +851,14 @@ impl<R: MsbRunner> BackupService<R> {
         let mut matches = entries.iter().filter(|entry| {
             entry["group"] == group && entry["name"] == name && entry["availability"] == "ready"
         });
-        let entry = matches.next().filter(|_| matches.next().is_none()).ok_or_else(|| {
-            BackupError::InvalidRequest(
-                "The runtime did not publish exactly one ready captured checkpoint.".into(),
-            )
-        })?;
+        let entry = matches
+            .next()
+            .filter(|_| matches.next().is_none())
+            .ok_or_else(|| {
+                BackupError::InvalidRequest(
+                    "The runtime did not publish exactly one ready captured checkpoint.".into(),
+                )
+            })?;
         self.member_artifact(entry, group)
     }
 
@@ -829,7 +869,9 @@ impl<R: MsbRunner> BackupService<R> {
             .as_str()
             .filter(|id| valid_snapshot_id(id))
             .ok_or_else(|| {
-                BackupError::InvalidRequest("The runtime returned an invalid checkpoint identity.".into())
+                BackupError::InvalidRequest(
+                    "The runtime returned an invalid checkpoint identity.".into(),
+                )
             })?;
         let path = Path::new(entry["artifact_path"].as_str().ok_or_else(|| {
             BackupError::InvalidRequest("The runtime omitted the captured checkpoint path.".into())
@@ -844,7 +886,10 @@ impl<R: MsbRunner> BackupService<R> {
         let path = fs::canonicalize(path)?;
         if !path.is_dir()
             || path.file_name().is_none_or(|part| part != id)
-            || path.parent().and_then(Path::file_name).is_none_or(|part| part != group)
+            || path
+                .parent()
+                .and_then(Path::file_name)
+                .is_none_or(|part| part != group)
             || path.parent().and_then(Path::parent) != Some(native_store.as_path())
         {
             return Err(BackupError::InvalidRequest(
@@ -950,7 +995,10 @@ impl<R: MsbRunner> BackupService<R> {
         let payload_path = &extracted.path;
         // The pre-scan measured exactly what the runtime will unpack; check
         // again now that the private copy is written.
-        let needed = extracted.scan.unpacked_bytes.saturating_add(FREE_SPACE_RESERVE);
+        let needed = extracted
+            .scan
+            .unpacked_bytes
+            .saturating_add(FREE_SPACE_RESERVE);
         let available = (self.free_space)(store)?;
         if available < needed {
             return Err(BackupError::InsufficientSpace(format!(
@@ -1029,7 +1077,11 @@ impl<R: MsbRunner> BackupService<R> {
             .iter()
             .filter(|entry| entry["group"] == import_group)
             .collect();
-        if imported.is_empty() || imported.iter().any(|entry| entry["availability"] != "ready") {
+        if imported.is_empty()
+            || imported
+                .iter()
+                .any(|entry| entry["availability"] != "ready")
+        {
             return Err(BackupError::InvalidArchive(
                 "the runtime did not publish a complete ready imported checkpoint group".into(),
             ));
@@ -1095,7 +1147,8 @@ impl<R: MsbRunner> BackupService<R> {
         )?;
         // `msb restore` rebuilds the VM from this descriptor, not from the
         // export manifest Silo validated, so the two must agree (E-19).
-        let descriptor = read_snapshot_descriptor(&self.member_artifact(head_member, import_group)?)?;
+        let descriptor =
+            read_snapshot_descriptor(&self.member_artifact(head_member, import_group)?)?;
         compare_loaded_descriptor(&descriptor, head_id, runtime_config).map_err(|detail| {
             BackupError::InvalidArchive(format!(
                 "the loaded checkpoint does not match the export's settings: {detail}"
@@ -1107,7 +1160,11 @@ impl<R: MsbRunner> BackupService<R> {
     /// A crash can interrupt Silo after the runtime finished capture but before
     /// its journal was cleared. Verify that complete member before keeping it as
     /// a live sandbox's lineage parent; incomplete members must be removed.
-    pub(crate) fn export_capture_ready(&self, group: &str, member: &str) -> Result<bool, BackupError> {
+    pub(crate) fn export_capture_ready(
+        &self,
+        group: &str,
+        member: &str,
+    ) -> Result<bool, BackupError> {
         let cleanup = Cancellation::default();
         let entries = self.snapshot_index("Checking interrupted export capture", &cleanup)?;
         if !entries.iter().any(|entry| {
@@ -1118,7 +1175,11 @@ impl<R: MsbRunner> BackupService<R> {
         let path = self.captured_snapshot_path(group, member, &cleanup)?;
         self.require_success_with(
             "Verifying interrupted export capture",
-            &["snapshot".into(), "verify".into(), path.to_string_lossy().into_owned()],
+            &[
+                "snapshot".into(),
+                "verify".into(),
+                path.to_string_lossy().into_owned(),
+            ],
             self.command_timeout.min(CLEANUP_COMMAND_TIMEOUT),
             &cleanup,
         )?;
@@ -1163,18 +1224,28 @@ impl<R: MsbRunner> BackupService<R> {
         if members.is_empty() {
             return Ok(());
         }
-        use crate::runtime::checkpoints::{NativeMember, native_removal_plan};
+        use crate::runtime::checkpoints::{native_removal_plan, NativeMember};
         // The runtime's historical parent_digest column holds a snapshot ID,
         // not a content digest. Reuse checkpoint cleanup's graph planner.
-        let inventory: Vec<NativeMember> = members.iter().map(|entry| {
-            let mut member: NativeMember = serde_json::from_value((*entry).clone())?;
-            if member.name.as_deref().is_none_or(str::is_empty) && valid_snapshot_id(&member.snapshot_id) {
-                member.name = Some(member.snapshot_id.clone());
-            }
-            Ok::<_, BackupError>(member)
-        }).collect::<Result<_, _>>()?;
+        let inventory: Vec<NativeMember> = members
+            .iter()
+            .map(|entry| {
+                let mut member: NativeMember = serde_json::from_value((*entry).clone())?;
+                if member.name.as_deref().is_none_or(str::is_empty)
+                    && valid_snapshot_id(&member.snapshot_id)
+                {
+                    member.name = Some(member.snapshot_id.clone());
+                }
+                Ok::<_, BackupError>(member)
+            })
+            .collect::<Result<_, _>>()?;
         let candidates = inventory.iter().filter_map(NativeMember::key).collect();
-        let plan = native_removal_plan(&inventory, &candidates, &Default::default(), &Default::default());
+        let plan = native_removal_plan(
+            &inventory,
+            &candidates,
+            &Default::default(),
+            &Default::default(),
+        );
         if !plan.kept.is_empty() || plan.remove.len() != members.len() {
             return Err(BackupError::InvalidArchive(
                 "the incomplete import has a cyclic or invalid checkpoint chain".into(),
@@ -1330,16 +1401,19 @@ const OWNED_VOLUMES_EXTENSION: &str = "microsandbox.owned-volumes";
 const RESTORE_DEFAULTS_EXTENSION: &str = "microsandbox.restore-defaults";
 
 fn read_snapshot_descriptor(artifact: &Path) -> Result<Value, BackupError> {
-    let invalid = || BackupError::InvalidArchive("the loaded checkpoint descriptor is unreadable".into());
-    let (file, metadata) = open_regular_file(&artifact.join(SNAPSHOT_DESCRIPTOR)).map_err(|error| match error {
-        OpenRegularError::NotRegular => invalid(),
-        OpenRegularError::Io(error) => BackupError::Io(error),
-    })?;
+    let invalid =
+        || BackupError::InvalidArchive("the loaded checkpoint descriptor is unreadable".into());
+    let (file, metadata) =
+        open_regular_file(&artifact.join(SNAPSHOT_DESCRIPTOR)).map_err(|error| match error {
+            OpenRegularError::NotRegular => invalid(),
+            OpenRegularError::Io(error) => BackupError::Io(error),
+        })?;
     if metadata.len() > MAX_SNAPSHOT_DESCRIPTOR_BYTES {
         return Err(invalid());
     }
     let mut bytes = Vec::new();
-    file.take(MAX_SNAPSHOT_DESCRIPTOR_BYTES).read_to_end(&mut bytes)?;
+    file.take(MAX_SNAPSHOT_DESCRIPTOR_BYTES)
+        .read_to_end(&mut bytes)?;
     serde_json::from_slice(&bytes).map_err(|_| invalid())
 }
 
@@ -1399,7 +1473,10 @@ fn compare_loaded_descriptor(
     {
         return Err("it uses a different image".into());
     }
-    if let Some(expected) = runtime_config.get("manifest_digest").filter(|value| !value.is_null()) {
+    if let Some(expected) = runtime_config
+        .get("manifest_digest")
+        .filter(|value| !value.is_null())
+    {
         if image.get("manifest_digest") != Some(expected) {
             return Err("it uses a different image digest".into());
         }
@@ -1436,7 +1513,11 @@ fn compare_loaded_descriptor(
         .get(RESTORE_DEFAULTS_EXTENSION)
         .map(|defaults| defaults.get("user").cloned().unwrap_or(Value::Null))
         .unwrap_or(Value::Null);
-    if &user != runtime_config.pointer("/runtime/user").unwrap_or(&Value::Null) {
+    if &user
+        != runtime_config
+            .pointer("/runtime/user")
+            .unwrap_or(&Value::Null)
+    {
         return Err("it sets a different default user".into());
     }
 
@@ -1444,7 +1525,12 @@ fn compare_loaded_descriptor(
     let expected: Vec<&Value> = runtime_config
         .get("mounts")
         .and_then(Value::as_array)
-        .map(|mounts| mounts.iter().filter(|mount| mount["type"] == "Owned").collect())
+        .map(|mounts| {
+            mounts
+                .iter()
+                .filter(|mount| mount["type"] == "Owned")
+                .collect()
+        })
         .unwrap_or_default();
     let captured: Vec<&Value> = match extensions.get(OWNED_VOLUMES_EXTENSION) {
         None => Vec::new(),
@@ -1459,7 +1545,8 @@ fn compare_loaded_descriptor(
     }
     for declared in &expected {
         let found = captured.iter().find(|volume| {
-            volume.pointer("/mount/guest").is_some() && volume.pointer("/mount/guest") == declared.get("guest")
+            volume.pointer("/mount/guest").is_some()
+                && volume.pointer("/mount/guest") == declared.get("guest")
         });
         let Some(volume) = found else {
             return Err("it mounts a volume at an undeclared path".into());
@@ -1469,13 +1556,19 @@ fn compare_loaded_descriptor(
         // defaults as well as fields explicitly present in the manifest.
         for (field, default) in [
             ("storage", Value::Null),
-            ("options", serde_json::json!({"readonly":false,"noexec":false,"nosuid":false,"nodev":false})),
+            (
+                "options",
+                serde_json::json!({"readonly":false,"noexec":false,"nosuid":false,"nodev":false}),
+            ),
             ("stat_virtualization", serde_json::json!("strict")),
             ("host_permissions", serde_json::json!("private")),
         ] {
             let expected = declared.get(field).unwrap_or(&default);
             if volume.pointer(&format!("/mount/{field}")) != Some(expected) {
-                return Err(format!("its {} volume has different {field}", declared["guest"].as_str().unwrap_or("owned")));
+                return Err(format!(
+                    "its {} volume has different {field}",
+                    declared["guest"].as_str().unwrap_or("owned")
+                ));
             }
         }
     }
@@ -1492,7 +1585,10 @@ fn compare_loaded_descriptor(
                 .pointer(&format!("/state/requirements_summary/{captured}"))
                 .and_then(Value::as_u64);
             if captured.is_none()
-                || captured != runtime_config.pointer(&format!("/resources/{declared}")).and_then(Value::as_u64)
+                || captured
+                    != runtime_config
+                        .pointer(&format!("/resources/{declared}"))
+                        .and_then(Value::as_u64)
             {
                 return Err("its CPU or memory layout differs from the export's settings".into());
             }
@@ -1500,7 +1596,6 @@ fn compare_loaded_descriptor(
     }
     Ok(())
 }
-
 
 /// Stage names are known only after the child creates them. This before/after
 /// census is scoped to one running load; crash recovery must not infer ownership
@@ -1527,9 +1622,13 @@ fn native_import_stages(home: &Path) -> Result<HashSet<PathBuf>, BackupError> {
 }
 
 fn cleanup_new_native_import_stages(home: &Path, before: &HashSet<PathBuf>) {
-    let Ok(after) = native_import_stages(home) else { return };
+    let Ok(after) = native_import_stages(home) else {
+        return;
+    };
     for path in after.difference(before) {
-        let Ok(metadata) = fs::symlink_metadata(path) else { continue };
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            continue;
+        };
         if metadata.file_type().is_symlink() || metadata.is_file() {
             let _ = fs::remove_file(path);
         } else if metadata.is_dir() {
@@ -1677,7 +1776,11 @@ fn read_and_verify_package(
                 let unpack_budget = space
                     .store_free
                     .saturating_sub(FREE_SPACE_RESERVE)
-                    .saturating_sub(if space.shared_volume { sandbox.payload_size } else { 0 })
+                    .saturating_sub(if space.shared_volume {
+                        sandbox.payload_size
+                    } else {
+                        0
+                    })
                     .min(DEFAULT_MAX_ARCHIVE_BYTES);
                 let (path, scan) = extract_scanned_payload(
                     &mut file,
@@ -1895,9 +1998,9 @@ fn apply_captured_layout(
         .pointer(&format!("/extensions/{OWNED_VOLUMES_EXTENSION}"))
         .and_then(Value::as_array)
         .and_then(|volumes| {
-            volumes
-                .iter()
-                .find(|volume| volume.pointer("/mount/guest").and_then(Value::as_str) == Some("/workspace"))
+            volumes.iter().find(|volume| {
+                volume.pointer("/mount/guest").and_then(Value::as_str) == Some("/workspace")
+            })
         })
         .ok_or_else(|| unsupported("it does not include the workspace disk"))?;
     let capacity_mib = workspace
@@ -1909,9 +2012,9 @@ fn apply_captured_layout(
         .get_mut("mounts")
         .and_then(Value::as_array_mut)
         .and_then(|mounts| {
-            mounts.iter_mut().find(|mount| {
-                mount["type"] == "Owned" && mount["guest"] == "/workspace"
-            })
+            mounts
+                .iter_mut()
+                .find(|mount| mount["type"] == "Owned" && mount["guest"] == "/workspace")
         })
     {
         mount["storage"]["capacity_mib"] = capacity_mib.into();
@@ -1971,7 +2074,10 @@ fn validate_volume_sources(
     })
 }
 
-fn validate_volume_contract(runtime_config: &Value, machine_config: &Value) -> Result<(), BackupError> {
+fn validate_volume_contract(
+    runtime_config: &Value,
+    machine_config: &Value,
+) -> Result<(), BackupError> {
     for (runtime_field, machine_field, multiplier) in [
         ("cpus", "cpus", 1),
         ("max_cpus", "maxCPUs", 1),
@@ -2052,7 +2158,9 @@ fn select_restore_source(
             .sandboxes
             .iter()
             .position(|sandbox| sandbox.name == name)
-            .ok_or_else(|| BackupError::InvalidRequest(format!("{name} is not in this export file."))),
+            .ok_or_else(|| {
+                BackupError::InvalidRequest(format!("{name} is not in this export file."))
+            }),
         None if manifest.sandboxes.len() == 1 => Ok(0),
         None => Err(BackupError::InvalidRequest(
             "Choose which sandbox to import from this export file.".into(),
@@ -2073,7 +2181,8 @@ fn validate_backup_request(request: &BackupRequest) -> Result<(), BackupError> {
         != Some("silo-backup")
     {
         return Err(BackupError::InvalidRequest(
-            "The export filename must end in .silo-backup. Choose a filename with that extension.".into(),
+            "The export filename must end in .silo-backup. Choose a filename with that extension."
+                .into(),
         ));
     }
     if request.destination.exists() {
@@ -2336,7 +2445,10 @@ fn portable_export_network(name: &str, runtime_config: &mut Value) -> Result<(),
     let Some(network) = runtime_config.get_mut("network") else {
         return Ok(());
     };
-    if default_github_network(network) || imported_deny_network(network) || network.get("policy").is_some_and(Value::is_null) {
+    if default_github_network(network)
+        || imported_deny_network(network)
+        || network.get("policy").is_some_and(Value::is_null)
+    {
         return Ok(());
     }
     let expected = imported_deny_network_value();
@@ -2393,7 +2505,8 @@ fn unsupported_runtime_setting(config: &serde_json::Map<String, Value>) -> Optio
     ];
     for (field, defaults) in expected {
         if let Some(value) = config.get(field) {
-            if field == "network" && (default_github_network(value) || imported_deny_network(value)) {
+            if field == "network" && (default_github_network(value) || imported_deny_network(value))
+            {
                 continue;
             }
             let Some(fields) = value.as_object() else {
@@ -2613,9 +2726,8 @@ fn scan_snapshot_archive(
     limits: ScanLimits,
     cancellation: &Cancellation,
 ) -> Result<PayloadScan, ScanFailure> {
-    let decoder = zstd::stream::read::Decoder::new(reader).map_err(|error| {
-        ScanFailure::Unsafe(format!("it is not a zstd stream ({error})"))
-    })?;
+    let decoder = zstd::stream::read::Decoder::new(reader)
+        .map_err(|error| ScanFailure::Unsafe(format!("it is not a zstd stream ({error})")))?;
     let counting = CountingReader {
         inner: decoder,
         count: 0,
@@ -2641,8 +2753,7 @@ fn scan_snapshot_archive(
                 )));
             }
             let kind = entry.header().entry_type();
-            if !(kind.is_file() || kind.is_contiguous() || kind.is_gnu_sparse() || kind.is_dir())
-            {
+            if !(kind.is_file() || kind.is_contiguous() || kind.is_gnu_sparse() || kind.is_dir()) {
                 return Err(ScanFailure::Unsafe(
                     "it contains a link, device or other special entry".into(),
                 ));
@@ -2679,9 +2790,7 @@ fn scan_snapshot_archive(
                 )));
             }
             if kind.is_dir() && entry.header().entry_size().unwrap_or(1) != 0 {
-                return Err(ScanFailure::Unsafe(
-                    "a directory entry carries data".into(),
-                ));
+                return Err(ScanFailure::Unsafe("a directory entry carries data".into()));
             }
             // The iterator skips the entry's stored bytes by reading them
             // from the counted stream. Reading through `entry` would also
@@ -2755,7 +2864,9 @@ fn extract_scanned_payload(
     let remaining = tee.input.limit();
     let digest = format!("sha256:{:x}", tee.hasher.finalize());
     if remaining != 0 {
-        return Err(BackupError::InvalidArchive(format!("the {label} is incomplete")));
+        return Err(BackupError::InvalidArchive(format!(
+            "the {label} is incomplete"
+        )));
     }
     if digest != expected_sha256 {
         return Err(BackupError::InvalidArchive(format!(
@@ -2786,7 +2897,8 @@ fn estimated_tree_bytes(root: &Path, cancellation: &Cancellation) -> Result<u64,
                 pending.push(entry?.path());
             }
         } else if metadata.is_file() {
-            total = total.saturating_add(metadata.len().min(metadata.blocks().saturating_mul(512)))
+            total = total
+                .saturating_add(metadata.len().min(metadata.blocks().saturating_mul(512)))
                 .saturating_add(1024); // entry headers and alignment
         }
     }
@@ -2893,9 +3005,12 @@ fn extract_verified_payload(
 
 /// Publish `source` at `destination` without ever replacing a file there.
 fn rename_without_replacing(source: &Path, destination: &Path) -> io::Result<()> {
-    rename_without_replacing_with(source, destination, exclusive_rename, |source, destination| {
-        fs::hard_link(source, destination)
-    })
+    rename_without_replacing_with(
+        source,
+        destination,
+        exclusive_rename,
+        |source, destination| fs::hard_link(source, destination),
+    )
 }
 
 /// Some volumes (NFS, SMB, exFAT and other FUSE or network file systems)
@@ -3016,9 +3131,10 @@ fn write_immutable_package(
     let archive_size = manifest
         .sandboxes
         .iter()
-        .try_fold((MAGIC.len() + 4 + 8 + manifest_bytes.len()) as u64, |sum, sandbox| {
-            sum.checked_add(sandbox.payload_size)
-        })
+        .try_fold(
+            (MAGIC.len() + 4 + 8 + manifest_bytes.len()) as u64,
+            |sum, sandbox| sum.checked_add(sandbox.payload_size),
+        )
         .ok_or_else(|| {
             BackupError::InvalidRequest("The export size cannot be represented.".into())
         })?;
@@ -3071,7 +3187,9 @@ fn write_immutable_package(
             "Export metadata changed size while it was being written.".into(),
         ));
     }
-    temporary.as_file_mut().seek(SeekFrom::Start(manifest_offset))?;
+    temporary
+        .as_file_mut()
+        .seek(SeekFrom::Start(manifest_offset))?;
     temporary.write_all(&final_manifest)?;
     temporary.as_file().sync_all()?;
     // Verify all written bytes before the atomic commit. Cancellation cannot turn
@@ -3130,8 +3248,11 @@ fn open_regular_file(path: &Path) -> Result<(File, fs::Metadata), OpenRegularErr
 /// Open a payload the runtime wrote and return it with its size; it is
 /// hashed later while being copied into the archive.
 fn open_payload(path: &Path, max_bytes: u64) -> Result<(File, u64), BackupError> {
-    let not_regular =
-        || BackupError::InvalidArchive("the runtime did not create a regular checkpoint export file".into());
+    let not_regular = || {
+        BackupError::InvalidArchive(
+            "the runtime did not create a regular checkpoint export file".into(),
+        )
+    };
     let (file, metadata) = open_regular_file(path).map_err(|error| match error {
         OpenRegularError::NotRegular => not_regular(),
         OpenRegularError::Io(error) => BackupError::Io(error),
@@ -3173,7 +3294,9 @@ fn check_cancelled(cancellation: &Cancellation) -> Result<(), BackupError> {
 
 /// MicroSandbox snapshot identity: `snap_` and 32 hex digits.
 fn valid_snapshot_id(id: &str) -> bool {
-    id.len() == 37 && id.starts_with("snap_") && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    id.len() == 37
+        && id.starts_with("snap_")
+        && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// The only native groups export/import may create or discard: `silo-import-`
@@ -3214,7 +3337,7 @@ fn unique_suffix() -> String {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
-    use std::sync::{Mutex, atomic::AtomicU64};
+    use std::sync::{atomic::AtomicU64, Mutex};
 
     fn tar_header(path: &str, kind: tar::EntryType, size: u64) -> tar::Header {
         let mut header = tar::Header::new_gnu();
@@ -3236,7 +3359,10 @@ mod tests {
     fn fake_snapshot_archive() -> Vec<u8> {
         zstd_tar(|builder| {
             builder
-                .append(&tar_header("snapshots", tar::EntryType::Directory, 0), io::empty())
+                .append(
+                    &tar_header("snapshots", tar::EntryType::Directory, 0),
+                    io::empty(),
+                )
                 .unwrap();
             builder
                 .append(
@@ -3320,7 +3446,10 @@ mod tests {
         ) -> Result<CommandOutput, BackupError> {
             check_cancelled(cancellation)?;
             self.calls.lock().unwrap().push(arguments.to_vec());
-            self.timeouts.lock().unwrap().push((arguments.to_vec(), timeout));
+            self.timeouts
+                .lock()
+                .unwrap()
+                .push((arguments.to_vec(), timeout));
             let success = || CommandOutput {
                 status: ExitStatus::from_raw(0),
                 stdout: String::new(),
@@ -3334,7 +3463,11 @@ mod tests {
             {
                 ["snapshot", "create", _, "--from-sandbox", _, "--group", group, "--guest-flush", _, "--integrity", "--quiet"] =>
                 {
-                    let snapshot = command.home.join("snapshots").join(group).join("snap_00000000000000000000000000000000");
+                    let snapshot = command
+                        .home
+                        .join("snapshots")
+                        .join(group)
+                        .join("snap_00000000000000000000000000000000");
                     fs::create_dir_all(&snapshot)?;
                     fs::write(snapshot.join("snapshot.json"), b"{}")?;
                     if self.cancel_after_snapshot.load(Ordering::Acquire) {
@@ -3379,13 +3512,21 @@ mod tests {
                     if self.cancel_during_load.load(Ordering::Acquire) {
                         // The runner killed msb after it had installed members.
                         fs::create_dir_all(command.home.join("cache/tmp/snapshot-import-killed"))?;
-                        fs::create_dir_all(command.home.join("snapshots/.msb-snapshot-import-killed"))?;
+                        fs::create_dir_all(
+                            command.home.join("snapshots/.msb-snapshot-import-killed"),
+                        )?;
                         cancellation.cancel();
                         return Err(BackupError::Cancelled);
                     }
                     if self.fail_load.load(Ordering::Acquire) {
-                        fs::create_dir_all(command.home.join("cache/tmp/snapshot-import-interrupted"))?;
-                        fs::create_dir_all(command.home.join("snapshots/.msb-snapshot-import-interrupted"))?;
+                        fs::create_dir_all(
+                            command.home.join("cache/tmp/snapshot-import-interrupted"),
+                        )?;
+                        fs::create_dir_all(
+                            command
+                                .home
+                                .join("snapshots/.msb-snapshot-import-interrupted"),
+                        )?;
                         return Ok(CommandOutput {
                             status: ExitStatus::from_raw(1 << 8),
                             stderr: "unsafe archive member".into(),
@@ -3422,7 +3563,11 @@ mod tests {
                             "artifact_path": snapshot
                         }));
                     }
-                    if let Some(create) = calls.iter().rev().find(|call| call.get(1).is_some_and(|part| part == "create")) {
+                    if let Some(create) = calls
+                        .iter()
+                        .rev()
+                        .find(|call| call.get(1).is_some_and(|part| part == "create"))
+                    {
                         let group = &create[6];
                         entries.push(serde_json::json!({
                             "group": group,
@@ -3432,7 +3577,11 @@ mod tests {
                             "artifact_path": command.home.join("snapshots").join(group).join("snap_00000000000000000000000000000000")
                         }));
                     }
-                    if let Some(load) = calls.iter().rev().find(|call| call.get(1).is_some_and(|part| part == "load")) {
+                    if let Some(load) = calls
+                        .iter()
+                        .rev()
+                        .find(|call| call.get(1).is_some_and(|part| part == "load"))
+                    {
                         let group = load.last().unwrap();
                         let artifact = |id: &str, descriptor: &Value| -> io::Result<PathBuf> {
                             let path = command.home.join("snapshots").join(group).join(id);
@@ -3474,7 +3623,8 @@ mod tests {
                         } else {
                             "snap_11111111111111111111111111111111"
                         }
-                    }).to_string(),
+                    })
+                    .to_string(),
                     ..success()
                 }),
                 ["list", "--format", "json"] => {
@@ -3678,7 +3828,10 @@ mod tests {
         let lock_result = wait_for_interrupted_command(&home, Duration::ZERO);
         fs::write(home.join("release"), b"release").unwrap();
         assert!(ready);
-        assert!(lock_result.is_ok(), "a read-only list must not hold the worker lock");
+        assert!(
+            lock_result.is_ok(),
+            "a read-only list must not hold the worker lock"
+        );
         assert_eq!(worker.join().unwrap().unwrap().stdout, "[]");
     }
 
@@ -3703,9 +3856,15 @@ mod tests {
         assert!(wait_for_file(&home.join("ready")));
         let started = Instant::now();
         cancellation.cancel();
-        assert!(matches!(worker.join().unwrap(), Err(BackupError::Cancelled)));
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(BackupError::Cancelled)
+        ));
         assert!(home.join("term").exists(), "msb must receive SIGTERM first");
-        assert!(started.elapsed() < Duration::from_secs(5), "graceful exit must not wait the grace out");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "graceful exit must not wait the grace out"
+        );
         // The child released the worker lock when it exited.
         assert!(wait_for_interrupted_command(&home, Duration::ZERO).is_ok());
     }
@@ -3770,9 +3929,15 @@ mod tests {
 
     #[test]
     fn worker_lock_wait_is_shorter_than_the_command_timeout() {
-        assert_eq!(worker_lock_timeout(DEFAULT_COMMAND_TIMEOUT), WORKER_LOCK_TIMEOUT);
+        assert_eq!(
+            worker_lock_timeout(DEFAULT_COMMAND_TIMEOUT),
+            WORKER_LOCK_TIMEOUT
+        );
         assert!(WORKER_LOCK_TIMEOUT < DEFAULT_COMMAND_TIMEOUT);
-        assert_eq!(worker_lock_timeout(Duration::from_secs(5)), Duration::from_secs(5));
+        assert_eq!(
+            worker_lock_timeout(Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
     }
 
     #[test]
@@ -3806,17 +3971,15 @@ mod tests {
             .push(serde_json::json!({"type":"DiskImage", "guest":"/extra"}));
         assert!(validate_snapshottable_config("dev", &extra_disk).is_err());
         assert!(validate_package_volumes(&[]).is_ok());
-        assert!(
-            validate_package_volumes(&[serde_json::json!({
-                "role": "workspace",
-                "mountPath": "/workspace",
-                "capacityBytes": 1,
-                "logicalSizeBytes": 1,
-                "payloadSize": 1,
-                "payloadSha256": format!("sha256:{}", "0".repeat(64)),
-            })])
-            .is_err()
-        );
+        assert!(validate_package_volumes(&[serde_json::json!({
+            "role": "workspace",
+            "mountPath": "/workspace",
+            "capacityBytes": 1,
+            "logicalSizeBytes": 1,
+            "payloadSize": 1,
+            "payloadSha256": format!("sha256:{}", "0".repeat(64)),
+        })])
+        .is_err());
     }
 
     #[test]
@@ -3861,15 +4024,16 @@ mod tests {
         let conflict = create_one(&service, destination.clone(), false);
         assert!(matches!(conflict, Err(BackupError::FileConflict(_))));
         let message = conflict.err().unwrap().to_string();
-        assert!(message.starts_with("A file already exists at "), "{message}");
+        assert!(
+            message.starts_with("A file already exists at "),
+            "{message}"
+        );
         assert!(!message.contains("VM named"), "{message}");
         assert_eq!(fs::read(destination).unwrap(), first);
         let calls = service.runner.calls.lock().unwrap();
-        assert!(
-            calls
-                .iter()
-                .any(|args| args.ends_with(&["--with-parents".into(), "--with-image".into()]))
-        );
+        assert!(calls
+            .iter()
+            .any(|args| args.ends_with(&["--with-parents".into(), "--with-image".into()])));
     }
 
     #[test]
@@ -3916,7 +4080,9 @@ mod tests {
             .any(|args| args.ends_with(&["--with-parents".into(), "--with-image".into()])));
     }
 
-    fn export_checkpoint(runner: FakeRunner) -> (tempfile::TempDir, Result<PackageManifest, BackupError>) {
+    fn export_checkpoint(
+        runner: FakeRunner,
+    ) -> (tempfile::TempDir, Result<PackageManifest, BackupError>) {
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("checkpoint.silo-backup");
         let member = "c0123456789abcdef0123456789abcde";
@@ -4003,7 +4169,9 @@ mod tests {
         without_workspace["requires"] = serde_json::json!([]);
         *runner.member_descriptor.lock().unwrap() = Some(without_workspace);
         let (_temp, manifest) = export_checkpoint(runner);
-        assert!(matches!(manifest, Err(BackupError::UnsupportedStorage(message)) if message.contains("workspace disk")));
+        assert!(
+            matches!(manifest, Err(BackupError::UnsupportedStorage(message)) if message.contains("workspace disk"))
+        );
     }
 
     #[test]
@@ -4023,11 +4191,9 @@ mod tests {
             .position(|args| args.get(1).is_some_and(|arg| arg == "save"))
             .unwrap();
         assert!(capture < archive);
-        assert!(
-            calls[capture]
-                .windows(2)
-                .any(|pair| pair[0] == "--guest-flush" && pair[1] == "required")
-        );
+        assert!(calls[capture]
+            .windows(2)
+            .any(|pair| pair[0] == "--guest-flush" && pair[1] == "required"));
         assert!(!calls.iter().any(|args| {
             args.first()
                 .is_some_and(|arg| arg == "stop" || arg == "start")
@@ -4039,25 +4205,35 @@ mod tests {
         for cancelled in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let runner = FakeRunner::default();
-            runner.cancel_after_snapshot.store(cancelled, Ordering::Release);
+            runner
+                .cancel_after_snapshot
+                .store(cancelled, Ordering::Release);
             let service = service(&temp, runner);
             let intents = Mutex::new(Vec::new());
             let result = service.create_backup_with_token(
                 BackupRequest {
                     destination: temp.path().join("dev.silo-backup"),
                     sources: vec![BackupSource {
-                        name: "dev".into(), snapshot_group: "dev".into(), was_running: false,
-                        runtime_config: managed_config("dev"), machine_config: machine_config("dev"),
+                        name: "dev".into(),
+                        snapshot_group: "dev".into(),
+                        was_running: false,
+                        runtime_config: managed_config("dev"),
+                        machine_config: machine_config("dev"),
                         existing_member: None,
                     }],
                 },
-                &Cancellation::default(), None,
+                &Cancellation::default(),
+                None,
                 &|_, member| {
                     let calls = service.runner.calls.lock().unwrap();
                     if member.is_some() {
-                        assert!(!calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "create")));
+                        assert!(!calls
+                            .iter()
+                            .any(|args| args.get(1).is_some_and(|arg| arg == "create")));
                     } else {
-                        assert!(calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "verify")));
+                        assert!(calls
+                            .iter()
+                            .any(|args| args.get(1).is_some_and(|arg| arg == "verify")));
                     }
                     intents.lock().unwrap().push(member.map(str::to_owned));
                     Ok(())
@@ -4067,7 +4243,11 @@ mod tests {
             assert!(intents[0].as_ref().unwrap().starts_with("silo-backup-"));
             if cancelled {
                 assert!(matches!(result, Err(BackupError::Cancelled)));
-                assert_eq!(intents.len(), 1, "the partial member stays journaled for cleanup");
+                assert_eq!(
+                    intents.len(),
+                    1,
+                    "the partial member stays journaled for cleanup"
+                );
             } else {
                 result.unwrap();
                 assert_eq!(intents.len(), 2);
@@ -4081,8 +4261,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let service = service(&temp, FakeRunner::default());
         let group = "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9";
-        create_one_in_group(&service, temp.path().join("dev.silo-backup"), false, group)
-            .unwrap();
+        create_one_in_group(&service, temp.path().join("dev.silo-backup"), false, group).unwrap();
         let calls = service.runner.calls.lock().unwrap();
         let capture = calls
             .iter()
@@ -4318,7 +4497,11 @@ mod tests {
         ));
         assert!(!destination.exists());
         let captures = fs::read_dir(service.command.home.join("snapshots")).unwrap();
-        assert_eq!(captures.count(), 1, "captured ancestry must survive cancellation");
+        assert_eq!(
+            captures.count(),
+            1,
+            "captured ancestry must survive cancellation"
+        );
         let calls = service.runner.calls.lock().unwrap();
         assert!(!calls.iter().any(|arguments| {
             arguments
@@ -4332,32 +4515,50 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let runner = FakeRunner::default();
         for index in 0..128 {
-            runner.existing_members.lock().unwrap().push((
-                "dev".into(), format!("silo-backup-0-{index}-1"),
-            ));
+            runner
+                .existing_members
+                .lock()
+                .unwrap()
+                .push(("dev".into(), format!("silo-backup-0-{index}-1")));
         }
         // Other groups do not count toward this sandbox's cap.
-        runner.existing_members.lock().unwrap().push((
-            "other".into(), "silo-backup-0-999-1".into(),
-        ));
+        runner
+            .existing_members
+            .lock()
+            .unwrap()
+            .push(("other".into(), "silo-backup-0-999-1".into()));
         let service = service(&temp, runner);
-        let error = create_one(&service, temp.path().join("full.silo-backup"), false)
-            .unwrap_err();
-        assert!(error.to_string().contains("128 state-export captures"), "{error}");
+        let error = create_one(&service, temp.path().join("full.silo-backup"), false).unwrap_err();
+        assert!(
+            error.to_string().contains("128 state-export captures"),
+            "{error}"
+        );
         assert!(error.to_string().contains("existing checkpoint"), "{error}");
         let calls = service.runner.calls.lock().unwrap();
-        assert!(!calls.iter().any(|call| call.get(1).is_some_and(|verb| verb == "create")));
-        assert!(!calls.iter().any(|call| call.get(1).is_some_and(|verb| verb == "remove")));
+        assert!(!calls
+            .iter()
+            .any(|call| call.get(1).is_some_and(|verb| verb == "create")));
+        assert!(!calls
+            .iter()
+            .any(|call| call.get(1).is_some_and(|verb| verb == "remove")));
         drop(calls);
         // Reusing an existing capture remains possible at the limit.
-        service.create_backup(BackupRequest {
-            destination: temp.path().join("reuse.silo-backup"),
-            sources: vec![BackupSource {
-                name: "dev".into(), snapshot_group: "dev".into(), was_running: false,
-                runtime_config: managed_config("dev"), machine_config: machine_config("dev"),
-                existing_member: Some("silo-backup-0-0-1".into()),
-            }],
-        }, &Cancellation::default()).unwrap();
+        service
+            .create_backup(
+                BackupRequest {
+                    destination: temp.path().join("reuse.silo-backup"),
+                    sources: vec![BackupSource {
+                        name: "dev".into(),
+                        snapshot_group: "dev".into(),
+                        was_running: false,
+                        runtime_config: managed_config("dev"),
+                        machine_config: machine_config("dev"),
+                        existing_member: Some("silo-backup-0-0-1".into()),
+                    }],
+                },
+                &Cancellation::default(),
+            )
+            .unwrap();
     }
 
     #[test]
@@ -4372,13 +4573,28 @@ mod tests {
             Err(BackupError::CommandFailed { .. })
         ));
         assert!(!first.exists());
-        assert!(fs::read_dir(service.command.home.join("snapshots")).unwrap().count() > 0);
+        assert!(
+            fs::read_dir(service.command.home.join("snapshots"))
+                .unwrap()
+                .count()
+                > 0
+        );
         service.runner.fail_save.store(false, Ordering::Release);
         create_one(&service, temp.path().join("retry.silo-backup"), false).unwrap();
         let calls = service.runner.calls.lock().unwrap();
-        assert_eq!(calls.iter().filter(|args| args.get(1).is_some_and(|arg| arg == "create")).count(), 2);
-        assert!(!calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "remove")));
-        assert!(calls.iter().all(|args| !args.iter().any(|arg| arg == "--dest-dir")));
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|args| args.get(1).is_some_and(|arg| arg == "create"))
+                .count(),
+            2
+        );
+        assert!(!calls
+            .iter()
+            .any(|args| args.get(1).is_some_and(|arg| arg == "remove")));
+        assert!(calls
+            .iter()
+            .all(|args| !args.iter().any(|arg| arg == "--dest-dir")));
     }
 
     #[test]
@@ -4432,12 +4648,22 @@ mod tests {
             .collect();
         let index = serde_json::to_vec(&rows).unwrap();
         assert!(index.len() > MAX_COMMAND_OUTPUT);
-        let (complete, truncated) = read_output(index.as_slice(), MAX_STRUCTURED_OUTPUT, false).unwrap();
+        let (complete, truncated) =
+            read_output(index.as_slice(), MAX_STRUCTURED_OUTPUT, false).unwrap();
         assert!(!truncated);
-        assert_eq!(serde_json::from_slice::<Vec<Value>>(&complete).unwrap().len(), rows.len());
+        assert_eq!(
+            serde_json::from_slice::<Vec<Value>>(&complete)
+                .unwrap()
+                .len(),
+            rows.len()
+        );
         let oversized = vec![b'x'; MAX_STRUCTURED_OUTPUT + 1];
-        let (_, truncated) = read_output(oversized.as_slice(), MAX_STRUCTURED_OUTPUT, false).unwrap();
-        assert!(truncated, "oversized structured output must fail before JSON parsing");
+        let (_, truncated) =
+            read_output(oversized.as_slice(), MAX_STRUCTURED_OUTPUT, false).unwrap();
+        assert!(
+            truncated,
+            "oversized structured output must fail before JSON parsing"
+        );
         let (tail, truncated) = read_output(index.as_slice(), MAX_COMMAND_OUTPUT, true).unwrap();
         assert!(truncated);
         assert_eq!(tail.len(), MAX_COMMAND_OUTPUT);
@@ -4492,7 +4718,10 @@ mod tests {
             );
         }
         let message = with_format(4);
-        assert!(message.contains("newer version of Silo") && message.contains("Update Silo"), "{message}");
+        assert!(
+            message.contains("newer version of Silo") && message.contains("Update Silo"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -4503,7 +4732,12 @@ mod tests {
         assert_eq!(snapshot_format_for("0.7.2"), "msb-snapshot-tar-zstd-v0.7");
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("dev.silo-backup");
-        create_one(&service(&temp, FakeRunner::default()), destination.clone(), false).unwrap();
+        create_one(
+            &service(&temp, FakeRunner::default()),
+            destination.clone(),
+            false,
+        )
+        .unwrap();
         let mut manifest = read_and_verify_package(
             &destination,
             DEFAULT_MAX_ARCHIVE_BYTES,
@@ -4517,13 +4751,20 @@ mod tests {
         manifest.runtime.version = format!("{major}.{}.0", minor + 1);
         manifest.runtime.snapshot_format = snapshot_format_for(&manifest.runtime.version);
         let message = validate_manifest(&manifest).err().unwrap().to_string();
-        assert!(message.contains("newer than the") && message.contains("Update Silo"), "{message}");
-        manifest.runtime.version = format!("{major}.{minor}.{}", patch.saturating_sub(1).min(patch));
+        assert!(
+            message.contains("newer than the") && message.contains("Update Silo"),
+            "{message}"
+        );
+        manifest.runtime.version =
+            format!("{major}.{minor}.{}", patch.saturating_sub(1).min(patch));
         if manifest.runtime.version == bundled_runtime_version() {
             manifest.runtime.version = format!("{major}.0.0");
         }
         let message = validate_manifest(&manifest).err().unwrap().to_string();
-        assert!(message.contains("cannot import") && message.contains("export it again"), "{message}");
+        assert!(
+            message.contains("cannot import") && message.contains("export it again"),
+            "{message}"
+        );
     }
 
     #[cfg(unix)]
@@ -4551,17 +4792,25 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         let path = fifo.clone();
         thread::spawn(move || {
-            let _ = sender.send(matches!(open_regular_file(&path), Err(OpenRegularError::NotRegular)));
+            let _ = sender.send(matches!(
+                open_regular_file(&path),
+                Err(OpenRegularError::NotRegular)
+            ));
         });
         assert!(
-            receiver.recv_timeout(Duration::from_secs(5)).expect("opening a FIFO must not block"),
+            receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("opening a FIFO must not block"),
             "a FIFO is not a regular archive"
         );
         let regular = temp.path().join("regular.silo-backup");
         fs::write(&regular, b"12345").unwrap();
         let link = temp.path().join("link.silo-backup");
         std::os::unix::fs::symlink(&regular, &link).unwrap();
-        assert!(matches!(open_regular_file(&link), Err(OpenRegularError::NotRegular)));
+        assert!(matches!(
+            open_regular_file(&link),
+            Err(OpenRegularError::NotRegular)
+        ));
         let (_, metadata) = open_regular_file(&regular).ok().unwrap();
         assert_eq!(metadata.len(), 5);
         let service = service(&temp, FakeRunner::default());
@@ -4625,7 +4874,10 @@ mod tests {
         let destination = temp.path().join("dev.silo-backup");
         let service = service(&temp, FakeRunner::default());
         create_one(&service, destination.clone(), false).unwrap();
-        service.runner.invalid_import_head.store(true, Ordering::Release);
+        service
+            .runner
+            .invalid_import_head
+            .store(true, Ordering::Release);
         let result = service.prepare_restore(
             RestoreRequest {
                 archive: destination,
@@ -4634,10 +4886,14 @@ mod tests {
             },
             &Cancellation::default(),
         );
-        assert!(matches!(result, Err(BackupError::InvalidArchive(message)) if message.contains("head is not uniquely indexed")));
+        assert!(
+            matches!(result, Err(BackupError::InvalidArchive(message)) if message.contains("head is not uniquely indexed"))
+        );
         let calls = service.runner.calls.lock().unwrap();
-        assert!(!calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "verify")
-            && args.iter().any(|arg| arg.starts_with("silo-import-"))));
+        assert!(!calls
+            .iter()
+            .any(|args| args.get(1).is_some_and(|arg| arg == "verify")
+                && args.iter().any(|arg| arg.starts_with("silo-import-"))));
     }
 
     #[test]
@@ -4651,7 +4907,9 @@ mod tests {
             .path()
             .join("home/cache/tmp/snapshot-import-preexisting");
         fs::create_dir_all(&existing_cache_stage).unwrap();
-        let existing_snapshot_stage = temp.path().join("home/snapshots/.msb-snapshot-import-preexisting");
+        let existing_snapshot_stage = temp
+            .path()
+            .join("home/snapshots/.msb-snapshot-import-preexisting");
         fs::create_dir_all(&existing_snapshot_stage).unwrap();
         service.runner.fail_load.store(true, Ordering::Release);
         let result = service.prepare_restore(
@@ -4667,13 +4925,14 @@ mod tests {
         assert!(fs::read_dir(scratch).unwrap().next().is_none());
         assert!(existing_cache_stage.is_dir());
         assert!(existing_snapshot_stage.is_dir());
-        assert!(!temp.path().join("home/snapshots/.msb-snapshot-import-interrupted").exists());
-        assert!(
-            !temp
-                .path()
-                .join("home/cache/tmp/snapshot-import-interrupted")
-                .exists()
-        );
+        assert!(!temp
+            .path()
+            .join("home/snapshots/.msb-snapshot-import-interrupted")
+            .exists());
+        assert!(!temp
+            .path()
+            .join("home/cache/tmp/snapshot-import-interrupted")
+            .exists());
     }
 
     fn restore_request(archive: PathBuf) -> RestoreRequest {
@@ -4693,7 +4952,9 @@ mod tests {
             .iter()
             .filter(|args| {
                 args.get(1).is_some_and(|arg| arg == verb)
-                    && args.last().is_some_and(|arg| arg.starts_with("silo-import-"))
+                    && args
+                        .last()
+                        .is_some_and(|arg| arg.starts_with("silo-import-"))
             })
             .cloned()
             .collect()
@@ -4705,7 +4966,10 @@ mod tests {
         let destination = temp.path().join("dev.silo-backup");
         let service = service(&temp, FakeRunner::default());
         create_one(&service, destination.clone(), false).unwrap();
-        service.runner.fail_import_verify.store(true, Ordering::Release);
+        service
+            .runner
+            .fail_import_verify
+            .store(true, Ordering::Release);
         let group = new_import_group();
         let result = service.prepare_restore_in_group(
             restore_request(destination),
@@ -4717,24 +4981,36 @@ mod tests {
         // The root becomes head, the child goes first, then the root: no --force.
         assert_eq!(
             import_group_calls(&service, "head"),
-            [vec!["snapshot".to_string(), "head".into(), format!("{group}:imported-parent")]]
+            [vec![
+                "snapshot".to_string(),
+                "head".into(),
+                format!("{group}:imported-parent")
+            ]]
         );
         assert_eq!(
             import_group_calls(&service, "remove"),
             [
-                vec!["snapshot".to_string(), "remove".into(), "--quiet".into(), format!("{group}:imported-member")],
-                vec!["snapshot".to_string(), "remove".into(), "--quiet".into(), format!("{group}:imported-parent")],
+                vec![
+                    "snapshot".to_string(),
+                    "remove".into(),
+                    "--quiet".into(),
+                    format!("{group}:imported-member")
+                ],
+                vec![
+                    "snapshot".to_string(),
+                    "remove".into(),
+                    "--quiet".into(),
+                    format!("{group}:imported-parent")
+                ],
             ]
         );
-        assert!(
-            !service
-                .runner
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|args| args.iter().any(|arg| arg == "--force" || arg == "-f"))
-        );
+        assert!(!service
+            .runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "--force" || arg == "-f")));
     }
 
     #[test]
@@ -4747,12 +5023,19 @@ mod tests {
             let group = new_import_group();
             let recorded = AtomicBool::new(false);
             let result = service.prepare_restore_in_group(
-                restore_request(destination), &group, &Cancellation::default(),
+                restore_request(destination),
+                &group,
+                &Cancellation::default(),
                 &|| {
                     assert!(import_group_calls(&service, "load").is_empty());
                     recorded.store(true, Ordering::Release);
-                    if journal_fails { Err(BackupError::InvalidRequest("test journal write failed".into())) }
-                    else { Ok(()) }
+                    if journal_fails {
+                        Err(BackupError::InvalidRequest(
+                            "test journal write failed".into(),
+                        ))
+                    } else {
+                        Ok(())
+                    }
                 },
             );
             assert!(recorded.load(Ordering::Acquire));
@@ -4773,13 +5056,26 @@ mod tests {
         let destination = temp.path().join("dev.silo-backup");
         let service = service(&temp, FakeRunner::default());
         create_one(&service, destination.clone(), false).unwrap();
-        service.runner.cancel_during_load.store(true, Ordering::Release);
-        let result = service.prepare_restore(restore_request(destination), &Cancellation::default());
+        service
+            .runner
+            .cancel_during_load
+            .store(true, Ordering::Release);
+        let result =
+            service.prepare_restore(restore_request(destination), &Cancellation::default());
         assert!(matches!(result, Err(BackupError::Cancelled)));
         assert_eq!(import_group_calls(&service, "remove").len(), 2);
-        assert!(!temp.path().join("home/cache/tmp/snapshot-import-killed").exists());
-        assert!(!temp.path().join("home/snapshots/.msb-snapshot-import-killed").exists());
-        assert!(fs::read_dir(temp.path().join("scratch")).unwrap().next().is_none());
+        assert!(!temp
+            .path()
+            .join("home/cache/tmp/snapshot-import-killed")
+            .exists());
+        assert!(!temp
+            .path()
+            .join("home/snapshots/.msb-snapshot-import-killed")
+            .exists());
+        assert!(fs::read_dir(temp.path().join("scratch"))
+            .unwrap()
+            .next()
+            .is_none());
     }
 
     #[test]
@@ -4810,7 +5106,11 @@ mod tests {
     fn discarding_is_limited_to_import_groups_and_idempotent() {
         let temp = tempfile::tempdir().unwrap();
         let service = service(&temp, FakeRunner::default());
-        for foreign in ["dev", "silo-import-short", "silo-import-6B79CF8F70B34F2D93D13EEB3798A8B9"] {
+        for foreign in [
+            "dev",
+            "silo-import-short",
+            "silo-import-6B79CF8F70B34F2D93D13EEB3798A8B9",
+        ] {
             assert!(matches!(
                 service.discard_import_group(foreign),
                 Err(BackupError::InvalidRequest(_))
@@ -4819,7 +5119,9 @@ mod tests {
         assert!(service.runner.calls.lock().unwrap().is_empty());
         service.discard_import_group(&new_import_group()).unwrap();
         let calls = service.runner.calls.lock().unwrap();
-        assert!(calls.iter().all(|args| args.get(1).is_some_and(|arg| arg == "list")));
+        assert!(calls
+            .iter()
+            .all(|args| args.get(1).is_some_and(|arg| arg == "list")));
     }
 
     fn create_two(service: &BackupService<FakeRunner>, destination: PathBuf) {
@@ -4893,7 +5195,9 @@ mod tests {
         bytes[offset + 5] ^= 0xff;
         fs::write(&archive, &bytes).unwrap();
         // A damaged payload is only found by hashing it.
-        assert!(service.inspect_archive(&archive, &Cancellation::default()).is_err());
+        assert!(service
+            .inspect_archive(&archive, &Cancellation::default())
+            .is_err());
         let described = service
             .describe_archive(&archive, &Cancellation::default())
             .unwrap();
@@ -4943,10 +5247,19 @@ mod tests {
             available_bytes,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("changed while it was being exported"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("changed while it was being exported"),
+            "{error}"
+        );
         assert!(!destination.exists());
         assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
-            !entry.unwrap().file_name().to_string_lossy().starts_with(".silo-backup-")
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".silo-backup-")
         }));
 
         let length = fs::metadata(&payload_path).unwrap().len();
@@ -4960,7 +5273,10 @@ mod tests {
             available_bytes,
         )
         .unwrap();
-        let expected = format!("sha256:{:x}", Sha256::digest(fs::read(&payload_path).unwrap()));
+        let expected = format!(
+            "sha256:{:x}",
+            Sha256::digest(fs::read(&payload_path).unwrap())
+        );
         assert_eq!(current.sandboxes[0].payload_sha256, expected);
         let written = read_and_verify_package(
             &destination,
@@ -4986,7 +5302,8 @@ mod tests {
             service.free_space = free_space;
         }
         create_one(&service, destination.clone(), false).unwrap();
-        let result = service.prepare_restore(restore_request(destination), &Cancellation::default());
+        let result =
+            service.prepare_restore(restore_request(destination), &Cancellation::default());
         let calls = service.runner.calls.lock().unwrap().clone();
         (result, calls)
     }
@@ -5046,7 +5363,10 @@ mod tests {
                 )
                 .unwrap();
             builder
-                .append(&tar_header("snapshots/b", tar::EntryType::Regular, 2), &b"{}"[..])
+                .append(
+                    &tar_header("snapshots/b", tar::EntryType::Regular, 2),
+                    &b"{}"[..],
+                )
                 .unwrap();
         });
         let (result, calls) = import_crafted(payload, None);
@@ -5061,13 +5381,18 @@ mod tests {
         let payload = zstd_tar(|builder| {
             builder
                 .append(
-                    &tar_header("layers/zeros.raw", tar::EntryType::Regular, zeros.len() as u64),
+                    &tar_header(
+                        "layers/zeros.raw",
+                        tar::EntryType::Regular,
+                        zeros.len() as u64,
+                    ),
                     zeros.as_slice(),
                 )
                 .unwrap();
         });
         assert!(payload.len() < 1024 * 1024);
-        let (result, calls) = import_crafted(payload, Some(|_| Ok(FREE_SPACE_RESERVE + 8 * 1024 * 1024)));
+        let (result, calls) =
+            import_crafted(payload, Some(|_| Ok(FREE_SPACE_RESERVE + 8 * 1024 * 1024)));
         let Err(BackupError::InsufficientSpace(detail)) = result else {
             panic!("the bomb was not stopped at the space budget");
         };
@@ -5085,7 +5410,10 @@ mod tests {
         let three = zstd_tar(|builder| {
             for name in ["a", "b", "c"] {
                 builder
-                    .append(&tar_header(&format!("snapshots/{name}"), tar::EntryType::Regular, 1), &b"x"[..])
+                    .append(
+                        &tar_header(&format!("snapshots/{name}"), tar::EntryType::Regular, 1),
+                        &b"x"[..],
+                    )
                     .unwrap();
             }
         });
@@ -5099,11 +5427,20 @@ mod tests {
             let mut header = tar_header("layers/layer_1.raw", tar::EntryType::GNUSparse, 512);
             let gnu = header.as_gnu_mut().unwrap();
             let logical = 2_u64 << 30;
-            gnu.sparse[0].offset.copy_from_slice(format!("{:011o}\0", 0).as_bytes());
-            gnu.sparse[0].numbytes.copy_from_slice(format!("{:011o}\0", 512).as_bytes());
-            gnu.sparse[1].offset.copy_from_slice(format!("{logical:011o}\0").as_bytes());
-            gnu.sparse[1].numbytes.copy_from_slice(format!("{:011o}\0", 0).as_bytes());
-            gnu.realsize.copy_from_slice(format!("{logical:011o}\0").as_bytes());
+            gnu.sparse[0]
+                .offset
+                .copy_from_slice(format!("{:011o}\0", 0).as_bytes());
+            gnu.sparse[0]
+                .numbytes
+                .copy_from_slice(format!("{:011o}\0", 512).as_bytes());
+            gnu.sparse[1]
+                .offset
+                .copy_from_slice(format!("{logical:011o}\0").as_bytes());
+            gnu.sparse[1]
+                .numbytes
+                .copy_from_slice(format!("{:011o}\0", 0).as_bytes());
+            gnu.realsize
+                .copy_from_slice(format!("{logical:011o}\0").as_bytes());
             header.set_cksum();
             builder.append(&header, &[7_u8; 512][..]).unwrap();
         });
@@ -5111,7 +5448,10 @@ mod tests {
             scan_snapshot_archive(sparse.as_slice(), limits, &Cancellation::default()),
             Err(ScanFailure::Unsafe(detail)) if detail.contains("larger than any disk")
         ));
-        let roomy = ScanLimits { max_sparse_bytes: 4 << 30, ..limits };
+        let roomy = ScanLimits {
+            max_sparse_bytes: 4 << 30,
+            ..limits
+        };
         let scan = scan_snapshot_archive(sparse.as_slice(), roomy, &Cancellation::default())
             .ok()
             .unwrap();
@@ -5152,7 +5492,8 @@ mod tests {
         *runner.loaded_descriptor.lock().unwrap() = Some(descriptor);
         let service = service(&temp, runner);
         create_one(&service, destination.clone(), false).unwrap();
-        let result = service.prepare_restore(restore_request(destination), &Cancellation::default());
+        let result =
+            service.prepare_restore(restore_request(destination), &Cancellation::default());
         let removed = service.runner.removed.lock().unwrap().clone();
         (result, removed)
     }
@@ -5160,7 +5501,10 @@ mod tests {
     fn refused_because(result: Result<PreparedRestore, BackupError>) -> String {
         match result {
             Err(BackupError::InvalidArchive(detail)) => {
-                assert!(detail.starts_with("the loaded checkpoint does not match"), "{detail}");
+                assert!(
+                    detail.starts_with("the loaded checkpoint does not match"),
+                    "{detail}"
+                );
                 detail
             }
             Err(other) => panic!("expected a descriptor mismatch, got {other}"),
@@ -5181,48 +5525,88 @@ mod tests {
         };
         let cases: Vec<(&str, Box<dyn FnOnce(&mut Value)>)> = vec![
             ("adds or omits a mounted volume", Box::new(extra_mount)),
-            ("undeclared setting (env)", Box::new(|descriptor: &mut Value| {
-                descriptor["env"] = serde_json::json!([{"key": "LD_PRELOAD", "value": "/tmp/x.so"}]);
-            })),
-            ("undeclared setting (patches)", Box::new(|descriptor: &mut Value| {
-                descriptor["patches"] = serde_json::json!([{"path": "/etc/profile"}]);
-            })),
-            ("undeclared setting (init)", Box::new(|descriptor: &mut Value| {
-                descriptor["init"] = serde_json::json!({"cmd": ["/bin/evil"]});
-            })),
-            ("different image", Box::new(|descriptor: &mut Value| {
-                descriptor["image"]["reference"] = "attacker.example/evil:latest".into();
-            })),
-            ("different default user", Box::new(|descriptor: &mut Value| {
-                descriptor["requires"] = serde_json::json!([OWNED_VOLUMES_EXTENSION, RESTORE_DEFAULTS_EXTENSION]);
-                descriptor["extensions"][RESTORE_DEFAULTS_EXTENSION] = serde_json::json!({"user": "root"});
-            })),
-            ("unsupported runtime extension", Box::new(|descriptor: &mut Value| {
-                descriptor["requires"] = serde_json::json!([OWNED_VOLUMES_EXTENSION, "vendor.host-mounts"]);
-            })),
-            ("different storage", Box::new(|descriptor: &mut Value| {
-                descriptor["extensions"][OWNED_VOLUMES_EXTENSION][0]["mount"]["storage"]["capacity_mib"] = 4_194_304.into();
-            })),
-            ("different root disk layout", Box::new(|descriptor: &mut Value| {
-                descriptor["root_disk"] = serde_json::json!({"layout": "flat"});
-            })),
-            ("names another checkpoint", Box::new(|descriptor: &mut Value| {
-                descriptor["snapshot_id"] = "snap_22222222222222222222222222222222".into();
-            })),
+            (
+                "undeclared setting (env)",
+                Box::new(|descriptor: &mut Value| {
+                    descriptor["env"] =
+                        serde_json::json!([{"key": "LD_PRELOAD", "value": "/tmp/x.so"}]);
+                }),
+            ),
+            (
+                "undeclared setting (patches)",
+                Box::new(|descriptor: &mut Value| {
+                    descriptor["patches"] = serde_json::json!([{"path": "/etc/profile"}]);
+                }),
+            ),
+            (
+                "undeclared setting (init)",
+                Box::new(|descriptor: &mut Value| {
+                    descriptor["init"] = serde_json::json!({"cmd": ["/bin/evil"]});
+                }),
+            ),
+            (
+                "different image",
+                Box::new(|descriptor: &mut Value| {
+                    descriptor["image"]["reference"] = "attacker.example/evil:latest".into();
+                }),
+            ),
+            (
+                "different default user",
+                Box::new(|descriptor: &mut Value| {
+                    descriptor["requires"] =
+                        serde_json::json!([OWNED_VOLUMES_EXTENSION, RESTORE_DEFAULTS_EXTENSION]);
+                    descriptor["extensions"][RESTORE_DEFAULTS_EXTENSION] =
+                        serde_json::json!({"user": "root"});
+                }),
+            ),
+            (
+                "unsupported runtime extension",
+                Box::new(|descriptor: &mut Value| {
+                    descriptor["requires"] =
+                        serde_json::json!([OWNED_VOLUMES_EXTENSION, "vendor.host-mounts"]);
+                }),
+            ),
+            (
+                "different storage",
+                Box::new(|descriptor: &mut Value| {
+                    descriptor["extensions"][OWNED_VOLUMES_EXTENSION][0]["mount"]["storage"]
+                        ["capacity_mib"] = 4_194_304.into();
+                }),
+            ),
+            (
+                "different root disk layout",
+                Box::new(|descriptor: &mut Value| {
+                    descriptor["root_disk"] = serde_json::json!({"layout": "flat"});
+                }),
+            ),
+            (
+                "names another checkpoint",
+                Box::new(|descriptor: &mut Value| {
+                    descriptor["snapshot_id"] = "snap_22222222222222222222222222222222".into();
+                }),
+            ),
         ];
         for (expected, alter) in cases {
             let (result, removed) = import_with_descriptor(alter);
             let detail = refused_because(result);
             assert!(detail.contains(expected), "{expected}: {detail}");
-            assert_eq!(removed.len(), 2, "{expected}: the loaded group must be removed");
+            assert_eq!(
+                removed.len(),
+                2,
+                "{expected}: the loaded group must be removed"
+            );
         }
     }
 
     #[test]
     fn loaded_snapshot_must_preserve_default_owned_mount_policies() {
-        for (field, replacement) in [("stat_virtualization", "relaxed"), ("host_permissions", "mirror")] {
+        for (field, replacement) in [
+            ("stat_virtualization", "relaxed"),
+            ("host_permissions", "mirror"),
+        ] {
             let (result, removed) = import_with_descriptor(|descriptor| {
-                descriptor["extensions"][OWNED_VOLUMES_EXTENSION][0]["mount"][field] = replacement.into();
+                descriptor["extensions"][OWNED_VOLUMES_EXTENSION][0]["mount"][field] =
+                    replacement.into();
             });
             let error = refused_because(result);
             assert!(error.contains(field), "{error}");
@@ -5267,7 +5651,9 @@ mod tests {
         let timeout = |verb: &str| {
             timeouts
                 .iter()
-                .filter(|(args, _)| args.first().is_some_and(|arg| arg == "snapshot") && args[1] == verb)
+                .filter(|(args, _)| {
+                    args.first().is_some_and(|arg| arg == "snapshot") && args[1] == verb
+                })
                 .map(|(_, timeout)| *timeout)
                 .collect::<Vec<_>>()
         };
@@ -5303,7 +5689,9 @@ mod tests {
         for (name, link) in [("linked", true), ("placeholder", false)] {
             let (source, destination) = fresh(name);
             if link {
-                rename_without_replacing_with(&source, &destination, rejects, |s, d| fs::hard_link(s, d))
+                rename_without_replacing_with(&source, &destination, rejects, |s, d| {
+                    fs::hard_link(s, d)
+                })
             } else {
                 rename_without_replacing_with(&source, &destination, rejects, no_links)
             }
@@ -5314,11 +5702,17 @@ mod tests {
             // A taken name is never replaced by either fallback.
             let (source, _) = fresh(&format!("{name}-again"));
             let result = if link {
-                rename_without_replacing_with(&source, &destination, rejects, |s, d| fs::hard_link(s, d))
+                rename_without_replacing_with(&source, &destination, rejects, |s, d| {
+                    fs::hard_link(s, d)
+                })
             } else {
                 rename_without_replacing_with(&source, &destination, rejects, no_links)
             };
-            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists, "{name}");
+            assert_eq!(
+                result.unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists,
+                "{name}"
+            );
             assert_eq!(fs::read_to_string(&destination).unwrap(), name);
             assert!(source.exists());
         }
@@ -5333,9 +5727,13 @@ mod tests {
     fn export_checks_working_space_before_runtime_capture_or_save() {
         let temp = tempfile::tempdir().unwrap();
         let mut service = service(&temp, FakeRunner::default());
-        service.free_space = |path| Ok(if path.ends_with("scratch") {
-            FREE_SPACE_RESERVE
-        } else { u64::MAX / 2 });
+        service.free_space = |path| {
+            Ok(if path.ends_with("scratch") {
+                FREE_SPACE_RESERVE
+            } else {
+                u64::MAX / 2
+            })
+        };
         let error = create_one(&service, temp.path().join("dev.silo-backup"), false).unwrap_err();
         assert!(matches!(error, BackupError::InsufficientSpace(_)));
         assert!(error.to_string().contains("working copy"), "{error}");
@@ -5355,7 +5753,11 @@ mod tests {
         assert!(message.contains("is available"), "{message}");
         assert!(!destination.exists());
         assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
-            !entry.unwrap().file_name().to_string_lossy().starts_with(".silo-backup-")
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".silo-backup-")
         }));
     }
 
@@ -5369,10 +5771,16 @@ mod tests {
         // No room for the private working copy.
         service.free_space = |_| Ok(FREE_SPACE_RESERVE);
         let error = service
-            .prepare_restore(restore_request(destination.clone()), &Cancellation::default())
+            .prepare_restore(
+                restore_request(destination.clone()),
+                &Cancellation::default(),
+            )
             .err()
             .unwrap();
-        assert!(error.to_string().contains("for its private working copy"), "{error}");
+        assert!(
+            error.to_string().contains("for its private working copy"),
+            "{error}"
+        );
 
         // Room to stage, but the runtime store cannot take the unpacked data.
         service.free_space = |path| {
@@ -5383,10 +5791,18 @@ mod tests {
             })
         };
         let error = service
-            .prepare_restore(restore_request(destination.clone()), &Cancellation::default())
+            .prepare_restore(
+                restore_request(destination.clone()),
+                &Cancellation::default(),
+            )
             .err()
             .unwrap();
-        assert!(error.to_string().contains("available to Silo's runtime storage"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("available to Silo's runtime storage"),
+            "{error}"
+        );
 
         // The runtime store filled up while the payload was being unpacked.
         static CALLS: AtomicU64 = AtomicU64::new(0);
@@ -5402,9 +5818,16 @@ mod tests {
             .prepare_restore(restore_request(destination), &Cancellation::default())
             .err()
             .unwrap();
-        assert!(error.to_string().contains("free space in Silo's runtime storage"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("free space in Silo's runtime storage"),
+            "{error}"
+        );
         let calls = service.runner.calls.lock().unwrap();
-        assert!(!calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "load")));
+        assert!(!calls
+            .iter()
+            .any(|args| args.get(1).is_some_and(|arg| arg == "load")));
     }
 
     #[test]
@@ -5414,9 +5837,14 @@ mod tests {
         let service = service(&temp, FakeRunner::default());
         create_one(&service, destination.clone(), false).unwrap();
         let kept = service
-            .prepare_restore(restore_request(destination.clone()), &Cancellation::default())
+            .prepare_restore(
+                restore_request(destination.clone()),
+                &Cancellation::default(),
+            )
             .unwrap();
-        service.discard_import_on_failure(&kept.snapshot_group).keep();
+        service
+            .discard_import_on_failure(&kept.snapshot_group)
+            .keep();
         assert!(service.runner.removed.lock().unwrap().is_empty());
 
         let failed = service
@@ -5428,7 +5856,9 @@ mod tests {
         }
         let removed = service.runner.removed.lock().unwrap();
         assert_eq!(removed.len(), 2);
-        assert!(removed.iter().all(|selector| selector.starts_with(&failed.snapshot_group)));
+        assert!(removed
+            .iter()
+            .all(|selector| selector.starts_with(&failed.snapshot_group)));
     }
 
     #[test]
@@ -5437,5 +5867,4 @@ mod tests {
         assert!(validate_sandbox_name("/absolute").is_err());
         assert!(validate_sandbox_name("valid-name").is_ok());
     }
-
 }

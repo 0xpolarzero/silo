@@ -58,7 +58,9 @@ fn enabled(command: &str, state: &MenuState) -> bool {
 /// The menu item is Silo's own rather than AppKit's `terminate:`; AppKit quits
 /// (Dock, logout) reach the same path through `system_shutdown`.
 fn request_menu_quit(id: &str, request_exit: impl FnOnce()) -> bool {
-    if id != "silo-menu:quit" { return false; }
+    if id != "silo-menu:quit" {
+        return false;
+    }
     request_exit();
     true
 }
@@ -319,7 +321,8 @@ mod native {
             items,
         });
         app.on_menu_event(|app, event| {
-            if super::request_menu_quit(event.id().as_ref(), || crate::settings::request_quit(app)) {
+            if super::request_menu_quit(event.id().as_ref(), || crate::settings::request_quit(app))
+            {
                 return;
             }
             let Some(command) = event.id().as_ref().strip_prefix("silo-menu:") else {
@@ -372,11 +375,13 @@ mod native {
                         super::open_help_window(app, &resources.join("docs/silo-help.html"))
                     });
                 if let (Err(message), Some(window)) = (result, app.get_webview_window("main")) {
-                    crate::status_panel::report(crate::system_integrations::show_integration_error(
-                        app.clone(),
-                        window,
-                        message,
-                    ));
+                    crate::status_panel::report(
+                        crate::system_integrations::show_integration_error(
+                            app.clone(),
+                            window,
+                            message,
+                        ),
+                    );
                 }
                 return;
             }
@@ -393,11 +398,13 @@ mod native {
                 let app = app.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let result = destination.and_then(|destination| {
-                        crate::applications::launch::sanitize_child(&mut std::process::Command::new(if cfg!(target_os = "macos") {
-                            "/usr/bin/open"
-                        } else {
-                            "xdg-open"
-                        }))
+                        crate::applications::launch::sanitize_child(
+                            &mut std::process::Command::new(if cfg!(target_os = "macos") {
+                                "/usr/bin/open"
+                            } else {
+                                "xdg-open"
+                            }),
+                        )
                         .arg(destination)
                         .status()
                         .map_err(|_| "The document or browser could not be opened.")
@@ -551,7 +558,13 @@ mod tests {
         }
         assert_eq!(requests.get(), 1);
         assert!(enabled("quit", &MenuState::default()));
-        assert!(enabled("quit", &MenuState { busy: true, ..Default::default() }));
+        assert!(enabled(
+            "quit",
+            &MenuState {
+                busy: true,
+                ..Default::default()
+            }
+        ));
     }
 
     #[test]
@@ -589,9 +602,18 @@ mod tests {
     fn help_window_keeps_its_page_and_sends_web_links_to_the_browser() {
         let help: tauri::Url = "file:///usr/lib/Silo/docs/silo-help.html".parse().unwrap();
         let at = |url: &str| help_navigation(&url.parse().unwrap(), &help);
-        assert_eq!(at("file:///usr/lib/Silo/docs/silo-help.html"), HelpNavigation::Stay);
-        assert_eq!(at("file:///usr/lib/Silo/docs/silo-help.html#checkpoints"), HelpNavigation::Stay);
-        assert_eq!(at("https://github.com/0xpolarzero/silo/issues"), HelpNavigation::Browser);
+        assert_eq!(
+            at("file:///usr/lib/Silo/docs/silo-help.html"),
+            HelpNavigation::Stay
+        );
+        assert_eq!(
+            at("file:///usr/lib/Silo/docs/silo-help.html#checkpoints"),
+            HelpNavigation::Stay
+        );
+        assert_eq!(
+            at("https://github.com/0xpolarzero/silo/issues"),
+            HelpNavigation::Browser
+        );
         assert_eq!(at("file:///etc/passwd"), HelpNavigation::Block);
         assert_eq!(at("javascript:alert(1)"), HelpNavigation::Block);
         assert_eq!(at("mailto:someone@example.com"), HelpNavigation::Block);

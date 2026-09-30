@@ -9,8 +9,8 @@ use objc2_app_kit::{
     NSGraphicsContext, NSImage, NSImageInterpolation, NSWorkspace,
 };
 use objc2_foundation::{
-    NSBundle, NSCopying, NSData, NSDataBase64EncodingOptions, NSDictionary,
-    NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL,
+    NSBundle, NSCopying, NSData, NSDataBase64EncodingOptions, NSDictionary, NSObjectProtocol,
+    NSPoint, NSRect, NSSize, NSString, NSURL,
 };
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
@@ -33,7 +33,11 @@ pub fn editor_command(application: &Application) -> Result<super::launch::Editor
     if !program.is_file() {
         return Err("The selected editor's command is unavailable.".into());
     }
-    Ok(super::launch::EditorCommand { program, args: Vec::new(), zed })
+    Ok(super::launch::EditorCommand {
+        program,
+        args: Vec::new(),
+        zed,
+    })
 }
 
 pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
@@ -252,7 +256,10 @@ fn add_url(
         // Xcode and other source editors are not offered: the handoff
         // supports only Zed and Visual Studio Code (G-07).
         HandlerFilter::Editor => {
-            !is_terminal && identifier.as_deref().is_some_and(|id| EDITOR_IDS.contains(&id))
+            !is_terminal
+                && identifier
+                    .as_deref()
+                    .is_some_and(|id| EDITOR_IDS.contains(&id))
         }
         // Terminals, download managers and virtual-machine helpers also register
         // HTTPS, so a URL scheme alone does not establish browser relevance.
@@ -622,8 +629,11 @@ mod tests {
         fs::write(info, contents).unwrap();
         fs::write(path.join("Contents/MacOS/cli"), b"").unwrap();
         let application = application_at(&path).unwrap();
-        let crate::applications::launch::EditorCommand { program: command, zed, .. } =
-            editor_command(&application).unwrap();
+        let crate::applications::launch::EditorCommand {
+            program: command,
+            zed,
+            ..
+        } = editor_command(&application).unwrap();
         assert!(zed);
         assert!(command.ends_with("Contents/MacOS/cli"));
         assert!(editor_adapter("com.todesktop.230313mzl4w4u92").is_none());
@@ -659,7 +669,10 @@ mod tests {
 
     #[test]
     fn an_unsupported_system_default_falls_back_to_a_supported_app() {
-        let installed = ["/Applications/Visual Studio Code.app".to_string(), "/Applications/Zed.app".to_string()];
+        let installed = [
+            "/Applications/Visual Studio Code.app".to_string(),
+            "/Applications/Zed.app".to_string(),
+        ];
         assert_eq!(
             supported_default(Some("/Applications/Zed.app".into()), &installed).as_deref(),
             Some("/Applications/Zed.app")
@@ -672,10 +685,16 @@ mod tests {
     }
 }
 
-pub fn open_terminal(_app: &tauri::AppHandle, application: &Application, command: &str) -> Result<(), String> {
+pub fn open_terminal(
+    _app: &tauri::AppHandle,
+    application: &Application,
+    command: &str,
+) -> Result<(), String> {
     let id = autoreleasepool(|_| {
         let url = NSURL::fileURLWithPath(&NSString::from_str(&application.path));
-        NSBundle::bundleWithURL(&url).and_then(|b| b.bundleIdentifier()).map(|id| id.to_string())
+        NSBundle::bundleWithURL(&url)
+            .and_then(|b| b.bundleIdentifier())
+            .map(|id| id.to_string())
     });
     if id.as_deref() == Some("com.mitchellh.ghostty") {
         // Callers run on a worker. osascript keeps the first-run Automation
@@ -687,14 +706,19 @@ pub fn open_terminal(_app: &tauri::AppHandle, application: &Application, command
             Err(Bounded::TimedOut) => Err("Ghostty did not respond. Check its Automation permission before retrying.".into()),
         };
     }
-    if !matches!(id.as_deref(), Some("com.apple.Terminal" | "com.googlecode.iterm2")) {
+    if !matches!(
+        id.as_deref(),
+        Some("com.apple.Terminal" | "com.googlecode.iterm2")
+    ) {
         return Err("This terminal does not have a supported command launcher. Choose Ghostty, Terminal, or iTerm in Settings.".into());
     }
     let file = crate::terminal::command_file(command)?;
     let mut launch = std::process::Command::new("/usr/bin/open");
     launch.arg("-a").arg(&application.path).arg(&file);
     let result = crate::terminal::launch(launch);
-    if result.is_err() { let _ = fs::remove_file(file); }
+    if result.is_err() {
+        let _ = fs::remove_file(file);
+    }
     result
 }
 /// Ghostty's scripting dictionary (1.3+). The command arrives as `argv`,
@@ -777,11 +801,19 @@ mod terminal_tests {
         // Same argument shape as Ghostty's launch, without contacting any app.
         let command = "-x 'a\"b' \\n $(y)";
         let output = std::process::Command::new("/usr/bin/osascript")
-            .args(["-e", "on run argv\n return item 1 of argv\nend run", "--", command])
+            .args([
+                "-e",
+                "on run argv\n return item 1 of argv\nend run",
+                "--",
+                command,
+            ])
             .output()
             .unwrap();
         assert!(output.status.success());
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), format!("{command}\n"));
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{command}\n")
+        );
     }
 
     #[test]
@@ -794,7 +826,11 @@ mod terminal_tests {
             Err(Bounded::TimedOut)
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
-        let status = run_bounded(std::process::Command::new("/usr/bin/false"), GHOSTTY_TIMEOUT).unwrap();
+        let status = run_bounded(
+            std::process::Command::new("/usr/bin/false"),
+            GHOSTTY_TIMEOUT,
+        )
+        .unwrap();
         assert!(!status.success());
     }
 }

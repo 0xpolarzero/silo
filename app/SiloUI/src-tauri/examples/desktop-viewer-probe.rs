@@ -3,6 +3,8 @@ mod desktop_proxy;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -11,8 +13,6 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use tauri::{
     webview::{Cookie, NewWindowResponse, PageLoadEvent},
     AppHandle, LogicalPosition, LogicalSize, Manager, WebviewBuilder, WebviewUrl,
@@ -35,12 +35,15 @@ type ProbeLog = Arc<Mutex<File>>;
 fn stage(log: &ProbeLog, message: &str) {
     let line = format!("probe: {message}");
     eprintln!("{line}");
-    if let Ok(mut file) = log.lock() { let _ = writeln!(file, "{line}"); }
+    if let Ok(mut file) = log.lock() {
+        let _ = writeln!(file, "{line}");
+    }
 }
 
 fn read_connection(path: PathBuf) -> Result<Connection, &'static str> {
     let bytes = fs::read(path).map_err(|_| "could not read private connection JSON")?;
-    let input: Connection = serde_json::from_slice(&bytes).map_err(|_| "invalid private connection JSON")?;
+    let input: Connection =
+        serde_json::from_slice(&bytes).map_err(|_| "invalid private connection JSON")?;
     if input.port == 0
         || !input.socket.is_absolute()
         || input.username.is_empty()
@@ -51,11 +54,7 @@ fn read_connection(path: PathBuf) -> Result<Connection, &'static str> {
     Ok(input)
 }
 
-fn capture_rendered_frame(
-    webview: tauri::Webview,
-    log: ProbeLog,
-    frame_path: PathBuf,
-) {
+fn capture_rendered_frame(webview: tauri::Webview, log: ProbeLog, frame_path: PathBuf) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(500));
         let script = r#"(() => {
@@ -135,15 +134,21 @@ fn capture_rendered_frame(
                 ));
             }
         });
-        stage(&log, &format!("render probe dispatched (success={})", dispatched.is_ok()));
+        stage(
+            &log,
+            &format!("render probe dispatched (success={})", dispatched.is_ok()),
+        );
     });
 }
 
 fn proxy_self_check(proxy: &desktop_proxy::Proxy, log: &ProbeLog) {
     let started = Instant::now();
     let result = (|| -> Result<(String, String, String), &'static str> {
-        let mut socket = TcpStream::connect(("127.0.0.1", proxy.port)).map_err(|_| "loopback_connect")?;
-        socket.set_read_timeout(Some(Duration::from_secs(4))).map_err(|_| "read_timeout_setup")?;
+        let mut socket =
+            TcpStream::connect(("127.0.0.1", proxy.port)).map_err(|_| "loopback_connect")?;
+        socket
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .map_err(|_| "read_timeout_setup")?;
         write!(socket, "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: http://127.0.0.1:{}\r\nCookie: {}={}\r\nConnection: close\r\n\r\n", proxy.port, proxy.port, proxy.cookie_name, proxy.token).map_err(|_| "request_write")?;
         let mut response = Vec::new();
         let mut chunk = [0; 4096];
@@ -152,33 +157,86 @@ fn proxy_self_check(proxy: &desktop_proxy::Proxy, log: &ProbeLog) {
             match socket.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => response.extend_from_slice(&chunk[..n]),
-                Err(error) if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => { timed_out = true; break; },
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    timed_out = true;
+                    break;
+                }
                 Err(_) => return Err("response_read"),
             }
         }
-        let boundary = response.windows(4).position(|bytes| bytes == b"\r\n\r\n").ok_or(
-            if response.is_empty() { if timed_out { "response_timeout" } else { "no_response" } }
-            else { "incomplete_response_headers" },
-        )?;
+        let boundary = response
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .ok_or(if response.is_empty() {
+                if timed_out {
+                    "response_timeout"
+                } else {
+                    "no_response"
+                }
+            } else {
+                "incomplete_response_headers"
+            })?;
         let headers = String::from_utf8_lossy(&response[..boundary]);
-        let status = headers.lines().next().and_then(|line| line.split_whitespace().nth(1)).ok_or("invalid_status")?.to_owned();
-        let mime = headers.lines().find_map(|line| line.split_once(':')
-            .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-            .map(|(_, value)| value.trim().split(';').next().unwrap_or("unknown").to_owned()))
+        let status = headers
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .ok_or("invalid_status")?
+            .to_owned();
+        let mime = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, value)| {
+                        value
+                            .trim()
+                            .split(';')
+                            .next()
+                            .unwrap_or("unknown")
+                            .to_owned()
+                    })
+            })
             .unwrap_or_else(|| "unknown".into());
         let body = String::from_utf8_lossy(&response[boundary + 4..]);
         let lower = body.to_ascii_lowercase();
-        let title = lower.find("<title>").and_then(|start| {
-            let start = start + 7;
-            let end = lower[start..].find("</title>")? + start;
-            body.get(start..end)
-        }).map(|value| value.chars().filter(|ch| ch.is_ascii_alphanumeric() || " -_".contains(*ch)).take(80).collect())
+        let title = lower
+            .find("<title>")
+            .and_then(|start| {
+                let start = start + 7;
+                let end = lower[start..].find("</title>")? + start;
+                body.get(start..end)
+            })
+            .map(|value| {
+                value
+                    .chars()
+                    .filter(|ch| ch.is_ascii_alphanumeric() || " -_".contains(*ch))
+                    .take(80)
+                    .collect()
+            })
             .unwrap_or_else(|| "unavailable".into());
         Ok((status, mime, title))
     })();
     match result {
-        Ok((status, mime, title)) => stage(log, &format!("authenticated proxy GET status={status} mime={mime} title={title} elapsed_ms={}", started.elapsed().as_millis())),
-        Err(category) => stage(log, &format!("authenticated proxy GET failed category={category} elapsed_ms={}", started.elapsed().as_millis())),
+        Ok((status, mime, title)) => stage(
+            log,
+            &format!(
+                "authenticated proxy GET status={status} mime={mime} title={title} elapsed_ms={}",
+                started.elapsed().as_millis()
+            ),
+        ),
+        Err(category) => stage(
+            log,
+            &format!(
+                "authenticated proxy GET failed category={category} elapsed_ms={}",
+                started.elapsed().as_millis()
+            ),
+        ),
     }
 }
 
@@ -196,13 +254,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = read_connection(PathBuf::from(input_path))?;
     let upstream = input.socket.display().to_string();
     stage(&log, "starting loopback proxy");
-    let proxy = desktop_proxy::Proxy::start(input.socket.clone(), input.port, &input.username, &input.password)
-        .map_err(|error| {
-            stage(&log, &format!("proxy startup failed ({error})"));
-            error
-        })?;
+    let proxy = desktop_proxy::Proxy::start(
+        input.socket.clone(),
+        input.port,
+        &input.username,
+        &input.password,
+    )
+    .map_err(|error| {
+        stage(&log, &format!("proxy startup failed ({error})"));
+        error
+    })?;
     drop(input);
-    stage(&log, &format!("proxy ready on 127.0.0.1:{}; SSH upstream is {upstream}", proxy.port));
+    stage(
+        &log,
+        &format!(
+            "proxy ready on 127.0.0.1:{}; SSH upstream is {upstream}",
+            proxy.port
+        ),
+    );
     let cleanup = Arc::new(Mutex::new(Some(proxy)));
     let cleanup_for_setup = cleanup.clone();
     let cleanup_on_close = cleanup.clone();
@@ -227,7 +296,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let log_for_attach = log.clone();
             let frame_path = frame_path_for_setup.clone();
             std::thread::spawn(move || {
-                if let Err(error) = attach_child(window, cleanup_for_setup, log_for_attach.clone(), frame_path) {
+                if let Err(error) = attach_child(
+                    window,
+                    cleanup_for_setup,
+                    log_for_attach.clone(),
+                    frame_path,
+                ) {
                     stage(&log_for_attach, &format!("child setup failed ({error})"));
                 }
             });
@@ -285,7 +359,13 @@ fn attach_child(
             } else {
                 format!("{}{}", url.origin().ascii_serialization(), url.path())
             };
-            stage(&log, &format!("navigation {safe_url} {}", if allowed { "allowed" } else { "denied" }));
+            stage(
+                &log,
+                &format!(
+                    "navigation {safe_url} {}",
+                    if allowed { "allowed" } else { "denied" }
+                ),
+            );
             allowed
         }
     });
@@ -307,8 +387,14 @@ fn attach_child(
         let _ = child.close();
         return Err("cookie setup failed".into());
     }
-    let cookie_present = child.cookies()?.iter().any(|cookie| cookie.name() == cookie_name);
-    stage(&log, &format!("cookie presence confirmed ({cookie_present})"));
+    let cookie_present = child
+        .cookies()?
+        .iter()
+        .any(|cookie| cookie.name() == cookie_name);
+    stage(
+        &log,
+        &format!("cookie presence confirmed ({cookie_present})"),
+    );
     if !cookie_present {
         let _ = child.close();
         return Err("cookie was not present in child webview".into());

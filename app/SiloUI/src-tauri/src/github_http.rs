@@ -106,7 +106,11 @@ impl Gates {
         // superseded key must not keep scheduling successful work forever.
         self.requests
             .values()
-            .filter_map(|failure| failure.until.map(|until| until.max(self.floor(&failure.class))))
+            .filter_map(|failure| {
+                failure
+                    .until
+                    .map(|until| until.max(self.floor(&failure.class)))
+            })
             .chain(self.rate_until.values().copied())
             .filter(|until| *until > at)
             .min()
@@ -201,9 +205,27 @@ pub(crate) fn reset_retries() {
 fn preflight(key: &str, class: &str) -> Result<(), String> {
     gates().check(key, class, now())
 }
-fn failure(key: &str, class: &str, retryable: bool, floor: u64, rate: bool, message: &str, safe: bool) -> String {
+fn failure(
+    key: &str,
+    class: &str,
+    retryable: bool,
+    floor: u64,
+    rate: bool,
+    message: &str,
+    safe: bool,
+) -> String {
     let jitter = u64::from(uuid::Uuid::new_v4().as_bytes()[0]);
-    gates().fail(key.into(), class, now(), retryable, floor, rate, jitter, message, safe)
+    gates().fail(
+        key.into(),
+        class,
+        now(),
+        retryable,
+        floor,
+        rate,
+        jitter,
+        message,
+        safe,
+    )
 }
 fn number(headers: &HeaderMap, name: &str) -> Option<u64> {
     headers.get(name)?.to_str().ok()?.parse().ok()
@@ -497,8 +519,28 @@ mod tests {
     #[test]
     fn expired_superseded_key_does_not_keep_scheduling_work() {
         let mut g = Gates::default();
-        g.fail("obsolete".into(), "c", 100, true, 0, false, 0, "offline", false);
-        g.fail("current".into(), "c", 110, true, 0, false, 0, "offline", false);
+        g.fail(
+            "obsolete".into(),
+            "c",
+            100,
+            true,
+            0,
+            false,
+            0,
+            "offline",
+            false,
+        );
+        g.fail(
+            "current".into(),
+            "c",
+            110,
+            true,
+            0,
+            false,
+            0,
+            "offline",
+            false,
+        );
         assert_eq!(g.next_retry(101), 102);
         assert_eq!(g.next_retry(102), 112);
         assert_eq!(g.next_retry(112), 0);
@@ -600,28 +642,56 @@ mod tests {
     fn one_credentials_rate_limit_never_delays_another_credential() {
         let oauth = rate_class(&Authentication::Bearer("fixture-oauth-token".into()));
         let personal = rate_class(&Authentication::Bearer("fixture-personal-token".into()));
-        let app = rate_class(&Authentication::App { client_id: "fixture".into(), client_secret: "fixture-secret".into() });
+        let app = rate_class(&Authentication::App {
+            client_id: "fixture".into(),
+            client_secret: "fixture-secret".into(),
+        });
         assert_ne!(oauth, personal);
-        assert_eq!(oauth, rate_class(&Authentication::Bearer("fixture-oauth-token".into())));
+        assert_eq!(
+            oauth,
+            rate_class(&Authentication::Bearer("fixture-oauth-token".into()))
+        );
         // Classes may be persisted; they never contain a credential.
         assert!(!oauth.contains("fixture") && !personal.contains("fixture"));
         assert!(!app.contains("secret"));
         let mut g = Gates::default();
         // An OAuth secondary rate limit...
-        g.fail("catalog".into(), &oauth, 100, true, 5000, true, 0, "limit", false);
+        g.fail(
+            "catalog".into(),
+            &oauth,
+            100,
+            true,
+            5000,
+            true,
+            0,
+            "limit",
+            false,
+        );
         assert!(g.check("other-oauth-request", &oauth, 4000).is_err());
         // ...does not fail the personal-token check or App token operations.
         assert!(g.check("personal-token-user", &personal, 100).is_ok());
         assert!(g.check("revoke", &app, 100).is_ok());
         // A personal-token failure is scheduled on its own, before the OAuth floor.
-        g.fail("personal-token-user".into(), &personal, 100, true, 0, false, 0, "offline", true);
+        g.fail(
+            "personal-token-user".into(),
+            &personal,
+            100,
+            true,
+            0,
+            false,
+            0,
+            "offline",
+            true,
+        );
         assert_eq!(g.next_retry(100), 102);
         assert_eq!(g.next_retry(102), 5000);
         // Persisted floors are restored per class.
         let mut restored = Gates::default();
         restored.restore_floor(&oauth, 5000);
         assert!(restored.check("catalog", &oauth, 4999).is_err());
-        assert!(restored.check("personal-token-user", &personal, 4999).is_ok());
+        assert!(restored
+            .check("personal-token-user", &personal, 4999)
+            .is_ok());
     }
     #[test]
     fn ambiguous_mint_is_not_replayed_but_new_choice_can_proceed() {
@@ -651,7 +721,9 @@ mod tests {
         let mut at = 100;
         for _ in 0..(MAX_RETRIES + 5) {
             g.fail("/user".into(), "c", at, true, 0, false, 0, "offline", true);
-            at = g.requests["/user"].until.expect("safe read stopped retrying");
+            at = g.requests["/user"]
+                .until
+                .expect("safe read stopped retrying");
         }
         assert!(g.check("/user", "c", at).is_ok());
         // Unsafe requests still stop to avoid repeating a side effect.

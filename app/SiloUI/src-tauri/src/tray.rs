@@ -171,8 +171,11 @@ mod platform {
             // A desktop without a tray must never strand an invisible app, but a
             // brief watcher restart (plasmashell, GNOME Shell reload) must not
             // pop the window up either.
-            let (app, online, offline) =
-                (self.app.clone(), self.online.clone(), self.offline_generation.clone());
+            let (app, online, offline) = (
+                self.app.clone(),
+                self.online.clone(),
+                self.offline_generation.clone(),
+            );
             std::thread::spawn(move || {
                 std::thread::sleep(super::WATCHER_GRACE);
                 let visible = app
@@ -222,7 +225,12 @@ mod platform {
             .spawn()
             .await
             {
-                Ok(handle) => *app.state::<TrayState>().handle.lock().unwrap_or_else(|error| error.into_inner()) = Some(handle),
+                Ok(handle) => {
+                    *app.state::<TrayState>()
+                        .handle
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = Some(handle)
+                }
                 Err(error) => {
                     app.state::<TrayState>()
                         .online
@@ -236,7 +244,12 @@ mod platform {
     }
 
     pub async fn update(app: &AppHandle, tone: Tone, label: String) -> Result<(), String> {
-        let handle = app.state::<TrayState>().handle.lock().unwrap_or_else(|error| error.into_inner()).clone();
+        let handle = app
+            .state::<TrayState>()
+            .handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         if let Some(handle) = handle {
             handle
                 .update(move |tray| {
@@ -287,15 +300,30 @@ mod tests {
         assert!(!panel_can_anchor(true, 1880, 12));
         assert!(!panel_can_anchor(false, 0, 0));
         assert!(!panel_can_anchor(true, 0, 0));
-        assert!(panel_can_anchor(false, 0, 1050), "a panel at the left screen edge is still anchored");
+        assert!(
+            panel_can_anchor(false, 0, 1050),
+            "a panel at the left screen edge is still anchored"
+        );
     }
 
     #[test]
     fn brief_tray_restarts_do_not_pop_up_the_window() {
-        assert!(surface_after_grace(false, true, false), "a tray that stays gone surfaces a hidden window");
-        assert!(!surface_after_grace(true, true, false), "the tray came back");
-        assert!(!surface_after_grace(false, false, false), "a later disappearance decides");
-        assert!(!surface_after_grace(false, true, true), "a visible window is left alone");
+        assert!(
+            surface_after_grace(false, true, false),
+            "a tray that stays gone surfaces a hidden window"
+        );
+        assert!(
+            !surface_after_grace(true, true, false),
+            "the tray came back"
+        );
+        assert!(
+            !surface_after_grace(false, false, false),
+            "a later disappearance decides"
+        );
+        assert!(
+            !surface_after_grace(false, true, true),
+            "a visible window is left alone"
+        );
         assert!(WATCHER_GRACE >= std::time::Duration::from_secs(3));
     }
 }

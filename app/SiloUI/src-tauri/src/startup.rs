@@ -37,7 +37,10 @@ fn selected_sandboxes(settings: &Map<String, Value>) -> Vec<String> {
 }
 
 fn preserve_recovered_stops(settings: &mut Map<String, Value>, stopped: &HashSet<String>) {
-    if let Some(ids) = settings.get_mut("startupWorkspaceIds").and_then(Value::as_array_mut) {
+    if let Some(ids) = settings
+        .get_mut("startupWorkspaceIds")
+        .and_then(Value::as_array_mut)
+    {
         ids.retain(|id| !id.as_str().is_some_and(|id| stopped.contains(id)));
     }
 }
@@ -48,7 +51,10 @@ fn settings_for_launch(
     stopped: &HashSet<String>,
 ) -> Result<Map<String, Value>, String> {
     if settings.get("onboardingComplete").and_then(Value::as_bool) != Some(true)
-        || settings.get("startWorkspacesAtLaunch").and_then(Value::as_bool) != Some(true)
+        || settings
+            .get("startWorkspacesAtLaunch")
+            .and_then(Value::as_bool)
+            != Some(true)
     {
         return Ok(settings);
     }
@@ -56,23 +62,45 @@ fn settings_for_launch(
     // selection absent on disk. Match that default without overriding an
     // explicit selection (including []) or inferring a remote launch target.
     if settings.get("onboardingComplete").and_then(Value::as_bool) == Some(true)
-        && settings.get("startWorkspacesAtLaunch").and_then(Value::as_bool) == Some(true)
+        && settings
+            .get("startWorkspacesAtLaunch")
+            .and_then(Value::as_bool)
+            == Some(true)
         && !settings.contains_key("startupWorkspaceIds")
     {
-        let configuration = crate::runtime::read_metadata(metadata).map_err(|error| error.to_string())?;
-        let mut local = configuration.machines.iter().filter(|machine| machine.is_vm());
-        let initial = local.clone().find(|machine| machine.name() == "dev").or_else(|| local.next());
-        settings.insert("startupWorkspaceIds".into(), serde_json::json!(initial.map(|machine| machine.id()).into_iter().collect::<Vec<_>>()));
+        let configuration =
+            crate::runtime::read_metadata(metadata).map_err(|error| error.to_string())?;
+        let mut local = configuration
+            .machines
+            .iter()
+            .filter(|machine| machine.is_vm());
+        let initial = local
+            .clone()
+            .find(|machine| machine.name() == "dev")
+            .or_else(|| local.next());
+        settings.insert(
+            "startupWorkspaceIds".into(),
+            serde_json::json!(initial
+                .map(|machine| machine.id())
+                .into_iter()
+                .collect::<Vec<_>>()),
+        );
     }
     preserve_recovered_stops(&mut settings, stopped);
     // A one-time migration may retain old workspace IDs only in preserved
     // settings while selecting a clean runtime generation.
-    if let Some(ids) = settings.get_mut("startupWorkspaceIds").and_then(Value::as_array_mut) {
+    if let Some(ids) = settings
+        .get_mut("startupWorkspaceIds")
+        .and_then(Value::as_array_mut)
+    {
         if !ids.is_empty() {
             let available: HashSet<_> = crate::runtime::read_metadata(metadata)
                 .map_err(|error| error.to_string())?
-                .machines.into_iter().filter(|machine| machine.is_vm())
-                .map(|machine| machine.id().to_owned()).collect();
+                .machines
+                .into_iter()
+                .filter(|machine| machine.is_vm())
+                .map(|machine| machine.id().to_owned())
+                .collect();
             ids.retain(|id| id.as_str().is_some_and(|id| available.contains(id)));
         }
     }
@@ -134,37 +162,74 @@ pub(crate) fn install(app: &AppHandle) {
         let Ok(_active) = state.active.lock() else {
             return;
         };
-        if crate::runtime_migration::blocks_operations(&app) { return; }
+        if crate::runtime_migration::blocks_operations(&app) {
+            return;
+        }
         if let Err(message) = crate::backup_controller::wait_for_recovery(&app) {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = crate::system_integrations::show_integration_error(app.clone(), window, message);
+                let _ = crate::system_integrations::show_integration_error(
+                    app.clone(),
+                    window,
+                    message,
+                );
             }
             return;
         }
-        if state.cancelled.load(Ordering::SeqCst) { return; }
+        if state.cancelled.load(Ordering::SeqCst) {
+            return;
+        }
         if let Err(message) = crate::runtime::configuration_recovery::recover(&app) {
-            crate::notifications::notify(&app, crate::notifications::failure(
-                "startup:setup", "Sandbox setup couldn\u{2019}t resume", &message, None));
+            crate::notifications::notify(
+                &app,
+                crate::notifications::failure(
+                    "startup:setup",
+                    "Sandbox setup couldn\u{2019}t resume",
+                    &message,
+                    None,
+                ),
+            );
             if let Some(window) = app.get_webview_window("main") {
-                let _ = crate::system_integrations::show_integration_error(app.clone(), window,
-                    format!("{message}\n\nSaved setup progress was preserved. Relaunch Silo to retry."));
+                let _ = crate::system_integrations::show_integration_error(
+                    app.clone(),
+                    window,
+                    format!(
+                        "{message}\n\nSaved setup progress was preserved. Relaunch Silo to retry."
+                    ),
+                );
             }
             return;
         }
-        let (recovered_stops, failure) = after_lifecycle_recovery(crate::runtime::lifecycle_recovery::recover(&app));
+        let (recovered_stops, failure) =
+            after_lifecycle_recovery(crate::runtime::lifecycle_recovery::recover(&app));
         if let Some(message) = failure {
-            crate::notifications::notify(&app, crate::notifications::failure(
-                "startup:actions", "Sandbox actions couldn\u{2019}t resume", &message, None));
+            crate::notifications::notify(
+                &app,
+                crate::notifications::failure(
+                    "startup:actions",
+                    "Sandbox actions couldn\u{2019}t resume",
+                    &message,
+                    None,
+                ),
+            );
             if let Some(window) = app.get_webview_window("main") {
-                let _ = crate::system_integrations::show_integration_error(app.clone(), window, message);
+                let _ = crate::system_integrations::show_integration_error(
+                    app.clone(),
+                    window,
+                    message,
+                );
             }
         }
         match crate::runtime::update_recovery::recover(&app) {
             Ok(true) => return, // Preserve the exact pre-update running set, even if empty.
             Ok(false) => (),
-            Err(message) => { crate::updates::recovery_failed(&app, message); return; }
+            Err(message) => {
+                crate::updates::recovery_failed(&app, message);
+                return;
+            }
         }
-        let Some(recovered_stops) = recovered_stops else { return; };
+        let Some(recovered_stops) = recovered_stops else {
+            return;
+        };
         let result = crate::settings::current_settings(&app).and_then(|settings| {
             let paths = crate::runtime::runtime_paths(&app)?;
             let settings = settings_for_launch(settings, &paths.metadata, &recovered_stops)?;
@@ -176,8 +241,15 @@ pub(crate) fn install(app: &AppHandle) {
         });
         let failures = result.unwrap_or_else(|error| vec![error]);
         if !failures.is_empty() && !state.cancelled.load(Ordering::SeqCst) {
-            crate::notifications::notify(&app, crate::notifications::failure(
-                "startup:launch", &startup_failure_title(failures.len()), &failures.join(" "), None));
+            crate::notifications::notify(
+                &app,
+                crate::notifications::failure(
+                    "startup:launch",
+                    &startup_failure_title(failures.len()),
+                    &failures.join(" "),
+                    None,
+                ),
+            );
             if let Some(window) = app.get_webview_window("main") {
                 let message = format!("Some sandboxes could not start automatically:\n\n{}\n\nOther selected sandboxes may have started. Check their status and use Start to retry. Update the startup selection in Settings if needed.", failures.join("\n"));
                 let _ = crate::system_integrations::show_integration_error(
@@ -224,10 +296,19 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let metadata = directory.path().join("machines.json");
         let id = "00000000-0000-4000-8000-000000000001";
-        std::fs::write(&metadata, json!({"schemaVersion":1,"machines":[vm(id, "dev")]}).to_string()).unwrap();
+        std::fs::write(
+            &metadata,
+            json!({"schemaVersion":1,"machines":[vm(id, "dev")]}).to_string(),
+        )
+        .unwrap();
         // This is the saved state produced by accepting the UI's default chip.
         let settings = json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true});
-        let resolved = settings_for_launch(settings.as_object().unwrap().clone(), &metadata, &HashSet::new()).unwrap();
+        let resolved = settings_for_launch(
+            settings.as_object().unwrap().clone(),
+            &metadata,
+            &HashSet::new(),
+        )
+        .unwrap();
         let mut started = Vec::new();
         let failures = start_selected(&resolved, &AtomicBool::new(false), |id| {
             started.push(id.to_owned());
@@ -246,16 +327,30 @@ mod tests {
         let remote = json!({"kind":"ssh", "id":"00000000-0000-4000-8000-000000000003", "name":"remote", "host":"example.test", "user":"owner", "port":22});
         let settings = json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true});
         for (machines, expected) in [
-            (vec![remote.clone(), vm(first, "alpha"), vm(dev, "dev")], vec![dev]),
+            (
+                vec![remote.clone(), vm(first, "alpha"), vm(dev, "dev")],
+                vec![dev],
+            ),
             (vec![remote.clone(), vm(first, "alpha")], vec![first]),
             (vec![remote], vec![]),
             (vec![], vec![]),
         ] {
-            std::fs::write(&metadata, json!({"schemaVersion":1,"machines":machines}).to_string()).unwrap();
-            let resolved = settings_for_launch(settings.as_object().unwrap().clone(), &metadata, &HashSet::new()).unwrap();
+            std::fs::write(
+                &metadata,
+                json!({"schemaVersion":1,"machines":machines}).to_string(),
+            )
+            .unwrap();
+            let resolved = settings_for_launch(
+                settings.as_object().unwrap().clone(),
+                &metadata,
+                &HashSet::new(),
+            )
+            .unwrap();
             assert_eq!(selected_sandboxes(&resolved), expected);
             let stopped = expected.iter().map(|id| (*id).to_owned()).collect();
-            let resolved = settings_for_launch(settings.as_object().unwrap().clone(), &metadata, &stopped).unwrap();
+            let resolved =
+                settings_for_launch(settings.as_object().unwrap().clone(), &metadata, &stopped)
+                    .unwrap();
             assert!(selected_sandboxes(&resolved).is_empty());
         }
     }
@@ -278,7 +373,8 @@ mod tests {
             json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true,"startupWorkspaceIds":["00000000-0000-4000-8000-000000000001"]}),
         ] {
             let settings = settings.as_object().unwrap().clone();
-            let resolved = settings_for_launch(settings.clone(), &metadata, &HashSet::new()).unwrap();
+            let resolved =
+                settings_for_launch(settings.clone(), &metadata, &HashSet::new()).unwrap();
             assert_eq!(resolved, settings);
         }
 
@@ -289,11 +385,18 @@ mod tests {
             json!({}),
         ] {
             let settings = settings.as_object().unwrap().clone();
-            let resolved = settings_for_launch(settings.clone(), &metadata, &HashSet::new()).unwrap();
+            let resolved =
+                settings_for_launch(settings.clone(), &metadata, &HashSet::new()).unwrap();
             assert_eq!(resolved, settings);
         }
         let enabled = json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true});
-        assert!(settings_for_launch(enabled.as_object().unwrap().clone(), &metadata, &HashSet::new()).unwrap_err().contains("configuration is invalid"));
+        assert!(settings_for_launch(
+            enabled.as_object().unwrap().clone(),
+            &metadata,
+            &HashSet::new()
+        )
+        .unwrap_err()
+        .contains("configuration is invalid"));
     }
 
     #[test]
@@ -312,9 +415,13 @@ mod tests {
         }));
         assert_eq!(stops, Some(HashSet::from(["stopped".to_owned()])));
         assert!(failure.unwrap().contains("dev: The sandbox was replaced."));
-        assert_eq!(after_lifecycle_recovery(Ok(Recovered::default())), (Some(HashSet::new()), None));
+        assert_eq!(
+            after_lifecycle_recovery(Ok(Recovered::default())),
+            (Some(HashSet::new()), None)
+        );
         // Without the list of saved actions an explicit stop could be among them.
-        let (stops, failure) = after_lifecycle_recovery(Err("Saved sandbox actions could not be read.".into()));
+        let (stops, failure) =
+            after_lifecycle_recovery(Err("Saved sandbox actions could not be read.".into()));
         assert_eq!(stops, None);
         assert!(failure.unwrap().contains("were not started"));
     }

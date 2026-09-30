@@ -166,12 +166,15 @@ pub(crate) fn recovery_failed(app: &AppHandle, message: String) {
         "Some sandboxes could not resume after updating. Relaunch Silo to retry.",
         &message,
     );
-    crate::notifications::notify(app, crate::notifications::failure(
-        "update:resume",
-        "Sandboxes couldn\u{2019}t resume after updating",
-        &message,
-        None,
-    ));
+    crate::notifications::notify(
+        app,
+        crate::notifications::failure(
+            "update:resume",
+            "Sandboxes couldn\u{2019}t resume after updating",
+            &message,
+            None,
+        ),
+    );
 }
 fn busy(phase: &str) -> bool {
     matches!(phase, "checking" | "downloading" | "installing")
@@ -390,7 +393,9 @@ async fn check(app: AppHandle, automatic: bool) -> Result<Snapshot, String> {
                 .format(&time::format_description::well_known::Rfc3339)
                 .ok();
             let pending = s.update.as_ref().map(|u| u.version.clone());
-            let found = update.as_ref().map(|u| (u.version.as_str(), u.body.as_deref()));
+            let found = update
+                .as_ref()
+                .map(|u| (u.version.as_str(), u.body.as_deref()));
             // The kept bytes were verified against the pending update's signature.
             if !settle_check(&mut s.snapshot, &mut s.bytes, pending.as_deref(), found) {
                 s.update = update;
@@ -609,7 +614,8 @@ fn restart_after_install(
 }
 fn relaunch_required(snapshot: &mut Snapshot, details: String) {
     snapshot.phase = "error".into();
-    snapshot.error = Some("Silo was updated but could not restart. Quit and reopen Silo to finish.".into());
+    snapshot.error =
+        Some("Silo was updated but could not restart. Quit and reopen Silo to finish.".into());
     snapshot.error_details = Some(details);
     snapshot.retry_action = Some("relaunch".into());
     snapshot.install_status = None;
@@ -783,7 +789,9 @@ pub(crate) async fn install_update(
 pub(crate) async fn open_update_release(app: tauri::AppHandle) -> Result<(), String> {
     // The shared browser opener honours the browser setting and leaves no
     // unreaped child process (F-25).
-    tauri::async_runtime::spawn_blocking(move || crate::applications::open_browser(&app, RELEASE_URL))
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::applications::open_browser(&app, RELEASE_URL)
+    })
     .await
     .map_err(|_| "The browser could not be opened.".to_string())?
 }
@@ -829,20 +837,35 @@ mod tests {
         state.downloaded_bytes = 3;
         state.total_bytes = Some(3);
         let mut bytes = Some(vec![1, 2, 3]);
-        assert!(settle_check(&mut state, &mut bytes, Some("1.2.0"), Some(("1.2.0", None))));
+        assert!(settle_check(
+            &mut state,
+            &mut bytes,
+            Some("1.2.0"),
+            Some(("1.2.0", None))
+        ));
         assert_eq!(state.phase, "ready");
         assert_eq!(bytes.as_deref(), Some(&[1, 2, 3][..]));
         assert_eq!((state.downloaded_bytes, state.total_bytes), (3, Some(3)));
         assert_eq!(state.available_version.as_deref(), Some("1.2.0"));
         // A newer release supersedes the pending one; its download no longer applies.
-        assert!(!settle_check(&mut state, &mut bytes, Some("1.2.0"), Some(("1.3.0", Some("notes")))));
+        assert!(!settle_check(
+            &mut state,
+            &mut bytes,
+            Some("1.2.0"),
+            Some(("1.3.0", Some("notes")))
+        ));
         assert_eq!(state.phase, "available");
         assert!(bytes.is_none());
         assert_eq!((state.downloaded_bytes, state.total_bytes), (0, None));
         assert_eq!(state.available_version.as_deref(), Some("1.3.0"));
         assert_eq!(state.release_notes.as_deref(), Some("notes"));
         // Same version without a download: refresh the release, nothing to keep.
-        assert!(!settle_check(&mut state, &mut bytes, Some("1.3.0"), Some(("1.3.0", None))));
+        assert!(!settle_check(
+            &mut state,
+            &mut bytes,
+            Some("1.3.0"),
+            Some(("1.3.0", None))
+        ));
         assert_eq!(state.phase, "available");
         assert!(!settle_check(&mut state, &mut bytes, Some("1.3.0"), None));
         assert_eq!(state.phase, "idle");
@@ -854,13 +877,28 @@ mod tests {
         assert!(!blocks_automatic_check("available", None, true, false));
         assert!(!blocks_automatic_check("idle", None, false, false));
         // A failed check keeps retrying on its backoff.
-        assert!(!blocks_automatic_check("error", Some("check"), false, false));
+        assert!(!blocks_automatic_check(
+            "error",
+            Some("check"),
+            false,
+            false
+        ));
         // Verified bytes and download or install retries are never replaced in the background.
         assert!(blocks_automatic_check("ready", None, true, true));
-        assert!(blocks_automatic_check("error", Some("download"), true, false));
+        assert!(blocks_automatic_check(
+            "error",
+            Some("download"),
+            true,
+            false
+        ));
         assert!(blocks_automatic_check("error", Some("install"), true, true));
         // An installed update waiting for a relaunch must not be offered again.
-        assert!(blocks_automatic_check("error", Some("relaunch"), false, false));
+        assert!(blocks_automatic_check(
+            "error",
+            Some("relaunch"),
+            false,
+            false
+        ));
     }
     #[test]
     fn restart_closes_tunnels_first_and_a_failed_exec_resumes_sandboxes_and_asks_to_relaunch() {
@@ -884,9 +922,11 @@ mod tests {
             panic!("an installed package must not be offered for reinstallation");
         };
         assert_eq!(details, "exec failed");
-        let InstallError::NotRestarted(details) =
-            restart_after_install(|| {}, || "exec failed".into(), || Err("dev: start failed".into()))
-        else {
+        let InstallError::NotRestarted(details) = restart_after_install(
+            || {},
+            || "exec failed".into(),
+            || Err("dev: start failed".into()),
+        ) else {
             panic!("an installed package must not be offered for reinstallation");
         };
         assert!(details.contains("exec failed") && details.contains("dev: start failed"));
@@ -896,8 +936,16 @@ mod tests {
         relaunch_required(&mut state, details);
         assert_eq!(state.phase, "error");
         assert_eq!(state.retry_action.as_deref(), Some("relaunch"));
-        assert!(state.error.as_deref().unwrap().contains("Quit and reopen Silo"));
-        assert!(state.error_details.as_deref().unwrap().contains("dev: start failed"));
+        assert!(state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Quit and reopen Silo"));
+        assert!(state
+            .error_details
+            .as_deref()
+            .unwrap()
+            .contains("dev: start failed"));
         assert!(!state.can_install && state.install_status.is_none());
     }
     #[test]

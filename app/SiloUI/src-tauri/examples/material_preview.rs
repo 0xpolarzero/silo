@@ -47,15 +47,21 @@ async fn set_preview_theme(
             }))
         })();
         #[cfg(not(target_os = "macos"))]
-        let result = window.theme().map(|appearance| serde_json::json!({
-            "requestedTheme": theme,
-            "windowAppearance": appearance.to_string(),
-        })).map_err(|error| error.to_string());
+        let result = window
+            .theme()
+            .map(|appearance| {
+                serde_json::json!({
+                    "requestedTheme": theme,
+                    "windowAppearance": appearance.to_string(),
+                })
+            })
+            .map_err(|error| error.to_string());
         if let Ok(appearance) = &result {
             eprintln!("Silo material preview appearance: {appearance}");
         }
         let _ = send.send(result);
-    }).map_err(|error| error.to_string())?;
+    })
+    .map_err(|error| error.to_string())?;
     receive.await.map_err(|error| error.to_string())?
 }
 

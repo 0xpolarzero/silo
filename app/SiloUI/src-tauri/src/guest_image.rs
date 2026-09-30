@@ -217,9 +217,9 @@ pub(super) fn prepare<R: RuntimeRunner + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use flate2::{write::GzEncoder, Compression};
     use serde_json::json;
+    use std::fs;
 
     fn fixture(directory: &Path) -> serde_json::Value {
         fs::create_dir_all(directory.join("guest-image")).unwrap();
@@ -290,25 +290,47 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct FailingImporter(AtomicUsize);
         impl RuntimeRunner for FailingImporter {
-            fn run(&self, _paths: &RuntimePaths, args: &[String], _timeout: Duration) -> Result<super::super::CommandOutput, RuntimeError> {
+            fn run(
+                &self,
+                _paths: &RuntimePaths,
+                args: &[String],
+                _timeout: Duration,
+            ) -> Result<super::super::CommandOutput, RuntimeError> {
                 assert_eq!(&args[..2], ["image", "load"]);
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Err(RuntimeError::Unavailable("interrupted".into()))
             }
         }
-        let dir = tempfile::tempdir().unwrap(); fixture(dir.path());
-        let paths = RuntimePaths { guest_image: dir.path().join("guest-image"), executable: dir.path().join("msb"), home: dir.path().join("home"), storage_home: None, library: dir.path().join("lib"), metadata: dir.path().join("metadata"), volumes: dir.path().join("volumes") };
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path());
+        let paths = RuntimePaths {
+            guest_image: dir.path().join("guest-image"),
+            executable: dir.path().join("msb"),
+            home: dir.path().join("home"),
+            storage_home: None,
+            library: dir.path().join("lib"),
+            metadata: dir.path().join("metadata"),
+            volumes: dir.path().join("volumes"),
+        };
         let runner = FailingImporter(AtomicUsize::new(0));
         for _ in 0..2 {
-            assert!(prepare(&runner, &paths).unwrap_err().to_string().contains("could not prepare"));
-            assert_eq!(fs::read_dir(paths.home.join("cache/tmp")).unwrap().count(), 0);
+            assert!(prepare(&runner, &paths)
+                .unwrap_err()
+                .to_string()
+                .contains("could not prepare"));
+            assert_eq!(
+                fs::read_dir(paths.home.join("cache/tmp")).unwrap().count(),
+                0
+            );
         }
         assert_eq!(runner.0.load(Ordering::SeqCst), 2);
     }
     #[test]
     fn insufficient_space_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(check_space(dir.path(), u64::MAX).unwrap_err().contains("Free at least"));
+        assert!(check_space(dir.path(), u64::MAX)
+            .unwrap_err()
+            .contains("Free at least"));
     }
 
     #[test]
@@ -318,21 +340,41 @@ mod tests {
         use super::super::{CommandOutput, ProcessRunner};
         struct NoImport;
         impl RuntimeRunner for NoImport {
-            fn run(&self, _: &RuntimePaths, _: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            fn run(
+                &self,
+                _: &RuntimePaths,
+                _: &[String],
+                _: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
                 panic!("A verified cached image must not be imported again");
             }
         }
-        let directory = tempfile::Builder::new().prefix("silo-image-live-").tempdir_in("/tmp").unwrap();
+        let directory = tempfile::Builder::new()
+            .prefix("silo-image-live-")
+            .tempdir_in("/tmp")
+            .unwrap();
         let paths = RuntimePaths {
-            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image"),
-            executable: std::env::var("SILO_TEST_MSB").expect("set SILO_TEST_MSB").into(),
-            library: std::env::var("SILO_TEST_LIBKRUNFW").expect("set SILO_TEST_LIBKRUNFW").into(),
-            home: directory.path().join("msb"), storage_home: None,
-            metadata: directory.path().join("machines.json"), volumes: directory.path().join("volumes"),
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
+            executable: std::env::var("SILO_TEST_MSB")
+                .expect("set SILO_TEST_MSB")
+                .into(),
+            library: std::env::var("SILO_TEST_LIBKRUNFW")
+                .expect("set SILO_TEST_LIBKRUNFW")
+                .into(),
+            home: directory.path().join("msb"),
+            storage_home: None,
+            metadata: directory.path().join("machines.json"),
+            volumes: directory.path().join("volumes"),
         };
         struct CountingImporter(std::sync::atomic::AtomicUsize);
         impl RuntimeRunner for CountingImporter {
-            fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
                 self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 ProcessRunner.run(paths, args, timeout)
             }
@@ -347,9 +389,14 @@ mod tests {
         });
         assert_eq!(runner.0.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(prepare(&NoImport, &paths).unwrap(), image);
-        assert_eq!(fs::read_dir(paths.home.join("cache/tmp")).unwrap().count(), 0);
+        assert_eq!(
+            fs::read_dir(paths.home.join("cache/tmp")).unwrap().count(),
+            0
+        );
         let cache = GlobalCache::new(&paths.home.join("cache")).unwrap();
-        assert!(cached(&cache, &validate_directory(&paths.guest_image).unwrap()));
+        assert!(cached(
+            &cache,
+            &validate_directory(&paths.guest_image).unwrap()
+        ));
     }
-
 }

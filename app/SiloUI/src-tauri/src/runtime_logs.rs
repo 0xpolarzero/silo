@@ -1,6 +1,6 @@
 //! Bounded, rotation-aware queries over all retained diagnostic files.
-use crate::bridge_error::{BridgeError, ErrorCode};
 use super::*;
+use crate::bridge_error::{BridgeError, ErrorCode};
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::MetadataExt;
 
@@ -103,8 +103,14 @@ fn boot_record(raw: &str) -> Result<(String, String), String> {
     }
     let error: BootError = serde_json::from_str(raw)
         .map_err(|_| "The retained boot failure contains invalid data.")?;
-    let errno = error.errno.map(|value| format!(", errno {value}")).unwrap_or_default();
-    Ok((stamp(&error.t)?, format!("Boot failed ({}{errno}): {}", error.stage, error.message)))
+    let errno = error
+        .errno
+        .map(|value| format!(", errno {value}"))
+        .unwrap_or_default();
+    Ok((
+        stamp(&error.t)?,
+        format!("Boot failed ({}{errno}): {}", error.stage, error.message),
+    ))
 }
 
 /// Longest record read as written. Longer records are truncated or replaced by a
@@ -115,10 +121,18 @@ const TRUNCATED_TEXT: usize = 64 * 1024;
 const TRUNCATED: &str = " … [record over 1 MiB truncated]";
 
 /// Reads at most `RECORD_LIMIT + 1` bytes: more than the limit marks an oversized record.
-fn read_record(reader: &mut impl BufRead, stream: &str, bytes: &mut Vec<u8>, limit: u64) -> std::io::Result<usize> {
+fn read_record(
+    reader: &mut impl BufRead,
+    stream: &str,
+    bytes: &mut Vec<u8>,
+    limit: u64,
+) -> std::io::Result<usize> {
     let mut bounded = reader.take(limit.min(RECORD_LIMIT + 1));
-    if stream == "boot-error" { bounded.read_to_end(bytes) }
-    else { bounded.read_until(b'\n', bytes) }
+    if stream == "boot-error" {
+        bounded.read_to_end(bytes)
+    } else {
+        bounded.read_until(b'\n', bytes)
+    }
 }
 /// Skips the rest of an oversized line within `remaining` bytes. Returns the bytes
 /// skipped and whether the line ended with a newline.
@@ -129,7 +143,9 @@ fn skip_line(reader: &mut impl BufRead, mut remaining: u64) -> std::io::Result<(
         if buffer.is_empty() {
             break;
         }
-        let window = &buffer[..buffer.len().min(usize::try_from(remaining).unwrap_or(usize::MAX))];
+        let window = &buffer[..buffer
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX))];
         if let Some(index) = window.iter().position(|byte| *byte == b'\n') {
             reader.consume(index + 1);
             return Ok((skipped + index as u64 + 1, true));
@@ -260,8 +276,13 @@ fn scan(
     let mut consumed = start;
     loop {
         let mut bytes = Vec::new();
-        let count = read_record(&mut reader, &segment.stream, &mut bytes, segment.bytes.saturating_sub(offset))
-            .map_err(|_| "Retained logs could not be read.")? as u64;
+        let count = read_record(
+            &mut reader,
+            &segment.stream,
+            &mut bytes,
+            segment.bytes.saturating_sub(offset),
+        )
+        .map_err(|_| "Retained logs could not be read.")? as u64;
         if count == 0 {
             break;
         }
@@ -347,8 +368,13 @@ fn cached_page(
             .seek(SeekFrom::Start(location.offset))
             .map_err(|_| "Retained log read failed.")?;
         let mut raw_bytes = Vec::new();
-        read_record(reader, &segment.stream, &mut raw_bytes, segment.bytes.saturating_sub(location.offset))
-            .map_err(|_| "Retained log read failed.")?;
+        read_record(
+            reader,
+            &segment.stream,
+            &mut raw_bytes,
+            segment.bytes.saturating_sub(location.offset),
+        )
+        .map_err(|_| "Retained log read failed.")?;
         if record_id(location.file, location.offset, &raw_bytes) != location.id {
             return Err("Retained log data changed or expired. Refresh the search.".into());
         }
@@ -415,15 +441,19 @@ fn files(directory: &Path) -> Result<Vec<(PathBuf, Segment)>, String> {
     for file in directory {
         let file = file.map_err(|_| "Retained logs could not be read.")?;
         let name = file.file_name().to_string_lossy().into_owned();
-        let stream = if name == "boot-error.json" { Some("boot-error") } else { ["exec", "runtime", "kernel"].into_iter().find(|stream| {
-            let base = format!("{stream}.log");
-            name == base
-                || name
-                    .strip_prefix(&format!("{base}."))
-                    .is_some_and(|suffix| {
-                        !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
-                    })
-        }) };
+        let stream = if name == "boot-error.json" {
+            Some("boot-error")
+        } else {
+            ["exec", "runtime", "kernel"].into_iter().find(|stream| {
+                let base = format!("{stream}.log");
+                name == base
+                    || name
+                        .strip_prefix(&format!("{base}."))
+                        .is_some_and(|suffix| {
+                            !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+                        })
+            })
+        };
         let Some(stream) = stream else {
             continue;
         };
@@ -577,7 +607,10 @@ pub(super) fn query_local(
     )
 }
 #[tauri::command]
-pub(crate) async fn query_sandbox_logs(app: AppHandle, request: Query) -> Result<Page, BridgeError> {
+pub(crate) async fn query_sandbox_logs(
+    app: AppHandle,
+    request: Query,
+) -> Result<Page, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || query(&app, request))
         .await
         .map_err(|e| e.to_string())?
@@ -637,7 +670,14 @@ fn read(
         source: request.source.clone().filter(|source| source != "all"),
     };
     if let Some(around) = &request.around_id {
-        return context(&available, around, &request, sandbox_name, computer_id, computer_name);
+        return context(
+            &available,
+            around,
+            &request,
+            sandbox_name,
+            computer_id,
+            computer_name,
+        );
     }
     // Follow continues its previous snapshot; anything unexpected rebuilds it.
     let previous = request.follow.as_deref().and_then(|token| {
@@ -665,9 +705,18 @@ fn read(
                     }
                     index.add(segment.inode, offset, id, decoded, &filter)
                 })?;
-                files.push(Indexed { segment: segment.clone(), consumed, complete });
+                files.push(Indexed {
+                    segment: segment.clone(),
+                    consumed,
+                    complete,
+                });
             }
-            Cached { binding: binding.clone(), files, records: index.sorted(), summary }
+            Cached {
+                binding: binding.clone(),
+                files,
+                records: index.sorted(),
+                summary,
+            }
         }
     };
     let id = store(cached, request.follow.as_deref())?;
@@ -690,8 +739,13 @@ struct Filter {
 }
 impl Filter {
     fn matches(&self, occurred_at: &str, source: &str, line: &str) -> bool {
-        self.since.as_deref().is_none_or(|since| occurred_at >= since)
-            && self.until.as_deref().is_none_or(|until| occurred_at <= until)
+        self.since
+            .as_deref()
+            .is_none_or(|since| occurred_at >= since)
+            && self
+                .until
+                .as_deref()
+                .is_none_or(|until| occurred_at <= until)
             && self.source.as_deref().is_none_or(|wanted| wanted == source)
             && line.to_lowercase().contains(&self.needle)
     }
@@ -738,20 +792,37 @@ struct Index {
     bytes: usize,
 }
 impl Index {
-    fn add(&mut self, file: u64, offset: u64, id: String, decoded: Decoded, filter: &Filter) -> Result<(), String> {
-        if !filter.matches(&decoded.occurred_at, &decoded.source, &runtime_activity::log_text(&decoded.body)) {
+    fn add(
+        &mut self,
+        file: u64,
+        offset: u64,
+        id: String,
+        decoded: Decoded,
+        filter: &Filter,
+    ) -> Result<(), String> {
+        if !filter.matches(
+            &decoded.occurred_at,
+            &decoded.source,
+            &runtime_activity::log_text(&decoded.body),
+        ) {
             return Ok(());
         }
         self.bytes += location_cost(&decoded.occurred_at, &id);
         if self.bytes > INDEX_BUDGET {
             return Err(TOO_MANY_MATCHES.into());
         }
-        self.records.push(Location { file, offset, time: decoded.occurred_at, id });
+        self.records.push(Location {
+            file,
+            offset,
+            time: decoded.occurred_at,
+            id,
+        });
         Ok(())
     }
     /// Newest first, the order pages are served in.
     fn sorted(mut self) -> Vec<Location> {
-        self.records.sort_unstable_by(|a, b| (&b.time, &b.id).cmp(&(&a.time, &a.id)));
+        self.records
+            .sort_unstable_by(|a, b| (&b.time, &b.id).cmp(&(&a.time, &a.id)));
         self.records
     }
 }
@@ -759,12 +830,17 @@ const INDEX_BUDGET: usize = 128 * 1024 * 1024;
 /// A following view keeps one snapshot (each refresh replaces its predecessor),
 /// so a few searches per view are enough.
 const MAX_SNAPSHOTS: usize = 16;
-const TOO_MANY_MATCHES: &str = "This search has too many matches. Narrow its time range or search text.";
+const TOO_MANY_MATCHES: &str =
+    "This search has too many matches. Narrow its time range or search text.";
 fn location_cost(time: &str, id: &str) -> usize {
     std::mem::size_of::<Location>() + time.len() + id.len()
 }
 fn cached_cost(cached: &Cached) -> usize {
-    cached.records.iter().map(|record| location_cost(&record.time, &record.id)).sum()
+    cached
+        .records
+        .iter()
+        .map(|record| location_cost(&record.time, &record.id))
+        .sum()
 }
 /// Keep a snapshot for its cursors, replacing the snapshot it follows and evicting
 /// the least recently used over budget.
@@ -779,9 +855,18 @@ fn store(cached: Cached, replaces: Option<&str>) -> Result<String, String> {
     }
     cache.retain(|_, (seen, _)| seen.elapsed() < Duration::from_secs(1800));
     while cache.len() >= MAX_SNAPSHOTS
-        || cache.values().map(|(_, cached)| cached_cost(cached)).sum::<usize>() + cost > INDEX_BUDGET
+        || cache
+            .values()
+            .map(|(_, cached)| cached_cost(cached))
+            .sum::<usize>()
+            + cost
+            > INDEX_BUDGET
     {
-        let Some(oldest) = cache.iter().min_by_key(|(_, (seen, _))| *seen).map(|(id, _)| id.clone()) else {
+        let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, (seen, _))| *seen)
+            .map(|(id, _)| id.clone())
+        else {
             break;
         };
         cache.remove(&oldest);
@@ -829,7 +914,11 @@ fn follow_index(
             }
             index.add(segment.inode, offset, id, decoded, filter)
         })?;
-        files.push(Indexed { segment: segment.clone(), consumed, complete });
+        files.push(Indexed {
+            segment: segment.clone(),
+            consumed,
+            complete,
+        });
     }
     // Both lists are newest first; keep that order while merging.
     let appended = index.sorted();
@@ -837,7 +926,11 @@ fn follow_index(
     let mut kept = previous
         .records
         .iter()
-        .filter(|record| carried.get(&record.file).is_some_and(|consumed| record.offset < *consumed))
+        .filter(|record| {
+            carried
+                .get(&record.file)
+                .is_some_and(|consumed| record.offset < *consumed)
+        })
         .peekable();
     let mut appended = appended.into_iter().peekable();
     loop {
@@ -849,12 +942,22 @@ fn follow_index(
         };
         if take_kept {
             let old = kept.next().expect("peeked");
-            records.push(Location { file: old.file, offset: old.offset, time: old.time.clone(), id: old.id.clone() });
+            records.push(Location {
+                file: old.file,
+                offset: old.offset,
+                time: old.time.clone(),
+                id: old.id.clone(),
+            });
         } else {
             records.push(appended.next().expect("peeked"));
         }
     }
-    let cached = Cached { binding: previous.binding.clone(), files, records, summary };
+    let cached = Cached {
+        binding: previous.binding.clone(),
+        files,
+        records,
+        summary,
+    };
     if cached_cost(&cached) > INDEX_BUDGET {
         return Err(TOO_MANY_MATCHES.into());
     }
@@ -910,7 +1013,11 @@ fn context(
     let mut entries = older;
     entries.extend(newer);
     entries.sort_by_key(|entry| std::cmp::Reverse(key(entry)));
-    if serde_json::to_vec(&entries).map_err(|e| e.to_string())?.len() > 1024 * 1024 {
+    if serde_json::to_vec(&entries)
+        .map_err(|e| e.to_string())?
+        .len()
+        > 1024 * 1024
+    {
         return Err("This context window is too large. Narrow the time range instead.".into());
     }
     Ok(Page {
@@ -941,39 +1048,77 @@ mod tests {
             })
         };
         let busy = gate.try_vm("vm-1", "dev", "Starting dev").unwrap();
-        super::clean_up_if_stopped(&gate, "vm-1", "dev", || panic!("a busy VM is not inspected"), || {
-            panic!("a busy VM's logs are not cleaned")
-        })
+        super::clean_up_if_stopped(
+            &gate,
+            "vm-1",
+            "dev",
+            || panic!("a busy VM is not inspected"),
+            || panic!("a busy VM's logs are not cleaned"),
+        )
         .unwrap();
         drop(busy);
         let mut cleaned = false;
-        super::clean_up_if_stopped(&gate, "vm-1", "dev", || !start_admitted(), || {
-            // A Start cannot be admitted between the stopped check and the cleanup.
-            assert!(!start_admitted());
-            cleaned = true;
-            Ok(())
-        })
+        super::clean_up_if_stopped(
+            &gate,
+            "vm-1",
+            "dev",
+            || !start_admitted(),
+            || {
+                // A Start cannot be admitted between the stopped check and the cleanup.
+                assert!(!start_admitted());
+                cleaned = true;
+                Ok(())
+            },
+        )
         .unwrap();
         assert!(cleaned);
         assert!(start_admitted(), "the gate is released after cleanup");
-        super::clean_up_if_stopped(&gate, "vm-1", "dev", || false, || panic!("a running VM's logs are not cleaned")).unwrap();
+        super::clean_up_if_stopped(
+            &gate,
+            "vm-1",
+            "dev",
+            || false,
+            || panic!("a running VM's logs are not cleaned"),
+        )
+        .unwrap();
     }
     #[test]
     fn unsupported_remote_request_becomes_a_structured_outcome() {
         let page = super::remote_page(Err(BridgeError::unsupported())).unwrap();
         assert!(page.unsupported && page.entries.is_empty());
-        assert!(super::remote_page(Err(BridgeError::new(ErrorCode::UnsupportedRemoteOperation, "Owner cannot serve logs."))).unwrap().unsupported);
-        assert_eq!(super::remote_page(Err("Connection refused.".into())).err().unwrap(), BridgeError::from("Connection refused."));
+        assert!(
+            super::remote_page(Err(BridgeError::new(
+                ErrorCode::UnsupportedRemoteOperation,
+                "Owner cannot serve logs."
+            )))
+            .unwrap()
+            .unsupported
+        );
+        assert_eq!(
+            super::remote_page(Err("Connection refused.".into()))
+                .err()
+                .unwrap(),
+            BridgeError::from("Connection refused.")
+        );
     }
     use super::*;
     #[test]
     fn boot_failure_is_searchable_with_its_timestamp_context_and_pagination() {
         let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("runtime.log"), "2026-09-22T09:19:32.455Z entering VM\n").unwrap();
-        fs::write(directory.path().join("boot-error.json"), serde_json::to_string_pretty(&json!({
-            "t": "2026-09-22T09:19:32.467Z", "stage": "build_vm", "errno": null,
-            "message": "libkrunfw could not load: different Team IDs\nTOKEN=private-value",
-        })).unwrap()).unwrap();
+        fs::write(
+            directory.path().join("runtime.log"),
+            "2026-09-22T09:19:32.455Z entering VM\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("boot-error.json"),
+            serde_json::to_string_pretty(&json!({
+                "t": "2026-09-22T09:19:32.467Z", "stage": "build_vm", "errno": null,
+                "message": "libkrunfw could not load: different Team IDs\nTOKEN=private-value",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let mut query = request();
         query.query = Some("different Team IDs".into());
         query.source = Some("runtime".into());
@@ -982,13 +1127,22 @@ mod tests {
         let page = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
         assert_eq!(page.total_matches, 1);
         assert_eq!(page.entries[0].source, "runtime");
-        assert_eq!(page.entries[0].occurred_at, "2026-09-22T09:19:32.467000000Z");
+        assert_eq!(
+            page.entries[0].occurred_at,
+            "2026-09-22T09:19:32.467000000Z"
+        );
         assert!(page.entries[0].line.contains("build_vm"));
         assert!(!page.entries[0].line.contains("private-value"));
         assert!(!page.timestamp_estimated);
         let mut context = request();
         context.around_id = Some(page.entries[0].id.clone());
-        assert_eq!(read(directory.path(), context, "dev", "pc", "Desktop").unwrap().entries.len(), 2);
+        assert_eq!(
+            read(directory.path(), context, "dev", "pc", "Desktop")
+                .unwrap()
+                .entries
+                .len(),
+            2
+        );
         let mut query = request();
         query.limit = Some(1);
         let first = read(directory.path(), query.clone(), "dev", "pc", "Desktop").unwrap();
@@ -1002,16 +1156,40 @@ mod tests {
     #[test]
     fn replacing_a_boot_failure_expires_the_old_snapshot() {
         let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("runtime.log"), "2026-09-22T09:19:30Z entering VM\n").unwrap();
-        let boot = |message| serde_json::to_vec(&json!({ "t": "2026-09-22T09:19:32Z", "stage": "build_vm", "message": message })).unwrap();
-        fs::write(directory.path().join("boot-error.json"), boot("first attempt")).unwrap();
+        fs::write(
+            directory.path().join("runtime.log"),
+            "2026-09-22T09:19:30Z entering VM\n",
+        )
+        .unwrap();
+        let boot = |message| {
+            serde_json::to_vec(
+                &json!({ "t": "2026-09-22T09:19:32Z", "stage": "build_vm", "message": message }),
+            )
+            .unwrap()
+        };
+        fs::write(
+            directory.path().join("boot-error.json"),
+            boot("first attempt"),
+        )
+        .unwrap();
         let mut query = request();
         query.limit = Some(1);
         let first = read(directory.path(), query.clone(), "dev", "pc", "Desktop").unwrap();
-        fs::write(directory.path().join("next-boot-error.json"), boot("next attempt")).unwrap();
-        fs::rename(directory.path().join("next-boot-error.json"), directory.path().join("boot-error.json")).unwrap();
+        fs::write(
+            directory.path().join("next-boot-error.json"),
+            boot("next attempt"),
+        )
+        .unwrap();
+        fs::rename(
+            directory.path().join("next-boot-error.json"),
+            directory.path().join("boot-error.json"),
+        )
+        .unwrap();
         query.cursor = first.next_cursor;
-        assert!(read(directory.path(), query, "dev", "pc", "Desktop").err().unwrap().contains("expired"));
+        assert!(read(directory.path(), query, "dev", "pc", "Desktop")
+            .err()
+            .unwrap()
+            .contains("expired"));
     }
 
     fn request() -> Query {
@@ -1264,20 +1442,45 @@ mod tests {
         (entries, first)
     }
     fn summary_of(entries: &[Entry]) -> Vec<(String, String, String)> {
-        entries.iter().map(|entry| (entry.id.clone(), entry.occurred_at.clone(), entry.line.clone())).collect()
+        entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.id.clone(),
+                    entry.occurred_at.clone(),
+                    entry.line.clone(),
+                )
+            })
+            .collect()
     }
     fn append(path: &Path, text: &str) {
-        std::fs::OpenOptions::new().append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
     }
     #[test]
     fn follow_reads_appended_records_and_matches_a_full_refresh() {
         let directory = tempfile::tempdir().unwrap();
         let exec = directory.path().join("exec.log");
-        fs::write(&exec, (0..300).map(|i| line(i, "record")).collect::<String>()).unwrap();
+        fs::write(
+            &exec,
+            (0..300).map(|i| line(i, "record")).collect::<String>(),
+        )
+        .unwrap();
         let kernel = directory.path().join("kernel.log");
-        fs::write(&kernel, "2026-09-18T12:00:00.000000100Z kernel start\n2026-09-18T12:00:00.000000200Z partial").unwrap();
+        fs::write(
+            &kernel,
+            "2026-09-18T12:00:00.000000100Z kernel start\n2026-09-18T12:00:00.000000200Z partial",
+        )
+        .unwrap();
         let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
-        let snapshot = first.snapshot.clone().expect("a first page names its snapshot");
+        let snapshot = first
+            .snapshot
+            .clone()
+            .expect("a first page names its snapshot");
         // Appends, a completed console line, a rotation and a new segment.
         append(&exec, &line(301, "appended"));
         append(&kernel, " line completed\n");
@@ -1291,23 +1494,40 @@ mod tests {
         // 301 execution records in the rotated file, one in the new file, two console lines.
         assert_eq!(followed_first.total_matches, 304);
         assert_eq!(
-            (followed_first.oldest_available_timestamp, followed_first.newest_available_timestamp),
-            (full_first.oldest_available_timestamp, full_first.newest_available_timestamp)
+            (
+                followed_first.oldest_available_timestamp,
+                followed_first.newest_available_timestamp
+            ),
+            (
+                full_first.oldest_available_timestamp,
+                full_first.newest_available_timestamp
+            )
         );
-        assert!(followed.iter().any(|entry| entry.line.ends_with("partial line completed")));
+        assert!(followed
+            .iter()
+            .any(|entry| entry.line.ends_with("partial line completed")));
         assert!(!followed.iter().any(|entry| entry.line.ends_with("partial")));
         // A follow replaces its predecessor instead of accumulating snapshots.
         let mut stale = request();
         stale.cursor = Some(format!("{snapshot}:0"));
-        assert!(read(directory.path(), stale, "dev", "pc", "Desktop").err().unwrap().contains("expired"));
+        assert!(read(directory.path(), stale, "dev", "pc", "Desktop")
+            .err()
+            .unwrap()
+            .contains("expired"));
     }
     #[test]
     fn follow_does_not_reread_records_it_already_indexed() {
         let directory = tempfile::tempdir().unwrap();
         let exec = directory.path().join("exec.log");
-        fs::write(&exec, (0..100).map(|i| line(i, "record")).collect::<String>()).unwrap();
+        fs::write(
+            &exec,
+            (0..100).map(|i| line(i, "record")).collect::<String>(),
+        )
+        .unwrap();
         let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
-        let previous = cache().lock().unwrap()[first.snapshot.as_deref().unwrap()].1.clone();
+        let previous = cache().lock().unwrap()[first.snapshot.as_deref().unwrap()]
+            .1
+            .clone();
         // Overwrite indexed bytes in place: a rescan would find unreadable records.
         let mut bytes = fs::read(&exec).unwrap();
         bytes[..10].copy_from_slice(b"##########");
@@ -1315,8 +1535,15 @@ mod tests {
         file.write_all(&bytes).unwrap();
         file.write_all(line(100, "appended").as_bytes()).unwrap();
         drop(file);
-        let filter = Filter { since: None, until: None, needle: String::new(), source: None };
-        let next = follow_index(&previous, &files(directory.path()).unwrap(), &filter).unwrap().unwrap();
+        let filter = Filter {
+            since: None,
+            until: None,
+            needle: String::new(),
+            source: None,
+        };
+        let next = follow_index(&previous, &files(directory.path()).unwrap(), &filter)
+            .unwrap()
+            .unwrap();
         assert_eq!(next.records.len(), 101);
         assert!(!next.summary.unreadable, "indexed bytes were read again");
         assert_eq!(next.files[0].consumed, fs::metadata(&exec).unwrap().len());
@@ -1328,7 +1555,12 @@ mod tests {
         fs::write(&exec, (0..50).map(|i| line(i, "old")).collect::<String>()).unwrap();
         let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
         // Retention truncates the current inode in place; the writer starts again.
-        fs::OpenOptions::new().write(true).open(&exec).unwrap().set_len(0).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&exec)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
         append(&exec, &line(60, "after truncation"));
         for token in [first.snapshot.clone().unwrap(), "unknown-snapshot".into()] {
             let mut follow = request();
@@ -1357,7 +1589,13 @@ mod tests {
         assert!(first.unreadable_records);
         assert!(first.timestamp_estimated);
         let lines: Vec<_> = entries.iter().map(|entry| entry.line.as_str()).collect();
-        for expected in ["before", "after", "no timestamp", "[Unreadable execution log record]", "[Unreadable boot failure record]"] {
+        for expected in [
+            "before",
+            "after",
+            "no timestamp",
+            "[Unreadable execution log record]",
+            "[Unreadable boot failure record]",
+        ] {
             assert!(lines.contains(&expected), "{expected}: {lines:?}");
         }
     }
@@ -1382,27 +1620,63 @@ mod tests {
         assert!(lines.contains(&"2026-09-18T08:00:01Z after the flood"));
         assert!(lines.contains(&"exec after"));
         assert!(lines.contains(&"[Execution log record over 1 MiB omitted]"));
-        let truncated: Vec<_> = lines.iter().filter(|line| line.ends_with("[record over 1 MiB truncated]")).collect();
-        assert_eq!(truncated.len(), 2, "{:?}", lines.iter().map(|line| line.len()).collect::<Vec<_>>());
+        let truncated: Vec<_> = lines
+            .iter()
+            .filter(|line| line.ends_with("[record over 1 MiB truncated]"))
+            .collect();
+        assert_eq!(
+            truncated.len(),
+            2,
+            "{:?}",
+            lines.iter().map(|line| line.len()).collect::<Vec<_>>()
+        );
         assert!(truncated.iter().all(|line| line.len() < 70 * 1024));
         let mut search = request();
         search.query = Some("after the flood".into());
-        assert_eq!(read(directory.path(), search, "dev", "pc", "Desktop").unwrap().total_matches, 1);
+        assert_eq!(
+            read(directory.path(), search, "dev", "pc", "Desktop")
+                .unwrap()
+                .total_matches,
+            1
+        );
     }
     #[test]
     fn guest_console_timestamps_are_labelled() {
         let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("kernel.log"), "2020-01-01T00:00:00Z forged by the guest\n").unwrap();
-        fs::write(directory.path().join("runtime.log"), "2026-09-18T08:00:00Z runtime\n").unwrap();
+        fs::write(
+            directory.path().join("kernel.log"),
+            "2020-01-01T00:00:00Z forged by the guest\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("runtime.log"),
+            "2026-09-18T08:00:00Z runtime\n",
+        )
+        .unwrap();
         fs::write(directory.path().join("exec.log"), line(1, "exec")).unwrap();
         let page = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
         for entry in &page.entries {
-            assert_eq!(entry.guest_timestamp, entry.source == "kernel", "{}", entry.line);
+            assert_eq!(
+                entry.guest_timestamp,
+                entry.source == "kernel",
+                "{}",
+                entry.line
+            );
         }
         let json = serde_json::to_value(&page).unwrap();
-        let kernel = json["entries"].as_array().unwrap().iter().find(|entry| entry["source"] == "kernel").unwrap();
+        let kernel = json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["source"] == "kernel")
+            .unwrap();
         assert_eq!(kernel["guestTimestamp"], true);
-        assert!(json["entries"].as_array().unwrap().iter().filter(|entry| entry["source"] != "kernel").all(|entry| entry.get("guestTimestamp").is_none()));
+        assert!(json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["source"] != "kernel")
+            .all(|entry| entry.get("guestTimestamp").is_none()));
         let mut context = request();
         context.around_id = Some(kernel["id"].as_str().unwrap().into());
         let around = read(directory.path(), context, "dev", "pc", "Desktop").unwrap();

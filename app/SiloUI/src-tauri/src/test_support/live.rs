@@ -21,8 +21,12 @@ pub(crate) fn isolated_editor_home(home: &Path, real_home: &Path) -> Result<Path
     if !home.is_absolute() || !real_home.is_absolute() {
         return Err("Live editor tests require absolute, existing fixture and user homes.");
     }
-    let home = home.canonicalize().map_err(|_| "Cannot resolve fixture home.")?;
-    let real_home = real_home.canonicalize().map_err(|_| "Cannot resolve user home.")?;
+    let home = home
+        .canonicalize()
+        .map_err(|_| "Cannot resolve fixture home.")?;
+    let real_home = real_home
+        .canonicalize()
+        .map_err(|_| "Cannot resolve user home.")?;
     if home == real_home {
         return Err("Live editor tests refuse a fixture home equal to HOME.");
     }
@@ -51,7 +55,10 @@ mod tests {
         assert!(isolated_editor_home(&real, &real).is_err());
         assert!(isolated_editor_home(&real.join("."), &real).is_err());
         assert!(isolated_editor_home(Path::new("fixture"), &real).is_err());
-        assert_eq!(isolated_editor_home(&fixture, &real).unwrap(), fixture.canonicalize().unwrap());
+        assert_eq!(
+            isolated_editor_home(&fixture, &real).unwrap(),
+            fixture.canonicalize().unwrap()
+        );
     }
 
     #[cfg(unix)]

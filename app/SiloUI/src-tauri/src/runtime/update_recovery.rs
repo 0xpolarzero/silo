@@ -122,7 +122,9 @@ fn running(
                         .collect(),
                 );
             }
-            let exists = listed.as_ref().is_some_and(|names| names.contains(m.name()));
+            let exists = listed
+                .as_ref()
+                .is_some_and(|names| names.contains(m.name()));
             if checkpoints::pending_view(paths, m.id(), exists).map_err(|e| e.to_string())? {
                 continue;
             }
@@ -151,7 +153,10 @@ pub(crate) fn running_names(app: &AppHandle) -> Result<Vec<String>, String> {
 /// Caller holds the operation gate (computer scope) for the whole installation,
 /// including every stop.
 pub(crate) fn prepare(app: &AppHandle, consent: bool) -> Result<(), String> {
-    debug_assert!(operation_gate::held(), "update preparation requires the operation gate");
+    debug_assert!(
+        operation_gate::held(),
+        "update preparation requires the operation gate"
+    );
     let paths = runtime_paths(app)?;
     if load(&paths)?.is_some() {
         return Err(
@@ -189,7 +194,10 @@ fn stop_selected(
 
 /// Caller holds the operation gate. Each success is persisted, making replay idempotent.
 pub(crate) fn restore_locked(app: &AppHandle) -> Result<(), String> {
-    debug_assert!(operation_gate::held(), "update restore requires the operation gate");
+    debug_assert!(
+        operation_gate::held(),
+        "update restore requires the operation gate"
+    );
     let paths = runtime_paths(app)?;
     let host = host_resources().map_err(|e| e.to_string())?;
     restore_pending(&paths, |machine| {
@@ -348,8 +356,14 @@ mod tests {
         let kept = uuid::Uuid::new_v4().to_string();
         let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":kept,"name":"kept","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
-        let removed = RunningMachine { id: uuid::Uuid::new_v4().to_string(), name: "removed".into() };
-        let kept = RunningMachine { id: kept, name: "kept".into() };
+        let removed = RunningMachine {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "removed".into(),
+        };
+        let kept = RunningMachine {
+            id: kept,
+            name: "kept".into(),
+        };
         save(&paths, &[removed, kept]).unwrap();
         let mut resumed = vec![];
         restore_pending(&paths, |machine| {
@@ -368,9 +382,20 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         struct NoRuntime;
         impl RuntimeRunner for NoRuntime {
-            fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
-                assert_eq!(args[0], "list", "a pending sandbox has no runtime VM to inspect");
-                Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() })
+            fn run(
+                &self,
+                _: &RuntimePaths,
+                args: &[String],
+                _: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                assert_eq!(
+                    args[0], "list",
+                    "a pending sandbox has no runtime VM to inspect"
+                );
+                Ok(CommandOutput {
+                    stdout: "[]".into(),
+                    stderr: String::new(),
+                })
             }
         }
         let dir = tempfile::tempdir().unwrap();
@@ -430,9 +455,17 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         struct Inspect(Value);
         impl RuntimeRunner for Inspect {
-            fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            fn run(
+                &self,
+                _: &RuntimePaths,
+                args: &[String],
+                _: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
                 assert_eq!(args[0], "inspect");
-                Ok(CommandOutput { stdout: self.0.to_string(), stderr: String::new() })
+                Ok(CommandOutput {
+                    stdout: self.0.to_string(),
+                    stderr: String::new(),
+                })
             }
         }
         let dir = tempfile::tempdir().unwrap();
@@ -440,11 +473,17 @@ mod tests {
         let id = uuid::Uuid::new_v4().to_string();
         let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
-        for status in ["Crashed", "Stopped", "Created", "Running", "Starting", "Draining", "Unknown"] {
-            let runner = Inspect(json!({"name":"dev","status":status,"config":{"labels":{"silo.managed":"true","silo.machine-id":id}}}));
+        for status in [
+            "Crashed", "Stopped", "Created", "Running", "Starting", "Draining", "Unknown",
+        ] {
+            let runner = Inspect(
+                json!({"name":"dev","status":status,"config":{"labels":{"silo.managed":"true","silo.machine-id":id}}}),
+            );
             let result = running(&runner, &paths);
             match status {
-                "Crashed" | "Stopped" | "Created" => assert!(result.unwrap().is_empty(), "{status}"),
+                "Crashed" | "Stopped" | "Created" => {
+                    assert!(result.unwrap().is_empty(), "{status}")
+                }
                 "Running" => assert_eq!(result.unwrap()[0].name, "dev"),
                 _ => assert!(result.is_err(), "{status}"),
             }

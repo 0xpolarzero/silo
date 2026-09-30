@@ -882,7 +882,12 @@ fn runtime_manifest_matches(manifest: &MicrosandboxManifest) -> bool {
                     && manifest.executable.source_commit == RUNTIME_INPUTS.source_commit
                     && manifest.executable.source_archive_sha256
                         == RUNTIME_INPUTS.source_archive_sha256
-                    && manifest.executable.patch_sha256s == RUNTIME_INPUTS.patches.iter().map(|patch| patch.sha256.clone()).collect::<Vec<_>>()
+                    && manifest.executable.patch_sha256s
+                        == RUNTIME_INPUTS
+                            .patches
+                            .iter()
+                            .map(|patch| patch.sha256.clone())
+                            .collect::<Vec<_>>()
                     && manifest.executable.toolchain == RUNTIME_INPUTS.toolchain
                     && manifest.executable.features == RUNTIME_INPUTS.features
                     && manifest.executable.official_release_asset == executable_asset
@@ -1192,11 +1197,24 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut listed = std::collections::BTreeSet::new();
         for input in &RUNTIME_INPUTS.patches {
-            assert!(input.path.starts_with("patches/") && !input.path.contains(".."), "{}", input.path);
+            assert!(
+                input.path.starts_with("patches/") && !input.path.contains(".."),
+                "{}",
+                input.path
+            );
             let bytes = fs::read(root.join(&input.path))
                 .unwrap_or_else(|error| panic!("{}: {error}", input.path));
-            assert_eq!(format!("{:x}", Sha256::digest(&bytes)), input.sha256, "{}", input.path);
-            assert!(listed.insert(input.path.clone()), "{} is listed twice", input.path);
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&bytes)),
+                input.sha256,
+                "{}",
+                input.path
+            );
+            assert!(
+                listed.insert(input.path.clone()),
+                "{} is listed twice",
+                input.path
+            );
         }
         let checked_in: std::collections::BTreeSet<_> = fs::read_dir(root.join("patches"))
             .unwrap()

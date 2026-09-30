@@ -63,7 +63,9 @@ pub(crate) fn response_user(response: &Value) -> Result<&'static str, String> {
 }
 
 pub(crate) fn require_client_protocol(user: &str, request: &Value) -> Result<(), String> {
-    if user != "silo" { return Err(MIGRATION_REQUIRED.into()); }
+    if user != "silo" {
+        return Err(MIGRATION_REQUIRED.into());
+    }
     if request.get("accountProtocol").and_then(Value::as_u64) != Some(1) {
         return Err(
             "Update Silo on the connecting computer to access this sandbox's Linux account.".into(),
@@ -114,7 +116,10 @@ mod tests {
         let script = std::fs::read_to_string(&paths.executable).unwrap();
         std::fs::write(&paths.executable, script.replace("printf '1", "printf '0")).unwrap();
         let error = inspect_user(&paths, "dev").unwrap_err();
-        assert!(error.contains("Relaunch Silo") && error.contains("repair or update Silo"), "{error}");
+        assert!(
+            error.contains("Relaunch Silo") && error.contains("repair or update Silo"),
+            "{error}"
+        );
         test_runtime(&paths.executable, false);
         let script = std::fs::read_to_string(&paths.executable).unwrap();
         std::fs::write(&paths.executable, script.replace("printf '1", "printf '0")).unwrap();
@@ -124,7 +129,9 @@ mod tests {
     #[test]
     fn working_account_requires_the_unified_policy() {
         assert!(working_user(&json!({})).unwrap_err().contains("Migrate"));
-        assert!(working_user(&json!({"labels":{}})).unwrap_err().contains("Migrate"));
+        assert!(working_user(&json!({"labels":{}}))
+            .unwrap_err()
+            .contains("Migrate"));
         assert_eq!(
             working_user(&json!({"labels":{LABEL:"1"}})).unwrap(),
             "silo"
