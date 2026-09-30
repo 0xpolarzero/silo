@@ -36,7 +36,8 @@ type ShouldTerminate = extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject) -> 
 /// tao's delegate) and before it runs.
 pub(super) fn install(app: &AppHandle) -> Result<(), String> {
     let _ = APP.set(app.clone());
-    let mtm = MainThreadMarker::new().ok_or("the terminate handler must be installed on the main thread")?;
+    let mtm = MainThreadMarker::new()
+        .ok_or("the terminate handler must be installed on the main thread")?;
     let application = NSApplication::sharedApplication(mtm);
     let delegate = application
         .delegate()
@@ -88,7 +89,8 @@ fn current_quit_reason() -> Option<u32> {
     // return an autoreleased descriptor or nil.
     let reason: Option<Retained<NSAppleEventDescriptor>> =
         unsafe { msg_send![&*event, attributeDescriptorForKeyword: QUIT_REASON] };
-    let reason = reason.or_else(|| unsafe { msg_send![&*event, paramDescriptorForKeyword: QUIT_REASON] })?;
+    let reason =
+        reason.or_else(|| unsafe { msg_send![&*event, paramDescriptorForKeyword: QUIT_REASON] })?;
     Some(match reason.enumCodeValue() {
         0 => reason.typeCodeValue(),
         code => code,
@@ -103,7 +105,8 @@ pub(super) fn reply(app: &AppHandle, should_terminate: bool) -> bool {
     }
     let result = app.run_on_main_thread(move || {
         if let Some(mtm) = MainThreadMarker::new() {
-            NSApplication::sharedApplication(mtm).replyToApplicationShouldTerminate(should_terminate);
+            NSApplication::sharedApplication(mtm)
+                .replyToApplicationShouldTerminate(should_terminate);
         }
     });
     if let Err(error) = result {

@@ -146,8 +146,17 @@ mod tests {
     #[test]
     fn logind_budget_leaves_time_to_exit_inside_the_delay() {
         assert_eq!(logind_budget(None), Duration::from_millis(4250));
-        assert_eq!(logind_budget(Some(Duration::from_secs(30))), Duration::from_millis(29250).min(SESSION_END_BUDGET));
-        assert_eq!(logind_budget(Some(Duration::from_millis(500))), Duration::from_secs(1));
-        assert_eq!(logind_budget(Some(Duration::from_secs(10))), Duration::from_millis(9250));
+        assert_eq!(
+            logind_budget(Some(Duration::from_secs(30))),
+            Duration::from_millis(29250).min(SESSION_END_BUDGET)
+        );
+        assert_eq!(
+            logind_budget(Some(Duration::from_millis(500))),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            logind_budget(Some(Duration::from_secs(10))),
+            Duration::from_millis(9250)
+        );
     }
 }

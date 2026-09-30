@@ -134,7 +134,10 @@ mod tests {
             Some(PathBuf::from("/home/me/silo/./target/silo-ui"))
         );
         assert_eq!(resolve_program("target/silo-ui", Path::new(""), None), None);
-        assert_eq!(resolve_program("silo-ui", directory.path(), path.clone()), Some(bin.join("silo-ui")));
+        assert_eq!(
+            resolve_program("silo-ui", directory.path(), path.clone()),
+            Some(bin.join("silo-ui"))
+        );
         assert_eq!(resolve_program("missing", directory.path(), path), None);
         assert_eq!(resolve_program("", directory.path(), None), None);
     }
@@ -166,7 +169,10 @@ mod tests {
         let guard = builder.find(".plugin(single_instance::plugin())").unwrap();
         for later in [".plugin(tauri_plugin_", ".setup(", ".on_page_load("] {
             let position = builder.find(later).unwrap_or(usize::MAX);
-            assert!(guard < position, "{later} must follow the single-instance plugin");
+            assert!(
+                guard < position,
+                "{later} must follow the single-instance plugin"
+            );
         }
     }
 }
