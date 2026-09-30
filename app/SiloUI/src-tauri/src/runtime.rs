@@ -2038,6 +2038,38 @@ fn read_application_snapshot_once(
         .map_err(|error| error.to_string())
 }
 
+/// Longest a single health-check runtime call may take.
+const HEALTH_CALL_BUDGET: Duration = Duration::from_secs(5);
+
+/// Runs health-check runtime calls with a budget per call rather than one budget shared
+/// by the list and every inspection: with many VMs a shared budget ran out before the
+/// last VMs were inspected. A slow VM now fails only its own (stale, skipped) row.
+struct HealthRunner<'a> {
+    inner: &'a dyn RuntimeRunner,
+    budget: Duration,
+}
+
+impl RuntimeRunner for HealthRunner<'_> {
+    fn run(
+        &self,
+        paths: &RuntimePaths,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<CommandOutput, RuntimeError> {
+        if !paths.home.is_dir()
+            || paths
+                .storage_home
+                .as_ref()
+                .is_some_and(|home| !home.is_dir())
+        {
+            return Err(RuntimeError::Unavailable(
+                "The managed runtime is unavailable.".into(),
+            ));
+        }
+        self.inner.run(paths, args, timeout.min(self.budget))
+    }
+}
+
 /// A background health observation uses the same real inspection as the UI, without
 /// host identity discovery. Never hold the mutation lock while inspecting: user
 /// actions take priority. Each VM reports whether it stayed idle and untouched by any
@@ -2046,33 +2078,6 @@ fn read_application_snapshot_once(
 /// created, started, or changed here.
 pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Reading {
     use crate::health_watch::{Reading, VmReading};
-    struct HealthRunner(Instant);
-    impl RuntimeRunner for HealthRunner {
-        fn run(
-            &self,
-            paths: &RuntimePaths,
-            args: &[String],
-            timeout: Duration,
-        ) -> Result<CommandOutput, RuntimeError> {
-            let remaining = Duration::from_secs(5)
-                .checked_sub(self.0.elapsed())
-                .filter(|remaining| !remaining.is_zero())
-                .ok_or_else(|| RuntimeError::TimedOut {
-                    operation: "Health check".into(),
-                })?;
-            if !paths.home.is_dir()
-                || paths
-                    .storage_home
-                    .as_ref()
-                    .is_some_and(|home| !home.is_dir())
-            {
-                return Err(RuntimeError::Unavailable(
-                    "The managed runtime is unavailable.".into(),
-                ));
-            }
-            run_msb(paths, args, timeout.min(remaining))
-        }
-    }
     let paths = runtime_paths(app);
     let before = paths
         .as_ref()
@@ -2082,7 +2087,7 @@ pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Readi
     // no operation touched the VM during the read.
     let started = OPERATIONS.generations();
     let source = paths.as_ref().map_err(Clone::clone).and_then(|paths| {
-        read_application_state_with(&HealthRunner(Instant::now()), paths)
+        read_application_state_with(&HealthRunner { inner: &ProcessRunner, budget: HEALTH_CALL_BUDGET }, paths)
             .map_err(|error| error.to_string())
     });
     let after = paths
@@ -6190,6 +6195,40 @@ esac
         keep_last_known_repositories(&paths, &mut response.workspaces);
         assert_eq!(response.workspaces[0].repositories, repositories);
         assert!(response.workspaces[1].repositories.is_empty(), "a stopped VM lists no repositories");
+    }
+
+    #[test]
+    fn health_checks_budget_each_runtime_call_instead_of_the_whole_reading() {
+        struct SlowRunner { timeouts: Mutex<Vec<Duration>>, inner: StubRunner }
+        impl RuntimeRunner for SlowRunner {
+            fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+                self.timeouts.lock().unwrap().push(timeout);
+                std::thread::sleep(Duration::from_millis(30));
+                self.inner.run(paths, args, timeout)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let slow = SlowRunner { timeouts: Mutex::new(Vec::new()), inner: two_vm_reading(&paths, "Running", "Stopped") };
+        // Three calls take about 90 ms together; each still gets its own 50 ms budget.
+        let health = HealthRunner { inner: &slow, budget: Duration::from_millis(50) };
+        let encoded = published(&read_application_state_with(&health, &paths).unwrap());
+        assert!(encoded["workspaces"].as_array().unwrap().iter().all(|row| row["freshness"] == "fresh"));
+        let timeouts = slow.timeouts.lock().unwrap();
+        assert_eq!(timeouts.len(), 3);
+        assert!(timeouts.iter().all(|timeout| *timeout == Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn health_checks_report_an_unavailable_runtime_home_without_running_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let inner = StubRunner::successful_json(vec![]);
+        let health = HealthRunner { inner: &inner, budget: HEALTH_CALL_BUDGET };
+        assert!(matches!(health.run(&paths, &["list".into()], READ_TIMEOUT), Err(RuntimeError::Unavailable(_))));
+        assert!(inner.calls.lock().unwrap().is_empty());
     }
 
     #[test]
