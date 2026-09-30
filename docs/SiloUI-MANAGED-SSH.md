@@ -26,7 +26,10 @@ listeners and stores the configuration.
    The **Save key file** action in that menu opens a save dialog for clients that take a key file. Exported
    keys have mode 0600. The copied command's path belongs to this computer;
    download the key when setting up a client on another computer.
-4. Enable **Allow SSH from other computers** for LAN/VPN access. A single available interface
+4. Enable **Allow SSH from other computers** for LAN/VPN access. Silo first asks
+   for confirmation, naming the address and port that become reachable; turning
+   SSH back on while it is still set to allow other computers asks the same way.
+   A single available interface
    is selected automatically; choose one when the host has several. The address
    can be copied separately for clients such as ZCode.
 5. The connection address tooltip includes the host-key fingerprint when available.
@@ -126,8 +129,11 @@ remove close managed SSH first. Quit closes listeners under the runtime mutation
 lock before stopping local VMs; the shutdown admission flag prevents reopening.
 Final app Exit also closes listeners.
 
-A background monitor reconciles every two seconds when it can obtain the runtime
-mutation lock. This covers app startup with already-running VMs, external stops,
+A background monitor reconciles every 15 seconds when it can obtain the runtime
+mutation lock, and only while SSH access is enabled for some sandbox or Silo
+still owns a listener or error; otherwise it takes no lock and inspects nothing.
+Runtime inspection and listener start-up run outside the lock that guards the
+listener table, so SSH status reads and closes never wait for them. This covers app startup with already-running VMs, external stops,
 process failures, interface loss, and recovery from occupied ports. The child
 itself observes VM transport closure, independently of that polling interval.
 Corrupt or unreadable saved state closes all managed SSH listeners. Configuration
