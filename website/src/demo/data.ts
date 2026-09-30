@@ -47,6 +47,7 @@ export const demoActions: ApplicationActions = {
   openDesktop: readOnlyOperation,
   readWorkspaceStorage: async () => ({
     workspaceHostBytes: 18 * 1024 ** 3, runtimeHostBytes: 4 * 1024 ** 3,
+    checkpointHostBytes: 0, checkpointCount: 0,
     workspaceUsedBytes: 12 * 1024 ** 3, workspaceCapacityBytes: 64 * 1024 ** 3,
     lastReclaimedBytes: 2 * 1024 ** 3, lastTrimAt: 1789941600, lastError: null,
     history: [{ at: 1789941600, trigger: 'scheduled', reclaimedBytes: 2 * 1024 ** 3, error: null }],

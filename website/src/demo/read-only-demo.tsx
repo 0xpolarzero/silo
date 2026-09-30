@@ -51,6 +51,7 @@ function DemoPages() {
     page = navigation.workspaceSection === 'overview'
       ? <OverviewPage readOnly source={demoSource} actions={demoActions} onMachinesChange={readOnlyOperation} />
       : <WorkspacesPage
+          source={demoSource}
           section={navigation.workspaceSection} onSectionChange={navigation.selectWorkspaceSection}
           workspaces={demoSource.workspaces} activities={demoSource.activities}
           network={demoSource.network} networkActions={demoActions}

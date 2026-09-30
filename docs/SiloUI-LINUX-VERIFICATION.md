@@ -248,7 +248,7 @@ commands in the main WebView, with no archive mocks.
 The tested Silo flow's repeat export failed with the ambiguous-ID error above.
 Inspection of pinned MicroSandbox 0.7.2 source explains a possible integration
 failure but does not establish an upstream contract violation. The [runtime
-manifest](../app/SiloUI/src-tauri/runtime/microsandbox/manifest.json) pins
+inputs](../app/SiloUI/runtime-inputs.json) pin
 source commit `60d4dc8a436fb9365491567ec21d073e924e3c6d`. In that source,
 `sdk/rust/lib/backend/local/snapshot/lineage.rs` persists a snapshot ID for the
 source cursor; `snapshot/archive.rs::resolve_parent_artifact` prefers a
