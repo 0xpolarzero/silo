@@ -45,7 +45,7 @@ Ordered source patch pins:
 | `microsandbox-portable-image-cache-0.7.2.patch` | `23b3b8e3cbc9ec20160306fd2aab5b196418efe132ed830e2e18738a89cfff57` |
 | `microsandbox-live-public-ports-0.7.2.patch` | `ad1abf1973c7e542ec7015575ab4ad35b321ac434e2bb9049aef096fa6b2b012` |
 | `microsandbox-preserve-basic-auth-0.7.2.patch` | `e1957e2bc8adb2552140a9309d1d26d2721a38113f375328b9def408f5b1b5aa` |
-| `microsandbox-secret-values-stdin-0.7.2.patch` | `a4190f14836bf457ae2f57254ebd23d6fd2c221572af85d6e5b5230c400abbe5` |
+| `microsandbox-secret-values-stdin-0.7.2.patch` | `32ba747bae584847a39d7727aa2d7a2046574085554e558ead066ad01a266250` |
 
 The ninth patch restores the independent Basic Auth substitution policy stored by MicroSandbox 0.6.x. Version 0.7.2 removed that field and made Basic Auth follow ordinary headers; its strict persisted-config decoder therefore rejected existing Silo sandbox records before owned-disk conversion. The patch preserves an explicit Basic Auth boolean, keeps the 0.7.2 headers behavior when the field is absent, and normalizes the observed historical `query_params` name to `query` at the persisted-config boundary. It never drops an unknown secret policy.
 
@@ -232,3 +232,25 @@ fetch success alone does not establish completeness. On two historical 6 MB
 versions, a cold source transfer used 12,001,358 protocol bytes; a repeat with an
 existing host cache used 275 bytes. Local timings were 0.209 s and 0.157 s. These
 measurements establish cache bandwidth savings, not live VM or SSH-network latency.
+
+B-28 source mapping: each general secret keeps its guest name and placeholder,
+but the CLI records an opaque `SILO_SECRET_<number>` source. The number is the
+big-endian decimal value of the first 128 bits of SHA-256 of the guest name; it
+is stable across assignment order, additions and removals. Silo sends values
+under these generated names on stdin and refuses duplicate sources. The CLI's
+create, modify and restore adapters use the same mapping only when stdin
+transport is enabled. `SILO_GITHUB` remains the reserved GitHub protocol source.
+The shared reserved-name list guards guest settings, independently of transport.
+
+Primary-source gap verified in the pinned
+[CLI network adapter](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/crates/cli/lib/commands/common.rs):
+the parser persists the guest name as its environment source and offers no
+separate source-name option. This small bundled upstream patch supplies the
+mapping at the existing adapter seam; no credential broker or storage service
+is added. The source patch retains the upstream license and existing runtime
+build, packaging, and protocol-probe checks.
+
+The build and smoke-test record above predates the generated source mapping.
+For the mapping revision, the focused upstream secret-values test and Silo's
+transport and secret-configuration tests pass. The patched CLI's compilation
+and parser tests are checked separately; live VMs remain unverified.

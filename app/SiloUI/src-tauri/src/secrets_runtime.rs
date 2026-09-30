@@ -57,6 +57,14 @@ impl From<Attempt> for String {
 pub(super) const SILO_GITHUB_SECRET_SPEC: &str =
     "SILO_GITHUB:passthrough=*@github.com,api.github.com,uploads.github.com";
 
+/// Stable opaque runtime source, shared with the bundled CLI's stdin adapter.
+/// Hashing the guest name keeps references unchanged when other secrets change.
+pub(super) fn source_name(name: &str) -> String {
+    let digest = Sha256::digest(name.as_bytes());
+    let number = u128::from_be_bytes(digest[..16].try_into().expect("SHA-256 has 16 bytes"));
+    format!("SILO_SECRET_{number}")
+}
+
 fn names(config: &Value) -> HashSet<String> {
     config
         .pointer("/network/secrets/secrets")
@@ -220,7 +228,7 @@ pub(crate) fn verify_config(config: &Value, material: &Material) -> bool {
             })
             .collect();
         entry["source"]["kind"] == "env"
-            && entry["source"]["var"] == name.as_str()
+            && entry["source"]["var"] == source_name(name)
             && entry["value"].as_str().unwrap_or_default().is_empty()
             && entry["require_tls_identity"].as_bool().unwrap_or(true)
             && entry["placeholder"] == format!("$MSB_{name}")
@@ -430,13 +438,26 @@ mod tests {
         assert_eq!(live, vec!["--secret", "TOKEN:passthrough=*@*"]);
     }
     #[test]
+    fn generated_sources_are_stable_and_distinct_from_guest_names() {
+        // Same vector as the bundled CLI patch, independent of assignment order.
+        assert_eq!(source_name("API_KEY"), "SILO_SECRET_272068193077316117667065620025266693635");
+        assert_ne!(source_name("API_KEY"), source_name("OTHER"));
+        let all = vec![("OTHER".into(), "other-value".into(), vec!["*".into()]), ("API_KEY".into(), "api-value".into(), vec!["*".into()])];
+        let one = vec![all[1].clone()];
+        let full: Value = serde_json::from_slice(&secret_values_document(&all, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
+        let reduced: Value = serde_json::from_slice(&secret_values_document(&one, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
+        assert_eq!(full[&source_name("API_KEY")], reduced[&source_name("API_KEY")]);
+        assert!(reduced.get("API_KEY").is_none());
+    }
+
+    #[test]
     fn verification_requires_host_reference_tls_and_exact_domains() {
         let material = vec![(
             "TOKEN".into(),
             "never-durable".into(),
             vec!["api.example.com".into()],
         )];
-        let mut config = json!({"network":{"tls":{"enabled":true},"secrets":{"secrets":[{"env_var":"TOKEN","source":{"kind":"env","var":"TOKEN"},"value":"","placeholder":"$MSB_TOKEN","require_tls_identity":true,"allowed_hosts":[{"exact":"api.example.com"}]}]}}});
+        let mut config = json!({"network":{"tls":{"enabled":true},"secrets":{"secrets":[{"env_var":"TOKEN","source":{"kind":"env","var":source_name("TOKEN")},"value":"","placeholder":"$MSB_TOKEN","require_tls_identity":true,"allowed_hosts":[{"exact":"api.example.com"}]}]}}});
         assert!(verify_config(&config, &material));
         config["network"]["secrets"]["secrets"][0]["value"] = json!("never-durable");
         assert!(!verify_config(&config, &material));

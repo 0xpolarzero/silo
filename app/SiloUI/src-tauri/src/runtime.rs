@@ -1083,12 +1083,14 @@ const SECRET_VALUES_STDIN_FLAG: &str = "MSB_SECRET_VALUES_STDIN";
 
 /// The secret source values one runtime child may resolve, as the JSON object it reads
 /// on standard input: the GitHub access profile under `SILO_GITHUB` and each general
-/// secret under its name (validated names never collide with `SILO_GITHUB`).
+/// secret under a generated source name (guest names never become host variables).
 fn secret_values_document(material: &secrets_runtime::Material, github_profile: &str) -> Result<Vec<u8>, RuntimeError> {
     let mut values = serde_json::Map::new();
     values.insert("SILO_GITHUB".into(), github_profile.into());
     for (name, value, _) in material {
-        values.insert(name.clone(), value.as_str().into());
+        if values.insert(secrets_runtime::source_name(name), value.as_str().into()).is_some() {
+            return Err(RuntimeError::Invalid("Sandbox secret source names conflict. Rename one secret and retry.".into()));
+        }
     }
     serde_json::to_vec(&Value::Object(values))
         .map_err(|_| RuntimeError::Invalid("Silo could not prepare the sandbox's secrets.".into()))
@@ -5675,7 +5677,7 @@ esac
         assert_eq!(args.trim(), format!("modify dev --secret {} --format json", secrets_runtime::SILO_GITHUB_SECRET_SPEC));
         assert!(!args.contains("ghs_scoped") && !args.contains("secret-value"));
         let values: Value = serde_json::from_str(&fs::read_to_string(paths.home.join("modify-values")).unwrap()).unwrap();
-        assert_eq!(values, json!({"SILO_GITHUB": profile.to_string(), "API_TOKEN": "secret-value"}));
+        assert_eq!(values, json!({"SILO_GITHUB": profile.to_string(), secrets_runtime::source_name("API_TOKEN"): "secret-value"}));
         // Neither the profile nor a secret, nor any secret-named variable, is in the environment.
         let environment = fs::read_to_string(paths.home.join("modify-env")).unwrap();
         assert!(environment.lines().any(|line| line == "MSB_SECRET_VALUES_STDIN=1"));
@@ -5689,7 +5691,7 @@ esac
     fn secret_values_document_carries_the_profile_and_each_secret_by_source_name() {
         let material = vec![("API_KEY".to_string(), "value \"quoted\"".to_string(), vec!["api.example.com".to_string()])];
         let document: Value = serde_json::from_slice(&secret_values_document(&material, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
-        assert_eq!(document, json!({"SILO_GITHUB": DISABLED_GITHUB_PROFILE, "API_KEY": "value \"quoted\""}));
+        assert_eq!(document, json!({"SILO_GITHUB": DISABLED_GITHUB_PROFILE, secrets_runtime::source_name("API_KEY"): "value \"quoted\""}));
     }
 
     #[test]
