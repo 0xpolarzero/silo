@@ -134,10 +134,14 @@ mod platform {
         fn activate(&mut self, x: i32, y: i32) {
             let app = self.app.clone();
             status_panel::report(self.app.run_on_main_thread(move || {
-                status_panel::report(status_panel::toggle(
-                    &app,
-                    tauri::PhysicalPosition::new(x as f64, y as f64),
-                ));
+                if super::panel_can_anchor(wayland(), x, y) {
+                    status_panel::report(status_panel::toggle(
+                        &app,
+                        tauri::PhysicalPosition::new(x as f64, y as f64),
+                    ));
+                } else {
+                    status_panel::report(status_panel::open_main(app, None));
+                }
             }));
         }
         fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -184,6 +188,13 @@ mod platform {
             });
             true
         }
+    }
+
+    /// Whether GTK runs on Wayland. Call on the GTK main thread.
+    fn wayland() -> bool {
+        use gtk::glib::prelude::ObjectExt;
+        gtk::gdk::Display::default()
+            .is_some_and(|display| display.type_().name() == "GdkWaylandDisplay")
     }
 
     struct TrayState {
@@ -257,9 +268,27 @@ fn surface_after_grace(online: bool, latest_disappearance: bool, main_visible: b
     !online && latest_disappearance && !main_visible
 }
 
+/// The tray panel is a borderless always-on-top window placed at the tray
+/// icon. Wayland ignores client positioning and always-on-top, and KDE on
+/// Wayland reports activation at (0, 0), so there the tray opens the main
+/// window instead of a panel that could appear anywhere and never close.
+#[cfg(any(test, target_os = "linux"))]
+fn panel_can_anchor(wayland: bool, x: i32, y: i32) -> bool {
+    !wayland && (x, y) != (0, 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wayland_or_an_unknown_position_opens_the_main_window() {
+        assert!(panel_can_anchor(false, 1880, 12));
+        assert!(!panel_can_anchor(true, 1880, 12));
+        assert!(!panel_can_anchor(false, 0, 0));
+        assert!(!panel_can_anchor(true, 0, 0));
+        assert!(panel_can_anchor(false, 0, 1050), "a panel at the left screen edge is still anchored");
+    }
 
     #[test]
     fn brief_tray_restarts_do_not_pop_up_the_window() {
