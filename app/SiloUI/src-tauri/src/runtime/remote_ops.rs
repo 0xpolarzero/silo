@@ -91,7 +91,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
             _ => return Err("Unsupported remote request.".into()),
         }
         serde_json::to_value(
-            read_application_state_with(&ProcessRunner, &paths).map_err(|e| e.to_string())?,
+            application_state_response(app, &paths).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())
     })();
@@ -103,7 +103,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
 /// idempotent, so transient runtime failures retry through `gated_auto_retry`, which
 /// re-acquires this VM's gate per attempt (released between attempts) with the same lane,
 /// dedupe key, labels, cancellability, and expected durations as the local command;
-/// dismiss-error runs once. `silo://application-state-changed` is emitted around the work.
+/// dismiss-error runs once. `silo://application-state-changed` is emitted after the work.
 fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Result<Value, String> {
     let vm_id = params["vmId"].as_str().ok_or("Missing VM identity.")?.to_owned();
     let action = params["action"].as_str().ok_or("Missing VM action.")?.to_owned();
@@ -150,7 +150,7 @@ fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Resul
         shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
         let request = read_metadata(&paths.metadata)?;
         let resources = host_resources()?;
-        let _ = app.emit("silo://application-state-changed", ());
+        // The queue event shows the action; state is announced once the gate is released.
         let machine = request
             .machines
             .iter()
@@ -176,7 +176,7 @@ fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Resul
         .map_err(|e| safe_activity_error(&e))
         .and_then(|_| {
             serde_json::to_value(
-                read_application_state_with(&ProcessRunner, paths).map_err(|e| e.to_string())?,
+                application_state_response(app, paths).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())
         })
