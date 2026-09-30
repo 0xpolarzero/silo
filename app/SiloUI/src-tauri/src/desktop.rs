@@ -489,7 +489,7 @@ async fn execute(
         }
     })
     .await
-    .map_err(|_| "Desktop operation worker failed.".to_string())?
+    .map_err(|_| "Silo could not finish the Linux desktop action. Reopen the viewer and retry.".to_string())?
 }
 #[tauri::command]
 pub async fn read_desktop_state(

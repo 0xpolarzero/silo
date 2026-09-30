@@ -92,7 +92,7 @@ fn path(paths: &RuntimePaths, id: &str) -> PathBuf {
 }
 
 pub(super) fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeError> {
-    uuid::Uuid::parse_str(id).map_err(|_| error("Invalid workspace identity."))?;
+    uuid::Uuid::parse_str(id).map_err(|_| error("Silo could not identify this sandbox. Refresh its status and retry the checkpoint action."))?;
     let bytes = match fs::read(path(paths, id)) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Record::default()),
@@ -214,7 +214,7 @@ pub(crate) fn ensure_snapshot_group(
         && record.inflight_checkpoint.is_none()
     {
         return Err(error(
-            "Saved snapshot history is missing its native group. It was preserved because the original lineage cannot be identified safely.",
+            "Silo cannot match the saved checkpoints to this sandbox. Its history was preserved. Relaunch Silo and retry; if the problem continues, report it with the sandbox name.",
         ));
     }
     let group = record
@@ -225,7 +225,7 @@ pub(crate) fn ensure_snapshot_group(
         .to_owned();
     if !valid_snapshot_group(&group) {
         return Err(error(
-            "The checkpoint group is invalid; no snapshot operation was started.",
+            "Silo could not identify this sandbox's checkpoints. No checkpoint action was started. Refresh its history and retry.",
         ));
     }
     record.snapshot_group = Some(group.clone());
@@ -234,7 +234,7 @@ pub(crate) fn ensure_snapshot_group(
 }
 
 pub(super) fn save(paths: &RuntimePaths, id: &str, record: &Record) -> Result<(), RuntimeError> {
-    uuid::Uuid::parse_str(id).map_err(|_| error("Invalid workspace identity."))?;
+    uuid::Uuid::parse_str(id).map_err(|_| error("Silo could not identify this sandbox. Refresh its status and retry the checkpoint action."))?;
     let directory = directory(paths);
     fs::create_dir_all(&directory).map_err(|_| error("Checkpoint history could not be saved."))?;
     let mut file = tempfile::NamedTempFile::new_in(&directory)
@@ -694,7 +694,7 @@ pub async fn create_checkpoint(
         result.map_err(|e| e.to_string())
     })
     .await
-    .map_err(|_| "Checkpoint worker failed.".to_string())?
+    .map_err(|_| "Silo could not finish creating the checkpoint. Refresh its history before trying again.".to_string())?
 }
 
 pub(super) fn is_pending(paths: &RuntimePaths, id: &str) -> Result<bool, RuntimeError> {
@@ -989,7 +989,7 @@ pub(super) fn start_pending(
     }
     if pending.source_workspace != lineage_group {
         return Err(error(
-            "The pending checkpoint group does not match saved lineage metadata. The checkpoint was preserved.",
+            "Silo cannot match the pending checkpoint to this sandbox's history. The checkpoint was preserved. Relaunch Silo and retry Start.",
         ));
     }
     let policy = record.desired_network_policy.clone().ok_or_else(|| {
@@ -1502,7 +1502,7 @@ pub async fn fork_checkpoint(
         result.map_err(|error| error.to_string())
     })
     .await
-    .map_err(|_| "Checkpoint fork worker failed.".to_string())?
+    .map_err(|_| "Silo could not finish creating the fork. Refresh the sandbox list before trying again.".to_string())?
 }
 
 /// Persist a failure record without letting a save failure replace the real error.
@@ -1902,7 +1902,7 @@ pub async fn restore_checkpoint(
         result.map_err(|error| error.to_string())
     })
     .await
-    .map_err(|_| "Checkpoint Restore worker failed.".to_string())?
+    .map_err(|_| "Silo could not finish Restore. Open the Checkpoints tab to review recovery and retry Restore.".to_string())?
 }
 
 /// Resume a VM an unfinished Restore left paused; if it cannot resume, stop it so it is
@@ -2037,7 +2037,7 @@ pub async fn abandon_restore(app: AppHandle, workspace_id: String) -> Result<App
         result.map_err(|error| error.to_string())
     })
     .await
-    .map_err(|_| "Abandon Restore worker failed.".to_string())?
+    .map_err(|_| "Silo could not abandon Restore. Open the Checkpoints tab to review recovery and retry.".to_string())?
 }
 
 /// Quit stops VMs gracefully, which a paused VM cannot take. Release a VM an unfinished
@@ -2251,7 +2251,7 @@ pub async fn delete_checkpoint(
         result.map_err(|error| error.to_string())
     })
     .await
-    .map_err(|_| "Checkpoint delete worker failed.".to_string())?
+    .map_err(|_| "Silo could not finish deleting the checkpoint. Refresh its history before trying again.".to_string())?
 }
 
 /// Per-checkpoint storage and whether Delete is possible, for the Checkpoints panel.
@@ -2334,7 +2334,7 @@ pub async fn read_checkpoint_usage(app: AppHandle, workspace_id: String) -> Resu
         usage_with(&ProcessRunner, &paths, &workspace_id).map_err(|error| safe_activity_error(&error))
     })
     .await
-    .map_err(|_| "Checkpoint usage worker failed.".to_string())?
+    .map_err(|_| "Silo could not read checkpoint disk usage. Refresh the Storage tab and retry.".to_string())?
 }
 
 /// Host allocation of one sandbox's checkpoints and how many it has, for the Storage tab.

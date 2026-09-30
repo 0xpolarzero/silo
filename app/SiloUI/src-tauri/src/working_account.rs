@@ -2,7 +2,7 @@
 use crate::runtime::{self, RuntimePaths};
 use serde_json::Value;
 
-const MIGRATION_REQUIRED: &str = "This VM uses the old account layout. Migrate it to the silo account or create a new VM before using it.";
+const MIGRATION_REQUIRED: &str = "This sandbox uses the old account layout. Migrate it to the silo account or create a new sandbox before using it.";
 
 pub(crate) const LABEL: &str = "silo.working-account";
 pub(crate) const UNIFIED_LABEL: &str = "silo.working-account=1";
@@ -10,17 +10,17 @@ pub(crate) const UNIFIED_LABEL: &str = "silo.working-account=1";
 pub(crate) fn working_user(config: &Value) -> Result<&'static str, String> {
     let config = config
         .as_object()
-        .ok_or("Invalid VM account policy metadata.")?;
+        .ok_or("Silo could not read this sandbox's account settings. Retry migration or create a new sandbox.")?;
     let Some(labels) = config.get("labels") else {
         return Err(MIGRATION_REQUIRED.into());
     };
     let labels = labels
         .as_object()
-        .ok_or("Invalid VM account policy metadata.")?;
+        .ok_or("Silo could not read this sandbox's account settings. Retry migration or create a new sandbox.")?;
     match labels.get(LABEL) {
         None => Err(MIGRATION_REQUIRED.into()),
         Some(Value::String(version)) if version == "1" => Ok("silo"),
-        _ => Err("Unsupported VM account policy. Update Silo before accessing this VM.".into()),
+        _ => Err("This sandbox uses an account layout Silo cannot open. Update Silo before accessing it.".into()),
     }
 }
 
@@ -35,7 +35,7 @@ pub(crate) fn inspect_user(paths: &RuntimePaths, name: &str) -> Result<&'static 
 
 pub(crate) fn require_runtime(paths: &RuntimePaths, user: &str) -> Result<(), String> {
     if user != "silo" {
-        return Err("Unsupported VM working account.".into());
+        return Err("This sandbox uses an unsupported Linux account. Migrate it to the silo account or create a new sandbox.".into());
     }
     let output = runtime::run_msb(
         paths,
@@ -43,10 +43,10 @@ pub(crate) fn require_runtime(paths: &RuntimePaths, user: &str) -> Result<(), St
         std::time::Duration::from_secs(10),
     )
     .map_err(|_| {
-        "The bundled runtime cannot safely serve this VM's working account. Repair or update Silo."
+        "The bundled runtime cannot open this sandbox's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo."
     })?;
     if output.stdout.trim() != "1" {
-        return Err("The bundled runtime cannot safely serve this VM's working account. Repair or update Silo.".into());
+        return Err("The bundled runtime cannot open this sandbox's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo.".into());
     }
     Ok(())
 }
@@ -57,7 +57,7 @@ pub(crate) fn response_user(response: &Value) -> Result<&'static str, String> {
         Some(Value::String(user)) if user == "root" => Err(MIGRATION_REQUIRED.into()),
         Some(Value::String(user)) if user == "silo" => Ok("silo"),
         _ => {
-            Err("Invalid VM account in connection response. Update Silo on both computers.".into())
+            Err("The connection returned an unsupported sandbox account. Update Silo on both computers.".into())
         }
     }
 }
@@ -66,7 +66,7 @@ pub(crate) fn require_client_protocol(user: &str, request: &Value) -> Result<(),
     if user != "silo" { return Err(MIGRATION_REQUIRED.into()); }
     if request.get("accountProtocol").and_then(Value::as_u64) != Some(1) {
         return Err(
-            "Update Silo on the connecting computer to access this VM's working account.".into(),
+            "Update Silo on the connecting computer to access this sandbox's Linux account.".into(),
         );
     }
     Ok(())
@@ -113,9 +113,8 @@ mod tests {
         assert_eq!(inspect_user(&paths, "dev").unwrap(), "silo");
         let script = std::fs::read_to_string(&paths.executable).unwrap();
         std::fs::write(&paths.executable, script.replace("printf '1", "printf '0")).unwrap();
-        assert!(inspect_user(&paths, "dev")
-            .unwrap_err()
-            .contains("Repair or update Silo"));
+        let error = inspect_user(&paths, "dev").unwrap_err();
+        assert!(error.contains("Relaunch Silo") && error.contains("repair or update Silo"), "{error}");
         test_runtime(&paths.executable, false);
         let script = std::fs::read_to_string(&paths.executable).unwrap();
         std::fs::write(&paths.executable, script.replace("printf '1", "printf '0")).unwrap();
