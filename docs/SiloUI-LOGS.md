@@ -7,8 +7,11 @@ state refreshes no longer fetch log tails for every sandbox.
 ## Retention
 
 The bundled runtime retains execution, runtime and kernel output for at most
-seven days with a shared 250 MiB budget per sandbox. It removes the oldest
-segments when either limit is reached. Segments rotate at 10 MiB or one day.
+seven days with independent 125 MiB budgets for host-written execution records
+and guest console output per sandbox (250 MiB total). Runtime and kernel console
+segments share the console budget. It removes the oldest segments within each
+budget when either its size limit or the age limit is reached. Segments rotate
+at 10 MiB or one day.
 Expiration uses the segment's first-write time, so newer records in an old
 segment can expire up to a day early. The limits apply to raw runtime files;
 they do not establish a minimum guaranteed investigation window.
@@ -89,10 +92,11 @@ estimated; console records over 1 MiB keep their first 64 KiB and end with
 placeholder. The view and export coverage report `unreadableRecords`. Times
 parsed from kernel console text are chosen by the guest, so those records carry
 `guestTimestamp` and the view labels them "time reported by the sandbox".
-Separate retention budgets for guest console output and host-written execution
-records are not implemented: retention runs in the pinned runtime patch, whose
-`log_retention.rs` must match Silo's copy byte for byte, so changing it requires
-re-pinning and rebuilding the bundled runtime.
+Guest console floods cannot evict host-written execution records: each group
+has its own 125 MiB retention budget. Execution floods cannot evict console
+records either. Retention runs in the pinned runtime patch, whose
+`logging_retention.rs` matches Silo's `log_retention.rs` byte for byte, including
+regressions for floods in both directions and shared runtime/kernel eviction.
 
 Copy copies the records currently fetched, with identifying context.
 Export… saves all matching pages through the native save dialog as JSON
@@ -109,8 +113,8 @@ that arbitrary secrets are removed. Review exports before sharing them.
 - [Query adapter](../app/SiloUI/src-tauri/src/runtime_logs.rs): local retained
   files, search, pagination, surrounding records and remote owner routing.
 - [Retention policy](../app/SiloUI/src-tauri/src/log_retention.rs): segment age,
-  shared byte budget and stopped-sandbox cleanup.
-- [Runtime patch](https://github.com/0xpolarzero/silo/blob/d3481b294342784bbf1047e6d94587381eee2479/app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch):
+  independent execution/console byte budgets and stopped-sandbox cleanup.
+- [Runtime patch](../app/SiloUI/patches/microsandbox-log-retention-desktop-start-0.7.2.patch):
   execution, runtime and kernel writers.
 - [Logs view](../app/SiloUI/src/features/application/pages/logs-page.tsx):
   search, filters, refresh and follow controls.

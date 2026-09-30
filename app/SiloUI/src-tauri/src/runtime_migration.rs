@@ -561,7 +561,9 @@ fn verify_staged_vm(
     let inspected: serde_json::Value = serde_json::from_str(&output.stdout)
         .map_err(|_| "The staged sandbox returned invalid inspection data.")?;
     let status = inspected.get("status").and_then(serde_json::Value::as_str);
-    if !matches!(status, Some("Created" | "Stopped")) {
+    // Inspection reconciles dead Running processes to Crashed. All three states
+    // allow disk-only adoption; never start guest code during migration.
+    if !matches!(status, Some("Created" | "Stopped" | "Crashed")) {
         return Err(
             "An existing sandbox is not stopped. Stop it before retrying migration.".into(),
         );
@@ -1485,6 +1487,39 @@ mod tests {
             b"previous backup history"
         );
         assert_eq!(old_after, old_before);
+    }
+
+    #[test]
+    fn conversion_accepts_crashed_sandboxes_without_starting_guest_code() {
+        let (dir, paths) = previous_generation();
+        let runner = StagedRuntime::new(dir.path(), "Crashed");
+        let original = tree(&dir.path().join("runtime"));
+        convert_with(&runner, dir.path(), &paths, &|_| Ok(())).unwrap();
+        assert_eq!(
+            *runner.calls.lock().unwrap(),
+            ["inspect", "adopt-disk", "inspect"]
+        );
+        assert_eq!(tree(&dir.path().join("runtime")), original);
+        assert_eq!(
+            selected_runtime_storage(dir.path()).unwrap(),
+            dir.path().join(CONVERTED)
+        );
+    }
+
+    #[test]
+    fn conversion_rejects_active_and_unknown_sandbox_states() {
+        for status in ["Running", "Starting", "Draining", "Paused", "Unknown"] {
+            let (dir, paths) = previous_generation();
+            let runner = StagedRuntime::new(dir.path(), status);
+            let original = tree(&dir.path().join("runtime"));
+            let error = convert_with(&runner, dir.path(), &paths, &|_| Ok(())).unwrap_err();
+            assert!(
+                error.contains("Stop it before retrying"),
+                "{status}: {error}"
+            );
+            assert_eq!(*runner.calls.lock().unwrap(), ["inspect"], "{status}");
+            assert_eq!(tree(&dir.path().join("runtime")), original, "{status}");
+        }
     }
 
     #[test]

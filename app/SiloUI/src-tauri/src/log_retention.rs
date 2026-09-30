@@ -6,6 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+// Split equally between host execution records and guest console output.
 pub const MAX_BYTES: u64 = 250 * 1024 * 1024;
 pub const MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 #[allow(dead_code)] // Used by the live runtime writer; desktop only cleans stopped logs.
@@ -80,12 +81,19 @@ pub fn enforce_at(
         }
         let path = entry.path();
         let age = started(&path)?;
-        files.push((age, path, entry.metadata()?.len()));
+        let execution = entry.file_name().to_string_lossy().starts_with("exec.log");
+        files.push((age, path, entry.metadata()?.len(), usize::from(execution)));
     }
     files.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    let mut total: u64 = files.iter().map(|f| f.2).sum();
-    for (start, path, size) in files {
-        if now.duration_since(start).unwrap_or_default() < max_age && total <= max_bytes {
+    let budgets = [max_bytes / 2, max_bytes - max_bytes / 2];
+    let mut totals = [0_u64; 2];
+    for (_, _, size, group) in &files {
+        totals[*group] += size;
+    }
+    for (start, path, size, group) in files {
+        if now.duration_since(start).unwrap_or_default() < max_age
+            && totals[group] <= budgets[group]
+        {
             continue;
         }
         if path.extension().is_some_and(|ext| ext == "log") {
@@ -106,7 +114,7 @@ pub fn enforce_at(
                 Err(e) => return Err(e),
             }
         }
-        total = total.saturating_sub(size);
+        totals[group] = totals[group].saturating_sub(size);
     }
     Ok(())
 }
@@ -155,7 +163,7 @@ mod tests {
         assert_eq!(fs::read_to_string(fresh).unwrap(), "new");
     }
     #[test]
-    fn budget_is_shared_and_current_path_survives_expiry() {
+    fn console_streams_share_a_budget_and_current_path_survives_expiry() {
         let dir = dir();
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
         for (name, seconds) in [("exec.log.1", 3), ("runtime.log.1", 2), ("kernel.log", 1)] {
@@ -165,11 +173,53 @@ mod tests {
         }
         fs::write(dir.join("unrelated"), "keep").unwrap();
         enforce_at(&dir, now, 10, MAX_AGE).unwrap();
-        assert!(!dir.join("exec.log.1").exists());
-        assert!(dir.join("runtime.log.1").exists());
+        assert!(dir.join("exec.log.1").exists());
+        assert!(!dir.join("runtime.log.1").exists());
         enforce_at(&dir, now + MAX_AGE, 10, MAX_AGE).unwrap();
         assert_eq!(fs::metadata(dir.join("kernel.log")).unwrap().len(), 0);
         assert!(dir.join("unrelated").exists());
+    }
+    #[test]
+    fn console_flood_cannot_evict_execution_records() {
+        let dir = dir();
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for (name, contents, seconds) in [
+            ("exec.log.1", "host", 3),
+            ("kernel.log.1", "guest", 2),
+            ("runtime.log", "flood", 1),
+        ] {
+            let path = dir.join(name);
+            fs::write(&path, contents).unwrap();
+            mark(&path, now - Duration::from_secs(seconds)).unwrap();
+        }
+        enforce_at(&dir, now, 10, MAX_AGE).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("exec.log.1")).unwrap(), "host");
+        assert!(!dir.join("kernel.log.1").exists());
+        assert_eq!(
+            fs::read_to_string(dir.join("runtime.log")).unwrap(),
+            "flood"
+        );
+    }
+    #[test]
+    fn execution_flood_cannot_evict_console_records() {
+        let dir = dir();
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for (name, contents, seconds) in [
+            ("kernel.log.1", "guest", 3),
+            ("exec.log.1", "older", 2),
+            ("exec.log", "newer", 1),
+        ] {
+            let path = dir.join(name);
+            fs::write(&path, contents).unwrap();
+            mark(&path, now - Duration::from_secs(seconds)).unwrap();
+        }
+        enforce_at(&dir, now, 10, MAX_AGE).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("kernel.log.1")).unwrap(),
+            "guest"
+        );
+        assert!(!dir.join("exec.log.1").exists());
+        assert_eq!(fs::read_to_string(dir.join("exec.log")).unwrap(), "newer");
     }
     #[test]
     #[cfg(unix)]

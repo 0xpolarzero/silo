@@ -74,11 +74,11 @@
     },
     {
       "path": "patches/microsandbox-adopt-owned-disk-0.7.2.patch",
-      "sha256": "fd0024b0acc4a99e6168fd2d441671980503ab859928407815068d70e246edd3"
+      "sha256": "2ba4201ef289c74ace157348f243c19f9c41f913e56055ae6d4a3bb23142eadc"
     },
     {
       "path": "patches/microsandbox-log-retention-desktop-start-0.7.2.patch",
-      "sha256": "503348219964dbe67529e51ae1b0adc870419cc62fdcc1fa9bb8c3fdbc9e41c9"
+      "sha256": "00e0f10d560e60f70ac2dca83e01200b56eb2155813ed032ad03a32a57953f5a"
     },
     {
       "path": "patches/microsandbox-restore-root-capacity-0.7.2.patch",
