@@ -4660,6 +4660,21 @@ pub(crate) fn create_disposable_test_machine(
     Ok(machine)
 }
 
+/// Exercise the same explicit Start path as the app for an imported sandbox.
+/// Live regressions supply disposable runtime paths; no app data is resolved here.
+#[cfg(test)]
+pub(crate) fn start_disposable_test_import(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<(), RuntimeError> {
+    let _guard = OPERATIONS.computer("Starting disposable imported sandbox")
+        .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+    let machine = read_metadata(&paths.metadata)?.machines.into_iter()
+        .find(|machine| machine.is_vm() && machine.name() == name)
+        .ok_or_else(|| RuntimeError::Invalid("Imported test sandbox is missing.".into()))?;
+    checkpoints::start_pending(&ProcessRunner, paths, &machine)
+}
+
 fn cleanup_failed_create(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,

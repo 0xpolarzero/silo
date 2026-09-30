@@ -141,8 +141,9 @@ These variables exist only in the compiled test harness, not the application.
 The test writes distinct root/workspace markers, exports, and deletes the
 isolated original runtime/cache/volumes. It imports into different runtime
 homes, first empty and then already containing an independently created VM.
-It starts imported VMs, verifies files and identity, and checks that the existing
-VM and its cached disks remain intact. It cleans up its own VMs. It never uses existing user VM data.
+It verifies that import saves a pending sandbox without creating or starting a
+runtime VM. It then uses the app's explicit Start path, verifies files and identity,
+and checks that the existing VM and its cached disks remain intact. It cleans up its own VMs. It never uses existing user VM data.
 
 ## Coverage limits
 

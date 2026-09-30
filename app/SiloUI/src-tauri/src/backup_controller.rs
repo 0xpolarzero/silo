@@ -3178,13 +3178,13 @@ mod tests {
                 "Saving stopped workspace",
             ]
         );
-        let restored = inspect(&paths, restored_name).unwrap();
-        assert_eq!(restored.status, "Created");
+        assert!(runtime::is_pending_restore(&paths, restored_name));
+        let native: Vec<Value> = serde_json::from_str(&run(&["list", "--format", "json"]).stdout).unwrap();
+        assert!(native.iter().all(|sandbox| sandbox["name"] != restored_name));
         // Settings were saved, but process death preceded the success result.
-        // Relaunch adopts the import under its journaled identity.
-        let restored_id = restored.config["labels"]["silo.machine-id"]
-            .as_str()
-            .unwrap();
+        // Relaunch adopts the import under its journaled identity without booting it.
+        let restored_id = runtime::read_metadata(&paths.metadata).unwrap().machines.into_iter()
+            .find(|machine| machine.name() == restored_name).unwrap().id().to_owned();
         let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
         let recovered = recovery::recover_at_paths(
             &paths,
@@ -3200,15 +3200,20 @@ mod tests {
             .iter()
             .any(|machine| machine.id() == restored_id));
 
+        runtime::start_disposable_test_import(&paths, restored_name).unwrap();
+        assert!(!runtime::is_pending_restore(&paths, restored_name));
+        let restored = inspect(&paths, restored_name).unwrap();
+        assert_eq!(restored.status, "Running");
         assert_eq!(
             restored.config.get("pull_policy").and_then(Value::as_str),
             Some("Never")
         );
-        assert!(backup::default_github_network(&restored.config["network"]));
+        assert_eq!(restored.config["network"]["policy"], serde_json::json!({
+            "default_egress":"deny", "default_ingress":"deny", "rules":[]
+        }));
         assert_eq!(restored.config["labels"]["silo.github-protocol"], "1");
         assert_eq!(restored.config["labels"]["silo.working-account"], "1");
         let restored_user = crate::working_account::working_user(&restored.config).unwrap();
-        run(&["start", restored_name]);
         assert_eq!(
             run(&[
                 "exec",
@@ -3318,8 +3323,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(original_cache, cache_hashes());
-        assert_eq!(inspect(&paths, restored_name).unwrap().status, "Created");
-        run(&["start", restored_name]);
+        assert!(runtime::is_pending_restore(&paths, restored_name));
+        runtime::start_disposable_test_import(&paths, restored_name).unwrap();
+        assert_eq!(inspect(&paths, restored_name).unwrap().status, "Running");
         let second_proof = run(&[
             "exec",
             restored_name,
@@ -3510,56 +3516,11 @@ mod tests {
         )
         .unwrap();
 
-        // Read the imported pending-restore selectors, then cold-boot the disk only.
-        let restored_id = runtime::read_metadata(&cold.metadata)
-            .unwrap()
-            .machines
-            .into_iter()
-            .find(|m| m.name() == restored_name)
-            .unwrap()
-            .id()
-            .to_owned();
-        let record: Value = serde_json::from_slice(
-            &fs::read(
-                cold.metadata
-                    .with_file_name("checkpoints")
-                    .join(format!("{restored_id}.json")),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let import_group = record["pendingCheckpointRestore"]["sourceWorkspace"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let import_member = record["pendingCheckpointRestore"]["checkpointId"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        // A full checkpoint imported as disk-state cold-boots with --disk-only.
-        run(
-            &cold,
-            &[
-                "restore",
-                &format!("{import_group}:{import_member}"),
-                "--name",
-                restored_name,
-                "--disk-only",
-                "--cpus",
-                "1",
-                "--memory",
-                "1G",
-            ],
-        );
-        // Consume the pending restore as a successful explicit Start does, so the
-        // guarded exec below treats the imported workspace as active.
-        let record_path = cold
-            .metadata
-            .with_file_name("checkpoints")
-            .join(format!("{restored_id}.json"));
-        let mut active: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
-        active["pendingCheckpointRestore"] = Value::Null;
-        fs::write(&record_path, serde_json::to_vec(&active).unwrap()).unwrap();
+        assert!(runtime::is_pending_restore(&cold, restored_name));
+        // Use the app's explicit Start path; it consumes the pending import only
+        // after the runtime verifies the new sandbox's identity and policy.
+        runtime::start_disposable_test_import(&cold, restored_name).unwrap();
+        assert!(!runtime::is_pending_restore(&cold, restored_name));
         let proof = run(
             &cold,
             &[
