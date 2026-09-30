@@ -1,7 +1,6 @@
 import type { ReactNode } from "react"
 import { AlertTriangle } from "lucide-react"
 
-import { ConnectionIcon } from "@/components/connection-icon"
 import { StatusBadge } from "@/components/status-badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -37,22 +36,31 @@ const workspaceStateStyles: Record<WorkspaceState, string> = {
   failed: "bg-destructive",
 }
 
+// Each state also has its own shape (● running, ▶ starting, ■ stopped, ✕ failed) so the
+// state reads without relying on color.
+const workspaceStateShapes = {
+  running: { shape: "circle", className: "rounded-full" },
+  starting: { shape: "triangle", className: "[clip-path:polygon(10%_0,100%_50%,10%_100%)]" },
+  stopped: { shape: "square", className: "rounded-[1px]" },
+  failed: { shape: "cross", className: "[clip-path:polygon(20%_0,50%_30%,80%_0,100%_20%,70%_50%,100%_80%,80%_100%,50%_70%,20%_100%,0_80%,30%_50%,0_20%)]" },
+} as const satisfies Record<WorkspaceState, { shape: string; className: string }>
+
 export function WorkspaceStateDot({ state, className }: { state: WorkspaceState; className?: string }) {
-  return <span className={cn("size-2 rounded-full", workspaceStateStyles[state], className)} data-workspace-state-dot={state} aria-hidden="true" />
+  const { shape, className: shapeClassName } = workspaceStateShapes[state]
+  return <span className={cn("size-2", shapeClassName, workspaceStateStyles[state], className)} data-workspace-state-dot={state} data-workspace-state-shape={shape} aria-hidden="true" />
 }
 
 export function WorkspaceBadge({ name, state, computer }: { name: string; state: WorkspaceState; computer?: WorkspaceComputer }) {
   const stateLabel = state.charAt(0).toUpperCase() + state.slice(1)
   return (
     <TooltipProvider delayDuration={150}><Tooltip><TooltipTrigger asChild><StatusBadge
-      indicator={<WorkspaceStateDot state={state} className="size-1.5" />}
+      indicator={<WorkspaceStateDot state={state} />}
       aria-label={`${name}, ${stateLabel}${computer ? `, on ${computer.name}` : ""}`}
       tabIndex={0}
       className="outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      {name}
-      {computer && <ConnectionIcon kind="vm" network className="ml-1 size-2.5 align-[-1px]" />}
-    </StatusBadge></TooltipTrigger><TooltipContent>{computer?.name ?? "This computer"}</TooltipContent></Tooltip></TooltipProvider>
+      {computer ? `${name} · ${computer.name}` : name}
+    </StatusBadge></TooltipTrigger><TooltipContent>{stateLabel} on {computer?.name ?? "this computer"}</TooltipContent></Tooltip></TooltipProvider>
   )
 }
 

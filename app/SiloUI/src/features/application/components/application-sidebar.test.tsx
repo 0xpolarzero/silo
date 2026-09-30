@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ApplicationShell } from "./application-shell"
@@ -24,6 +24,67 @@ function renderSidebar() {
     sidebar: screen.getByRole("navigation", { name: "Silo navigation" }),
   }
 }
+
+function renderAttention(props: Partial<Parameters<typeof ApplicationShell>[0]> = {}) {
+  render(<ApplicationShell
+    activeTab="workspaces"
+    workspaceSection="overview"
+    settingsSection="general"
+    systemIssueStatus={null}
+    workspaceAttention={{ errors: 1, warnings: 2 }}
+    onTabChange={vi.fn()}
+    onWorkspaceSectionChange={vi.fn()}
+    onSettingsSectionChange={vi.fn()}
+    canGoBack={false}
+    canGoForward={false}
+    onGoBack={vi.fn()}
+    onGoForward={vi.fn()}
+    {...props}
+  ><button>Page content</button></ApplicationShell>)
+  const sandboxes = () => screen.getByRole("button", { name: "Sandboxes" })
+  const mark = () => sandboxes().querySelector("[data-navigation-attention]")
+  return { sandboxes, mark }
+}
+
+describe("sidebar attention", () => {
+  afterEach(cleanup)
+
+  it("counts sandboxes, not errors, next to Overview", () => {
+    renderAttention()
+    const overview = within(screen.getByRole("button", { name: /^Overview/ }))
+    expect(overview.getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
+    expect(overview.getByRole("status", { name: "2 sandboxes have warnings" })).toHaveTextContent("2")
+  })
+
+  it("mirrors attention and section work on Sandboxes when its menu is collapsed", () => {
+    const { sandboxes, mark } = renderAttention({ navigationLoading: { workspaceSections: { files: true } } })
+    expect(mark()).toBeNull()
+    expect(sandboxes()).not.toHaveAttribute("aria-busy")
+    expect(screen.queryByRole("status", { name: /need attention/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Sandboxes menu" }))
+    expect(screen.queryByRole("button", { name: /^Overview/ })).not.toBeInTheDocument()
+    expect(screen.getByRole("status", { name: "3 sandboxes need attention" })).toBeInTheDocument()
+    expect(sandboxes()).toHaveAccessibleDescription("3 sandboxes need attention")
+    expect(mark()).toHaveTextContent("3")
+    expect(mark()).toHaveClass("text-destructive")
+    expect(sandboxes()).toHaveAttribute("aria-busy", "true")
+  })
+
+  it("keeps the mirrored signal on the icon when the sidebar is collapsed too", () => {
+    const { sandboxes, mark } = renderAttention({ workspaceAttention: { errors: 0, warnings: 1 } })
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Sandboxes menu" }))
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }))
+    expect(sandboxes()).toHaveAccessibleDescription("1 sandbox needs attention")
+    expect(mark()).toHaveClass("bg-amber-500")
+    expect(mark()).toBeEmptyDOMElement()
+  })
+
+  it("names the collapsed-sidebar Overview dot by the sandboxes that need attention", () => {
+    renderAttention()
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }))
+    expect(within(screen.getByRole("button", { name: /^Overview/ })).getByRole("status", { name: "3 sandboxes need attention" })).toHaveClass("bg-destructive")
+  })
+})
 
 function wait(milliseconds: number) {
   act(() => vi.advanceTimersByTime(milliseconds))
