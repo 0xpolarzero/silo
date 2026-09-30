@@ -218,7 +218,7 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
               return <ListRow
                 key={key}
                 icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-                title={<span className="truncate font-mono" title={address ? `${port.port} → ${address}` : `VM port ${port.port}`}>{address ? `${port.port} → ${address}` : `VM port ${port.port}`}</span>}
+                title={<span className="truncate font-mono" title={address ? `${port.port} → ${address}` : `Port ${port.port}`}>{address ? `${port.port} → ${address}` : `Port ${port.port}`}</span>}
                 detailClassName="whitespace-normal"
                 detail={<span className="inline-flex flex-wrap items-center gap-1.5">
                   <span className={cn("size-1.5 rounded-full", stateText === "Reachable" ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
@@ -232,25 +232,25 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
             })}</div>
           : !draft && <ListRow
               icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-              title={<span className="font-normal text-muted-foreground">No forwarded ports.</span>}
+              title={<span className="font-normal text-muted-foreground">No ports</span>}
               detail=""
             />
         : fallbackPorts.length > 0
           ? <div className="divide-y divide-border">{fallbackPorts.map(port => {
-              const url = `${port.scheme ? `${port.scheme}://` : ""}localhost:${port.hostPort ?? port.port}`
+              const url = `${port.scheme ? `${port.scheme}://` : ""}127.0.0.1:${port.hostPort ?? port.port}`
               return <ListRow
                 key={port.port}
                 icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
                 title={<span className="truncate" title={url}>{url}</span>}
                 detail={<span className="inline-flex items-center gap-1.5">
                   <span className={cn("size-1.5 rounded-full", port.listening === true ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
-                  {port.listening === true ? "Listening" : port.listening === false ? "Not listening" : "Unknown"}
+                  {portWorkspace.state !== "running" ? networkPortState(portWorkspace, { port: port.port, hostPort: port.hostPort ?? null, scheme: port.scheme ?? null, configured: port.configured ?? false, state: "unknown" }) : portWorkspace.freshness === "stale" ? "Unknown" : port.configured === false || port.hostPort == null ? "Not forwarded" : port.listening === true ? "Reachable" : port.listening === false ? "Waiting for service" : "Unknown"}
                 </span>}
               />
             })}</div>
           : <ListRow
               icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-              title={<span className="font-normal text-muted-foreground">No forwarded ports.</span>}
+              title={<span className="font-normal text-muted-foreground">No ports</span>}
               detail=""
             />}
     </ListCard>

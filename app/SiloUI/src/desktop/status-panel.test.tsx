@@ -74,7 +74,7 @@ it("uses an OS popup and retains stop confirmation in the panel", async () => {
 it("routes a native site selection through panel dismissal", async () => {
   const { user, actions } = setup()
   await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-  const sites = native.menu.mock.calls[0][0].items.find((item: { text: string }) => item.text === "Open site")
+  const sites = native.menu.mock.calls[0][0].items.find((item: { text: string }) => item.text === "Open in browser")
   expect(sites.enabled).toBe(true)
   const port = sites.items.find((item: { text?: string }) => item.text?.startsWith("Port "))
   expect(port).toBeDefined()

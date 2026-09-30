@@ -286,7 +286,7 @@ it("adds a port fixed to this sandbox from the Overview tab", async () => {
   const { user } = await openDetail(source, { saveNetworkPort, removeNetworkPort: vi.fn(), openNetworkPort: vi.fn(), refreshNetwork: vi.fn(async () => {}) })
 
   await user.click(screen.getByRole("button", { name: "Add port" }))
-  await user.type(screen.getByRole("spinbutton", { name: "VM port" }), "9000")
+  await user.type(screen.getByRole("spinbutton", { name: "Port" }), "9000")
   await user.click(screen.getByRole("button", { name: "Add" }))
   expect(saveNetworkPort).toHaveBeenCalledWith({ workspace: workspaceTarget(workspace), port: 9000, hostPort: null, scheme: "http" })
 })

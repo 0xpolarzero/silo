@@ -995,7 +995,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     })().finally(() => { eventRefresh = undefined })
   }
 
-  // Remote VM ports are opened through the remote bridge; the local command
+  // Remote Ports are opened through the remote bridge; the local command
   // never handles `silo-remote:` targets.
   function openNetworkPort(workspace: string, port: number) {
     const remote = parseRemoteWorkspaceTarget(workspace)

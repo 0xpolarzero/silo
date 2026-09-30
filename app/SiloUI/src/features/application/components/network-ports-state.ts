@@ -19,9 +19,9 @@ export function networkLoopbackAddress(port: NetworkPort) {
 
 /** The human-readable state of a port, accounting for VM lifecycle and stale/failed discovery. */
 export function networkPortState(workspace: ApplicationWorkspace, port: NetworkPort, error?: string | null, errors: string[] = []) {
-  if (workspace.state !== "running") return workspace.state === "starting" ? "VM starting" : workspace.state === "failed" ? "VM failed" : "VM stopped"
+  if (workspace.state !== "running") return workspace.state === "starting" ? "Sandbox starting" : workspace.state === "failed" ? "Sandbox failed" : "Sandbox stopped"
   if (workspace.freshness === "stale" || error || errors.some(e => e.startsWith(`${workspace.machine.name}:`))) return "Unknown"
-  return ({ reachable: "Reachable", waiting: "Waiting for service", unpublished: "VM only", unknown: "Unknown" })[port.state]
+  return ({ reachable: "Reachable", waiting: "Waiting for service", unpublished: "Not forwarded", unknown: "Unknown" })[port.state]
 }
 
 interface PortDraft { workspace: string; port: string; hostPort: string; scheme: string; editing: boolean }
@@ -90,7 +90,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     .sort((a, b) => a.workspace.machine.name.localeCompare(b.workspace.machine.name) || a.port.port - b.port.port)
   const errors = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))
-    // A stopped sandbox has no live services to observe; its saved ports show as "VM stopped".
+    // A stopped sandbox has no live services to observe; its saved ports show as "Sandbox stopped".
     return item?.error && workspace.state !== "stopped" ? [`${workspace.machine.name}: ${item.error}`] : []
   })
 

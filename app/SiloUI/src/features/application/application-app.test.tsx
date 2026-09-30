@@ -697,7 +697,7 @@ describe("application", () => {
 
     await user.click(sandboxSections.getByRole("button", { name: "Network" }))
     expect(panel.queryByRole("region", { name: "Network for dev" })).not.toBeInTheDocument()
-    expect(panel.getByText("No configured ports")).toBeVisible()
+    expect(panel.getByText("No ports")).toBeVisible()
 
     await user.click(sandboxSections.getByRole("button", { name: "Activity" }))
     const activity = panel.getByRole("list", { name: "Recent activity" })
