@@ -9,7 +9,7 @@ afterwards. The [probe evidence](research/desktop-viewer-probe-2026-09-27.md)
 records exact results and remaining limits.
 This plan
 supersedes implementation suggestions in the [viewer direction](SiloUI-DESKTOP-VIEWER-DIRECTION.md)
-where they conflict. The earlier [optional-desktop plan](SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md)
+where they conflict. The earlier [optional-desktop plan](archive/SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md)
 records the existing KasmVNC implementation, not this migration.
 
 ## Outcome and boundaries

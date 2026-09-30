@@ -60,6 +60,8 @@ export interface OnboardingViewModel {
   workspaceProgress: WorkspaceProgressView
   queueItems: ReviewQueueItemView[]
   finishEnabled: boolean
+  /** Why Finish is unavailable once sandbox setup settled, and how to resolve it. */
+  finishBlocker: NonNullable<OnboardingSource["finishBlocker"]> | null
   error: OnboardingSource["error"]
   stepStatus: Record<OnboardingStep, PresentationStatus>
 }
@@ -257,6 +259,7 @@ export function projectOnboarding(source: OnboardingSource, githubConnectionStat
     workspaceProgress,
     queueItems,
     finishEnabled: dependencyStatus === "succeeded" && source.error === null && (source.readyToFinish ?? queueItems.every(({ status }) => status === "succeeded")),
+    finishBlocker: source.error === null ? source.finishBlocker ?? null : null,
     error: source.error,
     stepStatus,
   }

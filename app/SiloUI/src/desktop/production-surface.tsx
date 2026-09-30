@@ -8,13 +8,19 @@ import type { SiloPreflightCheck } from "@/contracts/silo"
 import { SiloWindow } from "@/components/silo-window"
 import { useDependencyStore, type DependencyStore } from "@/desktop/dependencies"
 import { ProductionOnboarding } from "@/desktop/production-onboarding"
-import { useProductionSource, type ProductionSource } from "@/desktop/production-source"
+import { localUpdatingNotice, useProductionSource, type ProductionSource } from "@/desktop/production-source"
 import { StatusPanel } from "@/desktop/status-panel"
-import { ApplicationLoading } from "@/desktop/application-loading"
+import { ApplicationLoading, StatusPanelUnavailable } from "@/desktop/application-loading"
 import { ApplicationApp } from "@/features/application/application-app"
 import { useSettings } from "@/features/preferences/settings-store"
 
-export function Unavailable({ message, retry, checks = [], checking = false }: { message: string; retry?: () => void; checks?: SiloPreflightCheck[]; checking?: boolean }) {
+/** Painted before any native call at startup, so the window Rust has shown is never blank. */
+export function StartupLoading({ statusPanel = false }: { statusPanel?: boolean }) {
+  if (statusPanel) return <ApplicationLoading machines={[]} statusPanel />
+  return <SiloWindow title="Silo" label="Silo"><span role="status" className="sr-only">Opening Silo…</span></SiloWindow>
+}
+
+export function Unavailable({ message, retry, retryLabel = "Retry checks", checks = [], checking = false }: { message: string; retry?: () => void; retryLabel?: string; checks?: SiloPreflightCheck[]; checking?: boolean }) {
   return (
     <SiloWindow title="Silo" label="Silo unavailable">
       <div className="grid flex-1 place-items-center p-6">
@@ -26,7 +32,7 @@ export function Unavailable({ message, retry, checks = [], checking = false }: {
               <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{check.remediation}</p>
             </div>
           )) : <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{message}</p>}
-          {retry && <button type="button" disabled={checking} className="mt-3 rounded-md border px-3 py-1.5 text-xs disabled:opacity-50" onClick={retry}>{checking ? "Checking…" : "Retry checks"}</button>}
+          {retry && <button type="button" disabled={checking} className="mt-3 rounded-md border px-3 py-1.5 text-xs disabled:opacity-50" onClick={retry}>{checking ? "Checking…" : retryLabel}</button>}
         </div>
       </div>
     </SiloWindow>
@@ -35,13 +41,18 @@ export function Unavailable({ message, retry, checks = [], checking = false }: {
 
 type ProductionSurfaceProps = { source: ProductionSource; dependencyStore: DependencyStore | null; statusPanel?: boolean }
 export function ProductionSurface(props: ProductionSurfaceProps) {
-  return props.statusPanel ? <ProductionContent {...props} /> : <ShutdownBoundary><RuntimeMigrationBoundary><ProductionContent {...props} /></RuntimeMigrationBoundary></ShutdownBoundary>
+  return props.statusPanel ? <ProductionContent {...props} /> : <MainSurface {...props} />
+}
+function MainSurface(props: ProductionSurfaceProps) {
+  // Quit drains accepted setup first; name that work while the overlay waits for it.
+  const { setupDrain } = useProductionSource(props.source)
+  return <ShutdownBoundary pendingWork={setupDrain}><RuntimeMigrationBoundary><ProductionContent {...props} /></RuntimeMigrationBoundary></ShutdownBoundary>
 }
 function ProductionContent({ source, dependencyStore, statusPanel = false }: ProductionSurfaceProps) {
   const current = useProductionSource(source)
   const routeRequest = useMainRoute(!statusPanel)
   const dependencies = useDependencyStore(dependencyStore)
-  const { settings: currentSettings, store: settingsStore } = useSettings()
+  const { settings: currentSettings, revision: settingsRevision, writeProtected: settingsProtected, store: settingsStore } = useSettings()
   const [preparingUpdate, setPreparingUpdate] = useState(false)
   const updateBackend = useMemo(() => ({ ...desktopUpdateBackend, install: async (stopSandboxes: boolean) => {
     setPreparingUpdate(true)
@@ -62,23 +73,32 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   }, [checks])
   const checking = checks?.some(({ status }) => status === "pending") ?? false
   const failures = checking ? previousFailures : checks?.filter(({ status }) => ["failed", "unavailable", "timeout"].includes(status)) ?? []
-  const retryChecks = () => { dependencies?.retry(); void source.refresh() }
+  // Initialize again rather than refresh: after a failed start it also restores live
+  // events, polling and refresh-on-focus; once live it only refreshes.
+  const retryChecks = () => { dependencies?.retry(); void source.initialize().catch((error: unknown) => console.error("Silo live updates:", error)) }
   // Finish persists completion; keep this session on its preferences screen until Open Silo.
-  const [onboardingActive, setOnboardingActive] = useState(() => !currentSettings.onboardingComplete)
+  // Settings that could not be read (or a damaged, write-protected file) report defaults,
+  // so a missing completion flag is unknown, not "new user": never route to onboarding
+  // then. Onboarding could not save completion in that state anyway.
+  const [onboardingActive, setOnboardingActive] = useState(() => settingsRevision >= 0 && !settingsProtected && !currentSettings.onboardingComplete)
   if (!statusPanel && onboardingActive && dependencies) {
     return <UpdatesProvider backend={updateBackend}><UpdateInstallationBoundary preparing={preparingUpdate}><ProductionOnboarding application={current.source} dependencies={dependencies} source={source} onOpenApp={() => setOnboardingActive(false)} /></UpdateInstallationBoundary></UpdatesProvider>
   }
   if (!current.source) {
     if (current.loading && !current.error && !failures.length) return <ApplicationLoading machines={current.savedMachines ?? []} statusPanel={statusPanel} />
     const message = current.error ?? "The native application state is unavailable. No sandbox state changed."
+    if (statusPanel) return <StatusPanelUnavailable message={message} retry={current.loading ? undefined : retryChecks} />
     return <Unavailable message={message} checks={failures} checking={checking} retry={current.loading ? undefined : retryChecks} />
   }
   const remoteOnly = Boolean(current.source.remoteComputers?.length)
     && !current.source.workspaces.some(workspace => !workspace.computer && workspace.machine.kind === "vm")
   const localRuntimeFailures = remoteOnly ? [] : failures
+  // Connected computers stay usable while this computer's sandboxes update; say why
+  // the local ones are missing.
+  const notice = current.localUpdating ? localUpdatingNotice : undefined
   return statusPanel
-    ? <StatusPanel source={current.source} actions={source.statusActions} />
-    : <UpdatesProvider backend={updateBackend}><UpdateInstallationBoundary preparing={preparingUpdate}><ApplicationApp routeRequest={routeRequest} source={localRuntimeFailures.length ? { ...current.source, runtimeRepair: {
+    ? <StatusPanel source={current.source} actions={source.statusActions} notice={notice} />
+    : <UpdatesProvider backend={updateBackend}><UpdateInstallationBoundary preparing={preparingUpdate}>{notice && <p role="status" className="border-b bg-muted px-4 py-2 text-xs">{notice}</p>}<ApplicationApp routeRequest={routeRequest} source={localRuntimeFailures.length ? { ...current.source, runtimeRepair: {
       status: "unavailable", checking,
       reason: failures.map(({ title, detail }) => `${title}: ${detail}`).join("\n"),
       recovery: [...new Set(failures.map(({ remediation }) => remediation).filter(Boolean))].join("\n"),

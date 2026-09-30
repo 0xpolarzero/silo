@@ -177,7 +177,7 @@ Object.fromEntries(Object.entries(conditions).map(([job,condition]) => [job,eval
             PLATFORM, re.S,
         )
         self.assertIsNotNone(optional_cache)
-        self.assertIn('uses: actions/cache/restore@v4', optional_cache.group())
+        self.assertIn('uses: actions/cache/restore@', optional_cache.group())
         self.assertIn('continue-on-error: true', optional_cache.group())
         self.assertNotIn('continue-on-error', WORKFLOW + PLATFORM.replace(optional_cache.group(), ''))
         self.assertLess(ACTION.index('release-runtime-cache.py unpack'), ACTION.index('runtime-prepare -- npm run runtime:prepare'))

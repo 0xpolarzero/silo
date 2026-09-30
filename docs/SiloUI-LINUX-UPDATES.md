@@ -25,7 +25,10 @@ The **Update** action in Silo refreshes package information and requests system
 authentication before upgrading and restarting. For updates started outside Silo,
 quit Silo before applying the system update. Closing its window is not Quit.
 Quitting stops local VMs; remote VMs keep running. The installer refuses to
-replace a running packaged Silo or its runtime and never kills either process.
+replace a running packaged Silo or its runtime, names the blocking process, and
+never kills either. Short-lived remote-management relays (`silo-ui
+--remote-bridge` started by SSH from another computer, and `--remote-guest`
+editor connections) hold no VM or app state, so they do not block an update.
 New package versions also refuse startup while installation is in progress.
 The first migration from an older version cannot enforce that startup guard in
 old code, so keep Silo closed during this first installation.
@@ -49,6 +52,10 @@ component `main`, architectures `amd64` and `arm64`.
 succeeds, manually, and weekly to refresh expiring metadata. It downloads only
 public stable releases, verifies both package checksums against `SHA256SUMS`,
 validates their internal package/version/architecture, and signs the indexes.
+Because `SHA256SUMS` is part of the same editable release, each release must also
+be immutable, and every package must match GitHub's release attestation
+(`gh release verify-asset`), which GitHub signs at publication and later edits
+cannot change. A mutable or unattested release stops the job before signing.
 Drafts never enter the repository. The latest release must be the numerically
 highest stable release and must not change during publication.
 
@@ -64,7 +71,8 @@ See [GitHub scheduled workflow behavior](https://docs.github.com/en/actions/refe
 
 Infrastructure setup:
 
-1. Enable GitHub Pages with GitHub Actions as its build source.
+1. Enable GitHub Pages with GitHub Actions as its build source, and keep release
+   immutability enabled in the repository settings.
 2. Create an `apt-publish` environment restricted to the `main` branch.
 3. Store the dedicated ASCII-armored private archive key in that environment's
    `SILO_APT_SIGNING_KEY` secret. Do not use the Tauri updater key. Never commit
@@ -248,3 +256,26 @@ repository initially cached at 0.1.0, publication of 0.2.0, refresh/download/ins
 refusal with a second Silo process, version verification, cleanup, and downgrade
 refusal. The process fixtures use a copied sleep executable, not live VMs. The
 GUI authentication prompt and a live desktop VM restart were not exercised.
+
+## Stopping sandboxes only for installation, 29 September 2026
+
+Review finding F-04: the in-app update stopped every local VM before system
+authentication, the source check, the APT refresh and the download, and waited
+without limit while holding the installation and VM operation gates. Cancelling
+the authentication prompt, a disabled source, another package manager holding the
+lock, or a release not yet published to APT stopped and restarted every VM, and
+Quit waited behind the prompt.
+
+The helper now prints `ready` after the download and waits up to 30 minutes for
+`install` on its standard input (pkexec passes standard input through). Silo
+answers only after flushing settings, recording the running set and stopping it;
+any other answer, end of input or the timeout installs nothing. An already
+installed target version uses the same handshake before Silo restarts. Silo waits
+up to 30 minutes for `ready` while sandboxes keep running and new operations are
+refused; the VM operation gate is taken only for the install stage, so Quit is
+not queued behind authentication. On timeout Silo closes the helper's input, stops
+the prompt if authentication has not completed, and reports that no sandbox was
+stopped. A failure after `install` restores the recorded running set. APT's
+existing 60-second lock timeout bounds the install stage. Unit tests use shell
+fixtures for the handshake and Python tests for the helper; the packaged pkexec
+prompt and a live Debian upgrade were not exercised.

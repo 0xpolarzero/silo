@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -12,11 +13,22 @@ spec.loader.exec_module(module)
 
 
 class DownloadTests(unittest.TestCase):
-    def download(self, latest='v0.2.0', tamper=False):
-        releases = [dict(tag_name=v, draft=d, prerelease=False) for v, d in [('v0.3.0', True), ('v0.1.0', False), ('v0.2.0', False)]]
+    def download(self, latest='v0.2.0', tamper=False, mutable=(), unattested=()):
+        releases = [dict(tag_name=v, draft=d, prerelease=False, immutable=v not in mutable) for v, d in [('v0.3.0', True), ('v0.1.0', False), ('v0.2.0', False)]]
+        self.verified = []
         def gh(*args):
+            self.assertTrue(args[-1].startswith('repos/example/fork/releases'))
             return json.dumps({'tag_name': latest} if args[-1].endswith('/latest') else [releases])
         def fetch(args, **kwargs):
+            self.assertEqual(args[args.index('--repo') + 1], 'example/fork')
+            self.assertTrue(kwargs['check'])
+            if args[:3] == ['gh', 'release', 'verify-asset']:
+                tag, package = args[3], Path(args[4])
+                if tag in unattested:
+                    raise subprocess.CalledProcessError(1, args)
+                self.verified.append((tag, package.name))
+                return subprocess.CompletedProcess(args, 0)
+            self.assertEqual(args[:3], ['gh', 'release', 'download'])
             directory = Path(args[args.index('--dir') + 1])
             sums = []
             for name in ('Silo-linux-x64.deb', 'Silo-linux-arm64.deb'):
@@ -28,7 +40,7 @@ class DownloadTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         output = Path(tmp.name) / 'packages'
         with patch.object(module, 'gh', side_effect=gh), patch.object(module.subprocess, 'run', side_effect=fetch):
-            module.download(output)
+            module.download(output, 'example/fork')
         return output
 
     def test_downloads_only_two_latest_public_stable_releases(self):
@@ -43,3 +55,16 @@ class DownloadTests(unittest.TestCase):
     def test_rejects_package_checksum_mismatch(self):
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
             self.download(tamper=True)
+
+    def test_verifies_every_package_against_the_release_attestation(self):
+        self.download()
+        self.assertEqual(sorted(self.verified), sorted((tag, name) for tag in ('v0.1.0', 'v0.2.0') for name in ('Silo-linux-x64.deb', 'Silo-linux-arm64.deb')))
+
+    def test_rejects_a_package_without_a_matching_attestation(self):
+        # A replaced package and its rewritten SHA256SUMS still fail attestation.
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.download(unattested=('v0.1.0',))
+
+    def test_rejects_a_mutable_release(self):
+        with self.assertRaisesRegex(ValueError, 'not an immutable release'):
+            self.download(mutable=('v0.1.0',))

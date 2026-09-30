@@ -18,9 +18,12 @@ serde_json = "1"
 tempfile = "3.27"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-dialog = "2.7"
+# Single-instance guard: the official Tauri plugin (D-Bus on Linux, a Unix socket on macOS).
+# 2.4.x is the newest line that supports the pinned Tauri 2.11; see docs/SiloUI-REVIEW-DESIGN-NOTES.md (F-09).
+tauri-plugin-single-instance = "~2.4.5"
 tauri-plugin-opener = "~2.5.5"
 tauri-plugin-updater = "=2.11.0"
-tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "signal"] }
 base64 = "0.22"
 libc = "0.2"
 microsandbox-image = { git = "https://github.com/superradcompany/microsandbox", rev = "60d4dc8a436fb9365491567ec21d073e924e3c6d", package = "microsandbox-image" }
@@ -45,6 +48,8 @@ block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.3.6"
+# logind delay inhibitor for graceful shutdown (F-20). Already in the graph through ksni.
+zbus = "5"
 gio = "0.18"
 gtk = "0.18"
 

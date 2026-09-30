@@ -1,5 +1,6 @@
-import { Plus } from "lucide-react"
+import { KeyRound, Plus } from "lucide-react"
 
+import { EmptyState } from "@/components/empty-state"
 import { ListCard } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -36,7 +37,7 @@ export function SecretsPage({ source, onSaveSecret, onRemoveSecret, onRetrySecre
             </ul>
           </ListCard>
         </TooltipProvider>
-      ) : <p className="rounded-md border border-border px-3 py-6 text-center text-xs text-muted-foreground">No secrets configured.</p>}
+      ) : <EmptyState icon={<KeyRound />} title="No secrets configured." />}
     </div>
   )
 }

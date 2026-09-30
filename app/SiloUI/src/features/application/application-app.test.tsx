@@ -262,7 +262,7 @@ describe("application", () => {
       expect(icons[1]).toHaveAttribute("data-navigation-loading-indicator")
       expect(icons[1]).toHaveClass("size-2")
     }
-    expect(navigation.getByRole("status", { name: "0 sandbox errors, 3 sandbox warnings" })).toBeInTheDocument()
+    expect(navigation.getByRole("status", { name: "3 sandboxes need attention" })).toBeInTheDocument()
   })
 
   it.each(["past", "future"] as const)("removes a resolved issue from the %s navigation history", async (position) => {
@@ -424,8 +424,8 @@ describe("application", () => {
   })
 
   it.each([
-    ["warning", "3 sandbox warnings", "3"],
-    ["error", "3 sandbox errors", "3"],
+    ["warning", "3 sandboxes have warnings", "3"],
+    ["error", "3 sandboxes have errors", "3"],
   ] as const)("counts %s sandboxes next to Overview", (mode, label, count) => {
     renderApplication("running", applicationSourceForScenario("running", undefined, mode))
 
@@ -596,7 +596,7 @@ describe("application", () => {
     expect(playgroundsRepository.querySelector('[data-workspace-state-dot="stopped"]')).toHaveClass("bg-muted-foreground/55")
     const repositoryHeader = devRepository.querySelector("[data-repository-header]") as HTMLElement
     const repositoryActions = devRepository.querySelector("[data-repository-actions]") as HTMLElement
-    const pushButton = within(repositoryActions).getByRole("button", { name: "Push 2 commits" })
+    const pushButton = within(repositoryActions).getByRole("button", { name: "Push 2 commits for acme/silo in dev" })
     expect(repositoryActions).toHaveClass("flex", "min-h-6", "items-start")
     expect(pushButton).toHaveClass("h-6")
     expect(repositoryHeader).toContainElement(devBadge)
@@ -990,8 +990,8 @@ describe("application", () => {
     expect(overview.queryByText(/needs attention/i)).not.toBeInTheDocument()
 
     const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
-    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox error" })).toHaveTextContent("1")
-    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox warning" })).toHaveTextContent("1")
+    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
+    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has a warning" })).toHaveTextContent("1")
 
     await user.click(screen.getByRole("button", { name: "More actions for error" }))
     await user.click(screen.getByRole("menuitem", { name: "Duplicate error" }))
@@ -1122,8 +1122,8 @@ describe("application", () => {
     expect(overview.queryByText(/needs attention/i)).not.toBeInTheDocument()
 
     const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
-    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox error" })).toHaveTextContent("1")
-    expect(within(overviewNavigation).getByRole("status", { name: "3 sandbox warnings" })).toHaveTextContent("3")
+    expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
+    expect(within(overviewNavigation).getByRole("status", { name: "3 sandboxes have warnings" })).toHaveTextContent("3")
   })
 
   it("starts a new sandbox as an in-card configuration operation", async () => {
@@ -1529,17 +1529,39 @@ describe("application", () => {
 
   it("does not submit an incomplete author edit with repository changes", async () => {
     const source = applicationSourceForScenario("running")
-    const originalIdentity = source.github.workspaces![0].identity
     const { actions, user } = renderApplication("running", source)
     await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
     const github = within(appPanel("GitHub"))
     await user.clear(github.getByLabelText("Git name for dev"))
     await user.click(github.getByRole("checkbox", { name: "All repositories for playgrounds" }))
     expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
-    expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-      workspaces: expect.arrayContaining([expect.objectContaining({ workspace: "dev", identity: originalIdentity })]),
-    }))
+    // Only the changed sandbox is saved, so dev's unfinished author is not submitted.
+    const [saved] = vi.mocked(actions.saveGitHubConfiguration!).mock.calls[0]
+    expect(saved.workspaces.map(({ workspace }) => workspace)).toEqual(["playgrounds"])
     expect(github.getByLabelText("Git name for dev")).toHaveValue("")
+  })
+
+  it("saves only the edited sandbox against the shown revision and never turns access on", async () => {
+    const source = applicationSourceForScenario("running", "connected")
+    source.github.policyRevision = 10
+    source.github.accessEnabled = false
+    const { actions, user } = renderApplication("running", source)
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    const name = github.getByLabelText("Git name for playgrounds")
+    await user.clear(name)
+    await user.type(name, "Morgan Example")
+    await user.tab()
+    expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
+    const [saved] = vi.mocked(actions.saveGitHubConfiguration!).mock.calls[0]
+    // Other sandboxes (such as a fork's copied assignment) keep their saved choices, and a
+    // save right after Disable access cannot re-enable it.
+    expect(saved).toEqual({
+      baseRevision: 10,
+      hostIdentity: source.github.hostIdentity ?? null,
+      workspaces: [expect.objectContaining({ workspace: "playgrounds", identity: expect.objectContaining({ name: "Morgan Example" }) })],
+    })
+    expect(saved).not.toHaveProperty("accessEnabled")
   })
 
   it("settles a newer GitHub revision even when its completion matches the previous save", async () => {
@@ -1640,7 +1662,6 @@ describe("application", () => {
     expect(within(selected).queryByText("acme/design-system")).not.toBeInTheDocument()
     expect(actions.saveGitHubConfiguration).toHaveBeenCalledTimes(4)
     expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-      accessEnabled: true,
       workspaces: expect.arrayContaining([
         expect.objectContaining({
           workspace: "playgrounds",

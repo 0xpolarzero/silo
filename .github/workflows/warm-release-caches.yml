@@ -54,11 +54,11 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
       - name: Validate runtime inputs before installation or downloads
@@ -89,7 +89,7 @@ jobs:
         run: python3 scripts/release-dependency-cache.py prepare --target '${{ matrix.target }}' --state "$RUNNER_TEMP/release-dependencies" >> "$GITHUB_OUTPUT"
       - name: Check existing public dependency cache
         id: dependency-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/release-dependencies/cache
           key: ${{ steps.dependencies.outputs.key }}
@@ -104,7 +104,7 @@ jobs:
         run: python3 scripts/release-dependency-cache.py export --target '${{ matrix.target }}' --state "$RUNNER_TEMP/release-dependencies"
       - name: Save audited public dependency cache from main only
         if: github.ref == 'refs/heads/main' && steps.dependency-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/release-dependencies/cache
           key: ${{ steps.dependencies.outputs.key }}

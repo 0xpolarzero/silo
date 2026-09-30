@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { WorkspaceFileTree } from "./workspace-file-tree"
@@ -91,6 +91,54 @@ describe("live file tree", () => {
     await act(async () => resolve(page("recovered.txt")))
     expect(screen.getByText("recovered.txt")).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("polls the whole visible tree from its root instead of once per expanded folder", async () => {
+    const user = userEvent.setup()
+    const loader = vi.fn(async (_workspace: string, path: string): Promise<DirectoryPage> => path === "/workspace"
+      ? { entries: [{ name: "src", path: "/workspace/src", kind: "folder" }, { name: "docs", path: "/workspace/docs", kind: "folder" }], nextOffset: null, snapshotId: "root" }
+      : path === "/workspace/src"
+        ? { entries: [{ name: "lib", path: "/workspace/src/lib", kind: "folder" }], nextOffset: null, snapshotId: "src" }
+        : { entries: [], nextOffset: null, snapshotId: path })
+    const intervals = vi.spyOn(window, "setInterval")
+    const listeners = vi.spyOn(window, "addEventListener")
+    const store = createDirectoryStore(loader)
+    render(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active />)
+    await user.click(await screen.findByRole("button", { name: "Folder src" }))
+    await user.click(await screen.findByRole("button", { name: "Folder lib" }))
+    await user.click(screen.getByRole("button", { name: "Folder src" }))
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Folder lib" })).not.toBeInTheDocument())
+    expect(intervals.mock.calls.filter(([, delay]) => delay === 10_000)).toHaveLength(1)
+    expect(listeners.mock.calls.filter(([type]) => type === "focus")).toHaveLength(1)
+
+    loader.mockClear()
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    // Only the root is visible: src is collapsed, so neither it nor lib is refreshed.
+    expect(loader.mock.calls.map(([, path]) => path)).toEqual(["/workspace"])
+    intervals.mockRestore()
+    listeners.mockRestore()
+  })
+
+  it("refreshes each visible folder on the root's timer and stops while hidden", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const loader = vi.fn(async (_workspace: string, path: string): Promise<DirectoryPage> => path === "/workspace"
+        ? { entries: [{ name: "src", path: "/workspace/src", kind: "folder" }], nextOffset: null, snapshotId: "root" }
+        : { entries: [], nextOffset: null, snapshotId: "src" })
+      const store = createDirectoryStore(loader)
+      const view = render(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active />)
+      fireEvent.click(await screen.findByRole("button", { name: "Folder src" }))
+      await screen.findByText("Empty folder.")
+      loader.mockClear()
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+      expect(loader.mock.calls.map(([, path]) => path).sort()).toEqual(["/workspace", "/workspace/src"])
+
+      loader.mockClear()
+      view.rerender(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active={false} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      act(() => { window.dispatchEvent(new Event("focus")) })
+      expect(loader).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
   })
 
   it("appends skeletons while paging without hiding current files", async () => {

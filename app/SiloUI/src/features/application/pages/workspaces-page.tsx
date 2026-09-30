@@ -5,9 +5,11 @@ import { FolderActions } from "@/features/application/components/folder-actions"
 import { WorkspaceFileTree } from "@/features/application/components/workspace-file-tree"
 import type { createDirectoryStore } from "@/features/application/model/directory-store"
 import { useMemo, useState } from "react"
-import { Activity, Archive, Box, Check, CircleAlert, Cloud, GitBranch, KeyRound, Loader2, RefreshCw, TriangleAlert, Wrench } from "lucide-react"
+import { Activity, Archive, Box, Boxes, Check, CircleAlert, Cloud, File, GitBranch, KeyRound, Loader2, Plus, RefreshCw, TriangleAlert, Wrench } from "lucide-react"
 
 import { DisclosureHeader } from "@/components/disclosure-header"
+import { EmptyState } from "@/components/empty-state"
+import { ErrorDetails } from "@/components/error-details"
 import { FilterCombobox, type FilterOption } from "@/components/filter-combobox"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { StatusBadge } from "@/components/status-badge"
@@ -19,6 +21,7 @@ import { RepositoryPushFeedback, useRepositoryPushToasts } from "@/features/appl
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
 import type { ApplicationActions, ApplicationSource, ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, WorkspaceDetailSection } from "@/features/application/model/application-source"
 import { commitLabel } from "@/features/application/model/repository-push"
+import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import { showActionFailure } from "@/lib/operation-toast"
 import { cn } from "@/lib/utils"
 
@@ -49,18 +52,8 @@ function WorkspaceFilterBar({
   )
 }
 
-function EmptyState({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-border px-6 text-center">
-      <div>
-        <p className="text-sm font-medium">{title}</p>
-        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-      </div>
-    </div>
-  )
-}
-
 function Files({
+  source,
   onRefreshRepositories,
   workspaces,
   repositoryPushOperations,
@@ -71,6 +64,7 @@ function Files({
   directoryStore,
   active,
 }: {
+  source: ApplicationSource
   onRefreshRepositories?: () => Promise<void>
   editor: string
   onOpenEditor: (workspace: string, path: string) => void
@@ -91,7 +85,7 @@ function Files({
   }
   const [repositoriesOpen, setRepositoriesOpen] = useState(true)
   const [fileTreeOpen, setFileTreeOpen] = useState(true)
-  if (workspaces.length === 0) return <EmptyState title="No sandboxes selected" description="Select at least one sandbox to browse its files and repositories." />
+  if (workspaces.length === 0) return <EmptyState icon={<File />} title="No matching sandboxes" description="Clear the sandbox filter to browse files and repositories in every sandbox." />
   const repositories = workspaces.flatMap((workspace) => workspace.repositories.map((repository) => ({ workspace, repository })))
   const pushOperations = new Map(repositoryPushOperations.map((operation) => [`${operation.workspace}:${operation.repositoryPath}`, operation]))
 
@@ -126,6 +120,9 @@ function Files({
                   {repositories.map(({ workspace, repository }) => {
                     const operation = pushOperations.get(`${workspaceTarget(workspace)}:${repository.path}`)
                     const push = () => onPushRepository(workspaceTarget(workspace), repository.path, operation?.commitCount ?? repository.ahead)
+                    // Same gate and name as the status bar: identical buttons need the repository and sandbox.
+                    const canPush = workspaceAvailability(workspace, source).canOpen
+                    const sandbox = workspace.computer ? `${workspace.machine.name} on ${workspace.computer.name}` : workspace.machine.name
                     return (
                       <div key={`${workspace.machine.id}:${repository.path}`} role="listitem" aria-busy={operation?.status === "pushing" || undefined} className="group/folder transition-colors hover:bg-muted/35 focus-within:bg-muted/35">
                         <ListRow
@@ -142,14 +139,14 @@ function Files({
                           <div className="flex min-h-6 items-start pr-2 pb-2 pl-10" data-repository-actions>
                             {operation
                               ? <RepositoryPushFeedback operation={operation} workspace={workspaceTarget(workspace)} repositoryPath={repository.path} onRetry={push} onDismiss={onDismissRepositoryPush} />
-                              : <Button variant="outline" size="xs" onClick={push}>Push {commitLabel(repository.ahead)}</Button>}
+                              : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${sandbox}`} onClick={() => { if (canPush) push() }}>Push {commitLabel(repository.ahead)}</Button>}
                           </div>
                         )}
                       </div>
                     )
                   })}
                 </ListCard>
-              ) : <p className="text-xs text-muted-foreground">No repositories checked out.</p>}
+              ) : <EmptyState icon={<GitBranch />} title="No repositories checked out" className="min-h-24" />}
             </div>
           </CollapsibleContent>
         </section>
@@ -218,7 +215,7 @@ function ActivityLog({ workspaces, sourceActivities, filtered, onShowLogs }: { w
     ? allActivities
     : allActivities.filter(({ category }) => selectedCategories.has(category))
 
-  if (workspaces.length === 0 && allActivities.length === 0) return <EmptyState title="No recent activity" description="Sandbox and system activity will appear here." />
+  if (workspaces.length === 0 && allActivities.length === 0) return <EmptyState icon={<Activity />} title="No recent activity" description="Sandbox and system activity will appear here." />
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -276,7 +273,10 @@ function ActivityLog({ workspaces, sourceActivities, filtered, onShowLogs }: { w
                 detailClassName="whitespace-normal"
                 detail={
                   <div className="min-w-0 space-y-1" data-activity-content>
-                    <p className="whitespace-pre-wrap break-words">{item.detail}</p>
+                    {/* A failure's detail can carry raw runtime output: keep it behind Details. */}
+                    {item.tone === "danger" && item.detail
+                      ? <ErrorDetails message={item.detail} />
+                      : <p className="whitespace-pre-wrap break-words">{item.detail}</p>}
                     {workspace && item.tone === "danger" && <Button size="xs" variant="outline" onClick={() => onShowLogs(item)}>Show logs</Button>}
                     {item.status === "running" && item.progress !== undefined && (
                       <div className="flex max-w-sm items-center gap-2 pt-1">
@@ -312,6 +312,7 @@ function ActivityLog({ workspaces, sourceActivities, filtered, onShowLogs }: { w
 }
 
 export function WorkspacesPage({
+  source,
   network, networkError, networkActions, onSectionChange,
   editor,
   onOpenEditor,
@@ -328,7 +329,10 @@ export function WorkspacesPage({
   onLogQueryChange,
   onPushRepository,
   onDismissRepositoryPush,
+  onCreateSandbox,
 }: {
+  /** The application source, for the same availability rules as the other surfaces. */
+  source: ApplicationSource
   onSectionChange: (section: WorkspaceDetailSection) => void
   network?: ApplicationSource["network"]
   networkError?: string | null
@@ -348,6 +352,8 @@ export function WorkspacesPage({
   onLogQueryChange: (query: string) => void
   onPushRepository: (workspace: string, repositoryPath: string, commitCount: number) => void
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
+  /** Opens the new-sandbox editor; omitted while a sandbox cannot be created. */
+  onCreateSandbox?: () => void
 }) {
   const [logWindow, setLogWindow] = useState<LogWindow>()
   useRepositoryPushToasts(repositoryPushOperations, {
@@ -362,11 +368,26 @@ export function WorkspacesPage({
     () => selectedWorkspaceIds.size === 0 ? workspaces : workspaces.filter(({ machine }) => selectedWorkspaceIds.has(machine.id)),
     [workspaces, selectedWorkspaceIds],
   )
+  // An empty filter means every sandbox, so an empty list means there are none yet: offer to
+  // create one. Activity still shows system events and those of deleted sandboxes.
+  const hasSandboxes = workspaces.length > 0
+  if (!hasSandboxes && section !== "activity") {
+    return (
+      <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6">
+        <EmptyState
+          icon={<Boxes />}
+          title="No sandboxes yet"
+          description="Create a sandbox to browse its files, logs and network ports here."
+          action={onCreateSandbox && <Button variant="outline" size="xs" onClick={onCreateSandbox}><Plus aria-hidden="true" data-icon="inline-start" />New sandbox</Button>}
+        />
+      </div>
+    )
+  }
 
   return (
-    <div className="mx-auto grid h-full min-h-0 w-full max-w-4xl grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6">
-      <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />
-      {section === "files" && <Files onRefreshRepositories={networkActions.refreshRepositories} editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
+    <div className={cn("mx-auto grid h-full min-h-0 w-full max-w-4xl gap-4 overflow-hidden px-4 py-5 sm:px-6 sm:py-6", hasSandboxes ? "grid-rows-[auto_minmax(0,1fr)]" : "grid-rows-[minmax(0,1fr)]")}>
+      {hasSandboxes && <WorkspaceFilterBar workspaces={workspaces} selectedWorkspaceIds={selectedWorkspaceIds} onChange={onWorkspaceFilterChange} />}
+      {section === "files" && <Files source={source} onRefreshRepositories={networkActions.refreshRepositories} editor={editor} onOpenEditor={onOpenEditor} directoryStore={directoryStore} active={active} workspaces={visibleWorkspaces} repositoryPushOperations={repositoryPushOperations} onPushRepository={onPushRepository} onDismissRepositoryPush={onDismissRepositoryPush} />}
       {section === "logs" && <Logs key={JSON.stringify(visibleWorkspaces.map(workspaceTarget))} workspaces={visibleWorkspaces} query={logQuery} onQueryChange={onLogQueryChange} actions={networkActions} active={active} window={logWindow} onWindowChange={setLogWindow} />}
       {section === "network" && <NetworkPage workspaces={visibleWorkspaces} browser={browser} network={network} error={networkError} actions={networkActions} active={active} />}
       {section === "activity" && <ActivityLog workspaces={visibleWorkspaces} sourceActivities={activities} filtered={selectedWorkspaceIds.size > 0} onShowLogs={activity => {

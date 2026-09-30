@@ -44,7 +44,7 @@ not perform an authenticated VM request. It can report success with no grants.
 
 ### Proxy denial becomes an unexplained connection drop
 
-The [bundled runtime patch](../app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch#L2349)
+The [bundled runtime patch](https://github.com/0xpolarzero/silo/blob/d3481b294342784bbf1047e6d94587381eee2479/app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch#L2349)
 rejects empty profiles, malformed profiles, expired selected credentials,
 missing owner grants, unavailable write credentials and malformed token values
 through the same `ViolationAction::Block` result. The inherited TLS relay in

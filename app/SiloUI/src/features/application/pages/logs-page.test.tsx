@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
-import { fixtureLogPage, type LogPage, type LogQuery } from "../model/logs"
+import { fixtureLogPage, logPageSchema, type LogPage, type LogQuery } from "../model/logs"
 import { Toaster } from "@/components/ui/sonner"
 import { Logs } from "./logs-page"
 
@@ -23,6 +23,18 @@ function scrollNearEnd() {
   return viewport
 }
 describe("retained logs", () => {
+  it("says when records could not be read and labels times the sandbox reported", async () => {
+    const { workspace, actions } = fixture()
+    const occurredAt = "2020-01-01T00:00:00.000000000Z"
+    const page = logPageSchema.parse({
+      entries: [{ id: "1", line: "forged time", occurredAt, sandboxId: workspace.machine.id, computerId: "local", source: "kernel", guestTimestamp: true }],
+      nextCursor: null, oldestAvailableTimestamp: occurredAt, newestAvailableTimestamp: occurredAt, totalMatches: 1, timestampEstimated: false, unreadableRecords: true,
+    })
+    actions.queryLogs = vi.fn(async () => page)
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    expect(await screen.findByText(/Some records could not be read/)).toBeVisible()
+    expect(screen.getByTitle(`${occurredAt} (time reported by the sandbox)`)).toBeInTheDocument()
+  })
   it("restores expanded logs alongside the cached history after navigation", async () => {
     const { workspace, actions, queryLogs } = fixture()
     workspace.logs = workspace.logs.slice(0, 2)
@@ -93,6 +105,21 @@ describe("retained logs", () => {
     expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ source: undefined, since: undefined, until: undefined }))
     expect(screen.queryByLabelText("Logs from")).not.toBeInTheDocument()
     expect(screen.queryByText(/No logs in this time range/)).not.toBeInTheDocument()
+    expect(screen.getByText("No logs yet").closest('[data-slot="empty-state"]')).not.toBeNull()
+  })
+  it("styles an inverted date range as an inline error with the next step", () => {
+    const { workspace, actions, queryLogs } = fixture()
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" window={{ since: "2026-09-19T00:00:00.000Z", until: "2026-09-18T00:00:00.000Z" }} onQueryChange={vi.fn()} />)
+    const alert = screen.getByRole("alert")
+    expect(alert).toHaveTextContent("The start date is after the end date. Change the date filter to see logs.")
+    expect(alert).toHaveClass("text-xs", "text-destructive")
+    expect(queryLogs).not.toHaveBeenCalled()
+  })
+  it("uses the shared empty state when no sandbox matches", () => {
+    const { actions } = fixture()
+    render(<Logs workspaces={[]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    expect(screen.getByText("No matching sandboxes").closest('[data-slot="empty-state"]')).not.toBeNull()
+    expect(screen.queryByText(/No sandboxes selected/)).not.toBeInTheDocument()
   })
   it("adds, removes and clears optional filters without applying an unfinished date", async () => {
     const { workspace, actions, queryLogs } = fixture()
@@ -214,6 +241,30 @@ describe("retained logs", () => {
     } finally { vi.useRealTimers() }
   })
 
+  it("continues the previous snapshot while following, but starts a new search on Refresh and Export", async () => {
+    vi.useFakeTimers()
+    try {
+      const { workspace, actions } = fixture()
+      workspace.logs = workspace.logs.slice(0, 2)
+      const requests: LogQuery[] = []
+      let snapshots = 0
+      actions.queryLogs = vi.fn(async (request: LogQuery) => {
+        requests.push(request)
+        return { ...fixtureLogPage(workspace, request), snapshot: `snapshot-${++snapshots}` }
+      })
+      actions.exportLogs = vi.fn(async () => true)
+      await act(async () => render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />))
+      fireEvent.click(screen.getByRole("button", { name: "Follow" }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+      expect(requests.map(request => request.follow)).toEqual([undefined, "snapshot-1", "snapshot-2"])
+      fireEvent.click(screen.getByRole("button", { name: "Pause" }))
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Refresh logs" })) })
+      expect(requests.at(-1)?.follow).toBeUndefined()
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Export…" })) })
+      expect(vi.mocked(actions.exportLogs!).mock.calls[0][0].every(request => request.follow === undefined)).toBe(true)
+    } finally { vi.useRealTimers() }
+  })
   it("buffers quiet-owner history until busy-owner pages reach it", async () => {
     const { workspace, actions } = fixture()
     workspace.logs = ["10", "09", "08", "07"].map(hour => ({ occurredAt: `2026-09-18T${hour}:00:00Z`, line: `busy ${hour}` }))

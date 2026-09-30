@@ -65,8 +65,34 @@ computers and expired pagination snapshots produce explicit errors, not invented
 log entries. New writes do not shift an existing page sequence.
 Search snapshots expire after 30 minutes without use and can be evicted under
 memory pressure. Refresh to begin a new snapshot. Search indexes store record
-offsets rather than log bodies, with a shared 128 MiB index budget; an oversized
-query returns an explicit request to narrow its time range or search text.
+offsets rather than log bodies, with a shared 128 MiB index budget and at most
+16 snapshots; an oversized query returns an explicit request to narrow its time
+range or search text.
+
+Follow (review finding F-07) continues the previous first page's snapshot
+instead of starting a new search every three seconds. Each snapshot records, per
+retained file, the offset after its last newline-terminated record. A follow
+refresh reads each surviving file only from that offset (an unterminated final
+record is read again once complete), reads new files in full, drops records of
+expired files, and replaces its predecessor in the cache. It skips the runtime
+inspection and retention cleanup that a new search performs. A file that shrank
+in place (retention truncation), a changed boot failure record, or an expired
+snapshot rebuilds the index from scratch. Carried records keep the estimated
+time they were indexed with. Refresh, pagination and export always use a new
+search. Hosts running an older Silo ignore the follow token and run a full query.
+
+A malformed execution record, an unreadable boot failure, or any record over
+1 MiB no longer fails every query and export for the sandbox (review finding
+F-08). Malformed records appear as placeholders with the file time, marked
+estimated; console records over 1 MiB keep their first 64 KiB and end with
+"[record over 1 MiB truncated]"; execution records over 1 MiB become a
+placeholder. The view and export coverage report `unreadableRecords`. Times
+parsed from kernel console text are chosen by the guest, so those records carry
+`guestTimestamp` and the view labels them "time reported by the sandbox".
+Separate retention budgets for guest console output and host-written execution
+records are not implemented: retention runs in the pinned runtime patch, whose
+`log_retention.rs` must match Silo's copy byte for byte, so changing it requires
+re-pinning and rebuilding the bundled runtime.
 
 Copy copies the records currently fetched, with identifying context.
 Export… saves all matching pages through the native save dialog as JSON
@@ -84,7 +110,7 @@ that arbitrary secrets are removed. Review exports before sharing them.
   files, search, pagination, surrounding records and remote owner routing.
 - [Retention policy](../app/SiloUI/src-tauri/src/log_retention.rs): segment age,
   shared byte budget and stopped-sandbox cleanup.
-- [Runtime patch](../app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch):
+- [Runtime patch](https://github.com/0xpolarzero/silo/blob/d3481b294342784bbf1047e6d94587381eee2479/app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch):
   execution, runtime and kernel writers.
 - [Logs view](../app/SiloUI/src/features/application/pages/logs-page.tsx):
   search, filters, refresh and follow controls.

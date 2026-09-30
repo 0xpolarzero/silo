@@ -65,6 +65,8 @@ export interface ApplicationRepository {
 }
 
 export type RepositoryPushOperation = {
+  /** The host-owned push this result belongs to; older hosts may omit it. */
+  operationId?: string
   workspace: string
   repositoryPath: string
   commitCount: number
@@ -89,7 +91,7 @@ export interface NetworkPort {
   configured: boolean
   message?: string | null
 }
-export interface NetworkState { workspaces: { workspace: string; ports: NetworkPort[]; error: string | null }[] }
+export interface NetworkState { workspaces: { workspace: string; ports: NetworkPort[]; error: string | null; /** Host name published websites open at; absent means 127.0.0.1. */ host?: string | null }[] }
 export interface SshAccessWorkspace {
   unavailable?: string
   workspace: string; enabled: boolean; port: number; bindAddress: string; keys: string[]
@@ -132,6 +134,8 @@ export interface ApplicationActivity {
   workspace?: string
   progress?: number
   progressLabel?: string
+  /** A start, stop or restart the user cancelled: neither a failure nor a success. */
+  cancelled?: boolean
 }
 
 export interface ApplicationWorkspace {
@@ -207,8 +211,14 @@ export interface ApplicationGitHubWorkspacePolicy {
   repositories: readonly ApplicationGitHubRepositoryPolicy[]
 }
 
+/**
+ * A save of sandbox GitHub choices. `workspaces` lists only the sandboxes being changed;
+ * other sandboxes keep their saved choices. `baseRevision` is the `policyRevision` the
+ * edit was based on, so a change made meanwhile (such as a fork's copied assignment) is
+ * not overwritten. Access on/off is changed only through `setGitHubAccessEnabled`.
+ */
 export interface ApplicationGitHubConfiguration {
-  accessEnabled: boolean
+  baseRevision?: number
   hostIdentity: ApplicationGitIdentity | null
   workspaces: readonly ApplicationGitHubWorkspacePolicy[]
 }
@@ -230,6 +240,8 @@ export interface ApplicationSource {
   remoteComputers?: RemoteComputer[]
   remoteManagement?: RemoteManagement
   remoteManagementError?: string
+  /** Silo could not read its list of connected computers; the listed ones are the last known. */
+  remoteComputersError?: string
   sshAccess?: SshAccessState
   sshAccessError?: string | null
   network?: NetworkState

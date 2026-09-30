@@ -2,7 +2,7 @@
 
 Date: 2026-09-23. This is an **unexecuted diagnostic patch**, not an upstream
 repair or evidence about the deployed D1 release. The patch is
-[`d1-resume-allocation-exact-id.patch`](../../experiments/e2b-local/patches/d1-resume-allocation-exact-id.patch),
+[`d1-resume-allocation-exact-id.patch`](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/patches/d1-resume-allocation-exact-id.patch),
 SHA-256 `f068209f3ce5d901603074050ed9c51d2f285f1670d7534f508a212254ccf21f`.
 It applies only to a disposable copy of the captured public tree whose sorted
 per-file manifest SHA-256 is

@@ -55,9 +55,9 @@ assembles Ubuntu 22.04, Xfce/Xvfb, x11vnc, an E2B noVNC fork and websockify.
 Its Chrome and VS Code repository entries target AMD64. This is useful upstream
 integration, but it is not the unchanged ARM64 image used by our PoC.
 
-Our [template](../../experiments/e2b-local/template.py) instead builds Debian
+Our [template](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/template.py) instead builds Debian
 trixie with distribution desktop packages, Firefox, OpenSSH and LCU. Our
-[desktop launcher](../../experiments/e2b-local/start-desktop.sh) starts the
+[desktop launcher](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/start-desktop.sh) starts the
 display, session, control/observer servers and bridges. The distinction matters:
 the successful Mac trial does not show that E2B has assumed maintenance of our
 complete desktop appliance.
@@ -208,7 +208,7 @@ Silo then adds its own patch and inherits that maintenance burden.
 - **MicroSandbox is not maintenance-free or universally qualified.** Its
   [pinned README](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/README.md)
   identifies beta software. Silo's
-  [patch](../../app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch)
+  [patch](https://github.com/0xpolarzero/silo/blob/d3481b294342784bbf1047e6d94587381eee2479/app/SiloUI/patches/microsandbox-create-stopped-0.6.17.patch)
   spans creation, image integrity, secret/network policy, SSH, publication and
   logs. That is a reason to reduce patches and upstream fixes, not to call the
   incumbent finished.

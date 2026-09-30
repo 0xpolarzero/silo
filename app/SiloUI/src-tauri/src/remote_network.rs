@@ -57,15 +57,20 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, String> {
             return Err(error);
         }
     };
+    let hosts = crate::network::uses_sandbox_hosts(app);
     let mut entries = tunnels()
         .lock()
         .map_err(|_| "Network connections unavailable.")?;
-    project_ports(value, host, &mut entries)
+    project_ports(value, host, &mut entries, hosts)
 }
+/// Rewrite an owner's network state for this computer: rows become remote targets,
+/// ports show this computer's tunnels, and with `hosts` each sandbox gets the host
+/// name its websites open at here (C-24). The owner's own host choice is ignored.
 fn project_ports(
     mut value: Value,
     host: &str,
     entries: &mut HashMap<(String, String, u16), Tunnel>,
+    hosts: bool,
 ) -> Result<Value, String> {
     let mut observed = std::collections::HashSet::new();
     for row in value["workspaces"]
@@ -76,6 +81,12 @@ fn project_ports(
             .as_str()
             .ok_or("Missing remote VM identity.")?
             .to_owned();
+        let name = row["workspace"].as_str().unwrap_or("").to_owned();
+        row["host"] = if hosts {
+            json!(crate::network::sandbox_host(&name, &vm))
+        } else {
+            Value::Null
+        };
         row["workspace"] = json!(format!("silo-remote:{host}:{vm}"));
         for port in row["ports"]
             .as_array_mut()
@@ -250,11 +261,20 @@ pub async fn remote_open_network_port(
             .ok_or("This port is not a website.")?;
         let local = endpoint["hostPort"]
             .as_u64()
+            .and_then(|port| u16::try_from(port).ok())
             .ok_or("This service is not connected.")?;
-        crate::applications::open_browser(&app, &format!("{scheme}://127.0.0.1:{local}"))
+        let url = crate::network::website_url(scheme, row_host(&state, &target), local);
+        crate::applications::open_browser(&app, &url)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+fn row_host<'a>(state: &'a Value, target: &str) -> Option<&'a str> {
+    state["workspaces"]
+        .as_array()?
+        .iter()
+        .find(|row| row["workspace"] == target)?["host"]
+        .as_str()
 }
 pub(crate) fn close_all() {
     if let Ok(mut entries) = tunnels().lock() {
@@ -290,7 +310,7 @@ mod tests {
     #[test]
     fn owner_loopback_is_not_a_controller_endpoint_until_a_tunnel_exists() {
         let mut entries = HashMap::new();
-        let result = project_ports(observed(32000), "office", &mut entries).unwrap();
+        let result = project_ports(observed(32000), "office", &mut entries, false).unwrap();
         assert_eq!(
             result["workspaces"][0]["workspace"],
             "silo-remote:office:vm"
@@ -298,21 +318,32 @@ mod tests {
         assert!(result["workspaces"][0]["ports"][0]["hostPort"].is_null());
         assert_eq!(result["workspaces"][0]["ports"][0]["configured"], false);
         entries.insert(("office".into(), "vm".into(), 3000), tunnel());
-        let result = project_ports(observed(32000), "office", &mut entries).unwrap();
+        let result = project_ports(observed(32000), "office", &mut entries, false).unwrap();
         assert_eq!(result["workspaces"][0]["ports"][0]["hostPort"], 43000);
         assert_eq!(result["workspaces"][0]["ports"][0]["configured"], true);
+    }
+    #[test]
+    fn remote_sandboxes_open_at_their_own_host_on_this_computer() {
+        let mut entries = HashMap::new();
+        let value = json!({"workspaces":[{"workspace":"dev","vmId":"1a2b3c4d-0000-4000-8000-000000000001","host":"owner-choice.localhost","ports":[]}]});
+        let result = project_ports(value.clone(), "office", &mut entries, true).unwrap();
+        assert_eq!(result["workspaces"][0]["host"], "dev-1a2b3c4d.localhost");
+        assert_eq!(row_host(&result, "silo-remote:office:1a2b3c4d-0000-4000-8000-000000000001"), Some("dev-1a2b3c4d.localhost"));
+        // This computer's browser decides, not the owner's.
+        let result = project_ports(value, "office", &mut entries, false).unwrap();
+        assert!(result["workspaces"][0]["host"].is_null());
     }
     #[test]
     fn changed_owner_endpoint_or_deleted_vm_closes_only_its_own_tunnels() {
         let key = ("office".into(), "vm".into(), 3000);
         let other = ("other".into(), "vm".into(), 3000);
         let mut entries = HashMap::from([(key.clone(), tunnel()), (other.clone(), tunnel())]);
-        let result = project_ports(observed(32001), "office", &mut entries).unwrap();
+        let result = project_ports(observed(32001), "office", &mut entries, false).unwrap();
         assert!(result["workspaces"][0]["ports"][0]["hostPort"].is_null());
         assert!(!entries.contains_key(&key));
         assert!(entries.contains_key(&other));
         entries.insert(key.clone(), tunnel());
-        project_ports(json!({"workspaces":[]}), "office", &mut entries).unwrap();
+        project_ports(json!({"workspaces":[]}), "office", &mut entries, false).unwrap();
         assert!(!entries.contains_key(&key));
         assert!(entries.contains_key(&other));
     }

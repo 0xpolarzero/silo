@@ -75,6 +75,7 @@ pub(super) fn install(window: &WebviewWindow) -> tauri::Result<()> {
             menu_key(key),
             !modifiers.is_empty(),
             focus.bar.is_visible(),
+            event.time(),
         );
         if let Some(show) = action {
             if show {
@@ -94,10 +95,25 @@ pub(super) fn install(window: &WebviewWindow) -> tauri::Result<()> {
         keys_on_pointer.borrow_mut().cancel();
         glib::Propagation::Proceed
     });
+    // A window manager Alt+drag grabs the pointer, so Silo never sees the button.
+    // The grab still shows up as a crossing event or a broken grab.
+    gtk_window.add_events(gdk::EventMask::LEAVE_NOTIFY_MASK);
+    let keys_on_grab = alt_pending.clone();
+    gtk_window.connect_leave_notify_event(move |_, event| {
+        if event.mode() == gdk::CrossingMode::Grab {
+            keys_on_grab.borrow_mut().cancel();
+        }
+        glib::Propagation::Proceed
+    });
+    let keys_on_broken_grab = alt_pending.clone();
+    gtk_window.connect_grab_broken_event(move |_, _| {
+        keys_on_broken_grab.borrow_mut().cancel();
+        glib::Propagation::Proceed
+    });
     gtk_window.connect_key_release_event(move |_, event| {
         let action = alt_pending
             .borrow_mut()
-            .release(menu_key(event.keyval()), focus.bar.is_visible());
+            .release(menu_key(event.keyval()), focus.bar.is_visible(), event.time());
         if let Some(show) = action {
             if show {
                 focus.show();

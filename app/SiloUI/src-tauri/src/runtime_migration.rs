@@ -407,6 +407,7 @@ fn record_migration_failure(state: &mut MigrationState, error: String) {
 }
 
 fn convert_workspace_disk(
+    runner: &dyn runtime::RuntimeRunner,
     paths: &runtime::RuntimePaths,
     name: &str,
     source: &Path,
@@ -417,14 +418,14 @@ fn convert_workspace_disk(
         "--source".into(),
         source.to_string_lossy().into_owned(),
     ];
-    runtime::run_msb(paths, &args, Duration::from_secs(60 * 30))
+    runner.run(paths, &args, Duration::from_secs(60 * 30))
         .map(|_| ())
         .map_err(|error| conversion_failure(name, &error))
 }
 
-fn verify_staged_vm(paths: &runtime::RuntimePaths, name: &str, id: &str, old_runtime: &Path) -> Result<PathBuf, String> {
+fn verify_staged_vm(runner: &dyn runtime::RuntimeRunner, paths: &runtime::RuntimePaths, name: &str, id: &str, old_runtime: &Path) -> Result<PathBuf, String> {
     let args = vec!["inspect".into(), name.into(), "--format".into(), "json".into()];
-    let output = runtime::run_msb(paths, &args, Duration::from_secs(30))
+    let output = runner.run(paths, &args, Duration::from_secs(30))
         .map_err(|error| inspection_failure("Staged", name, &error))?;
     let inspected: serde_json::Value = serde_json::from_str(&output.stdout)
         .map_err(|_| "The staged sandbox returned invalid inspection data.")?;
@@ -457,69 +458,30 @@ fn verify_staged_vm(paths: &runtime::RuntimePaths, name: &str, id: &str, old_run
     Ok(source)
 }
 
+/// A conversion step reported to the migration state.
+enum Step {
+    Copying,
+    Converting { index: usize, total: usize },
+    Converted { index: usize, total: usize },
+}
+
+fn apply_step(state: &mut MigrationState, step: &Step) {
+    match *step {
+        Step::Copying => state.stage = "Copying existing sandbox data".into(),
+        Step::Converting { index, total } => state.stage = format!("Converting sandbox {} of {}", index + 1, total),
+        Step::Converted { index, total } => {
+            state.migrated_count = index + 1;
+            state.logs.push(format!("Sandbox {} of {} converted and verified.", index + 1, total));
+        }
+    }
+}
+
 fn convert(app: &AppHandle) -> Result<(), String> {
     let controller = app.state::<Arc<Controller>>();
-    let old_runtime = controller.app_data.join("runtime");
-    let old_metadata = runtime::read_metadata(&old_runtime.join("machines.json"))
-        .map_err(|_| "Existing sandbox settings could not be read. No data was changed.")?;
-    let machines: Vec<_> = old_metadata.machines.iter().filter(|machine| machine.is_vm()).collect();
-    if machines.is_empty() { return Err("No existing sandboxes need conversion.".into()); }
-    let lifecycle = old_runtime.join("lifecycle-operations");
-    let pending_lifecycle = lifecycle.is_dir() && fs::read_dir(&lifecycle)
-        .map_err(|_| "Previous sandbox actions could not be inspected.")?.next().is_some();
-    if old_runtime.join("configuration-operation.json").exists() || pending_lifecycle {
-        return Err("A previous sandbox operation still needs recovery. Migration did not change data.".into());
-    }
-    let backup_journal = controller.app_data.join("backup-operation.json");
-    if backup_journal.exists() {
-        let bytes = fs::read(&backup_journal).map_err(|_| "Previous backup progress could not be read.")?;
-        let value: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|_| "Previous backup progress is invalid; it was preserved.")?;
-        if value.get("terminal").is_none_or(serde_json::Value::is_null) {
-            return Err("An interrupted backup must finish before sandbox migration. No data was changed.".into());
-        }
-    }
     let paths = staged_paths(app, &controller.app_data)?;
-    let staged = controller.app_data.join(CONVERTED);
-    if staged.exists() {
-        if fs::symlink_metadata(&staged).map_err(|_| "Staged runtime could not be inspected.")?.file_type().is_symlink() {
-            return Err("Staged runtime is redirected; it was preserved.".into());
-        }
-        let _guard = runtime::configuration_recovery::command_lock(&paths, Duration::from_secs(30))
-            .map_err(|_| "A previous conversion command is still finishing. Retry later.")?;
-        fs::remove_dir_all(&staged).map_err(|_| "Prior staged conversion could not be cleared.")?;
-    }
-    update(app, |state| { state.stage = "Copying existing sandbox data".into(); Ok(()) })?;
-    copy_runtime_tree(&old_runtime, &staged)?;
-    runtime::prepare_runtime_home(&paths.home, paths.storage_home.as_deref())
-        .map_err(|_| "Staged runtime home could not be prepared.")?;
-    for (index, machine) in machines.iter().enumerate() {
-        update(app, |state| {
-            state.stage = format!("Converting sandbox {} of {}", index + 1, machines.len());
-            Ok(())
-        })?;
-        let source = verify_staged_vm(&paths, machine.name(), machine.id(), &old_runtime)?;
-        convert_workspace_disk(&paths, machine.name(), &source)?;
-        let inspect_args = vec!["inspect".into(), machine.name().into(), "--format".into(), "json".into()];
-        let output = runtime::run_msb(&paths, &inspect_args, Duration::from_secs(30))
-            .map_err(|error| inspection_failure("Converted", machine.name(), &error))?;
-        let inspected: serde_json::Value = serde_json::from_str(&output.stdout)
-            .map_err(|_| "Converted sandbox inspection returned invalid data.")?;
-        let owned = inspected.pointer("/config/mounts").and_then(serde_json::Value::as_array)
-            .is_some_and(|mounts| mounts.iter().any(|mount| mount.get("guest").and_then(serde_json::Value::as_str) == Some("/workspace")
-                && mount.get("type").and_then(serde_json::Value::as_str) == Some("Owned")));
-        if !owned { return Err("Converted workspace disk was not verified as owned storage.".into()); }
-        update(app, |state| {
-            state.migrated_count = index + 1;
-            state.logs.push(format!("Sandbox {} of {} converted and verified.", index + 1, machines.len()));
-            Ok(())
-        })?;
-    }
-    // The marker is the commit point. Before it, normal Silo paths still use
-    // the untouched old generation; after it, all paths resolve to the staged
-    // and verified new generation.
-    select_generation(&controller.app_data, CONVERTED)?;
-    quarantine_previous_backup_state(&controller.app_data)?;
+    convert_with(&runtime::ProcessRunner, &controller.app_data, &paths, &|step| {
+        update(app, |state| { apply_step(state, &step); Ok(()) }).map(drop)
+    })?;
     update(app, |state| {
         state.status = "running".into();
         state.stage = "Restarting with converted sandboxes".into();
@@ -532,6 +494,73 @@ fn convert(app: &AppHandle) -> Result<(), String> {
         tokio::time::sleep(Duration::from_millis(250)).await;
         restart.restart();
     });
+    Ok(())
+}
+
+/// Convert the previous runtime generation under `app_data` into a staged copy
+/// at `paths` and select it. Every refusal happens before anything is written;
+/// the original generation is never modified (D-42).
+fn convert_with(
+    runner: &dyn runtime::RuntimeRunner,
+    app_data: &Path,
+    paths: &runtime::RuntimePaths,
+    progress: &dyn Fn(Step) -> Result<(), String>,
+) -> Result<(), String> {
+    let old_runtime = app_data.join("runtime");
+    let old_metadata = runtime::read_metadata(&old_runtime.join("machines.json"))
+        .map_err(|_| "Existing sandbox settings could not be read. No data was changed.")?;
+    let machines: Vec<_> = old_metadata.machines.iter().filter(|machine| machine.is_vm()).collect();
+    if machines.is_empty() { return Err("No existing sandboxes need conversion.".into()); }
+    let lifecycle = old_runtime.join("lifecycle-operations");
+    let pending_lifecycle = lifecycle.is_dir() && fs::read_dir(&lifecycle)
+        .map_err(|_| "Previous sandbox actions could not be inspected.")?.next().is_some();
+    if old_runtime.join("configuration-operation.json").exists() || pending_lifecycle {
+        return Err("A previous sandbox operation still needs recovery. Migration did not change data.".into());
+    }
+    let backup_journal = app_data.join("backup-operation.json");
+    if backup_journal.exists() {
+        let bytes = fs::read(&backup_journal).map_err(|_| "Previous backup progress could not be read.")?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| "Previous backup progress is invalid; it was preserved.")?;
+        if value.get("terminal").is_none_or(serde_json::Value::is_null) {
+            return Err("An interrupted backup must finish before sandbox migration. No data was changed.".into());
+        }
+    }
+    let staged = app_data.join(CONVERTED);
+    if staged.exists() || fs::symlink_metadata(&staged).is_ok() {
+        if fs::symlink_metadata(&staged).map_err(|_| "Staged runtime could not be inspected.")?.file_type().is_symlink() {
+            return Err("Staged runtime is redirected; it was preserved.".into());
+        }
+        let _guard = runtime::configuration_recovery::command_lock(paths, Duration::from_secs(30))
+            .map_err(|_| "A previous conversion command is still finishing. Retry later.")?;
+        fs::remove_dir_all(&staged).map_err(|_| "Prior staged conversion could not be cleared.")?;
+    }
+    progress(Step::Copying)?;
+    copy_runtime_tree(&old_runtime, &staged)?;
+    runtime::prepare_runtime_home(&paths.home, paths.storage_home.as_deref())
+        .map_err(|_| "Staged runtime home could not be prepared.")?;
+    let total = machines.len();
+    for (index, machine) in machines.iter().enumerate() {
+        progress(Step::Converting { index, total })?;
+        let source = verify_staged_vm(runner, paths, machine.name(), machine.id(), &old_runtime)?;
+        convert_workspace_disk(runner, paths, machine.name(), &source)?;
+        let inspect_args = vec!["inspect".into(), machine.name().into(), "--format".into(), "json".into()];
+        let output = runner.run(paths, &inspect_args, Duration::from_secs(30))
+            .map_err(|error| inspection_failure("Converted", machine.name(), &error))?;
+        let inspected: serde_json::Value = serde_json::from_str(&output.stdout)
+            .map_err(|_| "Converted sandbox inspection returned invalid data.")?;
+        let owned = inspected.pointer("/config/mounts").and_then(serde_json::Value::as_array)
+            .is_some_and(|mounts| mounts.iter().any(|mount| mount.get("guest").and_then(serde_json::Value::as_str) == Some("/workspace")
+                && mount.get("type").and_then(serde_json::Value::as_str) == Some("Owned")));
+        if !owned { return Err("Converted workspace disk was not verified as owned storage.".into()); }
+        progress(Step::Converted { index, total })?;
+    }
+    // The marker is the commit point. Before it, normal Silo paths still use
+    // the untouched old generation; after it, all paths resolve to the staged
+    // and verified new generation. A crash before the quarantine below is
+    // finished by `initial` at the next launch.
+    select_generation(app_data, CONVERTED)?;
+    quarantine_previous_backup_state(app_data)?;
     Ok(())
 }
 
@@ -704,7 +733,7 @@ mod tests {
             metadata: dir.path().join("machines.json"),
             volumes: dir.path().join("volumes"),
         };
-        let error = verify_staged_vm(&paths, "dev", "synthetic-id", dir.path()).unwrap_err();
+        let error = verify_staged_vm(&runtime::ProcessRunner, &paths, "dev", "synthetic-id", dir.path()).unwrap_err();
         assert!(error.contains("dev"));
         assert!(error.contains("bundled runtime executable is missing"));
         assert!(!error.contains(dir.path().to_str().unwrap()));
@@ -750,6 +779,7 @@ mod tests {
         };
 
         let error = convert_workspace_disk(
+            &runtime::ProcessRunner,
             &paths,
             "dev",
             &dir.path().join("workspace.raw"),
@@ -793,7 +823,7 @@ mod tests {
             volumes: dir.path().join("volumes"),
         };
 
-        let error = convert_workspace_disk(&paths, "dev", &dir.path().join("workspace.raw"))
+        let error = convert_workspace_disk(&runtime::ProcessRunner, &paths, "dev", &dir.path().join("workspace.raw"))
             .unwrap_err();
         let mut state = fresh("running", 2);
         record_migration_failure(&mut state, error);
@@ -923,6 +953,166 @@ mod tests {
 
         assert_eq!(initial(&app_data.join(FILE), app_data).unwrap().status, "complete");
         assert_eq!(fs::read(&current_history).unwrap(), saved_history);
+        assert_eq!(fs::read(app_data.join("runtime/before-checkpoints-backup-history.json")).unwrap(), b"previous backup history");
+    }
+
+    const VM_ID: &str = "fcfbc268-ae3f-40ff-8dfa-8af78911e52f";
+
+    /// A previous runtime generation with one VM and its external workspace disk,
+    /// and the staged paths the converter would use.
+    fn previous_generation() -> (tempfile::TempDir, runtime::RuntimePaths) {
+        // Short root: the staged runtime home must fit a Unix socket path.
+        let dir = tempfile::Builder::new().prefix("sm").tempdir_in("/tmp").unwrap();
+        let app_data = dir.path();
+        let old = app_data.join("runtime");
+        fs::create_dir_all(old.join("volumes")).unwrap();
+        runtime::write_metadata(&old.join("machines.json"), &one_vm("dev", VM_ID)).unwrap();
+        fs::write(old.join("volumes/dev.raw"), b"workspace").unwrap();
+        let storage = app_data.join(CONVERTED);
+        let storage_home = storage.join("microsandbox");
+        let paths = runtime::RuntimePaths {
+            guest_image: app_data.join("guest-image"),
+            executable: app_data.join("msb"),
+            home: runtime::runtime_home_alias(app_data, &storage_home),
+            storage_home: Some(storage_home),
+            library: app_data.join("libkrunfw"),
+            metadata: storage.join("machines.json"),
+            volumes: storage.join("volumes"),
+        };
+        (dir, paths)
+    }
+
+    /// Every entry under `root` with its bytes (files), target (symlinks) or a marker (directories).
+    fn tree(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut entries = std::collections::BTreeMap::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(directory) = stack.pop() {
+            for entry in fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                let metadata = fs::symlink_metadata(&path).unwrap();
+                let key = path.strip_prefix(root).unwrap().to_path_buf();
+                let value = if metadata.file_type().is_symlink() {
+                    fs::read_link(&path).unwrap().into_os_string().into_encoded_bytes()
+                } else if metadata.is_dir() {
+                    stack.push(path);
+                    b"<directory>".to_vec()
+                } else {
+                    fs::read(&path).unwrap()
+                };
+                entries.insert(key, value);
+            }
+        }
+        entries
+    }
+
+    /// The staged runtime: reports the external disk until `adopt-disk` ran, then owned storage.
+    struct StagedRuntime {
+        old_runtime: PathBuf,
+        status: &'static str,
+        calls: Mutex<Vec<String>>,
+    }
+    impl StagedRuntime {
+        fn new(app_data: &Path, status: &'static str) -> Self {
+            Self { old_runtime: app_data.join("runtime"), status, calls: Mutex::new(Vec::new()) }
+        }
+    }
+    impl runtime::RuntimeRunner for StagedRuntime {
+        fn run(&self, _: &runtime::RuntimePaths, args: &[String], _: Duration) -> Result<runtime::CommandOutput, runtime::RuntimeError> {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(args[0].clone());
+            let mount = if calls.iter().any(|call| call == "adopt-disk") {
+                serde_json::json!({"guest":"/workspace","type":"Owned"})
+            } else {
+                serde_json::json!({"guest":"/workspace","type":"DiskImage","host":self.old_runtime.join("volumes/dev.raw")})
+            };
+            Ok(runtime::CommandOutput {
+                stdout: serde_json::json!({"name":"dev","status":self.status,"config":{"labels":{"silo.machine-id":VM_ID},"mounts":[mount]}}).to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn every_conversion_refusal_leaves_the_data_directory_untouched() {
+        type Arrange = fn(&Path);
+        let cases: [(&str, Arrange); 6] = [
+            ("No existing sandboxes", |app_data| {
+                runtime::write_metadata(&app_data.join("runtime/machines.json"), &runtime::MachineConfigurationRequest { schema_version: 1, machines: vec![] }).unwrap();
+            }),
+            ("still needs recovery", |app_data| fs::write(app_data.join("runtime/configuration-operation.json"), b"{}").unwrap()),
+            ("still needs recovery", |app_data| {
+                fs::create_dir(app_data.join("runtime/lifecycle-operations")).unwrap();
+                fs::write(app_data.join("runtime/lifecycle-operations/pending.json"), b"{}").unwrap();
+            }),
+            ("interrupted backup", |app_data| fs::write(app_data.join("backup-operation.json"), br#"{"terminal":null}"#).unwrap()),
+            ("backup progress is invalid", |app_data| fs::write(app_data.join("backup-operation.json"), b"{not json").unwrap()),
+            ("redirected", |app_data| std::os::unix::fs::symlink(app_data.join("elsewhere"), app_data.join(CONVERTED)).unwrap()),
+        ];
+        for (expected, arrange) in cases {
+            let (dir, paths) = previous_generation();
+            arrange(dir.path());
+            let before = tree(dir.path());
+            let runner = StagedRuntime::new(dir.path(), "Stopped");
+            let error = convert_with(&runner, dir.path(), &paths, &|_| Ok(())).unwrap_err();
+            assert!(error.contains(expected), "{expected}: {error}");
+            assert_eq!(tree(dir.path()), before, "{expected}");
+            assert!(runner.calls.lock().unwrap().is_empty(), "{expected}");
+        }
+    }
+
+    #[test]
+    fn conversion_replaces_a_prior_staged_attempt_and_commits_before_quarantine() {
+        let (dir, paths) = previous_generation();
+        let app_data = dir.path();
+        fs::create_dir_all(app_data.join(CONVERTED).join("leftover")).unwrap();
+        fs::write(app_data.join("backup-history.json"), b"previous backup history").unwrap();
+        let old_before = tree(&app_data.join("runtime"));
+        let steps = Mutex::new(Vec::new());
+        let runner = StagedRuntime::new(app_data, "Stopped");
+        convert_with(&runner, app_data, &paths, &|step| {
+            steps.lock().unwrap().push(match step {
+                Step::Copying => "copying".to_string(),
+                Step::Converting { index, total } => format!("converting {} of {total}", index + 1),
+                Step::Converted { index, total } => format!("converted {} of {total}", index + 1),
+            });
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(*steps.lock().unwrap(), ["copying", "converting 1 of 1", "converted 1 of 1"]);
+        assert_eq!(*runner.calls.lock().unwrap(), ["inspect", "adopt-disk", "inspect"]);
+        assert!(!app_data.join(CONVERTED).join("leftover").exists(), "the prior staged attempt was cleared");
+        assert_eq!(fs::read(app_data.join(CONVERTED).join("volumes/dev.raw")).unwrap(), b"workspace");
+        assert_eq!(selected_runtime_storage(app_data).unwrap(), app_data.join(CONVERTED));
+        // The original generation is unchanged apart from the quarantined backup history.
+        let mut old_after = tree(&app_data.join("runtime"));
+        assert_eq!(old_after.remove(Path::new("before-checkpoints-backup-history.json")).unwrap(), b"previous backup history");
+        assert_eq!(old_after, old_before);
+    }
+
+    #[test]
+    fn launch_finishes_a_conversion_that_stopped_between_commit_and_quarantine() {
+        let (dir, paths) = previous_generation();
+        let app_data = dir.path();
+        fs::write(app_data.join("backup-history.json"), b"previous backup history").unwrap();
+        // Make the quarantine step fail right after the commit, as a crash would stop it.
+        fs::write(app_data.join("runtime/before-checkpoints-backup-history.json"), b"stale").unwrap();
+        let mut progress = fresh("running", 1);
+        let recorded = Mutex::new(progress.clone());
+        let runner = StagedRuntime::new(app_data, "Stopped");
+        assert!(convert_with(&runner, app_data, &paths, &|step| {
+            apply_step(&mut recorded.lock().unwrap(), &step);
+            Ok(())
+        })
+        .is_err());
+        assert_eq!(selected_runtime_storage(app_data).unwrap(), app_data.join(CONVERTED), "the commit came first");
+        assert!(app_data.join("backup-history.json").exists());
+        progress = recorded.into_inner().unwrap();
+        write(&app_data.join(FILE), &progress).unwrap();
+        fs::remove_file(app_data.join("runtime/before-checkpoints-backup-history.json")).unwrap();
+        let recovered = initial(&app_data.join(FILE), app_data).unwrap();
+        assert_eq!(recovered.status, "complete");
+        assert_eq!(recovered.stage, "Migration complete");
+        assert!(!app_data.join("backup-history.json").exists());
         assert_eq!(fs::read(app_data.join("runtime/before-checkpoints-backup-history.json")).unwrap(), b"previous backup history");
     }
 

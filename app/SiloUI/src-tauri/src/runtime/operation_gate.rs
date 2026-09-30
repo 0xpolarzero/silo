@@ -132,6 +132,9 @@ struct Entry {
     key: Option<String>,
     since: Instant,
     since_ms: u64,
+    /// When the entry was admitted to run (or queued, while waiting). Unlike `since`,
+    /// never carried over from an earlier attempt: it bounds the cancel grace (D-32).
+    admitted: Instant,
     /// True while an operation runs longer than its owner opted to allow cancelling.
     /// Waiting entries report `true` regardless; a running entry reports this flag.
     cancellable: bool,
@@ -225,6 +228,7 @@ impl State {
             key,
             since: Instant::now(),
             since_ms: now_ms(),
+            admitted: Instant::now(),
             cancellable: false,
             cancel: Arc::new(AtomicBool::new(false)),
             expected: None,
@@ -301,6 +305,12 @@ thread_local! {
     static MASKED: Cell<usize> = const { Cell::new(0) };
 }
 
+/// True when the current thread holds an operation guard. Entry points documented
+/// as "the caller holds the operation gate" `debug_assert!` it (D-43).
+pub(crate) fn held() -> bool {
+    HELD.with(Cell::get) > 0
+}
+
 /// Run `work` with cancellation masked: a cancel requested meanwhile is not
 /// observed (children are not killed) until `work` returns, and is then honoured
 /// at the next check. Used for steps such as `msb stop` that must not be cut short.
@@ -334,6 +344,10 @@ pub(crate) fn check_cancelled() -> Result<(), GateError> {
         Ok(())
     }
 }
+
+/// How long after admission a cancel waits for the work to declare itself
+/// cancellable. Owners do so immediately after acquiring, so this only bounds a race.
+const ADMISSION_GRACE: Duration = Duration::from_millis(250);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -418,6 +432,16 @@ impl OperationGate {
         }
     }
 
+    /// True when the waiting entry `id` may run now or was asked to cancel; either
+    /// way its waiter must not give up its place as abandoned.
+    fn admissible_or_cancelled(&self, state: &State, id: u64) -> bool {
+        state
+            .waiting
+            .iter()
+            .position(|entry| entry.id == id)
+            .is_some_and(|index| state.admissible(index) || state.waiting[index].cancel.load(Ordering::SeqCst))
+    }
+
     /// Wait for a turn to change shared computer state.
     pub(crate) fn computer(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
         self.kind(OperationKind::Other).computer(label)
@@ -493,6 +517,7 @@ impl OperationGate {
                 let mut entry = state.waiting.remove(index).expect("index is in range");
                 entry.since = Instant::now();
                 entry.since_ms = now_ms();
+                entry.admitted = entry.since;
                 let token = entry.cancel.clone();
                 state.touch(&entry.scope, false);
                 state.running.push(entry);
@@ -512,8 +537,17 @@ impl OperationGate {
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .0;
                     // Re-check admission first: a turn that arrived is not given up.
-                    let index = state.waiting.iter().position(|entry| entry.id == id);
-                    if index.is_some_and(|index| !state.admissible(index)) && !keep_waiting() {
+                    if self.admissible_or_cancelled(&state, id) {
+                        continue;
+                    }
+                    // Ask the caller without the state lock held: the closure may read
+                    // the gate (or anything that does) without deadlocking (D-33).
+                    drop(state);
+                    let keep = keep_waiting();
+                    state = self.lock();
+                    // The turn may have arrived (or a cancel) while the closure ran;
+                    // the next loop pass admits or cancels it instead of giving it up.
+                    if !keep && !self.admissible_or_cancelled(&state, id) {
                         state.waiting.retain(|entry| entry.id != id);
                         drop(state);
                         self.notify();
@@ -611,6 +645,22 @@ impl OperationGate {
         self.lock().free(&Scope::Vm { id: id.to_owned() })
     }
 
+    /// True when no visible operation other than the calling thread's own is running or
+    /// waiting for the VM with stable `id` (computer-wide work affects every VM). State
+    /// readers use this to decide whether a VM's reading is settled: hidden housekeeping
+    /// never makes a reading stale, and work reading state after its own change is not
+    /// waiting on itself.
+    pub(crate) fn is_vm_quiet(&self, id: &str) -> bool {
+        let scope = Scope::Vm { id: id.to_owned() };
+        let own = CURRENT.with(|current| current.borrow().clone());
+        let state = self.lock();
+        !state.running.iter().chain(state.waiting.iter()).any(|entry| {
+            !entry.hidden
+                && entry.scope.conflicts(&scope)
+                && !own.as_ref().is_some_and(|token| Arc::ptr_eq(token, &entry.cancel))
+        })
+    }
+
     /// The queue as the UI sees it. Hidden internal-housekeeping entries are excluded, but
     /// they still gate real work: a visible waiter held up only by a hidden entry is flagged
     /// with `blocked_by_hidden` so the UI can explain the wait generically.
@@ -652,6 +702,12 @@ impl OperationGate {
     /// `GateError::Cancelled`. A *running* entry is signalled only when it opted in as
     /// cancellable (`OperationGuard::allow_cancel`); otherwise `GateError::NotCancellable`
     /// is returned and nothing changes. An unknown id is treated as already finished.
+    ///
+    /// Work declares itself cancellable right after admission, so a cancel can race
+    /// that declaration: the user cancelled a waiting entry just as its turn came, or
+    /// a start before its owner called `allow_cancel`. Such a cancel waits up to
+    /// `ADMISSION_GRACE` after admission for the work to opt in and is then honoured
+    /// (D-32); only work that stays non-cancellable reports `NotCancellable`.
     pub(crate) fn cancel(&self, id: u64) -> Result<(), GateError> {
         let mut state = self.lock();
         if let Some(entry) = state.waiting.iter().find(|entry| entry.id == id) {
@@ -661,23 +717,35 @@ impl OperationGate {
             self.notify();
             return Ok(());
         }
-        if let Some(entry) = state.running.iter().find(|entry| entry.id == id) {
-            if !entry.cancellable {
+        loop {
+            let Some(entry) = state.running.iter().find(|entry| entry.id == id) else {
+                return Ok(());
+            };
+            if entry.cancellable {
+                entry.cancel.store(true, Ordering::SeqCst);
+                drop(state);
+                self.notify();
+                return Ok(());
+            }
+            let remaining = ADMISSION_GRACE.saturating_sub(entry.admitted.elapsed());
+            if remaining.is_zero() {
                 return Err(GateError::NotCancellable);
             }
-            entry.cancel.store(true, Ordering::SeqCst);
-            drop(state);
-            self.notify();
-            return Ok(());
+            state = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
         }
-        Ok(())
     }
 
     /// Signal every waiting entry to leave the queue with `GateError::Cancelled`.
     /// Running work is left untouched. Used by Quit: once admission is refused a
-    /// waiter would only be rejected when its turn came, so it is cancelled at once.
+    /// waiter would only be rejected when its turn came, so it is cancelled at once,
+    /// and again before Quit releases the gate so work requested before its VMs
+    /// stopped never runs after a failed Quit (D-30).
     pub(crate) fn cancel_all_waiting(&self) {
-        let mut state = self.lock();
+        let state = self.lock();
         if state.waiting.is_empty() {
             return;
         }
@@ -726,11 +794,42 @@ impl OperationGate {
         self.notify();
     }
 
+    /// Change a running operation's queue label, for work that reports its progress.
+    fn relabel(&self, id: u64, label: &str) {
+        let mut state = self.lock();
+        if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
+            entry.label = label.to_owned();
+        }
+        drop(state);
+        self.notify();
+    }
+
     /// Record the expected maximum duration of a running operation for stuck reporting.
     fn set_expected(&self, id: u64, expected: Duration) {
         let mut state = self.lock();
         if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
             entry.expected = Some(expected);
+        }
+        drop(state);
+        self.notify();
+    }
+
+    fn since_of(&self, id: u64) -> Since {
+        let state = self.lock();
+        state
+            .running
+            .iter()
+            .find(|entry| entry.id == id)
+            .map_or_else(|| Since { at: Instant::now(), ms: now_ms() }, |entry| Since { at: entry.since, ms: entry.since_ms })
+    }
+
+    /// Report a running operation as started at `since`, for a later attempt of one
+    /// logical operation (D-27). Slow-operation flagging then counts the whole sequence.
+    fn set_since(&self, id: u64, since: Since) {
+        let mut state = self.lock();
+        if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
+            entry.since = since.at;
+            entry.since_ms = since.ms;
         }
         drop(state);
         self.notify();
@@ -749,6 +848,14 @@ impl OperationGate {
         }
         drop(state);
     }
+}
+
+/// When an operation started running, carried from the first attempt of a retry
+/// sequence to the later ones so the queue keeps one continuous start time.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Since {
+    at: Instant,
+    ms: u64,
 }
 
 /// Held for the duration of one operation, including all of its internal steps.
@@ -775,6 +882,23 @@ impl OperationGuard<'_> {
     /// Declare the expected maximum duration so the UI can flag the operation as slow.
     pub(crate) fn expect_within(&self, expected: Duration) {
         self.gate.set_expected(self.id, expected);
+    }
+
+    /// Show `label` for this operation in the queue from now on, for example the step
+    /// a long computer-wide operation is on. Observers are notified.
+    pub(crate) fn relabel(&self, label: &str) {
+        self.gate.relabel(self.id, label);
+    }
+
+    /// When this operation started running.
+    pub(crate) fn since(&self) -> Since {
+        self.gate.since_of(self.id)
+    }
+
+    /// Continue an earlier attempt's start time: a retry of the same operation is one
+    /// continuous piece of work in the queue, so "taking longer than expected" can fire.
+    pub(crate) fn continue_since(&self, since: Since) {
+        self.gate.set_since(self.id, since);
     }
 
     /// A cloneable handle to this operation's cancel flag, for passing to work that runs
@@ -955,6 +1079,19 @@ mod tests {
     }
 
     #[test]
+    fn held_reports_whether_this_thread_holds_an_operation() {
+        let gate = leak();
+        assert!(!held());
+        let guard = gate.vm("id-a", "a", "Start a").unwrap();
+        assert!(held());
+        assert!(!elsewhere(held), "holding is per thread");
+        drop(guard);
+        assert!(!held());
+        drop(gate.try_computer_hidden("Reconciling SSH access").unwrap());
+        assert!(!held());
+    }
+
+    #[test]
     fn nested_acquire_fails_instead_of_deadlocking() {
         let gate = leak();
         let _outer = gate.vm("id-a", "a", "Fork a").unwrap();
@@ -992,6 +1129,33 @@ mod tests {
         assert_eq!(waiter.join().unwrap(), GateError::Abandoned);
         assert!(gate.snapshot().waiting.is_empty());
         drop(running);
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn keep_waiting_may_read_the_gate_without_deadlocking() {
+        let gate = leak();
+        let running = gate.computer("Update").unwrap();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let (done, finished) = mpsc::channel();
+        {
+            let asked = asked.clone();
+            thread::spawn(move || {
+                // The closure reads the gate, as a future caller might (D-33).
+                let result = gate.acquire_while(Scope::Computer, None, "Backup", &|| {
+                    asked.fetch_add(1, Ordering::SeqCst);
+                    gate.snapshot().waiting.len() == 1
+                });
+                done.send(result.map(drop)).unwrap();
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while asked.load(Ordering::SeqCst) < 2 {
+            assert!(Instant::now() < deadline, "keep_waiting was not asked while waiting");
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(running);
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(()));
         assert!(gate.is_idle());
     }
 
@@ -1088,6 +1252,32 @@ mod tests {
     }
 
     #[test]
+    fn a_cancel_racing_admission_is_honoured_once_the_work_opts_in() {
+        let gate = leak();
+        let (admitted, admission) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let worker = thread::spawn(move || {
+            let guard = gate.vm("id-a", "a", "Starting a").unwrap();
+            admitted.send(()).unwrap();
+            // The owner declares cancellability only after the cancel arrived.
+            released.recv().unwrap();
+            guard.allow_cancel();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !cancel_requested() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(2));
+            }
+            cancel_requested()
+        });
+        admission.recv_timeout(Duration::from_secs(5)).unwrap();
+        let id = gate.snapshot().running[0].id;
+        let canceller = thread::spawn(move || gate.cancel(id));
+        thread::sleep(Duration::from_millis(20));
+        release.send(()).unwrap();
+        assert_eq!(canceller.join().unwrap(), Ok(()));
+        assert!(worker.join().unwrap(), "the racing cancel reaches the work");
+    }
+
+    #[test]
     fn cancelling_a_non_cancellable_running_entry_is_rejected() {
         let gate = leak();
         let running = gate.computer("Stopping").unwrap();
@@ -1139,6 +1329,39 @@ mod tests {
         assert!(!gate.snapshot().waiting[0].blocked_by_hidden);
         drop(visible);
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn a_later_attempt_can_continue_the_first_attempts_start_time() {
+        let gate = leak();
+        let first = gate.vm("id-a", "a", "Stopping a").unwrap();
+        let since = first.since();
+        let reported = gate.snapshot().running[0].since_ms;
+        drop(first);
+        thread::sleep(Duration::from_millis(5));
+        let second = gate.vm("id-a", "a", "Stopping a (attempt 2 of 3)").unwrap();
+        assert!(gate.snapshot().running[0].since_ms >= reported);
+        second.continue_since(since);
+        assert_eq!(gate.snapshot().running[0].since_ms, reported);
+        assert!(gate.oldest_running().unwrap().1 >= Duration::from_millis(5));
+        drop(second);
+    }
+
+    #[test]
+    fn a_running_operation_can_report_its_current_step_in_the_queue() {
+        let gate = leak();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        gate.set_listener(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let guard = gate.kind(OperationKind::Shutdown).computer("Stopping local sandboxes").unwrap();
+        let before = calls.load(Ordering::SeqCst);
+        guard.relabel("Stopping dev (1 of 2)");
+        assert_eq!(gate.snapshot().running[0].label, "Stopping dev (1 of 2)");
+        assert_eq!(gate.snapshot().running[0].kind, OperationKind::Shutdown);
+        assert!(calls.load(Ordering::SeqCst) > before, "observers learn about the new step");
+        drop(guard);
     }
 
     #[test]
@@ -1194,6 +1417,24 @@ mod tests {
         assert_ne!(gate.generation("id-a"), running);
         let settled = gate.generation("id-a");
         assert_eq!(gate.generation("id-a"), settled, "reading is stable while idle");
+    }
+
+    #[test]
+    fn a_vm_is_quiet_unless_visible_work_other_than_the_callers_own_touches_it() {
+        let gate = leak();
+        assert!(gate.is_vm_quiet("id-a"));
+        let hidden = gate.try_computer_hidden("Cleaning up expired logs").unwrap();
+        assert!(elsewhere(move || gate.is_vm_quiet("id-a")), "hidden housekeeping never settles a VM");
+        drop(hidden);
+        let own = gate.vm("id-a", "a", "Creating checkpoint").unwrap();
+        assert!(gate.is_vm_quiet("id-a"), "a thread reading after its own change");
+        assert!(!elsewhere(move || gate.is_vm_quiet("id-a")), "other readers see the VM busy");
+        assert!(elsewhere(move || gate.is_vm_quiet("id-b")), "other VMs stay quiet");
+        drop(own);
+        let change = gate.computer("Applying sandbox changes").unwrap();
+        assert!(gate.is_vm_quiet("id-b"));
+        assert!(!elsewhere(move || gate.is_vm_quiet("id-b")), "computer-wide work touches every VM");
+        drop(change);
     }
 
     #[test]

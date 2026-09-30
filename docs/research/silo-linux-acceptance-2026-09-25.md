@@ -21,7 +21,7 @@ and IPC, dependency retry, workspace/GitHub/secrets/backup/settings routes,
 inline secret validation, isolated XDG autostart enable/disable, and settings
 persistence after a full app relaunch. Compact report, driver log, and two
 screenshots are preserved in
-[`appimage-smoke/`](../../app/SiloUI/src-tauri/target/verification/linux-acceptance-20260925/appimage-smoke/).
+`app/SiloUI/src-tauri/target/verification/linux-acceptance-20260925/appimage-smoke/` (untracked local evidence).
 
 ## Real VM lifecycle
 
@@ -40,14 +40,14 @@ state across app relaunch, and source rollback of disk/RAM/process state. The
 11 core checks are listed in the preserved lifecycle report; the report's
 overall `passed` field is false because the subsequent archive action failed,
 so only those listed assertions are claimed as passed. Evidence is
-[`lifecycle-core.json`](../../app/SiloUI/src-tauri/target/verification/linux-acceptance-20260925/lifecycle-core.json).
+`app/SiloUI/src-tauri/target/verification/linux-acceptance-20260925/lifecycle-core.json` (untracked local evidence).
 
 The production archive export produced a valid v3 archive of 922,837,009 bytes
 (880.1 MiB), SHA-256
 `d759f814f90f15e5727f6fc75bb4fc9275fb7ce303dc41fef6f226e96f40a4be`. Production
 import persisted a new stopped VM; explicit Start passed exact workspace-byte
 and absence checks. The small migration screenshot is preserved as
-[`imported-migrated-stopped.png`](../../app/SiloUI/src-tauri/target/verification/linux-acceptance-20260925/imported-migrated-stopped.png).
+`app/SiloUI/src-tauri/target/verification/linux-acceptance-20260925/imported-migrated-stopped.png` (untracked local evidence).
 Archive export/import was exercised through production Tauri IPC, not through
 the native GTK folder chooser.
 
@@ -142,7 +142,7 @@ import, and fork retained their authoritative groups across app relaunch and
 preserved the expected 2 CPU / 2048 MiB / 8 GiB resources. `qemu-img` reported
 a raw root virtual size of exactly 8,589,934,592 bytes for all three VMs.
 Compact results are in
-[`snapshot-groups-result.json`](../../app/SiloUI/src-tauri/target/verification/x86-legacy-final7-matrix-20260926/evidence/snapshot-groups-result.json);
+`app/SiloUI/src-tauri/target/verification/x86-legacy-final7-matrix-20260926/evidence/snapshot-groups-result.json` (untracked local evidence);
 the migration journal is in the same evidence tree at
 `xdg-data/org.silo.preview/runtime-migration.json`.
 
@@ -166,7 +166,7 @@ runtime-input manifest SHA-256 is
 tests proved positive and denied probes, absent-service handling, the 128-port
 limit, occupied-port mapping preservation, established-relay closure on remove,
 and immediate exact-port reuse with traffic. Evidence is retained under
-[`native8-live-ports/`](../../app/SiloUI/src-tauri/target/verification/native8-live-ports/).
+`app/SiloUI/src-tauri/target/verification/native8-live-ports/` (untracked local evidence).
 The first x86 runtime-8 transfer request was rejected by automatic review.
 After the user explicitly approved the named patch and manifest transfer, the
 same transfer succeeded. The final x86 build, package smoke, and native live
@@ -182,7 +182,7 @@ stopped fork `54e8b201-7e30-44e1-b866-855b23fb7d4a` restored it on explicit
 Start. Restoring the source through recovery checkpoint
 `cd898861f17ab4870be24f8ef96014c5` and explicitly starting it also recovered
 the draft, with the saved baseline unchanged. Evidence is in
-[`x86-final-desktop/`](../../app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/)
+`x86-final-desktop/` (untracked local evidence: `app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/`)
 (`silo-live-viewer-unsaved.png`, `silo-fork-viewer-restored-unsaved.png`, and
 `silo-source-viewer-fresh-after-restore.png`).
 
@@ -196,7 +196,7 @@ live recovery: the dead-PID pair was replaced, `/tmp/.X11-unix` became
 root-owned mode 1777, and port 6901 listened. The installed guest service
 matched source SHA-256
 `735bd1ee3acda327c46fe031953f2e399d8f3c9a9a1008a234f08e6d7de035dc`. Compact
-evidence is [`live-stale-x11-recovery.json`](../../app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/live-stale-x11-recovery.json).
+evidence is `app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/live-stale-x11-recovery.json` (untracked local evidence).
 
 The remote SSH bridge stall had two buffering defects: the framed success
 response and short binary chunks in the raw stream were not flushed while the
@@ -205,10 +205,10 @@ fixes; the remote stream suite passed 5/5. A production remote viewer then
 connected to the running task VM over authenticated SSH, and a stopped fork
 refused connection without auto-starting. The live proof used the prior x86
 package with the same final remote-stream source; evidence is in
-[`remote-final/`](../../app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/remote-final/).
+`app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/remote-final/` (untracked local evidence).
 
 The final x86 runtime-8 AppImage is retained locally as
-[`Silo_0.9.0_native8_final.AppImage`](../../app/SiloUI/src-tauri/target/verification/native8-final-package/Silo_0.9.0_native8_final.AppImage),
+`app/SiloUI/src-tauri/target/verification/native8-final-package/Silo_0.9.0_native8_final.AppImage` (untracked local evidence),
 SHA-256 `58a0516b396632390b9637966219ff732b577810fcf18483dcc9cbb1409d804a`.
 Its extracted app executable is SHA-256
 `e2d23bb113a5d10f7ddf93d89b95a5cc3e6bf4839a31e2316dd8385628a6cad0`,
@@ -216,10 +216,10 @@ and its bundled native `msb` is SHA-256
 `285d0bb9a67dcef45e78fe4e4f2bc1608fa4ae6e3532053461c54a8878be2fe2`.
 The eight-patch runtime manifest, bundled Git and libraries, five protocol
 probes, and dependency checks passed; the compact
-[`package-smoke.json`](../../app/SiloUI/src-tauri/target/verification/native8-final-package/package-smoke.json)
+`app/SiloUI/src-tauri/target/verification/native8-final-package/package-smoke.json` (untracked local evidence)
 is SHA-256 `d7b44744a6b363237293a6182d4b39784fccfc0390c08f4f785ba265baf68d04`.
 The same native binary passed x86 live port-control tests in an isolated home;
-[`x86-live-ports.json`](../../app/SiloUI/src-tauri/target/verification/native8-live-ports/x86-live-ports.json)
+`app/SiloUI/src-tauri/target/verification/native8-live-ports/x86-live-ports.json` (untracked local evidence)
 is SHA-256 `b6991e628ae18875057dac7c043caace1f6c357bad145f052137c2312d29935d`.
 The final x86 package was smoke-tested, while the earlier package supplied the
 live migration, desktop, and remote-viewer behavior proofs. After all gates

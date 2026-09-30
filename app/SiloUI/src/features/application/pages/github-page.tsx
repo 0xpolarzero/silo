@@ -70,11 +70,17 @@ function copyDraft(draft: GitHubDraft): GitHubDraft {
   }
 }
 
-function configurationFromDraft(source: ApplicationSource, draft: GitHubDraft, accessEnabled: boolean): ApplicationGitHubConfiguration {
+/**
+ * A save of the sandboxes in `changed` only, based on the settings revision this page
+ * shows. Other sandboxes keep their saved choices (for example an assignment a fork just
+ * copied), and access on/off is never part of a save: a save sent right after Disable
+ * access must not turn access back on.
+ */
+function configurationFromDraft(source: ApplicationSource, draft: GitHubDraft, changed: ReadonlySet<string>): ApplicationGitHubConfiguration {
   return {
-    accessEnabled,
+    baseRevision: source.github.policyRevision,
     hostIdentity: source.github.hostIdentity ?? null,
-    workspaces: source.workspaces.filter(w => !w.computer).map(({ machine }) => ({
+    workspaces: source.workspaces.filter((w) => !w.computer && changed.has(w.machine.name)).map(({ machine }) => ({
       workspace: machine.name,
       ...(draft.access[machine.name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }),
       identity: draft.identities[machine.name] ?? { name: "", email: "", apply: false },
@@ -229,9 +235,12 @@ export function GitHubPage({
       [workspace]: { workspace, status: "applying", message },
     }))
     const sequence = ++saveSequence.current
-    rejectedSaves.current.delete(workspace)
+    // A save carries every edit not yet confirmed: this one, earlier pending ones and
+    // rejected ones, so one failure settles them together and a retry resends them.
+    for (const name of rejectedSaves.current) pendingSaves.current.set(name, sequence)
+    rejectedSaves.current.clear()
     pendingSaves.current.set(workspace, sequence)
-    const configuration = configurationFromDraft(source, { ...nextDraft, identities: identityIntent.current }, accessEnabled)
+    const configuration = configurationFromDraft(source, { ...nextDraft, identities: identityIntent.current }, new Set(pendingSaves.current.keys()))
     void Promise.resolve().then(() => actions.saveGitHubConfiguration?.(configuration)).then(() => {
       for (const [name, pendingSequence] of pendingSaves.current) {
         if (pendingSequence <= sequence) pendingSaves.current.delete(name)
@@ -339,7 +348,7 @@ export function GitHubPage({
 
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
-      <p className="mb-2 text-[11px] text-muted-foreground">GitHub access for VMs on this computer.</p>
+      <p className="mb-2 text-[11px] text-muted-foreground">GitHub access for sandboxes on this computer.</p>
       <GitHubAccessEditor
         compactConnection
         workspaces={source.workspaces.filter(w => !w.computer).map(({ machine }) => ({ name: machine.name }))}
@@ -366,8 +375,8 @@ export function GitHubPage({
         onResetWorkspaceIdentity={resetIdentity}
         connectedTitle={`Connected as @${source.github.account ?? "unknown"}`}
         connectedDetail={accessEnabled
-          ? "Repository credentials are scoped to each workspace."
-          : "GitHub access is off for every VM, including VMs that use a personal token."}
+          ? "Repository credentials are scoped to each sandbox."
+          : "GitHub access is off for every sandbox, including sandboxes that use a personal token."}
         connectedActions={connectedActions}
         notice={catalogNotice}
         renderWorkspaceActions={({ name }) => {

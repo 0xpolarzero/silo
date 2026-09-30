@@ -262,9 +262,17 @@ pub(super) fn perform(
         )));
     }
     let machine = machine(paths, name)?;
-    let existing = load(&path(paths, machine.id()))?;
-    let superseded = existing.clone().filter(|saved| saved.action != action);
-    let mut intent = if let Some(saved) = existing.filter(|saved| saved.action == action) {
+    // An explicit action replaces a saved one it cannot continue: another action,
+    // one saved for a different identity or name, or an unreadable file (for example
+    // from a newer Silo). Only an intact intent for this exact action is resumed.
+    let (existing, superseded) = match load(&path(paths, machine.id())) {
+        Ok(Some(saved)) if saved.machine_id == machine.id() && saved.name == name && saved.action == action => {
+            (Some(saved), None)
+        }
+        Ok(Some(saved)) if saved.machine_id == machine.id() => (None, Some(saved)),
+        Ok(_) | Err(_) => (None, None),
+    };
+    let mut intent = if let Some(saved) = existing {
         saved
     } else {
         Intent {
@@ -349,7 +357,50 @@ pub(super) fn forget_removed(
     }
     Ok(())
 }
-pub(crate) fn recover(app: &AppHandle) -> Result<HashSet<String>, String> {
+/// Retire every saved action except those for the VMs in `resuming`. Update
+/// preparation promises to restore exactly the pre-update running set, so a failed
+/// start kept for Retry must not start its VM at the next launch (D-22). An
+/// unfinished activity entry is settled as cancelled; a finished one keeps its
+/// outcome. Unreadable files are left for startup recovery to report.
+pub(crate) fn retire_except(paths: &RuntimePaths, resuming: &HashSet<String>) -> Result<(), RuntimeError> {
+    let entries = match fs::read_dir(directory(paths)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(error("Saved sandbox actions could not be read.")),
+    };
+    let mut retired = false;
+    for entry in entries {
+        let file = entry.map_err(|_| error("Saved sandbox actions could not be read."))?.path();
+        if file.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let Ok(Some(mut intent)) = load(&file) else { continue };
+        if file != path(paths, &intent.machine_id) || resuming.contains(&intent.machine_id) {
+            continue;
+        }
+        runtime_activity::retire(paths, &mut intent.event).map_err(error)?;
+        fs::remove_file(&file).map_err(|_| error("A saved sandbox action could not be retired."))?;
+        retired = true;
+    }
+    if retired {
+        File::open(directory(paths))
+            .and_then(|f| f.sync_all())
+            .map_err(|_| error("Retired sandbox actions could not be synced."))?;
+    }
+    Ok(())
+}
+
+/// The outcome of launch recovery. Per-action failures never hide the rest (D-23).
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Recovered {
+    /// VMs that launch auto-start must leave stopped: explicit stops that were
+    /// resumed or could not be settled, and VMs whose saved action is unreadable.
+    pub(crate) keep_stopped: HashSet<String>,
+    /// One line per saved action that could not be resumed; each was preserved.
+    pub(crate) failures: Vec<String>,
+}
+
+pub(crate) fn recover(app: &AppHandle) -> Result<Recovered, String> {
     let paths = runtime_paths(app)?;
     let _guard = OPERATIONS
         .computer("Resuming sandbox actions")
@@ -359,20 +410,25 @@ pub(crate) fn recover(app: &AppHandle) -> Result<HashSet<String>, String> {
     let _ = app.emit("silo://application-state-changed", ());
     result.map_err(|e| e.to_string())
 }
+/// Settle every saved action. Only a failure to list them is an error; every other
+/// failure is reported per action and recovery continues with the rest.
 fn recover_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     host: &HostResources,
-) -> Result<HashSet<String>, RuntimeError> {
+) -> Result<Recovered, RuntimeError> {
     let entries = match fs::read_dir(directory(paths)) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Recovered::default()),
         Err(_) => return Err(error("Saved sandbox actions could not be read.")),
     };
-    let mut stopped_ids = HashSet::new();
-    let mut failures = Vec::new();
+    let mut recovered = Recovered::default();
+    let mut unreadable = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|_| error("Saved sandbox actions could not be read."))?;
+        let Ok(entry) = entry else {
+            recovered.failures.push("A saved sandbox action could not be read.".into());
+            continue;
+        };
         if entry
             .path()
             .extension()
@@ -386,35 +442,42 @@ fn recover_with(
             Ok(Some(intent)) => intent,
             Ok(None) => continue,
             Err(failure) => {
-                failures.push(safe_activity_error(&failure));
+                recovered.failures.push(safe_activity_error(&failure));
+                unreadable.push(entry.path());
                 continue;
             }
         };
         if entry.path() != path(paths, &intent.machine_id) {
-            failures.push(format!("{}: Saved sandbox action identity is invalid.", intent.name));
+            recovered.failures.push(format!("{}: Saved sandbox action identity is invalid.", intent.name));
+            unreadable.push(entry.path());
             continue;
         }
         let result = inspect(runner, paths, &intent)
             .and_then(|initial| settle(runner, paths, host, &mut intent, initial));
-        match result {
-            Ok(()) if intent.action == "stop" => {
-                stopped_ids.insert(intent.machine_id);
-            }
-            Ok(()) => {}
-            Err(failure) => {
-                failures.push(format!(
-                    "{}: {}",
-                    intent.name,
-                    safe_activity_error(&failure)
-                ));
+        if let Err(failure) = &result {
+            recovered.failures.push(format!(
+                "{}: {}",
+                intent.name,
+                safe_activity_error(failure)
+            ));
+        }
+        // A resumed explicit stop, settled or not, wins over the launch selection.
+        if intent.action == "stop" {
+            recovered.keep_stopped.insert(intent.machine_id);
+        }
+    }
+    // An unreadable action may be an explicit stop: keep its VM (named by the
+    // file) out of automatic start rather than guess.
+    if !unreadable.is_empty() {
+        if let Ok(metadata) = read_metadata(&paths.metadata) {
+            for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
+                if unreadable.contains(&path(paths, machine.id())) {
+                    recovered.keep_stopped.insert(machine.id().to_owned());
+                }
             }
         }
     }
-    if failures.is_empty() {
-        Ok(stopped_ids)
-    } else {
-        Err(error(failures.join("\n")))
-    }
+    Ok(recovered)
 }
 
 #[cfg(test)]
@@ -550,7 +613,7 @@ mod tests {
             let original = pending(&paths, "restart", phase);
             let event_before = serde_json::to_value(&original.event).unwrap();
             let runner = Fake::new(state);
-            recover_with(&runner, &paths, &host()).unwrap();
+            assert_eq!(recover_with(&runner, &paths, &host()).unwrap(), Recovered::default());
             assert_eq!(runner.mutations(), commands);
             assert!(!path(&paths, ID).exists());
             let history = runtime_activity::read(&paths).unwrap();
@@ -571,7 +634,7 @@ mod tests {
         pending(&paths, "stop", Phase::StopPending);
         let runner = Fake::new("Running");
         assert_eq!(
-            recover_with(&runner, &paths, &host()).unwrap(),
+            recover_with(&runner, &paths, &host()).unwrap().keep_stopped,
             HashSet::from([ID.into()])
         );
         assert_eq!(runner.mutations(), vec!["stop"]);
@@ -587,7 +650,7 @@ mod tests {
         let history = runtime_activity::read(&paths).unwrap();
         dismiss_crashed_intent(&paths, &machine).unwrap();
         let crashed = Fake::new("Crashed");
-        assert!(recover_with(&crashed, &paths, &host()).unwrap().is_empty());
+        assert_eq!(recover_with(&crashed, &paths, &host()).unwrap(), Recovered::default());
         assert!(crashed.mutations().is_empty());
         assert_eq!(runtime_activity::read(&paths).unwrap(), history);
     }
@@ -625,7 +688,7 @@ mod tests {
         ));
         assert!(!path(&paths, ID).exists());
         let relaunch = Fake::new("Stopped");
-        assert!(recover_with(&relaunch, &paths, &host()).unwrap().is_empty());
+        assert_eq!(recover_with(&relaunch, &paths, &host()).unwrap(), Recovered::default());
         assert!(relaunch.mutations().is_empty());
     }
     #[test]
@@ -634,10 +697,91 @@ mod tests {
         pending(&paths, "stop", Phase::StopPending);
         fs::write(directory(&paths).join("broken.json"), "{not json").unwrap();
         let runner = Fake::new("Running");
-        assert!(recover_with(&runner, &paths, &host()).is_err());
+        let recovered = recover_with(&runner, &paths, &host()).unwrap();
+        assert_eq!(recovered.failures.len(), 1);
+        // The resumed explicit stop still keeps its VM out of launch auto-start.
+        assert_eq!(recovered.keep_stopped, HashSet::from([ID.into()]));
         assert_eq!(runner.mutations(), vec!["stop"]);
         assert!(!path(&paths, ID).exists());
         assert!(directory(&paths).join("broken.json").exists());
+    }
+    #[test]
+    fn an_unreadable_action_keeps_its_vm_out_of_launch_start_without_failing_recovery() {
+        let (_dir, paths, _) = setup();
+        // A future-version file, for example written by a newer Silo before a downgrade.
+        fs::create_dir_all(directory(&paths)).unwrap();
+        fs::write(path(&paths, ID), br#"{"version":2}"#).unwrap();
+        let runner = Fake::new("Stopped");
+        let recovered = recover_with(&runner, &paths, &host()).unwrap();
+        assert_eq!(recovered.failures.len(), 1);
+        assert_eq!(recovered.keep_stopped, HashSet::from([ID.into()]));
+        assert!(runner.mutations().is_empty());
+        assert!(path(&paths, ID).exists(), "the unreadable action is preserved");
+    }
+    #[test]
+    fn an_explicit_stop_that_cannot_be_resumed_still_wins_over_launch_start() {
+        let (_dir, paths, _) = setup();
+        pending(&paths, "stop", Phase::StopPending);
+        let mut runner = Fake::new("Running");
+        runner.replaced = true;
+        let recovered = recover_with(&runner, &paths, &host()).unwrap();
+        assert_eq!(recovered.failures.len(), 1);
+        assert_eq!(recovered.keep_stopped, HashSet::from([ID.into()]));
+    }
+    #[test]
+    fn an_explicit_action_replaces_a_saved_action_it_cannot_continue() {
+        let (_dir, paths, _) = setup();
+        fs::create_dir_all(directory(&paths)).unwrap();
+        fs::write(path(&paths, ID), br#"{"version":2}"#).unwrap();
+        let runner = Fake::new("Stopped");
+        perform(&runner, &paths, &host(), "start", "dev").unwrap();
+        assert_eq!(runner.mutations(), vec!["start"]);
+        assert!(!path(&paths, ID).exists());
+        // A saved action for the VM under an earlier name is settled, not resumed.
+        store(&paths, &Intent {
+            version: 1,
+            machine_id: ID.into(),
+            name: "old-dev".into(),
+            action: "stop".into(),
+            phase: Phase::StopPending,
+            event: runtime_activity::begin(&paths, "stop", "old-dev", ID).unwrap(),
+        })
+        .unwrap();
+        let runner = Fake::new("Running");
+        perform(&runner, &paths, &host(), "stop", "dev").unwrap();
+        assert_eq!(runner.mutations(), vec!["stop"]);
+        assert!(!path(&paths, ID).exists());
+        let history = runtime_activity::read(&paths).unwrap();
+        assert!(history.iter().any(|event| event["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("Replaced by"))));
+    }
+    #[test]
+    fn update_preparation_retires_actions_for_vms_it_will_not_resume() {
+        let (_dir, paths, _) = setup();
+        // A failed start kept for Retry: its activity already records the failure.
+        let mut runner = Fake::new("Stopped");
+        runner.fail_start = true;
+        assert!(perform(&runner, &paths, &host(), "start", "dev").is_err());
+        assert!(path(&paths, ID).exists());
+        let failed = runtime_activity::read(&paths).unwrap();
+        // A VM that the update will resume keeps its saved action.
+        retire_except(&paths, &HashSet::from([ID.into()])).unwrap();
+        assert!(path(&paths, ID).exists());
+        retire_except(&paths, &HashSet::new()).unwrap();
+        assert!(!path(&paths, ID).exists());
+        assert_eq!(runtime_activity::read(&paths).unwrap(), failed, "a finished outcome is kept");
+        let relaunch = Fake::new("Stopped");
+        assert_eq!(recover_with(&relaunch, &paths, &host()).unwrap(), Recovered::default());
+        assert!(relaunch.mutations().is_empty(), "the next launch does not start it");
+        // An unfinished action is settled as cancelled; unreadable files stay for recovery.
+        pending(&paths, "restart", Phase::StartPending);
+        fs::write(directory(&paths).join("broken.json"), "{not json").unwrap();
+        retire_except(&paths, &HashSet::new()).unwrap();
+        assert!(!path(&paths, ID).exists());
+        assert!(directory(&paths).join("broken.json").exists());
+        let history = runtime_activity::read(&paths).unwrap();
+        assert!(history.iter().any(|event| event["title"] == "Restart cancelled"));
     }
     #[test]
     fn timed_out_stop_that_never_settles_is_not_retried_as_transient() {
@@ -665,12 +809,12 @@ mod tests {
         pending(&paths, "restart", Phase::StopPending);
         let mut runner = Fake::new("Running");
         runner.replaced = true;
-        assert!(recover_with(&runner, &paths, &host()).is_err());
+        assert_eq!(recover_with(&runner, &paths, &host()).unwrap().failures.len(), 1);
         assert!(runner.mutations().is_empty());
         assert!(path(&paths, ID).exists());
         forget_removed(&paths, &machine).unwrap();
         assert!(!path(&paths, ID).exists());
-        assert!(recover_with(&runner, &paths, &host()).unwrap().is_empty());
+        assert_eq!(recover_with(&runner, &paths, &host()).unwrap(), Recovered::default());
     }
     #[test]
     fn rejected_new_action_leaves_the_superseded_intent_and_activity_unchanged() {
@@ -807,20 +951,24 @@ mod tests {
                 }
                 Ok(())
             };
+            let recover = || -> Result<Recovered, RuntimeError> {
+                let recovered = recover_with(&ProcessRunner, &paths, &host)?;
+                if recovered.failures.is_empty() { Ok(recovered) } else { Err(error(recovered.failures.join("\n"))) }
+            };
             checkpoint("restart", Phase::StopPending)?;
             exit_child("stop")?;
-            recover_with(&ProcessRunner, &paths, &host)?;
+            recover()?;
             let restarted_boot = boot()?;
             if first_boot == restarted_boot {
                 return Err(error("Recovered restart did not boot a new VM generation."));
             }
             checkpoint("restart", Phase::StartPending)?;
-            recover_with(&ProcessRunner, &paths, &host)?;
+            recover()?;
             if boot()? != restarted_boot {
                 return Err(error("Completed restart was repeated after recovery."));
             }
             checkpoint("stop", Phase::StopPending)?;
-            if !recover_with(&ProcessRunner, &paths, &host)?.contains(machine.id()) {
+            if !recover()?.keep_stopped.contains(machine.id()) {
                 return Err(error(
                     "Recovered explicit stop was not excluded from automatic start.",
                 ));
@@ -828,7 +976,7 @@ mod tests {
             checkpoint("start", Phase::StartPending)?;
             exit_child("start")?;
             let child_boot = boot()?;
-            recover_with(&ProcessRunner, &paths, &host)?;
+            recover()?;
             if boot()? != child_boot {
                 return Err(error(
                     "Surviving detached start was restarted during recovery.",

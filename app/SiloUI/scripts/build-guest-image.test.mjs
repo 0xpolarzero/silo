@@ -1,7 +1,26 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 import test from "node:test"
-import { verifyGuestImage } from "./build-guest-image.mjs"
+import { GUEST_IMAGE_VERSION, guestImageMetadata, verifyGuestImage } from "./build-guest-image.mjs"
+
+test("publication names derive from the recipe version and the publishing repository", () => {
+  assert.deepEqual(guestImageMetadata({ GITHUB_REPOSITORY: "Example-Owner/silo" }), {
+    version: GUEST_IMAGE_VERSION,
+    image: `ghcr.io/example-owner/silo-guest:${GUEST_IMAGE_VERSION}`,
+    tag: `guest-${GUEST_IMAGE_VERSION}`,
+    title: `Silo guest ${GUEST_IMAGE_VERSION.replace(/^ubuntu-([\d.]+)-(v\d+)$/, "Ubuntu $1 $2")}`,
+  })
+  // Local builds fall back to the package's repository.
+  assert.match(guestImageMetadata({}).image, /^ghcr\.io\/[a-z0-9-]+\/silo-guest:/)
+})
+
+test("the publication workflow repeats neither the image version nor the owner", () => {
+  const workflow = readFileSync(new URL("../../../.github/workflows/guest-image.yml", import.meta.url), "utf8")
+  assert.equal(workflow.includes(GUEST_IMAGE_VERSION), false)
+  assert.doesNotMatch(workflow, /ghcr\.io\/[a-z0-9]/)
+  assert.match(workflow, /environment: guest-image-publish/)
+})
 
 test("offline image validation rejects unsupported platforms before invoking Docker", () => {
   assert.throws(() => verifyGuestImage("riscv64", "unused", {
