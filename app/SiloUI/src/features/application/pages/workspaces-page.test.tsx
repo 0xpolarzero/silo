@@ -76,13 +76,19 @@ it("names each Push button by repository and sandbox and enables it only for an 
   const playgrounds = source.workspaces.find(({ machine }) => machine.name === "playgrounds")!
   playgrounds.state = "stopped"
   playgrounds.repositories = [{ ...playgrounds.repositories[0], path: "acme/silo", ahead: 2 }]
+  const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
+  const target = { repository: "acme/silo", branch: "main", commit: "b".repeat(40) }
+  dev.repositories = dev.repositories.map(repository => repository.path === "acme/silo" ? { ...repository, branch: target.branch, repository: target.repository, head: target.commit } : repository)
   const onPush = renderFiles(source)
   const repositories = within(screen.getByRole("list", { name: "Repositories" }))
   const running = repositories.getByRole("button", { name: "Push 2 commits for acme/silo in dev" })
   expect(running).toBeEnabled()
   expect(repositories.getByRole("button", { name: "Push 2 commits for acme/silo in playgrounds" })).toBeDisabled()
-  await userEvent.setup().click(running)
-  expect(onPush).toHaveBeenCalledWith("dev", "acme/silo", 2)
+  const user = userEvent.setup()
+  await user.click(running)
+  // Pushing asks to confirm the repository, branch and commit first (B-01).
+  await user.click(await screen.findByRole("button", { name: "Push" }))
+  expect(onPush).toHaveBeenCalledWith("dev", "acme/silo", 2, target)
 })
 
 it("disables Push while the sandbox is stale", () => {

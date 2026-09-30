@@ -641,7 +641,7 @@ pub async fn create_checkpoint(
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready(&app)?;
     let worker_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
         // Capture touches only this VM's own snapshot store and per-VM checkpoint
         // record, not the shared inventory, so it is ordered per VM by stable id.
@@ -1295,7 +1295,7 @@ pub async fn fork_checkpoint(
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready(&app)?;
     let worker_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
         // Fork creates a new VM and edits the shared inventory; computer scope.
         let guard = OPERATIONS
@@ -1691,7 +1691,7 @@ pub async fn restore_checkpoint(
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready(&app)?;
     let worker_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
         // Restore rewrites only this VM's runtime state and per-VM checkpoint record,
         // not the shared inventory, so it is ordered per VM by stable id.

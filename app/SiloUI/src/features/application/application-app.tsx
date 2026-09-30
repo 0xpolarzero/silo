@@ -14,7 +14,7 @@ import { ApplicationCommandMenu } from "@/features/application/components/applic
 import { OperationQueueToast } from "@/features/application/components/operation-queue-panel"
 import { QuitRequestConfirmation, type ConnectQuitConfirmation } from "@/features/application/components/quit-request-confirmation"
 import { applicationCommands, type SandboxCommandRequest } from "@/features/application/components/application-commands"
-import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, RepositoryPushTarget, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { defaultStartupWorkspaceIds } from "@/features/application/model/startup-workspaces"
 import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
@@ -218,12 +218,12 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     })
   }
 
-  function pushRepository(workspace: string, repositoryPath: string, commitCount: number) {
+  function pushRepository(workspace: string, repositoryPath: string, commitCount: number, target: RepositoryPushTarget) {
     setRepositoryPushOperations((current) => [
       ...current.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath),
-      { workspace, repositoryPath, commitCount, status: "pushing" },
+      { workspace, repositoryPath, commitCount, target, status: "pushing" },
     ])
-    actions.pushRepository(workspace, repositoryPath)
+    actions.pushRepository(workspace, repositoryPath, target)
   }
 
   const dismissRepositoryPush = useCallback((workspace: string, repositoryPath: string) => {
@@ -378,6 +378,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
             onWorkspaceFilterChange={setSelectedWorkspaceIds}
             onLogQueryChange={setLogQuery}
             onPushRepository={pushRepository}
+            operationQueue={source.operationQueue}
             onDismissRepositoryPush={dismissRepositoryPush}
             onCreateSandbox={canCreateSandbox && !installingUpdate ? requestNewSandbox : undefined}
           />

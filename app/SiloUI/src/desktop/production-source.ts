@@ -105,7 +105,7 @@ function tolerantArray<T extends z.ZodType>(item: T) {
 }
 
 const workspaceStates = ["running", "starting", "stopped", "failed"] as const
-const repositoryShape = z.object({ path: z.string(), branch: z.string(), ahead: z.number().int().nonnegative(), behind: z.number().int().nonnegative(), dirty: z.boolean() })
+const repositoryShape = z.object({ path: z.string(), branch: z.string(), ahead: z.number().int().nonnegative(), behind: z.number().int().nonnegative(), dirty: z.boolean(), repository: z.string().nullable().optional(), head: z.string().nullable().optional() })
 const fileEntryShape: z.ZodType<ApplicationFileEntry> = z.lazy(() => z.object({ name: z.string(), kind: z.enum(["folder", "file"]), children: z.array(fileEntryShape).optional() }))
 const workspacePortShape = z.object({
   port: z.number().int().min(1).max(65535), listening: z.boolean().nullable(),
@@ -164,7 +164,8 @@ const activityShape = z.object({
   cancelled: z.boolean().optional(),
 })
 
-const pushFields = { operationId: z.string().optional(), workspace: z.string().min(1), repositoryPath: z.string().min(1), commitCount: z.number().int().nonnegative() }
+const pushTargetShape = z.object({ repository: z.string().min(1), branch: z.string().min(1), commit: z.string().min(1) })
+const pushFields = { operationId: z.string().optional(), workspace: z.string().min(1), repositoryPath: z.string().min(1), commitCount: z.number().int().nonnegative(), target: pushTargetShape.optional() }
 const pushOperationShape = z.discriminatedUnion("status", [
   z.object({ ...pushFields, status: z.literal("pushing"), message: z.string().optional() }),
   z.object({ ...pushFields, status: z.literal("unknown"), message: z.string() }),
@@ -1458,8 +1459,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       remoteManagementError = undefined
       publish({ ...snapshot })
     },
-    connectComputer: async address => {
-      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address }))
+    connectComputer: async (address, options) => {
+      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address, replace: options?.replaceAddress ?? false }))
       // A list read that started before the connection is read again, so the new
       // computer is listed when this resolves.
       remoteListRevision++
@@ -1541,7 +1542,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (operation) void configureMachines(operation.candidate, { kind: "retry", workspace }).catch(() => {})
     },
     dismissRepositoryPush: (workspace, repositoryPath) => statusActions.dismissRepositoryPush(workspace, repositoryPath),
-    pushRepository: (workspace, repositoryPath) => {
+    pushRepository: (workspace, repositoryPath, target) => {
       const key = pushKey(workspace, repositoryPath)
       if (pendingRepositoryPushes.has(key) || view.source?.repositoryPushOperations.some(operation => operation.workspace === workspace && operation.repositoryPath === repositoryPath && (operation.status === "pushing" || operation.status === "unknown"))) return
       const commitCount = view.source?.workspaces.find(item => workspaceTarget(item) === workspace)?.repositories.find(repository => repository.path === repositoryPath)?.ahead ?? 0
@@ -1592,7 +1593,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const observe = async (start: boolean): Promise<void> => {
         if (!current()) return
         try {
-          const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", { workspace, repositoryPath, operationId })
+          // The host pushes exactly the confirmed target or reports that the repository changed.
+          const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", start ? { workspace, repositoryPath, operationId, target } : { workspace, repositoryPath, operationId })
           if (!current()) return
           // No saved job means the first request never arrived. Reuse its identifier.
           if (result === null && !start) return observe(true)

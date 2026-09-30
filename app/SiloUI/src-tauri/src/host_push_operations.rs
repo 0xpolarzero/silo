@@ -1,5 +1,8 @@
 //! Acknowledged push jobs belong to the host, not the SSH connection observing them.
-use crate::{host_push, remote, remote_access, runtime};
+use crate::{
+    host_push::{self, PushTarget},
+    remote, remote_access, runtime,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -127,6 +130,7 @@ fn claim(
     id: &str,
     workspace: &str,
     path: &str,
+    target: &PushTarget,
 ) -> Result<(Value, bool), String> {
     uuid::Uuid::parse_str(id).map_err(|_| "Invalid push operation identifier.")?;
     if let Some(job) = jobs.get(id) {
@@ -147,7 +151,7 @@ fn claim(
     if jobs.len() >= MAX_JOBS {
         return Err("Saved push history reached its 10,000-operation safety limit. No new push was started. Contact Silo support to archive the history without replaying previous requests.".into());
     }
-    let value = json!({"operationId":id,"workspace":workspace,"repositoryPath":path,"status":"pushing","commitCount":0});
+    let value = json!({"operationId":id,"workspace":workspace,"repositoryPath":path,"status":"pushing","commitCount":0,"target":target});
     jobs.insert(
         id.into(),
         Job {
@@ -164,13 +168,15 @@ pub(crate) fn start(
     workspace: String,
     path: String,
     id: String,
+    target: PushTarget,
 ) -> Result<Value, String> {
+    target.validate()?;
     let journal = runtime::runtime_paths(app)?
         .home
         .join("repository-push-operations.json");
     let _guard = LOCK.lock().map_err(|_| "Push state unavailable.")?;
     let mut jobs = read(&journal)?;
-    let (mut value, created) = claim(&mut jobs, &id, &workspace, &path)?;
+    let (mut value, created) = claim(&mut jobs, &id, &workspace, &path, &target)?;
     if !created {
         return Ok(value);
     }
@@ -183,8 +189,14 @@ pub(crate) fn start(
     write(&journal, &jobs)?;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = host_push::push_repository(app.clone(), workspace.clone(), path.clone()).await;
-        let mut value = result.unwrap_or_else(|message| json!({"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":message}));
+        let result = host_push::push_repository(
+            app.clone(),
+            workspace.clone(),
+            path.clone(),
+            target.clone(),
+        )
+        .await;
+        let mut value = result.unwrap_or_else(|message| json!({"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":message,"target":target}));
         value["operationId"] = json!(id);
         // The std lock and fsync'd journal write block; keep them off the async workers.
         let _ =
@@ -318,8 +330,48 @@ pub(crate) fn dismiss(app: &AppHandle, workspace: &str, path: &str) -> Result<()
 }
 // Preparation failures are authoritative: no detached job was dispatched.
 // Return them as results so a caller can distinguish them from a lost SSH reply.
-pub(crate) fn start_result(app: &AppHandle, workspace: String, path: String, id: String) -> Value {
-    start(app, workspace.clone(), path.clone(), id.clone()).unwrap_or_else(|message| json!({"operationId":id,"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":message}))
+pub(crate) fn start_result(
+    app: &AppHandle,
+    workspace: String,
+    path: String,
+    id: String,
+    target: PushTarget,
+) -> Value {
+    start(app, workspace.clone(), path.clone(), id.clone(), target).unwrap_or_else(|message| json!({"operationId":id,"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":message}))
+}
+const UPDATE_CONTROLLER: &str =
+    "Update Silo on the computer you are pushing from, then push again.";
+/// A controller that sends no confirmed target predates bound pushes; this
+/// computer never pushes on its behalf.
+fn remote_request(params: &Value) -> Result<(String, String, Option<PushTarget>), String> {
+    let text = |key: &str| {
+        params
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("Missing {key}."))
+    };
+    let target = match params.get("target") {
+        None | Some(Value::Null) => None,
+        Some(target) => Some(
+            serde_json::from_value(target.clone())
+                .map_err(|_| "Invalid push target.".to_string())?,
+        ),
+    };
+    Ok((text("path")?, text("operationId")?, target))
+}
+pub(crate) fn start_remote(
+    app: &AppHandle,
+    workspace: String,
+    params: &Value,
+) -> Result<Value, String> {
+    let (path, id, target) = remote_request(params)?;
+    Ok(match target {
+        Some(target) => start_result(app, workspace, path, id, target),
+        None => {
+            json!({"operationId":id,"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":UPDATE_CONTROLLER})
+        }
+    })
 }
 #[tauri::command]
 pub async fn start_repository_push(
@@ -327,20 +379,28 @@ pub async fn start_repository_push(
     workspace: String,
     repository_path: String,
     operation_id: String,
+    target: PushTarget,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        target.validate()?;
         if let Some((host, vm)) = remote_access::target(&workspace)? {
             match remote::call_remote(
                 &app,
                 &host,
                 "repository.push.start",
-                json!({"vmId":vm,"path":repository_path,"operationId":operation_id}),
+                json!({"vmId":vm,"path":repository_path,"operationId":operation_id,"target":target}),
             ) {
                 Err(message) if message == "This Silo version does not support that remote operation." => Ok(json!({"operationId":operation_id,"workspace":workspace,"repositoryPath":repository_path,"status":"failed","commitCount":0,"message":"Update Silo on the remote computer before pushing."})),
                 result => result,
             }
         } else {
-            Ok(start_result(&app, workspace, repository_path, operation_id))
+            Ok(start_result(
+                &app,
+                workspace,
+                repository_path,
+                operation_id,
+                target,
+            ))
         }
     })
     .await
@@ -371,6 +431,38 @@ pub async fn repository_push_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn target() -> PushTarget {
+        PushTarget {
+            repository: "owner/repo".into(),
+            branch: "main".into(),
+            commit: "a".repeat(40),
+        }
+    }
+    #[test]
+    fn remote_requests_without_a_confirmed_target_never_push() {
+        let params = json!({"vmId":"vm","path":"/workspace/repo","operationId":"id"});
+        let (path, id, requested) = remote_request(&params).unwrap();
+        assert_eq!((path.as_str(), id.as_str()), ("/workspace/repo", "id"));
+        assert!(requested.is_none());
+        let mut bound = params.clone();
+        bound["target"] = serde_json::to_value(target()).unwrap();
+        assert_eq!(remote_request(&bound).unwrap().2, Some(target()));
+        bound["target"] = json!({"repository":"owner/repo"});
+        assert!(remote_request(&bound).is_err());
+    }
+    #[test]
+    fn journaled_pushes_record_their_confirmed_target() {
+        let mut jobs = Journal::new();
+        let (value, _) = claim(
+            &mut jobs,
+            &uuid::Uuid::new_v4().to_string(),
+            "dev",
+            "/workspace/repo",
+            &target(),
+        )
+        .unwrap();
+        assert_eq!(value["target"]["commit"], "a".repeat(40));
+    }
     #[test]
     fn claim_prunes_dismissed_and_old_finished_history() {
         let mut jobs = Journal::new();
@@ -413,19 +505,28 @@ mod tests {
     fn lost_acknowledgement_and_concurrent_clicks_share_one_job() {
         let mut jobs = Journal::new();
         let id = uuid::Uuid::new_v4().to_string();
-        assert!(claim(&mut jobs, &id, "dev", "/workspace/repo").unwrap().1);
-        assert!(!claim(&mut jobs, &id, "dev", "/workspace/repo").unwrap().1);
+        assert!(
+            claim(&mut jobs, &id, "dev", "/workspace/repo", &target())
+                .unwrap()
+                .1
+        );
+        assert!(
+            !claim(&mut jobs, &id, "dev", "/workspace/repo", &target())
+                .unwrap()
+                .1
+        );
         let (other, created) = claim(
             &mut jobs,
             &uuid::Uuid::new_v4().to_string(),
             "dev",
             "/workspace/repo",
+            &target(),
         )
         .unwrap();
         assert!(!created);
         assert_eq!(other["operationId"], id);
         assert_eq!(jobs.len(), 1);
-        assert!(claim(&mut jobs, &id, "another", "/workspace/repo").is_err());
+        assert!(claim(&mut jobs, &id, "another", "/workspace/repo", &target()).is_err());
     }
     #[test]
     fn journal_preserves_results_and_never_replays_after_restart() {
@@ -433,17 +534,19 @@ mod tests {
         let path = temporary.path().join("jobs.json");
         let id = uuid::Uuid::new_v4().to_string();
         let mut jobs = Journal::new();
-        claim(&mut jobs, &id, "dev", "/workspace/repo").unwrap();
+        claim(&mut jobs, &id, "dev", "/workspace/repo", &target()).unwrap();
         jobs.get_mut(&id).unwrap().session = "previous-process".into();
         write(&path, &jobs).unwrap();
         let mut recovered = read(&path).unwrap();
-        let (result, created) = claim(&mut recovered, &id, "dev", "/workspace/repo").unwrap();
+        let (result, created) =
+            claim(&mut recovered, &id, "dev", "/workspace/repo", &target()).unwrap();
         assert!(!created);
         let (blocked, launched) = claim(
             &mut recovered,
             &uuid::Uuid::new_v4().to_string(),
             "dev",
             "/workspace/repo",
+            &target(),
         )
         .unwrap();
         assert!(!launched);
@@ -459,7 +562,8 @@ mod tests {
                 &mut recovered,
                 &uuid::Uuid::new_v4().to_string(),
                 "dev",
-                "/workspace/repo"
+                "/workspace/repo",
+                &target()
             )
             .unwrap()
             .1
@@ -472,18 +576,23 @@ mod tests {
     fn history_limits_reject_new_work_but_keep_existing_identifiers() {
         let id = uuid::Uuid::new_v4().to_string();
         let mut jobs = Journal::new();
-        claim(&mut jobs, &id, "dev", "/workspace/repo").unwrap();
+        claim(&mut jobs, &id, "dev", "/workspace/repo", &target()).unwrap();
         let mut finished = jobs[&id].clone();
         finished.operation["status"] = json!("succeeded");
         for index in 1..MAX_JOBS {
             jobs.insert(index.to_string(), finished.clone());
         }
-        assert!(!claim(&mut jobs, &id, "dev", "/workspace/repo").unwrap().1);
+        assert!(
+            !claim(&mut jobs, &id, "dev", "/workspace/repo", &target())
+                .unwrap()
+                .1
+        );
         assert!(claim(
             &mut jobs,
             &uuid::Uuid::new_v4().to_string(),
             "other",
-            "/workspace/repo"
+            "/workspace/repo",
+            &target()
         )
         .unwrap_err()
         .contains("10,000"));

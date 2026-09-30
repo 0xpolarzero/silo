@@ -10,6 +10,13 @@ import { statusBarFixtureModeFromSearch, statusBarSourceForFixture } from "@/fix
 const originalURL = window.location.href
 afterEach(() => window.history.replaceState(null, "", originalURL))
 
+/** Every push is confirmed first; the fixture push starts once the confirmation settles. */
+async function confirmPush(name: string) {
+  fireEvent.click(screen.getByRole("button", { name }))
+  fireEvent.click(screen.getByRole("button", { name: "Push" }))
+  await act(async () => {})
+}
+
 describe("status bar preview", () => {
   it("adds bounded stale, empty, and long-list fixtures without changing the source", () => {
     const source = applicationSourceForScenario("running")
@@ -55,13 +62,13 @@ describe("status bar preview", () => {
     expect(source.workspaces[0].stateDetail).toBe("Running for 2h 18m")
   })
 
-  it("pushes the pending commits, clears success feedback, and hands off the updated repository", () => {
+  it("pushes the pending commits, clears success feedback, and hands off the updated repository", async () => {
     vi.useFakeTimers()
     const source = applicationSourceForScenario("running")
     const onOpenSilo = vi.fn()
     const preview = render(<StatusBarPreview source={source} onOpenSilo={onOpenSilo} />)
     try {
-      fireEvent.click(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev" }))
+      await confirmPush("Push 2 commits for acme/silo in dev")
       expect(screen.getByText("Pushing 2 commits…")).toBeVisible()
       expect(screen.queryByRole("button", { name: "Push 2 commits for acme/silo in dev" })).not.toBeInTheDocument()
       expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
@@ -87,7 +94,7 @@ describe("status bar preview", () => {
     }
   })
 
-  it.each(["handoff", "quit"])("settles concurrent pushes before an early %s without changing unrelated operations", (action) => {
+  it.each(["handoff", "quit"])("settles concurrent pushes before an early %s without changing unrelated operations", async (action) => {
     vi.useFakeTimers()
     const base = applicationSourceForScenario("running")
     const unrelated = { workspace: "personal", repositoryPath: "taylor/docs-site", commitCount: 1, status: "failed" as const, message: "Remote unavailable." }
@@ -102,8 +109,8 @@ describe("status bar preview", () => {
     const onOpenSilo = vi.fn()
     const preview = render(<StatusBarPreview source={source} onOpenSilo={onOpenSilo} />)
     try {
-      fireEvent.click(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev" }))
-      fireEvent.click(screen.getByRole("button", { name: "Push 3 commits for acme/design-system in dev" }))
+      await confirmPush("Push 2 commits for acme/silo in dev")
+      await confirmPush("Push 3 commits for acme/design-system in dev")
       fireEvent.click(screen.getByRole("button", { name: "Start playgrounds" }))
       expect(screen.getByText("Pushing 2 commits…")).toBeVisible()
       expect(screen.getByText("Pushing 3 commits…")).toBeVisible()
@@ -134,14 +141,14 @@ describe("status bar preview", () => {
     }
   })
 
-  it("retries a failed push and replaces the error with progress and success", () => {
+  it("retries a failed push and replaces the error with progress and success", async () => {
     vi.useFakeTimers()
     const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "failed")
     const onOpenSilo = vi.fn()
     const preview = render(<StatusBarPreview source={source} onOpenSilo={onOpenSilo} />)
     try {
       expect(screen.getByText(/Push failed because the remote branch changed\./)).toBeVisible()
-      fireEvent.click(screen.getByRole("button", { name: "Retry push for acme/silo" }))
+      await confirmPush("Retry push for acme/silo")
       expect(screen.queryByText(/Push failed because the remote branch changed\./)).not.toBeInTheDocument()
       expect(screen.getByText("Pushing 2 commits…")).toBeVisible()
       act(() => vi.advanceTimersByTime(900))

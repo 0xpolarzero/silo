@@ -90,18 +90,24 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 None,
                 scheme,
             ))?;
-            crate::remote_network::host_state(app)
+            crate::remote_network::fresh_host_state(app)
         }
-        "repository.push.start" => Ok(crate::host_push_operations::start_result(app, vm_name(app, params)?, string(params, "path")?.into(), string(params, "operationId")?.into())),
-        "repository.push.status" => crate::host_push_operations::status(app, &vm_name(app, params)?, string(params, "path")?, string(params, "operationId")?),
-        "repository.push" => {
+        "network.unpublish" => {
+            // The owner's mapping is shared by every controller; removing it from one
+            // removes it here too, like removing the port on this computer.
             let name = vm_name(app, params)?;
-            tauri::async_runtime::block_on(crate::host_push::push_repository(
-                app.clone(),
-                name,
-                string(params, "path")?.into(),
-            ))
+            let port = params["port"]
+                .as_u64()
+                .and_then(|p| u16::try_from(p).ok())
+                .filter(|p| *p != 0)
+                .ok_or("Invalid port.")?;
+            tauri::async_runtime::block_on(crate::network::remove_network_port(app.clone(), name, port))?;
+            crate::remote_network::fresh_host_state(app)
         }
+        // Pushes are bound to the repository, branch and commit the user confirmed;
+        // the older unbound "repository.push" method is no longer served.
+        "repository.push.start" => crate::host_push_operations::start_remote(app, vm_name(app, params)?, params),
+        "repository.push.status" => crate::host_push_operations::status(app, &vm_name(app, params)?, string(params, "path")?, string(params, "operationId")?),
         "repository.dismiss" => {
             let name = vm_name(app, params)?;
             tauri::async_runtime::block_on(crate::host_push::dismiss_repository_push(

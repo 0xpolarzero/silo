@@ -17,9 +17,10 @@ import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { RepositoryPushFeedback, useRepositoryPushToasts } from "@/features/application/components/repository-push-feedback"
+import { RepositoryPushButton, RepositoryPushFeedback, useRepositoryPushToasts, type PushRepository } from "@/features/application/components/repository-push-feedback"
+import type { OperationQueue } from "@/features/application/model/operation-queue"
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
-import type { ApplicationActions, ApplicationSource, ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, WorkspaceDetailSection } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationSource, ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, RepositoryPushTarget, WorkspaceDetailSection } from "@/features/application/model/application-source"
 import { commitLabel } from "@/features/application/model/repository-push"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import { showActionFailure } from "@/lib/operation-toast"
@@ -72,7 +73,7 @@ function Files({
   active: boolean
   workspaces: ApplicationWorkspace[]
   repositoryPushOperations: RepositoryPushOperation[]
-  onPushRepository: (workspace: string, repositoryPath: string, commitCount: number) => void
+  onPushRepository: PushRepository
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
 }) {
   const [refreshing, setRefreshing] = useState(false)
@@ -119,7 +120,7 @@ function Files({
                 <ListCard divided role="list" aria-label="Repositories">
                   {repositories.map(({ workspace, repository }) => {
                     const operation = pushOperations.get(`${workspaceTarget(workspace)}:${repository.path}`)
-                    const push = () => onPushRepository(workspaceTarget(workspace), repository.path, operation?.commitCount ?? repository.ahead)
+                    const push = (target: RepositoryPushTarget) => onPushRepository(workspaceTarget(workspace), repository.path, operation?.commitCount ?? repository.ahead, target)
                     // Same gate and name as the status bar: identical buttons need the repository and sandbox.
                     const canPush = workspaceAvailability(workspace, source).canOpen
                     const sandbox = workspace.computer ? `${workspace.machine.name} on ${workspace.computer.name}` : workspace.machine.name
@@ -138,8 +139,8 @@ function Files({
                         {(operation || repository.ahead > 0) && (
                           <div className="flex min-h-6 items-start pr-2 pb-2 pl-10" data-repository-actions>
                             {operation
-                              ? <RepositoryPushFeedback operation={operation} workspace={workspaceTarget(workspace)} repositoryPath={repository.path} onRetry={push} onDismiss={onDismissRepositoryPush} />
-                              : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${sandbox}`} onClick={() => { if (canPush) push() }}>Push {commitLabel(repository.ahead)}</Button>}
+                              ? <RepositoryPushFeedback operation={operation} workspace={workspaceTarget(workspace)} repositoryPath={repository.path} repository={repository} onPush={push} onDismiss={onDismissRepositoryPush} />
+                              : <RepositoryPushButton repository={repository} disabled={!canPush} label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${sandbox}`} onPush={push}>Push {commitLabel(repository.ahead)}</RepositoryPushButton>}
                           </div>
                         )}
                       </div>
@@ -330,6 +331,7 @@ export function WorkspacesPage({
   onPushRepository,
   onDismissRepositoryPush,
   onCreateSandbox,
+  operationQueue,
 }: {
   /** The application source, for the same availability rules as the other surfaces. */
   source: ApplicationSource
@@ -350,15 +352,19 @@ export function WorkspacesPage({
   browser: string
   onWorkspaceFilterChange: (selectedWorkspaceIds: Set<string>) => void
   onLogQueryChange: (query: string) => void
-  onPushRepository: (workspace: string, repositoryPath: string, commitCount: number) => void
+  onPushRepository: PushRepository
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
   /** Opens the new-sandbox editor; omitted while a sandbox cannot be created. */
   onCreateSandbox?: () => void
+  /** Lets a running push be cancelled from its notification. */
+  operationQueue?: OperationQueue
 }) {
   const [logWindow, setLogWindow] = useState<LogWindow>()
   useRepositoryPushToasts(repositoryPushOperations, {
     onPush: onPushRepository,
     onDismiss: onDismissRepositoryPush,
+    queue: operationQueue,
+    onCancel: networkActions.cancelOperation,
     resolveSandbox: (target) => {
       const machine = workspaces.find((workspace) => workspaceTarget(workspace) === target)?.machine
       return machine ? { id: machine.id, name: machine.name } : undefined
