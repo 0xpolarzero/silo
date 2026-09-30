@@ -2,7 +2,7 @@
 use crate::runtime::{self, RuntimePaths};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
-use std::os::unix::process::CommandExt;
+use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
     collections::HashMap,
     fs,
@@ -15,8 +15,18 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 
-type DiscoveryCache = HashMap<String, (Instant, Result<Vec<Value>, String>)>;
-static DISCOVERIES: OnceLock<Mutex<DiscoveryCache>> = OnceLock::new();
+/// Repository discovery per VM: the last finished read (with its start time)
+/// and whether a background read is in flight.
+#[derive(Default)]
+struct Discovery {
+    last: Option<(Instant, Result<Vec<Value>, String>)>,
+    running: bool,
+}
+type Discoveries = (Mutex<HashMap<String, Discovery>>, std::sync::Condvar);
+static DISCOVERIES: OnceLock<Discoveries> = OnceLock::new();
+fn discoveries() -> &'static Discoveries {
+    DISCOVERIES.get_or_init(Default::default)
+}
 static RESULTS: OnceLock<Mutex<HashMap<String, (Value, Instant)>>> = OnceLock::new();
 fn results() -> &'static Mutex<HashMap<String, (Value, Instant)>> {
     RESULTS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -71,6 +81,16 @@ pub async fn dismiss_repository_push(
 }
 
 fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Result<String, String> {
+    guest_within(paths, name, script, args, 30)
+}
+/// `seconds` bounds the guest command; the host waits a little longer.
+fn guest_within(
+    paths: &RuntimePaths,
+    name: &str,
+    script: &str,
+    args: &[&str],
+    seconds: u64,
+) -> Result<String, String> {
     let user = crate::working_account::inspect_user(paths, name)?;
     let mut command = vec![
         "exec".into(),
@@ -87,7 +107,7 @@ fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Resul
         "--workdir".into(),
         "/".into(),
         "--timeout".into(),
-        "30s".into(),
+        format!("{seconds}s"),
         "--".into(),
         "sh".into(),
         "-c".into(),
@@ -95,7 +115,7 @@ fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Resul
         "silo-host-push".into(),
     ];
     command.extend(args.iter().map(|s| s.to_string()));
-    runtime::run_msb(paths, &command, Duration::from_secs(45))
+    runtime::run_msb(paths, &command, Duration::from_secs(seconds + 15))
         .map(|o| o.stdout)
         .map_err(|_| "Could not read committed repository data from the sandbox.".into())
 }
@@ -126,59 +146,156 @@ fn repository(url: &str) -> Result<String, String> {
         .or_else(|| url.strip_prefix("git@github.com:"))
         .ok_or("Choose a GitHub origin repository before pushing.")?;
     let name = name.strip_suffix(".git").unwrap_or(name);
-    if name.split('/').count() != 2
-        || name.split('/').any(|part| {
-            part.is_empty()
-                || part == "."
-                || part == ".."
-                || !part
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-        })
-    {
+    if !valid_repository_name(name) {
         return Err("Invalid GitHub origin repository.".into());
     }
     Ok(name.into())
 }
+fn valid_repository_name(name: &str) -> bool {
+    name.split('/').count() == 2
+        && name.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        })
+}
+fn valid_commit(commit: &str) -> bool {
+    matches!(commit.len(), 40 | 64) && commit.bytes().all(|c| c.is_ascii_hexdigit())
+}
+/// The repository, branch and commit the user confirmed. A push publishes
+/// exactly this commit to this branch of this repository, or nothing
+/// (owner decision 1).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct PushTarget {
+    pub(crate) repository: String,
+    pub(crate) branch: String,
+    pub(crate) commit: String,
+}
+impl PushTarget {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !valid_repository_name(&self.repository) {
+            return Err("Invalid GitHub repository for this push.".into());
+        }
+        if self.branch.is_empty()
+            || self.branch.len() > 255
+            || self.branch.starts_with('-')
+            || self.branch.chars().any(char::is_control)
+        {
+            return Err("Invalid branch for this push.".into());
+        }
+        if !valid_commit(&self.commit) {
+            return Err("Invalid commit for this push.".into());
+        }
+        Ok(())
+    }
+}
+const TARGET_CHANGED: &str =
+    "The repository changed after you confirmed the push. Review it and push again.";
+/// Rows at most this old are served without reading the guest again.
+const DISCOVERY_FRESH: Duration = Duration::from_secs(15);
+/// A state refresh waits this long for a VM's first discovery; later refreshes
+/// never wait, so a slow or hostile guest cannot stall them.
+const DISCOVERY_FIRST_WAIT: Duration = Duration::from_secs(3);
+/// Guest time limit for one discovery; an explicit refresh waits for it.
+const DISCOVERY_SECONDS: u64 = 20;
+
+/// Repositories of a running VM. Reads run in the background, one per VM at a
+/// time; callers get the last known rows while a newer read is in flight.
+/// `refresh` (the user's Refresh) waits for a read that started after the call.
 pub(crate) fn discover(
     paths: &RuntimePaths,
     name: &str,
     refresh: bool,
 ) -> Result<Vec<Value>, String> {
+    let requested = Instant::now();
     let key = format!("{}:{name}", paths.home.display());
-    let cache = DISCOVERIES.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some((at, result)) = cache
-        .lock()
-        .map_err(|_| "Repository state unavailable.")?
-        .get(&key)
-    {
-        if !refresh && at.elapsed() < Duration::from_secs(15) {
-            return result.clone();
+    let (lock, changed) = discoveries();
+    let wait_until = requested
+        + if refresh {
+            Duration::from_secs(DISCOVERY_SECONDS + 20)
+        } else {
+            DISCOVERY_FIRST_WAIT
+        };
+    let mut entries = lock.lock().map_err(|_| "Repository state unavailable.")?;
+    loop {
+        let entry = entries.entry(key.clone()).or_default();
+        if let Some((started, result)) = &entry.last {
+            let current = if refresh {
+                *started >= requested
+            } else {
+                started.elapsed() < DISCOVERY_FRESH
+            };
+            if current {
+                return result.clone();
+            }
         }
+        if !entry.running {
+            entry.running = true;
+            let (paths, name, key) = (paths.clone(), name.to_owned(), key.clone());
+            thread::spawn(move || {
+                let started = Instant::now();
+                let result = discover_uncached(&paths, &name);
+                let (lock, changed) = discoveries();
+                let mut entries = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if entries.len() > 64 {
+                    entries.retain(|other, entry| entry.running || *other == key);
+                }
+                let entry = entries.entry(key).or_default();
+                entry.last = Some((started, result));
+                entry.running = false;
+                changed.notify_all();
+            });
+        }
+        if !refresh {
+            if let Some((_, result)) = &entry.last {
+                return result.clone();
+            }
+        }
+        let now = Instant::now();
+        if now >= wait_until {
+            return match &entry.last {
+                Some((_, result)) => result.clone(),
+                None => Ok(Vec::new()),
+            };
+        }
+        entries = changed
+            .wait_timeout(entries, wait_until - now)
+            .map_err(|_| "Repository state unavailable.")?
+            .0;
     }
-    let result = discover_uncached(paths, name);
-    let mut cache = cache.lock().map_err(|_| "Repository state unavailable.")?;
-    if cache.len() > 64 {
-        cache.clear()
-    }
-    cache.insert(key, (Instant::now(), result.clone()));
-    result
 }
 // The guest deadline and runtime output budget bound discovery. An entry-count
 // cutoff discards every result when a workspace contains many Git worktrees.
-const DISCOVER_REPOSITORIES: &str = r#"find "$1" -name .git -prune -print 2>/dev/null | while IFS= read -r directory; do
+// Dependency and cache trees are skipped; they hold no repositories to push.
+const DISCOVER_REPOSITORIES: &str = r#"find "$1" \( -name node_modules -o -name .venv -o -name __pycache__ -o -name .tox -o -name .gradle -o -name .pnpm-store \) -prune -o -name .git -prune -print 2>/dev/null | while IFS= read -r directory; do
 p=${directory%/.git}
 branch=$(git -C "$p" symbolic-ref --quiet --short HEAD) || continue
-counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD) 0"
+counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD --not --remotes=origin) 0"
 dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null)
-printf '%s\000%s\000%s\000%s\000' "$p" "$branch" "$counts" "$dirty"
+head=$(git -C "$p" rev-parse --verify --quiet HEAD) || head=
+origin=$(git -C "$p" remote get-url origin 2>/dev/null) || origin=
+printf '%s\000%s\000%s\000%s\000%s\000%s\000' "$p" "$branch" "$counts" "$dirty" "$head" "$origin"
 done"#;
+const DISCOVERY_FIELDS: usize = 6;
 
 fn discover_uncached(paths: &RuntimePaths, name: &str) -> Result<Vec<Value>, String> {
-    let output = guest(paths, name, DISCOVER_REPOSITORIES, &["/workspace"])?;
+    Ok(discovered_rows(&guest_within(
+        paths,
+        name,
+        DISCOVER_REPOSITORIES,
+        &["/workspace"],
+        DISCOVERY_SECONDS,
+    )?))
+}
+/// Each row names the GitHub repository and head commit a push would publish,
+/// so the user confirms them and the push is bound to them.
+fn discovered_rows(output: &str) -> Vec<Value> {
     let fields: Vec<_> = output.split('\0').collect();
     let mut rows = Vec::new();
-    for parts in fields.chunks_exact(4) {
+    for parts in fields.chunks_exact(DISCOVERY_FIELDS) {
         if !valid_path(parts[0]) || parts[1].chars().any(char::is_control) {
             continue;
         }
@@ -189,9 +306,17 @@ fn discover_uncached(paths: &RuntimePaths, name: &str) -> Result<Vec<Value>, Str
         if counts.len() != 2 {
             continue;
         }
-        rows.push(json!({"path":parts[0],"branch":parts[1],"ahead":counts[0],"behind":counts[1],"dirty":!parts[3].is_empty()}));
+        rows.push(json!({
+            "path": parts[0],
+            "branch": parts[1],
+            "ahead": counts[0],
+            "behind": counts[1],
+            "dirty": !parts[3].is_empty(),
+            "head": Some(parts[4]).filter(|head| valid_commit(head)),
+            "repository": repository(parts[5]).ok(),
+        }));
     }
-    Ok(rows)
+    rows
 }
 struct HostGit {
     executable: PathBuf,
@@ -200,6 +325,56 @@ struct HostGit {
     support: PathBuf,
     ssh_command: Option<String>,
     cache_lock_fd: Option<std::os::fd::RawFd>,
+    /// When the push's GitHub credential stops working; no step runs past it.
+    deadline: Option<Instant>,
+}
+const CANCELLED: &str = "Push cancelled. The branch was not updated.";
+/// Precedes output relayed from the sandbox, which the guest controls.
+const SANDBOX_OUTPUT: &str = "Output from the sandbox (not from Silo or GitHub):";
+const CREDENTIAL_EXPIRED: &str =
+    "The push took longer than its GitHub credential allows. Push again to continue.";
+const STEP_TIMED_OUT: &str = "Git operation timed out. Check the remote before retrying.";
+/// Reported as an unknown result: GitHub may or may not have updated the branch.
+const PUBLICATION_UNKNOWN: &str =
+    "The push stopped while GitHub was receiving it. Check this branch on GitHub before pushing again.";
+/// A final push that Silo stopped (cancel or time limit) may already have
+/// updated the branch; any other failure means it did not.
+fn final_push_error(error: String) -> String {
+    match error.lines().next() {
+        Some(CANCELLED | CREDENTIAL_EXPIRED | STEP_TIMED_OUT) => PUBLICATION_UNKNOWN.into(),
+        _ => error,
+    }
+}
+/// Git and Git LFS read the GitHub token from this inherited pipe through the
+/// standard credential-helper protocol. The token never appears in arguments,
+/// the environment or a file, where other processes of the user could read it.
+const CREDENTIAL_FD: libc::c_int = 3;
+const CREDENTIAL_HELPER: &str = r#"!f() { test "$1" = get || exit 0; while IFS= read -r line && test -n "$line"; do :; done; IFS= read -r token <&3 || exit 0; printf 'username=x-access-token\npassword=%s\n' "$token"; }; f"#;
+/// One answer per credential request; Git and Git LFS ask about once per
+/// endpoint. The answers fit an empty pipe, so writing them never blocks.
+fn credential_pipe(token: &str) -> Result<std::io::PipeReader, String> {
+    use std::io::Write;
+    const FAILED: &str = "Cannot prepare the GitHub credential for Git.";
+    if token.is_empty() || token.len() > 1024 || token.bytes().any(|b| b <= b' ' || b == 127) {
+        return Err("Invalid GitHub credential.".into());
+    }
+    let (reader, mut writer) = std::io::pipe().map_err(|_| FAILED)?;
+    let answer = format!("{token}\n");
+    for _ in 0..(4096 / answer.len()).min(32) {
+        writer.write_all(answer.as_bytes()).map_err(|_| FAILED)?;
+    }
+    Ok(reader)
+}
+/// Credentials are offered only to the destination's origin, never to other hosts.
+fn credential_origin(remote: &str) -> Result<&str, String> {
+    let (scheme, rest) = remote
+        .split_once("://")
+        .ok_or("Invalid push destination.")?;
+    let host = rest.split('/').next().unwrap_or_default();
+    if !matches!(scheme, "https" | "http") || host.is_empty() {
+        return Err("Invalid push destination.".into());
+    }
+    Ok(&remote[..scheme.len() + 3 + host.len()])
 }
 impl HostGit {
     fn run(&self, args: &[&str], token: Option<&str>, remote: &str) -> Result<String, String> {
@@ -207,12 +382,60 @@ impl HostGit {
         command.process_group(0);
         let file_budget = temporary_budget(&self.directory)? as libc::rlim_t;
         let cache_lock_fd = self.cache_lock_fd;
+        let credential = token.map(credential_pipe).transpose()?;
+        let credential_fd = credential.as_ref().map(|reader| reader.as_raw_fd());
+        let mut settings = vec![
+            "core.hooksPath=/dev/null".to_owned(),
+            "core.fsmonitor=false".into(),
+            // Production sources are ssh://; only the local test harness
+            // publishes from file paths.
+            if cfg!(test) {
+                "protocol.file.allow=always".into()
+            } else {
+                "protocol.file.allow=never".into()
+            },
+            "protocol.ext.allow=never".into(),
+            "http.followRedirects=false".into(),
+            "credential.helper=".into(),
+        ];
+        if token.is_some() {
+            settings.push(format!(
+                "credential.{}.helper={CREDENTIAL_HELPER}",
+                credential_origin(remote)?
+            ));
+        }
+        settings.extend(
+            [
+                "fetch.fsckObjects=true",
+                "transfer.fsckObjects=true",
+                "gc.auto=0",
+                "maintenance.auto=false",
+            ]
+            .map(String::from),
+        );
         unsafe {
             command.pre_exec(move || {
                 // Keep the cache locked until this Git process exits, even if
                 // Silo crashes. The parent owns the file for the entire command.
-                if let Some(fd) = cache_lock_fd {
+                if let Some(mut fd) = cache_lock_fd {
+                    if credential_fd.is_some() && fd == CREDENTIAL_FD {
+                        // Move the lock aside; the credential pipe takes this number.
+                        fd = libc::fcntl(fd, libc::F_DUPFD, CREDENTIAL_FD + 1);
+                        if fd == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
                     if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                if let Some(fd) = credential_fd {
+                    let result = if fd == CREDENTIAL_FD {
+                        libc::fcntl(fd, libc::F_SETFD, 0)
+                    } else {
+                        libc::dup2(fd, CREDENTIAL_FD)
+                    };
+                    if result == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                 }
@@ -233,35 +456,10 @@ impl HostGit {
                 Ok(())
             });
         }
+        for setting in &settings {
+            command.arg("-c").arg(setting);
+        }
         command
-            .args([
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                // Production sources are ssh://; only the local test harness
-                // publishes from file paths.
-                if cfg!(test) {
-                    "protocol.file.allow=always"
-                } else {
-                    "protocol.file.allow=never"
-                },
-                "-c",
-                "protocol.ext.allow=never",
-                "-c",
-                "http.followRedirects=false",
-                "-c",
-                "credential.helper=",
-                "-c",
-                "fetch.fsckObjects=true",
-                "-c",
-                "transfer.fsckObjects=true",
-                "-c",
-                "gc.auto=0",
-                "-c",
-                "maintenance.auto=false",
-            ])
             .args(args)
             .current_dir(&self.directory)
             .env_clear()
@@ -293,23 +491,17 @@ impl HostGit {
         if cfg!(target_os = "linux") {
             command.env("GIT_SSL_CAINFO", linux_ca_bundle(&self.support));
         }
-        if let Some(token) = token {
+        if token.is_some() {
             command
-                .env("GIT_CONFIG_COUNT", "2")
-                .env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraHeader")
-                .env(
-                    "GIT_CONFIG_VALUE_0",
-                    format!(
-                        "Authorization: Basic {}",
-                        STANDARD.encode(format!("x-access-token:{token}"))
-                    ),
-                )
-                .env("GIT_CONFIG_KEY_1", "lfs.url")
-                .env("GIT_CONFIG_VALUE_1", format!("{remote}/info/lfs"));
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "lfs.url")
+                .env("GIT_CONFIG_VALUE_0", format!("{remote}/info/lfs"));
         }
         let mut child = command
             .spawn()
             .map_err(|_| "Bundled Git could not start. Repair Silo and retry.")?;
+        // Only the Git process tree keeps the credential pipe open.
+        drop(credential);
         let stdout = child.stdout.take().ok_or("Cannot capture Git output.")?;
         let stderr = child
             .stderr
@@ -317,14 +509,22 @@ impl HostGit {
             .ok_or("Cannot capture Git diagnostics.")?;
         let output_reader = thread::spawn(move || read_bounded(stdout, 1024 * 1024));
         let diagnostic_reader = thread::spawn(move || read_bounded(stderr, 16_384));
-        let deadline = Instant::now() + Duration::from_secs(1800);
+        let step_deadline = Instant::now() + Duration::from_secs(1800);
+        let deadline = self
+            .deadline
+            .map_or(step_deadline, |end| end.min(step_deadline));
         let mut space_check = Instant::now();
         let outcome = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
                 Err(_) => break Err("Cannot read Git process status."),
+                Ok(None) if runtime::operation_gate::cancel_requested() => break Err(CANCELLED),
                 Ok(None) if Instant::now() >= deadline => {
-                    break Err("Git operation timed out. Check the remote before retrying.");
+                    break Err(if deadline < step_deadline {
+                        CREDENTIAL_EXPIRED
+                    } else {
+                        STEP_TIMED_OUT
+                    });
                 }
                 Ok(None) => {
                     if space_check.elapsed() >= Duration::from_secs(1) {
@@ -373,10 +573,22 @@ impl HostGit {
             .copied()
             .collect::<Vec<_>>()
             .join(" ");
+        // Stages reading from the sandbox relay text the guest controls. Keep it
+        // out of the visible message and label it in the details.
+        let from_sandbox = args.contains(&"silo-source");
+        let diagnostic = if from_sandbox && !diagnostic.is_empty() {
+            format!("{SANDBOX_OUTPUT} {diagnostic}")
+        } else {
+            diagnostic
+        };
         match outcome {
             Ok(status) if !status.success() => {
                 // The first line is the summary; the rest becomes diagnostic details.
-                return Err(format!("Git {stage} failed ({status}).\n{diagnostic}"));
+                return Err(if from_sandbox {
+                    format!("Reading committed data from the sandbox failed (Git {stage}, {status}).\n{diagnostic}")
+                } else {
+                    format!("Git {stage} failed ({status}).\n{diagnostic}")
+                });
             }
             Err(message) => return Err(format!("{message}\n{diagnostic}")),
             _ => {}
@@ -477,11 +689,17 @@ fn validate_running(inspected: &runtime::InspectedSandbox, workspace: &str) -> R
     }
     Ok(())
 }
-fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, String> {
+fn perform(
+    app: &tauri::AppHandle,
+    workspace: &str,
+    path: &str,
+    target: &PushTarget,
+) -> Result<u64, String> {
     let _update = crate::updates::operation_guard()?;
     if !valid_path(path) {
         return Err("Choose a repository inside /workspace.".into());
     }
+    target.validate()?;
     runtime::validate_name(workspace).map_err(|e| e.to_string())?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
@@ -508,29 +726,56 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
         &[path],
     )?;
     drop(read_guard);
-    let repo = repository(origin.trim())?;
-    let token = crate::github::host_push_credential(app, workspace, &repo)?;
-    let _guard = runtime::OPERATIONS
+    // Authorize and push only the repository the user confirmed.
+    if !repository(origin.trim())?.eq_ignore_ascii_case(&target.repository) {
+        return Err(TARGET_CHANGED.into());
+    }
+    // Revoked when this function returns, whatever the outcome.
+    let credential = crate::github::host_push_credential(app, workspace, &target.repository)?;
+    let guard = runtime::OPERATIONS
         .kind(runtime::operation_gate::OperationKind::Push)
         .vm(&vm_id, workspace, &format!("Pushing from {workspace}"))
         .map_err(|e| e.to_string())?;
-    runtime::shutdown::ensure_accepting_operations()?;
-    require_running(&paths, workspace)?;
-    let executable = crate::bundled_tools::directory(app)?.join("git");
-    let support = app
-        .path()
-        .resource_dir()
-        .map_err(|_| "Cannot locate Git support.")?
-        .join("git-support");
-    push_committed(
-        &paths,
-        workspace,
-        path,
-        &repo,
-        &token,
-        &executable,
-        &support,
-    )
+    // A push can run for a long time; the user may stop it (and Quit may cancel it).
+    guard.allow_cancel();
+    let result = (|| {
+        runtime::shutdown::ensure_accepting_operations()?;
+        require_running(&paths, workspace)?;
+        let executable = crate::bundled_tools::directory(app)?.join("git");
+        let support = app
+            .path()
+            .resource_dir()
+            .map_err(|_| "Cannot locate Git support.")?
+            .join("git-support");
+        push_target(
+            &paths,
+            workspace,
+            path,
+            target,
+            credential.repository(),
+            credential.token(),
+            credential_deadline(credential.expires_at()),
+            &executable,
+            &support,
+        )
+    })();
+    // A cancelled step reports its own failure; say what happened instead.
+    result.map_err(|error| {
+        if error != PUBLICATION_UNKNOWN && runtime::operation_gate::cancel_requested() {
+            CANCELLED.into()
+        } else {
+            error
+        }
+    })
+}
+/// Stop a minute before GitHub rejects the credential.
+fn credential_deadline(expires_at: Option<u64>) -> Option<Instant> {
+    let expires_at = expires_at?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(Instant::now() + Duration::from_secs(expires_at.saturating_sub(now).saturating_sub(60)))
 }
 
 // The host owns all configuration and credentials. The source remote supplies
@@ -607,11 +852,9 @@ fn publish_committed_tracking(
     // complete trusted cache on every incremental push.
     // Only the currently advertised destination ref may exclude LFS uploads.
     // A previous cached branch must not suppress objects for a new destination.
-    git.run(
-        &["update-ref", "-d", "refs/remotes/origin/published"],
-        None,
-        "",
-    )?;
+    for stale in ["refs/remotes/origin/published", "refs/silo/remote-base"] {
+        git.run(&["update-ref", "-d", stale], None, "")?;
+    }
     let target_ref = format!("refs/heads/{branch}");
     let remote_head = git.run(
         &["ls-remote", "--heads", "origin", &target_ref],
@@ -619,7 +862,26 @@ fn publish_committed_tracking(
         remote,
     )?;
     let range = if remote_head.trim().is_empty() {
-        "refs/silo/push"
+        // A new branch: count only commits missing from the remote's default
+        // branch, not the whole history. An empty repository has no default
+        // branch, so every commit is new. Having that branch locally also
+        // keeps Git from re-sending history GitHub already has.
+        match git.run(
+            &[
+                "fetch",
+                "--no-tags",
+                "origin",
+                "+HEAD:refs/silo/remote-base",
+            ],
+            token,
+            remote,
+        ) {
+            Ok(_) => "refs/silo/remote-base..refs/silo/push",
+            Err(error) if matches!(error.lines().next(), Some(CANCELLED | CREDENTIAL_EXPIRED)) => {
+                return Err(error)
+            }
+            Err(_) => "refs/silo/push",
+        }
     } else {
         git.run(
             &[
@@ -664,6 +926,12 @@ fn publish_committed_tracking(
         "",
     );
     if let Err(first_push) = git.run(&["lfs", "push", "origin", "refs/silo/push"], token, remote) {
+        if matches!(
+            first_push.lines().next(),
+            Some(CANCELLED | CREDENTIAL_EXPIRED)
+        ) {
+            return Err(first_push);
+        }
         // Standard LFS fetch fills pruned historical data from the destination.
         // Content-addressed LFS uploads can safely be retried before any Git ref
         // update. Never enable allowincompletepush or parse a human transfer plan.
@@ -690,12 +958,14 @@ fn publish_committed_tracking(
         ],
         token,
         remote,
-    )?;
+    )
+    .map_err(final_push_error)?;
     Ok(count)
 }
 
-// The same publication path is exercised with disposable VMs and scoped
-// credentials in the opt-in live regression. Authorization stays in perform.
+// The opt-in live regression pushes the sandbox's current branch, as the UI
+// would after the user confirmed it.
+#[cfg(test)]
 pub(crate) fn push_committed(
     paths: &RuntimePaths,
     workspace: &str,
@@ -705,9 +975,42 @@ pub(crate) fn push_committed(
     executable: &Path,
     support: &Path,
 ) -> Result<u64, String> {
+    let head = guest(
+        paths,
+        workspace,
+        "set -eu\nprintf '%s\\n' \"$(git -C \"$1\" symbolic-ref --quiet --short HEAD)\" \"$(git -C \"$1\" rev-parse --verify HEAD)\"",
+        &[path],
+    )?;
+    let mut lines = head.lines();
+    let target = PushTarget {
+        repository: repo.into(),
+        branch: lines.next().unwrap_or_default().into(),
+        commit: lines.next().unwrap_or_default().into(),
+    };
+    target.validate()?;
+    push_target(
+        paths, workspace, path, &target, repo, token, None, executable, support,
+    )
+}
+
+// The same publication path is exercised with disposable VMs and scoped
+// credentials in the opt-in live regression. Authorization stays in perform.
+#[allow(clippy::too_many_arguments)]
+fn push_target(
+    paths: &RuntimePaths,
+    workspace: &str,
+    path: &str,
+    target: &PushTarget,
+    repo: &str,
+    token: &str,
+    deadline: Option<Instant>,
+    executable: &Path,
+    support: &Path,
+) -> Result<u64, String> {
     let id = uuid::Uuid::new_v4();
     let export = format!("/tmp/silo-push-{id}");
     let export_ref = format!("refs/silo/export/{id}");
+    let (branch, commit) = (target.branch.as_str(), target.commit.as_str());
     let result = (|| {
         let temp = tempfile::tempdir().map_err(|_| "Cannot create isolated host Git directory.")?;
         let root = temp.path();
@@ -716,12 +1019,14 @@ pub(crate) fn push_committed(
         let mut transport =
             crate::host_push_transport::prepare(paths, workspace, &root.join("ssh"))?;
         transport.install_lfs_server(&support.join("lfs-transfer/git-lfs-transfer"), &export)?;
+        // Export only the confirmed branch, and only while it still points at
+        // the confirmed commit. The host verifies the imported commit again.
         let data = guest(
             paths,
             workspace,
             r#"set -eu
-branch=$(git -C "$1" symbolic-ref --quiet --short HEAD)
-commit=$(git -C "$1" rev-parse --verify "refs/heads/$branch^{commit}")
+commit=$(git -C "$1" rev-parse --verify --quiet "refs/heads/$4^{commit}") || commit=
+if [ "$commit" != "$5" ]; then printf 'changed\n'; exit 0; fi
 git -C "$1" update-ref "$3" "$commit"
 # Use Git LFS's own storage resolution, including linked worktrees and lfs.storage.
 media=$(git -C "$1" lfs env | sed -n 's/^LocalMediaDir=//p')
@@ -732,15 +1037,12 @@ if [ -d "$media" ]; then
 else
     mkdir "$2/source.git/lfs/objects"
 fi
-printf '%s\n%s\n' "$branch" "$commit"
+printf '%s\n' "$commit"
 "#,
-            &[path, &export, &export_ref],
+            &[path, &export, &export_ref, branch, commit],
         )?;
-        let mut lines = data.lines();
-        let branch = lines.next().ok_or("Missing Git branch.")?;
-        let commit = lines.next().ok_or("Missing Git commit.")?;
-        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
-            return Err("Invalid exported Git commit.".into());
+        if data.lines().next() != Some(commit) {
+            return Err(TARGET_CHANGED.into());
         }
         let git = HostGit {
             executable: executable.to_path_buf(),
@@ -749,6 +1051,7 @@ printf '%s\n%s\n' "$branch" "$commit"
             support: support.to_path_buf(),
             ssh_command: Some(transport.ssh_command.clone()),
             cache_lock_fd: Some(cache.lock_fd()),
+            deadline,
         };
         fs::create_dir_all(&git.directory)
             .and_then(|_| fs::create_dir_all(git.home.join("empty-templates")))
@@ -775,44 +1078,41 @@ printf '%s\n%s\n' "$branch" "$commit"
         let count = publication?;
         // Tracking metadata describes the commit actually published, even if
         // the sandbox branch advanced while this operation was running.
-        let _ = guest(
-            paths,
-            workspace,
-            "git -C \"$1\" update-ref \"$2\" \"$3\"",
-            &[path, &format!("refs/remotes/origin/{branch}"), commit],
-        );
-        if let Some(cache) = DISCOVERIES.get() {
-            if let Ok(mut cache) = cache.lock() {
-                cache.remove(&format!("{}:{workspace}", paths.home.display()));
+        let _ = runtime::operation_gate::uncancellable(|| {
+            guest(
+                paths,
+                workspace,
+                "git -C \"$1\" update-ref \"$2\" \"$3\"",
+                &[path, &format!("refs/remotes/origin/{branch}"), commit],
+            )
+        });
+        // The next state refresh reads the repository again.
+        if let Ok(mut entries) = discoveries().0.lock() {
+            if let Some(entry) = entries.get_mut(&format!("{}:{workspace}", paths.home.display())) {
+                entry.last = None;
             }
         }
         Ok(count)
     })();
-    let _ = guest(
-        paths,
-        workspace,
-        "git -C \"$1\" update-ref -d \"$3\"; rm -rf -- \"$2\"",
-        &[path, &export, &export_ref],
-    );
+    // Clean up the export even after a cancel.
+    let _ = runtime::operation_gate::uncancellable(|| {
+        guest(
+            paths,
+            workspace,
+            "git -C \"$1\" update-ref -d \"$3\"; rm -rf -- \"$2\"",
+            &[path, &export, &export_ref],
+        )
+    });
     result
 }
+/// Push a local sandbox repository. Remote computers run this through their
+/// own push journal (`repository.push.start`).
 pub(crate) async fn push_repository(
     app: tauri::AppHandle,
     workspace: String,
     repository_path: String,
+    target: PushTarget,
 ) -> Result<Value, String> {
-    if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
-        return tauri::async_runtime::spawn_blocking(move || {
-            crate::remote::call_remote(
-                &app,
-                &host,
-                "repository.push",
-                json!({"vmId":vm,"path":repository_path}),
-            )
-        })
-        .await
-        .map_err(|_| "Remote repository request failed.".to_string())?;
-    }
     let key = format!("{workspace}\0{repository_path}");
     let planned_count = planned_count(&app, &workspace, &repository_path);
     {
@@ -820,20 +1120,26 @@ pub(crate) async fn push_repository(
         if r.get(&key).is_some_and(|(v, _)| v["status"] == "pushing") {
             return Err("This repository is already being pushed.".into());
         }
-        r.insert(key.clone(),(json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":planned_count,"status":"pushing"}),Instant::now()));
+        r.insert(key.clone(),(json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":planned_count,"status":"pushing","target":target}),Instant::now()));
     }
     let _ = app.emit("silo://application-state-changed", ());
     let task = {
-        let (app, workspace, repository_path) =
-            (app.clone(), workspace.clone(), repository_path.clone());
-        tauri::async_runtime::spawn_blocking(move || perform(&app, &workspace, &repository_path))
+        let (app, workspace, repository_path, target) = (
+            app.clone(),
+            workspace.clone(),
+            repository_path.clone(),
+            target.clone(),
+        );
+        tauri::async_runtime::spawn_blocking(move || {
+            perform(&app, &workspace, &repository_path, &target)
+        })
     };
     // A panicked task must still resolve the entry, or it would stay
     // "pushing" forever and block every retry.
     let outcome = task
         .await
         .unwrap_or_else(|_| Err("Host push task failed.".into()));
-    let value = finished_result(&workspace, &repository_path, outcome);
+    let value = finished_result(&workspace, &repository_path, &target, outcome);
     results()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -847,11 +1153,13 @@ pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_
     runtime::runtime_paths(app)
         .ok()
         .and_then(|paths| {
-            DISCOVERIES
-                .get()?
+            discoveries()
+                .0
                 .lock()
                 .ok()?
                 .get(&format!("{}:{workspace}", paths.home.display()))?
+                .last
+                .as_ref()?
                 .1
                 .as_ref()
                 .ok()?
@@ -861,13 +1169,27 @@ pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_
         })
         .unwrap_or(0)
 }
-fn finished_result(workspace: &str, repository_path: &str, outcome: Result<u64, String>) -> Value {
+fn finished_result(
+    workspace: &str,
+    repository_path: &str,
+    target: &PushTarget,
+    outcome: Result<u64, String>,
+) -> Value {
     match outcome {
         Ok(count) => json!({
             "workspace": workspace,
             "repositoryPath": repository_path,
             "commitCount": count,
             "status": "succeeded",
+            "target": target,
+        }),
+        Err(message) if message == PUBLICATION_UNKNOWN => json!({
+            "workspace": workspace,
+            "repositoryPath": repository_path,
+            "commitCount": 0,
+            "status": "unknown",
+            "message": message,
+            "target": target,
         }),
         Err(message) => {
             let mut value = json!({
@@ -875,6 +1197,7 @@ fn finished_result(workspace: &str, repository_path: &str, outcome: Result<u64, 
                 "repositoryPath": repository_path,
                 "commitCount": 0,
                 "status": "failed",
+                "target": target,
             });
             // Keep the visible message short; Git output goes to the Details disclosure.
             match message.split_once('\n') {
@@ -927,18 +1250,20 @@ mod tests {
         };
         let key = format!("{}:test", paths.home.display());
         let cached = vec![json!({"path": "removed-repository"})];
-        DISCOVERIES
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap()
-            .insert(key.clone(), (Instant::now(), Ok(cached.clone())));
+        discoveries().0.lock().unwrap().insert(
+            key.clone(),
+            Discovery {
+                last: Some((Instant::now(), Ok(cached.clone()))),
+                running: false,
+            },
+        );
         assert_eq!(discover(&paths, "test", false).unwrap(), cached);
         // A forced read must reach the missing runtime instead of returning
         // the fresh cached rows. No real VM or runtime is involved.
         let refreshed = discover(&paths, "test", true);
         assert!(refreshed.is_err());
         assert_eq!(discover(&paths, "test", false), refreshed);
-        DISCOVERIES.get().unwrap().lock().unwrap().remove(&key);
+        discoveries().0.lock().unwrap().remove(&key);
     }
 
     #[test]
@@ -960,6 +1285,12 @@ mod tests {
                 "-m",
                 "fixture",
             ],
+            vec![
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/Owner/Repo.git",
+            ],
         ] {
             assert!(Command::new("git")
                 .args(args)
@@ -968,6 +1299,15 @@ mod tests {
                 .unwrap()
                 .success());
         }
+        let head = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&seed)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
         let workspace = root.path().join("workspace with spaces");
         fs::create_dir(&workspace).unwrap();
         for index in 0..216 {
@@ -987,11 +1327,232 @@ mod tests {
         );
         let output = String::from_utf8(output.stdout).unwrap();
         let records: Vec<_> = output.split('\0').collect();
-        assert_eq!(records.len(), 216 * 4 + 1);
-        for record in records.chunks_exact(4) {
+        assert_eq!(records.len(), 216 * DISCOVERY_FIELDS + 1);
+        for record in records.chunks_exact(DISCOVERY_FIELDS) {
             assert_eq!(record[1], "main");
             assert_eq!(record[2], "1 0");
             assert_eq!(record[3], "");
+        }
+        // The workspace root is outside /workspace here; rename it for parsing.
+        let rows = discovered_rows(&output.replace(workspace.to_str().unwrap(), "/workspace"));
+        assert_eq!(rows.len(), 216);
+        assert_eq!(rows[0]["repository"], "Owner/Repo");
+        assert_eq!(rows[0]["head"], head.trim());
+    }
+
+    /// A runtime whose guest takes `delay` seconds per discovery and counts them.
+    fn slow_discovery_runtime(root: &Path, delay: &str) -> (RuntimePaths, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let paths = RuntimePaths {
+            executable: root.join("msb"),
+            home: root.join("home"),
+            guest_image: root.join("image"),
+            storage_home: None,
+            // The runtime checks that its library exists; the script stands in.
+            library: root.join("msb"),
+            metadata: root.join("machines.json"),
+            volumes: root.join("volumes"),
+        };
+        let count = root.join("discoveries");
+        let inspected = json!({"name":"dev","status":"Running","config":{"labels":{"silo.managed":"true",crate::working_account::LABEL:"1"}}});
+        fs::write(
+            &paths.executable,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n--silo-working-account-protocol) printf '1\\n' ;;\ninspect) printf '%s\\n' '{inspected}' ;;\nexec) echo run >>'{}'; sleep {delay}; printf '/workspace/repo\\0main\\0001 0\\0\\0{}\\0https://github.com/owner/repo.git\\0' ;;\n*) exit 2 ;;\nesac\n",
+                count.display(),
+                "e".repeat(40),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        (paths, count)
+    }
+    fn runs(count: &Path) -> usize {
+        fs::read_to_string(count).map_or(0, |text| text.lines().count())
+    }
+
+    #[test]
+    fn discovery_reads_each_vm_once_in_the_background_and_serves_known_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, count) = slow_discovery_runtime(root.path(), "1");
+        // Concurrent state refreshes share one guest read.
+        let readers: Vec<_> = (0..3)
+            .map(|_| {
+                let paths = paths.clone();
+                thread::spawn(move || discover(&paths, "dev", false))
+            })
+            .collect();
+        for reader in readers {
+            let rows = reader.join().unwrap().unwrap();
+            assert_eq!(rows[0]["repository"], "owner/repo");
+        }
+        assert_eq!(runs(&count), 1);
+        // Once stale, the known rows are returned at once while a new read runs.
+        let key = format!("{}:dev", paths.home.display());
+        discoveries()
+            .0
+            .lock()
+            .unwrap()
+            .get_mut(&key)
+            .unwrap()
+            .last
+            .as_mut()
+            .unwrap()
+            .0 = Instant::now() - Duration::from_secs(60);
+        let started = Instant::now();
+        assert_eq!(discover(&paths, "dev", false).unwrap().len(), 1);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while discoveries().0.lock().unwrap()[&key].running || runs(&count) < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "background discovery did not finish"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(runs(&count), 2);
+        discoveries().0.lock().unwrap().remove(&key);
+    }
+
+    #[test]
+    fn a_slow_guest_does_not_stall_state_refreshes() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, count) = slow_discovery_runtime(root.path(), "6");
+        let started = Instant::now();
+        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
+        // Later refreshes do not start another read or wait for this one.
+        let started = Instant::now();
+        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
+        assert_eq!(runs(&count), 1);
+        // An explicit refresh waits for the read to finish.
+        assert_eq!(discover(&paths, "dev", true).unwrap().len(), 1);
+        discoveries()
+            .0
+            .lock()
+            .unwrap()
+            .remove(&format!("{}:dev", paths.home.display()));
+    }
+
+    #[test]
+    fn discovery_counts_only_unpublished_commits_of_a_new_branch() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let repository = workspace.join("repo");
+        fs::create_dir_all(&repository).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                ])
+                .args(args)
+                .current_dir(&repository)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        for message in ["one", "two"] {
+            git(&["commit", "--quiet", "--allow-empty", "-m", message]);
+        }
+        let published = git(&["rev-parse", "HEAD"]);
+        git(&["update-ref", "refs/remotes/origin/main", published.trim()]);
+        git(&["switch", "--quiet", "-c", "feature"]);
+        git(&["commit", "--quiet", "--allow-empty", "-m", "three"]);
+        let output = Command::new("sh")
+            .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
+            .arg(&workspace)
+            .output()
+            .unwrap();
+        let output = String::from_utf8(output.stdout).unwrap();
+        let record: Vec<_> = output.split('\0').collect();
+        assert_eq!(record[1], "feature");
+        // Not the whole history (3): only the commit missing from origin.
+        assert_eq!(record[2], "1 0");
+    }
+
+    #[test]
+    fn discovery_skips_dependency_trees() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        for repository in [
+            "app",
+            "app/node_modules/dependency",
+            "tool/.venv/lib/package",
+        ] {
+            let directory = workspace.join(repository);
+            fs::create_dir_all(&directory).unwrap();
+            assert!(Command::new("git")
+                .args(["init", "--quiet", "--initial-branch=main"])
+                .current_dir(&directory)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let output = Command::new("sh")
+            .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
+            .arg(&workspace)
+            .output()
+            .unwrap();
+        let output = String::from_utf8(output.stdout).unwrap();
+        let paths: Vec<_> = output
+            .split('\0')
+            .step_by(DISCOVERY_FIELDS)
+            .filter(|path| !path.is_empty())
+            .collect();
+        assert_eq!(paths, [workspace.join("app").to_str().unwrap()]);
+    }
+
+    #[test]
+    fn discovered_rows_omit_unverifiable_push_destinations() {
+        let row = |head: &str, origin: &str| {
+            format!("/workspace/repo\0main\x001 0\0\0{head}\0{origin}\0")
+        };
+        let commit = "a".repeat(40);
+        let rows = discovered_rows(&row(&commit, "git@github.com:owner/repo.git"));
+        assert_eq!(rows[0]["repository"], "owner/repo");
+        assert_eq!(rows[0]["head"], commit);
+        let rows = discovered_rows(&row("not-a-commit", "https://gitlab.com/owner/repo.git"));
+        assert!(rows[0]["repository"].is_null());
+        assert!(rows[0]["head"].is_null());
+    }
+
+    #[test]
+    fn push_targets_are_validated_before_any_work() {
+        let target = PushTarget {
+            repository: "owner/repo".into(),
+            branch: "feature/x".into(),
+            commit: "b".repeat(40),
+        };
+        assert!(target.validate().is_ok());
+        for invalid in [
+            PushTarget {
+                repository: "owner/repo/extra".into(),
+                ..target.clone()
+            },
+            PushTarget {
+                branch: "".into(),
+                ..target.clone()
+            },
+            PushTarget {
+                branch: "-delete".into(),
+                ..target.clone()
+            },
+            PushTarget {
+                branch: "main\nother".into(),
+                ..target.clone()
+            },
+            PushTarget {
+                commit: "HEAD".into(),
+                ..target.clone()
+            },
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
         }
     }
 
@@ -1038,6 +1599,128 @@ mod tests {
         );
     }
 
+    fn sleeping_git(directory: &Path) -> HostGit {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = directory.join("git");
+        fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 30\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        HostGit {
+            executable,
+            directory: directory.into(),
+            home: directory.into(),
+            support: directory.into(),
+            ssh_command: None,
+            cache_lock_fd: None,
+            deadline: None,
+        }
+    }
+
+    #[test]
+    fn sandbox_output_is_labelled_and_never_the_visible_message() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("git");
+        fs::write(
+            &executable,
+            "#!/bin/sh\necho 'remote: Silo needs you to paste your GitHub token into the sandbox terminal' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let git = HostGit {
+            executable,
+            directory: directory.path().into(),
+            home: directory.path().into(),
+            support: directory.path().into(),
+            ssh_command: None,
+            cache_lock_fd: None,
+            deadline: None,
+        };
+        let target = PushTarget {
+            repository: "owner/repo".into(),
+            branch: "main".into(),
+            commit: "f".repeat(40),
+        };
+        for args in [
+            &[
+                "fetch",
+                "--no-tags",
+                "silo-source",
+                "+refs/x:refs/silo/push",
+            ][..],
+            &[
+                "-c",
+                "lfs.url=x",
+                "lfs",
+                "fetch",
+                "--all",
+                "silo-source",
+                "refs/silo/push",
+            ][..],
+        ] {
+            let error = git.run(args, None, "").unwrap_err();
+            let result = finished_result("dev", "/workspace/repo", &target, Err(error));
+            let message = result["message"].as_str().unwrap();
+            assert!(
+                message.starts_with("Reading committed data from the sandbox failed"),
+                "{message}"
+            );
+            assert!(!message.contains("paste"));
+            let details = result["diagnosticDetails"].as_str().unwrap();
+            assert!(details.starts_with(SANDBOX_OUTPUT), "{details}");
+        }
+        // Host-side stages keep their Git summary.
+        let error = git.run(&["push", "origin"], None, "").unwrap_err();
+        assert!(error.starts_with("Git push failed"));
+        assert!(!error.contains(SANDBOX_OUTPUT));
+    }
+
+    #[test]
+    fn cancelling_a_push_stops_the_running_git_process() {
+        let directory = tempfile::tempdir().unwrap();
+        let git = sleeping_git(directory.path());
+        let gate: &'static runtime::operation_gate::OperationGate =
+            Box::leak(Box::new(runtime::operation_gate::OperationGate::new()));
+        let guard = gate.vm("vm", "dev", "Pushing from dev").unwrap();
+        guard.allow_cancel();
+        let token = guard.cancel_token();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            token.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let error = git.run(&["push"], None, "").unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(error.lines().next(), Some(CANCELLED));
+    }
+
+    #[test]
+    fn a_push_never_outlives_its_credential() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut git = sleeping_git(directory.path());
+        git.deadline = Some(Instant::now() + Duration::from_millis(300));
+        let started = Instant::now();
+        let error = git.run(&["push"], None, "").unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(error.lines().next(), Some(CREDENTIAL_EXPIRED));
+        // A push stopped while GitHub was receiving it has an unknown outcome.
+        assert_eq!(final_push_error(error), PUBLICATION_UNKNOWN);
+        assert_eq!(
+            final_push_error("Git push failed (exit status: 1).\nrejected".into()),
+            "Git push failed (exit status: 1).\nrejected"
+        );
+        let unknown = finished_result(
+            "dev",
+            "/workspace/repo",
+            &PushTarget {
+                repository: "owner/repo".into(),
+                branch: "main".into(),
+                commit: "d".repeat(40),
+            },
+            Err(PUBLICATION_UNKNOWN.into()),
+        );
+        assert_eq!(unknown["status"], "unknown");
+    }
+
     #[test]
     fn host_git_rejects_oversized_output_without_spooling_to_disk() {
         use std::os::unix::fs::PermissionsExt;
@@ -1056,21 +1739,70 @@ mod tests {
             support: directory.path().into(),
             ssh_command: None,
             cache_lock_fd: None,
+            deadline: None,
         };
         assert!(git.run(&[], None, "").is_err());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
     #[test]
+    fn host_git_passes_the_token_through_a_pipe_not_arguments_or_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("git");
+        fs::write(
+            &executable,
+            "#!/bin/sh\n{ env; printf '%s\\n' \"$@\"; } >observed\nIFS= read -r token <&3 && printf '%s' \"$token\" >credential\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let git = HostGit {
+            executable,
+            directory: directory.path().into(),
+            home: directory.path().into(),
+            support: directory.path().into(),
+            ssh_command: None,
+            cache_lock_fd: None,
+            deadline: None,
+        };
+        let token = "ghu_fixtureToken123";
+        git.run(
+            &["ls-remote", "origin"],
+            Some(token),
+            "https://github.com/owner/repo.git",
+        )
+        .unwrap();
+        let observed = fs::read_to_string(directory.path().join("observed")).unwrap();
+        assert!(!observed.contains(token));
+        assert!(!observed.contains(&STANDARD.encode(format!("x-access-token:{token}"))));
+        assert!(observed.contains("credential.https://github.com.helper=!"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("credential")).unwrap(),
+            token
+        );
+    }
+    #[test]
     fn failed_results_separate_summary_from_git_diagnostics() {
+        let target = PushTarget {
+            repository: "owner/repo".into(),
+            branch: "main".into(),
+            commit: "c".repeat(40),
+        };
         let value = super::finished_result(
             "dev",
             "/workspace/repo",
+            &target,
             Err("Git push failed (exit status: 1).\nremote: rejected\nmore".into()),
         );
         assert_eq!(value["message"], "Git push failed (exit status: 1).");
         assert_eq!(value["diagnosticDetails"], "remote: rejected\nmore");
-        let plain =
-            super::finished_result("dev", "/workspace/repo", Err("Start the sandbox.".into()));
+        // Results name what was pushed, so a retry pushes the same confirmed target.
+        assert_eq!(value["target"]["branch"], "main");
+        let plain = super::finished_result(
+            "dev",
+            "/workspace/repo",
+            &target,
+            Err("Start the sandbox.".into()),
+        );
         assert_eq!(plain["message"], "Start the sandbox.");
         assert!(plain.get("diagnosticDetails").is_none());
     }
