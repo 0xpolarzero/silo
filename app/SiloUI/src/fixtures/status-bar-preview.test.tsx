@@ -52,7 +52,7 @@ describe("status bar preview", () => {
     await user.click(screen.getByRole("button", { name: "Restart" }))
     expect(screen.getByText("Restarting dev…")).toBeVisible()
     await waitFor(() => expect(screen.getByRole("complementary", { name: "Preview feedback" })).toHaveTextContent("Preview: dev restarted."))
-    await user.click(screen.getByRole("button", { name: "Open Silo…" }))
+    await user.click(screen.getByRole("button", { name: "Open Silo" }))
     expect(onOpenSilo).toHaveBeenCalledWith(expect.objectContaining({
       workspaces: expect.arrayContaining([
         expect.objectContaining({ machine: expect.objectContaining({ name: "dev" }), state: "running", stateDetail: "Running" }),
@@ -80,7 +80,7 @@ describe("status bar preview", () => {
       expect(screen.queryByText("Pushed 2 commits.")).not.toBeInTheDocument()
       expect(screen.queryByRole("button", { name: "Push 2 commits for acme/silo in dev" })).not.toBeInTheDocument()
 
-      fireEvent.click(screen.getByRole("button", { name: "Open Silo…" }))
+      fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
       const result = onOpenSilo.mock.calls[0][0]
       expect(result.workspaces[0].repositories).toEqual([
         { ...source.workspaces[0].repositories[0], ahead: 0 },
@@ -123,7 +123,7 @@ describe("status bar preview", () => {
         expect(screen.getByText("Pushed 2 commits.")).toBeVisible()
         expect(screen.getByText("Pushed 3 commits.")).toBeVisible()
       }
-      fireEvent.click(screen.getByRole("button", { name: "Open Silo…" }))
+      fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
       const result = onOpenSilo.mock.calls[0][0]
       expect(result.workspaces[0].repositories.map(({ ahead }: { ahead: number }) => ahead)).toEqual([0, 0])
       expect(result.workspaces[1].state).toBe("running")
@@ -153,7 +153,7 @@ describe("status bar preview", () => {
       expect(screen.getByText("Pushing 2 commits…")).toBeVisible()
       act(() => vi.advanceTimersByTime(900))
       expect(screen.getByText("Pushed 2 commits.")).toBeVisible()
-      fireEvent.click(screen.getByRole("button", { name: "Open Silo…" }))
+      fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
       expect(onOpenSilo.mock.calls[0][0].repositoryPushOperations).toEqual([
         { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "succeeded" },
       ])

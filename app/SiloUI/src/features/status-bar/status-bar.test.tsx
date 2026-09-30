@@ -358,7 +358,7 @@ describe("status bar", () => {
     screen.getByRole("button", { name: "Actions for dev" }).focus()
     await user.keyboard("{Enter}")
     expect(screen.queryByRole("menuitem", { name: "Files" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("menuitem", { name: "Open Silo…" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("menuitem", { name: "Open Silo" })).not.toBeInTheDocument()
     await user.keyboard("{End}{ArrowUp}{Enter}")
     expect(screen.getByRole("heading", { name: "dev folders" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Back to sandboxes" })).toHaveFocus()

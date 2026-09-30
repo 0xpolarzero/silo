@@ -228,7 +228,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(target)}><Terminal /></SandboxAction>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} onClick={() => openFolders(machine.id)}><Code /></SandboxAction>
                         </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => guardedActions.startWorkspace(target)}><Play /></SandboxAction>
-                          : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: target })}><SiloMark /></SandboxAction>)}
+                          : <SandboxAction label="Open Silo" onClick={() => actions.openSilo({ workspace: target })}><SiloMark /></SandboxAction>)}
                     <WorkspaceActions workspace={workspace} source={source} actions={guardedActions} onFolders={() => openFolders(machine.id)} onConfirm={(action) => setConfirmation({ workspace: target, action })} />
                   </>}
                 />
@@ -269,7 +269,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
         {quitPending && stoppedByQuit.length
           ? <QuitConfirmation names={stoppedByQuit} onCancel={() => { setQuitPending(false); focusContent() }} onQuit={() => { setQuitPending(false); actions.quit() }} />
           : <>
-            <Button variant="ghost" size="sm" className="gap-2" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
+            <Button variant="ghost" size="sm" className="gap-2" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo</span></Button>
             <SandboxAction label="Quit Silo" onClick={requestQuit}><Power /></SandboxAction>
           </>}
       </footer>
