@@ -32,6 +32,21 @@ it("keeps a deleted sandbox's activity when no sandbox filter is selected", () =
   expect(within(list).getByText("Event kept")).toBeVisible()
 })
 
+it("summarizes a failed activity's runtime output and keeps it behind Details", () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const failed = { ...activity("failed", workspaceTarget(source.workspaces[0])), title: "Start failed", detail: `The VM did not boot.\n${Array.from({ length: 20 }, (_, index) => `stderr line ${index}`).join("\n")}\n[Diagnostic truncated]` }
+  render(<WorkspacesPage
+    source={source} section="activity" workspaces={source.workspaces} activities={[failed]} selectedWorkspaceIds={new Set()}
+    networkActions={{} as ApplicationActions} onSectionChange={vi.fn()} editor="Editor" onOpenEditor={vi.fn()}
+    directoryStore={createDirectoryStore()} active logQuery="" repositoryPushOperations={[]} browser="Browser"
+    onWorkspaceFilterChange={vi.fn()} onLogQueryChange={vi.fn()} onPushRepository={vi.fn()} onDismissRepositoryPush={vi.fn()}
+  />)
+  const list = within(screen.getByRole("list", { name: "Recent activity" }))
+  expect(list.getByText("The VM did not boot.")).toBeVisible()
+  expect(list.queryByText(/stderr line 19/)).not.toBeInTheDocument()
+  expect(list.getByRole("button", { name: "Show details" })).toBeVisible()
+})
+
 it("hides other sandboxes' activity when a sandbox filter is selected", () => {
   const source = applicationSourceForScenario("complete")
   renderActivity(new Set([source.workspaces[0].machine.id]))

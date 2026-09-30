@@ -9,6 +9,7 @@ import { Activity, Archive, Box, Boxes, Check, CircleAlert, Cloud, File, GitBran
 
 import { DisclosureHeader } from "@/components/disclosure-header"
 import { EmptyState } from "@/components/empty-state"
+import { ErrorDetails } from "@/components/error-details"
 import { FilterCombobox, type FilterOption } from "@/components/filter-combobox"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { StatusBadge } from "@/components/status-badge"
@@ -272,7 +273,10 @@ function ActivityLog({ workspaces, sourceActivities, filtered, onShowLogs }: { w
                 detailClassName="whitespace-normal"
                 detail={
                   <div className="min-w-0 space-y-1" data-activity-content>
-                    <p className="whitespace-pre-wrap break-words">{item.detail}</p>
+                    {/* A failure's detail can carry raw runtime output: keep it behind Details. */}
+                    {item.tone === "danger" && item.detail
+                      ? <ErrorDetails message={item.detail} />
+                      : <p className="whitespace-pre-wrap break-words">{item.detail}</p>}
                     {workspace && item.tone === "danger" && <Button size="xs" variant="outline" onClick={() => onShowLogs(item)}>Show logs</Button>}
                     {item.status === "running" && item.progress !== undefined && (
                       <div className="flex max-w-sm items-center gap-2 pt-1">
