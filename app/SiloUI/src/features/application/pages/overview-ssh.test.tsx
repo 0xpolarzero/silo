@@ -32,8 +32,11 @@ it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", asy
 
   // The detail subtitle reflects that SSH is enabled without a separate scope chip;
   // the network/local scope stays visible in the SSH tab controls above.
-  source.sshAccess.workspaces[0].bindAddress = "127.0.0.1"
-  view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const refreshed = {
+    ...source,
+    sshAccess: { ...source.sshAccess, workspaces: source.sshAccess.workspaces.map(access => ({ ...access, bindAddress: "127.0.0.1" })) },
+  }
+  view.rerender(<OverviewPage source={refreshed} actions={actions} onMachinesChange={vi.fn()} />)
   expect(within(screen.getByRole("navigation", { name: "Breadcrumb" }).parentElement!).getByLabelText(/^SSH from .* only$/)).toBeVisible()
 })
 
