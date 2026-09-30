@@ -604,7 +604,10 @@ describe("application", () => {
     expect(within(playgroundsRepository).queryByRole("button", { name: /^Push / })).not.toBeInTheDocument()
 
     await user.click(pushButton)
-    expect(actions.pushRepository).toHaveBeenCalledWith("dev", "acme/silo")
+    expect(actions.pushRepository).not.toHaveBeenCalled()
+    expect(within(screen.getByRole("dialog")).getByText("Push to acme/silo?")).toBeVisible()
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Push" }))
+    expect(actions.pushRepository).toHaveBeenCalledWith("dev", "acme/silo", { repository: "acme/silo", branch: "main", commit: "4f1c2d9e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d" })
     expect(devRepository).toHaveAttribute("aria-busy", "true")
     expect(within(devRepository).getByRole("status")).toHaveClass("h-6")
     expect(within(devRepository).getByRole("status")).toHaveTextContent("Pushing 2 commits…")
@@ -938,7 +941,9 @@ describe("application", () => {
     expect(details.getByText(/no longer matches/)).toBeVisible()
 
     await application.user.click(details.getByRole("button", { name: "Retry push for acme/silo" }))
-    expect(application.actions.pushRepository).toHaveBeenCalledWith("dev", "acme/silo")
+    expect(application.actions.pushRepository).not.toHaveBeenCalled()
+    await application.user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Push" }))
+    expect(application.actions.pushRepository).toHaveBeenCalledWith("dev", "acme/silo", { repository: "acme/silo", branch: "main", commit: "4f1c2d9e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d" })
   })
 
   it.each([

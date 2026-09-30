@@ -26,7 +26,12 @@ describe("status bar", () => {
     const push = row.getByRole("button", { name: "Push 2 commits for acme/silo in dev" })
     expect(row.queryByText("acme/design-system")).not.toBeInTheDocument()
     await user.click(push)
-    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo")
+    // The push names its repository, branch and commit before anything is sent.
+    expect(actions.pushRepository).not.toHaveBeenCalled()
+    expect(screen.getByText("Push to acme/silo?")).toBeVisible()
+    expect(screen.getByText("Branch main · 2 commits · 4f1c2d9")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Push" }))
+    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", { repository: "acme/silo", branch: "main", commit: "4f1c2d9e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d" })
     expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
     const operation = { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "pushing" as const }
     rerender(<StatusBar source={{ ...source, repositoryPushOperations: [operation] }} actions={actions} defaultOpen />)
@@ -41,8 +46,16 @@ describe("status bar", () => {
     const source = applicationSourceForScenario("complete")
     const { user, actions } = setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, repositories: workspace.repositories.map((repository) => ({ ...repository, ahead: 1 })) })) })
     await user.click(screen.getByRole("button", { name: "Push 1 commit for acme/design-system in dev" }))
-    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/design-system")
+    expect(screen.getByText("Branch next · 1 commit · 9a8b7c6")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Push" }))
+    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/design-system", { repository: "acme/design-system", branch: "next", commit: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b" })
     expect(screen.getByRole("button", { name: "Push 1 commit for acme/silo in dev" })).toBeEnabled()
+  })
+
+  it("cannot push a repository whose GitHub destination is unknown", () => {
+    const source = applicationSourceForScenario("complete")
+    setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, repositories: workspace.repositories.map((repository) => ({ ...repository, repository: null })) })) })
+    expect(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev" })).toBeDisabled()
   })
 
   it.each(["stopped", "starting", "failed", "stale", "repair"])("keeps the commit count visible but blocks push when %s", (state) => {
@@ -71,7 +84,9 @@ describe("status bar", () => {
     const issue = screen.getByRole("alert", { name: "Push failed · dev" })
     expect(issue).toHaveTextContent("Remote unavailable.")
     await user.click(within(issue).getByRole("button", { name: "Retry push for acme/silo" }))
-    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo")
+    expect(screen.getByText("Push to acme/silo?")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Push" }))
+    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", { repository: "acme/silo", branch: "main", commit: "4f1c2d9e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d" })
     expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
   })
 

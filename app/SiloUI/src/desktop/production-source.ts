@@ -1148,7 +1148,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (operation) void configureMachines(operation.candidate, { kind: "retry", workspace }).catch(() => {})
     },
     dismissRepositoryPush: (workspace, repositoryPath) => statusActions.dismissRepositoryPush(workspace, repositoryPath),
-    pushRepository: (workspace, repositoryPath) => {
+    pushRepository: (workspace, repositoryPath, target) => {
       const key = JSON.stringify([workspace, repositoryPath])
       if (pendingRepositoryPushes.has(key) || snapshot.source?.repositoryPushOperations.some(operation => operation.workspace === workspace && operation.repositoryPath === repositoryPath && (operation.status === "pushing" || operation.status === "unknown"))) return
       const commitCount = snapshot.source?.workspaces.find(item => workspaceTarget(item) === workspace)?.repositories.find(repository => repository.path === repositoryPath)?.ahead ?? 0
@@ -1188,7 +1188,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const observe = async (start: boolean): Promise<void> => {
         if (disposed) return
         try {
-          const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", { workspace, repositoryPath, operationId })
+          // The host pushes exactly the confirmed target or reports that the repository changed.
+          const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", start ? { workspace, repositoryPath, operationId, target } : { workspace, repositoryPath, operationId })
           if (disposed) return
           // No saved job means the first request never arrived. Reuse its identifier.
           if (result === null && !start) return observe(true)

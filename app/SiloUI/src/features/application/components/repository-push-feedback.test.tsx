@@ -4,9 +4,11 @@ import { describe, expect, it, vi } from "vitest"
 
 import { Toaster } from "@/components/ui/sonner"
 import type { RepositoryPushOperation } from "@/features/application/model/application-source"
-import { useRepositoryPushToasts } from "./repository-push-feedback"
+import { RepositoryPushButton, RepositoryPushFeedback, useRepositoryPushToasts } from "./repository-push-feedback"
 
-const base = { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2 }
+const target = { repository: "acme/silo", branch: "main", commit: "0123456789abcdef0123456789abcdef01234567" }
+const base = { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, target }
+const row = { path: "acme/silo", branch: "feature", ahead: 3, behind: 0, dirty: false, repository: "acme/silo", head: "fedcba9876543210fedcba9876543210fedcba98" }
 
 function Harness({ operations, onPush, onDismiss }: { operations: RepositoryPushOperation[]; onPush: () => void; onDismiss: () => void }) {
   useRepositoryPushToasts(operations, { onPush, onDismiss })
@@ -32,18 +34,62 @@ describe("repository push notifications", () => {
     expect(onDismiss).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo")
   })
 
-  it("shows a failure with Retry that pushes the same commits again", async () => {
+  it("shows a failure with Retry that pushes the same confirmed target again", async () => {
     const { update, onPush } = setup([{ ...base, status: "pushing" }])
     update([{ ...base, status: "failed", message: "The remote branch changed." }])
     expect(await within(document.body).findByText("Push failed · silo")).toBeInTheDocument()
     expect(within(document.body).getByText("The remote branch changed.")).toBeInTheDocument()
     await userEvent.setup().click(within(document.body).getByRole("button", { name: "Retry" }))
-    expect(onPush).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", 2)
+    expect(onPush).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", 2, target)
+  })
+
+  it("offers no notification Retry for a push without a confirmed target", async () => {
+    const { update } = setup([{ ...base, target: undefined, status: "pushing" }])
+    update([{ ...base, target: undefined, status: "failed", message: "Update Silo." }])
+    expect(await within(document.body).findByText("Push failed · silo")).toBeInTheDocument()
+    expect(within(document.body).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
   })
 
   it("does not announce operations that were already finished at load", () => {
     const { onDismiss } = setup([{ ...base, status: "succeeded" }, { ...base, repositoryPath: "acme/other", status: "failed", message: "Old failure" }])
     expect(screen.queryByText(/Pushed|Push failed|Old failure/)).not.toBeInTheDocument()
     expect(onDismiss).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo")
+  })
+})
+
+describe("push confirmation", () => {
+  it("names the repository, branch and commit and pushes exactly that target", async () => {
+    const user = userEvent.setup()
+    const onPush = vi.fn()
+    render(<RepositoryPushButton repository={row} label="Push 3 commits" onPush={onPush}>Push 3 commits</RepositoryPushButton>)
+    await user.click(screen.getByRole("button", { name: "Push 3 commits" }))
+    expect(onPush).not.toHaveBeenCalled()
+    expect(screen.getByText("Push to acme/silo?")).toBeVisible()
+    expect(screen.getByText("Branch feature · 3 commits · fedcba9")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(onPush).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "Push 3 commits" }))
+    await user.click(screen.getByRole("button", { name: "Push" }))
+    expect(onPush).toHaveBeenCalledExactlyOnceWith({ repository: "acme/silo", branch: "feature", commit: row.head })
+  })
+
+  it("cannot push a repository without a GitHub destination or head commit", () => {
+    render(<>
+      <RepositoryPushButton repository={{ ...row, repository: null }} label="No origin" onPush={vi.fn()}>Push</RepositoryPushButton>
+      <RepositoryPushButton repository={{ ...row, head: undefined }} label="No head" onPush={vi.fn()}>Push</RepositoryPushButton>
+    </>)
+    expect(screen.getByRole("button", { name: "No origin" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "No head" })).toBeDisabled()
+  })
+
+  it("retries a failed push only after confirming the repository's current target", async () => {
+    const user = userEvent.setup()
+    const onPush = vi.fn()
+    render(<RepositoryPushFeedback operation={{ ...base, status: "failed", message: "The repository changed after you confirmed the push." }} workspace="dev" repositoryPath="acme/silo" repository={row} onPush={onPush} onDismiss={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Push failed for acme/silo. Show details" }))
+    await user.click(screen.getByRole("button", { name: "Retry push for acme/silo" }))
+    expect(screen.getByText("Branch feature · 3 commits · fedcba9")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Push" }))
+    expect(onPush).toHaveBeenCalledExactlyOnceWith({ repository: "acme/silo", branch: "feature", commit: row.head })
   })
 })

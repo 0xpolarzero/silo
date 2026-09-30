@@ -8,6 +8,8 @@ import type { BackupState } from "@/features/application/model/backup-source"
 import { createProductionSource, isUpdateInProgress, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
 import { siloProgressEventSchema } from "@/contracts/silo"
 
+const pushTarget = { repository: "owner/repo", branch: "main", commit: "a".repeat(40) }
+
 const toasts = vi.hoisted(() => ({ showOperationFailure: vi.fn() }))
 vi.mock("@/lib/operation-toast", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/operation-toast")>(), showOperationFailure: toasts.showOperationFailure }))
 
@@ -678,9 +680,9 @@ describe("production application bridge", () => {
     })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
-    store.applicationActions.pushRepository("dev", "/workspace/repo")
+    store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
     await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toContainEqual({ workspace: "dev", repositoryPath: "/workspace/repo", commitCount: 0, status: "failed", message: "Repository authorization was removed" }))
-    expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String) })
+    expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String), target: pushTarget })
     store.dispose()
   })
 
@@ -698,13 +700,13 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     try {
       await store.initialize()
-      store.applicationActions.pushRepository("dev", "/workspace/repo")
+      store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
       expect(mock.invoke.mock.calls.some(([command]) => command === "start_repository_push")).toBe(false)
       store.applicationActions.dismissRepositoryPush!("dev", "/workspace/repo")
       await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toEqual([]))
       expect(mock.invoke.mock.calls.some(([command]) => command === "start_repository_push")).toBe(false)
-      store.applicationActions.pushRepository("dev", "/workspace/repo")
-      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String) }))
+      store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
+      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String), target: pushTarget }))
     } finally { store.dispose() }
   })
 

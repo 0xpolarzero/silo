@@ -1,15 +1,47 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { CircleAlert, CircleCheck, Loader2, RotateCw } from "lucide-react"
 
+import { ConfirmBody, ConfirmPopover } from "@/components/confirm-popover"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { commitLabel } from "@/features/application/model/repository-push"
-import type { RepositoryPushOperation } from "@/features/application/model/application-source"
+import { commitLabel, pushTarget, shortCommit } from "@/features/application/model/repository-push"
+import type { ApplicationRepository, RepositoryPushOperation, RepositoryPushTarget } from "@/features/application/model/application-source"
 import type { NoticeSandbox } from "@/desktop/notices"
 import { dismissOperationToast, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 
 const pushToastId = (operation: RepositoryPushOperation) => `repository-push:${operation.workspace}:${operation.repositoryPath}`
 const repositoryName = (path: string) => path.split("/").filter(Boolean).at(-1) ?? path
+
+export type PushRepository = (workspace: string, repositoryPath: string, commitCount: number, target: RepositoryPushTarget) => void
+
+/** Every push names its repository and branch first (owner decision 1); the host then pushes exactly this commit. */
+function pushConfirmation(target: RepositoryPushTarget, commitCount: number) {
+  return {
+    title: `Push to ${target.repository}?`,
+    description: `Branch ${target.branch} · ${commitLabel(commitCount)} · ${shortCommit(target.commit)}`,
+    confirmLabel: "Push",
+  }
+}
+
+const UNCONFIRMABLE = "Silo cannot tell where this repository pushes. It needs a GitHub origin; refresh repositories, or update Silo on the computer that runs this sandbox."
+
+/**
+ * The push button: asks for confirmation naming the repository, branch and commit, then pushes that
+ * target. Disabled when the sandbox did not report a GitHub destination.
+ */
+export function RepositoryPushButton({ repository, disabled = false, label, onPush, children }: {
+  repository: ApplicationRepository
+  disabled?: boolean
+  /** Accessible name of the button. */
+  label?: string
+  onPush: (target: RepositoryPushTarget) => void
+  children: ReactNode
+}) {
+  const target = pushTarget(repository)
+  const button = <Button variant="outline" size="xs" disabled={disabled || !target} aria-label={label} title={target ? undefined : UNCONFIRMABLE}>{children}</Button>
+  if (!target || disabled) return button
+  return <ConfirmPopover {...pushConfirmation(target, repository.ahead)} onConfirm={() => onPush(target)}>{button}</ConfirmPopover>
+}
 
 /**
  * Announces backend-driven push transitions as notifications: loading, then a success that stays until closed
@@ -19,7 +51,8 @@ const repositoryName = (path: string) => path.split("/").filter(Boolean).at(-1) 
 export function useRepositoryPushToasts(
   operations: RepositoryPushOperation[],
   { onPush, onDismiss, resolveSandbox }: {
-    onPush: (workspace: string, repositoryPath: string, commitCount: number) => void
+    /** Retries a failed push of the same confirmed target. */
+    onPush: PushRepository
     onDismiss: (workspace: string, repositoryPath: string) => void
     /** Resolves the sandbox a push target belongs to, for the system notification. */
     resolveSandbox?: (workspace: string) => NoticeSandbox | undefined
@@ -51,7 +84,8 @@ export function useRepositoryPushToasts(
           description: operation.message,
           sandbox: operation.workspace,
           noticeSandbox: callbacks.current.resolveSandbox?.(operation.workspace),
-          retry: () => callbacks.current.onPush(operation.workspace, operation.repositoryPath, operation.commitCount),
+          // The user confirmed this exact target before; a retry pushes it again or aborts if the sandbox moved on.
+          retry: operation.target ? () => callbacks.current.onPush(operation.workspace, operation.repositoryPath, operation.commitCount, operation.target!) : undefined,
         })
       } else {
         dismissOperationToast(id)
@@ -67,14 +101,17 @@ export function RepositoryPushFeedback({
   operation,
   workspace,
   repositoryPath,
-  onRetry,
+  repository,
+  onPush,
   onDismiss,
   showSuccess = false,
 }: {
   operation: RepositoryPushOperation
   workspace: string
   repositoryPath: string
-  onRetry: () => void
+  /** The repository as the sandbox reports it now; Retry confirms and pushes its current target. */
+  repository?: ApplicationRepository
+  onPush: (target: RepositoryPushTarget) => void
   onDismiss: (workspace: string, repositoryPath: string) => void
   /** Show the success line and clear it after a few seconds. For surfaces without notifications. */
   showSuccess?: boolean
@@ -109,9 +146,25 @@ export function RepositoryPushFeedback({
       </div>
     )
   }
+  return <FailedPush operation={operation} repositoryPath={repositoryPath} repository={repository} onPush={onPush} />
+}
+
+function FailedPush({ operation, repositoryPath, repository, onPush }: {
+  operation: Extract<RepositoryPushOperation, { status: "failed" }>
+  repositoryPath: string
+  repository?: ApplicationRepository
+  onPush: (target: RepositoryPushTarget) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const target = repository ? pushTarget(repository) : null
+  function change(next: boolean) {
+    setOpen(next)
+    if (!next) setConfirming(false)
+  }
   return (
     <div className="flex h-6 items-center gap-1.5">
-      <Popover>
+      <Popover open={open} onOpenChange={change}>
         <PopoverTrigger asChild>
           <Button variant="ghost" size="xs" className="text-destructive hover:text-destructive" aria-label={`Push failed for ${repositoryPath}. Show details`}>
             <CircleAlert aria-hidden="true" />
@@ -119,12 +172,16 @@ export function RepositoryPushFeedback({
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="grid w-80 max-w-[calc(100vw-2rem)] gap-2 text-xs">
-          <p className="text-destructive">{operation.message}</p>
-          {operation.diagnosticDetails && <pre className="max-h-48 overflow-auto rounded-md bg-muted px-2.5 py-2 font-mono text-[10px] leading-4 whitespace-pre-wrap text-muted-foreground">{operation.diagnosticDetails}</pre>}
-          <Button className="justify-self-start" variant="outline" size="xs" onClick={onRetry} aria-label={`Retry push for ${repositoryPath}`}>
-            <RotateCw aria-hidden="true" />
-            Retry
-          </Button>
+          {confirming && target && repository
+            ? <ConfirmBody {...pushConfirmation(target, repository.ahead)} onConfirm={() => onPush(target)} onClose={() => change(false)} />
+            : <>
+              <p className="text-destructive">{operation.message}</p>
+              {operation.diagnosticDetails && <pre className="max-h-48 overflow-auto rounded-md bg-muted px-2.5 py-2 font-mono text-[10px] leading-4 whitespace-pre-wrap text-muted-foreground">{operation.diagnosticDetails}</pre>}
+              <Button className="justify-self-start" variant="outline" size="xs" disabled={!target} title={target ? undefined : UNCONFIRMABLE} onClick={() => setConfirming(true)} aria-label={`Retry push for ${repositoryPath}`}>
+                <RotateCw aria-hidden="true" />
+                Retry
+              </Button>
+            </>}
         </PopoverContent>
       </Popover>
     </div>

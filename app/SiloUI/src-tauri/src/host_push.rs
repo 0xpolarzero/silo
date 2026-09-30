@@ -126,20 +126,54 @@ fn repository(url: &str) -> Result<String, String> {
         .or_else(|| url.strip_prefix("git@github.com:"))
         .ok_or("Choose a GitHub origin repository before pushing.")?;
     let name = name.strip_suffix(".git").unwrap_or(name);
-    if name.split('/').count() != 2
-        || name.split('/').any(|part| {
-            part.is_empty()
-                || part == "."
-                || part == ".."
-                || !part
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-        })
-    {
+    if !valid_repository_name(name) {
         return Err("Invalid GitHub origin repository.".into());
     }
     Ok(name.into())
 }
+fn valid_repository_name(name: &str) -> bool {
+    name.split('/').count() == 2
+        && name.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        })
+}
+fn valid_commit(commit: &str) -> bool {
+    matches!(commit.len(), 40 | 64) && commit.bytes().all(|c| c.is_ascii_hexdigit())
+}
+/// The repository, branch and commit the user confirmed. A push publishes
+/// exactly this commit to this branch of this repository, or nothing
+/// (owner decision 1).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct PushTarget {
+    pub(crate) repository: String,
+    pub(crate) branch: String,
+    pub(crate) commit: String,
+}
+impl PushTarget {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !valid_repository_name(&self.repository) {
+            return Err("Invalid GitHub repository for this push.".into());
+        }
+        if self.branch.is_empty()
+            || self.branch.len() > 255
+            || self.branch.starts_with('-')
+            || self.branch.chars().any(char::is_control)
+        {
+            return Err("Invalid branch for this push.".into());
+        }
+        if !valid_commit(&self.commit) {
+            return Err("Invalid commit for this push.".into());
+        }
+        Ok(())
+    }
+}
+const TARGET_CHANGED: &str =
+    "The repository changed after you confirmed the push. Review it and push again.";
 pub(crate) fn discover(
     paths: &RuntimePaths,
     name: &str,
@@ -171,14 +205,26 @@ p=${directory%/.git}
 branch=$(git -C "$p" symbolic-ref --quiet --short HEAD) || continue
 counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD) 0"
 dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null)
-printf '%s\000%s\000%s\000%s\000' "$p" "$branch" "$counts" "$dirty"
+head=$(git -C "$p" rev-parse --verify --quiet HEAD) || head=
+origin=$(git -C "$p" remote get-url origin 2>/dev/null) || origin=
+printf '%s\000%s\000%s\000%s\000%s\000%s\000' "$p" "$branch" "$counts" "$dirty" "$head" "$origin"
 done"#;
+const DISCOVERY_FIELDS: usize = 6;
 
 fn discover_uncached(paths: &RuntimePaths, name: &str) -> Result<Vec<Value>, String> {
-    let output = guest(paths, name, DISCOVER_REPOSITORIES, &["/workspace"])?;
+    Ok(discovered_rows(&guest(
+        paths,
+        name,
+        DISCOVER_REPOSITORIES,
+        &["/workspace"],
+    )?))
+}
+/// Each row names the GitHub repository and head commit a push would publish,
+/// so the user confirms them and the push is bound to them.
+fn discovered_rows(output: &str) -> Vec<Value> {
     let fields: Vec<_> = output.split('\0').collect();
     let mut rows = Vec::new();
-    for parts in fields.chunks_exact(4) {
+    for parts in fields.chunks_exact(DISCOVERY_FIELDS) {
         if !valid_path(parts[0]) || parts[1].chars().any(char::is_control) {
             continue;
         }
@@ -189,9 +235,17 @@ fn discover_uncached(paths: &RuntimePaths, name: &str) -> Result<Vec<Value>, Str
         if counts.len() != 2 {
             continue;
         }
-        rows.push(json!({"path":parts[0],"branch":parts[1],"ahead":counts[0],"behind":counts[1],"dirty":!parts[3].is_empty()}));
+        rows.push(json!({
+            "path": parts[0],
+            "branch": parts[1],
+            "ahead": counts[0],
+            "behind": counts[1],
+            "dirty": !parts[3].is_empty(),
+            "head": Some(parts[4]).filter(|head| valid_commit(head)),
+            "repository": repository(parts[5]).ok(),
+        }));
     }
-    Ok(rows)
+    rows
 }
 struct HostGit {
     executable: PathBuf,
@@ -525,11 +579,17 @@ fn validate_running(inspected: &runtime::InspectedSandbox, workspace: &str) -> R
     }
     Ok(())
 }
-fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, String> {
+fn perform(
+    app: &tauri::AppHandle,
+    workspace: &str,
+    path: &str,
+    target: &PushTarget,
+) -> Result<u64, String> {
     let _update = crate::updates::operation_guard()?;
     if !valid_path(path) {
         return Err("Choose a repository inside /workspace.".into());
     }
+    target.validate()?;
     runtime::validate_name(workspace).map_err(|e| e.to_string())?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
@@ -556,9 +616,12 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
         &[path],
     )?;
     drop(read_guard);
-    let repo = repository(origin.trim())?;
+    // Authorize and push only the repository the user confirmed.
+    if !repository(origin.trim())?.eq_ignore_ascii_case(&target.repository) {
+        return Err(TARGET_CHANGED.into());
+    }
     // Revoked when this function returns, whatever the outcome.
-    let credential = crate::github::host_push_credential(app, workspace, &repo)?;
+    let credential = crate::github::host_push_credential(app, workspace, &target.repository)?;
     let _guard = runtime::OPERATIONS
         .kind(runtime::operation_gate::OperationKind::Push)
         .vm(&vm_id, workspace, &format!("Pushing from {workspace}"))
@@ -571,10 +634,11 @@ fn perform(app: &tauri::AppHandle, workspace: &str, path: &str) -> Result<u64, S
         .resource_dir()
         .map_err(|_| "Cannot locate Git support.")?
         .join("git-support");
-    push_committed(
+    push_target(
         &paths,
         workspace,
         path,
+        target,
         credential.repository(),
         credential.token(),
         &executable,
@@ -743,8 +807,9 @@ fn publish_committed_tracking(
     Ok(count)
 }
 
-// The same publication path is exercised with disposable VMs and scoped
-// credentials in the opt-in live regression. Authorization stays in perform.
+// The opt-in live regression pushes the sandbox's current branch, as the UI
+// would after the user confirmed it.
+#[cfg(test)]
 pub(crate) fn push_committed(
     paths: &RuntimePaths,
     workspace: &str,
@@ -754,9 +819,41 @@ pub(crate) fn push_committed(
     executable: &Path,
     support: &Path,
 ) -> Result<u64, String> {
+    let head = guest(
+        paths,
+        workspace,
+        "set -eu\nprintf '%s\\n' \"$(git -C \"$1\" symbolic-ref --quiet --short HEAD)\" \"$(git -C \"$1\" rev-parse --verify HEAD)\"",
+        &[path],
+    )?;
+    let mut lines = head.lines();
+    let target = PushTarget {
+        repository: repo.into(),
+        branch: lines.next().unwrap_or_default().into(),
+        commit: lines.next().unwrap_or_default().into(),
+    };
+    target.validate()?;
+    push_target(
+        paths, workspace, path, &target, repo, token, executable, support,
+    )
+}
+
+// The same publication path is exercised with disposable VMs and scoped
+// credentials in the opt-in live regression. Authorization stays in perform.
+#[allow(clippy::too_many_arguments)]
+fn push_target(
+    paths: &RuntimePaths,
+    workspace: &str,
+    path: &str,
+    target: &PushTarget,
+    repo: &str,
+    token: &str,
+    executable: &Path,
+    support: &Path,
+) -> Result<u64, String> {
     let id = uuid::Uuid::new_v4();
     let export = format!("/tmp/silo-push-{id}");
     let export_ref = format!("refs/silo/export/{id}");
+    let (branch, commit) = (target.branch.as_str(), target.commit.as_str());
     let result = (|| {
         let temp = tempfile::tempdir().map_err(|_| "Cannot create isolated host Git directory.")?;
         let root = temp.path();
@@ -765,12 +862,14 @@ pub(crate) fn push_committed(
         let mut transport =
             crate::host_push_transport::prepare(paths, workspace, &root.join("ssh"))?;
         transport.install_lfs_server(&support.join("lfs-transfer/git-lfs-transfer"), &export)?;
+        // Export only the confirmed branch, and only while it still points at
+        // the confirmed commit. The host verifies the imported commit again.
         let data = guest(
             paths,
             workspace,
             r#"set -eu
-branch=$(git -C "$1" symbolic-ref --quiet --short HEAD)
-commit=$(git -C "$1" rev-parse --verify "refs/heads/$branch^{commit}")
+commit=$(git -C "$1" rev-parse --verify --quiet "refs/heads/$4^{commit}") || commit=
+if [ "$commit" != "$5" ]; then printf 'changed\n'; exit 0; fi
 git -C "$1" update-ref "$3" "$commit"
 # Use Git LFS's own storage resolution, including linked worktrees and lfs.storage.
 media=$(git -C "$1" lfs env | sed -n 's/^LocalMediaDir=//p')
@@ -781,15 +880,12 @@ if [ -d "$media" ]; then
 else
     mkdir "$2/source.git/lfs/objects"
 fi
-printf '%s\n%s\n' "$branch" "$commit"
+printf '%s\n' "$commit"
 "#,
-            &[path, &export, &export_ref],
+            &[path, &export, &export_ref, branch, commit],
         )?;
-        let mut lines = data.lines();
-        let branch = lines.next().ok_or("Missing Git branch.")?;
-        let commit = lines.next().ok_or("Missing Git commit.")?;
-        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
-            return Err("Invalid exported Git commit.".into());
+        if data.lines().next() != Some(commit) {
+            return Err(TARGET_CHANGED.into());
         }
         let git = HostGit {
             executable: executable.to_path_buf(),
@@ -845,23 +941,14 @@ printf '%s\n%s\n' "$branch" "$commit"
     );
     result
 }
+/// Push a local sandbox repository. Remote computers run this through their
+/// own push journal (`repository.push.start`).
 pub(crate) async fn push_repository(
     app: tauri::AppHandle,
     workspace: String,
     repository_path: String,
+    target: PushTarget,
 ) -> Result<Value, String> {
-    if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
-        return tauri::async_runtime::spawn_blocking(move || {
-            crate::remote::call_remote(
-                &app,
-                &host,
-                "repository.push",
-                json!({"vmId":vm,"path":repository_path}),
-            )
-        })
-        .await
-        .map_err(|_| "Remote repository request failed.".to_string())?;
-    }
     let key = format!("{workspace}\0{repository_path}");
     let planned_count = planned_count(&app, &workspace, &repository_path);
     {
@@ -869,20 +956,26 @@ pub(crate) async fn push_repository(
         if r.get(&key).is_some_and(|(v, _)| v["status"] == "pushing") {
             return Err("This repository is already being pushed.".into());
         }
-        r.insert(key.clone(),(json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":planned_count,"status":"pushing"}),Instant::now()));
+        r.insert(key.clone(),(json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":planned_count,"status":"pushing","target":target}),Instant::now()));
     }
     let _ = app.emit("silo://application-state-changed", ());
     let task = {
-        let (app, workspace, repository_path) =
-            (app.clone(), workspace.clone(), repository_path.clone());
-        tauri::async_runtime::spawn_blocking(move || perform(&app, &workspace, &repository_path))
+        let (app, workspace, repository_path, target) = (
+            app.clone(),
+            workspace.clone(),
+            repository_path.clone(),
+            target.clone(),
+        );
+        tauri::async_runtime::spawn_blocking(move || {
+            perform(&app, &workspace, &repository_path, &target)
+        })
     };
     // A panicked task must still resolve the entry, or it would stay
     // "pushing" forever and block every retry.
     let outcome = task
         .await
         .unwrap_or_else(|_| Err("Host push task failed.".into()));
-    let value = finished_result(&workspace, &repository_path, outcome);
+    let value = finished_result(&workspace, &repository_path, &target, outcome);
     results()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -910,13 +1003,19 @@ pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_
         })
         .unwrap_or(0)
 }
-fn finished_result(workspace: &str, repository_path: &str, outcome: Result<u64, String>) -> Value {
+fn finished_result(
+    workspace: &str,
+    repository_path: &str,
+    target: &PushTarget,
+    outcome: Result<u64, String>,
+) -> Value {
     match outcome {
         Ok(count) => json!({
             "workspace": workspace,
             "repositoryPath": repository_path,
             "commitCount": count,
             "status": "succeeded",
+            "target": target,
         }),
         Err(message) => {
             let mut value = json!({
@@ -924,6 +1023,7 @@ fn finished_result(workspace: &str, repository_path: &str, outcome: Result<u64, 
                 "repositoryPath": repository_path,
                 "commitCount": 0,
                 "status": "failed",
+                "target": target,
             });
             // Keep the visible message short; Git output goes to the Details disclosure.
             match message.split_once('\n') {
@@ -1009,6 +1109,12 @@ mod tests {
                 "-m",
                 "fixture",
             ],
+            vec![
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/Owner/Repo.git",
+            ],
         ] {
             assert!(Command::new("git")
                 .args(args)
@@ -1017,6 +1123,15 @@ mod tests {
                 .unwrap()
                 .success());
         }
+        let head = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&seed)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
         let workspace = root.path().join("workspace with spaces");
         fs::create_dir(&workspace).unwrap();
         for index in 0..216 {
@@ -1036,11 +1151,64 @@ mod tests {
         );
         let output = String::from_utf8(output.stdout).unwrap();
         let records: Vec<_> = output.split('\0').collect();
-        assert_eq!(records.len(), 216 * 4 + 1);
-        for record in records.chunks_exact(4) {
+        assert_eq!(records.len(), 216 * DISCOVERY_FIELDS + 1);
+        for record in records.chunks_exact(DISCOVERY_FIELDS) {
             assert_eq!(record[1], "main");
             assert_eq!(record[2], "1 0");
             assert_eq!(record[3], "");
+        }
+        // The workspace root is outside /workspace here; rename it for parsing.
+        let rows = discovered_rows(&output.replace(workspace.to_str().unwrap(), "/workspace"));
+        assert_eq!(rows.len(), 216);
+        assert_eq!(rows[0]["repository"], "Owner/Repo");
+        assert_eq!(rows[0]["head"], head.trim());
+    }
+
+    #[test]
+    fn discovered_rows_omit_unverifiable_push_destinations() {
+        let row = |head: &str, origin: &str| {
+            format!("/workspace/repo\0main\x001 0\0\0{head}\0{origin}\0")
+        };
+        let commit = "a".repeat(40);
+        let rows = discovered_rows(&row(&commit, "git@github.com:owner/repo.git"));
+        assert_eq!(rows[0]["repository"], "owner/repo");
+        assert_eq!(rows[0]["head"], commit);
+        let rows = discovered_rows(&row("not-a-commit", "https://gitlab.com/owner/repo.git"));
+        assert!(rows[0]["repository"].is_null());
+        assert!(rows[0]["head"].is_null());
+    }
+
+    #[test]
+    fn push_targets_are_validated_before_any_work() {
+        let target = PushTarget {
+            repository: "owner/repo".into(),
+            branch: "feature/x".into(),
+            commit: "b".repeat(40),
+        };
+        assert!(target.validate().is_ok());
+        for invalid in [
+            PushTarget {
+                repository: "owner/repo/extra".into(),
+                ..target.clone()
+            },
+            PushTarget {
+                branch: "".into(),
+                ..target.clone()
+            },
+            PushTarget {
+                branch: "-delete".into(),
+                ..target.clone()
+            },
+            PushTarget {
+                branch: "main\nother".into(),
+                ..target.clone()
+            },
+            PushTarget {
+                commit: "HEAD".into(),
+                ..target.clone()
+            },
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
         }
     }
 
@@ -1146,15 +1314,27 @@ mod tests {
     }
     #[test]
     fn failed_results_separate_summary_from_git_diagnostics() {
+        let target = PushTarget {
+            repository: "owner/repo".into(),
+            branch: "main".into(),
+            commit: "c".repeat(40),
+        };
         let value = super::finished_result(
             "dev",
             "/workspace/repo",
+            &target,
             Err("Git push failed (exit status: 1).\nremote: rejected\nmore".into()),
         );
         assert_eq!(value["message"], "Git push failed (exit status: 1).");
         assert_eq!(value["diagnosticDetails"], "remote: rejected\nmore");
-        let plain =
-            super::finished_result("dev", "/workspace/repo", Err("Start the sandbox.".into()));
+        // Results name what was pushed, so a retry pushes the same confirmed target.
+        assert_eq!(value["target"]["branch"], "main");
+        let plain = super::finished_result(
+            "dev",
+            "/workspace/repo",
+            &target,
+            Err("Start the sandbox.".into()),
+        );
         assert_eq!(plain["message"], "Start the sandbox.");
         assert!(plain.get("diagnosticDetails").is_none());
     }
