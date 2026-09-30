@@ -144,6 +144,7 @@ const workspaceShape = z.object({
   host: z.string(),
   repositories: tolerantArray(repositoryShape), files: tolerantArray(fileEntryShape), ports: tolerantArray(workspacePortShape), logs: tolerantArray(logShape),
   githubRepositories: z.array(z.string()), secretNames: z.array(z.string()),
+  pendingSecretRevocations: z.array(z.string()).optional(),
   checkpoints: tolerantArray(checkpointShape).optional(),
   checkpointOperation: checkpointOperationShape.nullable().optional().catch(null),
   pendingCheckpointRestore: pendingCheckpointRestoreShape.nullable().optional().catch(null),

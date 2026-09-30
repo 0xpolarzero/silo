@@ -225,11 +225,16 @@ function WorkspaceActions({ workspace, availability, readOnly, guard }: { worksp
   const action = workspace.state === "running" || workspace.state === "starting" ? "stop" : "start"
   const enabled = !readOnly && (action === "stop" ? availability.canStop : availability.canStart)
   const asks = enabled && guard.check(workspace, action).kind === "confirm"
-  return <LifecycleControl guard={guard} workspace={workspace} action={action} disabled={!enabled} reason={readOnly ? undefined : availability.reasons[action]}>
-    {({ onClick, disabled }) => action === "stop"
-      ? <SandboxAction label={`Stop ${machine.name}`} tooltip={asks ? `Stop ${machine.name}…` : undefined} disabled={disabled} onClick={onClick}><Square /></SandboxAction>
-      : <SandboxAction label={`Start ${machine.name}`} tooltip={asks ? `Start ${machine.name}…` : undefined} disabled={disabled} onClick={onClick}><Play /></SandboxAction>}
-  </LifecycleControl>
+  return <>
+    {Boolean(workspace.pendingSecretRevocations?.length) && <LifecycleControl guard={guard} workspace={workspace} action="restart" disabled={readOnly || !availability.canRestart} reason={readOnly ? undefined : availability.reasons.restart}>
+      {({ onClick, disabled }) => <SandboxAction label={`Restart ${machine.name}`} disabled={disabled} onClick={onClick}><RotateCw /></SandboxAction>}
+    </LifecycleControl>}
+    <LifecycleControl guard={guard} workspace={workspace} action={action} disabled={!enabled} reason={readOnly ? undefined : availability.reasons[action]}>
+      {({ onClick, disabled }) => action === "stop"
+        ? <SandboxAction label={`Stop ${machine.name}`} tooltip={asks ? `Stop ${machine.name}…` : undefined} disabled={disabled} onClick={onClick}><Square /></SandboxAction>
+        : <SandboxAction label={`Start ${machine.name}`} tooltip={asks ? `Start ${machine.name}…` : undefined} disabled={disabled} onClick={onClick}><Play /></SandboxAction>}
+    </LifecycleControl>
+  </>
 }
 
 export function OverviewPage({ active = true, readOnly = false,

@@ -324,6 +324,54 @@ pub(crate) fn apply(
     })
 }
 
+/// Revoke only the removed name. No remaining secret values or credential-store
+/// reads are needed, and unrelated secret/GitHub policies remain untouched.
+pub(crate) fn remove_name(paths: &RuntimePaths, workspace: &str, name: &str) -> Result<(), String> {
+    modify(
+        paths,
+        workspace,
+        &["--secret-rm".into(), name.into()],
+        &Vec::new(),
+        false,
+    )
+    .map_err(String::from)
+}
+
+pub(crate) fn revoke_observed_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace: &str,
+    name: &str,
+    inspected: &InspectedSandbox,
+    remove: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<bool, String> {
+    if inspected.status != "Running" {
+        return Ok(false);
+    }
+    let Some(active) = inspected.active_config.as_ref() else {
+        return Ok(false);
+    };
+    if !names(active).contains(name) && !names(&inspected.config).contains(name) {
+        return Ok(true);
+    }
+    remove(name)?;
+    match observe_vm(runner, paths, workspace).map_err(|error| error.to_string())? {
+        VmRuntime::Absent => Ok(true),
+        VmRuntime::Present(observed) => {
+            ensure_managed(&observed).map_err(|error| error.to_string())?;
+            Ok(
+                matches!(observed.status.as_str(), "Stopped" | "Created" | "Crashed")
+                    || (observed.status == "Running"
+                        && !names(&observed.config).contains(name)
+                        && observed
+                            .active_config
+                            .as_ref()
+                            .is_some_and(|config| !names(config).contains(name))),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +448,33 @@ mod tests {
         assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
         let _ = id;
         drop(guard);
+    }
+
+    #[test]
+    fn name_only_revocation_does_not_resolve_remaining_secret_values() {
+        let _test_state = crate::test_support::global_state();
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test").unwrap();
+        fs::write(&paths.executable, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$MSB_HOME/revoke-args\"\ncat > \"$MSB_HOME/revoke-stdin\"\n").unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let store = directory.path().join("secrets.json");
+        // This unrelated assignment has no credential. Revocation must not ask for it.
+        fs::write(&store, r#"{"secrets":[{"id":"keep","valueId":"unavailable","name":"KEEP","workspaces":["dev"],"allowedDomains":["api.example.com"]}]}"#).unwrap();
+        crate::secrets::use_test_store(Some(store));
+        crate::secrets::use_test_vault(Some(Default::default()));
+        remove_name(&paths, "dev", "REMOVED").unwrap();
+        assert_eq!(
+            fs::read_to_string(paths.home.join("revoke-args")).unwrap(),
+            "modify\ndev\n--secret-rm\nREMOVED\n--format\njson\n"
+        );
+        let values: Value =
+            serde_json::from_slice(&fs::read(paths.home.join("revoke-stdin")).unwrap()).unwrap();
+        assert_eq!(values, json!({"SILO_GITHUB": DISABLED_GITHUB_PROFILE}));
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
     }
 
     fn config(names: &[&str]) -> Value {

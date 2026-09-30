@@ -816,6 +816,7 @@ pub(super) fn pending_workspace(
         logs: Vec::new(),
         github_repositories: Vec::new(),
         secret_names: Vec::new(),
+        pending_secret_revocations: Vec::new(),
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,

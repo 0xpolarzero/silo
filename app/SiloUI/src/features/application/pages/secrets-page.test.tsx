@@ -13,16 +13,34 @@ function SecretsPreview({ source }: { source: ApplicationSource }) {
 }
 
 describe("SecretsPage", () => {
-  it("shows persisted secret application after remount and enables controls only after it settles", () => {
+  it("keeps Edit and Remove available while sandbox secret application is pending", () => {
     const source = applicationSourceForScenario("running")
     const applying = { ...source, secrets: source.secrets.map((secret) => ({ ...secret, state: "applying" as const })) }
     const props = { onSaveSecret: vi.fn(), onRemoveSecret: vi.fn() }
     const { rerender } = render(<SecretsPage source={applying} {...props} />)
     expect(screen.getAllByText("Applying…").length).toBeGreaterThan(0)
-    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" })).toBeEnabled()
     rerender(<SecretsPage source={source} {...props} />)
     expect(screen.queryByText("Applying…")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeEnabled()
+  })
+
+  it("removes an applying secret even when its sandbox cannot be reached, blocking only the in-flight request", async () => {
+    const user = userEvent.setup()
+    const source = structuredClone(applicationSourceForScenario("running"))
+    source.secrets[0] = { ...source.secrets[0], state: "applying", removing: true, error: "Could not reach dev." }
+    source.workspaces[0].freshness = "stale"
+    let finish!: () => void
+    const remove = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+    render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={remove} />)
+    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeEnabled()
+    await user.click(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
+    await user.click(screen.getByRole("button", { name: /^Remove$/ }))
+    expect(remove).toHaveBeenCalledExactlyOnceWith("package-token")
+    expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" })).toBeDisabled()
+    await act(async () => finish())
     expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeEnabled()
   })
 
@@ -285,7 +303,7 @@ describe("SecretsPage", () => {
 
     await user.click(list.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
     expect(screen.getByText("Remove PACKAGE_TOKEN?")).toBeVisible()
-    expect(screen.getByText("Sandboxes using it lose access after they restart.")).toBeVisible()
+    expect(screen.getByText("Silo deletes the stored value immediately. Sandboxes that cannot revoke access may keep it until they restart.")).toBeVisible()
     await user.keyboard("{Escape}")
     await waitFor(() => expect(screen.queryByText("Remove PACKAGE_TOKEN?")).not.toBeInTheDocument())
     expect(list.getAllByRole("listitem")).toHaveLength(2)

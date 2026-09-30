@@ -7,10 +7,36 @@ history. Values are never returned in application snapshots. The editor sends a
 value only when adding or replacing one, then discards its draft on successful save.
 
 The credential store is read once per session, including caching denied access;
-only an explicit save/delete/retry retries a failed store operation. There is no
-plaintext fallback. A value is stored before its reference is published. Superseded
-values are pruned after reconciliation. A deletion remains a tombstone until live
-revocation and credential-store deletion complete, so a failed removal is retryable.
+an access failure expires after ten seconds so later starts can retry. An explicit
+save/delete/retry also retries a failed store operation. There is no plaintext
+fallback. A value is stored before its reference is published. Superseded values
+are pruned after reconciliation.
+
+Remove deletes the credential-store value and removes the secret from the list
+before returning, without waiting for any sandbox. Future starts resolve the
+current assignments and receive no removed value. Silo records possible access
+by each affected sandbox in an internal `pendingRevocations` journal containing
+only the sandbox name, secret name, secret ID, and immutable value generation.
+A credential-store deletion failure remains retryable and excludes that secret
+from future boot material; it does not report successful removal.
+
+State refreshes retry pending revocations in the background on the sandbox's owner
+computer, including for remote rows. A busy, transitional, paused, or unreadable
+sandbox keeps its record. A running sandbox clears it only after both durable and
+active runtime configuration confirm that the name is absent. Missing, deleted,
+stopped, or crashed sandboxes clear it without a live update. A verified restart
+with the current assignments also clears it. Pending sandboxes show “May still
+have access to GITHUB_TOKEN until it restarts” and offer Restart through the
+existing lifecycle controls. Unreachable sandboxes never disable Edit or Remove.
+
+Revocation sends only the removed name to the runtime and does not read remaining
+secret values. Re-adding a name creates a new secret ID and value generation.
+Under the VM gate, a retry rechecks current assignments and never removes a name
+assigned to a replacement. A verified live replacement clears earlier records;
+a deferred replacement keeps the warning until restart. Each completion clears
+only its own records, preserving later removals of the same name. Secret updates
+also resolve current material after acquiring the VM gate so an older queued
+update cannot restore a value removed while it waited.
 
 MicroSandbox receives host environment source references, not inline stored values.
 The guest sees `$MSB_NAME` through its named environment variable. Existing values
@@ -62,8 +88,11 @@ without GitHub access.
 
 - [MicroSandbox placeholder substitution](https://microsandbox.dev/blog/sandboxes-that-lie-about-their-secrets)
 - [Official Rust SDK modification API](https://github.com/superradcompany/microsandbox/blob/main/docs/sdk/rust/sandbox.mdx)
-- Pinned source: `5eca4de8bf233e57f114140f8c076ea8c96f21ab`,
-  `sdk/rust/lib/sandbox/modify.rs` and `crates/cli/lib/commands/modify.rs`.
+- Pinned source: `60d4dc8a436fb9365491567ec21d073e924e3c6d`, matching
+  `app/SiloUI/runtime-inputs.json`. The SDK's
+  [live secret update implementation](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/modify.rs#L1577)
+  resolves values for rotation and sends only `SecretLiveChange::Remove { name }`
+  for removal. B-27 uses that existing API without a runtime patch change.
 - Silo's checked-in runtime patch contains policy-change connection cancellation.
 
 ## Manual checks
@@ -82,8 +111,14 @@ Use disposable values and VMs. Never use a real credential for an echo-service t
 6. Restart, then verify the new variable and cleared pending state.
 7. Deny credential-store access and retry: preserve edits, show the unlock message,
    and do not repeatedly prompt in the background.
-8. Exercise deletion failure/retry and relaunch during pending updates. Remove a VM
-   and confirm its old assignments do not trap later secret deletion.
+8. Make a running VM unreadable or transitional, then remove its secret. Verify
+   the list and credential-store value disappear immediately, the sandbox warns
+   about possible access, and background refresh clears the warning after confirmed
+   revocation. Restart, stop, and deletion must also clear that sandbox's record.
+9. Re-add the same secret name while an old revocation is pending. Confirm the old
+   retry never removes the replacement value, including when updates overlap.
+10. Verify the warning and Restart action on a remote row through its owner;
+    keep the warning on an unreachable owner until a fresh owner snapshot clears it.
 
 ## Verification on 2026-09-09
 

@@ -139,6 +139,9 @@ fn advance(
     initial: InspectedSandbox,
 ) -> Result<(), RuntimeError> {
     let mut observed = stable(runner, paths, intent, initial)?;
+    if stopped(&observed) {
+        let _ = crate::secrets::workspace_stopped(&intent.name);
+    }
     if matches!(intent.action.as_str(), "start" | "restart") {
         crate::working_account::working_user(&observed.config).map_err(RuntimeError::Invalid)?;
     }
@@ -199,6 +202,9 @@ fn advance(
             observed.status.eq_ignore_ascii_case("running")
         };
         let started_here = command == "start" && result.is_ok();
+        if reached && command == "stop" {
+            let _ = crate::secrets::workspace_stopped(&intent.name);
+        }
         if !reached {
             // The timed-out stop was already followed by the full state wait;
             // report it as final rather than a transient error that is retried
@@ -691,6 +697,25 @@ mod tests {
         );
         assert!(crashed.mutations().is_empty());
         assert_eq!(runtime_activity::read(&paths).unwrap(), history);
+    }
+
+    #[test]
+    fn stop_and_restart_clear_pending_secret_revocations_even_when_the_next_start_fails() {
+        let _test_state = crate::test_support::global_state();
+        for action in ["stop", "restart"] {
+            let (dir, paths, _) = setup();
+            let store = dir.path().join("secrets.json");
+            fs::write(&store, r#"{"pendingRevocations":[{"secretId":"old","generation":"removed-value","name":"API_KEY","workspace":"dev"}]}"#).unwrap();
+            crate::secrets::use_test_store(Some(store));
+            crate::secrets::use_test_vault(Some(Default::default()));
+            let mut runner = Fake::new("Running");
+            runner.fail_start = true;
+            let result = perform(&runner, &paths, &host(), action, "dev");
+            assert_eq!(result.is_ok(), action == "stop");
+            assert!(crate::secrets::pending_names("dev").unwrap().is_empty());
+            crate::secrets::use_test_store(None);
+            crate::secrets::use_test_vault(None);
+        }
     }
 
     #[test]
