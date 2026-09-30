@@ -878,6 +878,7 @@ mod tests {
 
     #[test]
     fn continue_generation_keeps_old_vm_and_backup_data_out_of_new_runtime() {
+        // The runtime alias requires a short root to fit its Unix control socket path.
         let dir = tempfile::Builder::new().prefix("sm").tempdir_in("/tmp").unwrap();
         let app_data = dir.path();
         let old = app_data.join("runtime");
@@ -959,7 +960,7 @@ mod tests {
     /// A previous runtime generation with one VM and its external workspace disk,
     /// and the staged paths the converter would use.
     fn previous_generation() -> (tempfile::TempDir, runtime::RuntimePaths) {
-        // Short root: the staged runtime home must fit a Unix socket path.
+        // Use /tmp rather than macOS TMPDIR: staged homes must fit Unix socket path limits.
         let dir = tempfile::Builder::new().prefix("sm").tempdir_in("/tmp").unwrap();
         let app_data = dir.path();
         let old = app_data.join("runtime");

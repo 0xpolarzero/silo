@@ -76,7 +76,7 @@ Primary references:
 - [GIO AppInfo.launch_uris](https://docs.gtk.org/gio/method.AppInfo.launch_uris.html): application-aware URI launching and desktop-entry handling.
 - Bundled MicroSandbox source, pinned commit `5eca4de8bf233e57f114140f8c076ea8c96f21ab`, `crates/cli/lib/commands/ssh.rs` and `sdk/rust/lib/sandbox/ssh.rs`: stdio transport, authorized key store and per-sandbox host key path.
 
-Focused tests: `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml editor::tests` and `applications::tests`. The ignored `editor::tests::live_editor_transport` requires explicit `SILO_EDITOR_USER_HOME`, `SILO_EDITOR_RUNTIME_HOME`, `SILO_EDITOR_MSB`, and `SILO_EDITOR_LIBRARY`; it modifies that home's SSH integration and proves the dev test repository is reachable. `SILO_EDITOR_OPEN_ZED=1` also launches the real editor. It is never enabled during ordinary tests or production startup.
+Focused tests: `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml editor::tests` and `applications::tests`. The ignored `editor::tests::live_editor_transport` requires `SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures` and explicit `SILO_EDITOR_USER_HOME`, `SILO_EDITOR_RUNTIME_HOME`, `SILO_EDITOR_MSB`, and `SILO_EDITOR_LIBRARY`; the fixture home must already exist and must not resolve to `$HOME`; it modifies that home's SSH integration and proves the dev test repository is reachable. `SILO_EDITOR_OPEN_ZED=1` also launches the real editor. It is never enabled during ordinary tests or production startup.
 
 ## Live macOS verification (2026-09-10)
 

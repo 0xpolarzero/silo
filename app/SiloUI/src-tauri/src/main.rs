@@ -49,6 +49,8 @@ mod single_instance;
 mod startup;
 mod status_panel;
 mod sync;
+#[cfg(test)]
+mod test_support;
 mod system_integrations;
 mod system_shutdown;
 mod tray;

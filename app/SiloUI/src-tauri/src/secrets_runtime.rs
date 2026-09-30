@@ -327,6 +327,7 @@ mod tests {
 
     #[test]
     fn attempt_classifies_transient_and_final_and_preserves_the_message() {
+    let _test_state = crate::test_support::global_state();
         let transient = Attempt::Transient("timed out".into());
         let final_error = Attempt::Final("rejected".into());
         assert!(transient.is_transient());
@@ -344,6 +345,7 @@ mod tests {
 
     #[test]
     fn modify_child_is_killed_and_reported_cancelled_when_the_operation_is_cancelled() {
+    let _test_state = crate::test_support::global_state();
         // A long-running stand-in child models a `modify` runtime command; cancelling the
         // owning operation must kill it and return a non-transient `Cancelled` so the retry
         // boundary does not re-run the update.
@@ -384,6 +386,7 @@ mod tests {
     }
     #[test]
     fn separates_live_revocation_and_rotation_from_pending_additions() {
+    let _test_state = crate::test_support::global_state();
         let inspected = InspectedSandbox {
             runtime_instance_id: None,
             updated_at: None,
@@ -420,6 +423,7 @@ mod tests {
     }
     #[test]
     fn stopped_additions_apply_on_next_boot_without_pending_restart() {
+    let _test_state = crate::test_support::global_state();
         let inspected = InspectedSandbox {
             runtime_instance_id: None,
             updated_at: None,
@@ -439,6 +443,7 @@ mod tests {
     }
     #[test]
     fn generated_sources_are_stable_and_distinct_from_guest_names() {
+    let _test_state = crate::test_support::global_state();
         // Same vector as the bundled CLI patch, independent of assignment order.
         assert_eq!(source_name("API_KEY"), "SILO_SECRET_272068193077316117667065620025266693635");
         assert_ne!(source_name("API_KEY"), source_name("OTHER"));
@@ -452,6 +457,7 @@ mod tests {
 
     #[test]
     fn verification_requires_host_reference_tls_and_exact_domains() {
+    let _test_state = crate::test_support::global_state();
         let material = vec![(
             "TOKEN".into(),
             "never-durable".into(),
@@ -471,6 +477,7 @@ mod tests {
     }
     #[test]
     fn rejects_host_environment_overrides_and_inline_argument_injection() {
+    let _test_state = crate::test_support::global_state();
         for name in [
             "PATH",
             "MSB_HOME",
@@ -499,6 +506,8 @@ mod tests {
 #[test]
 #[ignore = "requires signed MicroSandbox, hypervisor access, bundled image and test HTTPS endpoints"]
 fn live_secret_adapter_uses_refs_and_preserves_boot_for_live_updates() {
+    let _test_state = crate::test_support::global_state();
+    crate::test_support::live::require_confirmation();
     let directory = tempfile::Builder::new()
         .prefix("silo-secret-test-")
         .tempdir_in("/tmp")

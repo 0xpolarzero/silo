@@ -1974,12 +1974,14 @@ mod tests {
 
     #[test]
     fn export_sizes_label_binary_units() {
+        let _test_state = crate::test_support::global_state();
         assert_eq!(display_size(3 * GIB), "3.0 GiB");
         assert_eq!(display_size(5 * 1024 * 1024), "5.0 MiB");
     }
 
     #[test]
     fn update_guard_refuses_while_an_interrupted_operation_is_pending() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = Arc::new(history_controller(
             directory.path().join("backup-history.json"),
@@ -1998,6 +2000,7 @@ mod tests {
 
     #[test]
     fn cancel_sets_the_in_process_flag_even_when_the_journal_cannot_be_saved() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let storage = directory.path().join("storage");
         let controller = history_controller(storage.join("backup-history.json"));
@@ -2017,6 +2020,7 @@ mod tests {
 
     #[test]
     fn dismissing_a_failed_recovery_abandons_it_and_keeps_files() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
@@ -2054,6 +2058,7 @@ mod tests {
 
     #[test]
     fn a_pending_journal_without_a_failed_result_is_not_abandoned() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
@@ -2074,6 +2079,7 @@ mod tests {
 
     #[test]
     fn a_panicking_worker_records_a_failure_and_releases_the_slot() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
         recovery::begin(
@@ -2126,6 +2132,7 @@ mod tests {
 
     #[test]
     fn reveal_allows_the_current_completed_export_when_the_file_exists() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("saved.silo-backup");
         std::fs::write(&file, b"archive").unwrap();
@@ -2144,6 +2151,7 @@ mod tests {
 
     #[test]
     fn reveal_rejects_an_earlier_export_that_is_no_longer_the_current_result() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("earlier.silo-backup");
         std::fs::write(&file, b"archive").unwrap();
@@ -2154,6 +2162,7 @@ mod tests {
 
     #[test]
     fn reveal_rejects_a_path_other_than_the_current_export() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let stranger = directory.path().join("stranger.silo-backup");
         std::fs::write(&stranger, b"archive").unwrap();
@@ -2173,6 +2182,7 @@ mod tests {
 
     #[test]
     fn reveal_rejects_a_traversal_or_non_identical_path() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("saved.silo-backup");
         std::fs::write(&file, b"archive").unwrap();
@@ -2196,6 +2206,7 @@ mod tests {
 
     #[test]
     fn reveal_rejects_a_known_archive_whose_file_is_missing() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("gone.silo-backup");
         let path = missing.to_string_lossy().into_owned();
@@ -2209,6 +2220,7 @@ mod tests {
 
     #[test]
     fn reveal_rejects_a_failed_operation_even_when_the_file_exists() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("saved.silo-backup");
         std::fs::write(&file, b"archive").unwrap();
@@ -2223,6 +2235,7 @@ mod tests {
 
     #[test]
     fn legacy_managed_root_default_is_materialized_only_when_saved_capacity_matches() {
+        let _test_state = crate::test_support::global_state();
         let legacy = serde_json::json!({"image":{"Oci":{"root_disk":{"kind":"managed"}}}});
         let mut matching = legacy.clone();
         assert!(normalize_backup_root_capacity(&mut matching, 4096));
@@ -2239,6 +2252,7 @@ mod tests {
 
     #[test]
     fn migrated_native_config_exports_only_the_current_empty_github_policy() {
+        let _test_state = crate::test_support::global_state();
         let network: Value = serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
         let mut inspected = serde_json::json!({
             "name":"legacy",
@@ -2282,6 +2296,7 @@ mod tests {
 
     #[test]
     fn the_chosen_destination_survives_reload_and_exports_are_not_recorded() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
@@ -2295,6 +2310,7 @@ mod tests {
 
     #[test]
     fn a_destination_that_cannot_be_saved_is_still_used_this_session() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let blocked = directory.path().join("not-a-directory");
         fs::write(&blocked, b"preserve").unwrap();
@@ -2309,6 +2325,7 @@ mod tests {
 
     #[test]
     fn unreadable_or_newer_export_history_never_blocks_exports_or_imports() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         for saved in [
@@ -2336,6 +2353,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_saved_operation_still_blocks_new_transfers() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         fs::write(directory.path().join("backup-operation.json"), b"broken").unwrap();
@@ -2346,6 +2364,7 @@ mod tests {
 
     #[test]
     fn backup_operation_serialization_matches_frontend_contract() {
+        let _test_state = crate::test_support::global_state();
         let archive = completed_archive();
         let operations = [
             Operation::Running {
@@ -2382,6 +2401,7 @@ mod tests {
 
     #[test]
     fn stale_result_dismissal_preserves_the_next_running_operation() {
+        let _test_state = crate::test_support::global_state();
         let controller = history_controller(PathBuf::from("/unused/history"));
         set_operation(
             &controller,
@@ -2436,33 +2456,53 @@ mod tests {
 
     #[test]
     fn resumed_work_waits_for_other_sandbox_changes_and_can_cancel_while_waiting() {
+        let _test_state = crate::test_support::global_state();
         let guard = runtime::OPERATIONS.computer("Contended work").unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
+        let (queued, waiting) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = mutation_guard(&backup::Cancellation::default(), runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {}).map(|_| ());
+            let result = mutation_guard(
+                &backup::Cancellation::default(),
+                runtime::operation_gate::OperationKind::Export,
+                "Exporting sandbox",
+                true,
+                &|| queued.send(()).unwrap(),
+            ).map(drop);
             sender.send(result).unwrap();
         });
-        assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(runtime::OPERATIONS.snapshot().waiting.iter().any(|entry| entry.label == "Exporting sandbox"));
+        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+
         let cancellation = backup::Cancellation::default();
+        let worker_cancellation = cancellation.clone();
+        let (queued, waiting) = std::sync::mpsc::channel();
+        let (cancelled, result) = std::sync::mpsc::channel();
+        let cancelled_worker = std::thread::spawn(move || {
+            let result = mutation_guard(
+                &worker_cancellation,
+                runtime::operation_gate::OperationKind::Export,
+                "Cancelled export",
+                true,
+                &|| queued.send(()).unwrap(),
+            ).map(drop);
+            cancelled.send(result).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
         cancellation.cancel();
-        assert!(
-            mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {})
-                .err()
-                .expect("a cancelled wait must not acquire the gate")
-                .cancelled
-        );
+        assert!(result.recv_timeout(Duration::from_secs(5)).unwrap().unwrap_err().cancelled);
+        cancelled_worker.join().unwrap();
+        assert!(!runtime::OPERATIONS.snapshot().waiting.iter().any(|entry| entry.label == "Cancelled export"));
+        // The cancelled waiter must finish while the contending operation still holds its turn.
+        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
         drop(guard);
-        assert!(
-            receiver
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .is_ok()
-        );
+        receiver.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         worker.join().unwrap();
     }
 
     #[test]
     fn delayed_dismissal_cannot_clear_a_new_completed_operation() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
         let result = |name: &str| Operation::Result {
@@ -2485,6 +2525,7 @@ mod tests {
 
     #[test]
     fn backup_state_serialization_matches_frontend_contract() {
+        let _test_state = crate::test_support::global_state();
         let state = BackupState {
             snapshot_id: "contract".into(),
             operation_id: None,
@@ -2501,6 +2542,7 @@ mod tests {
 
     #[test]
     fn backup_state_reads_only_memory_and_reports_a_saved_operation_error() {
+        let _test_state = crate::test_support::global_state();
         // The export folder is on a volume that no longer exists; reading state
         // must not touch it (a stalled mount would freeze every refresh).
         let directory = tempfile::tempdir().unwrap();
@@ -2519,6 +2561,7 @@ mod tests {
 
     #[test]
     fn archive_names_never_replace_an_existing_backup() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let names = vec!["dev".into()];
         let first = unique_archive(directory.path(), &names, false);
@@ -2530,6 +2573,7 @@ mod tests {
 
     #[test]
     fn archive_name_uses_the_sandbox_for_single_exports_and_a_generic_base_otherwise() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let date = {
             let today = time::OffsetDateTime::now_utc();
@@ -2573,6 +2617,7 @@ mod tests {
     }
     #[test]
     fn a_claimed_export_reports_the_operation_id_its_result_will_carry() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
         let claimed = claim_export(
@@ -2624,6 +2669,7 @@ mod tests {
 
     #[test]
     fn an_import_journals_its_identity_before_saving_and_commits_with_its_settings() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = import_paths(directory.path());
         fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
@@ -2639,6 +2685,7 @@ mod tests {
 
     #[test]
     fn an_import_that_cannot_save_its_settings_removes_its_record_and_identity() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = import_paths(directory.path());
         fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
@@ -2669,6 +2716,7 @@ mod tests {
 
     #[test]
     fn transfer_outcomes_come_from_the_error_kind_not_its_text() {
+        let _test_state = crate::test_support::global_state();
         let cancelled = failed_transfer("backup", completed_archive(), None, backup::BackupError::Cancelled.into());
         assert_eq!(outcome_and_detail(&cancelled), ("cancelled", "No export file was saved.".into()));
         // A failure whose text happens to read like a cancellation is still a failure.
@@ -2718,6 +2766,7 @@ mod tests {
 
     #[test]
     fn an_import_past_its_commit_point_reports_and_enforces_that_it_cannot_be_cancelled() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
         let cancellation = running_import(&controller);
@@ -2735,6 +2784,7 @@ mod tests {
 
     #[test]
     fn an_export_check_is_cancelled_only_by_its_own_request_or_a_newer_one() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
         let first = register_inspection(&controller, "first".into());
@@ -2755,6 +2805,7 @@ mod tests {
 
     #[test]
     fn a_queued_export_shows_that_it_waits_and_then_its_own_work() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = Arc::new(history_controller(directory.path().join("backup-history.json")));
         let claimed = claim_export(
@@ -2817,6 +2868,7 @@ mod tests {
 
     #[test]
     fn an_export_admitted_at_once_keeps_only_its_work_phase() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
         let claimed = claim_export(
@@ -2840,6 +2892,7 @@ mod tests {
 
     #[test]
     fn multi_vm_restore_requires_an_explicit_source() {
+        let _test_state = crate::test_support::global_state();
         let names = vec!["first".into(), "second".into()];
         assert!(select_archive_source(&names, None).is_err());
         assert_eq!(
@@ -2854,6 +2907,9 @@ mod tests {
     #[test]
     #[ignore = "requires the packaged runtime and hardware virtualization"]
     fn real_backup_restore_preserves_root_and_workspace_without_original_cache() {
+        crate::test_support::live::require_confirmation();
+        let _test_state = crate::test_support::global_state();
+        // The live runtime control socket requires a short root (104 bytes on macOS).
         let directory = tempfile::Builder::new()
             .prefix("silo-proof-")
             .tempdir_in("/tmp")
@@ -3297,6 +3353,9 @@ mod tests {
     #[test]
     #[ignore = "requires the packaged runtime and hardware virtualization"]
     fn real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk() {
+        crate::test_support::live::require_confirmation();
+        let _test_state = crate::test_support::global_state();
+        // The live runtime control socket requires a short root (104 bytes on macOS).
         let directory = tempfile::Builder::new()
             .prefix("silo-ckpt-proof-")
             .tempdir_in("/tmp")

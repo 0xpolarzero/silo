@@ -747,6 +747,7 @@ mod tests {
     }
     #[test]
     fn fork_copies_current_assignment_reference_without_copying_value() {
+        let _test_state = crate::test_support::global_state();
         let mut document = Document { secrets: vec![secret()], activities: Vec::new() };
         copy_assignment_refs(&mut document, "dev", "fork");
         assert_eq!(document.secrets[0].workspaces, ["dev", "fork"]);
@@ -756,6 +757,7 @@ mod tests {
     }
     #[test]
     fn applied_revision_changes_for_rotation_domains_and_removal_not_status() {
+        let _test_state = crate::test_support::global_state();
         let mut d = Document {
             secrets: vec![secret()],
             ..Default::default()
@@ -774,6 +776,7 @@ mod tests {
     }
     #[test]
     fn backend_rejects_reserved_names_before_storage() {
+        let _test_state = crate::test_support::global_state();
         for name in [
             "PATH",
             "HOME",
@@ -795,6 +798,7 @@ mod tests {
     }
     #[test]
     fn saving_and_applying_secrets_share_one_reserved_name_list() {
+        let _test_state = crate::test_support::global_state();
         assert!(!reserved_secret_names().names.is_empty() && !reserved_secret_names().prefixes.is_empty());
         for name in ["no_proxy", "Path", "silo_anything", "RUST_LOG"] {
             assert!(reserved_secret_name(name), "{name}");
@@ -806,6 +810,7 @@ mod tests {
     }
     #[test]
     fn values_and_domain_constraints_are_validated_on_host() {
+        let _test_state = crate::test_support::global_state();
         for value in [String::new(), "bad\0value".into(), "a".repeat(65537)] {
             let mut r = request();
             r.value = Some(value);
@@ -830,6 +835,7 @@ mod tests {
     /// Validation only checks syntax; it does not consult the public suffix list.
     #[test]
     fn allowed_domain_syntax_intent_matches_owner_decision_four() {
+        let _test_state = crate::test_support::global_state();
         for accepted in [
             "*",                     // explicit opt-in to every domain
             "*.co.uk",               // public-suffix wildcards are allowed by decision
@@ -864,6 +870,7 @@ mod tests {
     }
     #[test]
     fn edits_preserve_name_and_do_not_require_value() {
+        let _test_state = crate::test_support::global_state();
         let mut r = request();
         r.operation = "edit".into();
         r.id = Some("id".into());
@@ -879,6 +886,7 @@ mod tests {
     }
     #[test]
     fn snapshots_expose_only_public_metadata_and_actual_pending_vms() {
+        let _test_state = crate::test_support::global_state();
         let mut s = secret();
         s.pending_workspaces = vec!["dev".into()];
         let value = public(&s);
@@ -896,6 +904,7 @@ mod tests {
     }
     #[test]
     fn persisted_unfinished_secret_targets_are_not_reported_active_after_relaunch() {
+        let _test_state = crate::test_support::global_state();
         let mut secret = secret();
         assert_eq!(public(&secret)["state"], "applying");
         secret.pending_workspaces.push("dev".into());
@@ -912,6 +921,7 @@ mod tests {
     }
     #[test]
     fn poisoned_locks_recover_instead_of_blocking_secrets_and_updates() {
+        let _test_state = crate::test_support::global_state();
         static TEST: Mutex<()> = Mutex::new(());
         let _ = std::thread::spawn(|| {
             let _guard = TEST.lock().unwrap();
@@ -926,6 +936,7 @@ mod tests {
     }
     #[test]
     fn cached_store_failure_expires_so_later_starts_ask_the_store_again() {
+        let _test_state = crate::test_support::global_state();
         let failed_at = Instant::now();
         let mut cached: Cached = Some((Err(STORE_ERROR.into()), failed_at));
         expire_failure(&mut cached, failed_at + Duration::from_secs(1));
@@ -938,6 +949,7 @@ mod tests {
     }
     #[test]
     fn deleting_and_recreating_a_sandbox_leaves_it_no_secret_material() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
         let mut assigned = secret();
@@ -958,6 +970,7 @@ mod tests {
     }
     #[test]
     fn reconcile_releases_the_operation_lock_while_a_vm_applies() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
         save(&Document { secrets: vec![secret()], activities: Vec::new() }).unwrap();
@@ -994,6 +1007,7 @@ mod tests {
     }
     #[test]
     fn restart_finishing_during_apply_leaves_no_stale_restart_request() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
         let mut assigned = secret();
@@ -1023,6 +1037,7 @@ mod tests {
     }
     #[test]
     fn removal_completes_when_failed_vms_cannot_hold_the_secret() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
         use_test_vault(Some([("private-reference".to_string(), "private-value".to_string())].into()));
@@ -1060,6 +1075,7 @@ mod tests {
     }
     #[test]
     fn history_is_bounded_and_contains_no_values() {
+        let _test_state = crate::test_support::global_state();
         let mut d = Document::default();
         for _ in 0..110 {
             event(&mut d, "Secret settings saved", false);

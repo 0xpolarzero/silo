@@ -78,7 +78,7 @@
     },
     {
       "path": "patches/microsandbox-log-retention-desktop-start-0.7.2.patch",
-      "sha256": "22fa041105496be712eb58659bdcc29e950b2cd38c6bc5fd6182c1cb478f293b"
+      "sha256": "503348219964dbe67529e51ae1b0adc870419cc62fdcc1fa9bb8c3fdbc9e41c9"
     },
     {
       "path": "patches/microsandbox-restore-root-capacity-0.7.2.patch",

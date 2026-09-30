@@ -5060,6 +5060,7 @@ mod tests {
 
     #[test]
     fn auto_retry_retries_transient_failures_and_releases_the_gate_between_attempts() {
+        let _test_state = crate::test_support::global_state();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let attempts = AtomicUsize::new(0);
         let delays = [Duration::from_millis(5), Duration::from_millis(5)];
@@ -5090,6 +5091,7 @@ mod tests {
 
     #[test]
     fn cancelled_and_deduplicated_actions_are_not_notified_but_other_failures_are() {
+        let _test_state = crate::test_support::global_state();
         assert_eq!(lifecycle_failure(&RuntimeError::Cancelled {
             operation: "Starting dev".into(),
         }), LifecycleFailure::Cancelled);
@@ -5114,6 +5116,7 @@ mod tests {
 
     #[test]
     fn auto_retry_attempts_keep_the_first_attempts_start_time() {
+        let _test_state = crate::test_support::global_state();
         let gate: &'static operation_gate::OperationGate =
             Box::leak(Box::new(operation_gate::OperationGate::new()));
         let seen = Mutex::new(Vec::new());
@@ -5139,6 +5142,7 @@ mod tests {
 
     #[test]
     fn auto_retry_does_not_resume_after_a_quit_began_even_if_it_failed() {
+        let _test_state = crate::test_support::global_state();
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct Reopen;
         impl Drop for Reopen {
@@ -5175,6 +5179,7 @@ mod tests {
 
     #[test]
     fn auto_retry_does_not_retry_non_transient_failures() {
+        let _test_state = crate::test_support::global_state();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let attempts = AtomicUsize::new(0);
         let delays = [Duration::from_millis(5), Duration::from_millis(5)];
@@ -5206,6 +5211,7 @@ mod tests {
     // and classifies with `Attempt::is_transient`; these tests cover that wiring.
     #[test]
     fn secret_updates_retry_transient_attempts_and_release_the_gate_between_attempts() {
+        let _test_state = crate::test_support::global_state();
         use super::secrets_runtime::Attempt;
         use std::sync::atomic::{AtomicUsize, Ordering};
         // An isolated gate keeps the release-between-attempts assertion deterministic
@@ -5242,6 +5248,7 @@ mod tests {
 
     #[test]
     fn secret_updates_do_not_retry_final_attempts() {
+        let _test_state = crate::test_support::global_state();
         use super::secrets_runtime::Attempt;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let gate: &'static operation_gate::OperationGate =
@@ -5270,6 +5277,7 @@ mod tests {
 
     #[test]
     fn retry_sequence_stops_and_carries_cancellation_across_attempts() {
+        let _test_state = crate::test_support::global_state();
         use super::secrets_runtime::Attempt;
         use std::sync::atomic::{AtomicUsize, Ordering};
         // A shared gate lets a second thread cancel the running attempt by its queue id; the
@@ -5369,11 +5377,10 @@ mod tests {
     }
 
     fn fake_lifecycle_msb(paths: &RuntimePaths, block_on: &str) {
-        use std::os::unix::fs::PermissionsExt;
         fs::create_dir_all(&paths.home).unwrap();
         fs::write(&paths.library, b"test").unwrap();
         fs::write(paths.home.join("state"), "Stopped").unwrap();
-        fs::write(&paths.executable, format!(r#"#!/bin/sh
+        crate::test_support::write_shell_script(&paths.executable, format!(r#"#!/bin/sh
 printf '%s\n' "$1" >> "$MSB_HOME/calls"
 case "$1" in
   inspect) state=$(cat "$MSB_HOME/state"); printf '{{"name":"cleanup","status":"%s","config":{{"labels":{{"silo.managed":"true"}}}},"active_config":{{}}}}\n' "$state" ;;
@@ -5381,12 +5388,12 @@ case "$1" in
   stop) printf Stopped > "$MSB_HOME/state" ;;
 esac
 if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
-"#)).unwrap();
-        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+"#));
     }
 
     #[test]
     fn cancelling_exec_still_stops_its_temporary_boot() {
+        let _test_state = crate::test_support::global_state();
         for block_on in ["start", "exec"] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -5411,6 +5418,7 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
 
     #[test]
     fn a_start_whose_boot_cannot_be_verified_or_recorded_is_stopped_again() {
+        let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::PermissionsExt;
         for failure in ["inspect", "record"] {
             let directory = tempfile::tempdir().unwrap();
@@ -5444,6 +5452,7 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
 
     #[test]
     fn exec_without_start_does_not_wait_for_the_github_revision_lock() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_lifecycle_msb(&paths, "never");
@@ -5460,7 +5469,7 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
 
     #[test]
     fn desktop_guest_configuration_preserves_vm_lifecycle_even_when_guest_fails() {
-        let _guard = OPERATIONS.computer("Test serialization").unwrap();
+        let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::PermissionsExt;
         for installed in [false, true] {
             for running in [false, true] {
@@ -5500,6 +5509,7 @@ esac
 
     #[test]
     fn desktop_only_configuration_does_not_stop_or_modify_running_vm() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let previous = vm();
         let mut desired = previous.clone();
@@ -5516,6 +5526,7 @@ esac
 
     #[test]
     fn desktop_configuration_removal_is_rejected_before_guest_mutation() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let desired = vm();
         let mut previous = desired.clone();
@@ -5529,6 +5540,7 @@ esac
 
     #[test]
     fn legacy_vm_configuration_does_not_enable_desktop() {
+        let _test_state = crate::test_support::global_state();
         let value = serde_json::to_value(vm()).unwrap();
         assert!(value.get("desktop").is_none());
         let decoded: MachineConfiguration = serde_json::from_value(value).unwrap();
@@ -5537,6 +5549,7 @@ esac
 
     #[test]
     fn dismiss_crash_persists_only_that_crash_without_mutating_the_vm() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(&dir);
         let machine = vm();
@@ -5564,6 +5577,7 @@ esac
 
     #[test]
     fn dismiss_crash_rejects_running_unknown_and_replaced_sandboxes() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(&dir);
         let machine = vm();
@@ -5578,12 +5592,14 @@ esac
 
     #[test]
     fn bundled_image_preparation_reports_its_actual_stage() {
+        let _test_state = crate::test_support::global_state();
         let event = machine_progress("attempt", "workspace-image-preparation", "dev", 0);
         assert_eq!(event.message, "Preparing the bundled VM image…");
     }
 
     #[test]
     fn scoped_tokens_are_deduplicated_and_never_printed() {
+        let _test_state = crate::test_support::global_state();
         let mut tokens = scoped_tokens_of(
             r#"{"version":1,"owners":[{"readToken":"ghs_read","writeToken":"ghs_write"},{"readToken":"ghs_read"}]}"#,
         )
@@ -5598,6 +5614,7 @@ esac
 
     #[test]
     fn github_revisions_reject_delayed_updates_but_allow_same_revision_completion() {
+        let _test_state = crate::test_support::global_state();
         let mut revision = 4;
         assert!(accept_github_revision(&mut revision, 5).is_ok());
         assert!(accept_github_revision(&mut revision, 4).is_err());
@@ -5607,6 +5624,7 @@ esac
 
     #[test]
     fn vm_access_is_per_vm_and_revisions_never_wait_for_runtime_work() {
+        let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
         let a = vm_access_state(home.path(), "a").unwrap();
         let same = vm_access_state(home.path(), "a").unwrap();
@@ -5671,6 +5689,7 @@ esac
 
     #[test]
     fn github_update_passes_profile_and_secrets_only_on_standard_input() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_github_msb(&paths);
@@ -5699,6 +5718,7 @@ esac
 
     #[test]
     fn secret_values_document_carries_the_profile_and_each_secret_by_source_name() {
+        let _test_state = crate::test_support::global_state();
         let material = vec![("API_KEY".to_string(), "value \"quoted\"".to_string(), vec!["api.example.com".to_string()])];
         let document: Value = serde_json::from_slice(&secret_values_document(&material, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
         assert_eq!(document, json!({"SILO_GITHUB": DISABLED_GITHUB_PROFILE, secrets_runtime::source_name("API_KEY"): "value \"quoted\""}));
@@ -5706,6 +5726,7 @@ esac
 
     #[test]
     fn github_update_clears_the_boot_profile_first_and_rejects_older_revisions() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_github_msb(&paths);
@@ -5742,6 +5763,7 @@ esac
 
     #[test]
     fn failed_github_update_keeps_no_profile_and_reports_fixed_text() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_github_msb(&paths);
@@ -5757,6 +5779,7 @@ esac
 
     #[test]
     fn github_update_timeout_and_cancel_kill_the_runtime_child() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_github_msb(&paths);
@@ -5785,6 +5808,7 @@ esac
 
     #[test]
     fn github_update_waits_for_the_vms_operations_and_the_worker_lock() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_github_msb(&paths);
@@ -5815,6 +5839,7 @@ esac
 
     #[test]
     fn github_environment_is_bound_to_runtime_home_and_explicit_command_target() {
+        let _test_state = crate::test_support::global_state();
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         let paths = paths(&first);
@@ -5853,6 +5878,7 @@ esac
 
     #[test]
     fn production_lifecycle_actions_use_the_target_vms_github_profile() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let other_directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -5898,6 +5924,7 @@ esac
 
     #[test]
     fn activity_history_survives_restart_and_marks_only_unfinished_attempts_interrupted() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut journal = ActivityJournal::start(&paths, "attempt-1").unwrap();
@@ -5925,6 +5952,7 @@ esac
 
     #[test]
     fn setup_activity_is_interrupted_only_when_no_setup_journal_is_live() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
@@ -5952,6 +5980,7 @@ esac
 
     #[test]
     fn repeated_progress_is_saved_at_stage_boundaries_and_when_the_journal_ends() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let saved_bytes = || read_activity(&paths, false).unwrap().iter().rev()
@@ -5974,6 +6003,7 @@ esac
 
     #[test]
     fn a_full_journal_keeps_its_first_event_and_drops_the_oldest_progress() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut journal = ActivityJournal::start(&paths(&directory), "attempt").unwrap();
         journal.append(machine_progress("attempt", "setup-started", "", 0));
@@ -5989,6 +6019,7 @@ esac
 
     #[test]
     fn activity_does_not_publish_private_runtime_error_details() {
+        let _test_state = crate::test_support::global_state();
         let error = RuntimeError::Failed { operation: "Creating the sandbox".into(), exit_code: None, detail: "error sending request https://user:SECRET@registry.test/image?token=SECRET /Users/alice/private".into() };
         let safe = safe_activity_error(&error);
         assert!(safe.contains("registry could not be reached"));
@@ -5999,6 +6030,7 @@ esac
 
     #[test]
     fn activity_reports_history_write_failure_without_losing_the_operation() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut journal = ActivityJournal::start(&paths(&directory), "attempt").unwrap();
         journal.path = directory.path().join("missing-parent/file/activity.json");
@@ -6019,12 +6051,11 @@ esac
 
     #[test]
     fn structured_progress_is_drained_on_exit_and_ignores_untrusted_text() {
-        use std::os::unix::fs::PermissionsExt;
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fs::write(&paths.library, "test").unwrap();
-        fs::write(&paths.executable, "#!/bin/sh\nprintf '%s\\n' 'private token=SECRET' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":7,\"totalBytes\":9}' '{\"type\":\"silo-progress\",\"phase\":\"image-ready\"}' >&2\n").unwrap();
-        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        crate::test_support::write_shell_script(&paths.executable, "#!/bin/sh\nprintf '%s\\n' 'private token=SECRET' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":7,\"totalBytes\":9}' '{\"type\":\"silo-progress\",\"phase\":\"image-ready\"}' >&2\n");
         let events = Mutex::new(Vec::new());
         let publish = |event| events.lock().unwrap().push(event);
         SetupRunner {
@@ -6051,6 +6082,7 @@ esac
 
     #[test]
     fn activity_preserves_safe_failure_categories_and_rejects_modified_history() {
+        let _test_state = crate::test_support::global_state();
         for (detail, expected) in [
             ("401 Unauthorized SECRET", "authentication"),
             ("403 forbidden SECRET", "denied access"),
@@ -6082,6 +6114,7 @@ esac
 
     #[test]
     fn failed_activity_keeps_typed_reason_and_exit_code_across_restart() {
+        let _test_state = crate::test_support::global_state();
         let cases = [
             (
                 RuntimeError::Failed {
@@ -6166,6 +6199,7 @@ esac
 
     #[test]
     fn setup_activity_keeps_diagnostics_and_partial_guidance_in_application_state() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut event = machine_progress("attempt", "setup-failed", "dev", 0);
@@ -6187,6 +6221,7 @@ esac
 
     #[test]
     fn partial_configuration_failure_keeps_the_precise_error_and_guidance() {
+        let _test_state = crate::test_support::global_state();
         let precise = RuntimeError::Invalid("Sandbox 'second' is not owned by Silo. No sandbox operation was performed.".into());
         let report = failure_report(&RuntimeError::Partial(Box::new(precise)));
         assert_eq!(report.code, "configuration");
@@ -6210,6 +6245,7 @@ esac
 
     #[test]
     fn user_facing_failures_never_name_exit_codes_or_workers() {
+        let _test_state = crate::test_support::global_state();
         let error = RuntimeError::Failed { operation: "Starting the sandbox".into(), exit_code: Some(3), detail: "boom".into() };
         for text in [error.to_string(), safe_activity_error(&error), setup_failure_message("runtime").unwrap(), internal_failure("reading sandbox state"), safe_activity_error(&RuntimeError::Launch("could not launch: worker failure (exit code 2)".into()))] {
             let lower = text.to_lowercase();
@@ -6219,6 +6255,7 @@ esac
 
     #[test]
     fn interruption_recovery_keeps_a_full_journal_within_its_bound() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
@@ -6232,12 +6269,11 @@ esac
 
     #[test]
     fn structured_byte_counts_cannot_change_runtime_error_classification() {
-        use std::os::unix::fs::PermissionsExt;
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fs::write(&paths.library, "test").unwrap();
-        fs::write(&paths.executable, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":40123,\"totalBytes\":40399}' 'DNS lookup failed' >&2\nexit 1\n").unwrap();
-        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        crate::test_support::write_shell_script(&paths.executable, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":40123,\"totalBytes\":40399}' 'DNS lookup failed' >&2\nexit 1\n");
         let error = run_msb(
             &paths,
             &["create".into(), "--progress-json".into()],
@@ -6270,6 +6306,7 @@ esac
 
     #[test]
     fn activity_contract_matches_frontend_fixture() {
+        let _test_state = crate::test_support::global_state();
         let mut started = machine_progress("attempt-1", "setup-started", "", 0);
         started.timestamp = 1_700_000_000_000;
         let mut completed = machine_progress("attempt-1", "setup-completed", "", 0);
@@ -6291,16 +6328,7 @@ esac
     }
 
     pub(super) fn paths(directory: &tempfile::TempDir) -> RuntimePaths {
-        RuntimePaths {
-            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("runtime/guest-image"),
-            storage_home: None,
-            executable: directory.path().join("msb"),
-            home: directory.path().join("home"),
-            library: directory.path().join("libkrunfw"),
-            metadata: directory.path().join("machines.json"),
-            volumes: directory.path().join("volumes"),
-        }
+        crate::test_support::paths(directory.path())
     }
 
     fn vm() -> MachineConfiguration {
@@ -6356,6 +6384,7 @@ esac
 
     #[test]
     fn configuration_recovery_adopts_only_the_created_vm_with_the_saved_id() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let candidate = request(vec![vm()]);
@@ -6373,6 +6402,7 @@ esac
 
     #[test]
     fn interrupted_desktop_creation_is_retried_before_metadata_adoption() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut machine = vm();
@@ -6403,6 +6433,7 @@ esac
 
     #[test]
     fn configuration_recovery_verifies_an_edit_committed_before_interruption() {
+        let _test_state = crate::test_support::global_state();
         for (valid, retry) in [(false, false), (true, false), (false, true), (true, true)] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -6431,6 +6462,7 @@ esac
 
     #[test]
     fn configuration_retry_can_correct_failed_creation_and_preserve_completed_work() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
@@ -6455,6 +6487,7 @@ esac
 
     #[test]
     fn configuration_adoption_releases_worker_lock_before_guest_verification() {
+        let _test_state = crate::test_support::global_state();
         struct LockAwareRunner(StubRunner);
         impl RuntimeRunner for LockAwareRunner {
             fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -6488,6 +6521,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn command_lock_is_released_after_failed_spawn_and_completed_child() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut paths = paths(&directory);
         fs::write(&paths.library, b"test library").unwrap();
@@ -6504,6 +6538,7 @@ esac
     #[cfg(unix)]
     #[test]
     fn command_lock_remains_held_while_runtime_child_runs() {
+        let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -6529,6 +6564,7 @@ esac
 
     #[test]
     fn configuration_recovery_preserves_a_replacement_vm() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         configuration_recovery::begin(&paths, &request(vec![vm()])).unwrap();
@@ -6544,6 +6580,7 @@ esac
 
     #[test]
     fn configuration_recovery_retries_owned_incomplete_storage_without_relaunch() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let candidate = request(vec![vm()]);
@@ -6560,6 +6597,7 @@ esac
 
     #[test]
     fn configuration_recovery_preserves_committed_storage_when_runtime_is_missing() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let candidate = request(vec![vm()]);
@@ -6574,6 +6612,7 @@ esac
 
     #[test]
     fn configuration_recovery_finishes_interrupted_deletion() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
@@ -6589,6 +6628,7 @@ esac
 
     #[test]
     fn deleting_managed_volumes_removes_empty_folder_and_preserves_unknown_files() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let folder = paths.volumes.join("dev");
@@ -6605,6 +6645,7 @@ esac
 
     #[test]
     fn removed_sandbox_github_profile_is_not_inherited_by_a_new_one() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap()
@@ -6617,6 +6658,7 @@ esac
 
     #[test]
     fn deleting_a_sandbox_removes_its_github_assignment() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let document = directory.path().join("github.json");
@@ -6637,6 +6679,7 @@ esac
 
     #[test]
     fn duplicate_lifecycle_request_is_handed_off_not_failed() {
+        let _test_state = crate::test_support::global_state();
         let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::from(operation_gate::GateError::AlreadyQueued)));
         assert!(result.is_ok() && handed_off);
         let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::Busy));
@@ -6647,6 +6690,7 @@ esac
 
     #[test]
     fn running_checkpoint_operation_is_interrupted_only_when_its_vm_is_idle() {
+        let _test_state = crate::test_support::global_state();
         let running = || checkpoints::Operation { kind: "create".into(), status: "running".into(), stage: "Saving disk".into(), error: None };
         let live = checkpoint_operation_view(running(), true);
         assert_eq!((live.status.as_str(), live.stage.as_str(), live.error), ("running", "Saving disk", None));
@@ -6657,6 +6701,7 @@ esac
 
     #[test]
     fn application_snapshot_ignores_hidden_housekeeping_and_single_vm_work() {
+        let _test_state = crate::test_support::global_state();
         let gate = operation_gate::OperationGate::new();
         assert!(gate.is_computer_idle());
         let housekeeping = gate.try_computer_hidden("Cleaning up expired logs").unwrap();
@@ -6673,6 +6718,7 @@ esac
 
     #[test]
     fn application_snapshot_defers_during_mutation_but_reports_real_mismatches() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -6722,6 +6768,7 @@ esac
 
     #[test]
     fn a_busy_vm_keeps_its_last_settled_reading_while_other_rows_refresh() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
@@ -6749,6 +6796,7 @@ esac
 
     #[test]
     fn a_busy_vm_missing_from_the_runtime_or_unreadable_does_not_fail_the_read() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
@@ -6785,6 +6833,7 @@ esac
 
     #[test]
     fn hidden_housekeeping_and_launch_starts_never_defer_or_settle_other_rows() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
@@ -6809,6 +6858,7 @@ esac
 
     #[test]
     fn an_idle_vm_whose_inspection_fails_is_stale_with_its_last_known_state() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
@@ -6837,6 +6887,7 @@ esac
     }
     #[test]
     fn a_finished_change_is_not_reported_failed_when_the_refresh_fails() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
@@ -6863,6 +6914,7 @@ esac
 
     #[test]
     fn a_change_response_settles_other_busy_vms_but_not_the_callers_own_work() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
@@ -6882,6 +6934,7 @@ esac
 
     #[test]
     fn a_change_response_keeps_running_vms_repositories_until_the_next_read() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
@@ -6898,6 +6951,7 @@ esac
 
     #[test]
     fn health_checks_budget_each_runtime_call_instead_of_the_whole_reading() {
+        let _test_state = crate::test_support::global_state();
         struct SlowRunner { timeouts: Mutex<Vec<Duration>>, inner: StubRunner }
         impl RuntimeRunner for SlowRunner {
             fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -6922,6 +6976,7 @@ esac
 
     #[test]
     fn health_checks_report_an_unavailable_runtime_home_without_running_it() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let inner = StubRunner::successful_json(vec![]);
@@ -6938,6 +6993,7 @@ esac
 
     #[test]
     fn expired_log_cleanup_runs_off_the_read_path_at_most_hourly_per_vm() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut workspaces = stopped_dev(&paths);
@@ -6961,6 +7017,7 @@ esac
 
     #[test]
     fn a_busy_gate_postpones_log_cleanup_and_a_failure_flags_only_that_vm() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut workspaces = stopped_dev(&paths);
@@ -6984,6 +7041,7 @@ esac
 
     #[test]
     fn repository_discovery_for_one_vm_runs_one_caller_at_a_time() {
+        let _test_state = crate::test_support::global_state();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let active = Arc::new(AtomicUsize::new(0));
         let overlapped = Arc::new(AtomicUsize::new(0));
@@ -7007,6 +7065,7 @@ esac
 
     #[test]
     fn application_snapshot_discards_read_when_metadata_changes_and_retries_fresh() {
+        let _test_state = crate::test_support::global_state();
         struct ChangeMetadataOnce {
             calls: Mutex<Vec<Vec<String>>>,
             changed: Mutex<bool>,
@@ -7053,31 +7112,26 @@ esac
 
     #[test]
     fn application_snapshot_does_not_retry_real_runtime_read_errors() {
-        struct FailedRead { calls: Mutex<Vec<Vec<String>>> }
-        impl RuntimeRunner for FailedRead {
-            fn run(
-                &self,
-                _paths: &RuntimePaths,
-                args: &[String],
-                _timeout: Duration,
-            ) -> Result<CommandOutput, RuntimeError> {
-                self.calls.lock().unwrap().push(args.to_vec());
-                Err(RuntimeError::Unavailable("synthetic runtime read failure".into()))
-            }
-        }
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let runner = FailedRead { calls: Mutex::new(Vec::new()) };
+        let runner = crate::test_support::runner::ScriptedRunner::new([
+            crate::test_support::runner::ExpectedCommand::error(
+                ["list", "--label", "silo.managed=true", "--format", "json"],
+                RuntimeError::Unavailable("synthetic runtime read failure".into()),
+            ).with_timeout(READ_TIMEOUT),
+        ]);
         assert_eq!(
             read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap_err(),
             BridgeError::from("synthetic runtime read failure"),
         );
-        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        runner.assert_finished();
     }
 
     #[test]
     fn application_snapshot_defers_immediately_for_durable_configuration_recovery() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let configuration = request(vec![vm()]);
@@ -7093,6 +7147,7 @@ esac
 
     #[test]
     fn read_uses_only_managed_runtime_state_and_exact_saved_resources() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7118,6 +7173,7 @@ esac
 
     #[test]
     fn application_state_reports_the_host_capacity_that_ceilings_are_checked_against() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let encoded = serde_json::to_value(application_source_for_workspaces(&paths, Vec::new()).unwrap()).unwrap();
@@ -7137,6 +7193,7 @@ esac
 
     #[test]
     fn host_capacity_rounds_memory_down_and_is_absent_when_unmeasured() {
+        let _test_state = crate::test_support::global_state();
         let gib = 1024 * 1024 * 1024;
         let capacity = HostCapacity::of(&HostResources { logical_cpus: 8, physical_memory_bytes: Some(16 * gib - 1) }).unwrap();
         assert_eq!((capacity.logical_cpus, capacity.max_memory_gib), (8, 15));
@@ -7169,6 +7226,7 @@ esac
 
     #[test]
     fn a_damaged_checkpoint_record_degrades_only_its_own_sandbox() {
+        let _test_state = crate::test_support::global_state();
         for listed in [true, false] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -7198,6 +7256,7 @@ esac
 
     #[test]
     fn only_vms_that_cannot_hold_secret_values_count_as_revoked() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7231,6 +7290,7 @@ esac
 
     #[test]
     fn native_state_omits_legacy_placeholders_and_does_not_guess_ssh_state() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let ssh = MachineConfiguration::Ssh { id: "00000000-0000-4000-8000-000000000009".into(), name: "remote".into(), host: "example.test".into(), user: "me".into(), port: 22 };
@@ -7249,6 +7309,7 @@ esac
 
     #[test]
     fn read_refuses_missing_runtime_rows_instead_of_publishing_false_success() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7260,6 +7321,7 @@ esac
 
     #[test]
     fn create_keeps_workspace_and_runtime_on_independent_app_owned_disks() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![
@@ -7303,6 +7365,7 @@ esac
 
     #[test]
     fn desktop_creation_installs_after_base_tools_and_verifies_stopped_state() {
+        let _test_state = crate::test_support::global_state();
         for final_state in ["Stopped", "Running"] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -7322,6 +7385,7 @@ esac
 
     #[test]
     fn guest_tool_setup_does_not_hide_failure_to_restore_stopped_state() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![json!(null), inspect(&paths, "Running")]);
@@ -7333,6 +7397,7 @@ esac
 
     #[test]
     fn create_rejects_runtime_without_secure_github_protocol_before_provisioning() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![json!([]), json!(0)]);
@@ -7349,6 +7414,7 @@ esac
 
     #[test]
     fn create_rejects_unexpected_running_state() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![
@@ -7368,6 +7434,7 @@ esac
 
     #[test]
     fn create_preserves_a_runtime_name_collision() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![json!([{"name":"dev"}])]);
@@ -7378,6 +7445,7 @@ esac
 
     #[test]
     fn update_rejects_storage_resize_before_any_runtime_mutation() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let previous = vm();
@@ -7401,6 +7469,7 @@ esac
 
     #[test]
     fn edit_stops_running_vm_before_modifying_and_does_not_restart() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let previous = vm();
@@ -7418,6 +7487,7 @@ esac
 
     #[test]
     fn edit_does_not_modify_when_stop_is_unverified() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let previous = vm();
@@ -7439,6 +7509,7 @@ esac
 
     #[test]
     fn launch_start_takes_only_its_vms_lane_like_a_user_start() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7462,6 +7533,7 @@ esac
 
     #[test]
     fn launch_start_hands_off_to_a_user_start_already_waiting_for_the_vm() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7489,6 +7561,7 @@ esac
 
     #[test]
     fn launch_start_reports_a_fork_that_needs_its_first_explicit_start() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7503,6 +7576,7 @@ esac
 
     #[test]
     fn launch_starts_selected_existing_vm_and_verifies_running() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7523,6 +7597,7 @@ esac
 
     #[test]
     fn launch_skips_running_and_rejects_missing_ssh_and_unready() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(
@@ -7567,6 +7642,7 @@ esac
 
     #[test]
     fn launch_does_not_recover_crashed_or_transitioning_vms() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7579,6 +7655,7 @@ esac
 
     #[test]
     fn launch_respects_resources_and_ownership_without_starting() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7605,6 +7682,7 @@ esac
 
     #[test]
     fn lifecycle_checks_metadata_and_runtime_ownership_before_mutation() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7619,6 +7697,7 @@ esac
 
     #[test]
     fn lifecycle_does_not_report_success_when_runtime_stays_stopped() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7629,6 +7708,7 @@ esac
 
     #[test]
     fn lifecycle_refuses_a_runtime_row_without_silo_ownership() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7644,6 +7724,7 @@ esac
 
     #[test]
     fn validation_rejects_duplicates_and_invalid_resource_order() {
+        let _test_state = crate::test_support::global_state();
         let mut duplicate = vm();
         if let MachineConfiguration::Vm { name, .. } = &mut duplicate {
             *name = "dev".into();
@@ -7660,6 +7741,7 @@ esac
 
     #[test]
     fn saved_configuration_is_available_without_runtime_files() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let expected = request(vec![vm()]);
@@ -7673,6 +7755,7 @@ esac
 
     #[test]
     fn saved_configuration_distinguishes_first_launch_from_invalid_data() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("machines.json");
         assert!(read_metadata(&path).unwrap().machines.is_empty());
@@ -7685,6 +7768,7 @@ esac
 
     #[test]
     fn metadata_round_trip_is_atomic_and_preserves_split_storage_settings() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let expected = request(vec![vm()]);
@@ -7696,6 +7780,7 @@ esac
 
     #[test]
     fn measured_resources_reject_impossible_cpu_and_memory_requests() {
+        let _test_state = crate::test_support::global_state();
         let request = request(vec![vm()]);
         let constrained_cpu = HostResources {
             logical_cpus: 4,
@@ -7718,6 +7803,7 @@ esac
 
     #[test]
     fn removal_cleans_workspace_only_after_runtime_removal_succeeds() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let disk = disk_path(&paths, "dev", "workspace");
@@ -7739,6 +7825,7 @@ esac
 
     #[test]
     fn empty_setup_saves_and_verifies_without_initializing_runtime() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![]);
@@ -7772,6 +7859,7 @@ esac
 
     #[test]
     fn identity_resume_verifies_guest_files_not_boot_environment() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7787,6 +7875,7 @@ esac
 
     #[test]
     fn working_account_old_vm_cannot_start_or_restart() {
+        let _test_state = crate::test_support::global_state();
         for action in ["start", "restart", "launch"] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -7806,6 +7895,7 @@ esac
 
     #[test]
     fn working_account_git_identity_uses_the_same_home_for_write_and_verification() {
+        let _test_state = crate::test_support::global_state();
         let user = "silo";
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -7826,6 +7916,7 @@ esac
 
     #[test]
     fn running_identity_change_uses_normal_config_without_restart() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7851,6 +7942,7 @@ esac
 
     #[test]
     fn identity_verification_never_boots_a_stopped_vm() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7871,6 +7963,7 @@ esac
 
     #[test]
     fn identity_work_holds_one_named_cancellable_vm_lane_at_a_time() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut other = vm();
@@ -7915,6 +8008,7 @@ esac
 
     #[test]
     fn identity_missing_or_failed_guest_verification_never_succeeds() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -7932,6 +8026,7 @@ esac
 
     #[test]
     fn unapplied_identity_does_not_modify_vm() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::new(vec![]);
@@ -7951,6 +8046,7 @@ esac
 
     #[test]
     fn unknown_and_overflowing_resource_checks_never_pass() {
+        let _test_state = crate::test_support::global_state();
         let unknown = HostResources {
             logical_cpus: 8,
             physical_memory_bytes: None,
@@ -7968,6 +8064,8 @@ esac
     #[cfg(unix)]
     #[test]
     fn runtime_alias_is_short_and_preserves_existing_storage() {
+        let _test_state = crate::test_support::global_state();
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
             .tempdir_in("/tmp")
@@ -8005,7 +8103,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn runtime_alias_secures_existing_parent_without_changing_its_contents() {
+        let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
         let storage = directory.path().join("storage");
         let alias = runtime_home_alias(directory.path(), &storage);
@@ -8021,7 +8121,9 @@ esac
     #[cfg(unix)]
     #[test]
     fn runtime_alias_rejects_symlink_parent_without_changing_target_permissions() {
+        let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
         let other = directory.path().join("other");
         fs::create_dir(&other).unwrap();
@@ -8037,6 +8139,8 @@ esac
     #[cfg(unix)]
     #[test]
     fn runtime_alias_reports_existing_directory_and_preserves_data() {
+        let _test_state = crate::test_support::global_state();
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
         let storage = directory.path().join("storage");
         let alias = runtime_home_alias(directory.path(), &storage);
@@ -8053,6 +8157,8 @@ esac
     #[cfg(unix)]
     #[test]
     fn runtime_alias_is_prepared_before_configuration_lock_on_first_run() {
+        let _test_state = crate::test_support::global_state();
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
         let mut paths = paths(&directory);
         let storage = directory.path().join("storage");
@@ -8068,6 +8174,8 @@ esac
     #[cfg(unix)]
     #[test]
     fn runtime_alias_never_replaces_an_existing_wrong_target() {
+        let _test_state = crate::test_support::global_state();
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
             .tempdir_in("/tmp")
@@ -8087,6 +8195,7 @@ esac
 
     #[test]
     fn resolving_runtime_paths_does_not_require_runtime_files_or_manifest() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("Silo.app/Contents/MacOS/msb");
         let resource_dir = directory.path().join("Silo.app/Contents/Resources");
@@ -8126,6 +8235,7 @@ esac
 
     #[test]
     fn host_resource_probe_returns_measured_cpu_and_memory() {
+        let _test_state = crate::test_support::global_state();
         let measured = host_resources().unwrap();
         assert!(measured.logical_cpus > 0);
         assert!(measured
@@ -8135,6 +8245,7 @@ esac
 
     #[test]
     fn configuration_progress_reports_real_boundaries_and_never_false_verification() {
+        let _test_state = crate::test_support::global_state();
         for fail_verification in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -8200,6 +8311,7 @@ esac
 
     #[test]
     fn unavailable_local_runtime_shell_preserves_error_without_inventing_vm_state() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -8212,6 +8324,7 @@ esac
 
     #[test]
     fn deleting_last_vm_persists_empty_inventory_without_requiring_runtime_for_snapshot() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -8227,6 +8340,7 @@ esac
 
     #[test]
     fn adding_or_removing_a_vm_does_not_recheck_or_report_unchanged_vms() {
+        let _test_state = crate::test_support::global_state();
         for (removing, retry_workspace) in [(false, None), (true, None), (true, Some("work"))] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -8260,6 +8374,7 @@ esac
 
     #[test]
     fn interrupted_verification_resumes_only_until_it_completes() {
+        let _test_state = crate::test_support::global_state();
         let started = machine_progress("request-1", "workspace-verification", "dev", 0);
         let failed = machine_progress("request-1", "setup-failed", "dev", 0);
         assert_eq!(pending_verification_workspace(&[started.clone(), failed]), Some("dev".into()));
@@ -8271,6 +8386,7 @@ esac
 
     #[test]
     fn retry_checks_unchanged_saved_settings_for_runtime_resource_mismatch() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let configured = request(vec![vm()]);
@@ -8291,6 +8407,7 @@ esac
 
     #[test]
     fn removal_preflight_checks_every_vm_before_deleting_any() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let first = vm();
@@ -8330,6 +8447,7 @@ esac
 
     #[test]
     fn failed_later_removal_keeps_metadata_for_surviving_vms() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut second = vm();
@@ -8385,6 +8503,7 @@ esac
 
     #[test]
     fn failed_multi_create_keeps_metadata_for_completed_creation() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let first = vm();
@@ -8505,6 +8624,7 @@ esac
 
     #[test]
     fn deleting_a_pending_restore_removes_the_runtime_its_attempt_created() {
+        let _test_state = crate::test_support::global_state();
         for (status, stops) in [("Stopped", false), ("Running", true)] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -8539,6 +8659,7 @@ esac
 
     #[test]
     fn deleting_a_pending_restore_without_runtime_state_removes_only_silo_records() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -8558,6 +8679,7 @@ esac
 
     #[test]
     fn deleting_a_pending_restore_preserves_runtime_state_it_did_not_create() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
@@ -8571,6 +8693,7 @@ esac
 
     #[test]
     fn remove_refuses_a_running_vm_without_stopping_it_implicitly() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![inspect(&paths, "Running")]);
@@ -8711,6 +8834,7 @@ mod change_configuration_tests {
 
     #[test]
     fn upsert_rejected_when_expected_does_not_match_current() {
+        let _test_state = crate::test_support::global_state();
         let current = vm("a", "dev", 2);
         let mut machines = vec![current.clone(), vm("b", "web", 2)];
         // The user edited from a two-CPU baseline, but the VM now has four CPUs.
@@ -8724,6 +8848,7 @@ mod change_configuration_tests {
 
     #[test]
     fn delete_rejected_when_vm_no_longer_exists() {
+        let _test_state = crate::test_support::global_state();
         let mut machines = vec![vm("b", "web", 2)];
         let change = MachineConfigurationChange::Delete {
             vm_id: "a".into(),
@@ -8737,6 +8862,7 @@ mod change_configuration_tests {
 
     #[test]
     fn delete_of_present_vm_removes_only_that_vm() {
+        let _test_state = crate::test_support::global_state();
         let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2)];
         let change = MachineConfigurationChange::Delete {
             vm_id: "a".into(),
@@ -8750,6 +8876,7 @@ mod change_configuration_tests {
 
     #[test]
     fn two_sequential_changes_both_land_second_on_top_of_first() {
+        let _test_state = crate::test_support::global_state();
         // Each targeted change reads fresh state and applies on top of the previous
         // one, so both survive instead of the second overwriting the first.
         let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2)];
@@ -8768,6 +8895,7 @@ mod change_configuration_tests {
 
     #[test]
     fn edit_preserves_position_instead_of_appending() {
+        let _test_state = crate::test_support::global_state();
         let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2), vm("c", "db", 2)];
         upsert(&vm("a", "dev", 3), Some(&vm("a", "dev", 2))).apply(&mut machines).unwrap();
         assert_eq!(machines, vec![vm("a", "dev", 3), vm("b", "web", 2), vm("c", "db", 2)]);
@@ -8775,6 +8903,7 @@ mod change_configuration_tests {
 
     #[test]
     fn reorder_requires_matching_expected_order() {
+        let _test_state = crate::test_support::global_state();
         let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2), vm("c", "db", 2)];
         let change = MachineConfigurationChange::Reorder {
             order: vec!["c".into(), "a".into(), "b".into()],
@@ -8797,6 +8926,7 @@ mod change_configuration_tests {
 
     #[test]
     fn create_with_existing_id_is_rejected() {
+        let _test_state = crate::test_support::global_state();
         // A create carries `expected: null` meaning "must not already exist". An id that
         // is already present makes the current value differ from the expected absence.
         let mut machines = vec![vm("a", "dev", 2)];
@@ -8807,6 +8937,7 @@ mod change_configuration_tests {
 
     #[test]
     fn batch_applies_every_change_in_order() {
+        let _test_state = crate::test_support::global_state();
         let mut machines = vec![vm("a", "dev", 2)];
         let batch = MachineConfigurationChange::Batch {
             changes: vec![
@@ -8821,6 +8952,7 @@ mod change_configuration_tests {
 
     #[test]
     fn batch_rejects_all_or_nothing_when_one_change_is_stale() {
+        let _test_state = crate::test_support::global_state();
         let mut machines = vec![vm("a", "dev", 2)];
         // The second change expects a two-CPU baseline for "a" that the first already
         // moved to three, so it is stale and the whole batch is rejected untouched.
@@ -8838,6 +8970,7 @@ mod change_configuration_tests {
 
     #[test]
     fn nested_batches_are_rejected() {
+        let _test_state = crate::test_support::global_state();
         let mut machines = vec![vm("a", "dev", 2)];
         let batch = MachineConfigurationChange::Batch {
             changes: vec![MachineConfigurationChange::Batch { changes: vec![] }],

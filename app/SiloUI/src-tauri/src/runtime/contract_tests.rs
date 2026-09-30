@@ -59,6 +59,7 @@ impl RuntimeRunner for SnapshotRunner {
 
 #[test]
 fn application_and_remote_snapshot_match_wire_contract() {
+    let _test_state = crate::test_support::global_state();
     let directory = tempfile::tempdir().unwrap();
     let paths = super::tests::paths(&directory);
     crate::secrets::use_test_store(Some(directory.path().join("secrets.json")));

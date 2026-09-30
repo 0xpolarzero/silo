@@ -130,6 +130,7 @@ which Tauri signs with the Hypervisor entitlement; the raw build-cache executabl
 cannot boot a macOS VM:
 
 ```sh
+SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures \
 SILO_TEST_MSB="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app/Contents/MacOS/msb" \
 SILO_TEST_LIBKRUNFW="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app/Contents/Frameworks/libkrunfw.5.dylib" \
 cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml \

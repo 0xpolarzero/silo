@@ -114,7 +114,21 @@ pub fn enforce_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn dir() -> PathBuf {
+    // This module is copied into the runtime patch, so keep its tests std-only.
+    // The guard also removes fixtures when an assertion unwinds.
+    struct TestDir(PathBuf);
+    impl std::ops::Deref for TestDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn dir() -> TestDir {
         let dir = std::env::temp_dir().join(format!(
             "silo-retention-{}-{}",
             std::process::id(),
@@ -124,7 +138,7 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
-        dir
+        TestDir(dir)
     }
     #[test]
     fn expires_oldest_segment_even_if_recently_modified() {
@@ -139,7 +153,6 @@ mod tests {
         enforce_at(&dir, now, MAX_BYTES, MAX_AGE).unwrap();
         assert!(!old.exists());
         assert_eq!(fs::read_to_string(fresh).unwrap(), "new");
-        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn budget_is_shared_and_current_path_survives_expiry() {
@@ -157,7 +170,6 @@ mod tests {
         enforce_at(&dir, now + MAX_AGE, 10, MAX_AGE).unwrap();
         assert_eq!(fs::metadata(dir.join("kernel.log")).unwrap().len(), 0);
         assert!(dir.join("unrelated").exists());
-        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     #[cfg(unix)]
@@ -173,7 +185,19 @@ mod tests {
         enforce_at(&dir, now, MAX_BYTES, MAX_AGE).unwrap();
         assert_eq!(held.metadata().unwrap().len(), 0);
         assert_ne!(fs::metadata(&path).unwrap().ino(), old_inode);
-        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fixture_directory_is_removed_when_an_assertion_unwinds() {
+        let mut fixture = PathBuf::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let dir = dir();
+            fixture = dir.to_path_buf();
+            fs::write(dir.join("fixture"), "test").unwrap();
+            panic!("simulate an assertion failure");
+        }));
+        assert!(result.is_err());
+        assert!(!fixture.exists());
     }
 
     #[test]

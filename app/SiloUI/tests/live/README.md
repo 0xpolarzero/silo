@@ -13,6 +13,7 @@ Provide these values through a private local environment or secret manager. Neve
 - `SILO_GITHUB_TEST_READ_REPO`, `SILO_GITHUB_TEST_READ_REPO_ID`
 - `SILO_GITHUB_TEST_WRITE_REPO`, `SILO_GITHUB_TEST_WRITE_REPO_ID`
 - `SILO_GITHUB_TEST_DENIED_REPO`, `SILO_GITHUB_TEST_DENIED_REPO_ID`
+- `SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures`
 - `SILO_GITHUB_TEST_CONFIRM=private-test-repositories`
 
 Repository names use `owner/name`. IDs are the GitHub numeric repository IDs. The confirmation authorizes mutations only in the explicitly named disposable fixtures. Exact names, IDs, common ownership and privacy are verified before minting tokens or making mutations. Parent authorization is never revoked.
@@ -40,7 +41,7 @@ A failure reports only the stage, never a token or raw HTTP response. Check the 
 
 Also provide `SILO_TEST_MSB` and `SILO_TEST_LIBKRUNFW` pointing to Silo's patched MicroSandbox binary and library, and set `SILO_GITHUB_TEST_VM=1`. Run the same command with hardware virtualization permissions.
 
-After native checks, the harness starts the existing ignored `github_authenticated_guest_workflow` test. Its process receives only scoped child tokens, fixture names and the required host toolchain environment. It does not receive the App client secret or parent user token. Child output is suppressed to avoid credential disclosure.
+After native checks, the harness directly invokes the already-built test executable with an exact selector for the existing ignored `github_authenticated_guest_workflow` test. Its process receives only scoped child tokens, fixture names and the required host toolchain environment. It does not receive the App client secret or parent user token. Child output is suppressed to avoid credential disclosure.
 
 The guest test uses a temporary managed VM to check real Git clone/fetch/push, `gh`, Git LFS roundtrip, absence of real tokens in guest environment/configuration, live write removal, full access removal, restoration and unchanged VM boot ID. It also snapshots the source while write access is assigned, restores a fork after assigning that target a read-only profile, and verifies read access works while issue mutation and Git push fail immediately. The restore does not repair policy after guest start. It creates a unique test branch and deletes it during cleanup. Uploaded LFS objects can remain in GitHub storage after branch deletion; these repositories must be disposable.
 

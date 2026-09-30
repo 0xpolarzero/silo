@@ -261,6 +261,7 @@ mod tests {
     use super::*;
     #[test]
     fn update_journal_round_trips_and_rejects_duplicate_or_unknown_identity() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let machine = RunningMachine {
@@ -280,6 +281,7 @@ mod tests {
     }
     #[test]
     fn completed_resume_is_not_repeated_after_process_interruption() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let first = RunningMachine {
@@ -312,6 +314,7 @@ mod tests {
     }
     #[test]
     fn failed_resume_preserves_only_failed_identity_and_continues_others() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let first = RunningMachine {
@@ -339,6 +342,7 @@ mod tests {
 
     #[test]
     fn removed_sandbox_entries_are_resolved_instead_of_blocking_every_launch() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let kept = uuid::Uuid::new_v4().to_string();
@@ -361,6 +365,7 @@ mod tests {
 
     #[test]
     fn unstarted_pending_sandbox_does_not_block_updates() {
+        let _test_state = crate::test_support::global_state();
         struct NoRuntime;
         impl RuntimeRunner for NoRuntime {
             fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -385,6 +390,7 @@ mod tests {
 
     #[test]
     fn stop_requires_consent_and_persists_entire_running_set_before_first_action() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let machines = vec![
@@ -411,6 +417,7 @@ mod tests {
     }
     #[test]
     fn empty_running_set_is_still_a_durable_update_recovery() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         stop_selected(&paths, &[], false, |_| panic!("no running machines")).unwrap();
@@ -420,6 +427,7 @@ mod tests {
     }
     #[test]
     fn crashed_sandbox_does_not_block_update_but_transitions_and_unknown_states_do() {
+        let _test_state = crate::test_support::global_state();
         struct Inspect(Value);
         impl RuntimeRunner for Inspect {
             fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -445,6 +453,7 @@ mod tests {
 
     #[test]
     fn replacement_runtime_identity_is_never_accepted() {
+        let _test_state = crate::test_support::global_state();
         struct Inspect(Value);
         impl RuntimeRunner for Inspect {
             fn run(

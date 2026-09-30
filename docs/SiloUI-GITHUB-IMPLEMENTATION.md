@@ -533,3 +533,11 @@ individually and resealing the outer bundle with `codesign --force --sign -`
 succeeded; `codesign --verify --deep --strict` then passed for the exact debug
 bundle above. The running app was not quit or relaunched because Quit stops
 Silo-owned local VMs. The updated packaged UI therefore remains unverified.
+
+All ignored Rust live regressions require
+`SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures` before touching the runtime,
+network, or editor integration. Authenticated GitHub regressions additionally
+require `SILO_GITHUB_TEST_CONFIRM=private-test-repositories`. The isolated browser
+regression checks both confirmations before exchanging its authorization code.
+The guest regression runs the already-built test executable with an exact test
+selector; it does not start nested Cargo or share Cargo build locks.

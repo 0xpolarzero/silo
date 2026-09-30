@@ -933,18 +933,11 @@ mod tests {
         }
     }
     fn paths(dir: &tempfile::TempDir) -> RuntimePaths {
-        RuntimePaths {
-            guest_image: dir.path().join("image"),
-            executable: dir.path().join("msb"),
-            home: dir.path().join("home"),
-            storage_home: None,
-            library: dir.path().join("lib"),
-            metadata: dir.path().join("machines.json"),
-            volumes: dir.path().join("volumes"),
-        }
+        crate::test_support::paths(dir.path())
     }
     #[test]
     fn rejects_wildcards_invalid_ports_keys_and_duplicate_key_comments() {
+        let _test_state = crate::test_support::global_state();
         let mut c = config();
         validate(&c).unwrap();
         for ip in [
@@ -979,6 +972,7 @@ mod tests {
     }
     #[test]
     fn persists_identity_and_disabled_settings_without_touching_internal_keys() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         fs::create_dir_all(p.home.join("ssh")).unwrap();
@@ -1001,6 +995,7 @@ mod tests {
     }
     #[test]
     fn refuses_symlinked_settings() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         let target = dir.path().join("target");
@@ -1055,6 +1050,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn listener_drop_closes_socket_and_sessions_and_preserves_internal_authorization() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         fake_runtime(&p);
@@ -1089,6 +1085,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn closing_owner_pipe_exits_child_without_drop_cleanup() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         fake_runtime(&p);
@@ -1108,6 +1105,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn occupied_port_never_reports_an_unrelated_listener_as_ready() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         fake_runtime(&p);
@@ -1119,6 +1117,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn reconciliation_never_launches_stopped_disabled_unverified_or_keyless_sandboxes() {
+        let _test_state = crate::test_support::global_state();
         let mut owned = Owners::default();
         let mut c = config();
         for observed in [Ok(false), Err("status unavailable".into())] {
@@ -1142,6 +1141,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn reconciliation_reuses_live_listener_restarts_on_keys_and_revokes_on_stop() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         fake_runtime(&p);
@@ -1177,6 +1177,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn network_listener_failure_rolls_back_the_ready_loopback_listener() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         fake_runtime(&p);
@@ -1217,6 +1218,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn working_account_outdated_runtime_closes_listener_before_reuse_or_binding() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);
@@ -1230,16 +1232,16 @@ sys.stdin.buffer.read()
         owned.listeners.insert(c.workspace.clone(), Listener { children: vec![], config: c.clone() });
         for _ in 0..2 {
             let observed = inspect_running(&p, &c);
-            assert!(observed.as_ref().unwrap_err().contains("Repair or update Silo"));
+            assert_eq!(observed.as_ref().unwrap_err(), "The bundled runtime cannot open this sandbox's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo.");
             reconcile_one(&mut owned, &c, observed, &["127.0.0.1".into()], || panic!("unsafe runtime must not bind a listener"));
             assert!(!owned.listeners.contains_key(&c.workspace));
-            assert!(owned.errors[&c.workspace].contains("Repair or update Silo"));
+            assert_eq!(owned.errors[&c.workspace], "The bundled runtime cannot open this sandbox's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo.");
         }
     }
 
     #[test]
     fn working_account_remote_export_requires_protocol_before_creating_client_key() {
-        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);
@@ -1274,7 +1276,7 @@ sys.stdin.buffer.read()
 
     #[test]
     fn remote_connections_authorize_each_computers_own_key_and_never_send_a_private_key() {
-        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);
@@ -1316,7 +1318,7 @@ sys.stdin.buffer.read()
 
     #[test]
     fn disabling_ssh_access_revokes_computer_keys_and_rotates_the_managed_key() {
-        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);
@@ -1342,7 +1344,7 @@ sys.stdin.buffer.read()
 
     #[test]
     fn automatic_client_key_is_stable_isolated_and_exported_only_on_request() {
-        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);
@@ -1375,7 +1377,7 @@ sys.stdin.buffer.read()
 
     #[test]
     fn remote_enable_waits_for_owner_start_and_retries_preserve_sessions_until_remote_disable() {
-        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let _test_state = crate::test_support::global_state();
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
@@ -1442,7 +1444,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn state_and_closes_never_wait_for_listener_start_up() {
-        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let _test_state = crate::test_support::global_state();
         let _cleanup = CloseDev;
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
@@ -1465,7 +1467,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn a_close_during_listener_start_up_discards_the_new_listener() {
-        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let _test_state = crate::test_support::global_state();
         let _cleanup = CloseDev;
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
@@ -1483,7 +1485,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn background_checks_skip_the_gate_and_runtime_when_nothing_is_configured() {
-        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let _test_state = crate::test_support::global_state();
         close_all();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
@@ -1502,6 +1504,7 @@ sys.stdin.buffer.read()
     }
     #[test]
     fn state_read_returns_without_waiting_for_the_operation_gate() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);
@@ -1531,7 +1534,7 @@ sys.stdin.buffer.read()
 
     #[test]
     fn remote_save_rejects_replaced_ids_and_invalid_settings_without_writing() {
-        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);

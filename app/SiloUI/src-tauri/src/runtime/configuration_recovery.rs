@@ -342,6 +342,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ordinary_command_lock_release_survives_an_unrelated_fork() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&directory);
         for completed_child in [false, true] {
@@ -386,6 +387,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn deliberately_inherited_command_lock_survives_parent_release() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&directory);
         let mut lock = command_lock(&paths, Duration::ZERO).unwrap();
@@ -424,6 +426,7 @@ mod tests {
 
     #[test]
     fn working_account_recovery_provisions_only_labelled_interrupted_creations() {
+        let _test_state = crate::test_support::global_state();
         struct InterruptedRuntime {
             inspected: Value,
             calls: Mutex<Vec<Vec<String>>>,
@@ -479,6 +482,7 @@ mod tests {
 
     #[test]
     fn failed_recovery_unblocks_verified_current_state_without_discarding_intent() {
+        let _test_state = crate::test_support::global_state();
         struct EmptyRuntime;
         impl RuntimeRunner for EmptyRuntime {
             fn run(&self, _paths: &RuntimePaths, args: &[String], _timeout: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -511,6 +515,7 @@ mod tests {
 
     #[test]
     fn in_session_failure_stops_blocking_snapshots_but_keeps_intent() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&directory);
         let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
@@ -533,6 +538,7 @@ mod tests {
 
     #[test]
     fn retry_resumes_the_recorded_request_and_rejects_settings_changed_since() {
+        let _test_state = crate::test_support::global_state();
         struct EmptyRuntime;
         impl RuntimeRunner for EmptyRuntime {
             fn run(&self, _paths: &RuntimePaths, args: &[String], _timeout: Duration) -> Result<CommandOutput, RuntimeError> {

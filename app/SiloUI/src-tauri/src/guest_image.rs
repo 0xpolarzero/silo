@@ -314,6 +314,7 @@ mod tests {
     #[test]
     #[ignore = "requires signed bundled msb, hypervisor access and staged guest image"]
     fn live_bundled_image_import_and_cache_reuse() {
+        crate::test_support::live::require_confirmation();
         use super::super::{CommandOutput, ProcessRunner};
         struct NoImport;
         impl RuntimeRunner for NoImport {
