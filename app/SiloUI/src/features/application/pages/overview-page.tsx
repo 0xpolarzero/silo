@@ -19,7 +19,7 @@ import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOpe
 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
 import { ConfirmBody } from "@/components/confirm-popover"
-import type { BackupController } from "../model/backup-source"
+import type { BackupController, VerifiedExport } from "../model/backup-source"
 import type { WorkspaceCheckpoint } from "../model/checkpoint-source"
 
 import { ErrorDetails } from "@/components/error-details"
@@ -255,7 +255,7 @@ export function OverviewPage({ active = true, readOnly = false,
   sandboxRequest?: SandboxPageRequest
   onSandboxRequestHandled?: (token: number) => void
   /** Pick a folder and export a sandbox (or one of its checkpoints) as a background toast. */
-  onExportSandbox?: (sandboxName: string, checkpoint?: { id: string; name: string }) => void
+  onExportSandbox?: (sandboxName: string, checkpoint?: { id: string; name: string }) => void | Promise<VerifiedExport | null>
   /** Open the import review dialog after picking an export file. */
   onImportSandbox?: () => void
   /** Wraps the sandbox list's Add button so the import review popover anchors to it. */
@@ -374,6 +374,8 @@ export function OverviewPage({ active = true, readOnly = false,
   }
   const isMachineCreated = (machine: SetupMachineConfiguration) => committedWorkspaces.has(machine.id)
   const isMachineRunning = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.state === "running"
+  const latestDeleteState = useRef({ source, readOnly })
+  useEffect(() => { latestDeleteState.current = { source, readOnly } }, [source, readOnly])
 
   function notifyOperationUnavailable() {
     showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.", undefined, { native: false })
@@ -408,6 +410,25 @@ export function OverviewPage({ active = true, readOnly = false,
       checkpoints: workspace.checkpoints?.length,
       readSize: machine.kind === "vm" && !workspace.computer && readStorage
         ? async () => { const storage = await readStorage(machine.id); return storage.workspaceHostBytes + storage.runtimeHostBytes }
+        : undefined,
+      exportFirst: machine.kind === "vm" && !workspace.computer && exportSandbox
+        ? async () => {
+            try {
+              if (!await exportSandbox(machine.name)) return false
+            } catch (error) {
+              showActionFailure(`Couldn't export ${machine.name}`, error, undefined, { native: false })
+              return false
+            }
+            // Export can take minutes. A verified file does not authorize deleting a sandbox
+            // that started, disappeared, or became busy while that file was being written.
+            const current = latestDeleteState.current
+            const fresh = current.source.workspaces.find(item => item.machine.id === machine.id && !item.computer)
+            if (!fresh || current.readOnly || current.source.vmOperationsUnavailable || current.source.sandboxConfigurationOperation || workspaceAvailability(fresh, current.source).busy || fresh.state === "running" || fresh.freshness === "stale") {
+              showActionFailure(`Couldn't delete ${machine.name}`, "The sandbox changed while exporting. Review its current state before deleting it. Your export is saved.", undefined, { native: false })
+              return false
+            }
+            return true
+          }
         : undefined,
     }
   }

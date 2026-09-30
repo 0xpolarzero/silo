@@ -1,13 +1,67 @@
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
+import { Toaster } from "@/components/ui/sonner"
 
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
 import type { WorkspaceStorageState } from "../model/workspace-storage"
+import type { BackupController, VerifiedExport } from "../model/backup-source"
 import { OverviewPage } from "./overview-page"
 
 const GiB = 1024 ** 3
+const backup = { state: { availability: "available", operation: null }, actions: {} } as BackupController
+const verified: VerifiedExport = { operationId: "export-dev", archive: { name: "dev", archivePath: "/fixture/dev.silo", completedLabel: "Now", size: "4.2 GB", destination: "/fixture", sandboxes: ["dev"] } }
+
+for (const entry of ["row", "page"] as const) {
+  it(`waits for a verified export before deleting from the ${entry}`, async () => {
+    const user = userEvent.setup()
+    const onMachinesChange = vi.fn()
+    let complete!: (value: VerifiedExport | null) => void
+    const onExportSandbox = vi.fn(() => new Promise<VerifiedExport | null>(resolve => { complete = resolve }))
+    render(<OverviewPage source={stoppedDev()} actions={{} as ApplicationActions} backup={backup} onExportSandbox={onExportSandbox} onMachinesChange={onMachinesChange} />)
+    if (entry === "page") await user.click(screen.getByRole("button", { name: "Open dev" }))
+    await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+    await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
+    await user.click(popover().getByRole("button", { name: "Export, then delete" }))
+    expect(onExportSandbox).toHaveBeenCalledWith("dev")
+    expect(onMachinesChange).not.toHaveBeenCalled()
+    complete(verified)
+    await waitFor(() => expect(onMachinesChange).toHaveBeenCalledTimes(1))
+  })
+}
+
+it.each(["cancelled", "failed"])("keeps the sandbox when export is %s", async outcome => {
+  const user = userEvent.setup()
+  const onMachinesChange = vi.fn()
+  const onExportSandbox = vi.fn(async () => { if (outcome === "failed") throw new Error("Export failed"); return null })
+  render(<OverviewPage source={stoppedDev()} actions={{} as ApplicationActions} backup={backup} onExportSandbox={onExportSandbox} onMachinesChange={onMachinesChange} />)
+  await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+  await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
+  await user.click(popover().getByRole("button", { name: "Export, then delete" }))
+  await waitFor(() => expect(onExportSandbox).toHaveBeenCalled())
+  expect(onMachinesChange).not.toHaveBeenCalled()
+  expect(screen.getByRole("button", { name: "Open dev" })).toBeVisible()
+})
+
+it("keeps a sandbox that started while its export was running", async () => {
+  const user = userEvent.setup()
+  const onMachinesChange = vi.fn()
+  let complete!: (value: VerifiedExport) => void
+  const onExportSandbox = vi.fn(() => new Promise<VerifiedExport>(resolve => { complete = resolve }))
+  const source = stoppedDev()
+  const view = (current: ApplicationSource) => <><Toaster /><OverviewPage source={current} actions={{} as ApplicationActions} backup={backup} onExportSandbox={onExportSandbox} onMachinesChange={onMachinesChange} /></>
+  const { rerender } = render(view(source))
+  await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+  await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
+  await user.click(popover().getByRole("button", { name: "Export, then delete" }))
+  const running = structuredClone(source)
+  running.workspaces.find(({ machine }) => machine.name === "dev")!.state = "running"
+  rerender(view(running))
+  complete(verified)
+  await waitFor(() => expect(screen.getByText("Couldn't delete dev")).toBeVisible())
+  expect(onMachinesChange).not.toHaveBeenCalled()
+})
 
 function storage(bytes: number): WorkspaceStorageState {
   return { history: [], workspaceHostBytes: bytes - GiB / 2, runtimeHostBytes: GiB / 2, workspaceUsedBytes: null, workspaceCapacityBytes: null, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
