@@ -796,7 +796,7 @@ describe("onboarding", () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
 
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("menuitem", { name: "Connect a machine via SSH" }))
+    await user.click(screen.getByRole("menuitem", { name: "Connect an SSH host…" }))
     expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveValue("remote-1")
     expect(screen.getByRole("spinbutton", { name: "SSH port" })).toHaveValue(22)
     await user.click(screen.getByRole("button", { name: "Save" }))
@@ -807,7 +807,7 @@ describe("onboarding", () => {
     expect(screen.queryByDisplayValue("remote-1")).not.toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("menuitem", { name: "Connect a machine via SSH" }))
+    await user.click(screen.getByRole("menuitem", { name: "Connect an SSH host…" }))
     await user.clear(screen.getByRole("textbox", { name: "Sandbox name" }))
     await user.type(screen.getByRole("textbox", { name: "Sandbox name" }), "staging")
     await user.type(screen.getByRole("textbox", { name: "SSH host" }), "staging.example.com")
@@ -1077,7 +1077,7 @@ describe("onboarding", () => {
   it("mirrors final machine order and kind in Review while preserving activity collapse", async () => {
     const { user } = await renderMachineScenario()
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("menuitem", { name: "Connect a machine via SSH" }))
+    await user.click(screen.getByRole("menuitem", { name: "Connect an SSH host…" }))
     await user.clear(screen.getByRole("textbox", { name: "Sandbox name" }))
     await user.type(screen.getByRole("textbox", { name: "Sandbox name" }), "remote")
     await user.type(screen.getByRole("textbox", { name: "SSH host" }), "remote.example.com")

@@ -100,7 +100,7 @@ function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess
   onCancel?: ApplicationActions["cancelOperation"]
 }) {
   const { machine } = workspace
-  const location = workspace.computer ? workspace.computer.name : machine.kind === "vm" ? "VM" : "SSH"
+  const location = workspace.computer ? workspace.computer.name : machine.kind === "vm" ? "VM" : "SSH host"
   return <span>
     <WorkspaceStatus workspace={workspace} source={source} readOnly={readOnly} onCancel={onCancel} />
     <Sep />{location}
@@ -274,7 +274,7 @@ function OverviewTab({ workspace, source, actions, active, onEdit, onNavigate }:
         <ListRow
           icon={<ListRowIcon aria-hidden="true">{isVm ? <Cpu className="size-3.5" /> : <Server className="size-3.5" />}</ListRowIcon>}
           title={resourceTitle}
-          detail={isVm ? "Allocated to this sandbox" : "SSH machine connection"}
+          detail={isVm ? "Allocated to this sandbox" : "SSH host connection"}
           actions={isVm && onEdit ? <Button type="button" variant="outline" size="xs" onClick={onEdit}>Edit</Button> : undefined}
         />
       </ListCard>
@@ -376,7 +376,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     { value: "overview", label: "Overview", visible: true },
     { value: "checkpoints", label: "Checkpoints", visible: showCheckpoints },
     { value: "storage", label: "Storage", visible: showStorage },
-    { value: "access", label: "SSH", visible: showAccess },
+    { value: "access", label: "SSH access", visible: showAccess },
   ]
   const visibleTabs = tabs.filter(tab => tab.visible)
   const menuPopovers: MenuPopovers = {

@@ -45,7 +45,7 @@ function SandboxIcon({ kind, state, remote }: { kind: "vm" | "ssh"; state: Sandb
       ) : state === "warning" ? (
         <TriangleAlert className="size-3.5" aria-hidden="true" />
       ) : (
-        <ConnectionIcon kind={kind} network={remote} label={kind === "vm" ? `${remote ? "Remote" : "Local"} VM` : `${remote ? "Network" : "Local"} SSH`} />
+        <ConnectionIcon kind={kind} network={remote} label={kind === "vm" ? `${remote ? "Remote" : "Local"} VM` : "SSH host"} />
       )}
     </ListRowIcon>
   )

@@ -217,14 +217,16 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     reorder(id, targetIndex)
   }
 
-  const remoteCount = machines.filter(machine => getComputerId?.(machine) || machine.kind === "ssh").length
+  const sandboxCount = machines.filter(machine => machine.kind === "vm").length
+  const remoteCount = machines.filter(machine => machine.kind === "vm" && getComputerId?.(machine)).length
+  const sshHostCount = machines.length - sandboxCount
 
   return (
     <>
       <div aria-labelledby="machine-list-heading" className="flex h-full min-h-0 flex-col">
         <ListHeader
           heading={<h3 id="machine-list-heading" className={listHeadingClassName}>Sandboxes</h3>}
-          subtitle={summary ?? <>{machines.length} {machines.length === 1 ? "sandbox" : "sandboxes"} · {machines.length - remoteCount} on this computer · {remoteCount} remote</>}
+          subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this computer · {remoteCount} on other computers · {sshHostCount} {sshHostCount === 1 ? "SSH host" : "SSH hosts"}</>}
           actions={(importPopover ?? ((node: ReactNode) => node))(<Popover open={addOpen} onOpenChange={setAddOpen}>
             <PopoverTrigger asChild>
               <Button type="button" variant="outline" size="xs" aria-haspopup="menu" disabled={interactionDisabled} onClick={beginOperation}>
@@ -233,7 +235,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
             </PopoverTrigger>
             <PopoverContent role="menu" aria-label="Add sandbox" align="end" className="grid w-48 gap-1 p-1">
               <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { setAddOpen(false); startAdd("vm") }}>New sandbox</button>
-              <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { if (onConnectComputer) { setAddOpen(false); onConnectComputer() } else { setAddOpen(false); startAdd("ssh") } }}>{onConnectComputer ? "Connect computer…" : "Connect a machine via SSH"}</button>
+              <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { if (onConnectComputer) { setAddOpen(false); onConnectComputer() } else { setAddOpen(false); startAdd("ssh") } }}>{onConnectComputer ? "Connect computer…" : "Connect an SSH host…"}</button>
               {onImportSandbox && <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { setAddOpen(false); onImportSandbox() }}>Import sandbox…</button>}
             </PopoverContent>
           </Popover>)}

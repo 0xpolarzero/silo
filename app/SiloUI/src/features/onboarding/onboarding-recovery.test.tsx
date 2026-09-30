@@ -116,7 +116,7 @@ describe("onboarding restart recovery", () => {
     const view = render(onboarding(first, handlers))
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("menuitem", { name: "Connect a machine via SSH" }))
+    await user.click(screen.getByRole("menuitem", { name: "Connect an SSH host…" }))
     await user.clear(screen.getByRole("textbox", { name: "Sandbox name" }))
     await user.type(screen.getByRole("textbox", { name: "SSH host" }), "unfinished.")
     await user.clear(screen.getByRole("spinbutton", { name: "SSH port" }))
