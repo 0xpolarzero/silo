@@ -83,6 +83,8 @@ pub enum OperationKind {
     Push,
     PortPublish,
     PortRemove,
+    /// Moving a sandbox from the old guest account layout to the `silo` account.
+    AccountMigration,
     /// Stopping local VMs for quit or update.
     Shutdown,
     #[default]
@@ -992,12 +994,12 @@ impl OperationGate {
         self.notify();
     }
 
-    /// Mark a running operation cancellable and record it in the queue. Used by
-    /// `OperationGuard::allow_cancel`.
-    fn mark_cancellable(&self, id: u64) {
+    /// Record whether a running operation may be cancelled now. Used by
+    /// `OperationGuard::allow_cancel` and `OperationGuard::forbid_cancel`.
+    fn mark_cancellable(&self, id: u64, cancellable: bool) {
         let mut state = self.lock();
         if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
-            entry.cancellable = true;
+            entry.cancellable = cancellable;
         }
         drop(state);
         self.notify();
@@ -1094,7 +1096,14 @@ impl OperationGuard<'_> {
     /// thread) or the token from `cancel_token` (other threads); nothing is force-killed
     /// except child processes in the runtime polling loops.
     pub(crate) fn allow_cancel(&self) {
-        self.gate.mark_cancellable(self.id);
+        self.gate.mark_cancellable(self.id, true);
+    }
+
+    /// End a cancellable phase: from now on a cancel request is refused with
+    /// `GateError::NotCancellable`. A cancel that arrived before this call is still
+    /// reported by `check_cancelled`, so the work checks it once afterwards.
+    pub(crate) fn forbid_cancel(&self) {
+        self.gate.mark_cancellable(self.id, false);
     }
 
     /// Declare the expected maximum duration so the UI can flag the operation as slow.
@@ -1550,6 +1559,26 @@ mod tests {
     }
 
     #[test]
+    fn forbidding_cancel_ends_a_cancellable_phase_but_keeps_an_earlier_request() {
+        let gate = leak();
+        let running = gate.vm("id-a", "a", "Migrating a").unwrap();
+        let id = gate.snapshot().running[0].id;
+        running.allow_cancel();
+        running.forbid_cancel();
+        assert!(!gate.snapshot().running[0].cancellable);
+        thread::sleep(ADMISSION_GRACE);
+        assert_eq!(gate.cancel(id).unwrap_err(), GateError::NotCancellable);
+        assert!(check_cancelled().is_ok());
+
+        running.allow_cancel();
+        gate.cancel(id).unwrap();
+        running.forbid_cancel();
+        // A cancel requested during the cancellable phase is still reported once.
+        assert_eq!(check_cancelled().unwrap_err(), GateError::Cancelled);
+        drop(running);
+    }
+
+    #[test]
     fn hidden_housekeeping_is_excluded_from_the_snapshot_but_still_exclusive() {
         let gate = leak();
         // A hidden background reconcile holds the computer gate but never surfaces.
@@ -1693,6 +1722,7 @@ mod tests {
             (OperationKind::GithubApply, "githubApply"),
             (OperationKind::PortPublish, "portPublish"),
             (OperationKind::PortRemove, "portRemove"),
+            (OperationKind::AccountMigration, "accountMigration"),
             (OperationKind::Shutdown, "shutdown"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), name);
@@ -1929,6 +1959,7 @@ mod contract_tests {
             Push,
             PortPublish,
             PortRemove,
+            AccountMigration,
             Shutdown,
             Other,
         ];
@@ -1950,7 +1981,7 @@ mod contract_tests {
         let queue = OperationQueue {
             running: entries,
             waiting: vec![OperationEntry {
-                id: 15,
+                id: 16,
                 label: "Waiting contract operation".into(),
                 kind: Lifecycle,
                 vm_id: Some("00000000-0000-4000-8000-000000000002".into()),

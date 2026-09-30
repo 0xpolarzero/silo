@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Guest payload for the explicit host migration utility; never run on the host."""
+"""Guest payload for Silo's account migration (src/runtime/account_migration.rs); never run on the host."""
 import json
 import os
 from pathlib import Path

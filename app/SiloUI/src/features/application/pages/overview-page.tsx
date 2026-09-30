@@ -1,4 +1,6 @@
 import { ForkBody } from "../components/fork-popover"
+import { AccountMigrationBody } from "../components/account-migration"
+import { runAccountMigration } from "../model/account-migration"
 import { runCheckpointOperation, syncCheckpointProgress } from "../model/checkpoint-operation-toast"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
 import { SshAccessBadges } from "./ssh-access-panel"
@@ -13,7 +15,7 @@ import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
 import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditing } from "./sandbox-detail-page"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
+import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal, UserRoundCog } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
 import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOperationFailure, showOperationNotice, showOperationProgress } from "@/lib/operation-toast"
 
@@ -455,6 +457,44 @@ export function OverviewPage({ active = true, readOnly = false,
     return lifecycleLater(workspace, action, true)
   }
 
+  /** Why an account migration cannot be requested for this sandbox right now. */
+  function migrationBlocked(workspace: ApplicationWorkspace): string | undefined {
+    const { computer } = workspace
+    if (computer && !computer.connected) return `${computer.name} is offline. Reconnect it to migrate this sandbox.`
+    if (computer?.busy) return `${computer.name} is updating. Wait before migrating this sandbox.`
+    if (!computer && source.vmOperationsUnavailable) return source.vmOperationsUnavailable
+    if (!computer && source.runtimeRepair) return "Resolve the system issue first."
+    if (!computer && configurationOperation) return "Wait for sandbox changes to finish."
+    if (workspaceAvailability(workspace, source).busy) return "Wait for the current operation to finish."
+    if (workspace.freshness === "stale") return "Silo could not refresh this sandbox’s status."
+    return undefined
+  }
+
+  /** Migrate a sandbox to the silo account; progress shows in the operation queue. */
+  function migrateAccount(workspace: ApplicationWorkspace) {
+    const { machine, computer } = workspace
+    const target = workspaceTarget(workspace)
+    return runAccountMigration({
+      id: `account-migration:${computer?.id ?? ""}:${machine.id}`,
+      sandbox: machine.name,
+      computerName: computer?.name,
+      noticeSandbox: { id: machine.id, name: machine.name },
+      migrate: () => actions.migrateAccount!(target),
+      successAction: { label: "Start", onClick: lifecycleLater(workspace, "start", false) },
+    })
+  }
+
+  /** The migration controls of a sandbox that still uses the old account layout. */
+  function accountMigrationControls(workspace: ApplicationWorkspace): SandboxDetailControls["accountMigration"] {
+    if (readOnly || !workspace.accountMigration || !actions.planAccountMigration || !actions.migrateAccount) return undefined
+    const target = workspaceTarget(workspace)
+    return {
+      disabledReason: migrationBlocked(workspace),
+      plan: () => actions.planAccountMigration!(target),
+      migrate: () => migrateAccount(workspace),
+    }
+  }
+
   /** A sandbox's ⋯ menu actions and popovers, built once for its list row and its page. The
    * page and the list append their own Edit, Duplicate, Add Linux desktop and Delete items. */
   function sandboxMenu(workspace: ApplicationWorkspace): { items: MenuAction[]; popovers?: MenuPopovers } {
@@ -466,7 +506,9 @@ export function OverviewPage({ active = true, readOnly = false,
     const local = !workspace.computer
     const restartCheck = guard.check(workspace, "restart")
     const restartPrompt = restartCheck.kind === "confirm" && availability.canRestart && !readOnly ? restartCheck.prompt : undefined
+    const migration = workspace.accountMigration?.status === "running" ? undefined : accountMigrationControls(workspace)
     const items: MenuAction[] = [
+      ...(migration ? [{ label: "Migrate to the silo account…", icon: UserRoundCog, accessibleLabel: `Migrate ${machine.name} to the silo account`, disabled: Boolean(migration.disabledReason), tooltip: migration.disabledReason, popover: "account-migration" }] : []),
       ...(vm && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || availability.busy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
       restartPrompt
         ? { label: "Restart…", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, popover: "restart" }
@@ -478,6 +520,7 @@ export function OverviewPage({ active = true, readOnly = false,
       ...(vm && local && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || availability.busy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
     ]
     const popovers: MenuPopovers = { ...forkPopovers(workspace) }
+    if (migration) popovers["account-migration"] = close => <AccountMigrationBody sandboxName={machine.name} computerName={workspace.computer?.name} plan={migration.plan} onMigrate={migration.migrate} onClose={close} />
     if (restartPrompt) popovers.restart = close => <ConfirmBody tone={restartPrompt.tone} title={restartPrompt.title} description={restartPrompt.description} confirmLabel={restartPrompt.confirmLabel} onClose={close} onConfirm={lifecycleLater(workspace, "restart", true)} />
     return { items, popovers }
   }
@@ -675,6 +718,7 @@ export function OverviewPage({ active = true, readOnly = false,
       checkpointExportDisabled: transferBusy || backup?.state.availability === "unavailable",
       onCheckpointForkedAction: (name: string) => forkOpenAction(name, workspace.computer?.id),
       onCheckpointRestoredAction: () => ({ label: "Start", onClick: lifecycleLater(workspace, "start", false) }),
+      accountMigration: accountMigrationControls(workspace),
     }
   }
 
@@ -780,6 +824,7 @@ export function OverviewPage({ active = true, readOnly = false,
                       <span className="truncate" title={workspace?.attention?.message}>
                         {workspace ? <WorkspaceStatus workspace={workspace} source={source} readOnly={readOnly} onCancel={actions.cancelOperation} /> : <WorkspaceStateLabel state={state} />}
                         {workspace?.attention && <> · {workspace.attention.message}</>}
+                        {workspace?.accountMigration && workspace.accountMigration.status !== "running" && <> · {workspace.accountMigration.status === "failed" ? "Migration to the silo account did not finish" : "Old account layout: migrate it to use it"}</>}
                       </span>
                       {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || workspaceOperationBusy || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}
                     </span>

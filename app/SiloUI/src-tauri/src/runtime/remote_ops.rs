@@ -27,6 +27,10 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     if method == "runtime.action" {
         return remote_action(app, &paths, &params);
     }
+    // Account migration waits in the VM's lane like a local request (see account_migration).
+    if matches!(method, "runtime.account.plan" | "runtime.account.migrate") {
+        return account_migration::dispatch_remote(app, &paths, method, &params);
+    }
     // Anything else is unknown: refuse it before taking the gate or announcing a change.
     if !matches!(method, "runtime.upsert" | "runtime.delete") {
         return Err(BridgeError::unsupported());

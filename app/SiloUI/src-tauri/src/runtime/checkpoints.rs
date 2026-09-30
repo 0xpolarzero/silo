@@ -807,6 +807,7 @@ pub(super) fn pending_workspace(
         can_dismiss_error: false,
         lifecycle_failure: None,
         attention: None,
+        account_migration: None,
         freshness: Freshness::Fresh,
         settling: false,
         host: "127.0.0.1".into(),

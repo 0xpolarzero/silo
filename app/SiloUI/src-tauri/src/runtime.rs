@@ -1,3 +1,4 @@
+pub(crate) mod account_migration;
 pub(crate) mod checkpoints;
 pub(crate) mod configuration_recovery;
 #[cfg(test)]
@@ -578,6 +579,10 @@ struct ApplicationWorkspace {
     lifecycle_failure: Option<runtime_activity::LifecycleFailureView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attention: Option<WorkspaceAttention>,
+    /// Set while the sandbox still uses the old guest account layout, with any
+    /// migration running or failed for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_migration: Option<account_migration::View>,
     freshness: Freshness,
     /// True when an operation on this VM overlapped the read. The runtime fields
     /// (`state`, `stateDetail`, `attention`, `canDismissError`, `repositories`) are then
@@ -4078,6 +4083,7 @@ fn keep_runtime_fields(workspace: &mut ApplicationWorkspace, previous: &Applicat
         }
     }
     workspace.can_dismiss_error = previous.can_dismiss_error;
+    workspace.account_migration = previous.account_migration.clone();
     workspace.repositories = previous.repositories.clone();
 }
 
@@ -4214,6 +4220,7 @@ fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
         can_dismiss_error: false,
         lifecycle_failure: None,
         attention: None,
+        account_migration: None,
         freshness: Freshness::Fresh,
         settling: false,
         host: "127.0.0.1".into(),
@@ -4281,6 +4288,11 @@ fn application_source_for_workspaces(
     for workspace in &mut workspaces {
         if workspace.machine.is_vm() {
             workspace.lifecycle_failure = failures.remove(workspace.machine.id());
+            account_migration::annotate(
+                paths,
+                &workspace.machine,
+                &mut workspace.account_migration,
+            );
             match checkpoints::load(paths, workspace.machine.id()) {
                 Ok(checkpoint) => {
                     workspace.pending_checkpoint_restore =
@@ -4509,6 +4521,7 @@ fn vm_workspace(
             && matches!(state, WorkspaceState::Failed),
         lifecycle_failure: None,
         attention,
+        account_migration: account_migration::required(&inspected.config),
         freshness: Freshness::Fresh,
         settling: false,
         host: "127.0.0.1".into(),

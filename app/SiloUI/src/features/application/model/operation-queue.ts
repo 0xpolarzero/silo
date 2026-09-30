@@ -18,6 +18,7 @@ export const operationKinds = [
   "push",
   "portPublish",
   "portRemove",
+  "accountMigration",
   "shutdown",
   "other",
 ] as const

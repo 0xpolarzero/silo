@@ -1673,3 +1673,51 @@ describe("operation queue bridge", () => {
     } finally { store.dispose() }
   })
 })
+
+describe("account migration bridge", () => {
+  const legacy = structuredClone(source)
+  legacy.workspaces[0].accountMigration = { status: "failed", error: "The account migration inside the sandbox stopped.", diagnostic: "Exit code 1", backupDirectory: "/backups/dev-3f2a1b4c" }
+  const plan = { sandbox: "dev", running: false, resume: true, steps: ["Keep the earlier backup."], backupDirectory: "/backups/dev-3f2a1b4c", backupBytes: 0, availableBytes: 10, requiredBytes: 5, enoughSpace: true }
+
+  it("reads a sandbox's migration state and leaves out a status from a newer Silo", () => {
+    expect(parseApplicationSource(legacy).workspaces[0].accountMigration).toEqual(legacy.workspaces[0].accountMigration)
+    const newer = structuredClone(source) as unknown as { workspaces: Record<string, unknown>[] }
+    newer.workspaces[0].accountMigration = { status: "paused-by-future" }
+    expect(parseApplicationSource(newer).workspaces[0].accountMigration).toBeUndefined()
+  })
+
+  it("plans and migrates a local sandbox by its stable id, then refreshes", async () => {
+    const mock = native({}, {
+      read_application_state: () => structuredClone(legacy),
+      plan_account_migration: () => plan,
+      migrate_account: () => ({ succeeded: false, backupDirectory: "/backups/dev-3f2a1b4c", error: "Stopped.", diagnostic: "Exit code 1" }),
+    })
+    const store = createProductionSource(mock.bridge)
+    try {
+      await store.initialize()
+      const id = legacy.workspaces[0].machine.id
+      await expect(store.applicationActions.planAccountMigration!("dev")).resolves.toEqual(plan)
+      expect(mock.invoke).toHaveBeenCalledWith("plan_account_migration", { workspaceId: id })
+      const reads = mock.invoke.mock.calls.filter(([command]) => command === "read_application_state").length
+      await expect(store.applicationActions.migrateAccount!("dev")).resolves.toMatchObject({ succeeded: false, error: "Stopped." })
+      expect(mock.invoke).toHaveBeenCalledWith("migrate_account", { workspaceId: id })
+      await vi.waitFor(() => expect(mock.invoke.mock.calls.filter(([command]) => command === "read_application_state").length).toBeGreaterThan(reads))
+      await expect(store.applicationActions.planAccountMigration!("missing")).rejects.toThrow("This sandbox is unavailable.")
+    } finally { store.dispose() }
+  })
+
+  it("routes a remote sandbox's migration through its owning computer", async () => {
+    const hostId = "11111111-1111-4111-8111-111111111111"
+    const vmId = "22222222-2222-4222-8222-222222222222"
+    const mock = native({}, {
+      remote_plan_account_migration: () => plan,
+      remote_migrate_account: () => ({ succeeded: true, backupDirectory: "/backups/dev-3f2a1b4c" }),
+    })
+    const store = createProductionSource(mock.bridge)
+    const target = `silo-remote:${hostId}:${vmId}`
+    await expect(store.applicationActions.planAccountMigration!(target)).resolves.toMatchObject({ resume: true })
+    expect(mock.invoke).toHaveBeenCalledWith("remote_plan_account_migration", { hostId, vmId })
+    await expect(store.applicationActions.migrateAccount!(target)).resolves.toEqual({ succeeded: true, backupDirectory: "/backups/dev-3f2a1b4c" })
+    expect(mock.invoke).toHaveBeenCalledWith("remote_migrate_account", { hostId, vmId })
+  })
+})

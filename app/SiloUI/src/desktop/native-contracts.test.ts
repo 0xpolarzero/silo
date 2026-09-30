@@ -51,6 +51,8 @@ describe("Rust-emitted native wire contracts", () => {
         expect(workspace.unfinishedRestore).toEqual({ checkpointId: "point-1", checkpointName: "Before change", phase: "secured" })
         expect(workspace.lifecycleFailure).toBe("Start failed: The sandbox could not start.")
         expect(workspace.lifecycleFailureDiagnostic).toBe("Runtime startup failed.")
+        // The contract VM has no account label: it still needs migrating to the silo account.
+        expect(workspace.accountMigration).toEqual({ status: "required" })
         expect(state.activities).toHaveLength(1)
         expect(state.activities[0]).toMatchObject({
           id: "contract-lifecycle-1", category: "sandbox", status: "completed", tone: "danger",

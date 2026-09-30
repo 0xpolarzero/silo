@@ -2,7 +2,7 @@
 use crate::runtime::{self, RuntimePaths};
 use serde_json::Value;
 
-const MIGRATION_REQUIRED: &str = "This sandbox uses the old account layout. Migrate it to the silo account or create a new sandbox before using it.";
+const MIGRATION_REQUIRED: &str = "This sandbox uses the old account layout. Choose Migrate to the silo account in its menu, or create a new sandbox, before using it.";
 
 pub(crate) const LABEL: &str = "silo.working-account";
 pub(crate) const UNIFIED_LABEL: &str = "silo.working-account=1";
@@ -22,6 +22,17 @@ pub(crate) fn working_user(config: &Value) -> Result<&'static str, String> {
         Some(Value::String(version)) if version == "1" => Ok("silo"),
         _ => Err("This sandbox uses an account layout Silo cannot open. Update Silo before accessing it.".into()),
     }
+}
+
+/// True when a sandbox has no account label yet: the old layout, which Silo can migrate.
+/// An unknown label is a newer layout instead, and an unreadable one is neither.
+pub(crate) fn needs_migration(config: &Value) -> bool {
+    config.is_object()
+        && config.get("labels").is_none_or(|labels| {
+            labels
+                .as_object()
+                .is_some_and(|labels| !labels.contains_key(LABEL))
+        })
 }
 
 pub(crate) fn inspect_user(paths: &RuntimePaths, name: &str) -> Result<&'static str, String> {
@@ -144,6 +155,29 @@ mod tests {
             assert!(working_user(&config).is_err());
         }
     }
+    #[test]
+    fn only_a_missing_label_needs_migration() {
+        assert!(needs_migration(&json!({})));
+        assert!(needs_migration(&json!({"labels":{"silo.managed":"true"}})));
+        for config in [
+            json!({"labels":{LABEL:"1"}}),
+            json!({"labels":{LABEL:"2"}}),
+            json!({"labels":null}),
+            json!(null),
+            json!([]),
+        ] {
+            assert!(!needs_migration(&config), "{config}");
+        }
+        for config in [json!({}), json!({"labels":{}})] {
+            assert_eq!(
+                needs_migration(&config),
+                working_user(&config)
+                    .unwrap_err()
+                    .contains("Migrate to the silo account")
+            );
+        }
+    }
+
     #[test]
     fn working_account_requires_aware_remote_clients() {
         assert!(require_client_protocol("root", &json!({})).is_err());

@@ -80,6 +80,8 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
       forkCheckpoint: fixture.forkCheckpoint,
       restoreCheckpoint: fixture.restoreCheckpoint,
       deleteCheckpoint: fixture.deleteCheckpoint,
+      planAccountMigration: fixture.planAccountMigration,
+      migrateAccount: fixture.migrateAccount,
       listWorkspaceDirectory,
       queryLogs,
       ...actions,

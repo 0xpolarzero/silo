@@ -2,7 +2,8 @@ import type { ApplicationWorkspace } from "@/features/application/model/applicat
 import type { SandboxIconState, SandboxRowTone } from "../components/sandbox-list"
 
 export function workspaceIconState(workspace?: ApplicationWorkspace): SandboxIconState {
-  if (workspace?.state === "failed") return "error"
+  if (workspace?.state === "failed" || workspace?.accountMigration?.status === "failed") return "error"
+  if (workspace?.accountMigration?.status === "required") return workspace.attention?.level ?? "warning"
   return workspace?.attention?.level ?? "normal"
 }
 
@@ -17,12 +18,13 @@ export function sandboxBusyReason(workspace?: ApplicationWorkspace): string | un
   if (workspace.state === "starting" || action === "start") return `Wait until ${workspace.machine.name} finishes starting.`
   if (action === "stop") return `Wait until ${workspace.machine.name} finishes stopping.`
   if (action === "restart") return `Wait until ${workspace.machine.name} finishes restarting.`
+  if (workspace.accountMigration?.status === "running") return `Wait until ${workspace.machine.name} finishes moving to the silo account.`
   return undefined
 }
 
 export function workspaceRowTone(workspace?: ApplicationWorkspace): SandboxRowTone {
-  if (workspace?.state === "failed" || workspace?.attention?.level === "error") return "error"
-  if (workspace?.attention?.level === "warning") return "warning"
+  if (workspace?.state === "failed" || workspace?.attention?.level === "error" || workspace?.accountMigration?.status === "failed") return "error"
+  if (workspace?.attention?.level === "warning" || workspace?.accountMigration?.status === "required") return "warning"
   return workspace?.state ?? "stopped"
 }
 
