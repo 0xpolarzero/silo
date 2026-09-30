@@ -575,6 +575,75 @@ describe("export and import state", () => {
   })
 })
 
+describe("result and job identity", () => {
+  const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GB", destination: "/tmp", sandboxes: ["dev"] }
+  const result = { operation: "backup" as const, archive, runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Export complete", message: "Exported dev." }
+
+  it("shows a result again when the runtime refuses to dismiss it (H-33, E-49)", async () => {
+    const mock = bridge(command => {
+      if (command === "read_backup_state") return { ...backup, operationId: "op-1", operation: result }
+      if (command === "dismiss_backup_operation") return false
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      store.backupActions.dismissOperation()
+      expect(store.getSnapshot().backup.operation).toBeNull()
+      await vi.waitFor(() => expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", title: "Export complete" }))
+      expect(mock.invoke).toHaveBeenCalledWith("dismiss_backup_operation", { expectedOperation: result, expectedOperationId: "op-1" })
+    } finally { store.dispose() }
+  })
+
+  it("identifies a dismissed result by its operation id, not its serialized payload (H-33)", async () => {
+    let raced = false
+    const mock = bridge(command => {
+      // A read that raced the dismissal returns the same operation's result, re-rendered.
+      if (command === "read_backup_state") return { ...backup, operationId: "op-1", operation: raced ? { ...result, detail: "Archive verified." } : result }
+      if (command === "dismiss_backup_operation") { raced = true; return true }
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      store.backupActions.dismissOperation()
+      await vi.waitFor(() => expect(raced).toBe(true))
+      await store.refresh()
+      expect(store.getSnapshot().backup.operation).toBeNull()
+    } finally { store.dispose() }
+  })
+
+  it("dismisses the previous result in the runtime when a new export starts (E-49)", async () => {
+    const mock = bridge(command => {
+      if (command === "read_backup_state") return { ...backup, operationId: "op-1", operation: result }
+      if (command === "dismiss_backup_operation") return true
+      if (command === "start_backup") return new Promise(() => {})
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      store.backupActions.startBackup("/tmp", ["dev"])
+      expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running" })
+      expect(mock.invoke).toHaveBeenCalledWith("dismiss_backup_operation", { expectedOperation: result, expectedOperationId: "op-1" })
+    } finally { store.dispose() }
+  })
+
+  it("joins an identical in-flight configuration request whatever its property order (H-33)", async () => {
+    const pending = deferred<unknown>()
+    const mock = bridge(command => command === "retry_machine_configuration" ? pending.promise : undefined)
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const machines = store.getSnapshot().source!.workspaces.map(({ machine }) => machine)
+      const first = store.configureMachines({ schemaVersion: 1, machines }, { kind: "retry", workspace: "dev" })
+      const reordered = machines.map(machine => Object.fromEntries(Object.entries(machine).reverse()) as typeof machine)
+      const second = store.configureMachines({ machines: reordered, schemaVersion: 1 }, { workspace: "dev", kind: "retry" })
+      expect(second).toBe(first)
+      pending.resolve(structuredClone(source))
+      await first
+      expect(count(mock.invoke, "retry_machine_configuration")).toBe(1)
+    } finally { store.dispose() }
+  })
+})
+
 describe("GitHub state from full reads", () => {
   it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
     let failed = false

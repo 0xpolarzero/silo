@@ -160,6 +160,13 @@ function errorMessage(error: unknown): string {
   return text || "The desktop bridge returned an unknown error."
 }
 
+/** A JSON key that does not depend on object property order. */
+function canonicalKey(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
+    : item)
+}
+
 function unavailableBackup(message: string): BackupState {
   return { snapshotId: `unavailable:${message}`, availability: "unavailable", availabilityMessage: message, requiredSpaceGB: 0, archives: [], operation: null }
 }
@@ -272,7 +279,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const dismissedBackupResults = new Set<string>()
 
   /** Identity of one repository's push across native results, pending pushes and dismissals. */
-  function pushKey(workspace: string, repositoryPath: string) { return JSON.stringify([workspace, repositoryPath]) }
+  function pushKey(workspace: string, repositoryPath: string) { return `${workspace}\u0000${repositoryPath}` }
   function sshOwner(target: string) { return parseRemoteWorkspaceTarget(target)?.hostId ?? "" }
   function unavailableSshRows(hostId: string, computerName: string, message: string): SshAccessWorkspace[] {
     const cached = sshAccess?.workspaces.filter(row => sshOwner(row.workspace) === hostId) ?? []
@@ -396,6 +403,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     listeners.forEach((listener) => listener())
   }
 
+  /** Stable identity of an export/import result: the runtime's operation id, else its defining fields. */
+  function backupResultKey(state: BackupState, operation: BackupOperation) {
+    if (state.operationId) return `operation:${state.operationId}`
+    return JSON.stringify([operation.operation, operation.kind, operation.archive.archivePath, operation.archive.name, operation.targetName ?? null, operation.kind === "result" ? operation.outcome : null, operation.kind === "result" ? operation.title : null])
+  }
+
   function derivePorts(row: NetworkState["workspaces"][number] | undefined, reachable: boolean): ApplicationPort[] {
     return (row?.ports ?? []).map(port => ({ port: port.port, listening: reachable && !networkError && !row?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured }))
   }
@@ -407,7 +420,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   function derive(base: ProductionSnapshot): ProductionSnapshot {
     let operation = base.backup.operation
-    if (operation?.kind === "result" && dismissedBackupResults.has(JSON.stringify(operation))) operation = null
+    if (operation?.kind === "result" && dismissedBackupResults.has(backupResultKey(base.backup, operation))) operation = null
     if (localBackupOperation && operation !== localBackupOperation) {
       if (!operation) operation = localBackupOperation
       else {
@@ -945,7 +958,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const resolved: ConfigureAction = action ?? { kind: "changes", changes: deriveMachineChanges(committedMachines(), request.machines) }
     // A no-op submission changes nothing; resolve with the current source untouched.
     if (resolved.kind === "changes" && resolved.changes.length === 0) return Promise.resolve(snapshot.source as ApplicationSource)
-    const key = JSON.stringify([request, resolved])
+    const key = canonicalKey([request, resolved])
     if (lastMachineJob?.key === key) return lastMachineJob.promise
     ++identityVerificationSequence
     lastVerificationKey = undefined
@@ -1444,8 +1457,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   function showPendingBackup(operation: "backup" | "restore", archive: BackupArchive, targetName?: string) {
     ++refreshSequence
+    // A new operation replaces the previous result, here and in the runtime (E-49),
+    // so it does not come back after a relaunch.
     const previous = view.backup.operation
-    if (previous?.kind === "result") dismissedBackupResults.add(JSON.stringify(previous))
+    if (previous?.kind === "result" && previous !== localBackupOperation) {
+      dismissedBackupResults.add(backupResultKey(view.backup, previous))
+      void native.invoke("dismiss_backup_operation", { expectedOperation: previous, expectedOperationId: view.backup.operationId ?? null }).catch(() => {})
+    }
     localBackupOperation = { operation, archive, targetName, runningNames: [], kind: "running", progress: 0, indeterminate: true, canCancel: false,
       phases: [{ title: operation === "backup" ? "Preparing backup" : "Checking backup", detail: operation === "backup" ? "Preparing the selected sandboxes." : "Verifying the archive before restoring it.", tone: "running" }],
     }
@@ -1505,11 +1523,27 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     dismissOperation() {
       const operation = view.backup.operation
       if (operation?.kind !== "result") return
-      dismissedBackupResults.add(JSON.stringify(operation))
-      localBackupOperation = null
-      publish({ ...snapshot, backup: { ...snapshot.backup, operation: null } })
-      void native.invoke("dismiss_backup_operation", { expectedOperation: operation, expectedOperationId: snapshot.backup.operationId ?? null })
-        .catch(() => console.error("Silo could not save the backup result dismissal. It may appear again after relaunch."))
+      // A rejected start is reported only here; the runtime has nothing to dismiss.
+      if (operation === localBackupOperation) {
+        localBackupOperation = null
+        publish({ ...snapshot, backup: { ...snapshot.backup, operation: snapshot.backup.operation === operation ? null : snapshot.backup.operation } })
+        return
+      }
+      const key = backupResultKey(view.backup, operation)
+      dismissedBackupResults.add(key)
+      publish({ ...snapshot })
+      const restore = () => { dismissedBackupResults.delete(key); publish({ ...snapshot }) }
+      void native.invoke("dismiss_backup_operation", { expectedOperation: operation, expectedOperationId: view.backup.operationId ?? null })
+        .then((value) => {
+          if (z.boolean().parse(value)) return
+          // The runtime still holds a result (it changed, or is still being resolved): show it.
+          restore()
+          void refresh()
+        })
+        .catch((cause: unknown) => {
+          restore()
+          reportActionFailure("backup-dismiss", "Could not dismiss the result", errorMessage(cause))
+        })
     },
   }
 

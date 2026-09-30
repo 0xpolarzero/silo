@@ -1238,6 +1238,11 @@ describe("production application bridge", () => {
       if (command === "read_application_state") return structuredClone(source)
       if (command === "read_backup_state") return structuredClone(current)
       if (command === "start_restore") await new Promise<void>(resolve => { release = resolve })
+      if (command === "dismiss_backup_operation") {
+        if (current.operation?.kind !== "result") return false
+        current = { ...current, operation: null }
+        return true
+      }
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
