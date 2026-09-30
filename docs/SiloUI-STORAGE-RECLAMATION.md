@@ -98,7 +98,8 @@ it does not prove bounded cancellation of every possible stuck storage syscall.
 
 ## Other storage growth
 
-Silo already bounds runtime logs to 250 MiB and seven days through the shared
+Silo already bounds runtime logs to 250 MiB total and seven days, split into
+independent 125 MiB execution and console budgets, through the shared
 `log_retention.rs` implementation. Its private publishing cache has a 2 GiB
 eviction budget. Guest project caches belong to the user's workloads; this
 feature does not silently remove them. Free blocks in the guest and persistent

@@ -40,7 +40,7 @@ Ordered source patch pins:
 | `microsandbox-restore-policy-0.7.2.patch` | `8b8d9334d7358a7a985b32df1028d36f502d471d7221dea3e53d0efb85b2d5d9` |
 | `microsandbox-create-stopped-0.7.2.patch` | `c4c49e9d5eba20aec2882184adf3be4e75196071717f17051567f5ef7c70eafc` |
 | `microsandbox-adopt-owned-disk-0.7.2.patch` | `2ba4201ef289c74ace157348f243c19f9c41f913e56055ae6d4a3bb23142eadc` |
-| `microsandbox-log-retention-desktop-start-0.7.2.patch` | `22fa041105496be712eb58659bdcc29e950b2cd38c6bc5fd6182c1cb478f293b` |
+| `microsandbox-log-retention-desktop-start-0.7.2.patch` | `00e0f10d560e60f70ac2dca83e01200b56eb2155813ed032ad03a32a57953f5a` |
 | `microsandbox-restore-root-capacity-0.7.2.patch` | `3cb4f401df48cb4d2382716d6a51bc51af22a4087abdd106680d3338e82ffebe` |
 | `microsandbox-portable-image-cache-0.7.2.patch` | `23b3b8e3cbc9ec20160306fd2aab5b196418efe132ed830e2e18738a89cfff57` |
 | `microsandbox-live-public-ports-0.7.2.patch` | `ad1abf1973c7e542ec7015575ab4ad35b321ac434e2bb9049aef096fa6b2b012` |
@@ -270,3 +270,24 @@ checks process ownership before marking a stale run Crashed. Its
 and the adoption patch's fixture tests exercise this boundary without a VM.
 Silo's migration regression requires exactly inspect, adopt-disk and inspect.
 These tests do not qualify live migration or a packaged app.
+
+### Verification of D-25 and F-08 patches (2026-09-30)
+
+`npm --prefix app/SiloUI run runtime:prepare` rebuilt the ten-patch runtime
+in the isolated `fix/wc-patches` worktree with Rust 1.94.0, Node 24 and Go 1.25.
+The macOS ARM64 sidecar SHA-256 is
+`99b8b7ed9b2c346a88a7b6b0c8425c9f06a28f02b2b5a2aebeebf2571fdac6cd`.
+Its manifest matches every current patch pin. Version, all six Silo protocol
+probes and `adopt-disk --help` passed. A disposable catalog/disk fixture with
+no guest image exercised the built sidecar: direct Crashed adoption passed;
+a stale Running row inspected as Crashed and then adopted successfully.
+Both paths retained Crashed status and preserved original, staged and owned
+disk bytes. No VM or Silo app was started.
+
+The upstream adoption and dead-process reconciliation tests passed, as did
+11 logging tests and five execution-log tests. The shared retention source
+and patch passed the Vitest byte-identity and digest checks. Flood regressions
+failed with the old shared budget, then passed with independent 125 MiB
+execution and console budgets. Silo's migration regression likewise failed
+before admitting Crashed, then its 16-test migration suite passed. These are
+fixture, build and CLI results, not live migration or packaged-app qualification.
