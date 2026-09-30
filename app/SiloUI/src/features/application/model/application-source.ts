@@ -118,6 +118,8 @@ export type SshAccessRequest = Pick<SshAccessWorkspace, "workspace" | "enabled" 
 export interface NetworkPortRequest { workspace: string; port: number; hostPort: number | null; scheme: "http" | "https" | null }
 
 export interface ApplicationPort {
+  /** Host supplied by port forwarding; absent means 127.0.0.1. */
+  host?: string | null
   hostPort?: number | null
   scheme?: "http" | "https" | null
   configured?: boolean
