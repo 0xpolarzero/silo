@@ -1,4 +1,9 @@
-"""Build desktop apps, finalizing the VM signature on local macOS bundles."""
+"""Build desktop apps, finalizing the VM signature on local macOS bundles.
+
+Two channels exist and never share state: production (`org.silo.preview`, "Silo")
+and development (`org.silo.dev`, "Silo Dev"). A build is production unless it is
+a debug build (`--debug`), which always gets the development identity.
+"""
 import argparse
 import json
 from pathlib import Path
@@ -8,6 +13,7 @@ import sys
 from macos_release_signing import sign_runtime, verify_bundle
 
 APP = Path(__file__).resolve().parent.parent
+DEVELOPMENT_CONFIG = 'src-tauri/tauri.dev.conf.json'
 
 
 def build(arguments, *, root=APP, platform=sys.platform, run=subprocess.run):
@@ -21,6 +27,8 @@ def build(arguments, *, root=APP, platform=sys.platform, run=subprocess.run):
     parser.add_argument('--target', '-t')
     parser.add_argument('--bundles', '-b', nargs='+')
     options, _ = parser.parse_known_args(arguments)
+    if options.debug:
+        arguments = arguments + ['--config', DEVELOPMENT_CONFIG]
     if (platform == 'linux' and not options.no_bundle
             and not options.help and not options.version
             and (not options.target or options.target.endswith('unknown-linux-gnu'))):

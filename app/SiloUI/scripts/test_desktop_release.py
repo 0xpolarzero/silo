@@ -67,8 +67,27 @@ class DesktopBuildTests(unittest.TestCase):
             with self.subTest(platform=platform, args=args), patch('build_desktop.sign_runtime') as sign:
                 self.assertIsNone(build(args, root=self.root, platform=platform, run=self.command))
                 self.assertEqual(len(self.calls), 1)
-                self.assertEqual(self.calls[0][0][3:], args)
+                debug = '--debug' in args or '-d' in args
+                expected = args + ['--config', 'src-tauri/tauri.dev.conf.json'] if debug else args
+                self.assertEqual(self.calls[0][0][3:], expected)
                 sign.assert_not_called()
+
+    def test_only_debug_builds_use_the_development_identity(self):
+        dev = 'src-tauri/tauri.dev.conf.json'
+        for platform, args in [('darwin', ['--debug', '--bundles', 'app']), ('linux', ['-d', '--no-bundle']),
+                               ('linux', ['--debug', '--bundles', 'deb'])]:
+            self.calls.clear()
+            with self.subTest(platform=platform, args=args):
+                build(args, root=self.root, platform=platform, run=self.command)
+                self.assertIn(dev, self.calls[0][0])
+        for platform, args in [('linux', ['--bundles', 'deb']), ('linux', ['--no-bundle', '--ci']), ('darwin', [])]:
+            self.calls.clear()
+            with self.subTest(platform=platform, args=args), patch('build_desktop.sign_runtime'), \
+                    patch('build_desktop.verify_bundle'):
+                build(args, root=self.root, platform=platform, run=self.command)
+                for command, _ in self.calls:
+                    self.assertNotIn(dev, command)
+                    self.assertFalse(any('org.silo.dev' in part for part in command))
 
     def test_linux_local_bundle_uses_private_tools_layout_without_updater_artifacts(self):
         args = ['--bundles', 'deb', 'appimage']
