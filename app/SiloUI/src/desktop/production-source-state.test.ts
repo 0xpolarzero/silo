@@ -149,7 +149,7 @@ describe("remote computer refresh", () => {
       const refreshing = store.applicationActions.refreshRepositories!()
       await vi.advanceTimersByTimeAsync(15_000)
       await refreshing
-      expect(row()).toMatchObject({ freshness: "stale", stateDetail: "Refreshing status" })
+      expect(row()).toMatchObject({ freshness: "stale", stateDetail: "Updating…" })
       answer.resolve(remoteSource({ stateDetail: "Answered" }))
       await vi.advanceTimersByTimeAsync(0)
       expect(row()).toMatchObject({ freshness: "fresh", stateDetail: "Answered" })

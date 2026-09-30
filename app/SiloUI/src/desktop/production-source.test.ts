@@ -169,7 +169,7 @@ describe("production application bridge", () => {
       const refreshing = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
       expect(refreshing).toMatchObject({
         state: source.workspaces[0].state,
-        stateDetail: "Refreshing status",
+        stateDetail: "Updating…",
         freshness: "stale",
         computer: { connected: true, busy: true },
         lifecycleAction: "start",

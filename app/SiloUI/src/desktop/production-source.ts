@@ -470,7 +470,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const remotes = await Promise.all(remoteComputers.map(async computer => {
           const unavailable = (error: string) => (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
           // An offline computer would only cost a connection timeout on every poll.
-          if (!computer.connected) return unavailable(`${computer.name} is unavailable. Reconnect to see network services.`)
+          if (!computer.connected) return unavailable(`${computer.name} is offline. Reconnect to see network services.`)
           try { return networkStateShape.parse(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
           catch (cause) {
             return unavailable(isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : errorMessage(cause))
@@ -609,7 +609,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           computer: { ...computer, vmId: workspace.machine.id },
           ports: derivePorts(networkRows.get(target), computer.connected),
           freshness: computer.connected && !computer.busy && !slow ? workspace.freshness : "stale",
-          stateDetail: computer.busy || (computer.connected && slow) ? "Refreshing status" : computer.connected ? workspace.stateDetail : "Computer unavailable",
+          stateDetail: computer.busy || (computer.connected && slow) ? "Updating…" : computer.connected ? workspace.stateDetail : "Offline · last known status",
         })
       }
       for (const push of owner.repositoryPushOperations) {

@@ -201,7 +201,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
               const review = workspace.state === "failed" || workspace.attention?.level === "error"
               // A failed Start leaves the sandbox "Stopped": show the failure instead of a neutral row.
               const lifecycle = lifecycleOutcome(workspace)
-              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Computer unavailable · Last known status" : "Last known status" : lifecycle?.text)
+              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Offline · last known status" : "Last known status" : lifecycle?.text)
               return <SandboxListItem key={machine.id} aria-label={machine.name} aria-busy={availability.busy || undefined}>
                 <SandboxListRow
                   name={machine.name}
