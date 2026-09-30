@@ -64,7 +64,7 @@ it("keeps a sandbox that started while its export was running", async () => {
 })
 
 function storage(bytes: number): WorkspaceStorageState {
-  return { history: [], workspaceHostBytes: bytes - GiB / 2, runtimeHostBytes: GiB / 2, workspaceUsedBytes: null, workspaceCapacityBytes: null, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
+  return { history: [], workspaceHostBytes: bytes - GiB / 2, runtimeHostBytes: GiB / 2, checkpointHostBytes: null, checkpointCount: 2, workspaceUsedBytes: null, workspaceCapacityBytes: null, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
 }
 
 function stoppedDev(): ApplicationSource {

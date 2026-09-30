@@ -20,7 +20,7 @@ import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOpe
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
 import { ConfirmBody } from "@/components/confirm-popover"
 import type { BackupController, VerifiedExport } from "../model/backup-source"
-import type { WorkspaceCheckpoint } from "../model/checkpoint-source"
+import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "../model/checkpoint-source"
 
 import { ErrorDetails } from "@/components/error-details"
 import { ListRowIcon } from "@/components/list-row"
@@ -317,7 +317,7 @@ export function OverviewPage({ active = true, readOnly = false,
   /** The Fork popover body for a sandbox's ⋯ menu (row or detail page); state lives with that menu. */
   function forkPopovers(workspace: ApplicationWorkspace | undefined): MenuPopovers | undefined {
     if (!workspace || !actions.forkCheckpoint) return undefined
-    return { fork: close => <ForkBody sandboxName={workspace.machine.name} disabled={forkDisabled(workspace)} onFork={name => forkCurrentState(workspace, name)} onClose={close} /> }
+    return { fork: close => <ForkBody sandboxName={workspace.machine.name} disabled={forkDisabled(workspace)} takenNames={sandboxNamesOnComputer(visibleWorkspaces, workspace.computer?.id)} onFork={name => forkCurrentState(workspace, name)} onClose={close} /> }
   }
   const configurationOperation = source.sandboxConfigurationOperation
   const configurationLocked = readOnly || configurationOperation !== null
@@ -409,7 +409,11 @@ export function OverviewPage({ active = true, readOnly = false,
     return {
       checkpoints: workspace.checkpoints?.length,
       readSize: machine.kind === "vm" && !workspace.computer && readStorage
-        ? async () => { const storage = await readStorage(machine.id); return storage.workspaceHostBytes + storage.runtimeHostBytes }
+        ? async () => {
+            const storage = await readStorage(machine.id)
+            return storage.workspaceHostBytes === null || storage.runtimeHostBytes === null
+              ? null : storage.workspaceHostBytes + storage.runtimeHostBytes
+          }
         : undefined,
       exportFirst: machine.kind === "vm" && !workspace.computer && exportSandbox
         ? async () => {

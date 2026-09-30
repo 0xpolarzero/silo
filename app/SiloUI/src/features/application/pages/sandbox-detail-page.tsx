@@ -20,7 +20,7 @@ import { DisabledReason } from "@/features/application/components/disabled-reaso
 import { LifecycleControl } from "@/features/application/components/lifecycle-control"
 import type { LifecycleGuard } from "@/features/application/model/lifecycle-guard"
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
-import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
+import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { SshAccessBadges, SshAccessRow } from "@/features/application/pages/ssh-access-panel"
 import { WorkspaceStoragePanel } from "@/features/application/pages/workspace-storage-panel"
@@ -446,7 +446,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           <div className="pt-4">
             <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview" && controls.pageActive !== false} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
-              <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
+              <CheckpointPanel workspace={workspace} target={target} actions={actions} takenNames={sandboxNamesOnComputer(source.workspaces, workspace.computer?.id)} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
             </TabsContent>}
             {showStorage && actions.readWorkspaceStorage && <TabsContent value="storage">
               <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} sandboxName={machine.name} computerName={workspace.computer?.name} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />

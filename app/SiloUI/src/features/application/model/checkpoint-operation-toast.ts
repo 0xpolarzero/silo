@@ -37,6 +37,7 @@ const INITIAL_STEP: Record<CheckpointOperationSpec["kind"], string> = {
   capture: "Saving disk copies",
   restore: "Saving a recovery checkpoint",
   fork: "Copying from the checkpoint",
+  delete: "Removing saved data",
 }
 
 const RESTORE_STEPS = ["Save recovery checkpoint", "Restore disks", "Verify"]
