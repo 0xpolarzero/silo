@@ -52,6 +52,72 @@ function native(overrides: Partial<ProductionBridge> = {}, handlers: NativeComma
 }
 
 describe("production application bridge", () => {
+  it("validates pending secret revocation names without exposing them as configured secrets", () => {
+    const response = structuredClone(source)
+    response.workspaces[0].pendingSecretRevocations = ["REMOVED_TOKEN"]
+    expect(parseApplicationSource(response).workspaces[0].pendingSecretRevocations).toEqual(["REMOVED_TOKEN"])
+    expect(parseApplicationSource(response).secrets.some(secret => secret.name === "REMOVED_TOKEN")).toBe(false)
+    expect(() => parseApplicationSource({ ...response, workspaces: [{ ...response.workspaces[0], pendingSecretRevocations: [123] }] })).toThrow()
+  })
+
+  it("publishes remote pending revocation and clears it after Restart on the owning computer", async () => {
+    const remote = structuredClone(source)
+    remote.workspaces = [{ ...remote.workspaces[0], pendingSecretRevocations: ["REMOVED_TOKEN"], attention: { level: "warning", message: "May still have access to REMOVED_TOKEN until it restarts." } }]
+    const vmId = remote.workspaces[0].machine.id
+    const target = `silo-remote:office:${vmId}`
+    let restarted = false
+    const settled = () => ({ ...remote, workspaces: remote.workspaces.map(workspace => ({ ...workspace, pendingSecretRevocations: undefined, attention: undefined })) })
+    const mock = native({}, {
+      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      remote_host_snapshot: () => restarted ? settled() : remote,
+      remote_workspace_action: () => { restarted = true; return settled() },
+    })
+    const store = createProductionSource(mock.bridge)
+    const row = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
+    try {
+      await store.initialize()
+      await vi.waitFor(() => expect(row()?.pendingSecretRevocations).toEqual(["REMOVED_TOKEN"]))
+      expect(row()?.attention?.message).toContain("REMOVED_TOKEN")
+      store.applicationActions.restartWorkspace(target)
+      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("remote_workspace_action", { hostId: "office", vmId, action: "restart", name: "dev" }))
+      await vi.waitFor(() => expect(row()?.pendingSecretRevocations).toBeUndefined())
+    } finally { store.dispose() }
+  })
+
+  it.each([
+    { code: "update_in_progress", message: "Please wait for configuration." },
+    new Error("Connection timed out"),
+  ])("retains pending revocation in a stale remote snapshot until its owner confirms it cleared (%s)", async cause => {
+    const remote = structuredClone(source)
+    const message = "May still have access to REMOVED_TOKEN until it restarts."
+    remote.workspaces = [{ ...remote.workspaces[0], pendingSecretRevocations: ["REMOVED_TOKEN"], attention: { level: "warning", message } }]
+    const target = `silo-remote:office:${remote.workspaces[0].machine.id}`
+    let unavailable = false
+    let revoked = false
+    const mock = native({}, {
+      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      remote_host_snapshot: () => {
+        if (unavailable) throw cause
+        return revoked ? { ...remote, workspaces: remote.workspaces.map(workspace => ({ ...workspace, pendingSecretRevocations: undefined, attention: undefined })) } : remote
+      },
+    })
+    const store = createProductionSource(mock.bridge)
+    const row = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
+    try {
+      await store.initialize()
+      expect(row()?.pendingSecretRevocations).toEqual(["REMOVED_TOKEN"])
+      unavailable = true
+      await store.refresh()
+      await vi.waitFor(() => expect(row()).toMatchObject({ freshness: "stale", pendingSecretRevocations: ["REMOVED_TOKEN"], attention: { level: "warning", message } }))
+      unavailable = false
+      revoked = true
+      await store.refresh()
+      await vi.waitFor(() => expect(row()?.freshness).toBe("fresh"))
+      expect(row()?.pendingSecretRevocations).toBeUndefined()
+      expect(row()?.attention).toBeUndefined()
+    } finally { store.dispose() }
+  })
+
   it("normalizes native checkpoint epoch milliseconds at the application boundary", () => {
     const createdAt = Date.UTC(2026, 8, 25, 12, 34, 56)
     const response = structuredClone(source) as unknown as Record<string, unknown>

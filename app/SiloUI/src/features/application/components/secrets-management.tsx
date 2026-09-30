@@ -28,7 +28,7 @@ export function AddSecretEditor({ manager }: { manager: SecretsManager }) {
  * Remove controls (Remove asks in a popover), failure/Retry, and the inline editor. */
 export function SecretRow({ secret, manager }: { secret: ApplicationSecret; manager: SecretsManager }) {
   const { source } = manager
-  const working = manager.busy === secret.id || secret.state === "applying"
+  const working = manager.busy === secret.id
   const failure = manager.operationError?.id === secret.id ? manager.operationError.message : secret.error
   const disabled = manager.saving || manager.busy !== null
 
@@ -65,14 +65,14 @@ export function SecretRow({ secret, manager }: { secret: ApplicationSecret; mana
         actions={<div className="flex shrink-0 items-center gap-0.5 text-muted-foreground" role="group" aria-label={`Manage ${secret.name}`}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button type="button" variant="ghost" size="icon-xs" aria-label={`Edit ${secret.name}`} disabled={disabled || working || secret.removing} onClick={(event) => manager.openEditor(event.currentTarget, { secret })}>
+              <Button type="button" variant="ghost" size="icon-xs" aria-label={`Edit ${secret.name}`} disabled={disabled} onClick={(event) => manager.openEditor(event.currentTarget, { secret })}>
                 <Pencil aria-hidden="true" />
               </Button>
             </TooltipTrigger>
             <TooltipContent>{`Edit ${secret.name}`}</TooltipContent>
           </Tooltip>
-          <ConfirmPopover align="end" tone="destructive" title={`Remove ${secret.name}?`} description="Sandboxes using it lose access after they restart." confirmLabel="Remove" tooltip={`Remove ${secret.name}`} onConfirm={() => manager.removeSecret(secret.id)}>
-            <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${secret.name}`} disabled={disabled || working || secret.removing}>
+          <ConfirmPopover align="end" tone="destructive" title={`Remove ${secret.name}?`} description="Silo deletes the stored value immediately. Sandboxes that cannot revoke access may keep it until they restart." confirmLabel="Remove" tooltip={`Remove ${secret.name}`} onConfirm={() => manager.removeSecret(secret.id)}>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${secret.name}`} disabled={disabled}>
               {working ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Trash2 aria-hidden="true" />}
             </Button>
           </ConfirmPopover>

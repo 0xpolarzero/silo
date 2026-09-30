@@ -188,6 +188,8 @@ export interface ApplicationWorkspace {
   logs: ApplicationLog[]
   githubRepositories: string[]
   secretNames: string[]
+  /** Removed secrets that this sandbox may still hold until revocation or restart. */
+  pendingSecretRevocations?: string[]
   checkpoints?: WorkspaceCheckpoint[]
   checkpointOperation?: WorkspaceCheckpointOperation | null
   pendingCheckpointRestore?: PendingCheckpointRestore | null

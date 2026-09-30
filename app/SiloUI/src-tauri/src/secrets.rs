@@ -7,7 +7,10 @@ use std::{
     fs::{self, File},
     io::Read,
     path::PathBuf,
-    sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, MutexGuard, OnceLock, PoisonError, TryLockError,
+    },
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -69,9 +72,20 @@ struct Secret {
     #[serde(default)]
     removing: bool,
 }
+/// A removed generation's possible access in one guest. Never stores a value.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PendingRevocation {
+    secret_id: String,
+    generation: String,
+    pub(crate) name: String,
+    pub(crate) workspace: String,
+}
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Document {
+    #[serde(default)]
+    pending_revocations: Vec<PendingRevocation>,
     #[serde(default)]
     secrets: Vec<Secret>,
     #[serde(default)]
@@ -315,6 +329,9 @@ pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Resu
         let start = starts.entry(workspace.into()).or_default();
         *start = (start.0.wrapping_add(1), applied_revision.into());
         drop(starts);
+        document
+            .pending_revocations
+            .retain(|record| record.workspace != workspace);
         for secret in &mut document.secrets {
             secret.pending_workspaces.retain(|w| w != workspace);
             secret.affected.retain(|w| w != workspace);
@@ -323,11 +340,28 @@ pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Resu
         Ok(())
     })
 }
+/// Called with the VM gate held after an observed stop. Assignments and deferred
+/// additions still apply on the next start; only removed generations are cleared.
+pub(crate) fn workspace_stopped(workspace: &str) -> Result<(), String> {
+    if store_path().is_none() || pending_names(workspace)?.is_empty() {
+        return Ok(());
+    }
+    update(|document| {
+        document
+            .pending_revocations
+            .retain(|record| record.workspace != workspace);
+        Ok(())
+    })
+}
+
 pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
     if store_path().is_none() {
         return Ok(());
     }
     update(|document| {
+        document
+            .pending_revocations
+            .retain(|record| record.workspace != workspace);
         for secret in &mut document.secrets {
             secret.workspaces.retain(|w| w != workspace);
             secret.affected.retain(|w| w != workspace);
@@ -449,8 +483,7 @@ fn reconcile(app: &AppHandle, id: &str, operation: &mut OperationGuard) -> Resul
         id,
         operation,
         &runtime_material,
-        &mut |workspace, desired| crate::runtime::apply_secrets(app, workspace, desired),
-        &|workspace| crate::runtime::secret_revoked_without_runtime(app, workspace),
+        &mut |workspace, _desired| crate::runtime::apply_secrets(app, workspace),
         &|| {
             let _ = app.emit("silo://application-state-changed", ());
         },
@@ -461,16 +494,11 @@ fn reconcile(app: &AppHandle, id: &str, operation: &mut OperationGuard) -> Resul
 /// for minutes, so forks, updates and other secret operations are not blocked. It
 /// is re-taken to record each result and before credential-store changes. When the
 /// VM's desired secrets changed while unlocked, the newer state is applied again.
-///
-/// While a secret is being removed, a VM whose update failed but that cannot hold
-/// secret values (`revoked`: removed, missing from the runtime, or stopped) counts as
-/// revoked, so one broken or deleted VM cannot make the secret unremovable (B-27).
 fn reconcile_with(
     id: &str,
     operation: &mut OperationGuard,
     material: &dyn Fn(&str) -> Result<Material, String>,
     apply: &mut dyn FnMut(&str, Material) -> Result<Vec<String>, String>,
-    revoked: &dyn Fn(&str) -> bool,
     changed: &dyn Fn(),
 ) -> Result<(), String> {
     update(|d| {
@@ -497,6 +525,9 @@ fn reconcile_with(
     for workspace in targets {
         let mut attempts = 0;
         let result = loop {
+            if !load()?.secrets.iter().any(|secret| secret.id == id) {
+                return Ok(());
+            }
             let desired_revision = workspace_revision(&workspace)?;
             let started_before = last_start(&workspace);
             let desired = material(&workspace);
@@ -513,27 +544,10 @@ fn reconcile_with(
                 break result.map(|pending| if restarted { Vec::new() } else { pending });
             }
         };
-        let result = match result {
-            Err(_)
-                if secret.removing && {
-                    // Reading the VM's state can wait on the runtime; do not block other
-                    // secret operations meanwhile.
-                    *operation = None;
-                    let revoked = revoked(&workspace);
-                    *operation = Some(lock_unit(&OPERATION));
-                    revoked
-                } =>
-            {
-                Ok(Vec::new())
-            }
-            other => other,
-        };
         update(|document| {
-            let secret = document
-                .secrets
-                .iter_mut()
-                .find(|s| s.id == id)
-                .ok_or("This secret no longer exists.")?;
+            let Some(secret) = document.secrets.iter_mut().find(|s| s.id == id) else {
+                return Ok(());
+            };
             secret.pending_workspaces.retain(|w| w != &workspace);
             match &result {
                 Ok(pending_names) => {
@@ -553,49 +567,159 @@ fn reconcile_with(
         changed();
     }
     let document = load()?;
-    let secret = document
-        .secrets
-        .iter()
-        .find(|s| s.id == id)
-        .ok_or("This secret no longer exists.")?;
+    let Some(secret) = document.secrets.iter().find(|s| s.id == id) else {
+        return Ok(());
+    };
     let failed = !secret.errors.is_empty();
-    if secret.removing && !failed && secret.pending_workspaces.is_empty() {
-        // Keep the tombstone until both revocation and credential deletion succeed.
-        let mut values = read_vault()?;
-        values.remove(&secret.value_id);
-        if let Err(error) = write_vault(values) {
-            update(|d| {
-                d.secrets
-                    .iter_mut()
-                    .find(|s| s.id == id)
-                    .ok_or("This secret no longer exists.")?
-                    .errors
-                    .insert("Credential store".into(), error);
-                Ok(())
-            })?;
-            return Ok(());
-        }
-        update(|d| {
-            d.secrets.retain(|s| s.id != id);
-            event(d, "Secret removed", false);
-            Ok(())
-        })?;
-    } else {
-        update(|d| {
-            event(
-                d,
-                if failed {
-                    "Secret changes could not be applied"
-                } else {
-                    "Secret settings saved"
-                },
-                failed,
-            );
-            Ok(())
-        })?;
-    }
+    update(|d| {
+        event(
+            d,
+            if failed {
+                "Secret changes could not be applied"
+            } else {
+                "Secret settings saved"
+            },
+            failed,
+        );
+        Ok(())
+    })?;
     Ok(())
 }
+/// Commit the name-only retry journal before deleting the credential. A credential
+/// failure leaves a retryable tombstone excluded from all future boot material.
+fn remove_from_store(id: &str) -> Result<(), String> {
+    let secret = load()?
+        .secrets
+        .into_iter()
+        .find(|secret| secret.id == id)
+        .ok_or("This secret no longer exists.")?;
+    update(|document| {
+        document
+            .secrets
+            .iter_mut()
+            .find(|secret| secret.id == id)
+            .ok_or("This secret no longer exists.")?
+            .removing = true;
+        for workspace in secret
+            .workspaces
+            .iter()
+            .chain(&secret.affected)
+            .collect::<BTreeSet<_>>()
+        {
+            let record = PendingRevocation {
+                secret_id: secret.id.clone(),
+                generation: secret.value_id.clone(),
+                name: secret.name.clone(),
+                workspace: workspace.clone(),
+            };
+            if !document.pending_revocations.contains(&record) {
+                document.pending_revocations.push(record);
+            }
+        }
+        Ok(())
+    })?;
+    let mut values = read_vault()?;
+    values.remove(&secret.value_id);
+    write_vault(values)?;
+    update(|document| {
+        document.secrets.retain(|secret| secret.id != id);
+        event(document, "Secret removed", false);
+        Ok(())
+    })
+}
+
+pub(crate) fn pending_names(workspace: &str) -> Result<Vec<String>, String> {
+    Ok(load()?
+        .pending_revocations
+        .into_iter()
+        .filter(|record| record.workspace == workspace)
+        .map(|record| record.name)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect())
+}
+
+/// Called inside the VM gate, immediately before name-only revocation. A current
+/// assignment of this name must be applied by its own reconcile, never removed by
+/// a retry for an older generation. Keep the warning until replacement is verified.
+pub(crate) fn revocation_needed(record: &PendingRevocation) -> Result<bool, String> {
+    let document = load()?;
+    Ok(document.pending_revocations.contains(record)
+        && !document.secrets.iter().any(|secret| {
+            !secret.removing
+                && secret.name == record.name
+                && secret.workspaces.contains(&record.workspace)
+        }))
+}
+
+/// A successful live update replaced old values for these names. Clear only records
+/// present before that update, so a concurrent later removal remains pending.
+pub(crate) fn revocations_replaced(
+    records: &[PendingRevocation],
+    workspace: &str,
+    pending_names: &[String],
+) -> Result<(), String> {
+    update(|document| {
+        document.pending_revocations.retain(|record| {
+            record.workspace != workspace
+                || pending_names.contains(&record.name)
+                || !records.contains(record)
+        });
+        Ok(())
+    })
+}
+
+pub(crate) fn pending_revocations() -> Result<Vec<PendingRevocation>, String> {
+    Ok(load()?.pending_revocations)
+}
+
+fn retry_revocations_with(
+    revoke: &mut dyn FnMut(&PendingRevocation) -> Result<bool, String>,
+) -> Result<bool, String> {
+    let mut changed = false;
+    for record in pending_revocations()? {
+        if revoke(&record).unwrap_or(false) {
+            update(|document| {
+                document
+                    .pending_revocations
+                    .retain(|pending| pending != &record);
+                Ok(())
+            })?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+static REVOCATIONS_RUNNING: AtomicBool = AtomicBool::new(false);
+/// One pass per state refresh, off the read/Remove path; busy guests are skipped.
+/// Remote snapshots invoke the same owner-side read and retry path.
+pub(crate) fn schedule_revocations(app: &AppHandle) {
+    if pending_revocations().is_ok_and(|records| records.is_empty())
+        || REVOCATIONS_RUNNING.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        struct Running;
+        impl Drop for Running {
+            fn drop(&mut self) {
+                REVOCATIONS_RUNNING.store(false, Ordering::Release);
+            }
+        }
+        let _running = Running;
+        let Ok(_update) = crate::updates::operation_guard() else {
+            return;
+        };
+        if retry_revocations_with(&mut |record| crate::runtime::revoke_secret(&app, record))
+            .unwrap_or(false)
+        {
+            let _ = app.emit("silo://application-state-changed", ());
+        }
+    });
+}
+
 fn require_main(window: &WebviewWindow) -> Result<(), String> {
     if window.label() == "main" {
         Ok(())
@@ -675,20 +799,11 @@ pub async fn remove_secret(
     require_main(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let mut operation = Some(lock_unit(&OPERATION));
+        let _operation = lock_unit(&OPERATION);
         retry_store();
-        update(|d| {
-            let secret = d
-                .secrets
-                .iter_mut()
-                .find(|s| s.id == id)
-                .ok_or("This secret no longer exists.")?;
-            secret.removing = true;
-            secret.affected.extend(secret.workspaces.clone());
-            Ok(())
-        })?;
-        reconcile(&app, &id, &mut operation)?;
-        let _ = prune_values();
+        remove_from_store(&id)?;
+        let _ = app.emit("silo://application-state-changed", ());
+        schedule_revocations(&app);
         snapshot()
     })
     .await
@@ -705,7 +820,16 @@ pub async fn retry_secret(
         let _update = crate::updates::operation_guard()?;
         let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
-        reconcile(&app, &id, &mut operation)?;
+        if load()?
+            .secrets
+            .iter()
+            .any(|secret| secret.id == id && secret.removing)
+        {
+            remove_from_store(&id)?;
+            schedule_revocations(&app);
+        } else {
+            reconcile(&app, &id, &mut operation)?;
+        }
         let _ = prune_values();
         snapshot()
     })
@@ -724,12 +848,20 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     std::thread::spawn(move || {
         let mut operation = Some(lock_unit(&OPERATION));
         if let Ok(document) = load() {
-            for secret in document.secrets {
-                if !secret.affected.is_empty() || secret.removing {
-                    let _ = reconcile(&app, &secret.id, &mut operation);
-                }
+            // Migrate legacy removals before any slow live update can wait on a VM.
+            for secret in document.secrets.iter().filter(|secret| secret.removing) {
+                let _ = remove_from_store(&secret.id);
+            }
+            for secret in document
+                .secrets
+                .iter()
+                .filter(|secret| !secret.removing && !secret.affected.is_empty())
+            {
+                let _ = reconcile(&app, &secret.id, &mut operation);
             }
         }
+        drop(operation);
+        schedule_revocations(&app);
         let _ = app.emit("silo://application-state-changed", ());
     });
     Ok(())
@@ -767,6 +899,7 @@ mod tests {
         let mut document = Document {
             secrets: vec![secret()],
             activities: Vec::new(),
+            ..Default::default()
         };
         copy_assignment_refs(&mut document, "dev", "fork");
         assert_eq!(document.secrets[0].workspaces, ["dev", "fork"]);
@@ -996,6 +1129,7 @@ mod tests {
         save(&Document {
             secrets: vec![assigned],
             activities: Vec::new(),
+            ..Default::default()
         })
         .unwrap();
         workspace_removed("dev").unwrap();
@@ -1020,6 +1154,7 @@ mod tests {
         save(&Document {
             secrets: vec![secret()],
             activities: Vec::new(),
+            ..Default::default()
         })
         .unwrap();
         let mut operation = Some(lock_unit(&OPERATION));
@@ -1041,7 +1176,6 @@ mod tests {
                 }
                 Ok(Vec::new())
             },
-            &|_| false,
             &|| {},
         )
         .unwrap();
@@ -1071,6 +1205,7 @@ mod tests {
         save(&Document {
             secrets: vec![assigned],
             activities: Vec::new(),
+            ..Default::default()
         })
         .unwrap();
         let mut operation = Some(lock_unit(&OPERATION));
@@ -1084,7 +1219,6 @@ mod tests {
                 workspace_started(workspace, &workspace_revision(workspace)?)?;
                 Ok(vec!["API_KEY".into()])
             },
-            &|_| false,
             &|| {},
         )
         .unwrap();
@@ -1095,52 +1229,180 @@ mod tests {
         use_test_store(None);
     }
     #[test]
-    fn removal_completes_when_failed_vms_cannot_hold_the_secret() {
+    fn removal_deletes_the_value_before_any_runtime_retry() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
         use_test_vault(Some(
-            [("private-reference".to_string(), "private-value".to_string())].into(),
+            [("private-reference".into(), "private-value".into())].into(),
         ));
-        let mut removing = secret();
-        removing.workspaces = vec!["deleted".into(), "running".into()];
-        removing.affected = removing.workspaces.clone();
-        removing.removing = true;
         save(&Document {
-            secrets: vec![removing],
-            activities: Vec::new(),
+            secrets: vec![secret()],
+            ..Default::default()
         })
         .unwrap();
-        let reconcile = |running_revoked: bool| {
-            let mut operation = Some(lock_unit(&OPERATION));
-            reconcile_with(
-                "id",
-                &mut operation,
-                &|_| Ok(Vec::new()),
-                // Both VMs fail to confirm: one no longer exists, one is running.
-                &mut |workspace, _| Err(format!("{workspace} could not be inspected")),
-                &|workspace| workspace == "deleted" || running_revoked,
-                &|| {},
-            )
-            .unwrap();
-        };
-        // The VM that cannot hold the value counts as revoked; the running one does not,
-        // so the tombstone and the credential remain until it confirms.
-        reconcile(false);
-        let document = load().unwrap();
-        assert_eq!(
-            document.secrets[0].errors.keys().collect::<Vec<_>>(),
-            ["running"]
-        );
-        assert_eq!(document.secrets[0].affected, ["running"]);
-        assert!(read_vault().unwrap().contains_key("private-reference"));
-        // Once that VM is stopped as well, removal finishes and the value is deleted.
-        reconcile(true);
-        assert!(load().unwrap().secrets.is_empty());
+        remove_from_store("id").unwrap();
+        assert!(snapshot().unwrap().is_empty());
         assert!(read_vault().unwrap().is_empty());
+        assert!(runtime_material("dev").unwrap().is_empty());
+        assert_eq!(pending_names("dev").unwrap(), ["API_KEY"]);
+        retry_revocations_with(&mut |_| Err("unreadable".into())).unwrap();
+        assert_eq!(pending_names("dev").unwrap(), ["API_KEY"]);
+        retry_revocations_with(&mut |_| Ok(true)).unwrap();
+        assert!(pending_names("dev").unwrap().is_empty());
         use_test_store(None);
         use_test_vault(None);
     }
+
+    #[test]
+    fn removal_commits_while_an_older_secret_update_is_still_running() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        use_test_vault(Some(
+            [("private-reference".into(), "private-value".into())].into(),
+        ));
+        save(&Document {
+            secrets: vec![secret()],
+            ..Default::default()
+        })
+        .unwrap();
+        let mut operation = Some(lock_unit(&OPERATION));
+        reconcile_with(
+            "id",
+            &mut operation,
+            &runtime_material,
+            &mut |_, material| {
+                assert_eq!(material[0].1, "private-value");
+                let _remove = lock_unit(&OPERATION);
+                remove_from_store("id")?;
+                assert!(snapshot()?.is_empty());
+                assert!(read_vault()?.is_empty());
+                assert_eq!(pending_names("dev")?, ["API_KEY"]);
+                Ok(Vec::new())
+            },
+            &|| {},
+        )
+        .unwrap();
+        assert_eq!(
+            pending_names("dev").unwrap(),
+            ["API_KEY"],
+            "the old update's completion must not clear this removal"
+        );
+        use_test_store(None);
+        use_test_vault(None);
+    }
+
+    #[test]
+    fn verified_replacement_clears_old_records_without_clearing_a_later_generation() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        use_test_vault(Some(
+            [("private-reference".into(), "private-value".into())].into(),
+        ));
+        save(&Document {
+            secrets: vec![secret()],
+            ..Default::default()
+        })
+        .unwrap();
+        remove_from_store("id").unwrap();
+        let before_apply = pending_revocations().unwrap();
+        revocations_replaced(&before_apply, "dev", &["API_KEY".into()]).unwrap();
+        assert_eq!(
+            pending_names("dev").unwrap(),
+            ["API_KEY"],
+            "a next-start addition has not replaced the old live value"
+        );
+        let mut replacement = secret();
+        replacement.id = "replacement".into();
+        replacement.value_id = "new-value".into();
+        update(|document| {
+            document.secrets.push(replacement);
+            Ok(())
+        })
+        .unwrap();
+        remove_from_store("replacement").unwrap();
+        revocations_replaced(&before_apply, "dev", &[]).unwrap();
+        let remaining = pending_revocations().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].generation, "new-value");
+        use_test_store(None);
+        use_test_vault(None);
+    }
+
+    #[test]
+    fn restart_and_deletion_clear_only_their_sandbox_revocations() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        use_test_vault(Some(
+            [("private-reference".into(), "private-value".into())].into(),
+        ));
+        let mut assigned = secret();
+        assigned.workspaces.push("other".into());
+        save(&Document {
+            secrets: vec![assigned],
+            ..Default::default()
+        })
+        .unwrap();
+        let before = workspace_revision("dev").unwrap();
+        remove_from_store("id").unwrap();
+        workspace_started("dev", &before).unwrap();
+        assert_eq!(
+            pending_names("dev").unwrap(),
+            ["API_KEY"],
+            "an obsolete boot still had the value"
+        );
+        workspace_started("dev", &workspace_revision("dev").unwrap()).unwrap();
+        assert!(pending_names("dev").unwrap().is_empty());
+        assert_eq!(pending_names("other").unwrap(), ["API_KEY"]);
+        workspace_removed("other").unwrap();
+        assert!(load().unwrap().pending_revocations.is_empty());
+        use_test_store(None);
+        use_test_vault(None);
+    }
+
+    #[test]
+    fn readding_the_name_never_lets_an_old_retry_remove_the_replacement() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        use_test_vault(Some(
+            [("private-reference".into(), "private-value".into())].into(),
+        ));
+        save(&Document {
+            secrets: vec![secret()],
+            ..Default::default()
+        })
+        .unwrap();
+        remove_from_store("id").unwrap();
+        let old = load().unwrap().pending_revocations[0].clone();
+        assert!(revocation_needed(&old).unwrap());
+        assert!(validate(&request(), &load().unwrap()).is_ok());
+        let mut replacement = secret();
+        replacement.id = "replacement".into();
+        replacement.value_id = "new-generation".into();
+        update(|d| {
+            d.secrets.push(replacement);
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            !revocation_needed(&old).unwrap(),
+            "the VM gate rechecks this immediately before name-only removal"
+        );
+        // A delayed success for the old generation cannot clear a later removal.
+        write_vault([("new-generation".into(), "new-value".into())].into()).unwrap();
+        remove_from_store("replacement").unwrap();
+        retry_revocations_with(&mut |record| Ok(record.generation == old.generation)).unwrap();
+        let pending = load().unwrap().pending_revocations;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].generation, "new-generation");
+        use_test_store(None);
+        use_test_vault(None);
+    }
+
     #[test]
     fn history_is_bounded_and_contains_no_values() {
         let _test_state = crate::test_support::global_state();

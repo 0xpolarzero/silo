@@ -23,6 +23,68 @@ async function openDetail(source: ApplicationSource, actions: Partial<Applicatio
   return { user, workspace }
 }
 
+it.each([false, true])("shows pending secret revocation on the sandbox row and detail, routing Restart to its owner (remote=%s)", async remote => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  workspace.state = "running"
+  workspace.freshness = "fresh"
+  workspace.pendingSecretRevocations = ["GITHUB_TOKEN"]
+  const message = "May still have access to GITHUB_TOKEN until it restarts."
+  workspace.attention = { level: "warning", message }
+  if (remote) workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  const restartWorkspace = vi.fn()
+  const actions = { restartWorkspace } as unknown as ApplicationActions
+  const user = userEvent.setup()
+  const { rerender } = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(screen.getByText(message, { exact: false })).toBeVisible()
+  await user.click(screen.getByRole("button", { name: `Restart ${workspace.machine.name}` }))
+  await user.click(screen.getByRole("button", { name: "Restart" }))
+  expect(restartWorkspace).toHaveBeenCalledExactlyOnceWith(workspaceTarget(workspace))
+  await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
+  expect(screen.getByRole("note", { name: "Pending secret revocation" })).toHaveTextContent(message)
+  await user.click(screen.getByRole("button", { name: `Restart ${workspace.machine.name}` }))
+  await user.click(screen.getByRole("button", { name: "Restart" }))
+  expect(restartWorkspace).toHaveBeenCalledTimes(2)
+  const refreshed = structuredClone(source)
+  refreshed.workspaces.find(item => item.machine.id === workspace.machine.id)!.pendingSecretRevocations = undefined
+  refreshed.workspaces.find(item => item.machine.id === workspace.machine.id)!.attention = undefined
+  rerender(<OverviewPage source={refreshed} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(screen.queryByRole("note", { name: "Pending secret revocation" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: `Restart ${workspace.machine.name}` })).not.toBeInTheDocument()
+})
+
+it.each([false, true])("clears the overview row revocation warning and Restart action only after source refresh (remote=%s)", async remote => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  workspace.state = "running"
+  workspace.freshness = "fresh"
+  workspace.pendingSecretRevocations = ["REMOVED_TOKEN"]
+  const message = "May still have access to REMOVED_TOKEN until it restarts."
+  workspace.attention = { level: "warning", message }
+  if (remote) workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  const restartWorkspace = vi.fn()
+  const actions = { restartWorkspace } as unknown as ApplicationActions
+  const user = userEvent.setup()
+  const { rerender } = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  const row = screen.getByRole("button", { name: `Open ${workspace.machine.name}` }).closest("li")!
+  expect(row).toHaveTextContent(message)
+  expect(within(row).getByRole("img", { name: "warning status" })).toBeVisible()
+  await user.click(within(row).getByRole("button", { name: `Restart ${workspace.machine.name}` }))
+  await user.click(screen.getByRole("button", { name: "Restart" }))
+  expect(restartWorkspace).toHaveBeenCalledExactlyOnceWith(workspaceTarget(workspace))
+  expect(row).toHaveTextContent(message)
+  expect(within(row).getByRole("button", { name: `Restart ${workspace.machine.name}` })).toBeVisible()
+
+  const refreshed = structuredClone(source)
+  const refreshedWorkspace = refreshed.workspaces.find(item => item.machine.id === workspace.machine.id)!
+  refreshedWorkspace.pendingSecretRevocations = undefined
+  refreshedWorkspace.attention = undefined
+  rerender(<OverviewPage source={refreshed} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(row).not.toHaveTextContent(message)
+  expect(within(row).queryByRole("button", { name: `Restart ${workspace.machine.name}` })).not.toBeInTheDocument()
+  expect(within(row).queryByRole("img", { name: "warning status" })).not.toBeInTheDocument()
+})
+
 it("opens a sandbox detail page from the row body and returns to the list from the breadcrumb", async () => {
   const source = localVmSource()
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!

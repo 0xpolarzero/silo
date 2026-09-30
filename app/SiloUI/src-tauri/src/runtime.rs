@@ -593,6 +593,8 @@ struct ApplicationWorkspace {
     github_repositories: Vec<String>,
     secret_names: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pending_secret_revocations: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     checkpoints: Vec<checkpoints::Checkpoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_checkpoint_restore: Option<checkpoints::PendingRestore>,
@@ -2353,6 +2355,7 @@ pub async fn read_application_state(
     crate::runtime_migration::ensure_ready(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
+        crate::secrets::schedule_revocations(&app);
         // Only visible computer-wide work (sandbox configuration) can add or remove
         // sandboxes; work on one VM settles only that VM's row, and hidden housekeeping
         // never affects the read.
@@ -4062,6 +4065,18 @@ fn keep_runtime_fields(workspace: &mut ApplicationWorkspace, previous: &Applicat
     workspace.state = previous.state;
     workspace.state_detail = previous.state_detail.clone();
     workspace.attention = previous.attention.clone();
+    // The cache keeps runtime state while a VM settles. Revocation warnings are
+    // derived from today's journal, so do not copy yesterday's warning into it.
+    if !previous.pending_secret_revocations.is_empty() {
+        let warning = secret_revocation_warning(&previous.pending_secret_revocations);
+        if let Some(attention) = &mut workspace.attention {
+            if attention.message == warning {
+                workspace.attention = None;
+            } else if let Some(message) = attention.message.strip_suffix(&format!(" {warning}")) {
+                attention.message = message.into();
+            }
+        }
+    }
     workspace.can_dismiss_error = previous.can_dismiss_error;
     workspace.repositories = previous.repositories.clone();
 }
@@ -4208,6 +4223,7 @@ fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
         logs: Vec::new(),
         github_repositories: Vec::new(),
         secret_names: Vec::new(),
+        pending_secret_revocations: Vec::new(),
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
@@ -4248,6 +4264,13 @@ fn checkpoint_operation_view(
     operation
 }
 
+fn secret_revocation_warning(names: &[String]) -> String {
+    format!(
+        "May still have access to {} until it restarts.",
+        names.join(", ")
+    )
+}
+
 fn application_source_for_workspaces(
     paths: &RuntimePaths,
     mut workspaces: Vec<ApplicationWorkspace>,
@@ -4281,6 +4304,21 @@ fn application_source_for_workspaces(
                         message: format!("{error} Checkpoints and actions that need them are unavailable for this sandbox."),
                     });
                 }
+            }
+        }
+        workspace.pending_secret_revocations =
+            crate::secrets::pending_names(workspace.machine.name())
+                .map_err(RuntimeError::Unavailable)?;
+        if !workspace.pending_secret_revocations.is_empty() {
+            let warning = secret_revocation_warning(&workspace.pending_secret_revocations);
+            if let Some(attention) = &mut workspace.attention {
+                attention.message.push(' ');
+                attention.message.push_str(&warning);
+            } else {
+                workspace.attention = Some(WorkspaceAttention {
+                    level: AttentionLevel::Warning,
+                    message: warning,
+                });
             }
         }
         workspace.secret_names = secrets
@@ -4480,6 +4518,7 @@ fn vm_workspace(
         logs: Vec::new(),
         github_repositories: Vec::new(),
         secret_names: Vec::new(),
+        pending_secret_revocations: Vec::new(),
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
@@ -8824,56 +8863,127 @@ exit 9
         }
     }
 
+    fn pending_secret_fixture(directory: &tempfile::TempDir) -> crate::secrets::PendingRevocation {
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"pendingRevocations":[{"secretId":"old-secret","generation":"old-value","name":"API_KEY","workspace":"dev"}]}"#).unwrap();
+        crate::secrets::use_test_store(Some(store));
+        crate::secrets::use_test_vault(Some(Default::default()));
+        crate::secrets::pending_revocations().unwrap().remove(0)
+    }
+
+    fn inspected_secret(paths: &RuntimePaths, status: &str, names: &[&str]) -> Value {
+        let mut value = inspect(paths, status);
+        value["config"]["network"]["secrets"]["secrets"] = json!(names
+            .iter()
+            .map(|name| json!({"env_var":name}))
+            .collect::<Vec<_>>());
+        value["active_config"] = value["config"].clone();
+        value
+    }
+
     #[test]
-    fn only_vms_that_cannot_hold_secret_values_count_as_revoked() {
+    fn pending_secret_revocation_requires_verified_removal_or_a_guest_that_cannot_hold_values() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let missing = || {
-            Err(RuntimeError::Failed {
-                operation: "Reading sandbox state".into(),
-                exit_code: Some(1),
-                detail: "sandbox 'dev' not found".into(),
-            })
+        let record = pending_secret_fixture(&directory);
+        let removed = std::cell::RefCell::new(Vec::new());
+        let mut remove = |name: &str| {
+            removed.borrow_mut().push(name.to_string());
+            Ok(())
         };
-        let unavailable = || {
-            Err(RuntimeError::Unavailable(
-                "The managed runtime is unavailable.".into(),
-            ))
-        };
-        // No longer a configured VM: nothing can hold the value, and nothing is inspected.
-        assert!(vm_holds_no_secret_material(
+        for status in ["Starting", "Draining", "Paused", "Unknown"] {
+            assert!(!revoke_secret_with(
+                &StubRunner::successful_json(vec![inspected_secret(&paths, status, &["API_KEY"])]),
+                &paths,
+                &record,
+                &mut remove
+            )
+            .unwrap());
+        }
+        assert!(revoke_secret_with(
+            &StubRunner::new(vec![Err(RuntimeError::Unavailable("unreadable".into()))]),
+            &paths,
+            &record,
+            &mut remove
+        )
+        .is_err());
+        let no_active = inspect(&paths, "Running");
+        assert!(!revoke_secret_with(
+            &StubRunner::successful_json(vec![no_active]),
+            &paths,
+            &record,
+            &mut remove
+        )
+        .unwrap());
+        for status in ["Stopped", "Created", "Crashed"] {
+            assert!(revoke_secret_with(
+                &StubRunner::successful_json(vec![inspect(&paths, status)]),
+                &paths,
+                &record,
+                &mut remove
+            )
+            .unwrap());
+        }
+        let missing = StubRunner::new(vec![Err(RuntimeError::Failed {
+            operation: "inspect".into(),
+            exit_code: Some(1),
+            detail: "sandbox 'dev' not found".into(),
+        })]);
+        assert!(revoke_secret_with(&missing, &paths, &record, &mut remove).unwrap());
+        assert!(
+            removed.borrow().is_empty(),
+            "unreadable/transitional and stopped guests need no runtime mutation"
+        );
+        // The runtime claims success but still exposes the name: do not clear the warning.
+        assert!(!revoke_secret_with(
+            &StubRunner::successful_json(vec![
+                inspected_secret(&paths, "Running", &["API_KEY", "KEEP"]),
+                inspected_secret(&paths, "Running", &["API_KEY", "KEEP"])
+            ]),
+            &paths,
+            &record,
+            &mut remove
+        )
+        .unwrap());
+        assert!(revoke_secret_with(
+            &StubRunner::successful_json(vec![
+                inspected_secret(&paths, "Running", &["API_KEY", "KEEP"]),
+                inspected_secret(&paths, "Running", &["KEEP"])
+            ]),
+            &paths,
+            &record,
+            &mut remove
+        )
+        .unwrap());
+        assert_eq!(*removed.borrow(), ["API_KEY", "API_KEY"]);
+        assert!(revoke_secret_with(
+            &StubRunner::successful_json(vec![inspected_secret(&paths, "Running", &["API_KEY"])]),
+            &paths,
+            &record,
+            &mut |_| Err("runtime failed".into())
+        )
+        .is_err());
+        write_metadata(&paths.metadata, &request(Vec::new())).unwrap();
+        assert!(revoke_secret_with(
             &StubRunner::new(Vec::new()),
             &paths,
-            "deleted"
-        ));
-        for (output, expected) in [
-            (
-                StubRunner::successful_json(vec![inspect(&paths, "Stopped")]),
-                true,
-            ),
-            (
-                StubRunner::successful_json(vec![inspect(&paths, "Crashed")]),
-                true,
-            ),
-            (StubRunner::new(vec![missing()]), true),
-            (
-                StubRunner::successful_json(vec![inspect(&paths, "Running")]),
-                false,
-            ),
-            (
-                StubRunner::successful_json(vec![inspect(&paths, "Starting")]),
-                false,
-            ),
-            (StubRunner::new(vec![unavailable()]), false),
-        ] {
-            assert_eq!(
-                vm_holds_no_secret_material(&output, &paths, "dev"),
-                expected
-            );
-        }
-        // While another operation (for example a start) holds the VM, it is never assumed revoked.
+            &record,
+            &mut |_| panic!("deleted guest")
+        )
+        .unwrap());
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+    }
+
+    #[test]
+    fn pending_secret_retry_skips_busy_guests_and_rechecks_replacement_after_the_vm_settles() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let record = pending_secret_fixture(&directory);
         let (release, released) = std::sync::mpsc::channel::<()>();
         let (held, holding) = std::sync::mpsc::channel();
         let holder = thread::spawn(move || {
@@ -8881,20 +8991,72 @@ exit 9
                 .vm(
                     "00000000-0000-4000-8000-000000000001",
                     "dev",
-                    "Starting dev",
+                    "Updating dev",
                 )
                 .unwrap();
             held.send(()).unwrap();
             released.recv().unwrap();
         });
         holding.recv().unwrap();
-        assert!(!vm_holds_no_secret_material(
-            &StubRunner::successful_json(vec![inspect(&paths, "Stopped")]),
+        assert!(!revoke_secret_with(
+            &StubRunner::new(Vec::new()),
             &paths,
-            "dev"
-        ));
+            &record,
+            &mut |_| panic!("busy guest")
+        )
+        .unwrap());
+        // Replacement was applied by the preceding operation, before this retry's
+        // VM gate. The old journal entry must never remove the replacement by name.
+        let store = directory.path().join("secrets.json");
+        let mut document: Value = serde_json::from_slice(&fs::read(&store).unwrap()).unwrap();
+        document["secrets"] = json!([{"id":"new-secret","valueId":"new-value","name":"API_KEY","workspaces":["dev"],"allowedDomains":["api.example.com"]}]);
+        fs::write(&store, document.to_string()).unwrap();
         release.send(()).unwrap();
         holder.join().unwrap();
+        assert!(!revoke_secret_with(
+            &StubRunner::successful_json(vec![inspected_secret(&paths, "Running", &["API_KEY"])]),
+            &paths,
+            &record,
+            &mut |_| panic!("must preserve new value")
+        )
+        .unwrap());
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+    }
+
+    #[test]
+    fn pending_secret_warning_is_current_while_runtime_fields_are_cached() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let _record = pending_secret_fixture(&directory);
+        let source = application_source_for_workspaces(
+            &paths,
+            vec![vm_workspace(
+                &paths,
+                vm(),
+                &serde_json::from_value(inspect(&paths, "Running")).unwrap(),
+            )],
+        )
+        .unwrap();
+        let previous = &source.workspaces[0];
+        assert_eq!(previous.pending_secret_revocations, ["API_KEY"]);
+        assert_eq!(
+            previous.attention.as_ref().unwrap().message,
+            "May still have access to API_KEY until it restarts."
+        );
+        crate::secrets::workspace_started(
+            "dev",
+            &crate::secrets::workspace_revision("dev").unwrap(),
+        )
+        .unwrap();
+        let mut current = unread_workspace(vm());
+        keep_runtime_fields(&mut current, previous);
+        let cleared = application_source_for_workspaces(&paths, vec![current]).unwrap();
+        assert!(cleared.workspaces[0].pending_secret_revocations.is_empty());
+        assert!(cleared.workspaces[0].attention.is_none());
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
     }
 
     #[test]
@@ -10573,11 +10735,7 @@ exit 9
 mod github_integration_tests;
 
 /// Apply secret policy under the same per-VM lock as GitHub updates and boot.
-pub(crate) fn apply_secrets(
-    app: &AppHandle,
-    workspace: &str,
-    desired: Vec<(String, String, Vec<String>)>,
-) -> Result<Vec<String>, String> {
+pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str) -> Result<Vec<String>, String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
     // Applies secret policy inside one VM's guest only.
     let paths = runtime_paths(app)?;
@@ -10612,7 +10770,16 @@ pub(crate) fn apply_secrets(
                     ),
                 }
             })?;
-        secrets_runtime::apply(&paths, workspace, &desired, false)
+        // An edit/remove may have committed while this operation waited for the
+        // VM gate. Never send the caller's stale values back into the guest.
+        let revision = crate::secrets::workspace_revision(workspace)?;
+        let desired = crate::secrets::runtime_material(workspace)?;
+        let records = crate::secrets::pending_revocations()?;
+        let pending = secrets_runtime::apply(&paths, workspace, &desired, false)?;
+        if crate::secrets::workspace_revision(workspace)? == revision {
+            crate::secrets::revocations_replaced(&records, workspace, &pending)?;
+        }
+        Ok(pending)
     };
     // Re-applying the same desired secrets is idempotent, so a timed-out runtime command
     // is retried; validation, rejection, and verification failures are final. The typed
@@ -10629,44 +10796,75 @@ pub(crate) fn apply_secrets(
     .map_err(String::from)
 }
 
-/// True when `workspace` cannot be holding secret values right now, so a secret being
-/// removed is already revoked there even if its runtime update failed: it is no longer
-/// a configured local VM, its runtime sandbox does not exist, or the runtime reports it
-/// stopped. A stopped VM only receives secrets that are still assigned when it next
-/// boots (boot re-applies the current assignment, and a removed value is no longer
-/// passed to the runtime). A running, transitional or unreadable VM is never assumed
-/// revoked. The VM's turn is held while it is read so no boot can begin meanwhile.
-pub(crate) fn secret_revoked_without_runtime(app: &AppHandle, workspace: &str) -> bool {
-    runtime_paths(app)
-        .is_ok_and(|paths| vm_holds_no_secret_material(&ProcessRunner, &paths, workspace))
+/// Background name-only revocation. Use the owner computer's existing VM gate;
+/// skip busy/transitional/unreadable guests and retry on a later state refresh.
+pub(crate) fn revoke_secret(
+    app: &AppHandle,
+    record: &crate::secrets::PendingRevocation,
+) -> Result<bool, String> {
+    let paths = runtime_paths(app)?;
+    revoke_secret_with(&ProcessRunner, &paths, record, &mut |name| {
+        secrets_runtime::remove_name(&paths, &record.workspace, name)
+    })
 }
 
-fn vm_holds_no_secret_material(
+fn revoke_secret_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace: &str,
-) -> bool {
-    let Ok(metadata) = read_metadata(&paths.metadata) else {
-        return false;
-    };
+    record: &crate::secrets::PendingRevocation,
+    remove: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<bool, String> {
+    let metadata = read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     let Some(machine) = metadata
         .machines
         .iter()
-        .find(|machine| machine.is_vm() && machine.name() == workspace)
+        .find(|machine| machine.is_vm() && machine.name() == record.workspace)
     else {
-        return true;
+        return Ok(true);
     };
-    let Ok(_turn) = OPERATIONS.try_vm_hidden(machine.id(), workspace, "Checking secret revocation")
+    let Ok(_turn) =
+        OPERATIONS.try_vm_hidden(machine.id(), &record.workspace, "Revoking removed secret")
     else {
-        return false;
+        return Ok(false);
     };
-    match observe_vm(runner, paths, workspace) {
-        Ok(VmRuntime::Absent) => true,
-        Ok(VmRuntime::Present(inspected)) => {
-            ensure_managed(&inspected).is_ok()
-                && matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed")
+    let access = vm_access_state(&paths.home, &record.workspace)?;
+    let Ok(_runtime) = access.runtime.try_lock() else {
+        return Ok(false);
+    };
+    // Read after acquiring the VM gate: a queued old retry cannot remove a
+    // replacement that has since been applied under that same gate.
+    let observed =
+        observe_vm(runner, paths, &record.workspace).map_err(|error| error.to_string())?;
+    match observed {
+        VmRuntime::Absent => Ok(true),
+        VmRuntime::Present(inspected) => {
+            ensure_managed(&inspected).map_err(|error| error.to_string())?;
+            if inspected.name != record.workspace
+                || inspected
+                    .config
+                    .pointer("/labels/silo.machine-id")
+                    .and_then(Value::as_str)
+                    != Some(machine.id())
+            {
+                return Err(
+                    "The sandbox identity changed. Its secret revocation remains pending.".into(),
+                );
+            }
+            if matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed") {
+                return Ok(true);
+            }
+            if !crate::secrets::revocation_needed(record)? {
+                return Ok(false);
+            }
+            secrets_runtime::revoke_observed_with(
+                runner,
+                paths,
+                &record.workspace,
+                &record.name,
+                &inspected,
+                remove,
+            )
         }
-        Err(_) => false,
     }
 }
 

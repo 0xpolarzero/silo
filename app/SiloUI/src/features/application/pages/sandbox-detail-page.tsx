@@ -1,4 +1,4 @@
-import { ChevronRight, Code, Cpu, GitBranch, Globe, KeyRound, Play, Plus, Server, Square, Terminal } from "lucide-react"
+import { ChevronRight, Code, Cpu, GitBranch, Globe, KeyRound, Play, Plus, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useId, type MouseEvent, type ReactNode } from "react"
 
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
@@ -24,6 +24,7 @@ import type { LifecycleGuard } from "@/features/application/model/lifecycle-guar
 import type { NetworkPort, ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
 import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import { SshAccessBadges, SshAccessRow } from "@/features/application/pages/ssh-access-panel"
 import { WorkspaceStoragePanel } from "@/features/application/pages/workspace-storage-panel"
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
@@ -402,6 +403,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const activeTab = visibleTabs.some(tab => tab.value === controls.activeTab) ? controls.activeTab : "overview"
 
   const reasons = controls.disabledReasons ?? {}
+  const restartAvailability = workspaceAvailability(workspace, source)
 
   return <TooltipProvider delayDuration={150}>
     <div className="flex h-full min-h-0 flex-col">
@@ -425,6 +427,14 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           {menuActions.length > 0 && menu}
         </div>}
       />
+
+      {Boolean(workspace.pendingSecretRevocations?.length) && <div role="note" aria-label="Pending secret revocation" className="flex items-center gap-2 border-b border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+        <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+        <p className="min-w-0 flex-1 break-words">May still have access to {workspace.pendingSecretRevocations!.join(", ")} until it restarts.</p>
+        <LifecycleControl guard={controls.lifecycleGuard} workspace={workspace} action="restart" disabled={controls.readOnly || !restartAvailability.canRestart} reason={controls.readOnly ? undefined : restartAvailability.reasons.restart}>
+          {({ onClick, disabled }) => <Button variant="outline" size="xs" aria-label={`Restart ${machine.name}`} disabled={disabled} onClick={onClick}><RotateCw aria-hidden="true" />Restart</Button>}
+        </LifecycleControl>
+      </div>}
 
       {isEditing && editing.editor ? (
         <ScrollArea className="min-h-0 flex-1">
