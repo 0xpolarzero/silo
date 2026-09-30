@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::fd::AsRawFd,
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
@@ -635,8 +635,7 @@ impl<R: MsbRunner> BackupService<R> {
                 Ok::<_, BackupError>(payload_path)
             })();
             let payload_path = capture_result?;
-            let (payload_size, payload_sha256) =
-                hash_regular_file(&payload_path, self.max_archive_bytes, cancellation)?;
+            let (payload, payload_size) = open_payload(&payload_path, self.max_archive_bytes)?;
             total_payload_bytes = total_payload_bytes
                 .checked_add(payload_size)
                 .filter(|size| *size <= self.max_archive_bytes)
@@ -645,10 +644,10 @@ impl<R: MsbRunner> BackupService<R> {
                         "The selected VM snapshots exceed the export size safety limit.".into(),
                     )
                 })?;
-            payloads.push((source, payload_path, payload_size, payload_sha256));
+            payloads.push((source, payload, payload_size));
         }
 
-        let manifest = PackageManifest {
+        let mut manifest = PackageManifest {
             schema_version: FORMAT_VERSION,
             created_at_ms: now_ms(),
             runtime: RuntimeManifest {
@@ -659,25 +658,26 @@ impl<R: MsbRunner> BackupService<R> {
             },
             sandboxes: payloads
                 .iter()
-                .map(|(source, _, payload_size, payload_sha256)| PackageSandbox {
+                .map(|(source, _, payload_size)| PackageSandbox {
                     name: source.name.clone(),
                     runtime_config: source.runtime_config.clone(),
                     machine_config: source.machine_config.clone(),
                     payload_size: *payload_size,
-                    payload_sha256: payload_sha256.clone(),
+                    // Filled in while the payload is copied into the archive.
+                    payload_sha256: pending_digest(),
                     // Format 3 keeps this field; MicroSandbox's snapshot carries the disks.
                     volumes: Vec::new(),
                 })
                 .collect(),
         };
         let archive_payloads = payloads
-            .iter()
-            .map(|(_, snapshot, _, _)| snapshot.as_path())
+            .into_iter()
+            .map(|(_, payload, _)| payload)
             .collect::<Vec<_>>();
         let size_bytes = write_immutable_package(
             &request.destination,
-            &manifest,
-            &archive_payloads,
+            &mut manifest,
+            archive_payloads,
             cancellation,
             token,
         )?;
@@ -749,7 +749,12 @@ impl<R: MsbRunner> BackupService<R> {
         archive: &Path,
         cancellation: &Cancellation,
     ) -> Result<ArchiveInspection, BackupError> {
-        let package = read_and_verify_package(archive, self.max_archive_bytes, cancellation, None)?;
+        let package = read_and_verify_package(
+            archive,
+            self.max_archive_bytes,
+            cancellation,
+            PayloadMode::VerifyAll,
+        )?;
         Ok(ArchiveInspection {
             created_at_ms: package.manifest.created_at_ms,
             size_bytes: package.size_bytes,
@@ -798,16 +803,16 @@ impl<R: MsbRunner> BackupService<R> {
             &request.archive,
             self.max_archive_bytes,
             cancellation,
-            Some(stage.path()),
+            PayloadMode::Extract {
+                dir: stage.path(),
+                source: request.source_name.as_deref(),
+            },
         )?;
-        let selected_index =
-            select_restore_source(&package.manifest, request.source_name.as_deref())?;
-        let source = &package.manifest.sandboxes[selected_index];
-        let payload_path = package.snapshot_payload_paths[selected_index]
-            .as_ref()
-            .ok_or_else(|| {
-                BackupError::InvalidArchive("snapshot payload was not extracted".into())
-            })?;
+        let extracted = package.extracted.as_ref().ok_or_else(|| {
+            BackupError::InvalidArchive("snapshot payload was not extracted".into())
+        })?;
+        let source = &package.manifest.sandboxes[extracted.index];
+        let payload_path = &extracted.path;
         let before = self.snapshot_index("Checking imported checkpoint identity", cancellation)?;
         if before.iter().any(|entry| entry["group"] == import_group) {
             // Never load into, or clean up, a group this attempt did not create.
@@ -1183,15 +1188,32 @@ fn cleanup_new_cache_import_stages(home: &Path, before: &HashSet<std::ffi::OsStr
 
 struct VerifiedPackage {
     manifest: PackageManifest,
-    snapshot_payload_paths: Vec<Option<PathBuf>>,
+    /// The one payload extracted by `PayloadMode::Extract`.
+    extracted: Option<ExtractedPayload>,
     size_bytes: u64,
+}
+
+struct ExtractedPayload {
+    index: usize,
+    path: PathBuf,
+}
+
+enum PayloadMode<'a> {
+    /// Hash every payload: the review inspection and the export's final check.
+    VerifyAll,
+    /// Verify and extract only the selected sandbox's payload; skip the
+    /// others without reading them.
+    Extract {
+        dir: &'a Path,
+        source: Option<&'a str>,
+    },
 }
 
 fn read_and_verify_package(
     path: &Path,
     max_archive_bytes: u64,
     cancellation: &Cancellation,
-    extract_dir: Option<&Path>,
+    mode: PayloadMode<'_>,
 ) -> Result<VerifiedPackage, BackupError> {
     check_cancelled(cancellation)?;
     let (mut file, metadata) = open_regular_file(path).map_err(|error| match error {
@@ -1250,9 +1272,21 @@ fn read_and_verify_package(
         ));
     }
 
-    let mut snapshot_payload_paths = Vec::with_capacity(manifest.sandboxes.len());
+    let (extract_dir, selected) = match mode {
+        PayloadMode::VerifyAll => (None, None),
+        PayloadMode::Extract { dir, source } => {
+            (Some(dir), Some(select_restore_source(&manifest, source)?))
+        }
+    };
+    let mut extracted = None;
     for (index, sandbox) in manifest.sandboxes.iter().enumerate() {
-        let snapshot_output = extract_verified_payload(
+        if selected.is_some_and(|selected| selected != index) {
+            let skip = i64::try_from(sandbox.payload_size)
+                .map_err(|_| BackupError::InvalidArchive("payload sizes overflow".into()))?;
+            file.seek(SeekFrom::Current(skip))?;
+            continue;
+        }
+        let output = extract_verified_payload(
             &mut file,
             sandbox.payload_size,
             &sandbox.payload_sha256,
@@ -1260,11 +1294,13 @@ fn read_and_verify_package(
             &format!("snapshot payload for {}", sandbox.name),
             cancellation,
         )?;
-        snapshot_payload_paths.push(snapshot_output);
+        if let Some(path) = output {
+            extracted = Some(ExtractedPayload { index, path });
+        }
     }
     Ok(VerifiedPackage {
         manifest,
-        snapshot_payload_paths,
+        extracted,
         size_bytes: metadata.len(),
     })
 }
@@ -1943,17 +1979,34 @@ fn rename_without_replacing(source: &Path, destination: &Path) -> io::Result<()>
     }
 }
 
+/// A placeholder with the exact length of a real digest, so the manifest can
+/// be written before the payloads and rewritten in place once they are hashed.
+fn pending_digest() -> String {
+    format!("sha256:{}", "0".repeat(64))
+}
+
+/// Writes the archive, hashing each payload while it is copied (one read per
+/// payload), then verifies the whole written file once before publishing it.
+/// `payloads[i]` is the open, already-measured payload of `manifest.sandboxes[i]`.
 fn write_immutable_package(
     destination: &Path,
-    manifest: &PackageManifest,
-    payloads: &[&Path],
+    manifest: &mut PackageManifest,
+    payloads: Vec<File>,
     cancellation: &Cancellation,
     token: Option<&str>,
 ) -> Result<u64, BackupError> {
     let parent = destination.parent().ok_or_else(|| {
         BackupError::InvalidRequest("The backup destination has no parent directory.".into())
     })?;
+    if payloads.len() != manifest.sandboxes.len() {
+        return Err(BackupError::InvalidRequest(
+            "The export payloads do not match its manifest.".into(),
+        ));
+    }
     fs::create_dir_all(parent)?;
+    for sandbox in &mut manifest.sandboxes {
+        sandbox.payload_sha256 = pending_digest();
+    }
     let manifest_bytes = serde_json::to_vec(manifest)?;
     if manifest_bytes.is_empty() || manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(BackupError::InvalidRequest(
@@ -1969,19 +2022,38 @@ fn write_immutable_package(
     temporary.write_all(MAGIC)?;
     temporary.write_all(&FORMAT_VERSION.to_be_bytes())?;
     temporary.write_all(&(manifest_bytes.len() as u64).to_be_bytes())?;
+    let manifest_offset = (MAGIC.len() + 4 + 8) as u64;
     temporary.write_all(&manifest_bytes)?;
     let mut buffer = [0_u8; 128 * 1024];
-    for payload in payloads {
-        let mut input = File::open(payload)?;
+    for (sandbox, mut input) in manifest.sandboxes.iter_mut().zip(payloads) {
+        let mut hasher = Sha256::new();
+        let mut copied = 0_u64;
         loop {
             check_cancelled(cancellation)?;
             let count = input.read(&mut buffer)?;
             if count == 0 {
                 break;
             }
+            hasher.update(&buffer[..count]);
             temporary.write_all(&buffer[..count])?;
+            copied += count as u64;
         }
+        if copied != sandbox.payload_size {
+            return Err(BackupError::InvalidRequest(format!(
+                "The snapshot archive for {} changed while it was being exported.",
+                sandbox.name
+            )));
+        }
+        sandbox.payload_sha256 = format!("sha256:{:x}", hasher.finalize());
     }
+    let final_manifest = serde_json::to_vec(manifest)?;
+    if final_manifest.len() != manifest_bytes.len() {
+        return Err(BackupError::InvalidRequest(
+            "Backup metadata changed size while it was being written.".into(),
+        ));
+    }
+    temporary.as_file_mut().seek(SeekFrom::Start(manifest_offset))?;
+    temporary.write_all(&final_manifest)?;
     temporary.as_file().sync_all()?;
     // Verify all written bytes before the atomic commit. Cancellation cannot turn
     // an already-published, verified archive into a reported cancellation.
@@ -1989,7 +2061,7 @@ fn write_immutable_package(
         temporary.path(),
         DEFAULT_MAX_ARCHIVE_BYTES,
         cancellation,
-        None,
+        PayloadMode::VerifyAll,
     )?;
     let size_bytes = verified.size_bytes;
     check_cancelled(cancellation)?;
@@ -2036,14 +2108,12 @@ fn open_regular_file(path: &Path) -> Result<(File, fs::Metadata), OpenRegularErr
     Ok((file, metadata))
 }
 
-fn hash_regular_file(
-    path: &Path,
-    max_bytes: u64,
-    cancellation: &Cancellation,
-) -> Result<(u64, String), BackupError> {
+/// Open a payload the runtime wrote and return it with its size; it is
+/// hashed later while being copied into the archive.
+fn open_payload(path: &Path, max_bytes: u64) -> Result<(File, u64), BackupError> {
     let not_regular =
         || BackupError::InvalidArchive("the runtime did not create a regular snapshot archive".into());
-    let (mut file, metadata) = open_regular_file(path).map_err(|error| match error {
+    let (file, metadata) = open_regular_file(path).map_err(|error| match error {
         OpenRegularError::NotRegular => not_regular(),
         OpenRegularError::Io(error) => BackupError::Io(error),
     })?;
@@ -2055,17 +2125,7 @@ fn hash_regular_file(
             "the snapshot archive exceeds the configured safety limit".into(),
         ));
     }
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 128 * 1024];
-    loop {
-        check_cancelled(cancellation)?;
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-    Ok((metadata.len(), format!("sha256:{:x}", hasher.finalize())))
+    Ok((file, metadata.len()))
 }
 
 fn read_u32(reader: &mut impl Read) -> Result<u32, BackupError> {
@@ -2653,7 +2713,7 @@ mod tests {
             &destination,
             DEFAULT_MAX_ARCHIVE_BYTES,
             &Cancellation::default(),
-            None,
+            PayloadMode::VerifyAll,
         )
         .unwrap();
         package.manifest.runtime.guest_architecture = if std::env::consts::ARCH == "aarch64" {
@@ -3319,6 +3379,128 @@ mod tests {
         service.discard_import_group(&new_import_group()).unwrap();
         let calls = service.runner.calls.lock().unwrap();
         assert!(calls.iter().all(|args| args.get(1).is_some_and(|arg| arg == "list")));
+    }
+
+    fn create_two(service: &BackupService<FakeRunner>, destination: PathBuf) {
+        let source = |name: &str| BackupSource {
+            name: name.into(),
+            snapshot_group: name.into(),
+            was_running: false,
+            runtime_config: managed_config(name),
+            machine_config: machine_config(name),
+            existing_member: None,
+        };
+        service
+            .create_backup(
+                BackupRequest {
+                    destination,
+                    sources: vec![source("dev"), source("second")],
+                },
+                &Cancellation::default(),
+            )
+            .unwrap();
+    }
+
+    /// Byte offset of the first payload in a written archive.
+    fn first_payload_offset(bytes: &[u8]) -> usize {
+        let manifest_len = u64::from_be_bytes(bytes[20..28].try_into().unwrap()) as usize;
+        MAGIC.len() + 4 + 8 + manifest_len
+    }
+
+    #[test]
+    fn import_extracts_and_verifies_only_the_selected_sandbox() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("two.silo-backup");
+        let service = service(&temp, FakeRunner::default());
+        create_two(&service, archive.clone());
+        // Damage the first sandbox's payload; the review inspection sees it,
+        // but importing the second sandbox never reads that payload.
+        let mut bytes = fs::read(&archive).unwrap();
+        let offset = first_payload_offset(&bytes);
+        bytes[offset + 5] ^= 0xff;
+        fs::write(&archive, &bytes).unwrap();
+        assert!(matches!(
+            service.inspect_archive(&archive, &Cancellation::default()),
+            Err(BackupError::InvalidArchive(_))
+        ));
+        let restored = service
+            .prepare_restore(
+                RestoreRequest {
+                    archive,
+                    source_name: Some("second".into()),
+                    new_name: "second-copy".into(),
+                },
+                &Cancellation::default(),
+            )
+            .unwrap();
+        assert_eq!(restored.source_name, "second");
+        let staged = fs::read_dir(restored._stage.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(staged, ["snapshot-1.tar.zst"]);
+    }
+
+    #[test]
+    fn export_hashes_while_copying_and_refuses_a_payload_that_changed_size() {
+        let temp = tempfile::tempdir().unwrap();
+        let payload_path = temp.path().join("payload.msb");
+        fs::write(&payload_path, b"\x28\xb5\x2f\xfdpayload").unwrap();
+        let sandbox = |size: u64| PackageSandbox {
+            name: "dev".into(),
+            runtime_config: managed_config("dev"),
+            machine_config: machine_config("dev"),
+            payload_size: size,
+            payload_sha256: pending_digest(),
+            volumes: Vec::new(),
+        };
+        let manifest = |size: u64| PackageManifest {
+            schema_version: FORMAT_VERSION,
+            created_at_ms: 1,
+            runtime: RuntimeManifest {
+                name: "microsandbox".into(),
+                version: "0.7.2".into(),
+                snapshot_format: "msb-snapshot-tar-zstd-v0.7".into(),
+                guest_architecture: std::env::consts::ARCH.into(),
+            },
+            sandboxes: vec![sandbox(size)],
+        };
+        let destination = temp.path().join("out.silo-backup");
+        let mut stale = manifest(4);
+        let error = write_immutable_package(
+            &destination,
+            &mut stale,
+            vec![File::open(&payload_path).unwrap()],
+            &Cancellation::default(),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("changed while it was being exported"), "{error}");
+        assert!(!destination.exists());
+        assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+            !entry.unwrap().file_name().to_string_lossy().starts_with(".silo-backup-")
+        }));
+
+        let length = fs::metadata(&payload_path).unwrap().len();
+        let mut current = manifest(length);
+        write_immutable_package(
+            &destination,
+            &mut current,
+            vec![File::open(&payload_path).unwrap()],
+            &Cancellation::default(),
+            None,
+        )
+        .unwrap();
+        let expected = format!("sha256:{:x}", Sha256::digest(fs::read(&payload_path).unwrap()));
+        assert_eq!(current.sandboxes[0].payload_sha256, expected);
+        let written = read_and_verify_package(
+            &destination,
+            DEFAULT_MAX_ARCHIVE_BYTES,
+            &Cancellation::default(),
+            PayloadMode::VerifyAll,
+        )
+        .unwrap();
+        assert_eq!(written.manifest.sandboxes[0].payload_sha256, expected);
     }
 
     #[test]
