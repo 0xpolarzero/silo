@@ -45,6 +45,8 @@ export interface SandboxDetailEditing {
 }
 
 export interface SandboxDetailControls {
+  /** Whether the page holding this sandbox is visible; background refresh stops while it is not. Default true. */
+  pageActive?: boolean
   onBack: () => void
   activeTab: SandboxDetailTab
   onSelectTab: (tab: SandboxDetailTab) => void
@@ -442,7 +444,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="pt-4">
-            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview"} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
+            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview" && controls.pageActive !== false} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
               <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
             </TabsContent>}

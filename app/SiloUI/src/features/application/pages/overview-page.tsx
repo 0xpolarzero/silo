@@ -526,6 +526,7 @@ export function OverviewPage({ active = true, readOnly = false,
       isMachineRunning,
     }
     return {
+      pageActive: active,
       editing,
       onDuplicate: readOnly ? undefined : () => requestDuplicate(machine.id),
       onNavigate,
