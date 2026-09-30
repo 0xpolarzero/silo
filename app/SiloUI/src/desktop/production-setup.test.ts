@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { OnboardingCompletionRequest } from "@/features/onboarding/model/onboarding-source"
 import type { SiloProgressEvent } from "@/contracts/silo"
 import { createProductionSource, type ProductionBridge } from "./production-source"
+
+afterEach(() => { vi.useRealTimers() })
 
 const application = applicationSourceForScenario("running")
 const request: OnboardingCompletionRequest = {
@@ -229,6 +231,7 @@ describe("production setup queue", () => {
   })
 
   it.each(["succeeded", "failed"] as const)("waits for asynchronous GitHub policy and handles %s acknowledgment", async (status) => {
+    vi.useFakeTimers()
     const { store, github } = await setup()
     const selected = structuredClone(request)
     selected.github.connectionState = "connected"
@@ -238,7 +241,10 @@ describe("production setup queue", () => {
     const markComplete = vi.fn(async () => {})
     const result = store.finishSetup(selected, markComplete)
     const outcome = status === "failed" ? expect(result).rejects.toThrow("Policy rejected") : expect(result).resolves.toBeUndefined()
-    await vi.waitFor(() => expect(github).toHaveBeenCalledTimes(2), { timeout: 1500 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(github).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(github).toHaveBeenCalledTimes(2)
     expect(markComplete).not.toHaveBeenCalled()
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubRun")?.status).toBe("succeeded")
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubVerify")?.status).toBe("running")
@@ -269,13 +275,18 @@ describe("production setup queue", () => {
   })
 
   it("does not complete setup using acknowledgment for a replacement GitHub policy", async () => {
+    vi.useFakeTimers()
     const { store, github } = await setup()
     const selected = structuredClone(request)
     selected.github.connectionState = "connected"
     const workspace = selected.github.workspaces[0].workspace
     github.mockResolvedValueOnce({ ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }).mockResolvedValueOnce({ ...application.github, policyRevision: 8, workspaceOperations: [{ workspace, status: "succeeded", message: "Applied other settings" }] })
     const markComplete = vi.fn(async () => {})
-    await expect(store.finishSetup(selected, markComplete)).rejects.toThrow("GitHub settings changed during setup")
+    const outcome = expect(store.finishSetup(selected, markComplete)).rejects.toThrow("GitHub settings changed during setup")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(github).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(500)
+    await outcome
     expect(markComplete).not.toHaveBeenCalled()
     store.dispose()
   })

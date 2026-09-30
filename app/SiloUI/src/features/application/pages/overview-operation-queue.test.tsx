@@ -1,5 +1,6 @@
 import { act, render, screen, within } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setupFakeTimerUser } from "@/test/fake-timer-user"
 import { toast } from "sonner"
 
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -37,9 +38,11 @@ it("shows what a waiting sandbox operation is waiting for, near that sandbox", (
 })
 
 describe("operation-queue toast", () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "requestAnimationFrame", "cancelAnimationFrame"] }) })
   it("shows a title and elapsed time for a running operation, and lists waiting entries", async () => {
     render(<ToastHarness queue={fixtureOperationQueue()} />)
-    expect(await screen.findByText("Backing up sandboxes")).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Backing up sandboxes")).toBeInTheDocument()
     expect(screen.getByText("3m 0s")).toBeInTheDocument()
     // The waiting restart has its own lifecycle notification, so the queue toast omits it.
     expect(screen.queryByText(/Restarting dev/)).not.toBeInTheDocument()
@@ -51,7 +54,8 @@ describe("operation-queue toast", () => {
       waiting: [entry({ id: 2, label: "Saving Git identities" }), entry({ id: 3, label: "Restarting dev", kind: "lifecycle", vmId: "dev" })],
     }
     render(<ToastHarness queue={queue} />)
-    expect(await screen.findByText(/Saving Git identities — Waiting for Backing up sandboxes…/)).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText(/Saving Git identities — Waiting for Backing up sandboxes…/)).toBeInTheDocument()
   })
 
   it.each([
@@ -62,7 +66,8 @@ describe("operation-queue toast", () => {
   ] as const)("does not show a queue toast for %s (%s), which has its own notification", async (label, kind) => {
     const queue: OperationQueue = { running: [entry({ id: 1, label, kind, vmId: "dev", cancellable: true, sinceMs: Date.now() - 60_000 })], waiting: [] }
     render(<ToastHarness queue={queue} onCancel={vi.fn()} />)
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 700)) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.queryByText(label)).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
   })
@@ -73,7 +78,8 @@ describe("operation-queue toast", () => {
       waiting: [],
     }
     render(<ToastHarness queue={queue} />)
-    expect(await screen.findByText("2 operations in progress")).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("2 operations in progress")).toBeInTheDocument()
   })
 
   it("does not flash a toast for an operation that finishes within the debounce window", async () => {
@@ -92,9 +98,13 @@ describe("operation-queue toast", () => {
   it("shows the toast once an operation outlives the debounce window", async () => {
     const queue: OperationQueue = { running: [entry({ id: 1, label: "Saving Git identities", sinceMs: Date.now() })], waiting: [] }
     render(<ToastHarness queue={queue} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     // Not shown immediately (debounced), but it appears once the window elapses.
     expect(screen.queryByText("Saving Git identities")).not.toBeInTheDocument()
-    expect(await screen.findByText("Saving Git identities", {}, { timeout: 2000 })).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    // React publishes the toast after the debounce callback; Sonner queues its DOM update.
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Saving Git identities")).toBeInTheDocument()
   })
 
   it("flags an operation past its expected duration as taking longer than expected", async () => {
@@ -103,7 +113,8 @@ describe("operation-queue toast", () => {
       waiting: [],
     }
     render(<ToastHarness queue={queue} />)
-    expect(await screen.findByText("Taking longer than expected")).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Taking longer than expected")).toBeInTheDocument()
   })
 
   it("excludes export and import entries, which have their own transfer toast", async () => {
@@ -112,33 +123,36 @@ describe("operation-queue toast", () => {
       waiting: [entry({ id: 3, label: "Importing sandbox", kind: "import" })],
     }
     render(<ToastHarness queue={queue} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     // Only the non-transfer entry drives the toast title.
-    expect(await screen.findByText("Applying the sandbox configuration")).toBeInTheDocument()
+    expect(screen.getByText("Applying the sandbox configuration")).toBeInTheDocument()
     expect(screen.queryByText("Exporting sandbox")).not.toBeInTheDocument()
     expect(screen.queryByText(/Importing sandbox/)).not.toBeInTheDocument()
   })
 
   it("offers Cancel for a cancellable running operation and invokes onCancel", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup()
+    const user = setupFakeTimerUser()
     const onCancel = vi.fn()
     const queue: OperationQueue = {
       running: [entry({ id: 7, label: "Applying the sandbox configuration", vmId: "dev", cancellable: true })],
       waiting: [],
     }
     render(<ToastHarness queue={queue} onCancel={onCancel} />)
-    await user.click(await screen.findByRole("button", { name: "Cancel" }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(onCancel).toHaveBeenCalledWith(7)
   })
 
   it("names the operation Cancel stops when several are in progress", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup()
+    const user = setupFakeTimerUser()
     const onCancel = vi.fn()
     const queue: OperationQueue = {
       running: [entry({ id: 1, label: "Updating" }), entry({ id: 9, label: "Backing up sandboxes", cancellable: true })],
       waiting: [],
     }
     render(<ToastHarness queue={queue} onCancel={onCancel} />)
-    expect(await screen.findByText("2 operations in progress")).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("2 operations in progress")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Cancel “Backing up sandboxes”" }))
     expect(onCancel).toHaveBeenCalledWith(9)
@@ -147,16 +161,23 @@ describe("operation-queue toast", () => {
   it("does not offer Cancel for a non-cancellable running operation", async () => {
     const queue: OperationQueue = { running: [entry({ id: 8, label: "Applying the sandbox configuration", vmId: "dev", cancellable: false })], waiting: [] }
     render(<ToastHarness queue={queue} onCancel={vi.fn()} />)
-    expect(await screen.findByText("Applying the sandbox configuration")).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Applying the sandbox configuration")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
   })
 
   it("dismisses the toast when the queue empties", async () => {
     const queue: OperationQueue = { running: [entry({ id: 1, label: "Backing up sandboxes" })], waiting: [] }
     const { rerender } = render(<ToastHarness queue={queue} />)
-    expect(await screen.findByText("Backing up sandboxes")).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Backing up sandboxes")).toBeInTheDocument()
     rerender(<ToastHarness queue={{ running: [], waiting: [] }} />)
-    await vi.waitFor(() => expect(screen.queryByText("Backing up sandboxes")).not.toBeInTheDocument())
+    // Sonner dispatches dismissal on one frame and updates the DOM on the next.
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { vi.advanceTimersToNextFrame() })
+    await act(async () => { vi.advanceTimersToNextFrame() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+    expect(screen.queryByText("Backing up sandboxes")).not.toBeInTheDocument()
   })
 
   it("describes a wait held up only by hidden background maintenance generically", async () => {
@@ -165,6 +186,7 @@ describe("operation-queue toast", () => {
       waiting: [entry({ id: 1, label: "Saving Git identities", vmId: "dev", blockedByHidden: true, sinceMs: Date.now() - 60_000 })],
     }
     render(<ToastHarness queue={queue} />)
-    expect(await screen.findByText(/Saving Git identities — Waiting for background maintenance…/)).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText(/Saving Git identities — Waiting for background maintenance…/)).toBeInTheDocument()
   })
 })

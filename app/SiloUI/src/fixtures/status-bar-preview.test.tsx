@@ -1,6 +1,8 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
+
+import { setupFakeTimerUser } from "@/test/fake-timer-user"
 
 import { FixtureApp } from "./fixture-app"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -8,7 +10,10 @@ import { StatusBarPreview } from "@/fixtures/status-bar-preview"
 import { statusBarFixtureModeFromSearch, statusBarSourceForFixture } from "@/fixtures/status-bar-scenarios"
 
 const originalURL = window.location.href
-afterEach(() => window.history.replaceState(null, "", originalURL))
+afterEach(() => {
+  window.history.replaceState(null, "", originalURL)
+  vi.useRealTimers()
+})
 
 /** Every push is confirmed first; the fixture push starts once the confirmation settles. */
 async function confirmPush(name: string) {
@@ -33,25 +38,29 @@ describe("status bar preview", () => {
   })
 
   it("simulates lifecycle actions and hands the resulting snapshot to the application", async () => {
-    const user = userEvent.setup()
+    vi.useFakeTimers()
+    const user = setupFakeTimerUser()
     const source = applicationSourceForScenario("running")
     const onOpenSilo = vi.fn()
     render(<StatusBarPreview source={source} onOpenSilo={onOpenSilo} />)
 
     await user.click(screen.getByRole("button", { name: "Start playgrounds" }))
     expect(screen.getByRole("listitem", { name: "playgrounds" })).toHaveAttribute("aria-busy", "true")
-    expect(await within(screen.getByRole("listitem", { name: "playgrounds" })).findByText("Running", { exact: true })).toBeVisible()
+    await act(async () => { await vi.advanceTimersByTimeAsync(900) })
+    expect(within(screen.getByRole("listitem", { name: "playgrounds" })).getByText("Running", { exact: true })).toBeVisible()
     await user.click(screen.getByRole("button", { name: "Actions for playgrounds" }))
     await user.click(screen.getByRole("menuitem", { name: "Stop…" }))
     await user.click(screen.getByRole("button", { name: "Stop" }))
     expect(screen.getByText("Stopping playgrounds…")).toBeVisible()
-    expect(await within(screen.getByRole("listitem", { name: "playgrounds" })).findByText("Stopped", { exact: true })).toBeVisible()
+    await act(async () => { await vi.advanceTimersByTimeAsync(900) })
+    expect(within(screen.getByRole("listitem", { name: "playgrounds" })).getByText("Stopped", { exact: true })).toBeVisible()
 
     await user.click(screen.getByRole("button", { name: "Actions for dev" }))
     await user.click(screen.getByRole("menuitem", { name: "Restart…" }))
     await user.click(screen.getByRole("button", { name: "Restart" }))
     expect(screen.getByText("Restarting dev…")).toBeVisible()
-    await waitFor(() => expect(screen.getByRole("complementary", { name: "Preview feedback" })).toHaveTextContent("Preview: dev restarted."))
+    await act(async () => { await vi.advanceTimersByTimeAsync(900) })
+    expect(screen.getByRole("complementary", { name: "Preview feedback" })).toHaveTextContent("Preview: dev restarted.")
     await user.click(screen.getByRole("button", { name: "Open Silo" }))
     expect(onOpenSilo).toHaveBeenCalledWith(expect.objectContaining({
       workspaces: expect.arrayContaining([
@@ -73,10 +82,10 @@ describe("status bar preview", () => {
       expect(screen.queryByRole("button", { name: "Push 2 commits for acme/silo in dev" })).not.toBeInTheDocument()
       expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
 
-      act(() => vi.advanceTimersByTime(900))
+      await act(async () => { await vi.advanceTimersByTimeAsync(900) })
       expect(screen.getByText("Pushed 2 commits.")).toBeVisible()
       expect(screen.queryByText("Pushing 2 commits…")).not.toBeInTheDocument()
-      act(() => vi.advanceTimersByTime(4_000))
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
       expect(screen.queryByText("Pushed 2 commits.")).not.toBeInTheDocument()
       expect(screen.queryByRole("button", { name: "Push 2 commits for acme/silo in dev" })).not.toBeInTheDocument()
 
@@ -133,7 +142,7 @@ describe("status bar preview", () => {
         { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "succeeded" },
         { workspace: "dev", repositoryPath: "acme/design-system", commitCount: 3, status: "succeeded" },
       ])
-      act(() => vi.advanceTimersByTime(900))
+      await act(async () => { await vi.advanceTimersByTimeAsync(900) })
       expect(onOpenSilo).toHaveBeenCalledTimes(1)
     } finally {
       preview.unmount()
@@ -151,7 +160,7 @@ describe("status bar preview", () => {
       await confirmPush("Retry push for acme/silo")
       expect(screen.queryByText(/Push failed because the remote branch changed\./)).not.toBeInTheDocument()
       expect(screen.getByText("Pushing 2 commits…")).toBeVisible()
-      act(() => vi.advanceTimersByTime(900))
+      await act(async () => { await vi.advanceTimersByTimeAsync(900) })
       expect(screen.getByText("Pushed 2 commits.")).toBeVisible()
       fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
       expect(onOpenSilo.mock.calls[0][0].repositoryPushOperations).toEqual([

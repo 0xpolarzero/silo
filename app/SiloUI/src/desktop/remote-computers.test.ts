@@ -5,7 +5,10 @@ import { createProductionSource, type ProductionBridge } from "./production-sour
 
 import { assertNativeBridgeMocksHandled, nativeBridgeMock } from "@/test/native-bridge-mock"
 
-afterEach(assertNativeBridgeMocksHandled)
+afterEach(() => {
+  assertNativeBridgeMocksHandled()
+  vi.useRealTimers()
+})
 
 const pushTarget = { repository: "owner/repo", branch: "main", commit: "a".repeat(40) }
 
@@ -75,6 +78,7 @@ describe("remote computer ownership", () => {
 })
 
 it("keeps local state fresh after remote lifecycle failure and launches editors on the controlling computer", async () => {
+  vi.useFakeTimers()
   const local = applicationSourceForScenario("running")
   const remote = structuredClone(local)
   remote.workspaces = [remote.workspaces[0]]
@@ -97,7 +101,7 @@ it("keeps local state fresh after remote lifecycle failure and launches editors 
     await store.initialize()
     store.applicationActions.openEditor(target, "/workspace/project")
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_action", { action: "open-editor", name: target, path: "/workspace/project" }))
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await vi.advanceTimersByTimeAsync(0)
     store.applicationActions.stopWorkspace(target)
     await vi.waitFor(() => expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)?.freshness).toBe("stale"))
     expect(store.getSnapshot().source!.workspaces.filter(workspace => !workspace.computer).every(workspace => workspace.freshness === "fresh")).toBe(true)
@@ -315,6 +319,7 @@ it.each(["succeeded", "failed"] as const)("keeps a remote push loading across re
 })
 
 it.each([true, false])("reconciles a lost start reply without another push (host accepted: %s)", async accepted => {
+  vi.useFakeTimers()
   const local = applicationSourceForScenario("running")
   const remote = structuredClone(local)
   remote.workspaces = [remote.workspaces[0]]
@@ -348,7 +353,9 @@ it.each([true, false])("reconciles a lost start reply without another push (host
     await vi.waitFor(() => expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual(expect.objectContaining({ status: "pushing", message: expect.stringContaining("Waiting for push status") })))
     store.applicationActions.pushRepository(workspace, repositoryPath, pushTarget)
     expect(attempts).toBe(1)
-    await vi.waitFor(() => expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual({ workspace, repositoryPath, status: "succeeded", commitCount: 2 }), { timeout: 4_000 })
+    // A lost reply schedules the first retry after the 4 s failure backoff.
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual({ workspace, repositoryPath, status: "succeeded", commitCount: 2 })
     expect(attempts).toBe(accepted ? 1 : 2)
     const calls = invoke.mock.calls as unknown as Array<[string, { operationId?: string }]>
     const requestIds = calls.filter(([command]) => command === "start_repository_push" || command === "repository_push_status").map(([, args]) => args.operationId)
