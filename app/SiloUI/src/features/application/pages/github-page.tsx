@@ -348,7 +348,7 @@ export function GitHubPage({
 
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
-      <p className="mb-2 text-[11px] text-muted-foreground">GitHub access for VMs on this computer.</p>
+      <p className="mb-2 text-[11px] text-muted-foreground">GitHub access for sandboxes on this computer.</p>
       <GitHubAccessEditor
         compactConnection
         workspaces={source.workspaces.filter(w => !w.computer).map(({ machine }) => ({ name: machine.name }))}
@@ -375,8 +375,8 @@ export function GitHubPage({
         onResetWorkspaceIdentity={resetIdentity}
         connectedTitle={`Connected as @${source.github.account ?? "unknown"}`}
         connectedDetail={accessEnabled
-          ? "Repository credentials are scoped to each workspace."
-          : "GitHub access is off for every VM, including VMs that use a personal token."}
+          ? "Repository credentials are scoped to each sandbox."
+          : "GitHub access is off for every sandbox, including sandboxes that use a personal token."}
         connectedActions={connectedActions}
         notice={catalogNotice}
         renderWorkspaceActions={({ name }) => {
