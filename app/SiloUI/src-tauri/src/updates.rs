@@ -601,19 +601,10 @@ pub(crate) async fn install_update(
     }
 }
 #[tauri::command]
-pub(crate) async fn open_update_release() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let opener = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        std::process::Command::new(opener)
-            .arg(RELEASE_URL)
-            .spawn()
-            .map(|_| ())
-            .map_err(|_| "The browser could not be opened.".to_string())
-    })
+pub(crate) async fn open_update_release(app: tauri::AppHandle) -> Result<(), String> {
+    // The shared browser opener honours the browser setting and leaves no
+    // unreaped child process (F-25).
+    tauri::async_runtime::spawn_blocking(move || crate::applications::open_browser(&app, RELEASE_URL))
     .await
     .map_err(|_| "The browser could not be opened.".to_string())?
 }
