@@ -1886,16 +1886,12 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
         // sandboxes; work on one VM settles only that VM's row, and hidden housekeeping
         // never affects the read.
         let mut source = read_application_snapshot(&ProcessRunner, &paths, &OPERATIONS)?;
-        // Opportunistic log cleanup; skip when any operation is active or waiting.
-        if let Ok(_guard) = OPERATIONS.try_computer_hidden("Cleaning up expired logs") {
-            for workspace in &mut source.workspaces {
-                if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Stopped) && !workspace.settling
-                    && inspect_workspace(&ProcessRunner, &paths, workspace.machine.name()).is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status))
-                    && crate::log_retention::enforce(&paths.home.join("sandboxes").join(workspace.machine.name()).join("logs")).is_err()
-                {
-                    workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message: "Expired logs could not be cleaned up.".into() });
-                }
-            }
+        // Expired-log cleanup runs in the background, at most hourly per stopped VM, so a
+        // state read never waits for it or re-inspects every stopped VM.
+        let due = plan_log_cleanup(&paths, &mut source.workspaces, Instant::now());
+        if !due.is_empty() {
+            let cleanup_paths = paths.clone();
+            thread::spawn(move || clean_expired_logs(&ProcessRunner, &cleanup_paths, &OPERATIONS, &due));
         }
         enrich_application_state(&app, &paths, &mut source, Repositories::Discover { refresh: refresh_repositories.unwrap_or(false) });
         remember_settled(&paths, &source.workspaces);
@@ -1903,6 +1899,108 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
     })
     .await
     .map_err(|error| format!("Sandbox state worker failed: {error}"))?
+}
+
+/// Expired logs of a stopped VM are cleaned at most this often, off the state-read path.
+const LOG_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Default)]
+struct LogCleanup {
+    /// When each logs directory was last cleaned.
+    cleaned: HashMap<PathBuf, Instant>,
+    /// Logs directories whose last cleanup failed; their rows carry a warning.
+    failed: HashSet<PathBuf>,
+    /// A background cleanup pass is in progress.
+    running: bool,
+}
+
+static LOG_CLEANUP: OnceLock<Mutex<LogCleanup>> = OnceLock::new();
+
+fn log_cleanup() -> std::sync::MutexGuard<'static, LogCleanup> {
+    // Bookkeeping only: a panic while holding it at worst repeats a cleanup.
+    LOG_CLEANUP
+        .get_or_init(|| Mutex::new(LogCleanup::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn vm_logs(paths: &RuntimePaths, name: &str) -> PathBuf {
+    paths.home.join("sandboxes").join(name).join("logs")
+}
+
+/// Flag rows whose last log cleanup failed, and return the fresh, stopped VMs whose
+/// logs are due for cleanup (at most hourly each). Returning names starts a pass, so
+/// only one runs at a time; `clean_expired_logs` ends it.
+fn plan_log_cleanup(paths: &RuntimePaths, workspaces: &mut [ApplicationWorkspace], now: Instant) -> Vec<String> {
+    let mut state = log_cleanup();
+    for workspace in workspaces.iter_mut().filter(|workspace| workspace.machine.is_vm()) {
+        if workspace.attention.is_none() && state.failed.contains(&vm_logs(paths, workspace.machine.name())) {
+            workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message: "Expired logs could not be cleaned up.".into() });
+        }
+    }
+    if state.running {
+        return Vec::new();
+    }
+    let due: Vec<String> = workspaces
+        .iter()
+        .filter(|workspace| {
+            workspace.machine.is_vm()
+                && matches!(workspace.state, WorkspaceState::Stopped)
+                && !workspace.settling
+                && workspace.freshness == Freshness::Fresh
+                && state
+                    .cleaned
+                    .get(&vm_logs(paths, workspace.machine.name()))
+                    .is_none_or(|at| now.saturating_duration_since(*at) >= LOG_CLEANUP_INTERVAL)
+        })
+        .map(|workspace| workspace.machine.name().to_owned())
+        .collect();
+    state.running = !due.is_empty();
+    due
+}
+
+/// One background cleanup pass. It runs only while nothing else holds the gate (hidden,
+/// so it never shows in the queue), re-checks that each VM is still stopped, and records
+/// the outcome; a busy gate postpones the pass to a later read.
+fn clean_expired_logs(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    gate: &operation_gate::OperationGate,
+    names: &[String],
+) {
+    if let Ok(_guard) = gate.try_computer_hidden("Cleaning up expired logs") {
+        for name in names {
+            if !inspect_workspace(runner, paths, name).is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status)) {
+                continue;
+            }
+            let logs = vm_logs(paths, name);
+            let result = crate::log_retention::enforce(&logs);
+            let mut state = log_cleanup();
+            state.cleaned.insert(logs.clone(), Instant::now());
+            if result.is_err() {
+                state.failed.insert(logs);
+            } else {
+                state.failed.remove(&logs);
+            }
+        }
+    }
+    log_cleanup().running = false;
+}
+
+/// Run `work` for `key` one caller at a time, so concurrent readers (for example two
+/// windows refreshing together) share host_push's short-lived repository cache instead
+/// of each scanning the same guest.
+fn single_flight<T>(key: String, work: impl FnOnce() -> T) -> T {
+    static TURNS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let turn = TURNS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(key)
+        .or_default()
+        .clone();
+    let _turn = turn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    work()
 }
 
 /// How enrichment fills running VMs' repositories.
@@ -1932,7 +2030,9 @@ fn enrich_application_state(
                 if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running)
                     && !workspace.settling && workspace.freshness == Freshness::Fresh
                 {
-                    match crate::host_push::discover(paths, workspace.machine.name(), refresh) {
+                    let name = workspace.machine.name();
+                    let key = format!("{}:{name}", paths.home.display());
+                    match single_flight(key, || crate::host_push::discover(paths, name, refresh)) {
                         Ok(repositories) => workspace.repositories = repositories,
                         Err(message) => {
                             if workspace.attention.is_none() {
@@ -6231,6 +6331,81 @@ esac
         let health = HealthRunner { inner: &inner, budget: HEALTH_CALL_BUDGET };
         assert!(matches!(health.run(&paths, &["list".into()], READ_TIMEOUT), Err(RuntimeError::Unavailable(_))));
         assert!(inner.calls.lock().unwrap().is_empty());
+    }
+
+    fn stopped_dev(paths: &RuntimePaths) -> Vec<ApplicationWorkspace> {
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let runner = StubRunner::successful_json(vec![json!([{"name": "dev"}]), inspect(paths, "Stopped")]);
+        read_application_state_with(&runner, paths).unwrap().workspaces
+    }
+
+    #[test]
+    fn expired_log_cleanup_runs_off_the_read_path_at_most_hourly_per_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut workspaces = stopped_dev(&paths);
+        fs::create_dir_all(vm_logs(&paths, "dev")).unwrap();
+        let now = Instant::now();
+        let due = plan_log_cleanup(&paths, &mut workspaces, now);
+        assert_eq!(due, vec!["dev".to_string()]);
+        assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty(), "one pass at a time");
+        let gate = operation_gate::OperationGate::new();
+        let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped")]);
+        clean_expired_logs(&runner, &paths, &gate, &due);
+        assert_eq!(runner.calls.lock().unwrap().len(), 1, "the pass re-checks the VM is stopped");
+        assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty(), "cleaned within the hour");
+        assert_eq!(plan_log_cleanup(&paths, &mut workspaces, Instant::now() + LOG_CLEANUP_INTERVAL), vec!["dev".to_string()]);
+        clean_expired_logs(&StubRunner::successful_json(vec![]), &paths, &gate, &[]);
+        assert!(workspaces[0].attention.is_none());
+        // Running, settling or stale rows are never cleaned from a read.
+        workspaces[0].settling = true;
+        assert!(plan_log_cleanup(&paths, &mut workspaces, Instant::now() + 2 * LOG_CLEANUP_INTERVAL).is_empty());
+    }
+
+    #[test]
+    fn a_busy_gate_postpones_log_cleanup_and_a_failure_flags_only_that_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut workspaces = stopped_dev(&paths);
+        // Logs that cannot be read as a directory make retention fail.
+        fs::create_dir_all(vm_logs(&paths, "dev").parent().unwrap()).unwrap();
+        fs::write(vm_logs(&paths, "dev"), b"not a directory").unwrap();
+        let now = Instant::now();
+        let gate = leaked_gate();
+        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm("other-id", "other", "Starting other").unwrap());
+        let due = plan_log_cleanup(&paths, &mut workspaces, now);
+        let idle = StubRunner::successful_json(vec![]);
+        clean_expired_logs(&idle, &paths, gate, &due);
+        assert!(idle.calls.lock().unwrap().is_empty(), "busy: nothing was inspected");
+        assert_eq!(plan_log_cleanup(&paths, &mut workspaces, now), due, "still due after a postponed pass");
+        drop(release);
+        holder.join().unwrap();
+        clean_expired_logs(&StubRunner::successful_json(vec![inspect(&paths, "Stopped")]), &paths, gate, &due);
+        assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty());
+        assert_eq!(workspaces[0].attention.as_ref().unwrap().message, "Expired logs could not be cleaned up.");
+    }
+
+    #[test]
+    fn repository_discovery_for_one_vm_runs_one_caller_at_a_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = Arc::new(AtomicUsize::new(0));
+        let overlapped = Arc::new(AtomicUsize::new(0));
+        let callers: Vec<_> = (0..4)
+            .map(|_| {
+                let (active, overlapped) = (active.clone(), overlapped.clone());
+                std::thread::spawn(move || {
+                    single_flight("single-flight-test:dev".into(), || {
+                        if active.fetch_add(1, Ordering::SeqCst) > 0 {
+                            overlapped.fetch_add(1, Ordering::SeqCst);
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    })
+                })
+            })
+            .collect();
+        callers.into_iter().for_each(|caller| caller.join().unwrap());
+        assert_eq!(overlapped.load(Ordering::SeqCst), 0);
     }
 
     #[test]
