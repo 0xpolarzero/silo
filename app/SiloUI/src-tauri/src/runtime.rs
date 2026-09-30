@@ -1019,31 +1019,41 @@ fn run_msb_process(
         report,
     })?;
     if let Some(workspace) = github_command_workspace(args).filter(|_| matches!(args[0].as_str(), "start" | "restart")) {
-        let verified = inspect_workspace(&ProcessRunner, paths, workspace).and_then(|inspected| {
-            if inspected.status != "Running" {
-                return Ok(());
+        record_start_refresh(paths, workspace, || {
+            let inspected = inspect_workspace(&ProcessRunner, paths, workspace)?;
+            if inspected.status == "Running" {
+                crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default())
+                    .map_err(|_| RuntimeError::Unavailable("Silo could not record the sandbox's applied secret revision.".into()))?;
             }
-            crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default())
-                .map_err(|error| RuntimeError::Unavailable(format!(
-                    "Silo could not record which secrets {workspace} started with, so it stopped the sandbox again. {error}"
-                )))
+            Ok(())
         });
-        if let Err(error) = verified {
-            // The VM booted, but Silo could not confirm its state or record the secret
-            // revision it booted with. Undo the boot (the stop is not cancellable) so no
-            // caller reports, or leaves behind, a running VM in an unverified state.
-            let stopped = without_cancellation(|| {
-                run_msb_process(paths, &["stop".into(), workspace.into()], STOP_TIMEOUT, &ignore_progress)
-            });
-            return Err(match stopped {
-                Ok(_) => error,
-                Err(cleanup) => RuntimeError::Unavailable(format!(
-                    "{error} Stopping the sandbox also failed: {cleanup}"
-                )),
-            });
-        }
     }
     Ok(output)
+}
+
+// Post-boot reads and host bookkeeping cannot undo a successful runtime start.
+// Keep a visible hint until a later start verifies both state and secret revision.
+type StartRefreshWarnings = HashMap<(PathBuf, String), String>;
+static START_REFRESH_WARNINGS: OnceLock<Mutex<StartRefreshWarnings>> = OnceLock::new();
+
+fn record_start_refresh(paths: &RuntimePaths, workspace: &str, refresh: impl FnOnce() -> Result<(), RuntimeError>) {
+    let result = refresh();
+    let mut warnings = START_REFRESH_WARNINGS.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (paths.home.clone(), workspace.to_owned());
+    match result {
+        Ok(()) => { warnings.remove(&key); }
+        Err(error) => {
+            warnings.insert(key, format!("The sandbox started, but Silo could not refresh its state or secret status. {}", safe_activity_error(&error)));
+        }
+    }
+}
+
+fn start_refresh_attention(paths: &RuntimePaths, workspace: &str) -> Option<WorkspaceAttention> {
+    START_REFRESH_WARNINGS.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(paths.home.clone(), workspace.to_owned())).cloned()
+        .map(|message| WorkspaceAttention { level: AttentionLevel::Warning, message })
 }
 
 fn ensure_runtime_files(paths: &RuntimePaths) -> Result<(), RuntimeError> {
@@ -3958,7 +3968,8 @@ fn vm_workspace(
         "Running" => (
             WorkspaceState::Running,
             "Running".into(),
-            configuration_attention(paths, &machine, inspected),
+            configuration_attention(paths, &machine, inspected)
+                .or_else(|| start_refresh_attention(paths, machine.name())),
         ),
         "Starting" => (WorkspaceState::Starting, "Starting".into(), None),
         "Draining" => (WorkspaceState::Starting, "Stopping".into(), None),
@@ -4329,7 +4340,7 @@ fn apply_whole_configuration_with_progress(
             forget_github_state(&paths.home, machine.name());
             crate::github::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             remove_machine_volumes(paths, machine)?;
-            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name());
+            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name())?;
             checkpoints::forget_removed(paths, machine.id())?;
             progress("workspace-removal", machine.name(), 1);
         }
@@ -6495,6 +6506,40 @@ esac
             assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
             assert!(runner.0.calls.lock().unwrap().iter().any(|args| args[0] == "exec"));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_start_survives_failed_post_boot_inspection() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test library").unwrap();
+        fs::write(&paths.executable, r#"#!/bin/sh
+printf '%s\n' "$1" >> "$MSB_HOME/commands"
+case "$1" in
+  inspect) exit 9 ;;
+  start) cat >/dev/null ;;
+esac
+"#).unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let output = run_msb_process(&paths, &["start".into(), "dev".into()], Duration::from_secs(5), &|_| {});
+        assert!(output.is_ok());
+        assert_eq!(fs::read_to_string(paths.home.join("commands")).unwrap(), "start\ninspect\n");
+        let row = vm_workspace(&paths, vm(), &serde_json::from_value(inspect(&paths, "Running")).unwrap());
+        assert_eq!(row.state, WorkspaceState::Running);
+        assert!(row.attention.unwrap().message.contains("sandbox started"));
+    }
+
+    #[test]
+    fn failed_start_bookkeeping_keeps_a_warning_until_verified() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        record_start_refresh(&paths, "dev", || Err(RuntimeError::Unavailable("Applied secret revision could not be saved.".into())));
+        assert!(start_refresh_attention(&paths, "dev").unwrap().message.contains("secret status"));
+        record_start_refresh(&paths, "dev", || Ok(()));
+        assert!(start_refresh_attention(&paths, "dev").is_none());
     }
 
     #[cfg(unix)]
