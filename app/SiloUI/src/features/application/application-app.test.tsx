@@ -62,7 +62,7 @@ describe("application", () => {
     await user.click(sections.getByRole("button", { name: "Logs" }))
     expect(screen.getByText(/Showing .* matching records/)).toBeVisible()
     expect(queryLogs).toHaveBeenCalledTimes(calls)
-    await user.click(sections.getByRole("button", { name: "Overview" }))
+    await user.click(sections.getByRole("button", { name: "All sandboxes" }))
     await user.click(sections.getByRole("button", { name: "Logs" }))
     expect(screen.getByText(/Showing .* matching records/)).toBeVisible()
     expect(queryLogs).toHaveBeenCalledTimes(calls)
@@ -144,7 +144,7 @@ describe("application", () => {
     await user.click(form.getByRole("button", { name: "Save" }))
     expect(actions.saveSecret).toHaveBeenCalledExactlyOnceWith({ operation: "edit", id: "package-token", name: "PACKAGE_TOKEN", workspaces: ["dev", "playgrounds", "personal"], allowedDomains: ["packages.example.test"] })
 
-    await user.click(within(appNavigation()).getByRole("button", { name: "Overview" }))
+    await user.click(within(appNavigation()).getByRole("button", { name: "All sandboxes" }))
     expect(screen.getByRole("note", { name: "Secret changes apply on next start for personal" })).toBeVisible()
     await user.click(within(appNavigation()).getByRole("button", { name: "Secrets" }))
     expect(screen.getByLabelText("Allowed domains for PACKAGE_TOKEN")).toHaveTextContent("packages.example.test")
@@ -165,7 +165,7 @@ describe("application", () => {
     expect(within(appNavigation()).getByRole("button", { name: "Activity" })).toHaveAttribute("aria-current", "page")
     expect(appNavigation()).toHaveAttribute("data-collapsed", "true")
     rerender(<ApplicationPreview source={source} initialRoute={{ workspace: "dev" }} />)
-    expect(within(appNavigation()).getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page")
+    expect(within(appNavigation()).getByRole("button", { name: "All sandboxes" })).toHaveAttribute("aria-current", "page")
   })
 
   it("opens a sandbox detail page and returns to the list with the app's Back control", async () => {
@@ -368,7 +368,7 @@ describe("application", () => {
     vi.useFakeTimers()
     const application = renderApplication()
     try {
-      const overviewNav = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "Overview" })
+      const overviewNav = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "All sandboxes" })
       fireEvent.click(screen.getByRole("button", { name: "Add" }))
       fireEvent.click(screen.getByRole("menuitem", { name: "Import sandbox…" }))
       await act(async () => { await Promise.resolve() })
@@ -405,11 +405,11 @@ describe("application", () => {
     expect(within(navigation).getByRole("button", { name: "Sandboxes" })).toHaveAttribute("aria-current", "page")
     const sandboxSections = within(navigation).getByRole("group", { name: "Sandbox sections" })
     expect(within(sandboxSections).getAllByRole("button")).toEqual(["Overview", "Files", "Logs", "Network", "Activity"].map(name => within(sandboxSections).getByRole("button", { name })))
-    expect(within(sandboxSections).getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page")
+    expect(within(sandboxSections).getByRole("button", { name: "All sandboxes" })).toHaveAttribute("aria-current", "page")
     expect(sandboxSections).toHaveClass("sidebar-subnav")
 
     const overview = within(appPanel("Sandboxes"))
-    expect(overview.queryByRole("heading", { name: "Overview" })).not.toBeInTheDocument()
+    expect(overview.queryByRole("heading", { name: "All sandboxes" })).not.toBeInTheDocument()
     expect(overview.queryByText(/Updated just now/)).not.toBeInTheDocument()
     expect(overview.getByRole("heading", { name: "Sandboxes" })).toBeVisible()
     expect(overview.getByText("3 sandboxes · 3 on this computer · 0 remote")).toBeVisible()
@@ -536,7 +536,7 @@ describe("application", () => {
     await user.selectOptions(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs limit" }), "4")
     await user.click(sandboxSections.getByRole("button", { name: "Files" }))
     expect(within(appPanel("Sandboxes")).queryByRole("combobox", { name: "CPUs limit" })).not.toBeInTheDocument()
-    await user.click(sandboxSections.getByRole("button", { name: "Overview" }))
+    await user.click(sandboxSections.getByRole("button", { name: "All sandboxes" }))
     expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs limit" })).toHaveValue("4")
   })
 

@@ -213,7 +213,7 @@ describe("status bar preview", () => {
     const repositories = within(screen.getByRole("list", { name: "Repositories" }))
     expect(repositories.getByText("silo")).toBeVisible()
     expect(repositories.queryByText("acme/platform-tools")).not.toBeInTheDocument()
-    await user.click(navigation.getByRole("button", { name: "Overview" }))
+    await user.click(navigation.getByRole("button", { name: "All sandboxes" }))
     const playgrounds = within(screen.getByRole("list", { name: "Configured sandboxes" })).getByText("playgrounds").closest("li")!
     expect(within(playgrounds).getByText("Running", { exact: true })).toBeVisible()
     expect(new URL(window.location.href).searchParams.get("view")).toBe("app")
