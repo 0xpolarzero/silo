@@ -55,7 +55,7 @@ it("navigates four steps with GitHub going directly to Review", async () => {
   expectHiddenPanelHeading("Creating your sandboxes")
   await user.click(screen.getByRole("button", { name: "Continue" }))
   expectHiddenPanelHeading("GitHub")
-  expect(screen.queryByRole("tab", { name: "Git" })).not.toBeInTheDocument()
+  expect(screen.getAllByRole("tab").map(tab => tab.getAttribute("aria-label"))).toEqual(["Dependencies", "Sandboxes", "GitHub", "Review"])
   await user.click(screen.getByRole("button", { name: "Continue" }))
   expectHiddenPanelHeading("Review setup")
   await user.click(screen.getByRole("tab", { name: /Review/ }))
