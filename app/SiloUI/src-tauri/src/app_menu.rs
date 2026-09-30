@@ -419,8 +419,13 @@ mod native {
 #[cfg(any(test, target_os = "linux"))]
 #[derive(Default)]
 struct MenuKeys {
-    alt_pending: bool,
+    /// Event time (ms) of the bare Left Alt press that may toggle the menu.
+    alt_pressed_at: Option<u32>,
 }
+/// A longer bare Alt hold is a modifier (for example a window-manager Alt+drag
+/// that never reached Silo), not a menu toggle.
+#[cfg(any(test, target_os = "linux"))]
+const ALT_TAP_LIMIT_MS: u32 = 500;
 #[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Copy)]
 enum MenuKey {
@@ -432,19 +437,26 @@ enum MenuKey {
 #[cfg(any(test, target_os = "linux"))]
 impl MenuKeys {
     fn cancel(&mut self) {
-        self.alt_pending = false;
+        self.alt_pressed_at = None;
     }
-    fn press(&mut self, key: MenuKey, modified: bool, visible: bool) -> Option<bool> {
-        self.alt_pending = matches!(key, MenuKey::LeftAlt) && !modified;
+    /// `time` is the key event's timestamp in milliseconds (wrapping).
+    fn press(&mut self, key: MenuKey, modified: bool, visible: bool, time: u32) -> Option<bool> {
+        self.alt_pressed_at = match key {
+            // Key repeat keeps the time of the first press.
+            MenuKey::LeftAlt if !modified => Some(self.alt_pressed_at.unwrap_or(time)),
+            _ => None,
+        };
         match key {
             MenuKey::F10 if !modified => Some(true),
             MenuKey::Escape if visible => Some(false),
             _ => None,
         }
     }
-    fn release(&mut self, key: MenuKey, visible: bool) -> Option<bool> {
-        let pending = std::mem::take(&mut self.alt_pending);
-        (matches!(key, MenuKey::LeftAlt) && pending).then_some(!visible)
+    fn release(&mut self, key: MenuKey, visible: bool, time: u32) -> Option<bool> {
+        let pressed = self.alt_pressed_at.take();
+        (matches!(key, MenuKey::LeftAlt)
+            && pressed.is_some_and(|pressed| time.wrapping_sub(pressed) <= ALT_TAP_LIMIT_MS))
+        .then_some(!visible)
     }
 }
 
@@ -467,33 +479,46 @@ mod tests {
     #[test]
     fn bare_alt_toggles_only_after_release_and_f10_focuses() {
         let mut keys = MenuKeys::default();
-        assert_eq!(keys.press(MenuKey::LeftAlt, false, false), None);
-        assert_eq!(keys.release(MenuKey::LeftAlt, false), Some(true));
-        assert_eq!(keys.press(MenuKey::LeftAlt, false, true), None);
-        assert_eq!(keys.release(MenuKey::LeftAlt, true), Some(false));
-        assert_eq!(keys.press(MenuKey::F10, false, false), Some(true));
-        assert_eq!(keys.press(MenuKey::Escape, false, true), Some(false));
-        assert_eq!(keys.press(MenuKey::Escape, false, false), None);
+        assert_eq!(keys.press(MenuKey::LeftAlt, false, false, 1_000), None);
+        assert_eq!(keys.release(MenuKey::LeftAlt, false, 1_100), Some(true));
+        assert_eq!(keys.press(MenuKey::LeftAlt, false, true, 2_000), None);
+        assert_eq!(keys.release(MenuKey::LeftAlt, true, 2_050), Some(false));
+        assert_eq!(keys.press(MenuKey::F10, false, false, 3_000), Some(true));
+        assert_eq!(keys.press(MenuKey::Escape, false, true, 3_100), Some(false));
+        assert_eq!(keys.press(MenuKey::Escape, false, false, 3_200), None);
     }
     #[test]
     fn altgr_ctrl_alt_chords_and_shift_f10_do_not_reveal_menu() {
         let mut keys = MenuKeys::default();
         // AltGr maps to Other; modifier+Alt never arms the bare-Alt gesture.
         for key in [MenuKey::Other, MenuKey::LeftAlt] {
-            assert_eq!(keys.press(key, true, false), None);
-            assert_eq!(keys.release(key, false), None);
+            assert_eq!(keys.press(key, true, false, 0), None);
+            assert_eq!(keys.release(key, false, 10), None);
         }
-        keys.press(MenuKey::LeftAlt, false, false);
-        keys.press(MenuKey::Other, true, false);
-        assert_eq!(keys.release(MenuKey::LeftAlt, false), None);
-        assert_eq!(keys.press(MenuKey::F10, true, false), None);
+        keys.press(MenuKey::LeftAlt, false, false, 20);
+        keys.press(MenuKey::Other, true, false, 30);
+        assert_eq!(keys.release(MenuKey::LeftAlt, false, 40), None);
+        assert_eq!(keys.press(MenuKey::F10, true, false, 50), None);
     }
     #[test]
     fn focus_loss_or_pointer_action_cancels_pending_alt() {
         let mut keys = MenuKeys::default();
-        keys.press(MenuKey::LeftAlt, false, false);
+        keys.press(MenuKey::LeftAlt, false, false, 0);
         keys.cancel();
-        assert_eq!(keys.release(MenuKey::LeftAlt, false), None);
+        assert_eq!(keys.release(MenuKey::LeftAlt, false, 10), None);
+    }
+    #[test]
+    fn held_alt_from_a_window_manager_drag_does_not_toggle_the_menu() {
+        let mut keys = MenuKeys::default();
+        // Alt+drag on X11 KDE/Xfce: the WM takes the button, Silo sees only Alt.
+        keys.press(MenuKey::LeftAlt, false, false, 10_000);
+        for repeat in [10_300, 10_600, 10_900] {
+            keys.press(MenuKey::LeftAlt, false, false, repeat);
+        }
+        assert_eq!(keys.release(MenuKey::LeftAlt, false, 11_200), None);
+        // A quick tap still toggles, including across the 32-bit timestamp wrap.
+        keys.press(MenuKey::LeftAlt, false, false, u32::MAX - 50);
+        assert_eq!(keys.release(MenuKey::LeftAlt, false, 100), Some(true));
     }
     #[test]
     fn unready_or_busy_ui_cannot_receive_navigation_or_mutation_commands() {
