@@ -18,11 +18,13 @@ impl Fixture {
             "prepare the bundled Git runtime before testing"
         );
         symlink(runtime.join("bin/git"), tools.join("git")).unwrap();
-        symlink(
-            runtime.join("libexec/git-core/git-lfs"),
-            tools.join("git-lfs"),
-        )
-        .unwrap();
+        for helper in ["git-lfs", "git-remote-http"] {
+            symlink(
+                runtime.join("libexec/git-core").join(helper),
+                tools.join(helper),
+            )
+            .unwrap();
+        }
         Self { _root: root, tools }
     }
     fn repo(&self, name: &str, initialize: bool, bare: bool) -> HostGit {
@@ -37,6 +39,7 @@ impl Fixture {
             support: self._root.path().into(),
             ssh_command: None,
             cache_lock_fd: None,
+            deadline: None,
         };
         if initialize {
             if bare {
@@ -321,6 +324,8 @@ fn repeated_publication_reuses_host_objects_and_refreshes_branch_tracking() {
     let fixture = Fixture::new();
     let source = fixture.repo("source", true, false);
     let remote = fixture.repo("remote.git", true, true);
+    // Like GitHub, the destination has a default branch.
+    run(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     let host = fixture.repo("publisher", false, true);
     let media = source.directory.join(".git/lfs/objects");
     let lfs_url = format!("file://{}", source.directory.join(".git").display());
@@ -346,7 +351,8 @@ fn repeated_publication_reuses_host_objects_and_refreshes_branch_tracking() {
     let second = commit(&source);
     capture(&source, &second);
     assert_eq!(publish(&second, "main"), 1);
-    assert_eq!(publish(&second, "other"), 2);
+    // A new branch at an already published commit adds no commits.
+    assert_eq!(publish(&second, "other"), 0);
     assert_eq!(
         run(&remote, &["rev-parse", "refs/heads/main"]).trim(),
         second
@@ -359,4 +365,118 @@ fn repeated_publication_reuses_host_objects_and_refreshes_branch_tracking() {
         assert!(object_path(&host.directory.join("lfs/objects"), &oid).is_file());
         assert!(object_path(&remote.directory.join("lfs/objects"), &oid).is_file());
     }
+}
+
+/// Answers 401 until a request carries credentials, then records them.
+fn credential_server() -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{BufRead, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut authorization = None;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("authorization") {
+                        authorization = Some(value.trim().to_owned());
+                    }
+                }
+            }
+            let response = match authorization {
+                Some(value) => {
+                    let _ = sender.send(value);
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                }
+                None => "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"silo\"\r\nLFS-Authenticate: Basic realm=\"silo\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            };
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{address}/owner/repo.git"), receiver)
+}
+
+#[test]
+fn git_and_git_lfs_authenticate_through_the_credential_pipe() {
+    let fixture = Fixture::new();
+    let (remote, requests) = credential_server();
+    let git = fixture.repo("credential", true, true);
+    run(&git, &["config", "remote.origin.url", &remote]);
+    let expected = format!(
+        "Basic {}",
+        STANDARD.encode("x-access-token:ghu_fixtureToken")
+    );
+    let timeout = std::time::Duration::from_secs(20);
+    // Git's HTTP transport and Git LFS each ask the credential helper.
+    assert!(git
+        .run(
+            &["ls-remote", "--heads", "origin"],
+            Some("ghu_fixtureToken"),
+            &remote
+        )
+        .is_err());
+    assert_eq!(requests.recv_timeout(timeout).unwrap(), expected);
+    assert!(git
+        .run(&["lfs", "locks"], Some("ghu_fixtureToken"), &remote)
+        .is_err());
+    assert_eq!(requests.recv_timeout(timeout).unwrap(), expected);
+    // Other hosts never receive the credential.
+    let (other, other_requests) = credential_server();
+    assert!(git
+        .run(
+            &["ls-remote", "--heads", &other],
+            Some("ghu_fixtureToken"),
+            &remote
+        )
+        .is_err());
+    assert!(other_requests
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .is_err());
+}
+
+#[test]
+fn a_new_branch_counts_only_commits_missing_from_the_default_branch() {
+    let fixture = Fixture::new();
+    let source = fixture.repo("source", true, false);
+    let remote = fixture.repo("remote.git", true, true);
+    run(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    fs::write(source.directory.join("first.txt"), "first").unwrap();
+    let base = commit(&source);
+    capture(&source, &base);
+    assert_eq!(
+        fixture
+            .publish(&source, &remote, "publisher", &base, None)
+            .unwrap(),
+        1
+    );
+    for name in ["second.txt", "third.txt"] {
+        fs::write(source.directory.join(name), name).unwrap();
+        commit(&source);
+    }
+    let feature = run(&source, &["rev-parse", "HEAD"]).trim().to_owned();
+    capture(&source, &feature);
+    // A fresh publishing cache has never seen the remote's default branch.
+    let host = fixture.repo("feature-publisher", false, true);
+    let count = publish_committed(
+        &host,
+        source.directory.to_str().unwrap(),
+        &format!("file://{}", source.directory.join(".git").display()),
+        "refs/silo/captured",
+        &feature,
+        "feature",
+        remote.directory.to_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(
+        run(&remote, &["rev-parse", "refs/heads/feature"]).trim(),
+        feature
+    );
 }

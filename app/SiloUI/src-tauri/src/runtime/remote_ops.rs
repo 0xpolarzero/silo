@@ -26,6 +26,10 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     if method == "runtime.action" {
         return remote_action(app, &paths, &params);
     }
+    // Anything else is unknown: refuse it before taking the gate or announcing a change.
+    if !matches!(method, "runtime.upsert" | "runtime.delete") {
+        return Err("This Silo version does not support that remote operation.".into());
+    }
     // Inventory changes (upsert/delete) stay computer-scoped: they rewrite the shared
     // metadata file. They run once, holding the gate for the whole operation.
     let _guard = OPERATIONS
@@ -91,7 +95,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
             _ => return Err("Unsupported remote request.".into()),
         }
         serde_json::to_value(
-            read_application_state_with(&ProcessRunner, &paths).map_err(|e| e.to_string())?,
+            application_state_response(app, &paths).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())
     })();
@@ -103,8 +107,27 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
 /// idempotent, so transient runtime failures retry through `gated_auto_retry`, which
 /// re-acquires this VM's gate per attempt (released between attempts) with the same lane,
 /// dedupe key, labels, cancellability, and expected durations as the local command;
-/// dismiss-error runs once. `silo://application-state-changed` is emitted around the work.
+/// dismiss-error runs once. `silo://application-state-changed` is emitted after the work.
 fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Result<Value, String> {
+    let changed = || {
+        let _ = app.emit("silo://application-state-changed", ());
+    };
+    run_remote_action(&ProcessRunner, paths, params, &AUTO_RETRY_DELAYS, &host_resources, &changed)?;
+    serde_json::to_value(application_state_response(app, paths).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+/// The lifecycle part of `remote_action`, before the state read. A duplicate of a
+/// request already waiting is handed to it, like the local command (D-13), so a
+/// repeated remote click is not reported as a failure.
+fn run_remote_action(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    params: &Value,
+    delays: &[Duration],
+    resources: &dyn Fn() -> Result<HostResources, RuntimeError>,
+    changed: &dyn Fn(),
+) -> Result<(), String> {
     let vm_id = params["vmId"].as_str().ok_or("Missing VM identity.")?.to_owned();
     let action = params["action"].as_str().ok_or("Missing VM action.")?.to_owned();
     if !matches!(action.as_str(), "start" | "stop" | "restart" | "dismiss-error") {
@@ -149,17 +172,17 @@ fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Resul
     let work = || -> Result<(), RuntimeError> {
         shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
         let request = read_metadata(&paths.metadata)?;
-        let resources = host_resources()?;
-        let _ = app.emit("silo://application-state-changed", ());
+        let resources = resources()?;
+        // The queue event shows the action; state is announced once the gate is released.
         let machine = request
             .machines
             .iter()
             .find(|m| m.id() == vm_id && m.is_vm())
             .ok_or_else(|| RuntimeError::Invalid("This VM no longer exists on this computer.".into()))?;
-        explicit_workspace_action_with(&ProcessRunner, paths, &resources, &action, machine.name())
+        explicit_workspace_action_with(runner, paths, &resources, &action, machine.name())
     };
     let result = if matches!(action.as_str(), "start" | "stop" | "restart") {
-        gated_auto_retry(&base_label, acquire, prepare, work)
+        gated_auto_retry_with(delays, &base_label, acquire, prepare, work)
     } else {
         match acquire(&base_label) {
             Ok(guard) => {
@@ -171,15 +194,8 @@ fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Resul
             Err(error) => Err(error),
         }
     };
-    let _ = app.emit("silo://application-state-changed", ());
-    result
-        .map_err(|e| safe_activity_error(&e))
-        .and_then(|_| {
-            serde_json::to_value(
-                read_application_state_with(&ProcessRunner, paths).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())
-        })
+    changed();
+    hand_off_duplicate(result).0.map_err(|e| safe_activity_error(&e))
 }
 
 #[cfg(test)]
@@ -198,6 +214,143 @@ mod tests {
             desktop: None,
         }
     }
+    const ID: &str = "00000000-0000-4000-8000-0000000000d4";
+
+    /// A local runtime for one VM named "dev": starts may time out a set number of
+    /// times, or block until the running operation is cancelled.
+    #[derive(Default)]
+    struct Runtime {
+        state: Mutex<String>,
+        mutations: Mutex<Vec<String>>,
+        timeouts: std::sync::atomic::AtomicUsize,
+        started: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    }
+    impl Runtime {
+        fn stopped() -> Self {
+            Self { state: Mutex::new("Stopped".into()), ..Self::default() }
+        }
+        fn mutations(&self) -> Vec<String> {
+            self.mutations.lock().unwrap().clone()
+        }
+    }
+    impl RuntimeRunner for Runtime {
+        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            use std::sync::atomic::Ordering;
+            let output = |stdout: String| Ok(CommandOutput { stdout, stderr: String::new() });
+            match args[0].as_str() {
+                "inspect" => output(json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{"labels":{"silo.managed":"true","silo.working-account":"1","silo.machine-id":ID},"resources":{"cpus":1,"max_cpus":1,"memory_mib":1024,"max_memory_mib":1024}}}).to_string()),
+                "start" => {
+                    self.mutations.lock().unwrap().push("start".into());
+                    if let Some(started) = self.started.lock().unwrap().take() {
+                        started.send(()).unwrap();
+                        let deadline = Instant::now() + Duration::from_secs(5);
+                        while !operation_gate::cancel_requested() && Instant::now() < deadline {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        return Err(RuntimeError::Cancelled { operation: "start dev".into() });
+                    }
+                    if self.timeouts.load(Ordering::SeqCst) > 0 {
+                        self.timeouts.fetch_sub(1, Ordering::SeqCst);
+                        return Err(RuntimeError::TimedOut { operation: "Starting dev".into() });
+                    }
+                    *self.state.lock().unwrap() = "Running".into();
+                    output("null".into())
+                }
+                "stop" => {
+                    self.mutations.lock().unwrap().push("stop".into());
+                    *self.state.lock().unwrap() = "Stopped".into();
+                    output("null".into())
+                }
+                _ => output("null".into()),
+            }
+        }
+    }
+    fn configured() -> (tempfile::TempDir, RuntimePaths) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut machine = vm(ID);
+        if let MachineConfiguration::Vm { name, cpus, max_cpus, memory_gib, max_memory_gib, .. } = &mut machine {
+            (*name, *cpus, *max_cpus, *memory_gib, *max_memory_gib) = ("dev".into(), 1, 1, 1, 1);
+        }
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![machine] }).unwrap();
+        (dir, paths)
+    }
+    fn generous() -> Result<HostResources, RuntimeError> {
+        Ok(HostResources { logical_cpus: 64, physical_memory_bytes: Some(256 * 1024 * 1024 * 1024) })
+    }
+    const QUICK: [Duration; 2] = [Duration::from_millis(1), Duration::from_millis(1)];
+
+    #[test]
+    fn remote_start_retries_a_transient_failure_in_the_vm_lane() {
+        let (_dir, paths) = configured();
+        let runtime = Runtime::stopped();
+        runtime.timeouts.store(1, std::sync::atomic::Ordering::SeqCst);
+        let changed = std::sync::atomic::AtomicUsize::new(0);
+        let count = || { changed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); };
+        run_remote_action(&runtime, &paths, &json!({"vmId": ID, "action": "start"}), &QUICK, &generous, &count).unwrap();
+        assert_eq!(runtime.mutations(), vec!["start", "start"]);
+        assert_eq!(*runtime.state.lock().unwrap(), "Running");
+        assert!(!lifecycle_recovery::has_intent(&paths, ID));
+        assert!(OPERATIONS.is_vm_idle(ID));
+        assert_eq!(changed.load(std::sync::atomic::Ordering::SeqCst), 1, "state is announced once, after the work (D-18)");
+    }
+
+    #[test]
+    fn a_repeated_remote_request_is_handed_to_the_one_already_waiting() {
+        let (_dir, paths) = configured();
+        let runtime = std::sync::Arc::new(Runtime::stopped());
+        let blocker = OPERATIONS.vm(ID, "dev", "Creating checkpoint").unwrap();
+        let first = {
+            let (runtime, paths) = (runtime.clone(), paths.clone());
+            thread::spawn(move || run_remote_action(&*runtime, &paths, &json!({"vmId": ID, "action": "start"}), &QUICK, &generous, &|| {}))
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while OPERATIONS.snapshot().waiting.iter().all(|entry| entry.vm_id.as_deref() != Some(ID)) {
+            assert!(Instant::now() < deadline, "the first request never queued");
+            thread::sleep(Duration::from_millis(2));
+        }
+        let second = {
+            let (runtime, paths) = (runtime.clone(), paths.clone());
+            thread::spawn(move || run_remote_action(&*runtime, &paths, &json!({"vmId": ID, "action": "start"}), &QUICK, &generous, &|| {}))
+        };
+        assert_eq!(second.join().unwrap(), Ok(()), "a duplicate is not a failure");
+        assert!(runtime.mutations().is_empty(), "the duplicate did not run");
+        drop(blocker);
+        assert_eq!(first.join().unwrap(), Ok(()));
+        assert_eq!(runtime.mutations(), vec!["start"]);
+    }
+
+    #[test]
+    fn a_cancelled_remote_start_is_not_retried_or_resumed() {
+        let (_dir, paths) = configured();
+        let runtime = std::sync::Arc::new(Runtime::stopped());
+        let (started, running) = std::sync::mpsc::channel();
+        *runtime.started.lock().unwrap() = Some(started);
+        let action = {
+            let (runtime, paths) = (runtime.clone(), paths.clone());
+            thread::spawn(move || run_remote_action(&*runtime, &paths, &json!({"vmId": ID, "action": "start"}), &QUICK, &generous, &|| {}))
+        };
+        running.recv_timeout(Duration::from_secs(5)).unwrap();
+        let entry = OPERATIONS.snapshot().running.into_iter().find(|entry| entry.vm_id.as_deref() == Some(ID)).unwrap();
+        assert!(entry.cancellable);
+        OPERATIONS.cancel(entry.id).unwrap();
+        let error = action.join().unwrap().unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(runtime.mutations(), vec!["start"]);
+        assert!(!lifecycle_recovery::has_intent(&paths, ID), "launch will not resume it");
+        assert!(OPERATIONS.is_vm_idle(ID));
+    }
+
+    #[test]
+    fn remote_actions_reject_unknown_actions_and_vms_before_queueing() {
+        let (_dir, paths) = configured();
+        let runtime = Runtime::stopped();
+        for params in [json!({"vmId": ID, "action": "remove"}), json!({"vmId": "missing", "action": "start"}), json!({"action": "start"})] {
+            assert!(run_remote_action(&runtime, &paths, &params, &QUICK, &generous, &|| {}).is_err());
+        }
+        assert!(runtime.mutations().is_empty());
+    }
+
     #[test]
     fn targeted_change_preserves_other_vms_and_rejects_stale_configuration() {
         let a = vm("a");

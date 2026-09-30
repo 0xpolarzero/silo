@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import stat
 import subprocess
 import sys
@@ -13,6 +14,8 @@ SOURCE = Path('/etc/apt/sources.list.d/silo.sources')
 DIRECTORY = Path('/run/silo')
 MARKER = DIRECTORY / 'system-update.json'
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C', 'DEBIAN_FRONTEND': 'noninteractive'}
+# Silo stops its sandboxes after 'ready'; stopping many can take a while.
+CONFIRM_TIMEOUT = 30 * 60
 
 
 def version(value):
@@ -53,7 +56,15 @@ def stage(name):
     print(name, flush=True)
 
 
-def upgrade(selected, run=run, stage=stage):
+def confirm(stream=None, timeout=CONFIRM_TIMEOUT):
+    """Wait for Silo's go-ahead. It stops sandboxes only once everything before installation succeeded."""
+    stream = sys.stdin if stream is None else stream
+    readable, _, _ = select.select([stream], [], [], timeout)
+    if not readable or stream.readline().strip() != 'install':
+        raise RuntimeError('Silo cancelled the update before installation. Nothing was installed.')
+
+
+def upgrade(selected, run=run, stage=stage, confirm=confirm):
     version(selected)
     if not SOURCE.is_file() or re.search(r'^Enabled:\s*no\s*$', SOURCE.read_text(), re.M | re.I):
         raise RuntimeError('Enable Silo’s software source in Software & Updates, then retry.')
@@ -67,6 +78,8 @@ def upgrade(selected, run=run, stage=stage):
               '-o', 'Acquire::http::Timeout=30', '-o', 'Acquire::https::Timeout=30']
     stage('downloading')
     run([*common, '--download-only', 'install', f'silo={selected}'])
+    stage('ready')
+    confirm()
     stage('installing')
     run([*common, '--no-download', 'install', f'silo={selected}'])
 
@@ -98,7 +111,11 @@ def main():
         if len(current) != 2 or current[0] != 'install ok installed':
             raise RuntimeError('Silo’s package needs repair in the system package manager before updating.')
         if current[1] == selected:
-            return 0  # Package already updated; the old running app only needs restart.
+            # Package already updated; the old running app only needs to stop its
+            # sandboxes (so they resume on the new runtime) and restart.
+            stage('ready')
+            confirm()
+            return 0
         if subprocess.run(['/usr/bin/dpkg', '--compare-versions', selected, 'gt', current[1]], env=ENV).returncode:
             raise RuntimeError('Refusing to downgrade Silo. Check for updates again.')
         MARKER.unlink(missing_ok=True)

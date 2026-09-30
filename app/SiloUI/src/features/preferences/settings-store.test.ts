@@ -108,4 +108,40 @@ describe("settings synchronization", () => {
     expect(store.getSnapshot().saveError).toBeNull()
     expect(attempts).toBe(2)
   })
+
+  it("rolls back a change the backend rejects so later changes and flushes still save", async () => {
+    let state = snapshot()
+    const writes: unknown[] = []
+    let release!: () => void
+    const store = createSettingsStore({
+      subscribe: async () => () => {}, read: async () => state,
+      updateSettings: async (patch) => {
+        writes.push(patch)
+        if ("terminal" in patch) {
+          await new Promise<void>((resolve) => { release = resolve })
+          // Native commands reject with the command's error string.
+          throw "Invalid settings change"
+        }
+        state = snapshot(state.revision + 1, { ...state.settings, ...patch })
+        return state
+      },
+      updateOnboardingDraft: async () => state, flush: async () => {},
+    })
+    await store.initialize()
+    const saved = store.getSnapshot().settings.terminal
+    const rejected = store.updateSettings({ terminal: "iTerm" })
+    const later = store.updateSettings({ browser: "Firefox" })
+    expect(store.getSnapshot().settings).toMatchObject({ terminal: "iTerm", browser: "Firefox" })
+    release()
+    await Promise.all([rejected, later])
+    expect(writes).toEqual([{ terminal: "iTerm" }, { browser: "Firefox" }])
+    expect(store.getSnapshot().settings.terminal).toBe(saved)
+    expect(store.getSnapshot().settings.browser).toBe("Firefox")
+    expect(store.getSnapshot().saveError).toBe("Invalid settings change")
+    await store.flush()
+    expect(store.getSnapshot().saveError).toBeNull()
+    await store.updateSettings({ theme: "dark" })
+    expect(state.settings).toEqual({ browser: "Firefox", theme: "dark" })
+    expect(writes).toHaveLength(3)
+  })
 })

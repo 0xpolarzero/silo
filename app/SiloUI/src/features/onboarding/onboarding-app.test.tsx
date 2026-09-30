@@ -367,7 +367,7 @@ describe("onboarding", () => {
     await user.tab({ shift: true })
 
     expect(tooltipTrigger).toHaveFocus()
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Allow Git pushes and GitHub changes, such as issues and pull requests, from this VM.")
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Allow Git pushes and GitHub changes, such as issues and pull requests, from this sandbox.")
   })
 
   it("prefills and enables every workspace identity from the optional host identity", async () => {
@@ -390,7 +390,7 @@ describe("onboarding", () => {
     const identityTooltipTrigger = within(devIdentity).getByLabelText("About Git identity for dev")
     identityTooltipTrigger.focus()
     expect(identityTooltipTrigger).toHaveFocus()
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Name and email used for Git commits in this VM.")
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Name and email used for Git commits in this sandbox.")
     expect(screen.queryByText("Git name")).not.toBeInTheDocument()
     expect(screen.queryByText("Git email")).not.toBeInTheDocument()
     expect(screen.getByLabelText("Git name for personal")).toHaveValue("Taylor Example")

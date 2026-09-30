@@ -4,16 +4,18 @@ Silo's native menus dispatch `silo://menu-command` to the main window. React
 routes each request through existing navigation, forms and update controls.
 Only the main window can publish command availability. Actions start disabled
 until the listener is ready; installation disables navigation and mutation
-commands. Individual busy states disable update checks and backup operations.
+commands. Individual busy states disable update checks and export or import.
 The status panel has its own menu; the application menu belongs to the main window.
 
 Native menus own Command-B/Control-B for the sidebar and Command-K/Control-K for the command palette once connected, avoiding a second DOM shortcut handler. Repeated creation requests preserve unfinished forms. Consumed sandbox
 requests are cleared by their owner so returning to a remounted overview cannot
 open another form. Sidebar text follows the existing collapse state.
 
-Category shortcuts follow sidebar order: Command-1 Overview, 2 Files, 3 Logs,
-4 Network, 5 Activity, 6 GitHub, 7 Secrets, 8 Backup. Linux desktop builds use
-Control instead of Command and dispatch through the same guarded app actions.
+Category shortcuts follow sidebar order in the Go menu: Command-1 Sandboxes,
+2 Files, 3 Logs, 4 Network, 5 Activity, 6 GitHub, 7 Secrets. Linux desktop builds
+use Control instead of Command and dispatch through the same guarded app actions.
+The File menu has New Sandbox… (Command-N) and Import Sandbox…, which opens the
+export-file picker; Export… lives in each local sandbox's own menu.
 The shared shortcut badge displays these bindings at the right of expanded
 sidebar rows on hover/focus, or inside tooltips when collapsed. Existing toolbar
 tooltips include their actual bindings; controls without a shortcut have no badge.
@@ -35,6 +37,9 @@ predefined items. About reports the built app version.
 - Actual macOS menu clicks: Settings opened General; Check for Updates displayed
   progress then version 0.1.1 available; Create Backup opened sandbox selection;
   Restore Backup opened the archive picker, which was cancelled without restoring.
+  Those two items belonged to the since-removed Backup page. File → Import
+  Sandbox… replaced Restore Backup and Export… moved to each sandbox's menu;
+  this record does not cover them.
 - Command-N opened the existing VM form, cancelled without creating a VM.
   Command-K opened and closed one palette. Hide Sidebar collapsed the existing
   sidebar and became Show Sidebar; the sidebar was restored.

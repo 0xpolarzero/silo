@@ -446,6 +446,33 @@ pub struct ApplicationSource {
     secrets: Vec<Value>,
     backup: BackupSummary,
     preferences: Preferences,
+    /// This computer's limits for VM resource ceilings. Absent when the host could not
+    /// be measured (every VM change is then rejected by `validate_host_ceiling`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host_capacity: Option<HostCapacity>,
+}
+
+/// The host limits `validate_host_ceiling` enforces, so editors can clamp defaults and
+/// presets instead of offering ceilings Silo will reject.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostCapacity {
+    /// Logical CPUs; a VM's CPU ceiling may not exceed this.
+    logical_cpus: usize,
+    physical_memory_bytes: u64,
+    /// The largest whole-GiB memory ceiling Silo accepts on this host.
+    max_memory_gib: u64,
+}
+
+impl HostCapacity {
+    fn of(host: &HostResources) -> Option<Self> {
+        let physical_memory_bytes = host.physical_memory_bytes.filter(|bytes| *bytes > 0)?;
+        (host.logical_cpus > 0).then_some(Self {
+            logical_cpus: host.logical_cpus,
+            physical_memory_bytes,
+            max_memory_gib: physical_memory_bytes / (1024 * 1024 * 1024),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -461,6 +488,12 @@ struct ApplicationWorkspace {
     #[serde(skip_serializing_if = "Option::is_none")]
     attention: Option<WorkspaceAttention>,
     freshness: Freshness,
+    /// True when an operation on this VM overlapped the read. The runtime fields
+    /// (`state`, `stateDetail`, `attention`, `canDismissError`, `repositories`) are then
+    /// the last value read while the VM was idle (or this read's, when there is none);
+    /// Silo's own records (checkpoints, failures, secrets) stay current. Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    settling: bool,
     host: String,
     repositories: Vec<Value>,
     files: Vec<Value>,
@@ -474,6 +507,8 @@ struct ApplicationWorkspace {
     pending_checkpoint_restore: Option<checkpoints::PendingRestore>,
     #[serde(skip_serializing_if = "Option::is_none")]
     checkpoint_operation: Option<checkpoints::Operation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unfinished_restore: Option<checkpoints::UnfinishedRestore>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -498,10 +533,13 @@ enum AttentionLevel {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Freshness {
     Fresh,
+    /// This VM's own reading failed while nothing was changing it; the runtime fields
+    /// are its last known values and `attention` says why.
+    Stale,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -783,7 +821,7 @@ pub(crate) fn run_msb(
             if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
                 .find(|machine| machine.is_vm() && machine.name() == name) {
                 if checkpoints::needs_explicit_start(paths, machine.id())? {
-                    return Err(RuntimeError::Invalid("This stopped fork requires an explicit Start before other workspace actions.".into()));
+                    return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
                 }
             }
         }
@@ -1366,22 +1404,55 @@ pub async fn verify_workspace_identities(
 ) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        // Verifies Git identity across several VMs' metadata and guests; shared read.
-        let _guard = OPERATIONS
-            .computer("Verifying Git identities")
-            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
-        verify_workspace_identities_with(&ProcessRunner, &paths, &identities)
+        // Each VM is checked in its own lane, one at a time, so other sandboxes keep working.
+        verify_workspace_identities_in(&ProcessRunner, &paths, &identities, &identity_lane)
             .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("Git identity verification worker failed: {error}"))?
 }
 
+/// Holds one VM's lane while its Git identity is checked or written. Returns `None` when
+/// the caller already holds the gate (and in tests).
+type IdentityLane<'a> =
+    &'a dyn Fn(&MachineConfiguration, &str) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError>;
+
+/// Identity work on one VM: its own, cancellable queue entry naming the sandbox.
+fn identity_lane(
+    machine: &MachineConfiguration,
+    label: &str,
+) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError> {
+    let guard = OPERATIONS.vm(machine.id(), machine.name(), label)?;
+    guard.allow_cancel();
+    guard.expect_within(Duration::from_secs(600));
+    Ok(Some(guard))
+}
+
+fn no_identity_lane(
+    _machine: &MachineConfiguration,
+    _label: &str,
+) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError> {
+    Ok(None)
+}
+
+#[cfg(test)]
 fn verify_workspace_identities_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     identities: &[WorkspaceIdentity],
+) -> Result<bool, RuntimeError> {
+    verify_workspace_identities_in(runner, paths, identities, &no_identity_lane)
+}
+
+/// Whether every requested identity is already applied. Verification only decides a
+/// status, so it never boots a VM: a stopped VM's identity is unknown (`false`), and a
+/// running VM is checked in place with `exec --no-start`.
+fn verify_workspace_identities_in(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    identities: &[WorkspaceIdentity],
+    lane: IdentityLane<'_>,
 ) -> Result<bool, RuntimeError> {
     if identities.len() > MAX_MACHINE_COUNT {
         return Ok(false);
@@ -1401,13 +1472,14 @@ fn verify_workspace_identities_with(
         {
             return Ok(false);
         }
-        if !metadata
+        let Some(machine) = metadata
             .machines
             .iter()
-            .any(|machine| machine.name() == identity.workspace && machine.is_vm())
-        {
+            .find(|machine| machine.name() == identity.workspace && machine.is_vm())
+        else {
             return Ok(false);
-        }
+        };
+        let _lane = lane(machine, &format!("Checking Git identity for {}", machine.name()))?;
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
         ensure_managed(&inspected)?;
         if !identity.apply {
@@ -1418,8 +1490,11 @@ fn verify_workspace_identities_with(
         }) {
             return Ok(false);
         }
+        if inspected.status != "Running" {
+            return Ok(false);
+        }
         let user = crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Malformed)?;
-        if !verify_guest_identity(runner, paths, identity, user)? {
+        if !verify_guest_identity(runner, paths, identity, user, GuestBoot::Never)? {
             return Ok(false);
         }
     }
@@ -1435,12 +1510,10 @@ pub async fn configure_workspace_identities(
     let names: Vec<String> = identities.iter().map(|identity| identity.workspace.clone()).collect();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        // Writes Git identity across several VMs' metadata and guests; shared state.
-        let _guard = OPERATIONS
-            .computer("Saving Git identities")
-            .map_err(|error| error.to_string())?;
         shutdown::ensure_accepting_operations()?;
-        let result = configure_workspace_identities_with(&ProcessRunner, &paths, &identities);
+        // Every request is validated first; then each VM is written in its own lane, one
+        // at a time, cancellable, and named in the queue.
+        let result = configure_workspace_identities_in(&ProcessRunner, &paths, &identities, &identity_lane);
         result.map_err(|error| error.to_string())
     })
     .await
@@ -1465,6 +1538,15 @@ fn configure_workspace_identities_with(
     paths: &RuntimePaths,
     identities: &[WorkspaceIdentity],
 ) -> Result<(), RuntimeError> {
+    configure_workspace_identities_in(runner, paths, identities, &no_identity_lane)
+}
+
+fn configure_workspace_identities_in(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    identities: &[WorkspaceIdentity],
+    lane: IdentityLane<'_>,
+) -> Result<(), RuntimeError> {
     if identities.len() > MAX_MACHINE_COUNT {
         return Err(RuntimeError::Invalid("Too many sandbox identities.".into()));
     }
@@ -1482,22 +1564,23 @@ fn configure_workspace_identities_with(
                 "Each sandbox needs one valid Git name and email address.".into(),
             ));
         }
-        if !metadata
+        let Some(machine) = metadata
             .machines
             .iter()
-            .any(|machine| machine.name() == identity.workspace && machine.is_vm())
-        {
+            .find(|machine| machine.name() == identity.workspace && machine.is_vm())
+        else {
             return Err(RuntimeError::Invalid(format!(
                 "Sandbox '{}' is not a configured local VM. Its Git identity was not changed.",
                 identity.workspace
             )));
-        }
+        };
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
         ensure_managed(&inspected)?;
         let user = crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Malformed)?;
-        changed.push((identity, user));
+        changed.push((identity, user, machine));
     }
-    for (identity, user) in changed {
+    for (identity, user, machine) in changed {
+        let _lane = lane(machine, &format!("Saving Git identity for {}", machine.name()))?;
         // Remove old boot overrides: normal Git/jj configuration must own defaults.
         let mut args = vec!["modify".into(), identity.workspace.clone()];
         for key in [
@@ -1519,8 +1602,8 @@ fn configure_workspace_identities_with(
    jj config set --user -- user.name "$3"
    jj config set --user -- user.email "$4"
  fi"#;
-        run_identity_script(runner, paths, identity, script, user)?;
-        if !verify_guest_identity(runner, paths, identity, user)? {
+        run_identity_script(runner, paths, identity, script, user, GuestBoot::Temporary)?;
+        if !verify_guest_identity(runner, paths, identity, user, GuestBoot::Temporary)? {
             return Err(RuntimeError::Malformed(format!(
                 "Silo could not verify the saved Git identity for '{}'. Setup is not complete.",
                 identity.workspace
@@ -1530,43 +1613,55 @@ fn configure_workspace_identities_with(
     Ok(())
 }
 
+/// Whether a guest identity command may boot a stopped VM for its duration.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GuestBoot {
+    /// `exec` starts a stopped sandbox temporarily and stops it again.
+    Temporary,
+    /// Only a running sandbox is used (`exec --no-start`).
+    Never,
+}
+
 fn run_identity_script(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     identity: &WorkspaceIdentity,
     script: &str,
     user: &str,
+    boot: GuestBoot,
 ) -> Result<CommandOutput, RuntimeError> {
-    // exec starts stopped sandboxes temporarily and preserves already-running VMs.
-    // Values are positional arguments, never interpolated shell source.
-    runner.run(
-        paths,
-        &[
-            "exec".into(),
-            identity.workspace.clone(),
-            "--user".into(), user.into(),
-            "--env".into(), format!("USER={user}"),
-            "--env".into(), format!("LOGNAME={user}"),
-            "--no-tty".into(),
-            "--workdir".into(),
-            "/".into(),
-            "--quiet".into(),
-            "--timeout".into(),
-            "30s".into(),
-            "--".into(),
-            "sh".into(),
-            "-c".into(),
-            script.into(),
-            "silo-git-identity".into(),
-            identity.name.clone(),
-            identity.email.clone(),
-            serde_json::to_string(&identity.name)
-                .map_err(|_| RuntimeError::Invalid("Invalid Git name.".into()))?,
-            serde_json::to_string(&identity.email)
-                .map_err(|_| RuntimeError::Invalid("Invalid Git email.".into()))?,
-        ],
-        MUTATION_TIMEOUT,
-    )
+    // exec starts stopped sandboxes temporarily (unless `--no-start`) and preserves
+    // already-running VMs. Values are positional arguments, never interpolated shell source.
+    let mut args: Vec<String> = vec![
+        "exec".into(),
+        identity.workspace.clone(),
+        "--user".into(), user.into(),
+        "--env".into(), format!("USER={user}"),
+        "--env".into(), format!("LOGNAME={user}"),
+        "--no-tty".into(),
+        "--workdir".into(),
+        "/".into(),
+        "--quiet".into(),
+        "--timeout".into(),
+        "30s".into(),
+    ];
+    if boot == GuestBoot::Never {
+        args.push("--no-start".into());
+    }
+    args.extend([
+        "--".into(),
+        "sh".into(),
+        "-c".into(),
+        script.into(),
+        "silo-git-identity".into(),
+        identity.name.clone(),
+        identity.email.clone(),
+        serde_json::to_string(&identity.name)
+            .map_err(|_| RuntimeError::Invalid("Invalid Git name.".into()))?,
+        serde_json::to_string(&identity.email)
+            .map_err(|_| RuntimeError::Invalid("Invalid Git email.".into()))?,
+    ]);
+    runner.run(paths, &args, MUTATION_TIMEOUT)
 }
 
 fn verify_guest_identity(
@@ -1574,6 +1669,7 @@ fn verify_guest_identity(
     paths: &RuntimePaths,
     identity: &WorkspaceIdentity,
     user: &str,
+    boot: GuestBoot,
 ) -> Result<bool, RuntimeError> {
     let script = r#"set -eu
  if [ "$(git config --global --get user.name)" != "$1" ] ||
@@ -1583,7 +1679,7 @@ fn verify_guest_identity(
    [ "$(jj config get user.email)" = "$2" ] || exit 0
  fi
  printf '%s' silo-identity-verified"#;
-    Ok(run_identity_script(runner, paths, identity, script, user)?
+    Ok(run_identity_script(runner, paths, identity, script, user, boot)?
         .stdout
         .trim()
         == "silo-identity-verified")
@@ -1789,41 +1885,172 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         // Only visible computer-wide work (sandbox configuration) can add or remove
-        // sandboxes; hidden housekeeping or work on one VM must not freeze every row.
-        let mut source = read_application_snapshot(&ProcessRunner, &paths, &|| OPERATIONS.is_computer_idle())?;
-        // Opportunistic log cleanup; skip when any operation is active or waiting.
-        if let Ok(_guard) = OPERATIONS.try_computer_hidden("Cleaning up expired logs") {
-            for workspace in &mut source.workspaces {
-                if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Stopped)
-                    && inspect_workspace(&ProcessRunner, &paths, workspace.machine.name()).is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status))
-                    && crate::log_retention::enforce(&paths.home.join("sandboxes").join(workspace.machine.name()).join("logs")).is_err()
-                {
-                    workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message: "Expired logs could not be cleaned up.".into() });
-                }
+        // sandboxes; work on one VM settles only that VM's row, and hidden housekeeping
+        // never affects the read.
+        let mut source = read_application_snapshot(&ProcessRunner, &paths, &OPERATIONS)?;
+        // Expired-log cleanup runs in the background, at most hourly per stopped VM, so a
+        // state read never waits for it or re-inspects every stopped VM.
+        let due = plan_log_cleanup(&paths, &mut source.workspaces, Instant::now());
+        if !due.is_empty() {
+            let cleanup_paths = paths.clone();
+            thread::spawn(move || clean_expired_logs(&ProcessRunner, &cleanup_paths, &OPERATIONS, &due));
+        }
+        enrich_application_state(&app, &paths, &mut source, Repositories::Discover { refresh: refresh_repositories.unwrap_or(false) });
+        remember_settled(&paths, &source.workspaces);
+        Ok(source)
+    })
+    .await
+    .map_err(|error| format!("Sandbox state worker failed: {error}"))?
+}
+
+/// Expired logs of a stopped VM are cleaned at most this often, off the state-read path.
+const LOG_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Default)]
+struct LogCleanup {
+    /// When each logs directory was last cleaned.
+    cleaned: HashMap<PathBuf, Instant>,
+    /// Logs directories whose last cleanup failed; their rows carry a warning.
+    failed: HashSet<PathBuf>,
+    /// A background cleanup pass is in progress.
+    running: bool,
+}
+
+static LOG_CLEANUP: OnceLock<Mutex<LogCleanup>> = OnceLock::new();
+
+fn log_cleanup() -> std::sync::MutexGuard<'static, LogCleanup> {
+    // Bookkeeping only: a panic while holding it at worst repeats a cleanup.
+    LOG_CLEANUP
+        .get_or_init(|| Mutex::new(LogCleanup::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn vm_logs(paths: &RuntimePaths, name: &str) -> PathBuf {
+    paths.home.join("sandboxes").join(name).join("logs")
+}
+
+/// Flag rows whose last log cleanup failed, and return the fresh, stopped VMs whose
+/// logs are due for cleanup (at most hourly each). Returning names starts a pass, so
+/// only one runs at a time; `clean_expired_logs` ends it.
+fn plan_log_cleanup(paths: &RuntimePaths, workspaces: &mut [ApplicationWorkspace], now: Instant) -> Vec<String> {
+    let mut state = log_cleanup();
+    for workspace in workspaces.iter_mut().filter(|workspace| workspace.machine.is_vm()) {
+        if workspace.attention.is_none() && state.failed.contains(&vm_logs(paths, workspace.machine.name())) {
+            workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message: "Expired logs could not be cleaned up.".into() });
+        }
+    }
+    if state.running {
+        return Vec::new();
+    }
+    let due: Vec<String> = workspaces
+        .iter()
+        .filter(|workspace| {
+            workspace.machine.is_vm()
+                && matches!(workspace.state, WorkspaceState::Stopped)
+                && !workspace.settling
+                && workspace.freshness == Freshness::Fresh
+                && state
+                    .cleaned
+                    .get(&vm_logs(paths, workspace.machine.name()))
+                    .is_none_or(|at| now.saturating_duration_since(*at) >= LOG_CLEANUP_INTERVAL)
+        })
+        .map(|workspace| workspace.machine.name().to_owned())
+        .collect();
+    state.running = !due.is_empty();
+    due
+}
+
+/// One background cleanup pass. It runs only while nothing else holds the gate (hidden,
+/// so it never shows in the queue), re-checks that each VM is still stopped, and records
+/// the outcome; a busy gate postpones the pass to a later read.
+fn clean_expired_logs(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    gate: &operation_gate::OperationGate,
+    names: &[String],
+) {
+    if let Ok(_guard) = gate.try_computer_hidden("Cleaning up expired logs") {
+        for name in names {
+            if !inspect_workspace(runner, paths, name).is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status)) {
+                continue;
+            }
+            let logs = vm_logs(paths, name);
+            let result = crate::log_retention::enforce(&logs);
+            let mut state = log_cleanup();
+            state.cleaned.insert(logs.clone(), Instant::now());
+            if result.is_err() {
+                state.failed.insert(logs);
+            } else {
+                state.failed.remove(&logs);
             }
         }
-        source.repository_push_operations = crate::host_push_operations::merge(&app, crate::host_push::operations())?;
-        for workspace in &mut source.workspaces {
-            if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running) {
-                match crate::host_push::discover(&paths, workspace.machine.name(), refresh_repositories.unwrap_or(false)) {
-                    Ok(repositories) => workspace.repositories = repositories,
-                    Err(message) => {
-                        if workspace.attention.is_none() {
-                            workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message });
+    }
+    log_cleanup().running = false;
+}
+
+/// Run `work` for `key` one caller at a time, so concurrent readers (for example two
+/// windows refreshing together) share host_push's short-lived repository cache instead
+/// of each scanning the same guest.
+fn single_flight<T>(key: String, work: impl FnOnce() -> T) -> T {
+    static TURNS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let turn = TURNS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(key)
+        .or_default()
+        .clone();
+    let _turn = turn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    work()
+}
+
+/// How enrichment fills running VMs' repositories.
+#[derive(Clone, Copy)]
+enum Repositories {
+    /// Scan each fresh running guest (cached briefly unless `refresh`).
+    Discover { refresh: bool },
+    /// Keep each VM's last settled list; used by change responses.
+    LastKnown,
+}
+
+/// Add what the runtime read does not carry: push operations, each fresh running VM's
+/// repositories, and GitHub state. A settling or stale row keeps the repositories of its
+/// last known reading instead of scanning a guest that is changing or unreadable.
+fn enrich_application_state(
+    app: &AppHandle,
+    paths: &RuntimePaths,
+    source: &mut ApplicationSource,
+    repositories: Repositories,
+) {
+    source.repository_push_operations = crate::host_push_operations::merge(app, crate::host_push::operations())
+        .unwrap_or_else(|_| crate::host_push::operations());
+    match repositories {
+        Repositories::LastKnown => keep_last_known_repositories(paths, &mut source.workspaces),
+        Repositories::Discover { refresh } => {
+            for workspace in &mut source.workspaces {
+                if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running)
+                    && !workspace.settling && workspace.freshness == Freshness::Fresh
+                {
+                    let name = workspace.machine.name();
+                    let key = format!("{}:{name}", paths.home.display());
+                    match single_flight(key, || crate::host_push::discover(paths, name, refresh)) {
+                        Ok(repositories) => workspace.repositories = repositories,
+                        Err(message) => {
+                            if workspace.attention.is_none() {
+                                workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message });
+                            }
                         }
                     }
                 }
             }
         }
-        source.github = crate::github::snapshot(&app).unwrap_or_else(|message| serde_json::json!({
-            "state": "disconnected", "accessEnabled": false, "repositoryCatalog": [],
-            "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
-            "workspaceOperations": [], "hostIdentity": crate::host_identity::read(),
-        }));
-        Ok(source)
-    })
-    .await
-    .map_err(|error| format!("Sandbox state worker failed: {error}"))?
+    }
+    source.github = crate::github::snapshot(app).unwrap_or_else(|message| serde_json::json!({
+        "state": "disconnected", "accessEnabled": false, "repositoryCatalog": [],
+        "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
+        "workspaceOperations": [], "hostIdentity": crate::host_identity::cached(|| {}),
+    }));
 }
 
 /// The controller UI can remain usable when local VM inspection fails. This is
@@ -1836,7 +2063,7 @@ pub async fn read_application_shell(app: AppHandle, error: String) -> Result<App
         source.github = crate::github::snapshot(&app).unwrap_or_else(|message| serde_json::json!({
             "state": "disconnected", "accessEnabled": false, "repositoryCatalog": [],
             "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
-            "workspaceOperations": [], "hostIdentity": crate::host_identity::read(),
+            "workspaceOperations": [], "hostIdentity": crate::host_identity::cached(|| {}),
         }));
         Ok(source)
     }).await.map_err(|error| error.to_string())?
@@ -1851,10 +2078,13 @@ fn application_shell(paths: &RuntimePaths, error: &str) -> Result<ApplicationSou
     Ok(source)
 }
 
+/// The user-facing state read. Visible computer-wide work (it can add or remove
+/// sandboxes) defers the whole read with the UPDATING sentinel; work on one VM only
+/// settles that VM's row (`settle_rows`), and hidden housekeeping never affects it.
 fn read_application_snapshot(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    is_idle: &dyn Fn() -> bool,
+    gate: &operation_gate::OperationGate,
 ) -> Result<ApplicationSource, String> {
     const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
     const MAX_ATTEMPTS: usize = 2;
@@ -1865,7 +2095,7 @@ fn read_application_snapshot(
         if configuration_recovery::pending(paths)? {
             return Err(UPDATING.into());
         }
-        match read_application_snapshot_once(runner, paths, is_idle) {
+        match read_application_snapshot_once(runner, paths, gate) {
             Ok(source) => return Ok(source),
             Err(error) if error == UPDATING => {
                 if configuration_recovery::pending(paths)? {
@@ -1886,23 +2116,60 @@ fn read_application_snapshot(
 fn read_application_snapshot_once(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    is_idle: &dyn Fn() -> bool,
+    gate: &operation_gate::OperationGate,
 ) -> Result<ApplicationSource, String> {
     const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
     // Runtime creation and metadata publication are separate steps. Discard
     // observations overlapping a mutation, without blocking progress updates.
     if configuration_recovery::pending(paths)? { return Err(UPDATING.into()); }
     let check_idle = || -> Result<(), String> {
-        if is_idle() { Ok(()) } else { Err(UPDATING.into()) }
+        if gate.is_computer_idle() { Ok(()) } else { Err(UPDATING.into()) }
     };
     check_idle()?;
+    let started = gate.generations();
     let before = fs::read(&paths.metadata).ok();
-    let observed = read_application_state_with(runner, paths);
+    let rows = read_rows(runner, paths);
     check_idle()?;
     if before != fs::read(&paths.metadata).ok() {
         return Err(UPDATING.into());
     }
-    observed.map_err(|error| error.to_string())
+    // Decided after the read: a VM is settled only if nothing touched it meanwhile.
+    let settled = |id: &str| gate.is_vm_quiet(id) && gate.generation(id) == started.of(id);
+    rows.and_then(|rows| settle_rows(paths, rows, &settled))
+        .and_then(|workspaces| application_source_for_workspaces(paths, workspaces))
+        .map_err(|error| error.to_string())
+}
+
+/// Longest a single health-check runtime call may take.
+const HEALTH_CALL_BUDGET: Duration = Duration::from_secs(5);
+
+/// Runs health-check runtime calls with a budget per call rather than one budget shared
+/// by the list and every inspection: with many VMs a shared budget ran out before the
+/// last VMs were inspected. A slow VM now fails only its own (stale, skipped) row.
+struct HealthRunner<'a> {
+    inner: &'a dyn RuntimeRunner,
+    budget: Duration,
+}
+
+impl RuntimeRunner for HealthRunner<'_> {
+    fn run(
+        &self,
+        paths: &RuntimePaths,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<CommandOutput, RuntimeError> {
+        if !paths.home.is_dir()
+            || paths
+                .storage_home
+                .as_ref()
+                .is_some_and(|home| !home.is_dir())
+        {
+            return Err(RuntimeError::Unavailable(
+                "The managed runtime is unavailable.".into(),
+            ));
+        }
+        self.inner.run(paths, args, timeout.min(self.budget))
+    }
 }
 
 /// A background health observation uses the same real inspection as the UI, without
@@ -1913,33 +2180,6 @@ fn read_application_snapshot_once(
 /// created, started, or changed here.
 pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Reading {
     use crate::health_watch::{Reading, VmReading};
-    struct HealthRunner(Instant);
-    impl RuntimeRunner for HealthRunner {
-        fn run(
-            &self,
-            paths: &RuntimePaths,
-            args: &[String],
-            timeout: Duration,
-        ) -> Result<CommandOutput, RuntimeError> {
-            let remaining = Duration::from_secs(5)
-                .checked_sub(self.0.elapsed())
-                .filter(|remaining| !remaining.is_zero())
-                .ok_or_else(|| RuntimeError::TimedOut {
-                    operation: "Health check".into(),
-                })?;
-            if !paths.home.is_dir()
-                || paths
-                    .storage_home
-                    .as_ref()
-                    .is_some_and(|home| !home.is_dir())
-            {
-                return Err(RuntimeError::Unavailable(
-                    "The managed runtime is unavailable.".into(),
-                ));
-            }
-            run_msb(paths, args, timeout.min(remaining))
-        }
-    }
     let paths = runtime_paths(app);
     let before = paths
         .as_ref()
@@ -1949,7 +2189,7 @@ pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Readi
     // no operation touched the VM during the read.
     let started = OPERATIONS.generations();
     let source = paths.as_ref().map_err(Clone::clone).and_then(|paths| {
-        read_application_state_with(&HealthRunner(Instant::now()), paths)
+        read_application_state_with(&HealthRunner { inner: &ProcessRunner, budget: HEALTH_CALL_BUDGET }, paths)
             .map_err(|error| error.to_string())
     });
     let after = paths
@@ -1981,7 +2221,10 @@ pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Readi
                 };
                 let generation = started.of(&id);
                 VmReading {
-                    settled: OPERATIONS.is_vm_idle(&id) && OPERATIONS.generation(&id) == generation,
+                    // A VM whose own inspection failed says nothing about its health.
+                    settled: workspace.freshness == Freshness::Fresh
+                        && OPERATIONS.is_vm_idle(&id)
+                        && OPERATIONS.generation(&id) == generation,
                     generation,
                     name: workspace.machine.name().into(),
                     state,
@@ -2085,11 +2328,17 @@ fn gated_auto_retry_classified<T, E>(
     let total = delays.len() + 1;
     // One shared cancel token for the whole retry sequence, created before the first attempt.
     let token = Arc::new(AtomicBool::new(false));
+    // The first attempt's start time, so every attempt reports one continuous
+    // operation in the queue and slow-operation flagging can fire (D-27).
+    let mut first_since = None;
+    // A Quit or update that began after this request stopped the VMs; even if it failed
+    // and admission reopened, a later attempt must not undo that (D-30).
+    let quit = shutdown::generation();
     let mut attempt = 0usize;
     loop {
         // A cancel from a previous attempt (or during its backoff) stops the sequence before
         // re-acquiring the gate.
-        if token.load(Ordering::SeqCst) {
+        if token.load(Ordering::SeqCst) || shutdown::generation() != quit {
             return Err(cancelled());
         }
         let label = if attempt == 0 {
@@ -2099,6 +2348,13 @@ fn gated_auto_retry_classified<T, E>(
         };
         let outcome = {
             let mut guard = acquire(&label)?;
+            if shutdown::generation() != quit {
+                return Err(cancelled());
+            }
+            match first_since {
+                Some(since) => guard.continue_since(since),
+                None => first_since = Some(guard.since()),
+            }
             // Share the sequence-wide token so a cancel against this attempt is observed by
             // the work (through the current-operation token) and carries to later attempts.
             guard.adopt_cancel_token(token.clone());
@@ -2120,7 +2376,7 @@ fn gated_auto_retry_classified<T, E>(
                     let mut remaining = delays[attempt];
                     let slice = Duration::from_millis(100);
                     while !remaining.is_zero() {
-                        if token.load(Ordering::SeqCst) {
+                        if token.load(Ordering::SeqCst) || shutdown::generation() != quit {
                             return Err(cancelled());
                         }
                         let step = remaining.min(slice);
@@ -2150,7 +2406,7 @@ pub async fn workspace_action(
             if action == "open-terminal" { crate::terminal::open(&app, &name)?; }
             else { crate::editor::open(&app, &name, path.as_deref())?; }
             let paths = runtime_paths(&app)?;
-            read_application_state_with(&ProcessRunner, &paths).map_err(|error| error.to_string())
+            application_state_response(&app, &paths).map_err(|error| error.to_string())
         })
         .await
         .map_err(|_| "The application launcher failed.".to_string())?;
@@ -2207,7 +2463,9 @@ pub async fn workspace_action(
                 .iter()
                 .find(|machine| machine.id() == vm_id && machine.is_vm())
                 .ok_or_else(|| RuntimeError::Invalid("This VM no longer exists.".into()))?;
-            let _ = app.emit("silo://application-state-changed", ());
+            // No state event while the gate is held: the queue event already shows the
+            // action, and this VM's row keeps its last state until the post-release event
+            // below (D-18), so an in-gate refresh in every window would be wasted.
             let resources = host_resources()?;
             explicit_workspace_action_with(&ProcessRunner, &paths, &resources, &action, machine.name())
         };
@@ -2228,7 +2486,7 @@ pub async fn workspace_action(
         };
         let _ = app.emit("silo://application-state-changed", ());
         let (result, handed_off) = hand_off_duplicate(result);
-        let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+        let result = result.and_then(|_| application_state_response(&app, &paths));
         // Classify before the typed error is flattened to a message: a cancellation or a
         // deduplicated request is an expected outcome, not a failure to notify about.
         match result {
@@ -2542,69 +2800,133 @@ fn safe_activity_error(error: &RuntimeError) -> String {
     }
 }
 
+/// Setup activity journals being written in this process. While one is live, the saved
+/// history is current: an unfinished last attempt is running, not interrupted.
+static LIVE_SETUP_JOURNALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Serializes writes of the setup activity file with the interruption check, so a
+/// journal starting meanwhile is never overwritten by a stale "interrupted" marker.
+static SETUP_ACTIVITY_FILE: Mutex<()> = Mutex::new(());
+
+fn setup_activity_file() -> std::sync::MutexGuard<'static, ()> {
+    SETUP_ACTIVITY_FILE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Held by a live journal; see `LIVE_SETUP_JOURNALS`.
+struct LiveSetupJournal(());
+
+impl LiveSetupJournal {
+    fn new() -> Self {
+        let _file = setup_activity_file();
+        LIVE_SETUP_JOURNALS.fetch_add(1, Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for LiveSetupJournal {
+    fn drop(&mut self) {
+        LIVE_SETUP_JOURNALS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Repeated progress within one stage (download bytes, heartbeats) is saved at most this
+/// often; stage boundaries and outcomes are saved immediately.
+const ACTIVITY_PERSIST_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_ACTIVITY_EVENTS: usize = 512;
+
+fn persist_activity(path: &Path, events: &impl Serialize) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or("Silo's activity storage path is invalid.")?;
+    fs::create_dir_all(parent).map_err(|_| "Silo could not prepare setup activity storage.")?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|_| "Silo could not save setup activity.")?;
+    serde_json::to_writer(&mut file, events)
+        .map_err(|_| "Silo could not encode setup activity.")?;
+    file.as_file()
+        .sync_all()
+        .map_err(|_| "Silo could not save setup activity.")?;
+    file.persist(path)
+        .map_err(|_| "Silo could not save setup activity.")?;
+    Ok(())
+}
+
 struct ActivityJournal {
     path: PathBuf,
-    events: Vec<MachineConfigurationProgress>,
+    events: std::collections::VecDeque<MachineConfigurationProgress>,
     started: Instant,
+    /// When the history was last written, and whether events arrived since.
+    persisted_at: Option<Instant>,
+    unsaved: bool,
+    _live: LiveSetupJournal,
 }
 
 impl ActivityJournal {
     fn start(paths: &RuntimePaths, _request_id: &str) -> Result<Self, String> {
         let journal = Self {
             path: activity_path(paths),
-            events: Vec::new(),
+            events: std::collections::VecDeque::new(),
             started: Instant::now(),
+            persisted_at: None,
+            unsaved: false,
+            _live: LiveSetupJournal::new(),
         };
         // Failure to retain diagnostics must not prevent the requested setup.
         // The first append publishes a visible warning if storage is unavailable.
         Ok(journal)
     }
 
-    fn persist(&self) -> Result<(), String> {
-        let parent = self
-            .path
-            .parent()
-            .ok_or("Silo's activity storage path is invalid.")?;
-        fs::create_dir_all(parent).map_err(|_| "Silo could not prepare setup activity storage.")?;
-        let mut file = tempfile::NamedTempFile::new_in(parent)
-            .map_err(|_| "Silo could not save setup activity.")?;
-        serde_json::to_writer(&mut file, &self.events)
-            .map_err(|_| "Silo could not encode setup activity.")?;
-        file.as_file()
-            .sync_all()
-            .map_err(|_| "Silo could not save setup activity.")?;
-        file.persist(&self.path)
-            .map_err(|_| "Silo could not save setup activity.")?;
-        Ok(())
+    fn persist(&mut self) -> Result<(), String> {
+        let _file = setup_activity_file();
+        self.persisted_at = Some(Instant::now());
+        self.unsaved = false;
+        persist_activity(&self.path, &self.events)
+    }
+
+    fn push(&mut self, event: MachineConfigurationProgress) {
+        // Keep the first event (the attempt's start) and drop the oldest progress after it.
+        if self.events.len() >= MAX_ACTIVITY_EVENTS {
+            self.events.remove(1);
+        }
+        self.events.push_back(event);
     }
 
     fn append(&mut self, mut event: MachineConfigurationProgress) -> MachineConfigurationProgress {
         event.elapsed_seconds = self.started.elapsed().as_secs();
         // Progress updates replace the previous update for the same stage, retaining boundaries.
-        if self.events.last().is_some_and(|last| {
+        let repeated = self.events.back().is_some_and(|last| {
             last.step == event.step
                 && last.workspace == event.workspace
                 && last.fraction.is_none()
                 && !event.step.starts_with("setup-")
-        }) {
-            self.events.pop();
+        });
+        if repeated {
+            self.events.pop_back();
         }
-        if self.events.len() >= 512 {
-            self.events.remove(1);
+        self.push(event.clone());
+        self.unsaved = true;
+        // A repeated update within one stage is saved at most every few seconds (and when
+        // the journal ends); a new stage, a boundary or an outcome is saved immediately.
+        if repeated && self.persisted_at.is_some_and(|at| at.elapsed() < ACTIVITY_PERSIST_INTERVAL) {
+            return event;
         }
-        self.events.push(event.clone());
         if self.persist().is_err() {
             let mut warning = event.clone();
             warning.level = "warning".into();
             warning.message = "Setup continues, but Silo could not retain its activity history. Copy the activity before closing Silo.".into();
             warning.step = "activity-storage-warning".into();
             warning.fraction = None;
-            if self.events.len() >= 512 {
-                self.events.remove(1);
-            }
-            self.events.push(warning);
+            self.push(warning);
         }
         event
+    }
+}
+
+impl Drop for ActivityJournal {
+    fn drop(&mut self) {
+        // Save a throttled progress update the attempt ended on.
+        if self.unsaved {
+            let _ = self.persist();
+        }
     }
 }
 
@@ -2684,12 +3006,7 @@ fn read_activity(
             events.remove(1);
         }
         events.push(interrupted);
-        ActivityJournal {
-            path,
-            events: events.clone(),
-            started: Instant::now(),
-        }
-        .persist()?;
+        persist_activity(&path, &events)?;
     }
     Ok(events)
 }
@@ -2704,10 +3021,23 @@ fn pending_verification_workspace(events: &[MachineConfigurationProgress]) -> Op
     }).filter(|event| event.fraction == Some(0)).map(|event| event.workspace.clone())
 }
 
+/// Reading may rewrite (and fsync) the journal, so it runs off the main thread.
 #[tauri::command]
-pub fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurationProgress>, String> {
-    let paths = runtime_paths(&app)?;
-    read_activity(&paths, OPERATIONS.is_idle())
+pub async fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurationProgress>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        read_setup_activity_at(&paths)
+    })
+    .await
+    .map_err(|error| format!("Setup activity worker failed: {error}"))?
+}
+
+/// An unfinished last attempt was interrupted only when no setup journal is being
+/// written in this process. Unrelated work (launch auto-start, hidden housekeeping, other
+/// sandboxes) does not make an interrupted setup look in progress.
+fn read_setup_activity_at(paths: &RuntimePaths) -> Result<Vec<MachineConfigurationProgress>, String> {
+    let _file = setup_activity_file();
+    read_activity(paths, LIVE_SETUP_JOURNALS.load(Ordering::SeqCst) == 0)
 }
 
 fn normalize_request_id(request_id: Option<String>) -> Result<String, String> {
@@ -2730,6 +3060,7 @@ fn apply_configuration_with_progress(
     request_id: &str,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
+    debug_assert!(operation_gate::held(), "configuration changes require the operation gate");
     let resources = host_resources().map_err(|e| e.to_string())?;
     validate_request(&request).map_err(|e| e.to_string())?;
     validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
@@ -2747,7 +3078,7 @@ fn apply_configuration_with_progress(
     let publish = |event: MachineConfigurationProgress| {
         let mut journal = journal.lock().unwrap_or_else(|error| error.into_inner());
         let event = journal.append(event);
-        if let Some(warning) = journal.events.last().filter(|entry| entry.step == "activity-storage-warning") {
+        if let Some(warning) = journal.events.back().filter(|entry| entry.step == "activity-storage-warning") {
             let _ = app.emit_to("main", "silo://machine-configuration-progress", warning);
         }
         let _ = app.emit_to("main", "silo://machine-configuration-progress", &event);
@@ -2777,8 +3108,7 @@ fn apply_configuration_with_progress(
                 retry_workspace.as_deref(),
                 &progress,
             ).and_then(|_| configuration_recovery::finish(paths))
-        })
-        .and_then(|_| read_application_state_with(&ProcessRunner, paths));
+        });
     let mut outcome = machine_progress(
         request_id,
         if result.is_ok() {
@@ -2797,7 +3127,7 @@ fn apply_configuration_with_progress(
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .events
-            .last()
+            .back()
             .cloned();
         if let Some(last) = last {
             outcome.workspace = last.workspace;
@@ -2808,7 +3138,9 @@ fn apply_configuration_with_progress(
         );
     }
     publish(outcome);
-    result.map_err(|error| safe_activity_error(&error))
+    result.map_err(|error| safe_activity_error(&error))?;
+    // The setup's outcome is decided above; refreshing the list is separate (D-11).
+    application_state_response(app, paths).map_err(|error| safe_activity_error(&error))
 }
 
 /// Resume a failed sandbox setup or verification without the UI resending a whole list.
@@ -2904,65 +3236,294 @@ pub async fn change_machine_configuration(
     result
 }
 
+/// Read every sandbox with no operation-overlap policy: each VM's reading is taken as
+/// settled. A VM whose own inspection fails is returned stale (its last known state with
+/// the reason) instead of failing every sandbox. Health checks and tests use this.
 fn read_application_state_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
 ) -> Result<ApplicationSource, RuntimeError> {
+    let workspaces = settle_rows(paths, read_rows(runner, paths)?, &|_| true)?;
+    application_source_for_workspaces(paths, workspaces)
+}
+
+/// One configured sandbox as read from the runtime, before settling.
+struct Row {
+    /// The fresh reading, or a placeholder when `unread` is set.
+    workspace: ApplicationWorkspace,
+    unread: Option<Unread>,
+}
+
+/// Why a configured VM has no fresh reading.
+enum Unread {
+    /// The runtime list disagrees with Silo's records for this VM (absent although
+    /// expected, or present while a pending restore expects none).
+    Mismatch,
+    /// Its own inspection failed.
+    Failed(RuntimeError),
+}
+
+const INVENTORY_MISMATCH: &str = "Silo's saved sandbox configuration does not match its managed runtime state. No sandbox operation was performed.";
+
+/// List and inspect every configured sandbox. Only a failure that no single sandbox
+/// explains (metadata, the runtime list, or a managed runtime VM Silo does not know)
+/// fails the whole read; a VM's own failure is carried in its row for `settle_rows`.
+fn read_rows(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Vec<Row>, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
     let listed = if metadata.machines.iter().any(MachineConfiguration::is_vm) {
         list_managed(runner, paths)?
     } else { Vec::new() };
     let listed_names: HashSet<&str> = listed.iter().map(|entry| entry.name.as_str()).collect();
-    let mut configured_names = HashSet::new();
-    for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
-        if !checkpoints::pending_view(paths, machine.id(), listed_names.contains(machine.name()))? {
-            configured_names.insert(machine.name());
+    let configured: HashSet<&str> = metadata.machines.iter().filter(|machine| machine.is_vm()).map(MachineConfiguration::name).collect();
+    if listed_names.iter().any(|name| !configured.contains(name)) {
+        return Err(RuntimeError::Malformed(INVENTORY_MISMATCH.into()));
+    }
+    // Whether each VM is read from Silo's pending-restore record rather than the runtime.
+    // An unreadable record (damaged, or written by a newer Silo) degrades only its own
+    // sandbox: the runtime decides, and its row is flagged when checkpoints are loaded.
+    let from_record = |machine: &MachineConfiguration| {
+        let listed = listed_names.contains(machine.name());
+        checkpoints::pending_view(paths, machine.id(), listed).unwrap_or(!listed)
+    };
+    let mut rows = Vec::with_capacity(metadata.machines.len());
+    for machine in metadata.machines.iter().cloned() {
+        if !machine.is_vm() {
+            rows.push(Row { workspace: ssh_workspace(machine), unread: None });
+            continue;
         }
-    }
-    if configured_names != listed_names {
-        return Err(RuntimeError::Malformed(
-            "Silo's saved sandbox configuration does not match its managed runtime state. No sandbox operation was performed.".into(),
-        ));
-    }
-
-    let mut workspaces = Vec::with_capacity(metadata.machines.len());
-    for machine in metadata.machines {
-        match &machine {
-            MachineConfiguration::Vm { name, .. } => {
-                if checkpoints::pending_view(paths, machine.id(), listed_names.contains(name.as_str()))? {
-                    workspaces.push(checkpoints::pending_workspace(machine)?);
-                    continue;
-                }
-                let inspected = inspect_workspace(runner, paths, name)?;
+        let listed = listed_names.contains(machine.name());
+        let row = match (from_record(&machine), listed) {
+            (true, false) => Row { workspace: checkpoints::pending_workspace(machine)?, unread: None },
+            (true, true) | (false, false) => Row { workspace: unread_workspace(machine), unread: Some(Unread::Mismatch) },
+            (false, true) => match inspect_workspace(runner, paths, machine.name()).and_then(|inspected| {
                 ensure_managed(&inspected)?;
-                workspaces.push(vm_workspace(paths, machine, &inspected));
+                Ok(inspected)
+            }) {
+                Ok(inspected) => Row { workspace: vm_workspace(paths, machine, &inspected), unread: None },
+                Err(error) => Row { workspace: unread_workspace(machine), unread: Some(Unread::Failed(error)) },
+            },
+        };
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+/// Publish rows. `settled(id)` is true when no operation touched the VM during the read.
+///
+/// - A touched VM keeps its last settled reading, marked `settling` (per the D-02 owner
+///   answer, the row keeps its last known state next to its operation label); with no
+///   earlier reading it shows this read's value, or a neutral placeholder.
+/// - An untouched VM whose own inspection failed keeps its last known state, marked
+///   `stale` with the reason, instead of failing every sandbox.
+/// - An inventory mismatch on an untouched VM fails the whole read, as before.
+fn settle_rows(
+    paths: &RuntimePaths,
+    rows: Vec<Row>,
+    settled: &dyn Fn(&str) -> bool,
+) -> Result<Vec<ApplicationWorkspace>, RuntimeError> {
+    let last = last_settled(paths);
+    rows.into_iter()
+        .map(|Row { mut workspace, unread }| {
+            if !workspace.machine.is_vm() {
+                return Ok(workspace);
             }
-            MachineConfiguration::Ssh { host, .. } => workspaces.push(ApplicationWorkspace {
-                can_dismiss_error: false,
-                lifecycle_failure: None,
-                machine: machine.clone(),
-                purpose: "SSH sandbox".into(),
-                state: WorkspaceState::Stopped,
-                state_detail: "Remote status is not connected.".into(),
-                attention: Some(WorkspaceAttention {
-                    level: AttentionLevel::Warning,
-                    message: "Silo has not connected to this SSH sandbox.".into(),
-                }),
-                freshness: Freshness::Fresh,
-                host: host.clone(),
-                repositories: Vec::new(),
-                files: Vec::new(),
-                ports: Vec::new(),
-                logs: Vec::new(),
-                github_repositories: Vec::new(),
-                secret_names: Vec::new(),
-                checkpoints: Vec::new(),
-                pending_checkpoint_restore: None,
-                checkpoint_operation: None,
-            }),
+            let previous = last.get(workspace.machine.id());
+            if !settled(workspace.machine.id()) {
+                match (previous, &unread) {
+                    (Some(previous), _) => keep_runtime_fields(&mut workspace, previous),
+                    (None, Some(_)) => {
+                        workspace.state = WorkspaceState::Starting;
+                        workspace.state_detail = "Updating".into();
+                    }
+                    (None, None) => {}
+                }
+                workspace.settling = true;
+                return Ok(workspace);
+            }
+            match unread {
+                None => Ok(workspace),
+                Some(Unread::Mismatch) => Err(RuntimeError::Malformed(INVENTORY_MISMATCH.into())),
+                Some(Unread::Failed(error)) => {
+                    if let Some(previous) = previous {
+                        keep_runtime_fields(&mut workspace, previous);
+                    }
+                    workspace.freshness = Freshness::Stale;
+                    workspace.attention = Some(WorkspaceAttention {
+                        level: AttentionLevel::Warning,
+                        message: format!("Silo could not refresh this sandbox's state. {}", safe_activity_error(&error)),
+                    });
+                    Ok(workspace)
+                }
+            }
+        })
+        .collect()
+}
+
+/// Copy the runtime-derived fields of an earlier reading; Silo's records stay current.
+fn keep_runtime_fields(workspace: &mut ApplicationWorkspace, previous: &ApplicationWorkspace) {
+    workspace.state = previous.state;
+    workspace.state_detail = previous.state_detail.clone();
+    workspace.attention = previous.attention.clone();
+    workspace.can_dismiss_error = previous.can_dismiss_error;
+    workspace.repositories = previous.repositories.clone();
+}
+
+/// Each VM's last settled, fresh reading (after enrichment), keyed by the inventory it
+/// belongs to and the VM's stable id. Returned in place of readings that overlap work.
+type SettledReadings = HashMap<(PathBuf, String), ApplicationWorkspace>;
+static LAST_SETTLED: OnceLock<Mutex<SettledReadings>> = OnceLock::new();
+
+fn settled_readings() -> std::sync::MutexGuard<'static, SettledReadings> {
+    // A cache of readings: a panic while holding it cannot leave a reading half-written.
+    LAST_SETTLED
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn last_settled(paths: &RuntimePaths) -> HashMap<String, ApplicationWorkspace> {
+    settled_readings()
+        .iter()
+        .filter(|((metadata, _), _)| *metadata == paths.metadata)
+        .map(|((_, id), workspace)| (id.clone(), workspace.clone()))
+        .collect()
+}
+
+/// Remember the fresh, settled VM rows of a published source, and forget removed VMs.
+fn remember_settled(paths: &RuntimePaths, workspaces: &[ApplicationWorkspace]) {
+    let present: HashSet<&str> = workspaces.iter().map(|workspace| workspace.machine.id()).collect();
+    let mut readings = settled_readings();
+    readings.retain(|(metadata, id), _| *metadata != paths.metadata || present.contains(id.as_str()));
+    for workspace in workspaces {
+        if workspace.machine.is_vm() && !workspace.settling && workspace.freshness == Freshness::Fresh {
+            readings.insert((paths.metadata.clone(), workspace.machine.id().to_owned()), workspace.clone());
         }
     }
+}
+
+/// The state a change returns once it has succeeded. It is enriched like a normal read
+/// (GitHub state, push operations, repositories) so publishing it does not blank those
+/// panels (D-08), and a failed refresh never turns the finished change into an error
+/// (D-11): see `state_after_change`.
+pub(crate) fn application_state_response(
+    app: &AppHandle,
+    paths: &RuntimePaths,
+) -> Result<ApplicationSource, RuntimeError> {
+    let mut source = state_after_change(&ProcessRunner, paths, &OPERATIONS)?;
+    enrich_application_state(app, paths, &mut source, Repositories::LastKnown);
+    remember_settled(paths, &source.workspaces);
+    Ok(source)
+}
+
+/// State returned by a change that already succeeded. Its outcome and the refresh are
+/// separate: when the follow-up read fails, every VM keeps its last known state, marked
+/// stale with the reason, instead of the finished change being reported as failed.
+/// Work on other VMs settles their rows as in a normal read; the caller's own operation
+/// (if it still holds the gate) does not.
+fn state_after_change(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    gate: &operation_gate::OperationGate,
+) -> Result<ApplicationSource, RuntimeError> {
+    let started = gate.generations();
+    let settled = |id: &str| gate.is_vm_quiet(id) && gate.generation(id) == started.of(id);
+    let workspaces = match read_rows(runner, paths).and_then(|rows| settle_rows(paths, rows, &settled)) {
+        Ok(workspaces) => workspaces,
+        Err(error) => last_known_workspaces(paths, &error)?,
+    };
     application_source_for_workspaces(paths, workspaces)
+}
+
+fn last_known_workspaces(paths: &RuntimePaths, error: &RuntimeError) -> Result<Vec<ApplicationWorkspace>, RuntimeError> {
+    let last = last_settled(paths);
+    let message = format!("The change finished, but Silo could not refresh sandbox states. {}", safe_activity_error(error));
+    Ok(read_metadata(&paths.metadata)?
+        .machines
+        .into_iter()
+        .map(|machine| {
+            if !machine.is_vm() {
+                return ssh_workspace(machine);
+            }
+            let mut workspace = unread_workspace(machine);
+            if let Some(previous) = last.get(workspace.machine.id()) {
+                keep_runtime_fields(&mut workspace, previous);
+            }
+            workspace.freshness = Freshness::Stale;
+            workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message: message.clone() });
+            workspace
+        })
+        .collect())
+}
+
+/// A change's response does not scan guests: each fresh running VM shows the
+/// repositories of its last settled reading until the next full read refreshes them.
+fn keep_last_known_repositories(paths: &RuntimePaths, workspaces: &mut [ApplicationWorkspace]) {
+    let last = last_settled(paths);
+    for workspace in workspaces {
+        if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running) && workspace.repositories.is_empty() {
+            if let Some(previous) = last.get(workspace.machine.id()) {
+                workspace.repositories = previous.repositories.clone();
+            }
+        }
+    }
+}
+
+/// A VM row with no reading yet; its runtime fields are replaced when settled.
+fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
+    ApplicationWorkspace {
+        machine,
+        purpose: "Local MicroSandbox".into(),
+        state: WorkspaceState::Failed,
+        state_detail: "State unavailable".into(),
+        can_dismiss_error: false,
+        lifecycle_failure: None,
+        attention: None,
+        freshness: Freshness::Fresh,
+        settling: false,
+        host: "127.0.0.1".into(),
+        repositories: Vec::new(),
+        files: Vec::new(),
+        ports: Vec::new(),
+        logs: Vec::new(),
+        github_repositories: Vec::new(),
+        secret_names: Vec::new(),
+        checkpoints: Vec::new(),
+        pending_checkpoint_restore: None,
+        checkpoint_operation: None,
+        unfinished_restore: None,
+    }
+}
+
+fn ssh_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
+    let host = match &machine {
+        MachineConfiguration::Ssh { host, .. } => host.clone(),
+        MachineConfiguration::Vm { .. } => String::new(),
+    };
+    ApplicationWorkspace {
+        can_dismiss_error: false,
+        lifecycle_failure: None,
+        machine,
+        purpose: "SSH sandbox".into(),
+        state: WorkspaceState::Stopped,
+        state_detail: "Remote status is not connected.".into(),
+        attention: Some(WorkspaceAttention {
+            level: AttentionLevel::Warning,
+            message: "Silo has not connected to this SSH sandbox.".into(),
+        }),
+        freshness: Freshness::Fresh,
+        settling: false,
+        host,
+        repositories: Vec::new(),
+        files: Vec::new(),
+        ports: Vec::new(),
+        logs: Vec::new(),
+        github_repositories: Vec::new(),
+        secret_names: Vec::new(),
+        checkpoints: Vec::new(),
+        pending_checkpoint_restore: None,
+        checkpoint_operation: None,
+        unfinished_restore: None,
+    }
 }
 
 /// A persisted running checkpoint operation is interrupted only when no operation
@@ -2983,11 +3544,26 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
     for workspace in &mut workspaces {
         if workspace.machine.is_vm() {
             workspace.lifecycle_failure = failures.remove(workspace.machine.id());
-            let checkpoint = checkpoints::load(paths, workspace.machine.id())?;
-            workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
-            workspace.checkpoints = checkpoint.checkpoints;
-            let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
-            workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
+            match checkpoints::load(paths, workspace.machine.id()) {
+                Ok(checkpoint) => {
+                    workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
+                    workspace.unfinished_restore = checkpoints::view_unfinished_restore(&checkpoint);
+                    workspace.checkpoints = checkpoint.checkpoints;
+                    let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
+                    workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
+                }
+                // One unreadable record must not fail every sandbox: flag only this one.
+                Err(error) => {
+                    workspace.checkpoints = Vec::new();
+                    workspace.pending_checkpoint_restore = None;
+                    workspace.checkpoint_operation = None;
+                    workspace.unfinished_restore = None;
+                    workspace.attention = Some(WorkspaceAttention {
+                        level: AttentionLevel::Error,
+                        message: format!("{error} Checkpoints and actions that need them are unavailable for this sandbox."),
+                    });
+                }
+            }
         }
         workspace.secret_names = secrets.iter().filter(|secret| secret["removing"] != true && secret["workspaces"].as_array().is_some_and(|names| names.iter().any(|name| name.as_str() == Some(workspace.machine.name()))))
             .filter_map(|secret| secret["name"].as_str().map(str::to_owned)).collect();
@@ -3029,6 +3605,7 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
             startup_workspace_ids,
             reduce_motion: false,
         },
+        host_capacity: host_resources().ok().as_ref().and_then(HostCapacity::of),
     })
 }
 
@@ -3182,6 +3759,7 @@ fn vm_workspace(
         lifecycle_failure: None,
         attention,
         freshness: Freshness::Fresh,
+        settling: false,
         host: "127.0.0.1".into(),
         repositories: Vec::new(),
         files: Vec::new(),
@@ -3192,6 +3770,7 @@ fn vm_workspace(
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
+        unfinished_restore: None,
     }
 }
 
@@ -3278,18 +3857,74 @@ fn configuration_attention(
 
 pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
     let paths = runtime_paths(app)?;
-    // Launch-time start reads the shared inventory to resolve the VM; computer-wide.
-    let _guard = OPERATIONS
-        .kind(operation_gate::OperationKind::Lifecycle)
-        .computer("Starting sandbox")
-        .map_err(|e| e.to_string())?;
+    // A launch start changes only its VM, so it takes that VM's lane like a user Start:
+    // other sandboxes' actions and state are not held behind each boot.
+    let guard = match launch_start_guard(&OPERATIONS, &paths, id).map_err(|error| safe_activity_error(&error))? {
+        LaunchAdmission::Admitted(guard) => Some(guard),
+        LaunchAdmission::Unguarded => None,
+        LaunchAdmission::Skipped => return Ok(()),
+    };
     shutdown::ensure_accepting_operations()?;
     if crate::startup::is_cancelled(app) {
         return Ok(());
     }
-    host_resources()
-        .and_then(|host| start_at_launch_with(&ProcessRunner, &paths, &host, id))
-        .map_err(|error| safe_activity_error(&error))
+    let outcome = host_resources().and_then(|host| start_at_launch_with(&ProcessRunner, &paths, &host, id));
+    drop(guard);
+    match outcome {
+        Ok(LaunchStart::Done) => Ok(()),
+        Ok(LaunchStart::NeedsExplicitStart(name)) => Err(format!(
+            "{name} starts from a checkpoint and needs an explicit Start from its sandbox view."
+        )),
+        // The user cancelled this start from the queue; that is not a launch failure.
+        Err(RuntimeError::Cancelled { .. }) => Ok(()),
+        Err(error) => Err(safe_activity_error(&error)),
+    }
+}
+
+enum LaunchAdmission<'a> {
+    /// Run the start holding this VM's lane.
+    Admitted(operation_gate::OperationGuard<'a>),
+    /// Not a configured local VM: run unguarded so `start_at_launch_with` reports why.
+    Unguarded,
+    /// The user already queued the same Start, or cancelled this one while it waited.
+    Skipped,
+}
+
+/// Admit a launch-time start on the selected VM's own lane, with the same label, kind,
+/// dedupe key, cancellability and expected duration as a user Start.
+fn launch_start_guard<'a>(
+    gate: &'a operation_gate::OperationGate,
+    paths: &RuntimePaths,
+    id: &str,
+) -> Result<LaunchAdmission<'a>, RuntimeError> {
+    let metadata = read_metadata(&paths.metadata)?;
+    let Some(machine) = metadata.machines.iter().find(|machine| machine.id() == id && machine.is_vm()) else {
+        return Ok(LaunchAdmission::Unguarded);
+    };
+    let guard = gate.kind(operation_gate::OperationKind::Lifecycle).acquire(
+        operation_gate::Scope::Vm { id: id.to_owned() },
+        Some(machine.name().to_owned()),
+        &lifecycle_label("start", machine.name()),
+        Some(format!("vm:{id}:start")),
+    );
+    match guard {
+        Ok(guard) => {
+            guard.allow_cancel();
+            guard.expect_within(Duration::from_secs(180));
+            Ok(LaunchAdmission::Admitted(guard))
+        }
+        Err(operation_gate::GateError::AlreadyQueued | operation_gate::GateError::Cancelled) => Ok(LaunchAdmission::Skipped),
+        Err(error) => Err(RuntimeError::from(error)),
+    }
+}
+
+/// What a launch-time start did for one selected VM.
+#[derive(Debug, PartialEq, Eq)]
+enum LaunchStart {
+    /// Started, or already running.
+    Done,
+    /// A fork or restore waits for its first explicit Start; it was not started.
+    NeedsExplicitStart(String),
 }
 
 fn start_at_launch_with(
@@ -3297,7 +3932,7 @@ fn start_at_launch_with(
     paths: &RuntimePaths,
     host: &HostResources,
     id: &str,
-) -> Result<(), RuntimeError> {
+) -> Result<LaunchStart, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
     let machine = metadata.machines.iter().find(|machine| machine.id() == id)
         .ok_or_else(|| RuntimeError::Invalid("A sandbox selected for launch no longer exists. Update the startup selection in Settings.".into()))?;
@@ -3308,7 +3943,7 @@ fn start_at_launch_with(
         )));
     }
     if checkpoints::needs_explicit_start(paths, machine.id())? {
-        return Ok(());
+        return Ok(LaunchStart::NeedsExplicitStart(name.to_owned()));
     }
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
@@ -3324,8 +3959,11 @@ fn start_at_launch_with(
             ))),
         }
     })();
-    result
-        .map_err(|error| RuntimeError::Invalid(format!("{name}: {}", safe_activity_error(&error))))
+    match result {
+        Ok(()) => Ok(LaunchStart::Done),
+        Err(error @ RuntimeError::Cancelled { .. }) => Err(error),
+        Err(error) => Err(RuntimeError::Invalid(format!("{name}: {}", safe_activity_error(&error)))),
+    }
 }
 
 // Both local and remote user actions must activate the same selected checkpoint.
@@ -3362,7 +4000,7 @@ fn workspace_action_with(
         if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
             .find(|machine| machine.is_vm() && machine.name() == name) {
             if checkpoints::needs_explicit_start(paths, machine.id())? {
-                return Err(RuntimeError::Invalid("This fork needs its first explicit Start from the workspace view.".into()));
+                return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
             }
         }
     }
@@ -3451,7 +4089,9 @@ fn apply_whole_configuration_with_progress(
             lifecycle_recovery::forget_removed(paths, machine)?;
             crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             forget_github_state(&paths.home, machine.name());
+            crate::github::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             remove_machine_volumes(paths, machine)?;
+            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name());
             checkpoints::forget_removed(paths, machine.id())?;
             progress("workspace-removal", machine.name(), 1);
         }
@@ -3994,26 +4634,55 @@ fn update_machine(
     }
 }
 
+/// What deleting a VM removes from the runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemovalTarget {
+    /// Nothing: an SSH entry, or a pending checkpoint restore with no runtime VM yet.
+    Nothing,
+    /// An ordinary stopped VM.
+    Stopped,
+    /// The runtime VM a pending restore's attempt created (then failed verification or
+    /// timed out). Its sandbox cannot be started or stopped normally, so deletion stops
+    /// it first when it is still running.
+    RestoreAttempt { running: bool },
+}
+
 fn preflight_removal(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
-) -> Result<(), RuntimeError> {
+) -> Result<RemovalTarget, RuntimeError> {
     let MachineConfiguration::Vm { name, .. } = machine else {
-        return Ok(());
+        return Ok(RemovalTarget::Nothing);
     };
-    if checkpoints::is_pending(paths, machine.id())? { return Ok(()); }
-    let inspected = inspect_workspace(runner, paths, name)?;
+    // An unreadable checkpoint record leaves the pending state unknown; the runtime and
+    // its labels then decide, so a damaged record never blocks deleting its sandbox.
+    let pending = checkpoints::is_pending(paths, machine.id()).ok();
+    let inspected = match inspect_workspace(runner, paths, name) {
+        Ok(inspected) => inspected,
+        Err(error) if pending != Some(false) && is_missing_sandbox(&error) => return Ok(RemovalTarget::Nothing),
+        Err(error) => return Err(error),
+    };
     ensure_managed(&inspected)?;
     if inspected.name != *name || inspected.config.pointer("/labels/silo.machine-id").and_then(Value::as_str) != Some(machine.id()) {
         return Err(RuntimeError::Invalid("The sandbox selected for deletion changed identity. It was preserved.".into()));
     }
-    if !matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed") {
+    let stopped = matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed");
+    let attempt = inspected.config.pointer("/labels/silo.restore-attempt").and_then(Value::as_str).is_some();
+    if pending != Some(false) && attempt {
+        return Ok(RemovalTarget::RestoreAttempt { running: !stopped });
+    }
+    if pending == Some(true) {
+        return Err(RuntimeError::Invalid(format!(
+            "A runtime sandbox named '{name}' was not created by this sandbox's checkpoint restore. It was preserved."
+        )));
+    }
+    if !stopped {
         return Err(RuntimeError::Invalid(format!(
             "Stop sandbox '{name}' before removing it from Silo. This sandbox was not removed."
         )));
     }
-    Ok(())
+    Ok(RemovalTarget::Stopped)
 }
 
 fn remove_machine_runtime(
@@ -4021,14 +4690,17 @@ fn remove_machine_runtime(
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
-    let MachineConfiguration::Vm { name, .. } = machine else {
-        return Ok(());
-    };
-    preflight_removal(runner, paths, machine)?;
-    if checkpoints::is_pending(paths, machine.id())? { return Ok(()); }
+    let name = machine.name();
+    match preflight_removal(runner, paths, machine)? {
+        RemovalTarget::Nothing => return Ok(()),
+        RemovalTarget::Stopped | RemovalTarget::RestoreAttempt { running: false } => {}
+        RemovalTarget::RestoreAttempt { running: true } => {
+            runner.run(paths, &["stop".into(), name.into(), "--quiet".into()], STOP_TIMEOUT)?;
+        }
+    }
     runner.run(
         paths,
-        &["remove".into(), "--quiet".into(), name.clone()],
+        &["remove".into(), "--quiet".into(), name.into()],
         STOP_TIMEOUT,
     )?;
     Ok(())
@@ -4273,6 +4945,67 @@ mod tests {
             lifecycle_failure(&RuntimeError::from(operation_gate::GateError::Nested)),
             LifecycleFailure::Failed
         );
+    }
+
+    #[test]
+    fn auto_retry_attempts_keep_the_first_attempts_start_time() {
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let seen = Mutex::new(Vec::new());
+        let delays = [Duration::from_millis(20), Duration::from_millis(20)];
+        let result: Result<(), RuntimeError> = gated_auto_retry_classified(
+            &delays,
+            "Stopping since-dev",
+            |label| gate.vm("since-dev-id", "since-dev", label).map_err(RuntimeError::from),
+            |_guard| {},
+            || {
+                let mut seen = seen.lock().unwrap();
+                seen.push(gate.snapshot().running[0].since_ms);
+                if seen.len() < 3 { Err(RuntimeError::TimedOut { operation: "Stopping since-dev".into() }) } else { Ok(()) }
+            },
+            transient_runtime_error,
+            || RuntimeError::Cancelled { operation: "Stopping since-dev".into() },
+        );
+        assert!(result.is_ok());
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(seen.iter().all(|since| *since == seen[0]), "{seen:?}");
+    }
+
+    #[test]
+    fn auto_retry_does_not_resume_after_a_quit_began_even_if_it_failed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Reopen;
+        impl Drop for Reopen {
+            fn drop(&mut self) { shutdown::cancel(); }
+        }
+        let gate: &'static operation_gate::OperationGate =
+            Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let attempts = AtomicUsize::new(0);
+        let delays = [Duration::from_millis(300), Duration::from_millis(300)];
+        let result: Result<(), RuntimeError> = gated_auto_retry_classified(
+            &delays,
+            "Starting quit-dev",
+            |label| gate.vm("quit-dev-id", "quit-dev", label).map_err(RuntimeError::from),
+            |_guard| {},
+            || {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // Quit begins while this attempt backs off, stops the VMs, fails fast
+                    // and reopens admission before the backoff ends.
+                    std::thread::spawn(|| {
+                        std::thread::sleep(Duration::from_millis(50));
+                        let _reopen = Reopen;
+                        shutdown::begin();
+                    });
+                }
+                Err(RuntimeError::TimedOut { operation: "Starting quit-dev".into() })
+            },
+            transient_runtime_error,
+            || RuntimeError::Cancelled { operation: "Starting quit-dev".into() },
+        );
+        assert!(matches!(result, Err(RuntimeError::Cancelled { .. })), "{result:?}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(shutdown::ensure_accepting_operations().is_ok());
     }
 
     #[test]
@@ -4782,6 +5515,70 @@ esac
     }
 
     #[test]
+    fn setup_activity_is_interrupted_only_when_no_setup_journal_is_live() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+        journal.append(machine_progress("attempt", "setup-started", "", 0));
+        journal.append(machine_progress("attempt", "workspace-configuration", "dev", 0));
+        // While the setup runs, its unfinished history is current, not interrupted.
+        let running = read_setup_activity_at(&paths).unwrap();
+        assert_eq!(running.last().unwrap().step, "workspace-configuration");
+        drop(journal);
+        // Unrelated work, such as a launch auto-start on another sandbox, does not make an
+        // interrupted setup look in progress.
+        let _launch = OPERATIONS.vm("setup-activity-other-id", "other", "Starting other").unwrap();
+        let recovered = read_setup_activity_at(&paths).unwrap();
+        assert_eq!(recovered.last().unwrap().step, "setup-interrupted");
+        assert_eq!(read_activity(&paths, false).unwrap().len(), 3);
+    }
+
+    fn download_progress(bytes: u64) -> MachineConfigurationProgress {
+        let mut event = machine_progress("attempt", "image-download", "dev", 0);
+        event.step = "image-download".into();
+        event.fraction = None;
+        event.downloaded_bytes = Some(bytes);
+        event
+    }
+
+    #[test]
+    fn repeated_progress_is_saved_at_stage_boundaries_and_when_the_journal_ends() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let saved_bytes = || read_activity(&paths, false).unwrap().iter().rev()
+            .find(|event| event.step == "image-download").and_then(|event| event.downloaded_bytes);
+        let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+        journal.append(machine_progress("attempt", "setup-started", "", 0));
+        journal.append(download_progress(1));
+        assert_eq!(saved_bytes(), Some(1), "a new stage is saved immediately");
+        journal.append(download_progress(2));
+        journal.append(download_progress(3));
+        assert_eq!(saved_bytes(), Some(1), "repeated progress within a stage is throttled");
+        assert_eq!(journal.events.len(), 2, "repeated progress replaces the previous update");
+        journal.append(machine_progress("attempt", "workspace-configuration", "dev", 1));
+        assert_eq!(saved_bytes(), Some(3), "a boundary saves the latest progress with it");
+        journal.append(download_progress(4));
+        journal.append(download_progress(5));
+        drop(journal);
+        assert_eq!(saved_bytes(), Some(5), "the last update is saved when the journal ends");
+    }
+
+    #[test]
+    fn a_full_journal_keeps_its_first_event_and_drops_the_oldest_progress() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = ActivityJournal::start(&paths(&directory), "attempt").unwrap();
+        journal.append(machine_progress("attempt", "setup-started", "", 0));
+        for index in 0..MAX_ACTIVITY_EVENTS {
+            let name = format!("vm{index}");
+            journal.append(machine_progress("attempt", "workspace-configuration", &name, 0));
+        }
+        assert_eq!(journal.events.len(), MAX_ACTIVITY_EVENTS);
+        assert_eq!(journal.events[0].step, "setup-started");
+        assert_eq!(journal.events[1].workspace, "vm1");
+        assert_eq!(journal.events.back().unwrap().workspace, format!("vm{}", MAX_ACTIVITY_EVENTS - 1));
+    }
+
+    #[test]
     fn activity_does_not_publish_private_runtime_error_details() {
         let error = RuntimeError::Failed { operation: "Creating the sandbox".into(), detail: "error sending request https://user:SECRET@registry.test/image?token=SECRET /Users/alice/private".into() };
         let safe = safe_activity_error(&error);
@@ -4805,7 +5602,7 @@ esac
         ));
         assert_eq!(event.fraction, Some(1));
         assert_eq!(
-            journal.events.last().unwrap().step,
+            journal.events.back().unwrap().step,
             "activity-storage-warning"
         );
         assert!(journal.events.iter().any(|event| event.fraction == Some(1)));
@@ -5326,6 +6123,26 @@ esac
     }
 
     #[test]
+    fn deleting_a_sandbox_removes_its_github_assignment() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let document = directory.path().join("github.json");
+        std::fs::write(&document, serde_json::to_vec(&json!({"revision":3,"accessEnabled":true,"account":null,
+            "workspaces":[{"workspace":"dev","repositoryMode":"all","allRepositoriesAllowChanges":true,"repositories":[],
+                "identity":{"name":"","email":"","apply":false}}],"accessPending":["dev"]})).unwrap()).unwrap();
+        crate::github::use_test_document(Some(document.clone()));
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        let result = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]));
+        crate::github::use_test_document(None);
+        result.unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&document).unwrap()).unwrap();
+        assert_eq!(saved["workspaces"], json!([]), "a new sandbox named dev would inherit write access");
+        assert_eq!(saved["accessPending"], json!([]));
+    }
+
+    #[test]
     fn duplicate_lifecycle_request_is_handed_off_not_failed() {
         let (result, handed_off) = hand_off_duplicate(Err(RuntimeError::from(operation_gate::GateError::AlreadyQueued)));
         assert!(result.is_ok() && handed_off);
@@ -5367,8 +6184,332 @@ esac
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
-        assert_eq!(read_application_snapshot(&runner, &paths, &|| false).unwrap_err(), "SILO_SANDBOX_UPDATE_IN_PROGRESS");
-        assert!(read_application_snapshot(&runner, &paths, &|| true).unwrap_err().contains("does not match"));
+        let gate = operation_gate::OperationGate::new();
+        let change = gate.computer("Applying sandbox changes").unwrap();
+        assert_eq!(read_application_snapshot(&runner, &paths, &gate).unwrap_err(), "SILO_SANDBOX_UPDATE_IN_PROGRESS");
+        drop(change);
+        assert!(read_application_snapshot(&runner, &paths, &gate).unwrap_err().contains("does not match"));
+    }
+
+    fn leaked_gate() -> &'static operation_gate::OperationGate {
+        Box::leak(Box::new(operation_gate::OperationGate::new()))
+    }
+
+    /// Hold the guard `acquire` takes on another thread until the sender is dropped.
+    fn hold_elsewhere(
+        gate: &'static operation_gate::OperationGate,
+        acquire: impl FnOnce(&'static operation_gate::OperationGate) -> operation_gate::OperationGuard<'static> + Send + 'static,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (held, holding) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _guard = acquire(gate);
+            held.send(()).unwrap();
+            let _ = released.recv();
+        });
+        holding.recv().unwrap();
+        (release, holder)
+    }
+
+    fn two_vm_reading(paths: &RuntimePaths, dev: &str, work: &str) -> StubRunner {
+        StubRunner::successful_json(vec![
+            json!([{"name": "dev"}, {"name": "work"}]),
+            inspect_named(paths, &vm(), dev),
+            inspect_named(paths, &second_vm(), work),
+        ])
+    }
+
+    fn row<'a>(source: &'a Value, name: &str) -> &'a Value {
+        source["workspaces"].as_array().unwrap().iter().find(|row| row["machine"]["name"] == name).unwrap()
+    }
+
+    fn published(source: &ApplicationSource) -> Value {
+        serde_json::to_value(source).unwrap()
+    }
+
+    #[test]
+    fn a_busy_vm_keeps_its_last_settled_reading_while_other_rows_refresh() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        let first = read_application_snapshot(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate).unwrap();
+        remember_settled(&paths, &first.workspaces);
+        // A checkpoint pauses dev while work is started outside it.
+        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm(vm().id(), "dev", "Creating checkpoint").unwrap());
+        let busy = read_application_snapshot(&two_vm_reading(&paths, "Paused", "Running"), &paths, gate).unwrap();
+        let encoded = published(&busy);
+        assert_eq!((row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["settling"].as_bool()), (Some("running"), Some(true)));
+        assert_eq!(row(&encoded, "dev")["freshness"], "fresh");
+        assert_eq!(row(&encoded, "work")["state"], "running");
+        assert!(row(&encoded, "work").get("settling").is_none());
+        // A settling row never replaces the remembered reading.
+        remember_settled(&paths, &busy.workspaces);
+        assert!(matches!(last_settled(&paths)[vm().id()].state, WorkspaceState::Running));
+        drop(release);
+        holder.join().unwrap();
+        // Once nothing touches dev during a read, its row is fresh again.
+        let settled = published(&read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate).unwrap());
+        assert_eq!(row(&settled, "dev")["state"], "stopped");
+        assert!(row(&settled, "dev").get("settling").is_none());
+    }
+
+    #[test]
+    fn a_busy_vm_missing_from_the_runtime_or_unreadable_does_not_fail_the_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate).unwrap().workspaces);
+        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm(vm().id(), "dev", "Restoring checkpoint").unwrap());
+        // A restore has removed dev's runtime VM and not yet recreated it.
+        let removed = StubRunner::successful_json(vec![json!([{"name": "work"}]), inspect_named(&paths, &second_vm(), "Running")]);
+        let encoded = published(&read_application_snapshot(&removed, &paths, gate).unwrap());
+        assert_eq!((row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["settling"].as_bool()), (Some("stopped"), Some(true)));
+        assert_eq!(row(&encoded, "work")["state"], "running");
+        // Its inspection fails while the restore finishes.
+        let unreadable = StubRunner::new(vec![
+            identity_output(&json!([{"name": "dev"}, {"name": "work"}]).to_string()),
+            Err(RuntimeError::TimedOut { operation: "inspect dev".into() }),
+            identity_output(&inspect_named(&paths, &second_vm(), "Running").to_string()),
+        ]);
+        let encoded = published(&read_application_snapshot(&unreadable, &paths, gate).unwrap());
+        assert_eq!((row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["settling"].as_bool()), (Some("stopped"), Some(true)));
+        assert!(row(&encoded, "dev").get("attention").is_none());
+        // With no earlier reading, a busy unreadable VM shows a neutral updating row.
+        let fresh_directory = tempfile::tempdir().unwrap();
+        let fresh_paths = super::tests::paths(&fresh_directory);
+        write_metadata(&fresh_paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let removed = StubRunner::successful_json(vec![json!([{"name": "work"}]), inspect_named(&fresh_paths, &second_vm(), "Running")]);
+        let encoded = published(&read_application_snapshot(&removed, &fresh_paths, gate).unwrap());
+        assert_eq!(
+            (row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["stateDetail"].as_str(), row(&encoded, "dev")["settling"].as_bool()),
+            (Some("starting"), Some("Updating"), Some(true)),
+        );
+        drop(release);
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn hidden_housekeeping_and_launch_starts_never_defer_or_settle_other_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        let (release, holder) = hold_elsewhere(gate, |gate| gate.try_computer_hidden("Cleaning up expired logs").unwrap());
+        let encoded = published(&read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate).unwrap());
+        assert!(encoded["workspaces"].as_array().unwrap().iter().all(|row| row.get("settling").is_none()));
+        drop(release);
+        holder.join().unwrap();
+        // The first read at launch succeeds while a selected sandbox boots.
+        let launch_paths = paths.clone();
+        let (release, holder) = hold_elsewhere(gate, move |gate| match launch_start_guard(gate, &launch_paths, vm().id()).unwrap() {
+            LaunchAdmission::Admitted(guard) => guard,
+            _ => panic!("the launch start was not admitted"),
+        });
+        let encoded = published(&read_application_snapshot(&two_vm_reading(&paths, "Starting", "Running"), &paths, gate).unwrap());
+        assert_eq!(row(&encoded, "dev")["settling"], true);
+        assert!(row(&encoded, "work").get("settling").is_none());
+        drop(release);
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn an_idle_vm_whose_inspection_fails_is_stale_with_its_last_known_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate).unwrap().workspaces);
+        let unreadable = || StubRunner::new(vec![
+            identity_output(&json!([{"name": "dev"}, {"name": "work"}]).to_string()),
+            Err(RuntimeError::TimedOut { operation: "inspect dev".into() }),
+            identity_output(&inspect_named(&paths, &second_vm(), "Stopped").to_string()),
+        ]);
+        for source in [
+            read_application_snapshot(&unreadable(), &paths, gate).unwrap(),
+            read_application_state_with(&unreadable(), &paths).unwrap(),
+        ] {
+            let encoded = published(&source);
+            let dev = row(&encoded, "dev");
+            assert_eq!((dev["state"].as_str(), dev["freshness"].as_str()), (Some("running"), Some("stale")));
+            assert_eq!(dev["attention"]["level"], "warning");
+            assert!(dev["attention"]["message"].as_str().unwrap().contains("could not refresh"));
+            assert!(dev.get("settling").is_none());
+            assert_eq!((row(&encoded, "work")["state"].as_str(), row(&encoded, "work")["freshness"].as_str()), (Some("stopped"), Some("fresh")));
+            // A stale row is never remembered as a settled reading.
+            remember_settled(&paths, &source.workspaces);
+            assert!(matches!(last_settled(&paths)[vm().id()].freshness, Freshness::Fresh));
+        }
+    }
+    #[test]
+    fn a_finished_change_is_not_reported_failed_when_the_refresh_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate).unwrap().workspaces);
+        // One VM's inspection times out after the change: only its row is stale.
+        let unreadable = StubRunner::new(vec![
+            identity_output(&json!([{"name": "dev"}, {"name": "work"}]).to_string()),
+            Err(RuntimeError::TimedOut { operation: "inspect dev".into() }),
+            identity_output(&inspect_named(&paths, &second_vm(), "Running").to_string()),
+        ]);
+        let encoded = published(&state_after_change(&unreadable, &paths, gate).unwrap());
+        assert_eq!((row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["freshness"].as_str()), (Some("running"), Some("stale")));
+        assert_eq!((row(&encoded, "work")["state"].as_str(), row(&encoded, "work")["freshness"].as_str()), (Some("running"), Some("fresh")));
+        // The whole read fails: every VM keeps its last known state with the reason.
+        let failed = StubRunner::new(vec![Err(RuntimeError::Unavailable("synthetic runtime read failure".into()))]);
+        let encoded = published(&state_after_change(&failed, &paths, gate).unwrap());
+        for (name, state) in [("dev", "running"), ("work", "stopped")] {
+            let stale = row(&encoded, name);
+            assert_eq!((stale["state"].as_str(), stale["freshness"].as_str()), (Some(state), Some("stale")), "{name}");
+            assert!(stale["attention"]["message"].as_str().unwrap().contains("The change finished"));
+        }
+    }
+
+    #[test]
+    fn a_change_response_settles_other_busy_vms_but_not_the_callers_own_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate).unwrap().workspaces);
+        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm(second_vm().id(), "work", "Creating checkpoint").unwrap());
+        // The caller still holds dev's lane while it reads its own result.
+        let own = gate.vm(vm().id(), "dev", "Stopping dev").unwrap();
+        let encoded = published(&state_after_change(&two_vm_reading(&paths, "Stopped", "Paused"), &paths, gate).unwrap());
+        drop(own);
+        assert_eq!(row(&encoded, "dev")["state"], "stopped");
+        assert!(row(&encoded, "dev").get("settling").is_none());
+        assert_eq!((row(&encoded, "work")["state"].as_str(), row(&encoded, "work")["settling"].as_bool()), (Some("running"), Some(true)));
+        drop(release);
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn a_change_response_keeps_running_vms_repositories_until_the_next_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        let mut first = read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate).unwrap();
+        let repositories = vec![json!({"path": "/workspace/app", "branch": "main", "ahead": 0, "behind": 0, "dirty": false})];
+        first.workspaces[0].repositories = repositories.clone();
+        remember_settled(&paths, &first.workspaces);
+        let mut response = state_after_change(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate).unwrap();
+        keep_last_known_repositories(&paths, &mut response.workspaces);
+        assert_eq!(response.workspaces[0].repositories, repositories);
+        assert!(response.workspaces[1].repositories.is_empty(), "a stopped VM lists no repositories");
+    }
+
+    #[test]
+    fn health_checks_budget_each_runtime_call_instead_of_the_whole_reading() {
+        struct SlowRunner { timeouts: Mutex<Vec<Duration>>, inner: StubRunner }
+        impl RuntimeRunner for SlowRunner {
+            fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+                self.timeouts.lock().unwrap().push(timeout);
+                std::thread::sleep(Duration::from_millis(30));
+                self.inner.run(paths, args, timeout)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let slow = SlowRunner { timeouts: Mutex::new(Vec::new()), inner: two_vm_reading(&paths, "Running", "Stopped") };
+        // Three calls take about 90 ms together; each still gets its own 50 ms budget.
+        let health = HealthRunner { inner: &slow, budget: Duration::from_millis(50) };
+        let encoded = published(&read_application_state_with(&health, &paths).unwrap());
+        assert!(encoded["workspaces"].as_array().unwrap().iter().all(|row| row["freshness"] == "fresh"));
+        let timeouts = slow.timeouts.lock().unwrap();
+        assert_eq!(timeouts.len(), 3);
+        assert!(timeouts.iter().all(|timeout| *timeout == Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn health_checks_report_an_unavailable_runtime_home_without_running_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let inner = StubRunner::successful_json(vec![]);
+        let health = HealthRunner { inner: &inner, budget: HEALTH_CALL_BUDGET };
+        assert!(matches!(health.run(&paths, &["list".into()], READ_TIMEOUT), Err(RuntimeError::Unavailable(_))));
+        assert!(inner.calls.lock().unwrap().is_empty());
+    }
+
+    fn stopped_dev(paths: &RuntimePaths) -> Vec<ApplicationWorkspace> {
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let runner = StubRunner::successful_json(vec![json!([{"name": "dev"}]), inspect(paths, "Stopped")]);
+        read_application_state_with(&runner, paths).unwrap().workspaces
+    }
+
+    #[test]
+    fn expired_log_cleanup_runs_off_the_read_path_at_most_hourly_per_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut workspaces = stopped_dev(&paths);
+        fs::create_dir_all(vm_logs(&paths, "dev")).unwrap();
+        let now = Instant::now();
+        let due = plan_log_cleanup(&paths, &mut workspaces, now);
+        assert_eq!(due, vec!["dev".to_string()]);
+        assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty(), "one pass at a time");
+        let gate = operation_gate::OperationGate::new();
+        let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped")]);
+        clean_expired_logs(&runner, &paths, &gate, &due);
+        assert_eq!(runner.calls.lock().unwrap().len(), 1, "the pass re-checks the VM is stopped");
+        assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty(), "cleaned within the hour");
+        assert_eq!(plan_log_cleanup(&paths, &mut workspaces, Instant::now() + LOG_CLEANUP_INTERVAL), vec!["dev".to_string()]);
+        clean_expired_logs(&StubRunner::successful_json(vec![]), &paths, &gate, &[]);
+        assert!(workspaces[0].attention.is_none());
+        // Running, settling or stale rows are never cleaned from a read.
+        workspaces[0].settling = true;
+        assert!(plan_log_cleanup(&paths, &mut workspaces, Instant::now() + 2 * LOG_CLEANUP_INTERVAL).is_empty());
+    }
+
+    #[test]
+    fn a_busy_gate_postpones_log_cleanup_and_a_failure_flags_only_that_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut workspaces = stopped_dev(&paths);
+        // Logs that cannot be read as a directory make retention fail.
+        fs::create_dir_all(vm_logs(&paths, "dev").parent().unwrap()).unwrap();
+        fs::write(vm_logs(&paths, "dev"), b"not a directory").unwrap();
+        let now = Instant::now();
+        let gate = leaked_gate();
+        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm("other-id", "other", "Starting other").unwrap());
+        let due = plan_log_cleanup(&paths, &mut workspaces, now);
+        let idle = StubRunner::successful_json(vec![]);
+        clean_expired_logs(&idle, &paths, gate, &due);
+        assert!(idle.calls.lock().unwrap().is_empty(), "busy: nothing was inspected");
+        assert_eq!(plan_log_cleanup(&paths, &mut workspaces, now), due, "still due after a postponed pass");
+        drop(release);
+        holder.join().unwrap();
+        clean_expired_logs(&StubRunner::successful_json(vec![inspect(&paths, "Stopped")]), &paths, gate, &due);
+        assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty());
+        assert_eq!(workspaces[0].attention.as_ref().unwrap().message, "Expired logs could not be cleaned up.");
+    }
+
+    #[test]
+    fn repository_discovery_for_one_vm_runs_one_caller_at_a_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = Arc::new(AtomicUsize::new(0));
+        let overlapped = Arc::new(AtomicUsize::new(0));
+        let callers: Vec<_> = (0..4)
+            .map(|_| {
+                let (active, overlapped) = (active.clone(), overlapped.clone());
+                std::thread::spawn(move || {
+                    single_flight("single-flight-test:dev".into(), || {
+                        if active.fetch_add(1, Ordering::SeqCst) > 0 {
+                            overlapped.fetch_add(1, Ordering::SeqCst);
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    })
+                })
+            })
+            .collect();
+        callers.into_iter().for_each(|caller| caller.join().unwrap());
+        assert_eq!(overlapped.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -5411,7 +6552,7 @@ esac
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let runner = ChangeMetadataOnce { calls: Mutex::new(Vec::new()), changed: Mutex::new(false) };
-        let source = read_application_snapshot(&runner, &paths, &|| true).unwrap();
+        let source = read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap();
         assert_eq!(source.workspaces.len(), 1);
         assert_eq!(source.workspaces[0].machine.name(), "remote");
         assert_eq!(runner.calls.lock().unwrap().len(), 2);
@@ -5436,7 +6577,7 @@ esac
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let runner = FailedRead { calls: Mutex::new(Vec::new()) };
         assert_eq!(
-            read_application_snapshot(&runner, &paths, &|| true).unwrap_err(),
+            read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap_err(),
             "synthetic runtime read failure",
         );
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
@@ -5451,7 +6592,7 @@ esac
         configuration_recovery::begin(&paths, &configuration).unwrap();
         let runner = StubRunner::successful_json(Vec::new());
         assert_eq!(
-            read_application_snapshot(&runner, &paths, &|| true).unwrap_err(),
+            read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap_err(),
             "SILO_SANDBOX_UPDATE_IN_PROGRESS",
         );
         assert!(runner.calls.lock().unwrap().is_empty());
@@ -5480,6 +6621,86 @@ esac
             runner.calls.lock().unwrap()[0],
             vec!["list", "--label", MANAGED_LABEL, "--format", "json"]
         );
+    }
+
+    #[test]
+    fn application_state_reports_the_host_capacity_that_ceilings_are_checked_against() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let encoded = serde_json::to_value(application_source_for_workspaces(&paths, Vec::new()).unwrap()).unwrap();
+        let host = host_resources().unwrap();
+        let capacity = &encoded["hostCapacity"];
+        assert_eq!(capacity["logicalCpus"], json!(host.logical_cpus));
+        assert_eq!(capacity["physicalMemoryBytes"], json!(host.physical_memory_bytes.unwrap()));
+        // The published limits are exactly the largest ceilings the backend accepts.
+        let cpus = u8::try_from(host.logical_cpus).unwrap_or(u8::MAX);
+        let memory = u32::try_from(capacity["maxMemoryGib"].as_u64().unwrap()).unwrap();
+        assert!(validate_host_ceiling("dev", cpus, memory, &host).is_ok());
+        assert!(validate_host_ceiling("dev", cpus, memory + 1, &host).is_err());
+        if host.logical_cpus < usize::from(u8::MAX) {
+            assert!(validate_host_ceiling("dev", cpus + 1, memory, &host).is_err());
+        }
+    }
+
+    #[test]
+    fn host_capacity_rounds_memory_down_and_is_absent_when_unmeasured() {
+        let gib = 1024 * 1024 * 1024;
+        let capacity = HostCapacity::of(&HostResources { logical_cpus: 8, physical_memory_bytes: Some(16 * gib - 1) }).unwrap();
+        assert_eq!((capacity.logical_cpus, capacity.max_memory_gib), (8, 15));
+        assert!(HostCapacity::of(&HostResources { logical_cpus: 8, physical_memory_bytes: None }).is_none());
+        assert!(HostCapacity::of(&HostResources { logical_cpus: 0, physical_memory_bytes: Some(gib) }).is_none());
+    }
+
+    fn second_vm() -> MachineConfiguration {
+        let mut other = vm();
+        if let MachineConfiguration::Vm { id, name, .. } = &mut other {
+            *id = "00000000-0000-4000-8000-000000000002".into();
+            *name = "work".into();
+        }
+        other
+    }
+
+    fn inspect_named(paths: &RuntimePaths, machine: &MachineConfiguration, status: &str) -> Value {
+        let mut inspected = inspect(paths, status);
+        inspected["name"] = json!(machine.name());
+        inspected["config"]["labels"]["silo.machine-id"] = json!(machine.id());
+        inspected
+    }
+
+    fn damaged_checkpoint_record(paths: &RuntimePaths, machine: &MachineConfiguration) {
+        let directory = paths.metadata.with_file_name("checkpoints");
+        fs::create_dir_all(&directory).unwrap();
+        // For example, written by a newer Silo before a downgrade.
+        fs::write(directory.join(format!("{}.json", machine.id())), json!({"version": 2, "checkpoints": []}).to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_checkpoint_record_degrades_only_its_own_sandbox() {
+        for listed in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+            damaged_checkpoint_record(&paths, &vm());
+            let mut outputs = Vec::new();
+            if listed {
+                outputs.push(json!([{"name": "dev"}, {"name": "work"}]));
+                outputs.push(inspect_named(&paths, &vm(), "Running"));
+            } else {
+                // A pending fork with no runtime VM yet: its record decides, and is unreadable.
+                outputs.push(json!([{"name": "work"}]));
+            }
+            outputs.push(inspect_named(&paths, &second_vm(), "Running"));
+            let runner = StubRunner::successful_json(outputs);
+            let source = read_application_state_with(&runner, &paths).unwrap();
+            let encoded = serde_json::to_value(&source).unwrap();
+            let damaged = &encoded["workspaces"][0];
+            assert_eq!(damaged["attention"]["level"], "error", "{listed}");
+            assert!(damaged["attention"]["message"].as_str().unwrap().contains("Checkpoint history is invalid"));
+            assert!(damaged.get("checkpoints").is_none() && damaged.get("pendingCheckpointRestore").is_none());
+            let healthy = &encoded["workspaces"][1];
+            assert_eq!(healthy["state"], "running");
+            assert!(healthy.get("attention").is_none());
+        }
     }
 
     #[test]
@@ -5674,6 +6895,78 @@ esac
         let error = update_machine(&runner, &paths, &previous, &previous).unwrap_err();
         assert!(error.to_string().contains("did not stop"));
         assert!(!runner.calls.lock().unwrap().iter().any(|call| call[0] == "modify"));
+    }
+
+    fn wait_for_queue(gate: &operation_gate::OperationGate, ready: impl Fn(&operation_gate::OperationQueue) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready(&gate.snapshot()) {
+            assert!(Instant::now() < deadline, "operation queue did not reach the expected state");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn launch_start_takes_only_its_vms_lane_like_a_user_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let gate: &'static operation_gate::OperationGate = Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let LaunchAdmission::Admitted(guard) = launch_start_guard(gate, &paths, vm().id()).unwrap() else {
+            panic!("the launch start was not admitted");
+        };
+        let queue = gate.snapshot();
+        let entry = &queue.running[0];
+        assert_eq!(
+            (entry.label.as_str(), entry.vm_id.as_deref(), entry.kind, entry.cancellable),
+            ("Starting dev", Some(vm().id()), operation_gate::OperationKind::Lifecycle, true),
+        );
+        assert_eq!(entry.expected_ms, Some(180_000));
+        // Other sandboxes' actions and state reads are not held behind this boot.
+        assert!(gate.is_computer_idle());
+        std::thread::spawn(move || drop(gate.try_vm("other-id", "other", "Starting other").unwrap())).join().unwrap();
+        drop(guard);
+        assert!(matches!(launch_start_guard(gate, &paths, "deleted").unwrap(), LaunchAdmission::Unguarded));
+    }
+
+    #[test]
+    fn launch_start_hands_off_to_a_user_start_already_waiting_for_the_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let gate: &'static operation_gate::OperationGate = Box::leak(Box::new(operation_gate::OperationGate::new()));
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _checkpoint = gate.vm(vm().id(), "dev", "Creating checkpoint").unwrap();
+            released.recv().unwrap();
+        });
+        wait_for_queue(gate, |queue| queue.running.len() == 1);
+        let user = std::thread::spawn(move || {
+            gate.kind(operation_gate::OperationKind::Lifecycle)
+                .acquire(operation_gate::Scope::Vm { id: vm().id().into() }, Some("dev".into()), "Starting dev", Some(format!("vm:{}:start", vm().id())))
+                .map(drop)
+        });
+        wait_for_queue(gate, |queue| queue.waiting.len() == 1);
+        let launch_paths = paths.clone();
+        let skipped = std::thread::spawn(move || matches!(launch_start_guard(gate, &launch_paths, vm().id()), Ok(LaunchAdmission::Skipped)))
+            .join().unwrap();
+        assert!(skipped);
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(user.join().unwrap().is_ok());
+    }
+
+    #[test]
+    fn launch_start_reports_a_fork_that_needs_its_first_explicit_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        pending_restore_record(&paths, false);
+        let runner = StubRunner::successful_json(vec![]);
+        assert_eq!(
+            start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap(),
+            LaunchStart::NeedsExplicitStart("dev".into()),
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -5970,7 +7263,7 @@ esac
             old_vm["config"]["labels"].as_object_mut().unwrap().remove(crate::working_account::LABEL);
             let runner = StubRunner::successful_json(vec![old_vm]);
             let result = if action == "launch" {
-                start_at_launch_with(&runner, &paths, &generous_host(), vm().id())
+                start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).map(drop)
             } else {
                 workspace_action_with(&runner, &paths, &generous_host(), action, "dev")
             };
@@ -6022,6 +7315,70 @@ esac
         assert!(!calls
             .iter()
             .any(|args| ["restart", "stop", "start"].contains(&args[0].as_str())));
+    }
+
+    #[test]
+    fn identity_verification_never_boots_a_stopped_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        // A stopped VM's identity is unknown without booting it: not verified, no exec.
+        let stopped = StubRunner::new(vec![identity_output(&inspect(&paths, "Stopped").to_string())]);
+        assert!(!verify_workspace_identities_with(&stopped, &paths, &[test_identity()]).unwrap());
+        assert!(stopped.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        // A running VM is checked in place, never through exec's temporary boot.
+        let running = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output("silo-identity-verified"),
+        ]);
+        assert!(verify_workspace_identities_with(&running, &paths, &[test_identity()]).unwrap());
+        let calls = running.calls.lock().unwrap();
+        let options: Vec<&str> = calls[1].iter().take_while(|arg| *arg != "--").map(String::as_str).collect();
+        assert!(options.contains(&"--no-start"), "{options:?}");
+    }
+
+    #[test]
+    fn identity_work_holds_one_named_cancellable_vm_lane_at_a_time() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut other = vm();
+        if let MachineConfiguration::Vm { id, name, .. } = &mut other {
+            *id = "00000000-0000-4000-8000-000000000002".into();
+            *name = "work".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![vm(), other.clone()])).unwrap();
+        let lanes = Mutex::new(Vec::new());
+        let lane = |machine: &MachineConfiguration, label: &str| {
+            let guard = identity_lane(machine, label)?;
+            let queue = OPERATIONS.snapshot();
+            assert!(OPERATIONS.is_computer_idle(), "identity work must not take the whole computer");
+            let entry = queue.running.iter().find(|entry| entry.vm_id.as_deref() == Some(machine.id())).unwrap();
+            assert!(entry.cancellable);
+            lanes.lock().unwrap().push(entry.label.clone());
+            Ok(guard)
+        };
+        let mut work_inspect = inspect(&paths, "Running");
+        work_inspect["name"] = json!("work");
+        let runner = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output("silo-identity-verified"),
+            identity_output(&work_inspect.to_string()),
+            identity_output("silo-identity-verified"),
+        ]);
+        let mut work = test_identity();
+        work.workspace = "work".into();
+        assert!(verify_workspace_identities_in(&runner, &paths, &[test_identity(), work], &lane).unwrap());
+        assert_eq!(*lanes.lock().unwrap(), vec!["Checking Git identity for dev", "Checking Git identity for work"]);
+        assert!(OPERATIONS.is_vm_idle(vm().id()) && OPERATIONS.is_vm_idle(other.id()));
+        lanes.lock().unwrap().clear();
+        let writer = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output("{}"),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+        configure_workspace_identities_in(&writer, &paths, &[test_identity()], &lane).unwrap();
+        assert_eq!(*lanes.lock().unwrap(), vec!["Saving Git identity for dev"]);
     }
 
     #[test]
@@ -6582,6 +7939,84 @@ esac
         assert!(error.to_string().contains("Completed changes were kept"));
     }
 
+    const ATTEMPT_ID: &str = "00000000-0000-4000-8000-0000000000aa";
+
+    fn pending_restore_record(paths: &RuntimePaths, attempted: bool) {
+        let directory = paths.metadata.with_file_name("checkpoints");
+        fs::create_dir_all(&directory).unwrap();
+        let mut record = json!({
+            "version": 1,
+            "checkpoints": [],
+            "snapshotGroup": "dev",
+            "pendingCheckpointRestore": {"checkpointId": "c000000000000000000000000000000", "sourceWorkspace": "dev", "state": "full"},
+            "checkpointOperation": null,
+        });
+        if attempted {
+            record["restoreAttempted"] = json!(true);
+            record["restoreAttemptId"] = json!(ATTEMPT_ID);
+        }
+        fs::write(directory.join(format!("{}.json", vm().id())), record.to_string()).unwrap();
+    }
+
+    fn restore_attempt(paths: &RuntimePaths, status: &str) -> Value {
+        let mut attempt = inspect(paths, status);
+        attempt["config"]["labels"]["silo.restore-attempt"] = json!(ATTEMPT_ID);
+        attempt
+    }
+
+    fn missing_sandbox() -> Result<CommandOutput, RuntimeError> {
+        Err(RuntimeError::Failed { operation: "inspect dev".into(), detail: "exit code 1: sandbox not found".into() })
+    }
+
+    #[test]
+    fn deleting_a_pending_restore_removes_the_runtime_its_attempt_created() {
+        for (status, stops) in [("Stopped", false), ("Running", true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            pending_restore_record(&paths, true);
+            let attempt = restore_attempt(&paths, status);
+            let mut outputs = vec![attempt.clone(), attempt];
+            if stops { outputs.push(json!(null)); }
+            outputs.push(json!(null));
+            let runner = StubRunner::successful_json(outputs);
+            apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+            let calls = runner.calls.lock().unwrap();
+            let commands: Vec<&str> = calls.iter().map(|args| args[0].as_str()).collect();
+            let expected: &[&str] = if stops { &["inspect", "inspect", "stop", "remove"] } else { &["inspect", "inspect", "remove"] };
+            assert_eq!(commands, expected, "{status}");
+            assert!(calls.last().unwrap().contains(&"dev".to_string()));
+            // The runtime VM is removed before Silo forgets the sandbox and its record.
+            assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+            assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{}.json", vm().id())).exists());
+        }
+    }
+
+    #[test]
+    fn deleting_a_pending_restore_without_runtime_state_removes_only_silo_records() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        pending_restore_record(&paths, false);
+        let runner = StubRunner::new(vec![missing_sandbox(), missing_sandbox()]);
+        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+    }
+
+    #[test]
+    fn deleting_a_pending_restore_preserves_runtime_state_it_did_not_create() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        pending_restore_record(&paths, true);
+        let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped")]);
+        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap_err();
+        assert!(error.to_string().contains("preserved"), "{error}");
+        assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        assert_eq!(read_metadata(&paths.metadata).unwrap().machines, vec![vm()]);
+    }
+
     #[test]
     fn remove_refuses_a_running_vm_without_stopping_it_implicitly() {
         let directory = tempfile::tempdir().unwrap();
@@ -6655,6 +8090,7 @@ pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String])
 
 /// Caller holds the operation gate for this VM and has verified the stable VM identity.
 pub(crate) fn start_for_desktop(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeError> {
+    debug_assert!(operation_gate::held(), "a desktop start requires the VM's operation gate");
     workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", workspace)
 }
 

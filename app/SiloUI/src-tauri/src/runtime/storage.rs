@@ -44,8 +44,13 @@ struct Record {
 #[serde(rename_all = "camelCase")]
 pub struct StorageState {
     history: Vec<ReclaimEntry>,
-    workspace_host_bytes: u64,
-    runtime_host_bytes: u64,
+    /// Host allocation of the workspace disk and its layers; `None` when it could not be found.
+    workspace_host_bytes: Option<u64>,
+    /// Host allocation of the runtime root disks; `None` when the sandbox directory is missing.
+    runtime_host_bytes: Option<u64>,
+    /// Host allocation of the sandbox's checkpoints; `None` when it could not be measured.
+    checkpoint_host_bytes: Option<u64>,
+    checkpoint_count: usize,
     workspace_used_bytes: Option<u64>,
     workspace_capacity_bytes: Option<u64>,
     last_reclaimed_bytes: Option<u64>,
@@ -113,17 +118,48 @@ fn verify(machine: &MachineConfiguration, observed: &InspectedSandbox) -> Result
     }
     Ok(())
 }
-fn workspace_disk_path(paths: &RuntimePaths, machine: &MachineConfiguration) -> PathBuf {
+/// The owned `/workspace` volume's directory. A fresh VM keeps one `disk.raw` there; a full
+/// checkpoint rolls it onto qcow2 layers, and a VM restored from a checkpoint has only sealed
+/// layers and a writable qcow2 head (MicroSandbox `restore/owned.rs`).
+fn workspace_disk_dir(paths: &RuntimePaths, machine: &MachineConfiguration) -> PathBuf {
     let mut mount_id = String::from("workspace_");
     for byte in Sha256::digest(WORKSPACE_MOUNT.as_bytes()).iter().take(4) {
         use std::fmt::Write as _;
         let _ = write!(mount_id, "{byte:02x}");
     }
-    paths.home.join("sandboxes").join(machine.name()).join("owned-volumes").join(mount_id).join("disk.raw")
+    paths.home.join("sandboxes").join(machine.name()).join("owned-volumes").join(mount_id)
+}
+const MAX_DISK_FILES: usize = 256;
+/// Regular (never symlinked) disk files of the workspace volume; `None` when it is missing.
+fn workspace_disk_files(paths: &RuntimePaths, machine: &MachineConfiguration) -> Result<Option<Vec<PathBuf>>, RuntimeError> {
+    let directory = workspace_disk_dir(paths, machine);
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(failure("The workspace disk location is not a directory.")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(failure("The workspace disk usage could not be read.")),
+    }
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&directory).map_err(|_| failure("The workspace disk usage could not be read."))? {
+        let entry = entry.map_err(|_| failure("The workspace disk usage could not be read."))?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|_| failure("The workspace disk usage could not be read."))?;
+        if metadata.is_file() {
+            files.push(entry.path());
+            if files.len() > MAX_DISK_FILES { return Err(failure("The workspace disk has too many layers to measure.")); }
+        }
+    }
+    files.sort();
+    Ok(Some(files))
+}
+fn workspace_host_bytes(paths: &RuntimePaths, machine: &MachineConfiguration) -> Result<Option<u64>, RuntimeError> {
+    let Some(files) = workspace_disk_files(paths, machine)? else { return Ok(None) };
+    if files.is_empty() { return Ok(None); }
+    files.iter().try_fold(0u64, |total, file| Ok(total.saturating_add(allocated(file)?))).map(Some)
 }
 fn workspace_mount(paths: &RuntimePaths, machine: &MachineConfiguration, observed: &InspectedSandbox) -> bool {
-    let expected = workspace_disk_path(paths, machine);
-    let backing_is_file = fs::symlink_metadata(expected).is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink());
+    let backing_is_file = workspace_disk_files(paths, machine).ok().flatten().is_some_and(|files| files.iter().any(|file| {
+        file.file_name().is_some_and(|name| name == "disk.raw") || file.extension().is_some_and(|extension| extension == "qcow2")
+    }));
     let matches = |config: &Value| config.get("mounts").and_then(Value::as_array).is_some_and(|mounts| {
         mounts.iter().filter(|m| m["guest"] == WORKSPACE_MOUNT).count() == 1
             && mounts.iter().any(|m| m["guest"] == WORKSPACE_MOUNT && m["type"] == "Owned"
@@ -138,21 +174,23 @@ fn allocated(path: &Path) -> Result<u64, RuntimeError> {
         _ => Err(failure("The VM disk is not a readable regular file.")),
     }
 }
-fn runtime_allocated(paths: &RuntimePaths, name: &str) -> Result<u64, RuntimeError> {
+/// Root disks live beside the sandbox record: `upper.ext4`, a flat `rootfs.raw`, and
+/// the qcow2 layers a checkpoint or restore adds.
+fn runtime_allocated(paths: &RuntimePaths, name: &str) -> Result<Option<u64>, RuntimeError> {
     let dir = paths.home.join("sandboxes").join(name);
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(failure("The runtime disk usage could not be read.")),
     };
     let mut total = 0u64;
     for entry in entries {
         let entry = entry.map_err(|_| failure("The runtime disk usage could not be read."))?;
-        if entry.path().extension().is_some_and(|extension| extension == "ext4" || extension == "qcow2") {
+        if entry.path().extension().is_some_and(|extension| extension == "ext4" || extension == "qcow2" || extension == "raw") {
             total = total.saturating_add(allocated(&entry.path())?);
         }
     }
-    Ok(total)
+    Ok(Some(total))
 }
 fn guest_args(name: &str, seconds: u64, script: &str) -> Vec<String> {
     vec!["exec".into(), name.into(), "--no-start".into(), "--no-tty".into(),
@@ -171,9 +209,11 @@ fn state(runner: &dyn RuntimeRunner, paths: &RuntimePaths, machine: &MachineConf
     observed: &InspectedSandbox) -> Result<StorageState, RuntimeError> {
     verify(machine, observed)?;
     let record = load(paths, machine.id())?;
+    let (checkpoint_host_bytes, checkpoint_count) = checkpoints::storage_totals(runner, paths, machine.id(), machine.name());
     let mut state = StorageState {
+        checkpoint_host_bytes, checkpoint_count,
         history: record.history,
-        workspace_host_bytes: allocated(&workspace_disk_path(paths, machine))?,
+        workspace_host_bytes: workspace_host_bytes(paths, machine)?,
         runtime_host_bytes: runtime_allocated(paths, machine.name())?,
         workspace_used_bytes: None, workspace_capacity_bytes: None,
         last_reclaimed_bytes: record.last_reclaimed_bytes, last_trim_at: record.last_trim_at,
@@ -211,11 +251,16 @@ fn trim_triggered(runner: &dyn RuntimeRunner, paths: &RuntimePaths, machine: &Ma
     let seconds = budget.as_secs();
     if seconds < 4 { return Err(failure("No time remains for workspace reclamation.")); }
     let _command_guard = configuration_recovery::command_lock(paths, Duration::ZERO)?;
-    let disk_path = workspace_disk_path(paths, machine);
-    let disk = fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(&disk_path)
-        .map_err(|_| failure("The owned workspace disk could not be opened safely."))?;
-    let original_length = disk.metadata().map_err(|_| failure("The owned workspace disk length could not be verified."))?.len();
-    let before = disk.metadata().map_err(|_| failure("The owned workspace disk could not be measured."))?.blocks().saturating_mul(512);
+    // Hold every layer open so a runtime that shortens any of them is caught and repaired.
+    let mut disks = Vec::new();
+    for disk_path in workspace_disk_files(paths, machine)?.unwrap_or_default() {
+        let disk = fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(&disk_path)
+            .map_err(|_| failure("The owned workspace disk could not be opened safely."))?;
+        let original_length = disk.metadata().map_err(|_| failure("The owned workspace disk length could not be verified."))?.len();
+        disks.push((disk, original_length));
+    }
+    if disks.is_empty() { return Err(failure("The VM does not have the expected workspace disk mounted. No space was reclaimed.")); }
+    let before = workspace_host_bytes(paths, machine)?.ok_or_else(|| failure("The owned workspace disk could not be measured."))?;
     let mut record = load(paths, machine.id())?;
     record.last_attempt_at = Some(at);
     record.last_error = Some("The previous workspace reclamation did not complete.".into());
@@ -225,12 +270,14 @@ fn trim_triggered(runner: &dyn RuntimeRunner, paths: &RuntimePaths, machine: &Ma
     let mut args = guest_args(machine.name(), seconds - 1, TRIM);
     args.push(format!("{}s", seconds - 3));
     let result = runner.run(paths, &args, budget).map(|_| ());
-    let length_result = preserve_length(&disk, original_length);
+    // Check every layer even after the first failure, so each shortened one is repaired.
+    let length_result = disks.iter().map(|(disk, original_length)| preserve_length(disk, *original_length))
+        .fold(Ok(()), |first: Result<(), RuntimeError>, next| first.and(next));
     let length_error = length_result.as_ref().err().map(ToString::to_string);
     let result = length_result.and(result);
     match result {
         Ok(_) => {
-            let after = disk.metadata().map_err(|_| failure("The reclaimed disk could not be measured."))?.blocks().saturating_mul(512);
+            let after = workspace_host_bytes(paths, machine)?.ok_or_else(|| failure("The reclaimed disk could not be measured."))?;
             record.last_trim_at = Some(now());
             record.last_reclaimed_bytes = Some(before.saturating_sub(after));
             record.last_error = None;
@@ -310,18 +357,35 @@ fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, Ru
     }
     Ok(false)
 }
+/// Ticks after launch before the once-per-launch orphan sweep, so startup recovery and
+/// launch-time starts settle first.
+const SWEEP_AFTER_TICKS: u32 = 5;
+
 pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();
-    thread::spawn(move || loop {
-        // Periodic background trim skips whenever any operation is active or waiting.
-        if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
-            if shutdown::ensure_accepting_operations().is_ok() {
-                if let Ok(paths) = runtime_paths(&app) {
-                    let _ = periodic(&ProcessRunner, &paths);
+    thread::spawn(move || {
+        let mut ticks = 0u32;
+        let mut swept = false;
+        loop {
+            ticks = ticks.saturating_add(1);
+            // Periodic background work skips whenever any operation is active or waiting.
+            if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
+                if shutdown::ensure_accepting_operations().is_ok() {
+                    if let Ok(paths) = runtime_paths(&app) {
+                        if !swept && ticks > SWEEP_AFTER_TICKS && !crate::runtime_migration::blocks_operations(&app) {
+                            // Checkpoint data that no sandbox references any longer (E-03).
+                            swept = true;
+                            if let Err(failure) = checkpoints::sweep_orphans(&ProcessRunner, &paths) {
+                                eprintln!("Unused checkpoint data was kept: {failure}");
+                            }
+                        } else {
+                            let _ = periodic(&ProcessRunner, &paths);
+                        }
+                    }
                 }
             }
+            thread::sleep(Duration::from_secs(60));
         }
-        thread::sleep(Duration::from_secs(60));
     });
 }
 
@@ -355,8 +419,10 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
                 // No runtime sandbox or disk exists until the user starts it.
                 if reclaim { return Err(failure(&format!("Start {} first.", machine.name()))); }
                 let record = load(&paths, machine.id())?;
+                let (checkpoint_host_bytes, checkpoint_count) = checkpoints::storage_totals(&ProcessRunner, &paths, machine.id(), machine.name());
                 return Ok(StorageState {
-                    history: record.history, workspace_host_bytes: 0, runtime_host_bytes: 0,
+                    checkpoint_host_bytes, checkpoint_count,
+                    history: record.history, workspace_host_bytes: Some(0), runtime_host_bytes: Some(0),
                     workspace_used_bytes: None, workspace_capacity_bytes: None,
                     last_reclaimed_bytes: record.last_reclaimed_bytes, last_trim_at: record.last_trim_at,
                     last_error: None,

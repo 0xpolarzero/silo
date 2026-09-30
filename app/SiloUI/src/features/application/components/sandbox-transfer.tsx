@@ -1,14 +1,9 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 
-import { FormPopover } from "@/components/confirm-popover"
 import { type OperationStep, dismissOperationToast, showActionFailure, showOperationFailure, showOperationNotice, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Progress } from "@/components/ui/progress"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { ApplicationSource } from "@/features/application/model/application-source"
-import type { BackupArchive, BackupController, BackupPhase } from "@/features/application/model/backup-source"
-import { validateSandboxName } from "@/features/onboarding/model/machine-configuration"
+import type { BackupController, BackupPhase, VerifiedExport } from "@/features/application/model/backup-source"
+import { ImportPopover, type ImportReview } from "@/features/application/components/import-popover"
 
 /** One toast tracks the single in-flight export or import; updating it in place keeps the
  * notification tied to backend truth across navigation. */
@@ -20,57 +15,16 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
-type ImportReview =
-  | { kind: "checking" }
-  | { kind: "invalid"; reason: string }
-  | { kind: "review"; archive: BackupArchive; sourceName: string; newName: string }
-
 const stepState: Record<BackupPhase["tone"], OperationStep["state"]> = { succeeded: "done", running: "current", waiting: "pending", failed: "failed" }
 
-/** Import review popover anchored to the sandbox list's Add button: shows the archive summary,
- * picks a source sandbox when several are present, and names the new sandbox. */
-function ImportPopover({ source, review, anchor, onReview, onImport, onClose, onRetry }: {
-  source: ApplicationSource
-  review: ImportReview | null
-  anchor: ReactNode
-  onReview: (review: ImportReview) => void
-  onImport: (archive: BackupArchive, newName: string, sourceName: string) => void
-  onClose: () => void
-  onRetry: () => void
-}) {
-  const nameErrorID = useId()
-  const isReview = review?.kind === "review" ? review : null
-  const nameError = isReview ? validateSandboxName(isReview.newName) : undefined
-  const nameConflict = isReview
-    ? source.workspaces.filter((w) => !w.computer).some(({ machine }) => machine.name.toLowerCase() === isReview.newName.toLowerCase())
-    : false
-  const title = isReview ? `Import ${isReview.archive.name}` : review?.kind === "invalid" ? "This export cannot be imported" : "Checking export"
-  const fields = !review ? null : review.kind === "checking"
-    ? <Progress value={null} aria-label="Export validation progress" />
-    : review.kind === "invalid"
-    ? <p className="text-destructive">{review.reason} No sandbox data changed.</p>
-    : <div className="grid gap-2">
-        <p className="text-muted-foreground">{review.archive.size} · {review.archive.sandboxes.length === 1 ? review.archive.sandboxes[0] : `${review.archive.sandboxes.length} sandboxes`}. Imported as a new stopped sandbox; existing sandboxes and the export file stay unchanged.</p>
-        {review.archive.sandboxes.length > 1 && <label className="grid gap-1">Sandbox to import<Select value={review.sourceName} onValueChange={(sourceName) => onReview({ ...review, sourceName, newName: review.newName === `${review.sourceName}-imported` ? `${sourceName}-imported` : review.newName })}><SelectTrigger className="h-7 text-[11px]" aria-label="Sandbox to import"><SelectValue /></SelectTrigger><SelectContent>{review.archive.sandboxes.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></label>}
-        <label className="grid gap-1">New sandbox name<Input technical value={review.newName} aria-invalid={Boolean(nameError) || nameConflict} aria-describedby={nameError ? nameErrorID : undefined} onChange={(event) => onReview({ ...review, newName: event.target.value })} />{nameError && <span id={nameErrorID} className="text-destructive">{nameError}</span>}{!nameError && nameConflict && <span className="text-destructive">A sandbox named {review.newName} already exists.</span>}</label>
-      </div>
-  return <FormPopover
-    open={review !== null}
-    onOpenChange={(open) => { if (!open) onClose() }}
-    anchor={<span className="inline-flex">{anchor}</span>}
-    align="end"
-    title={title}
-    fields={fields}
-    confirmLabel="Import"
-    canSubmit={Boolean(isReview) && !nameError && !nameConflict}
-    onSubmit={() => { if (isReview) onImport(isReview.archive, isReview.newName, isReview.sourceName) }}
-    description={review?.kind === "invalid" ? <Button type="button" variant="outline" size="xs" onClick={onRetry}>Choose another file</Button> : undefined}
-  />
-}
-
 export interface SandboxTransfer {
-  /** Pick a folder, then export a sandbox (or one of its checkpoints) as a background toast. */
-  exportSandbox: (sandboxName: string, checkpoint?: { id: string; name: string }) => Promise<void>
+  /**
+   * Pick a folder, then export a sandbox (or one of its checkpoints) as a background toast.
+   * Resolves once that export finished: with the verified export, or null when none was
+   * produced (folder picker dismissed, export unavailable, busy, refused, failed or cancelled;
+   * the toast explains why). Never rejects. "Export, then delete" deletes only on a result.
+   */
+  exportSandbox: (sandboxName: string, checkpoint?: { id: string; name: string }) => Promise<VerifiedExport | null>
   /** Pick an export file, validate it, then open the import review popover. */
   beginImport: () => Promise<void>
   /** Wraps the sandbox list's Add button: the import review popover anchors to it. */
@@ -87,28 +41,37 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
   backupRef.current = backup
   const optionsRef = useRef(options)
   optionsRef.current = options
-  // The running export's checkpoint name (if any); used for toast titles across navigation.
-  const checkpointRef = useRef<string | undefined>(undefined)
   // Retry handler for the current operation, replayed from a failure toast's Retry action.
   const retryRef = useRef<(() => void) | undefined>(undefined)
   const reviewDraftRef = useRef<Extract<ImportReview, { kind: "review" }> | null>(null)
   const [review, setReview] = useState<ImportReview | null>(null)
   // A result already present when the app loads is from a previous session: never toast it.
   const seenOperation = useRef(false)
+  // The export file check behind the open review; closing the review aborts it (E-27).
+  const inspectionRef = useRef<AbortController | null>(null)
+  useEffect(() => () => inspectionRef.current?.abort(), [])
 
-  async function exportSandbox(sandboxName: string, checkpoint?: { id: string; name: string }) {
+  function closeReview() {
+    inspectionRef.current?.abort()
+    inspectionRef.current = null
+    setReview(null)
+  }
+
+  async function exportSandbox(sandboxName: string, checkpoint?: { id: string; name: string }): Promise<VerifiedExport | null> {
     const controller = backupRef.current
     if (controller.state.availability === "unavailable") {
       showOperationFailure(TRANSFER_TOAST_ID, "Export is unavailable", { description: controller.state.availabilityMessage ?? "Export is not available in this Silo build. No sandbox data was changed.", native: false })
-      return
+      return null
     }
     let destination: string | null
     try { destination = await controller.actions.chooseDestination() }
-    catch (error) { showOperationFailure(TRANSFER_TOAST_ID, "Could not choose a folder", { description: `${errorText(error)} No export was created.`, native: false }); return }
-    if (!destination) return
-    checkpointRef.current = checkpoint?.name
+    catch (error) { showOperationFailure(TRANSFER_TOAST_ID, "Could not choose a folder", { description: `${errorText(error)} No export was created.`, native: false }); return null }
+    if (!destination) return null
+    // Another export or import is running: leave its toast and Retry untouched (E-52).
+    if (backupRef.current.state.operation?.kind === "running") return null
     retryRef.current = () => { void exportSandbox(sandboxName, checkpoint) }
-    controller.actions.startBackup(destination, [sandboxName], checkpoint?.id)
+    // The toast, driven by the backup state, reports every outcome; only a verified export resolves.
+    return backupRef.current.actions.exportAndVerify(destination, [sandboxName], checkpoint?.id).catch(() => null)
   }
 
   async function beginImport() {
@@ -118,9 +81,15 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
       return
     }
     controller.actions.dismissOperation()
+    inspectionRef.current?.abort()
+    const inspection = new AbortController()
+    inspectionRef.current = inspection
     let result
-    try { result = await controller.actions.chooseArchive(() => setReview({ kind: "checking" })) }
-    catch (error) { setReview({ kind: "invalid", reason: errorText(error) }); return }
+    try { result = await controller.actions.chooseArchive(() => { if (!inspection.signal.aborted) setReview({ kind: "checking" }) }, inspection.signal) }
+    catch (error) { if (!inspection.signal.aborted) setReview({ kind: "invalid", reason: errorText(error) }); return }
+    // A review closed (or replaced) while the file was checked ignores the late result.
+    if (inspection.signal.aborted) return
+    inspectionRef.current = null
     if (!result) { setReview(null); return }
     if (!result.valid) { setReview({ kind: "invalid", reason: result.reason ?? "This export file could not be validated." }); return }
     const base = result.archive.sandboxes[0] || "sandbox"
@@ -145,7 +114,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
 
     if (operation.kind === "running") {
       const title = isExport
-        ? (checkpointRef.current ? `Exporting checkpoint “${checkpointRef.current}”` : `Exporting ${operation.archive.sandboxes.join(", ") || "sandbox"}`)
+        ? (operation.archive.checkpointName ? `Exporting checkpoint “${operation.archive.checkpointName}”` : `Exporting ${operation.archive.sandboxes.join(", ") || "sandbox"}`)
         : `Importing ${operation.targetName ?? "sandbox"}`
       const phase = operation.phases.find((entry) => entry.tone === "running") ?? operation.phases.at(-1)
       const onCancel = () => backupRef.current.actions.cancelOperation()
@@ -154,9 +123,10 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
         step: phase ? (phase.detail || phase.title) : undefined,
         steps: operation.phases.map((entry) => ({ label: entry.title, state: stepState[entry.tone] })),
         progress: operation.indeterminate ? null : operation.progress / 100,
+        // The backend sends canCancel: false once Cancel would no longer be honoured (an import saving its sandbox).
         cancel: operation.canCancel === false ? undefined : isExport
-          ? { onCancel, confirm: { prompt: "Stop exporting? The incomplete file is removed.", confirmLabel: "Stop", keepLabel: "Keep going" } }
-          : { onCancel, confirm: { prompt: "Remove the incomplete sandbox?", confirmLabel: "Remove", keepLabel: "Keep going" } },
+          ? { onCancel, confirm: { prompt: "Stop exporting? No export file is saved.", confirmLabel: "Stop", keepLabel: "Keep going" } }
+          : { onCancel, confirm: { prompt: "Stop importing? No sandbox is added.", confirmLabel: "Stop", keepLabel: "Keep going" } },
       })
       return
     }
@@ -165,16 +135,22 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
 
     if (operation.outcome === "success") {
       const archive = operation.archive
-      const title = isExport ? (checkpointRef.current ? "Checkpoint exported" : "Exported") : `Imported ${operation.targetName ?? archive.sandboxes[0] ?? "sandbox"}`
+      const title = isExport ? (archive.checkpointName ? "Checkpoint exported" : "Exported") : `Imported ${operation.targetName ?? archive.sandboxes[0] ?? "sandbox"}`
       const action = isExport
         ? { label: revealLabel(), onClick: () => {
             backupRef.current.actions.revealArchive(archive).catch((error) => showActionFailure("Could not reveal the export", errorText(error), undefined, { native: false }))
           } }
         : (() => {
+            // Resolve the sandbox when Open is clicked: the application snapshot can
+            // list the imported sandbox only after this toast appears (E-57).
             const name = operation.targetName
-            const match = name ? optionsRef.current.source.workspaces.find(({ machine, computer }) => !computer && machine.name === name) : undefined
-            const open = optionsRef.current.openSandbox
-            return match && open ? { label: "Open", onClick: () => open(match.machine.id) } : undefined
+            if (!name || !optionsRef.current.openSandbox) return undefined
+            return { label: "Open", onClick: () => {
+              const { source, openSandbox } = optionsRef.current
+              const match = source.workspaces.find(({ machine, computer }) => !computer && machine.name === name)
+              if (match && openSandbox) openSandbox(match.machine.id)
+              else showActionFailure(`Could not open ${name}`, "Silo does not list this sandbox yet. Refresh, then open it from the sandbox list.", undefined, { native: false })
+            } }
           })()
       showOperationSuccess(TRANSFER_TOAST_ID, title, { description: isExport ? `${archive.name} · ${archive.size}` : "Stopped and verified.", action, persist: true, native: false, sandbox: isExport ? undefined : operation.targetName ?? archive.sandboxes[0], onDismiss: dismiss })
       return
@@ -185,14 +161,10 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
       return
     }
 
-    // failed or restart-required: persistent, actionable.
+    // Failed: persistent, actionable.
     const description = <div className="grid gap-1"><p>{operation.message}</p>{operation.detail && <p className="text-muted-foreground">{operation.detail}</p>}</div>
-    const retry = operation.outcome === "restart-required"
-      ? { label: "Retry start", onClick: () => backupRef.current.actions.retryStart(operation.runningNames[0]) }
-      : retryRef.current
-      ? { label: "Retry", onClick: () => retryRef.current?.() }
-      : undefined
-    showOperationFailure(TRANSFER_TOAST_ID, operation.title, { description, action: retry, onDismiss: dismiss, tone: operation.outcome === "restart-required" ? "warning" : "error", native: false })
+    const retry = retryRef.current ? { label: "Retry", onClick: () => retryRef.current?.() } : undefined
+    showOperationFailure(TRANSFER_TOAST_ID, operation.title, { description, action: retry, onDismiss: dismiss, tone: "error", native: false })
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [backup.state.operation])
 
@@ -201,11 +173,10 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
     source={optionsRef.current.source}
     review={review}
     onReview={setReview}
-    onClose={() => setReview(null)}
-    onRetry={() => { setReview(null); void beginImport() }}
+    onClose={closeReview}
+    onRetry={() => { closeReview(); void beginImport() }}
     onImport={(archive, newName, sourceName) => {
       reviewDraftRef.current = { kind: "review", archive, sourceName, newName }
-      checkpointRef.current = undefined
       retryRef.current = () => { if (reviewDraftRef.current) setReview(reviewDraftRef.current) }
       backupRef.current.actions.startRestore(archive, newName, sourceName)
       setReview(null)

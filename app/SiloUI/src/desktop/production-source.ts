@@ -2,17 +2,17 @@ import { workspaceStorageStateSchema } from "@/features/application/model/worksp
 import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { useSyncExternalStore } from "react"
+import { useMemo, useSyncExternalStore } from "react"
 import { z } from "zod"
 import { showOperationFailure } from "@/lib/operation-toast"
 
-import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
+import { siloBootstrapResultSchema, siloProgressEventSchema, siloProtocolErrorSchema, setupMachineConfigurationRequestSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
-import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
-import { operationQueueSchema, isCancelledError, type OperationQueue } from "@/features/application/model/operation-queue"
+import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationActivity, ApplicationFileEntry, ApplicationPort, ApplicationSource, ApplicationWorkspace, SecretConfigurationRequest } from "@/features/application/model/application-source"
+import { operationQueueSchema, isCancelledError, cancelledActionLabel, type OperationQueue } from "@/features/application/model/operation-queue"
 import { deriveMachineChanges, isStaleConfigurationError, type MachineConfigurationChange } from "@/features/application/model/machine-change"
-import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
-import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
+import { ExportIncompleteError, type BackupArchive, type BackupController, type BackupOperation, type BackupState, type VerifiedExport } from "@/features/application/model/backup-source"
+import { checkpointUsageSchema, type WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 
 import { remoteComputerSchema, remoteManagementSchema, remoteWorkspaceTarget, parseRemoteWorkspaceTarget, workspaceTarget, type RemoteComputer, type RemoteManagement } from "@/features/application/model/remote-computers"
@@ -84,49 +84,153 @@ const checkpointShape = z.object({
   sizeBytes: z.number().int().nonnegative().optional(),
 })
 const checkpointOperationShape = z.object({
-  kind: z.enum(["capture", "fork", "restore"]), status: z.enum(["running", "failed"]),
+  kind: z.enum(["capture", "fork", "restore", "delete"]), status: z.enum(["running", "failed"]),
   stage: z.string(), error: z.string().optional(),
+})
+const unfinishedRestoreShape = z.object({
+  checkpointId: z.string().min(1), checkpointName: z.string().nullish(), phase: z.enum(["capturing", "secured"]),
 })
 const pendingCheckpointRestoreShape = z.object({
   checkpointId: z.string().min(1), sourceWorkspace: z.string().min(1), state: z.enum(["full", "disk"]),
 })
 
+/** An enum that maps a value from a newer Silo to a fallback instead of rejecting the whole state. */
+function tolerantEnum<const T extends readonly [string, ...string[]]>(values: T, fallback: T[number]) {
+  return z.string().transform((value): T[number] => (values as readonly string[]).includes(value) ? value : fallback)
+}
+
+/** A list that drops entries it cannot read instead of rejecting the state around it. */
+function tolerantArray<T extends z.ZodType>(item: T) {
+  return z.array(z.unknown()).transform(items => items.flatMap((entry): z.output<T>[] => {
+    const parsed = item.safeParse(entry)
+    return parsed.success ? [parsed.data] : []
+  }))
+}
+
+const workspaceStates = ["running", "starting", "stopped", "failed"] as const
+const repositoryShape = z.object({ path: z.string(), branch: z.string(), ahead: z.number().int().nonnegative(), behind: z.number().int().nonnegative(), dirty: z.boolean(), repository: z.string().nullable().optional(), head: z.string().nullable().optional() })
+const fileEntryShape: z.ZodType<ApplicationFileEntry> = z.lazy(() => z.object({ name: z.string(), kind: z.enum(["folder", "file"]), children: z.array(fileEntryShape).optional() }))
+const workspacePortShape = z.object({
+  port: z.number().int().min(1).max(65535), listening: z.boolean().nullable(),
+  hostPort: z.number().int().min(1).max(65535).nullish(), scheme: z.enum(["http", "https"]).nullish(), configured: z.boolean().optional(),
+})
+const logShape = z.object({ line: z.string(), occurredAt: z.string() })
+const attentionShape = z.object({ level: tolerantEnum(["warning", "error"], "warning"), message: z.string() })
+
+// Fields from a newer Silo pass through untouched, so editing never drops them.
+const machineShape = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("vm"), id: z.string().min(1), name: z.string().min(1),
+    cpus: z.number().int().positive(), maxCPUs: z.number().int().positive(), memoryGiB: z.number().int().positive(), maxMemoryGiB: z.number().int().positive(),
+    workspaceStorageGiB: z.number().int().positive(), runtimeStorageGiB: z.number().int().positive(),
+    desktop: z.object({ startWithSandbox: z.boolean() }).optional(),
+  }).passthrough(),
+  z.object({ kind: z.literal("ssh"), id: z.string().min(1), name: z.string().min(1), host: z.string().min(1), user: z.string().min(1), port: z.number().int().min(1).max(65535) }).passthrough(),
+]).transform(machine => machine as SetupMachineConfiguration)
+
+const workspaceShape = z.object({
+  machine: machineShape,
+  purpose: z.string(),
+  // A state from a newer Silo is shown as the last reported detail, marked stale below.
+  state: z.string(),
+  stateDetail: z.string(),
+  canDismissError: z.boolean().optional(),
+  lifecycleFailure: z.string().optional(),
+  attention: attentionShape.nullish().transform(value => value ?? undefined),
+  freshness: tolerantEnum(["fresh", "stale"], "stale"),
+  host: z.string(),
+  repositories: tolerantArray(repositoryShape), files: tolerantArray(fileEntryShape), ports: tolerantArray(workspacePortShape), logs: tolerantArray(logShape),
+  githubRepositories: z.array(z.string()), secretNames: z.array(z.string()),
+  checkpoints: tolerantArray(checkpointShape).optional(),
+  checkpointOperation: checkpointOperationShape.nullable().optional().catch(null),
+  pendingCheckpointRestore: pendingCheckpointRestoreShape.nullable().optional().catch(null),
+  unfinishedRestore: unfinishedRestoreShape.nullable().optional().catch(null),
+  settling: z.boolean().optional(),
+}).passthrough().transform(workspace => (workspaceStates as readonly string[]).includes(workspace.state)
+  ? { ...workspace, state: workspace.state as (typeof workspaceStates)[number] }
+  : { ...workspace, state: "stopped" as const, freshness: "stale" as const, attention: workspace.attention ?? { level: "warning" as const, message: "This version of Silo cannot show this sandbox's current state. Update Silo to see it." } })
+
+/** Workspaces of a machine kind this version does not know (a newer Silo) are left out rather than rejecting the list. */
+const workspacesShape = z.array(z.unknown())
+  .transform(items => items.filter(item => {
+    const kind = (item as { machine?: { kind?: unknown } } | null)?.machine?.kind
+    return kind === "vm" || kind === "ssh"
+  }))
+  .pipe(z.array(workspaceShape))
+
+const activityShape = z.object({
+  id: z.string().min(1),
+  category: tolerantEnum(["sandbox", "git", "backup", "secrets", "github", "system"], "system"),
+  title: z.string(), detail: z.string(), occurredAt: z.string(), time: z.string(),
+  tone: tolerantEnum(["success", "neutral", "warning", "danger"], "neutral"),
+  status: tolerantEnum(["running", "completed"], "completed"),
+  workspace: z.string().nullish().transform(value => value ?? undefined),
+  progress: z.number().optional(), progressLabel: z.string().optional(),
+  cancelled: z.boolean().optional(),
+})
+
+const pushTargetShape = z.object({ repository: z.string().min(1), branch: z.string().min(1), commit: z.string().min(1) })
+const pushFields = { operationId: z.string().optional(), workspace: z.string().min(1), repositoryPath: z.string().min(1), commitCount: z.number().int().nonnegative(), target: pushTargetShape.optional() }
+const pushOperationShape = z.discriminatedUnion("status", [
+  z.object({ ...pushFields, status: z.literal("pushing"), message: z.string().optional() }),
+  z.object({ ...pushFields, status: z.literal("unknown"), message: z.string() }),
+  z.object({ ...pushFields, status: z.literal("succeeded") }),
+  z.object({ ...pushFields, status: z.literal("failed"), message: z.string(), diagnosticDetails: z.string().optional() }),
+])
+
+const runtimeRepairShape = z.object({
+  status: tolerantEnum(["needed", "unavailable"], "unavailable"), reason: z.string(), recovery: z.string().optional(), checking: z.boolean().optional(),
+})
+
+const sandboxConfigurationOperationShape = z.object({
+  id: z.string().min(1),
+  status: z.enum(["applying", "awaiting-approval", "failed"]),
+  candidate: setupMachineConfigurationRequestSchema,
+  progressEvents: z.array(siloProgressEventSchema),
+  result: siloBootstrapResultSchema.nullable(),
+  error: siloProtocolErrorSchema.nullable(),
+})
+
+const preferencesShape = z.object({
+  terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
+  startWorkspacesAtLaunch: z.boolean(), reduceMotion: z.boolean(),
+}).passthrough()
+const backupSummaryShape = z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() })
+
+// Every field the UI dereferences is validated here. Lists that only enrich the
+// view (activities, pushes, repositories, logs) drop an entry they cannot read,
+// and enums tolerate values from a newer Silo, so one unknown value never
+// rejects a whole computer's state or throws while it is being shown.
 const applicationSourceShape = z.object({
-  runtimeRepair: z.unknown().nullable(),
-  workspaces: z.array(z.object({
-    machine: z.object({ id: z.string().min(1), kind: z.enum(["vm", "ssh"]), name: z.string().min(1) }).passthrough(),
-    purpose: z.string(),
-    state: z.enum(["running", "starting", "stopped", "failed"]),
-    stateDetail: z.string(),
-    canDismissError: z.boolean().optional(),
-    lifecycleFailure: z.string().optional(),
-    freshness: z.enum(["fresh", "stale"]),
-    host: z.string(),
-    repositories: z.array(z.unknown()), files: z.array(z.unknown()), ports: z.array(z.unknown()), logs: z.array(z.unknown()),
-    githubRepositories: z.array(z.string()), secretNames: z.array(z.string()),
-    checkpoints: z.array(checkpointShape).optional(),
-    checkpointOperation: checkpointOperationShape.nullable().optional(),
-    pendingCheckpointRestore: pendingCheckpointRestoreShape.nullable().optional(),
-  }).passthrough()),
-  activities: z.array(z.unknown()),
-  sandboxConfigurationOperation: z.unknown().nullable(),
-  repositoryPushOperations: z.array(z.unknown()),
+  runtimeRepair: runtimeRepairShape.nullable(),
+  workspaces: workspacesShape,
+  activities: tolerantArray(activityShape),
+  // The runtime does not report an operation in progress; the source tracks its own.
+  sandboxConfigurationOperation: sandboxConfigurationOperationShape.nullable().catch(null),
+  repositoryPushOperations: tolerantArray(pushOperationShape),
   github: githubStateShape,
   secrets: z.array(secretShape),
-  backup: z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() }),
-  preferences: z.object({
-    terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
-    startWorkspacesAtLaunch: z.boolean(), reduceMotion: z.boolean(),
-  }).passthrough(),
+  backup: backupSummaryShape,
+  preferences: preferencesShape,
 }).passthrough()
+
+// Another computer's GitHub, secrets, export and preference state is never shown
+// here, so a newer shape of those must not make its sandboxes unavailable.
+const remoteApplicationSourceShape = applicationSourceShape.extend({
+  github: githubStateShape.catch({ state: "disconnected" as const, account: undefined }),
+  secrets: tolerantArray(secretShape),
+  backup: backupSummaryShape.catch({ lastArchive: "", completedLabel: "", compressedSize: "", destination: "" }),
+  preferences: preferencesShape.catch({ terminal: "", editor: "", browser: "", launchAtLogin: false, startWorkspacesAtLaunch: false, reduceMotion: false }),
+})
 
 const backupArchiveShape = z.object({
   name: z.string().min(1), archivePath: z.string().min(1), completedLabel: z.string(), size: z.string(), destination: z.string(), sandboxes: z.array(z.string()),
+  checkpointName: z.string().optional(),
 }).strict()
 const backupPhaseShape = z.object({ title: z.string(), detail: z.string(), tone: z.enum(["waiting", "running", "succeeded", "failed"]) }).strict()
 const backupOperationShape = z.discriminatedUnion("kind", [
   z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("running"), progress: z.number().min(0).max(100), indeterminate: z.boolean().optional(), canCancel: z.boolean().optional(), phases: z.array(backupPhaseShape) }).strict(),
-  z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("result"), outcome: z.enum(["success", "failed", "restart-required", "cancelled"]), title: z.string(), message: z.string(), detail: z.string().optional() }).strict(),
+  z.object({ operation: z.enum(["backup", "restore"]), archive: backupArchiveShape, runningNames: z.array(z.string()), targetName: z.string().optional(), kind: z.literal("result"), outcome: z.enum(["success", "failed", "cancelled"]), title: z.string(), message: z.string(), detail: z.string().optional() }).strict(),
 ])
 const backupStateShape = z.object({
   snapshotId: z.string(), operationId: z.string().optional(), availability: z.enum(["available", "unavailable"]), availabilityMessage: z.string().optional(),
@@ -138,7 +242,7 @@ const backupStateShape = z.object({
 const archiveInspectionShape = z.object({ archive: backupArchiveShape, valid: z.boolean(), reason: z.string().optional() }).strict()
 
 const networkStateShape = z.object({ workspaces: z.array(z.object({
-  workspace: z.string(), error: z.string().nullable(), ports: z.array(z.object({
+  workspace: z.string(), error: z.string().nullable(), host: z.string().regex(/^[a-z0-9-]{1,63}\.localhost$/).nullable().optional(), ports: z.array(z.object({
     configuredHostPort: z.number().int().min(1).max(65535).nullable().optional(),
     port: z.number().int().min(1).max(65535), hostPort: z.number().int().min(1).max(65535).nullable(),
     scheme: z.enum(["http", "https"]).nullable(), state: z.enum(["reachable", "waiting", "unpublished", "unknown"]),
@@ -147,7 +251,12 @@ const networkStateShape = z.object({ workspaces: z.array(z.object({
 })) })
 
 export function parseApplicationSource(input: unknown): ApplicationSource {
-  return applicationSourceShape.parse(input) as unknown as ApplicationSource
+  return applicationSourceShape.parse(input) as ApplicationSource
+}
+
+/** Another computer's snapshot, which may come from an older or newer Silo. */
+export function parseRemoteApplicationSource(input: unknown): ApplicationSource {
+  return remoteApplicationSourceShape.parse(input) as ApplicationSource
 }
 
 export function parseBackupState(input: unknown): BackupState {
@@ -158,6 +267,13 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
   const text = String(error).trim()
   return text || "The desktop bridge returned an unknown error."
+}
+
+/** A JSON key that does not depend on object property order. */
+function canonicalKey(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
+    : item)
 }
 
 function unavailableBackup(message: string): BackupState {
@@ -173,11 +289,34 @@ export interface ProductionSnapshot {
   setupActivity?: SiloProgressEvent[]
   setupActivityError?: string
   setupCandidate?: SetupMachineConfigurationRequest
+  /** The setup work Quit is waiting for while it drains setup. */
+  setupDrain?: string
+  /** `source` is a shell for connected computers while this computer's sandboxes update. */
+  localUpdating?: boolean
   source: ApplicationSource | null
   backup: BackupState
   loading: boolean
   error: string | null
 }
+
+export const localUpdatingNotice = "Sandboxes on this computer are updating. They appear here when the update finishes."
+
+type RemoteHost = z.infer<typeof remoteComputerSchema>
+type LifecycleAction = "start" | "stop" | "restart"
+const lifecycleActions: LifecycleAction[] = ["start", "stop", "restart"]
+
+/** Runtime lifecycle activity ids, bare or wrapped by the remote activity prefix. */
+function isLifecycleActivity(id: string) {
+  return id.startsWith("lifecycle-") || /^silo-remote-activity:[^:]*:lifecycle-/.test(id)
+}
+
+/** How long a caller waits for one computer's snapshot before showing its last known state as stale. */
+const REMOTE_READ_WAIT_MS = 15_000
+
+/** Push status polling: the normal interval, the backoff ceiling, and unanswered checks before giving up. */
+const PUSH_STATUS_INTERVAL_MS = 2_000
+const PUSH_STATUS_MAX_INTERVAL_MS = 30_000
+const PUSH_STATUS_ATTEMPTS = 8
 
 /** The runtime's "configuration is updating" sentinel, bare or wrapped by a remote bridge. */
 export function isUpdateInProgress(cause: unknown) {
@@ -193,6 +332,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     loading: true,
     error: null,
   }
+  let view = snapshot
   type SetupItem = NonNullable<OnboardingSource["setupQueue"]>[number]
   type SetupJob = { items: SetupItem[]; activityId: string }
   let setupJobs: SetupJob[] = []
@@ -210,8 +350,16 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let remoteComputers: RemoteComputer[] = []
   let remoteManagement: RemoteManagement | undefined
   let remoteManagementError: string | undefined
+  let remoteComputersError: string | undefined
   const remoteSnapshots = new Map<string, ApplicationSource>()
-  let remoteRefresh: Promise<void> | undefined
+  let remoteHosts: RemoteHost[] = []
+  let remoteListRevision = 0
+  let remoteListRead: Promise<boolean> | undefined
+  let remotePasses = 0
+  const remoteRevisions = new Map<string, number>()
+  const remoteReads = new Map<string, { repositories: boolean; promise: Promise<void> }>()
+  const remoteRepositoryReads = new Set<string>()
+  const slowComputers = new Set<string>()
   let remoteTimer: ReturnType<typeof setInterval> | undefined
   let sshAccess: SshAccessState | undefined
   let sshAccessError: string | null = null
@@ -228,7 +376,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let operationQueueDirty = false
   let disposed = false
   let activeRefreshes = 0
+  /** Bumped whenever newer state is published outside a read: reads started earlier are dropped. */
   let refreshSequence = 0
+  let readSequence = 0
+  let appliedApplicationRead = 0
+  let appliedBackupRead = 0
   let refreshRepositoriesOnReturn = false
   let githubMutationSequence = 0
   let githubMutationPending = false
@@ -236,17 +388,23 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
   const pendingCheckpointOperations = new Map<string, WorkspaceCheckpointOperation>()
-  const checkpointOperationBases = new Map<string, WorkspaceCheckpointOperation | null | undefined>()
   const pushPollTimers = new Set<ReturnType<typeof setTimeout>>()
   const pendingRepositoryPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
-  const remotePushRevisions = new Map<string, number>()
+  /** The push whose status polling currently owns each repository key. */
+  const activePushes = new Map<string, object>()
+  /** Pushes whose status could not be confirmed; shown as "unknown" until dismissed or reported by their host. */
+  const unconfirmedPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
   const pendingLifecycle = new Map<string, "start" | "stop" | "restart" | "dismiss-error">()
   const workspaceFailures = new Map<string, { machineId: string; action: string; message: string; cancelled: boolean }>()
   let pendingBackupOperation = false
   let localBackupOperation: BackupOperation | null = null
   const dismissedBackupResults = new Set<string>()
-  let requestedOperation: { operation: "backup" | "restore"; archive: BackupArchive; targetName?: string } | null = null
+  // Exports awaiting their own result (E-59). Each sees every backend backup
+  // state read, with the read's sequence, or null when the source is disposed.
+  const exportWaiters = new Set<(state: BackupState | null, sequence: number) => void>()
 
+  /** Identity of one repository's push across native results, pending pushes and dismissals. */
+  function pushKey(workspace: string, repositoryPath: string) { return `${workspace}\u0000${repositoryPath}` }
   function sshOwner(target: string) { return parseRemoteWorkspaceTarget(target)?.hostId ?? "" }
   function unavailableSshRows(hostId: string, computerName: string, message: string): SshAccessWorkspace[] {
     const cached = sshAccess?.workspaces.filter(row => sshOwner(row.workspace) === hostId) ?? []
@@ -305,11 +463,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       try {
         const local = networkStateShape.parse(await native.invoke("read_network_state"))
         const remotes = await Promise.all(remoteComputers.map(async computer => {
+          const unavailable = (error: string) => (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
+          // An offline computer would only cost a connection timeout on every poll.
+          if (!computer.connected) return unavailable(`${computer.name} is unavailable. Reconnect to see network services.`)
           try { return networkStateShape.parse(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
           catch (cause) {
-            const message = errorMessage(cause)
-            const error = isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : message
-            return (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
+            return unavailable(isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : errorMessage(cause))
           }
         }))
         const result = { workspaces: [...local.workspaces, ...remotes.flat()] }
@@ -352,14 +511,69 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   async function changeSecret(command: string, arguments_: Record<string, unknown>) {
     const secrets = z.array(secretShape).parse(await native.invoke(command, arguments_))
+    ++refreshSequence
     if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
     void refresh()
   }
 
+  // `snapshot` is the base state: the local application source as last read or
+  // returned by a mutation, without frontend overlays. `view` is what subscribers
+  // see: the base plus remote computers, network ports, and pending, failed and
+  // unconfirmed actions. It is derived once per publish and never written back,
+  // so an overlay disappears as soon as its reason does.
   function publish(next: ProductionSnapshot) {
     if (disposed) return
-    let operation = next.backup.operation
-    if (operation?.kind === "result" && dismissedBackupResults.has(JSON.stringify(operation))) operation = null
+    snapshot = next
+    view = derive(next)
+    listeners.forEach((listener) => listener())
+  }
+
+  // A cancelled start, stop or restart is recorded by the runtime (D-26) as a
+  // lifecycle activity with `cancelled: true`, not as a failure; older computers
+  // still report it as "<Action> failed: … was cancelled.". Both render as the
+  // neutral cancelled state the action itself shows, after a reload or on a peer.
+  function lastCancelledLifecycle(activities: ApplicationActivity[]) {
+    const latest = new Map<string, ApplicationActivity>()
+    for (const activity of activities) {
+      if (activity.category !== "sandbox" || !activity.workspace || !isLifecycleActivity(activity.id)) continue
+      const known = latest.get(activity.workspace)
+      if (!known || activity.occurredAt > known.occurredAt) latest.set(activity.workspace, activity)
+    }
+    const cancelled = new Map<string, LifecycleAction>()
+    for (const [target, activity] of latest) {
+      const action = activity.cancelled ? lifecycleActions.find(candidate => cancelledActionLabel(candidate) === activity.title) : undefined
+      if (action) cancelled.set(target, action)
+    }
+    return cancelled
+  }
+
+  function reportedCancellation(workspace: ApplicationWorkspace, cancelledAction: LifecycleAction | undefined): Partial<ApplicationWorkspace> {
+    if (workspace.lifecycleFailure) {
+      if (!isCancelledError(workspace.lifecycleFailure)) return {}
+      const prefix = /^(Start|Stop|Restart) failed: /.exec(workspace.lifecycleFailure)
+      return { lifecycleFailure: workspace.lifecycleFailure.slice(prefix?.[0].length ?? 0), lifecycleFailureAction: (prefix?.[1].toLowerCase() ?? "start") as LifecycleAction, lifecycleFailureCancelled: true }
+    }
+    return cancelledAction ? { lifecycleFailure: "The action was cancelled.", lifecycleFailureAction: cancelledAction, lifecycleFailureCancelled: true } : {}
+  }
+
+  /** Stable identity of an export/import result: the runtime's operation id, else its defining fields. */
+  function backupResultKey(state: BackupState, operation: BackupOperation) {
+    if (state.operationId) return `operation:${state.operationId}`
+    return JSON.stringify([operation.operation, operation.kind, operation.archive.archivePath, operation.archive.name, operation.targetName ?? null, operation.kind === "result" ? operation.outcome : null, operation.kind === "result" ? operation.title : null])
+  }
+
+  function derivePorts(row: NetworkState["workspaces"][number] | undefined, reachable: boolean): ApplicationPort[] {
+    return (row?.ports ?? []).map(port => ({ port: port.port, listening: reachable && !networkError && !row?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured }))
+  }
+
+  function withPendingCheckpoint(workspace: ApplicationWorkspace, target: string): ApplicationWorkspace {
+    const pending = pendingCheckpointOperations.get(target)
+    return pending ? { ...workspace, checkpointOperation: workspace.checkpointOperation?.status === "running" ? workspace.checkpointOperation : pending } : workspace
+  }
+
+  function derive(base: ProductionSnapshot): ProductionSnapshot {
+    let operation = base.backup.operation
+    if (operation?.kind === "result" && dismissedBackupResults.has(backupResultKey(base.backup, operation))) operation = null
     if (localBackupOperation && operation !== localBackupOperation) {
       if (!operation) operation = localBackupOperation
       else {
@@ -367,91 +581,111 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         if (operation.kind === "running") dismissedBackupResults.clear()
       }
     }
-    if (operation?.kind === "result") requestedOperation = null
-    next = { ...next, backup: { ...next.backup, operation } }
-    if (next.source) next = { ...next, source: { ...next.source, remoteComputers, remoteManagement, remoteManagementError, network, networkError, sshAccess, sshAccessError, operationQueue,
-      workspaces: next.source.workspaces.filter(workspace => !workspace.computer).map(workspace => {
-        const target = workspaceTarget(workspace)
-        const pending = pendingCheckpointOperations.get(target)
-        return { ...workspace,
-          ...(pending && { checkpointOperation: workspace.checkpointOperation?.status === "running" ? workspace.checkpointOperation : pending }),
-          ports: (network?.workspaces.find(item => item.workspace === workspace.machine.name)?.ports ?? []).map(port => ({ port: port.port, listening: !networkError && !network?.workspaces.find(item => item.workspace === workspace.machine.name)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })),
-        }
-      })
-    } }
-    if (next.source) next = { ...next, source: { ...next.source, workspaces: [
-      ...next.source.workspaces,
-      ...remoteComputers.flatMap(computer => (remoteSnapshots.get(computer.id)?.workspaces ?? []).filter(workspace => workspace.machine.kind === "vm").map(workspace => {
+    const next = { ...base, backup: { ...base.backup, operation } }
+    if (!base.source) return next
+    const networkRows = new Map((network?.workspaces ?? []).map(row => [row.workspace, row]))
+    const workspaces = base.source.workspaces.filter(workspace => !workspace.computer).map(workspace => ({
+      ...withPendingCheckpoint(workspace, workspace.machine.name),
+      ports: derivePorts(networkRows.get(workspace.machine.name), true),
+    }))
+    let pushes = base.source.repositoryPushOperations.filter(push => !parseRemoteWorkspaceTarget(push.workspace))
+    const activities = base.source.activities.filter(activity => !activity.id.startsWith("silo-remote-activity:"))
+    for (const computer of remoteComputers) {
+      const owner = remoteSnapshots.get(computer.id)
+      if (!owner) continue
+      const vms = new Map(owner.workspaces.filter(workspace => workspace.machine.kind === "vm").map(workspace => [workspace.machine.name, workspace]))
+      const sshNames = new Set(owner.workspaces.filter(workspace => workspace.machine.kind === "ssh").map(workspace => workspace.machine.name))
+      const slow = slowComputers.has(computer.id)
+      for (const workspace of vms.values()) {
         const target = remoteWorkspaceTarget(computer.id, workspace.machine.id)
-        const pending = pendingCheckpointOperations.get(target)
-        return {
-          ...workspace,
-          ...(pending && { checkpointOperation: workspace.checkpointOperation?.status === "running" ? workspace.checkpointOperation : pending }),
+        workspaces.push({
+          ...withPendingCheckpoint(workspace, target),
           machine: { ...workspace.machine, id: target },
           computer: { ...computer, vmId: workspace.machine.id },
-          ports: (network?.workspaces.find(item => item.workspace === target)?.ports ?? []).map(port => ({ port: port.port, listening: computer.connected && !networkError && !network?.workspaces.find(item => item.workspace === target)?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured })),
-          freshness: computer.connected && !computer.busy ? workspace.freshness : "stale" as const,
-          stateDetail: computer.busy ? "Refreshing status" : computer.connected ? workspace.stateDetail : "Computer unavailable",
-        }
-      })),
-    ],
-      repositoryPushOperations: [
-        ...next.source.repositoryPushOperations.filter(operation => !parseRemoteWorkspaceTarget(operation.workspace)),
-        ...remoteComputers.flatMap(computer => {
-          const owner = remoteSnapshots.get(computer.id)
-          return (owner?.repositoryPushOperations ?? []).filter(operation => owner?.workspaces.some(workspace => workspace.machine.kind === "vm" && workspace.machine.name === operation.workspace)).map(operation => ({ ...operation,
-            workspace: remoteWorkspaceTarget(computer.id, owner?.workspaces.find(workspace => workspace.machine.name === operation.workspace)?.machine.id ?? operation.workspace),
-          }))
-        }),
-      ],
-      activities: [
-        ...next.source.activities.filter(activity => !activity.id.startsWith("silo-remote-activity:")),
-        ...remoteComputers.flatMap(computer => {
-          const owner = remoteSnapshots.get(computer.id)
-          return (owner?.activities ?? []).filter(activity => !activity.workspace || !owner?.workspaces.some(workspace => workspace.machine.kind === "ssh" && workspace.machine.name === activity.workspace)).map(activity => ({ ...activity,
-            id: `silo-remote-activity:${encodeURIComponent(computer.id)}:${encodeURIComponent(activity.id)}`,
-            detail: `${computer.name}: ${activity.detail}`,
-            workspace: activity.workspace ? remoteWorkspaceTarget(computer.id, owner?.workspaces.find(workspace => workspace.machine.name === activity.workspace)?.machine.id ?? activity.workspace) : undefined,
-          }))
-        }),
-      ],
-    } }
-    // Remote polling can return a snapshot captured before the push started.
-    // Keep the operation loading until its host supplies a terminal result.
-    if (next.source && pendingRepositoryPushes.size) next = { ...next, source: { ...next.source,
-      repositoryPushOperations: [
-        ...next.source.repositoryPushOperations.filter(operation => !pendingRepositoryPushes.has(JSON.stringify([operation.workspace, operation.repositoryPath]))),
-        ...pendingRepositoryPushes.values(),
-      ],
-    } }
-    snapshot = next.source ? { ...next, source: { ...next.source, workspaces: next.source.workspaces.map(({ lifecycleAction: _previous, ...workspace }) => {
-      const target = workspaceTarget(workspace)
-      const failure = workspaceFailures.get(target)
-      return { ...workspace,
-        ...(failure?.machineId === workspace.machine.id && { lifecycleFailure: failure.message, lifecycleFailureAction: failure.action as "start" | "stop" | "restart" | "dismiss-error", lifecycleFailureCancelled: failure.cancelled }),
-        ...(pendingLifecycle.has(target) && { lifecycleAction: pendingLifecycle.get(target) }),
+          ports: derivePorts(networkRows.get(target), computer.connected),
+          freshness: computer.connected && !computer.busy && !slow ? workspace.freshness : "stale",
+          stateDetail: computer.busy || (computer.connected && slow) ? "Refreshing status" : computer.connected ? workspace.stateDetail : "Computer unavailable",
+        })
       }
-    }) } } : next
-    listeners.forEach((listener) => listener())
+      for (const push of owner.repositoryPushOperations) {
+        const workspace = vms.get(push.workspace)
+        if (workspace) pushes.push({ ...push, workspace: remoteWorkspaceTarget(computer.id, workspace.machine.id) })
+      }
+      for (const activity of owner.activities) {
+        if (activity.workspace && sshNames.has(activity.workspace)) continue
+        activities.push({ ...activity,
+          id: `silo-remote-activity:${encodeURIComponent(computer.id)}:${encodeURIComponent(activity.id)}`,
+          detail: `${computer.name}: ${activity.detail}`,
+          workspace: activity.workspace ? remoteWorkspaceTarget(computer.id, vms.get(activity.workspace)?.machine.id ?? activity.workspace) : undefined,
+        })
+      }
+    }
+    if (pendingRepositoryPushes.size || unconfirmedPushes.size) {
+      // A push whose sandbox (or computer) is gone has nothing left to show or poll.
+      const targets = new Set(workspaces.map(workspaceTarget))
+      for (const [key, push] of pendingRepositoryPushes) if (!targets.has(push.workspace)) { pendingRepositoryPushes.delete(key); activePushes.delete(key) }
+      for (const [key, push] of unconfirmedPushes) if (!targets.has(push.workspace)) unconfirmedPushes.delete(key)
+      // The owning host reporting this very push replaces its unconfirmed result.
+      for (const [key, unconfirmed] of unconfirmedPushes) if (pushes.some(push => pushKey(push.workspace, push.repositoryPath) === key && push.operationId === unconfirmed.operationId)) unconfirmedPushes.delete(key)
+      // Remote polling can return a snapshot captured before the push started.
+      // Keep the operation loading until its host supplies a terminal result.
+      pushes = [
+        ...pushes.filter(push => !pendingRepositoryPushes.has(pushKey(push.workspace, push.repositoryPath)) && !unconfirmedPushes.has(pushKey(push.workspace, push.repositoryPath))),
+        ...pendingRepositoryPushes.values(),
+        ...unconfirmedPushes.values(),
+      ]
+    }
+    const cancelledActions = lastCancelledLifecycle(activities)
+    return { ...next, source: { ...base.source,
+      remoteComputers, remoteManagement, remoteManagementError, remoteComputersError, network, networkError, sshAccess, sshAccessError, operationQueue,
+      repositoryPushOperations: pushes,
+      activities,
+      workspaces: workspaces.map(({ lifecycleAction: _reported, ...workspace }) => {
+        const target = workspaceTarget(workspace)
+        const failure = workspaceFailures.get(target)
+        const action = pendingLifecycle.get(target)
+        // A resubmitted lifecycle action supersedes the last failure or cancellation
+        // until it reports its own result.
+        const current = action ? { ...workspace, lifecycleFailure: undefined, lifecycleFailureAction: undefined, lifecycleFailureCancelled: undefined } : { ...workspace, ...reportedCancellation(workspace, cancelledActions.get(target)) }
+        return { ...current,
+          ...(failure?.machineId === workspace.machine.id && { lifecycleFailure: failure.message, lifecycleFailureAction: failure.action as "start" | "stop" | "restart" | "dismiss-error", lifecycleFailureCancelled: failure.cancelled }),
+          ...(action && { lifecycleAction: action }),
+        }
+      }),
+    } }
   }
 
-  function parseMutationSource(value: unknown, previousSource = snapshot.source): ApplicationSource {
-    const parsed = parseApplicationSource(value)
-    // Mutation responses contain configuration/state but do not load log output.
-    // Keep captured lines until the full refresh replaces them with current logs.
-    const result = { ...parsed, workspaces: parsed.workspaces.map(workspace => ({
+  // Mutation responses carry the configuration and VM state but not the enrichment of
+  // a full read (D-08): no log output, no repositories, no push operations, and a
+  // placeholder GitHub state. Keep those from the state they replace until the full
+  // refresh that follows every mutation; the merge stays as a guard once D-08 lands.
+  function parseMutationSource(value: unknown, previousSource = snapshot.source, parse = parseApplicationSource): ApplicationSource {
+    const parsed = parse(value)
+    const previous = new Map((previousSource?.workspaces ?? []).map(workspace => [workspace.machine.id, workspace]))
+    const workspaces = parsed.workspaces.map(workspace => ({
       ...workspace,
-      logs: workspace.logs.length ? workspace.logs : previousSource?.workspaces.find(previous => previous.machine.id === workspace.machine.id)?.logs ?? [],
-    })) }
-    return result.github.hostIdentity === undefined
-      ? { ...result, github: { ...result.github, hostIdentity: previousSource?.github.hostIdentity } }
-      : result
+      logs: workspace.logs.length ? workspace.logs : previous.get(workspace.machine.id)?.logs ?? [],
+      repositories: workspace.repositories.length ? workspace.repositories : previous.get(workspace.machine.id)?.repositories ?? [],
+    }))
+    const repositoryPushOperations = parsed.repositoryPushOperations.length ? parsed.repositoryPushOperations : previousSource?.repositoryPushOperations ?? []
+    return { ...parsed, workspaces, repositoryPushOperations, github: mutationGitHub(parsed.github, previousSource?.github) }
   }
 
+  function mutationGitHub(github: ApplicationSource["github"], previous: ApplicationSource["github"] | undefined): ApplicationSource["github"] {
+    if (!previous) return github
+    // A placeholder has neither a policy revision nor a catalog status (the runtime's
+    // unavailable fallback has the latter); an older revision is stale.
+    const placeholder = github.policyRevision === undefined && github.repositoryCatalogStatus === undefined
+    if (placeholder || (github.policyRevision !== undefined && github.policyRevision < (previous.policyRevision ?? 0))) return previous
+    return github.hostIdentity === undefined ? { ...github, hostIdentity: previous.hostIdentity } : github
+  }
+
+  // A failed or malformed read says nothing about an export or import in progress:
+  // keep the last known state (including a running or just-requested operation)
+  // and report the problem, instead of inventing a failed result whose Retry the
+  // still-running operation would reject.
   function unreadableBackup(message: string): BackupState {
-    const state = unavailableBackup(message)
-    if (requestedOperation) state.operation = backupFailure(requestedOperation.operation, requestedOperation.archive, message, requestedOperation.targetName)
-    return state
+    return { ...snapshot.backup, availability: "unavailable", availabilityMessage: message }
   }
 
   async function readSetupActivity(requestId?: string) {
@@ -466,38 +700,137 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
-  async function refreshComputers(refreshRepositories = false) {
-    if (remoteRefresh) {
-      if (!refreshRepositories) return remoteRefresh
-      await remoteRefresh
-    }
-    remoteRefresh = (async () => {
-      try {
-        const computers = z.array(remoteComputerSchema).parse(await native.invoke("remote_host_list"))
-        const next = await Promise.all(computers.map(async computer => {
-          try {
-            // A push result delivered during this read is newer than this snapshot.
-            const revision = remotePushRevisions.get(computer.id)
-            const source = parseApplicationSource(await native.invoke("remote_host_snapshot", { hostId: computer.id, ...(refreshRepositories && { refreshRepositories: true }) }))
-            if (revision === remotePushRevisions.get(computer.id)) remoteSnapshots.set(computer.id, source)
-            return { ...computer, connected: true, lastSeen: Date.now() }
-          } catch (cause) {
-            if (isUpdateInProgress(cause)) return { ...computer, connected: true, busy: true, lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
-            return { ...computer, connected: false, error: errorMessage(cause), lastSeen: remoteComputers.find(item => item.id === computer.id)?.lastSeen }
-          }
-        }))
-        remoteComputers = next
-        for (const id of remoteSnapshots.keys()) if (!next.some(computer => computer.id === id)) remoteSnapshots.delete(id)
-        remoteManagement = remoteManagementSchema.parse(await native.invoke("remote_management_status"))
-        remoteManagementError = undefined
-      } catch (cause) { remoteManagementError = errorMessage(cause) }
-      if (!snapshot.source && snapshot.error) {
-        const source = await unavailableLocalSource(snapshot.error)
-        if (!snapshot.source && source) publish({ ...snapshot, source })
+  // Remote computers refresh independently: a remote snapshot can take minutes, so
+  // each computer has at most one read in flight, publishes as soon as it settles,
+  // and never holds back another computer's status. Callers wait for a computer at
+  // most REMOTE_READ_WAIT_MS; after that it shows its last known state as stale.
+  function remoteRevision(hostId: string) { return remoteRevisions.get(hostId) ?? 0 }
+  /** Every remote mutation bumps its computer's revision: a read that started earlier is dropped and read again. */
+  function bumpRemote(hostId: string) { remoteRevisions.set(hostId, remoteRevision(hostId) + 1) }
+
+  function setComputer(computer: RemoteComputer) {
+    const order = remoteHosts.map(host => host.id)
+    remoteComputers = [...remoteComputers.filter(item => item.id !== computer.id), computer]
+      .sort((left, right) => order.indexOf(left.id) - order.indexOf(right.id))
+  }
+
+  function readComputer(hostId: string, refreshRepositories: boolean): Promise<void> {
+    const inFlight = remoteReads.get(hostId)
+    // A read already fetching repositories answers this request too; otherwise one
+    // follow-up read with repositories is chained after it.
+    if (inFlight) { if (refreshRepositories && !inFlight.repositories) remoteRepositoryReads.add(hostId); return inFlight.promise }
+    const entry = { repositories: refreshRepositories, promise: Promise.resolve() }
+    entry.promise = (async () => {
+      for (;;) {
+        remoteRepositoryReads.delete(hostId)
+        const revision = remoteRevision(hostId)
+        let outcome: { source: ApplicationSource } | { cause: unknown }
+        try { outcome = { source: parseRemoteApplicationSource(await native.invoke("remote_host_snapshot", { hostId, ...(entry.repositories && { refreshRepositories: true }) })) } }
+        catch (cause) { outcome = { cause } }
+        const host = remoteHosts.find(item => item.id === hostId)
+        if (disposed || !host) return
+        // A mutation during the read makes this result older than what is shown.
+        if (revision === remoteRevision(hostId)) {
+          const lastSeen = remoteComputers.find(item => item.id === hostId)?.lastSeen
+          slowComputers.delete(hostId)
+          if ("source" in outcome) {
+            remoteSnapshots.set(hostId, outcome.source)
+            setComputer({ ...host, connected: true, lastSeen: Date.now() })
+          } else if (isUpdateInProgress(outcome.cause)) setComputer({ ...host, connected: true, busy: true, lastSeen })
+          else setComputer({ ...host, connected: false, error: errorMessage(outcome.cause), lastSeen })
+          publish({ ...snapshot })
+          if (!remoteRepositoryReads.has(hostId)) return
+          entry.repositories = true
+        }
       }
-      publish({ ...snapshot })
-    })().finally(() => { remoteRefresh = undefined })
-    return remoteRefresh
+    })().finally(() => { if (remoteReads.get(hostId) === entry) remoteReads.delete(hostId) })
+    remoteReads.set(hostId, entry)
+    return entry.promise
+  }
+
+  function waitForComputer(hostId: string, read: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const slow = new Promise<void>(resolve => {
+      timer = setTimeout(() => {
+        const host = remoteHosts.find(item => item.id === hostId)
+        if (!disposed && host && remoteReads.get(hostId)?.promise === read && !slowComputers.has(hostId)) {
+          slowComputers.add(hostId)
+          const known = remoteComputers.find(item => item.id === hostId)
+          setComputer({ ...host, connected: known?.connected ?? false, lastSeen: known?.lastSeen, error: `${host.name} is not responding. Showing its last known state.` })
+          publish({ ...snapshot })
+        }
+        resolve()
+      }, REMOTE_READ_WAIT_MS)
+    })
+    return Promise.race([read, slow]).finally(() => clearTimeout(timer))
+  }
+
+  /** The computer list; a list read that overlapped a connect or removal is read again. */
+  function readHostList(): Promise<boolean> {
+    remoteListRead ??= (async () => {
+      for (;;) {
+        const revision = remoteListRevision
+        let hosts: RemoteHost[]
+        try { hosts = z.array(remoteComputerSchema).parse(await native.invoke("remote_host_list")) }
+        catch (cause) {
+          if (disposed) return false
+          // The known computers stay listed; the failure is about the list itself.
+          remoteComputersError = `Silo could not read its list of computers: ${errorMessage(cause)}`
+          publish({ ...snapshot })
+          return false
+        }
+        if (disposed) return false
+        if (revision !== remoteListRevision) continue
+        remoteComputersError = undefined
+        remoteHosts = hosts
+        remoteComputers = hosts.flatMap(host => {
+          const known = remoteComputers.find(item => item.id === host.id)
+          return known ? [{ ...known, name: host.name, address: host.address }] : []
+        })
+        for (const id of remoteSnapshots.keys()) if (!hosts.some(host => host.id === id)) remoteSnapshots.delete(id)
+        for (const id of slowComputers) if (!hosts.some(host => host.id === id)) slowComputers.delete(id)
+        publish({ ...snapshot })
+        return true
+      }
+    })().finally(() => { remoteListRead = undefined })
+    return remoteListRead
+  }
+
+  async function readRemoteManagement() {
+    try {
+      const management = remoteManagementSchema.parse(await native.invoke("remote_management_status"))
+      if (disposed) return
+      remoteManagement = management
+      remoteManagementError = undefined
+    } catch (cause) { remoteManagementError = errorMessage(cause) }
+  }
+
+  async function refreshComputers(refreshRepositories = false) {
+    remotePasses++
+    const [listed] = await Promise.all([readHostList(), readRemoteManagement()])
+    if (disposed) return
+    if (listed) await Promise.all(remoteHosts.map(host => waitForComputer(host.id, readComputer(host.id, refreshRepositories))))
+    if (!snapshot.source && snapshot.error) {
+      const source = await unavailableLocalSource(snapshot.error)
+      if (!snapshot.source && source) publish({ ...snapshot, source })
+    } else if (!snapshot.source && localStateUpdating) {
+      const source = await updatingLocalSource()
+      if (!snapshot.source && source) publish({ ...snapshot, source, loading: false, localUpdating: true })
+    }
+    publish({ ...snapshot })
+  }
+
+  // While this computer's sandbox state is updating (computer-wide work such as
+  // resuming sandboxes at launch), connected computers stay usable through the shell
+  // source instead of a skeleton for the whole operation. Updating is not a runtime
+  // failure, and local changes wait for it; `localUpdating` marks the shell.
+  let localStateUpdating = false
+  async function updatingLocalSource(): Promise<ApplicationSource | null> {
+    if (!remoteComputers.some(computer => computer.connected && remoteSnapshots.has(computer.id))) return null
+    try {
+      const shell = parseApplicationSource(await native.invoke("read_application_shell", { error: localUpdatingNotice }))
+      return { ...shell, runtimeRepair: null, vmOperationsUnavailable: localUpdatingNotice }
+    } catch { return null }
   }
 
   async function unavailableLocalSource(message: string): Promise<ApplicationSource | null> {
@@ -522,13 +855,18 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     finally { activeRefreshes-- }
   }
 
+  // Reads may overlap. A read's result is dropped when a mutation published newer
+  // state after it started, or when a later read's result is already shown. An
+  // UPDATING reply carries no state, so it never displaces an earlier read's result.
   async function readSnapshots(refreshRepositories: boolean) {
-    const sequence = ++refreshSequence
+    const epoch = refreshSequence
+    const sequence = ++readSequence
+    const remotePassesAtStart = remotePasses
     const [applicationResult, backupResult] = await Promise.allSettled([
       refreshRepositories ? native.invoke<unknown>("read_application_state", { refreshRepositories: true }) : native.invoke<unknown>("read_application_state"),
       native.invoke<unknown>("read_backup_state"),
     ])
-    if (disposed || sequence !== refreshSequence) return
+    if (disposed || epoch !== refreshSequence) return
     let source = snapshot.source
     let backup = snapshot.backup
     let error: string | null = null
@@ -544,20 +882,34 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (!configurationUpdating) {
         error = `Silo could not read application state: ${errorMessage(applicationResult.reason)}`
         source = await unavailableLocalSource(error)
-      }
+      } else if (!source) source = await updatingLocalSource()
     }
+    let backendBackup: BackupState | null = null
     if (backupResult.status === "fulfilled") {
       try {
-        backup = parseBackupState(backupResult.value)
+        backup = backendBackup = parseBackupState(backupResult.value)
       }
       catch (cause) { backup = unreadableBackup(`Silo returned invalid backup state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
     } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
-    if (disposed || sequence !== refreshSequence) return
-    if (source && snapshot.source && (githubMutationPending || (source.github.policyRevision ?? 0) < (snapshot.source.github.policyRevision ?? 0))) source = { ...source, github: snapshot.source.github }
+    if (disposed || epoch !== refreshSequence) return
+    if (backendBackup) { const state = backendBackup; exportWaiters.forEach(waiter => waiter(state, sequence)) }
+    const applicationCurrent = sequence > appliedApplicationRead
+    const backupCurrent = sequence > appliedBackupRead
+    if (!applicationCurrent && !backupCurrent) return
+    if (!applicationCurrent) { source = snapshot.source; error = snapshot.error; configurationUpdating = false }
+    else if (!configurationUpdating) appliedApplicationRead = sequence
+    if (backupCurrent) appliedBackupRead = sequence
+    else backup = snapshot.backup
+    // Only a known older policy revision is stale. The runtime's fallback for a failed
+    // GitHub read carries no revision and must replace the last verified state.
+    const githubRevision = source?.github.policyRevision
+    if (source && snapshot.source && (githubMutationPending || (githubRevision !== undefined && githubRevision < (snapshot.source.github.policyRevision ?? 0)))) source = { ...source, github: snapshot.source.github }
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
-    publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error })
+    localStateUpdating = configurationUpdating
+    publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error, localUpdating: configurationUpdating && source !== null && (snapshot.source === null || snapshot.localUpdating === true) })
     void refreshNetwork()
-    void refreshComputers()
+    // One remote read per refresh; one that started during this refresh is recent enough.
+    if (remotePasses === remotePassesAtStart) void refreshComputers()
   }
 
   async function onWindowFocus() {
@@ -569,7 +921,18 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
-  async function initialize() {
+  // Idempotent: Retry after a failed start calls it again. It subscribes only while
+  // not yet subscribed and installs focus, visibility and polling once; later calls
+  // just refresh.
+  let live = false
+  let initialization: Promise<void> | undefined
+  function initialize(): Promise<void> {
+    initialization ??= (live ? refresh() : startLiveUpdates()).finally(() => { initialization = undefined })
+    return initialization
+  }
+
+  async function startLiveUpdates() {
+    if (disposed) return
     try {
       unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
       unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
@@ -577,7 +940,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       unlisten.push(await native.listen("desktop:status-opened", refreshFromEvent))
       // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
       // so setup and sandbox configuration must be accepted again.
-      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => { if (event?.payload === false) acceptingSetup = true }))
+      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => {
+        if (event?.payload !== false) return
+        acceptingSetup = true
+        if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
+      }))
       unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
         const parsed = siloProgressEventSchema.safeParse(event?.payload)
         if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
@@ -592,11 +959,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       publish({ ...snapshot, loading: false, error })
       throw new Error(error)
     }
+    if (disposed) { unlisten.splice(0).forEach((stop) => stop()); return }
+    live = true
     window.addEventListener("focus", onWindowFocus)
     document.addEventListener("visibilitychange", onVisibilityChange)
-    await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
-    if (disposed) return
-    remoteTimer = setInterval(() => {
+    // Polling starts before the first loads finish, so a slow computer cannot hold it back.
+    remoteTimer ??= setInterval(() => {
       // Repository changes inside a VM do not emit application events. A hidden
       // window (the closed main window, the unopened status panel) does no polling,
       // including remote SSH snapshots; slow reads finish before another poll, and
@@ -604,6 +972,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (document.visibilityState === "hidden" || activeRefreshes > 0) return
       void refresh()
     }, 10_000)
+    await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
   }
 
   function onVisibilityChange() {
@@ -643,7 +1012,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function setWorkspaceFailure(action: string, name: string, cause: unknown) {
-    const workspace = snapshot.source?.workspaces.find(workspace => workspaceTarget(workspace) === name)
+    const workspace = view.source?.workspaces.find(workspace => workspaceTarget(workspace) === name)
     if (!workspace) return
     const message = errorMessage(cause)
     // A user-requested cancellation is not a failure: record it as a neutral,
@@ -658,7 +1027,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   /** The sandbox's display name for system notifications; the target encodes the host and id. */
   function remoteDisplayName(target: string): string | null {
-    return snapshot.source?.workspaces.find(item => workspaceTarget(item) === target)?.machine.name ?? null
+    return view.source?.workspaces.find(item => workspaceTarget(item) === target)?.machine.name ?? null
   }
 
   function workspaceAction(action: string, name: string, extras: Record<string, unknown> = {}) {
@@ -672,33 +1041,30 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     pendingWorkspaceActions.add(key)
     const lifecycle = action === "start" || action === "stop" || action === "restart" || action === "dismiss-error"
     // Submitting a lifecycle action supersedes any prior failure or cancellation for
-    // this VM: clear the tracked failure and the fields already baked into the current
-    // source so a Retry does not leave the old message showing while the resubmitted
-    // action waits or runs. publish recomputes lifecycleAction but preserves the baked
-    // failure fields, so they must be cleared on the source here.
+    // this VM: the view hides it while the resubmitted action waits or runs.
     if (lifecycle) {
       workspaceFailures.delete(name)
       pendingLifecycle.set(name, action)
-      const cleared = snapshot.source
-        ? { ...snapshot.source, workspaces: snapshot.source.workspaces.map(item => workspaceTarget(item) === name
-            ? { ...item, lifecycleFailure: undefined, lifecycleFailureAction: undefined, lifecycleFailureCancelled: undefined }
-            : item) }
-        : snapshot.source
-      publish({ ...snapshot, source: cleared })
+      publish({ ...snapshot })
     }
     void native.invoke<unknown>(remote && lifecycle ? "remote_workspace_action" : "workspace_action", remote && lifecycle ? { ...remote, action, name: remoteDisplayName(name), ...extras } : { action, name, ...extras })
+      // The follow-up refresh is not awaited: the action is finished, so a repeat must
+      // not be ignored while a slow remote snapshot settles.
       .then((result) => {
-        if (remote && !lifecycle) return refreshComputers()
-        const source = parseMutationSource(result, remote ? remoteSnapshots.get(remote.hostId) ?? null : snapshot.source)
+        if (remote && !lifecycle) { void refreshComputers(); return }
+        const source = remote ? parseMutationSource(result, remoteSnapshots.get(remote.hostId) ?? null, parseRemoteApplicationSource) : parseMutationSource(result)
         if (lifecycle || workspaceFailures.get(name)?.action === action) workspaceFailures.delete(name)
         if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
         if (remote) {
+          bumpRemote(remote.hostId)
           remoteSnapshots.set(remote.hostId, source)
           publish({ ...snapshot, error: null })
-          return refreshComputers()
+          void refreshComputers()
+          return
         }
+        ++refreshSequence
         publish({ ...snapshot, source, error: null })
-        return refresh()
+        void refresh()
       })
       .catch((cause) => {
         if (!remote) { setWorkspaceFailure(action, name, cause); return }
@@ -782,7 +1148,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const resolved: ConfigureAction = action ?? { kind: "changes", changes: deriveMachineChanges(committedMachines(), request.machines) }
     // A no-op submission changes nothing; resolve with the current source untouched.
     if (resolved.kind === "changes" && resolved.changes.length === 0) return Promise.resolve(snapshot.source as ApplicationSource)
-    const key = JSON.stringify([request, resolved])
+    const key = canonicalKey([request, resolved])
     if (lastMachineJob?.key === key) return lastMachineJob.promise
     ++identityVerificationSequence
     lastVerificationKey = undefined
@@ -804,6 +1170,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           ? native.invoke("retry_machine_configuration", { requestId, ...(resolved.workspace ? { retryWorkspace: resolved.workspace } : {}) })
           : native.invoke("change_machine_configuration", { change: resolved.changes.length === 1 ? resolved.changes[0] : { kind: "batch", changes: resolved.changes }, requestId })))
         activeConfiguration = null
+        ++refreshSequence
         publish({ ...snapshot, source: result, error: null })
         return result
       } catch (cause) {
@@ -833,8 +1200,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         publish({ ...snapshot, setupFinishedAt: Math.floor(Date.now() / 1000) })
       }
     })
+    // Only an in-flight job is shared: a later identical request (Continue on a
+    // starting VM, Retry after a failure) must reach the backend again.
     lastMachineJob = { key, promise }
-    void promise.catch(() => { if (lastMachineJob?.promise === promise) lastMachineJob = undefined })
+    const settled = () => { if (lastMachineJob?.promise === promise) lastMachineJob = undefined }
+    void promise.then(settled, settled)
     return promise
   }
 
@@ -902,7 +1272,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       await identityJob
       if (request.github.connectionState === "connected") {
         const previous = snapshot.source?.github
-        let github = await githubMutation("save_github_configuration", { configuration: { accessEnabled: true, hostIdentity: snapshot.source?.github.hostIdentity ?? null, workspaces: request.github.workspaces.map((policy) => ({ repositoryMode: "selected", allRepositoriesAllowChanges: false, ...policy })) } })
+        // Setup never turns GitHub access on or off: an explicit Disable access stays in effect.
+        let github = await githubMutation("save_github_configuration", { configuration: { baseRevision: previous?.policyRevision, hostIdentity: snapshot.source?.github.hostIdentity ?? null, workspaces: request.github.workspaces.map((policy) => ({ repositoryMode: "selected", allRepositoriesAllowChanges: false, ...policy })) } })
         if (previous?.policyRevision === github.policyRevision && previous?.workspaceOperations?.some(({ status }) => status === "failed") && github.workspaceOperations?.some(({ status }) => status === "failed")) github = await githubMutation("retry_github_configuration")
         setJobStatus(job, ["githubRun"], "succeeded")
         setJobStatus(job, ["githubVerify"], "running")
@@ -934,9 +1305,36 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return enqueueSetup(["completion"], async () => { await preceding; await markComplete() })
   }
 
+  // Setup waits (GitHub access polling) end early when Quit drains setup.
+  const setupWaits = new Set<() => void>()
+  function setupDelay(ms: number) {
+    return new Promise<void>((resolve) => {
+      const done = () => { window.clearTimeout(timer); setupWaits.delete(done); resolve() }
+      const timer = window.setTimeout(done, ms)
+      setupWaits.add(done)
+    })
+  }
+
+  /** What Quit is waiting for while setup drains, for the shutdown overlay. */
+  function pendingSetupWork(): string | undefined {
+    const pending = new Set(setupJobs.flatMap((job) => job.items.filter(({ status }) => status === "running" || status === "queued").map(({ id }) => id)))
+    const steps = [
+      (pending.has("workspaceRun") || pending.has("workspaceVerify")) && "creating sandboxes",
+      (pending.has("identityRun") || pending.has("identityVerify")) && "applying Git identities",
+      (pending.has("githubRun") || pending.has("githubVerify")) && "verifying GitHub access",
+      pending.has("completion") && "saving setup",
+    ].filter((step): step is string => Boolean(step))
+    return steps.length ? `Finishing setup (${steps.join(", ")})…` : undefined
+  }
+
   async function drainSetup() {
     acceptingSetup = false
-    await setupTail
+    // Accepted setup finishes, but nothing waits minutes for GitHub to confirm access.
+    ;[...setupWaits].forEach((wake) => wake())
+    const pending = pendingSetupWork()
+    if (pending) publish({ ...snapshot, setupDrain: pending })
+    try { await setupTail }
+    finally { if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined }) }
   }
 
   function saveMachineConfiguration(request: SetupMachineConfigurationRequest, baseline?: SetupMachineConfiguration[]): Promise<void> {
@@ -955,15 +1353,18 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     let github = initial
     const revision = initial.policyRevision
     const deadline = Date.now() + 300_000
+    const quitting = () => new Error("Silo is quitting. GitHub access was not verified; Continue after reopening Silo to check again.")
     while (true) {
       if (disposed) throw new Error("Silo closed before GitHub access was verified.")
+      if (!acceptingSetup) throw quitting()
       if (revision !== undefined && (github.policyRevision !== revision || (snapshot.source?.github.policyRevision ?? revision) > revision)) throw new Error("GitHub settings changed during setup. Continue again to verify the latest settings.")
       const operations = workspaces.map((workspace) => github.workspaceOperations?.find((operation) => operation.workspace === workspace))
       const failure = operations.find((operation) => operation?.status === "failed")
       if (failure) throw new Error(failure.message)
       if (operations.every((operation) => operation?.status === "succeeded")) return
       if (Date.now() >= deadline) throw new Error("GitHub access has not been verified in every sandbox. Retry to check again.")
-      await new Promise((resolve) => window.setTimeout(resolve, 500))
+      await setupDelay(500)
+      if (!acceptingSetup) throw quitting()
       github = githubStateShape.parse(await native.invoke("read_github_state"))
       if (!githubMutationPending && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github } })
     }
@@ -1009,33 +1410,35 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (pendingCheckpointOperations.has(checkpointTarget) || ownerWorkspace?.checkpointOperation?.status === "running") {
       throw new Error("A checkpoint operation is already running for this sandbox.")
     }
-    const kind: WorkspaceCheckpointOperation["kind"] = command === "create_checkpoint" ? "capture" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : (() => { throw new Error("Unsupported checkpoint operation.") })()
+    const kind: WorkspaceCheckpointOperation["kind"] = command === "create_checkpoint" ? "capture" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : command === "delete_checkpoint" ? "delete" : command === "abandon_restore" ? "restore" : (() => { throw new Error("Unsupported checkpoint operation.") })()
+    if (remote && kind === "delete") throw new Error("Delete checkpoints of this sandbox in Silo on its own computer.")
+    if (remote && command === "abandon_restore") throw new Error("Abandon this Restore in Silo on the sandbox’s own computer.")
     const operation: WorkspaceCheckpointOperation = {
       kind,
       status: "running",
-      stage: kind === "capture" ? "Creating checkpoint…" : kind === "fork" ? "Creating stopped fork…" : "Saving recovery checkpoint and restoring…",
+      stage: kind === "capture" ? "Creating checkpoint…" : kind === "fork" ? "Creating stopped fork…" : kind === "delete" ? "Deleting checkpoint…" : command === "abandon_restore" ? "Abandoning Restore…" : "Saving recovery checkpoint and restoring…",
     }
     pendingCheckpointOperations.set(checkpointTarget, operation)
-    checkpointOperationBases.set(checkpointTarget, ownerWorkspace?.checkpointOperation)
     publish({ ...snapshot })
     if (remote) {
       const action = kind === "capture" ? "create" : kind
       try {
         await native.invoke("remote_checkpoint_action", { hostId: remote.hostId, vmId: remote.vmId, action, ...arguments_ })
-        checkpointOperationBases.set(checkpointTarget, undefined)
+        bumpRemote(remote.hostId)
         await refreshComputers(true)
       } catch (cause) {
+        bumpRemote(remote.hostId)
         void refreshComputers()
         throw cause
       } finally {
         pendingCheckpointOperations.delete(checkpointTarget)
-        clearCheckpointOperation(checkpointTarget, operation)
+        publish({ ...snapshot })
       }
       return
     }
     try {
       const result = await native.invoke<unknown>(command, { workspaceId: localWorkspace!.machine.id, ...arguments_ })
-      checkpointOperationBases.set(checkpointTarget, undefined)
+      ++refreshSequence
       publish({ ...snapshot, source: parseMutationSource(result), error: null })
       void refresh()
     } catch (cause) {
@@ -1043,27 +1446,19 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       throw cause
     } finally {
       pendingCheckpointOperations.delete(checkpointTarget)
-      clearCheckpointOperation(checkpointTarget, operation)
+      publish({ ...snapshot })
     }
-  }
-
-  function clearCheckpointOperation(target: string, synthetic: WorkspaceCheckpointOperation) {
-    const base = checkpointOperationBases.get(target) ?? null
-    checkpointOperationBases.delete(target)
-    if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, workspaces: snapshot.source.workspaces.map(workspace =>
-      workspaceTarget(workspace) === target && workspace.checkpointOperation === synthetic
-        ? { ...workspace, checkpointOperation: base }
-        : workspace,
-    ) } })
   }
 
   const applicationActions: ApplicationActions = {
     createCheckpoint: (workspace, name) => checkpointAction("create_checkpoint", workspace, { name }),
     forkCheckpoint: (workspace, checkpointId, newName) => checkpointAction("fork_checkpoint", workspace, { checkpointId, newName }),
     restoreCheckpoint: (workspace, checkpointId) => checkpointAction("restore_checkpoint", workspace, { checkpointId }),
+    deleteCheckpoint: (workspace, checkpointId) => checkpointAction("delete_checkpoint", workspace, { checkpointId }),
+    abandonRestore: workspace => checkpointAction("abandon_restore", workspace, {}),
+    readCheckpointUsage: async workspaceId => checkpointUsageSchema.parse(await native.invoke("read_checkpoint_usage", { workspaceId })),
     refreshRepositories: async () => {
-      await refresh(true)
-      await refreshComputers(true)
+      await Promise.all([refresh(true), refreshComputers(true)])
       if (snapshot.error) throw new Error(snapshot.error)
     },
     queryLogs: async request => logPageSchema.parse(await native.invoke("query_sandbox_logs", { request })),
@@ -1074,22 +1469,30 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       remoteManagementError = undefined
       publish({ ...snapshot })
     },
-    connectComputer: async address => {
-      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address }))
+    connectComputer: async (address, options) => {
+      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address, replace: options?.replaceAddress ?? false }))
+      // A list read that started before the connection is read again, so the new
+      // computer is listed when this resolves.
+      remoteListRevision++
       await refreshComputers()
     },
     removeComputer: async hostId => {
       await native.invoke("remove_remote_host", { hostId })
+      remoteListRevision++
+      bumpRemote(hostId)
+      remoteHosts = remoteHosts.filter(host => host.id !== hostId)
       remoteComputers = remoteComputers.filter(computer => computer.id !== hostId)
       remoteSnapshots.delete(hostId)
+      slowComputers.delete(hostId)
       publish({ ...snapshot })
     },
     saveRemoteMachine: async (hostId, machine, expected) => {
       const target = parseRemoteWorkspaceTarget(machine.id)
-      const source = parseApplicationSource(await native.invoke("remote_upsert_machine", {
+      const source = parseMutationSource(await native.invoke("remote_upsert_machine", {
         hostId, machine: { ...machine, id: target?.vmId ?? machine.id },
         expected: expected ? { ...expected, id: parseRemoteWorkspaceTarget(expected.id)?.vmId ?? expected.id } : null,
-      }))
+      }), remoteSnapshots.get(hostId) ?? null, parseRemoteApplicationSource)
+      bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)
       publish({ ...snapshot })
       void refreshComputers()
@@ -1097,7 +1500,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     deleteRemoteMachine: async (hostId, machine) => {
       const vmId = parseRemoteWorkspaceTarget(machine.id)?.vmId
       if (!vmId) throw new Error("The remote VM identity is missing.")
-      const source = parseApplicationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }))
+      const source = parseMutationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }), remoteSnapshots.get(hostId) ?? null, parseRemoteApplicationSource)
+      bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)
       publish({ ...snapshot })
       void refreshComputers()
@@ -1148,27 +1552,35 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (operation) void configureMachines(operation.candidate, { kind: "retry", workspace }).catch(() => {})
     },
     dismissRepositoryPush: (workspace, repositoryPath) => statusActions.dismissRepositoryPush(workspace, repositoryPath),
-    pushRepository: (workspace, repositoryPath) => {
-      const key = JSON.stringify([workspace, repositoryPath])
-      if (pendingRepositoryPushes.has(key) || snapshot.source?.repositoryPushOperations.some(operation => operation.workspace === workspace && operation.repositoryPath === repositoryPath && (operation.status === "pushing" || operation.status === "unknown"))) return
-      const commitCount = snapshot.source?.workspaces.find(item => workspaceTarget(item) === workspace)?.repositories.find(repository => repository.path === repositoryPath)?.ahead ?? 0
+    pushRepository: (workspace, repositoryPath, target) => {
+      const key = pushKey(workspace, repositoryPath)
+      if (pendingRepositoryPushes.has(key) || view.source?.repositoryPushOperations.some(operation => operation.workspace === workspace && operation.repositoryPath === repositoryPath && (operation.status === "pushing" || operation.status === "unknown"))) return
+      const commitCount = view.source?.workspaces.find(item => workspaceTarget(item) === workspace)?.repositories.find(repository => repository.path === repositoryPath)?.ahead ?? 0
+      // Polling stops once this push is finished or its sandbox (or computer) is gone.
+      const owner = {}
+      const current = () => !disposed && activePushes.get(key) === owner
+      activePushes.set(key, owner)
+      unconfirmedPushes.delete(key)
       pendingRepositoryPushes.set(key, { workspace, repositoryPath, commitCount, status: "pushing" })
       publish({ ...snapshot })
-      const finish = (operation?: ApplicationSource["repositoryPushOperations"][number], error?: string) => {
+      // Push results are shown on the repository row, never through `snapshot.error`,
+      // which is not rendered once the application has loaded.
+      const finish = (operation: ApplicationSource["repositoryPushOperations"][number]) => {
         pendingRepositoryPushes.delete(key)
+        activePushes.delete(key)
         ++refreshSequence
         const remote = parseRemoteWorkspaceTarget(workspace)
-        if (remote) remotePushRevisions.set(remote.hostId, (remotePushRevisions.get(remote.hostId) ?? 0) + 1)
-        const owner = remote && remoteSnapshots.get(remote.hostId)
-        if (operation && remote && owner) {
-          const name = owner.workspaces.find(workspace => workspace.machine.id === remote.vmId)?.machine.name
-          if (name) remoteSnapshots.set(remote.hostId, { ...owner, repositoryPushOperations: [
-            ...owner.repositoryPushOperations.filter(operation => operation.workspace !== name || operation.repositoryPath !== repositoryPath),
+        if (remote) bumpRemote(remote.hostId)
+        const host = remote && remoteSnapshots.get(remote.hostId)
+        if (remote && host) {
+          const name = host.workspaces.find(workspace => workspace.machine.id === remote.vmId)?.machine.name
+          if (name) remoteSnapshots.set(remote.hostId, { ...host, repositoryPushOperations: [
+            ...host.repositoryPushOperations.filter(operation => operation.workspace !== name || operation.repositoryPath !== repositoryPath),
             { ...operation, workspace: name },
           ] })
         }
-        if (snapshot.source) publish({ ...snapshot, error: error ?? snapshot.error, source: { ...snapshot.source,
-          repositoryPushOperations: [...snapshot.source.repositoryPushOperations.filter(operation => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath), ...(operation ? [{ ...operation, workspace }] : [])],
+        if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source,
+          repositoryPushOperations: [...snapshot.source.repositoryPushOperations.filter(operation => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath), { ...operation, workspace }],
         } })
       }
       let operationId: string = crypto.randomUUID()
@@ -1177,19 +1589,23 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         z.object({ operationId: z.string().optional(), status: z.literal("unknown"), commitCount: z.number(), message: z.string() }),
         z.object({ operationId: z.string().optional(), status: z.literal("failed"), commitCount: z.number(), message: z.string(), diagnosticDetails: z.string().optional() }),
       ])
+      // Unanswered status checks back off exponentially; after PUSH_STATUS_ATTEMPTS in a
+      // row the push ends as a dismissible "unknown" result instead of spinning forever.
+      let failures = 0
       const schedule = () => {
-        if (disposed) return
+        if (!current()) return
         const timer = setTimeout(() => {
           pushPollTimers.delete(timer)
           void observe(false)
-        }, 2_000)
+        }, Math.min(PUSH_STATUS_INTERVAL_MS * 2 ** failures, PUSH_STATUS_MAX_INTERVAL_MS))
         pushPollTimers.add(timer)
       }
       const observe = async (start: boolean): Promise<void> => {
-        if (disposed) return
+        if (!current()) return
         try {
-          const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", { workspace, repositoryPath, operationId })
-          if (disposed) return
+          // The host pushes exactly the confirmed target or reports that the repository changed.
+          const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", start ? { workspace, repositoryPath, operationId, target } : { workspace, repositoryPath, operationId })
+          if (!current()) return
           // No saved job means the first request never arrived. Reuse its identifier.
           if (result === null && !start) return observe(true)
           const parsed = terminalShape.safeParse(result)
@@ -1201,11 +1617,20 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           }
           const active = z.object({ operationId: z.string(), status: z.literal("pushing") }).parse(result)
           operationId = active.operationId
+          failures = 0
           pendingRepositoryPushes.set(key, { workspace, repositoryPath, commitCount, status: "pushing" })
           publish({ ...snapshot })
         } catch (cause) {
+          if (!current()) return
           // A lost connection is not a failed push. Keep the button disabled and
           // query the host-owned operation until it supplies an actual result.
+          if (++failures >= PUSH_STATUS_ATTEMPTS) {
+            pendingRepositoryPushes.delete(key)
+            activePushes.delete(key)
+            unconfirmedPushes.set(key, { operationId, workspace, repositoryPath, commitCount, status: "unknown", message: `Silo could not confirm this push (${errorMessage(cause)}). Check the branch on GitHub before pushing again.` })
+            publish({ ...snapshot })
+            return
+          }
           pendingRepositoryPushes.set(key, { workspace, repositoryPath, commitCount, status: "pushing", message: `Waiting for push status: ${errorMessage(cause)}` })
           publish({ ...snapshot })
         }
@@ -1258,13 +1683,51 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   function showPendingBackup(operation: "backup" | "restore", archive: BackupArchive, targetName?: string) {
     ++refreshSequence
-    const previous = snapshot.backup.operation
-    if (previous?.kind === "result") dismissedBackupResults.add(JSON.stringify(previous))
-    requestedOperation = { operation, archive, targetName }
+    // A new operation replaces the previous result, here and in the runtime (E-49),
+    // so it does not come back after a relaunch.
+    const previous = view.backup.operation
+    if (previous?.kind === "result" && previous !== localBackupOperation) {
+      dismissedBackupResults.add(backupResultKey(view.backup, previous))
+      void native.invoke("dismiss_backup_operation", { expectedOperation: previous, expectedOperationId: view.backup.operationId ?? null }).catch(() => {})
+    }
     localBackupOperation = { operation, archive, targetName, runningNames: [], kind: "running", progress: 0, indeterminate: true, canCancel: false,
       phases: [{ title: operation === "backup" ? "Preparing backup" : "Checking backup", detail: operation === "backup" ? "Preparing the selected sandboxes." : "Verifying the archive before restoring it.", tone: "running" }],
     }
     publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
+  }
+
+  /** Checks an export file under a request id so aborting `signal` stops the check (E-27).
+   * The check changes no state, so no refresh follows it. */
+  async function inspectBackupArchive(archivePath: string, signal?: AbortSignal) {
+    const requestId = crypto.randomUUID()
+    const cancel = () => { void native.invoke("cancel_backup_inspection", { requestId }).catch(() => undefined) }
+    signal?.addEventListener("abort", cancel, { once: true })
+    try { return archiveInspectionShape.parse(await native.invoke("inspect_backup_archive", { archivePath, requestId })) }
+    finally { signal?.removeEventListener("abort", cancel) }
+  }
+
+  /** Settles with the result the backend reports under `operationId`. A state read
+   * that began after the export started and shows another id means the result is gone. */
+  function waitForExport(operationId: string): Promise<VerifiedExport> {
+    // Reads are numbered as they start: one numbered after this began knows the export.
+    const startedAfter = readSequence
+    return new Promise((resolve, reject) => {
+      const waiter = (state: BackupState | null, sequence: number) => {
+        const operation = state?.operation
+        if (state?.operationId === operationId && operation?.kind !== "result") return
+        if (state && state.operationId !== operationId && sequence <= startedAfter) return
+        exportWaiters.delete(waiter)
+        if (state?.operationId === operationId && operation?.kind === "result") {
+          if (operation.operation === "backup" && operation.outcome === "success") resolve({ operationId, archive: operation.archive })
+          else reject(new ExportIncompleteError(operation.outcome === "cancelled" ? "cancelled" : "failed", operation.message, operationId))
+          return
+        }
+        reject(new ExportIncompleteError("unavailable", state
+          ? "Silo no longer reports this export's result. Check the export folder before relying on it."
+          : "Silo stopped tracking this export before it finished.", operationId))
+      }
+      exportWaiters.add(waiter)
+    })
   }
 
   const backupActions: BackupController["actions"] = {
@@ -1273,31 +1736,37 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (selected) await refresh()
       return selected
     },
-    async chooseArchive(onSelected) {
+    async chooseArchive(onSelected, signal) {
       const archivePath = await native.invoke<string | null>("choose_backup_archive")
-      if (!archivePath) return null
+      if (!archivePath || signal?.aborted) return null
       onSelected?.(archivePath)
-      const inspected = archiveInspectionShape.parse(await native.invoke("inspect_backup_archive", { archivePath }))
-      await refresh()
-      return inspected
+      return inspectBackupArchive(archivePath, signal)
     },
-    async inspectArchive(archive) {
-      const inspected = archiveInspectionShape.parse(await native.invoke("inspect_backup_archive", { archivePath: archive.archivePath }))
-      await refresh()
-      return inspected
-    },
+    inspectArchive: (archive, signal) => inspectBackupArchive(archive.archivePath, signal),
     startBackup(destination, sandboxes, checkpointId) {
-      if (pendingBackupOperation || snapshot.backup.operation?.kind === "running") return
+      if (pendingBackupOperation || view.backup.operation?.kind === "running") return
+      backupActions.exportAndVerify(destination, sandboxes, checkpointId).catch(() => undefined)
+    },
+    async exportAndVerify(destination, sandboxes, checkpointId) {
+      if (pendingBackupOperation || view.backup.operation?.kind === "running") throw new ExportIncompleteError("busy", "Another export or import is running.")
       pendingBackupOperation = true
-      showPendingBackup("backup", { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes })
-      void native.invoke("start_backup", { destination, sandboxes, ...(checkpointId && { checkpointId }) }).then(() => { if (localBackupOperation?.kind === "running") dismissedBackupResults.clear(); return refresh() }).catch((cause) => {
-        const archive: BackupArchive = { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
+      const archive: BackupArchive = { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
+      showPendingBackup("backup", archive)
+      let operationId: string
+      try { operationId = z.string().min(1).parse(await native.invoke("start_backup", { destination, sandboxes, ...(checkpointId && { checkpointId }) })) }
+      catch (cause) {
         localBackupOperation = backupFailure("backup", archive, errorMessage(cause))
         publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
-      }).finally(() => { pendingBackupOperation = false })
+        throw new ExportIncompleteError("rejected", errorMessage(cause))
+      }
+      finally { pendingBackupOperation = false }
+      const completion = waitForExport(operationId)
+      if (localBackupOperation?.kind === "running") dismissedBackupResults.clear()
+      void refresh()
+      return completion
     },
     startRestore(archive, newName, sourceName) {
-      if (pendingBackupOperation || snapshot.backup.operation?.kind === "running") return
+      if (pendingBackupOperation || view.backup.operation?.kind === "running") return
       pendingBackupOperation = true
       showPendingBackup("restore", archive, newName)
       void native.invoke("start_restore", { archivePath: archive.archivePath, newName, ...(sourceName && { sourceName }) }).then(() => { if (localBackupOperation?.kind === "running") dismissedBackupResults.clear(); return refresh() }).catch((cause) => {
@@ -1306,24 +1775,33 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       }).finally(() => { pendingBackupOperation = false })
     },
     cancelOperation() { void native.invoke("cancel_backup_operation").then(() => refresh()).catch((cause) => reportUnavailable(`Backup cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
-    retryStart(name) {
-      void native.invoke<unknown>("retry_workspace_start", { name }).then((result) => {
-        const source = parseMutationSource(result)
-        publish({ ...snapshot, source, error: null })
-        return refresh()
-      }).catch((cause) => setWorkspaceFailure("start", name, cause))
-    },
     async revealArchive(archive) {
       await native.invoke("reveal_backup_archive", { archivePath: archive.archivePath })
     },
     dismissOperation() {
-      const operation = snapshot.backup.operation
+      const operation = view.backup.operation
       if (operation?.kind !== "result") return
-      dismissedBackupResults.add(JSON.stringify(operation))
-      localBackupOperation = null
-      publish({ ...snapshot, backup: { ...snapshot.backup, operation: null } })
-      void native.invoke("dismiss_backup_operation", { expectedOperation: operation, expectedOperationId: snapshot.backup.operationId ?? null })
-        .catch(() => console.error("Silo could not save the backup result dismissal. It may appear again after relaunch."))
+      // A rejected start is reported only here; the runtime has nothing to dismiss.
+      if (operation === localBackupOperation) {
+        localBackupOperation = null
+        publish({ ...snapshot, backup: { ...snapshot.backup, operation: snapshot.backup.operation === operation ? null : snapshot.backup.operation } })
+        return
+      }
+      const key = backupResultKey(view.backup, operation)
+      dismissedBackupResults.add(key)
+      publish({ ...snapshot })
+      const restore = () => { dismissedBackupResults.delete(key); publish({ ...snapshot }) }
+      void native.invoke("dismiss_backup_operation", { expectedOperation: operation, expectedOperationId: view.backup.operationId ?? null })
+        .then((value) => {
+          if (z.boolean().parse(value)) return
+          // The runtime still holds a result (it changed, or is still being resolved): show it.
+          restore()
+          void refresh()
+        })
+        .catch((cause: unknown) => {
+          restore()
+          reportActionFailure("backup-dismiss", "Could not dismiss the result", errorMessage(cause))
+        })
     },
   }
 
@@ -1335,15 +1813,22 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     openTerminal: applicationActions.openTerminal,
     pushRepository: applicationActions.pushRepository,
     openSilo: (route?: StatusBarRoute) => { void native.invoke("open_main", { route: route ?? null }).catch((cause) => console.error("Silo main window:", errorMessage(cause))) },
-    quit: () => { void native.invoke("quit_app") },
+    quit: () => { void native.invoke("quit_app").catch((cause: unknown) => reportActionFailure("quit", "Could not quit Silo", errorMessage(cause))) },
     refresh: () => { void refresh() },
     openEditor: (name, path) => workspaceAction("open-editor", name, { path }),
     openSite: (workspace, port) => { void Promise.resolve().then(() => openNetworkPort(workspace, port)).catch(() => reportUnavailable("Could not open this service. Check its port in Network.")) },
     dismissRepositoryPush: (workspace, repositoryPath) => {
+      // An unconfirmed result exists only here: acknowledging it never waits on its
+      // (possibly unreachable) host, which is told on a best-effort basis.
+      if (unconfirmedPushes.delete(pushKey(workspace, repositoryPath))) {
+        publish({ ...snapshot })
+        void native.invoke("dismiss_repository_push", { workspace, repositoryPath }).catch(() => {})
+        return
+      }
       void native.invoke("dismiss_repository_push", { workspace, repositoryPath }).then(() => {
         ++refreshSequence
         const remote = parseRemoteWorkspaceTarget(workspace)
-        if (remote) remotePushRevisions.set(remote.hostId, (remotePushRevisions.get(remote.hostId) ?? 0) + 1)
+        if (remote) bumpRemote(remote.hostId)
         const owner = remote && remoteSnapshots.get(remote.hostId)
         if (remote && owner) {
           const name = owner.workspaces.find(workspace => workspace.machine.id === remote.vmId)?.machine.name
@@ -1358,12 +1843,23 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   return {
-    getSnapshot: () => snapshot,
+    getSnapshot: () => view,
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener) },
     initialize,
+    // The saved list only draws loading rows before live state arrives, so it never
+    // blocks or fails startup: an unreadable or unexpected list shows no rows.
     async loadConfiguration() {
-      const configuration = z.object({ schemaVersion: z.literal(1), machines: z.array(setupMachineConfigurationSchema).max(64) }).parse(await native.invoke("read_machine_configuration"))
-      publish({ ...snapshot, savedMachines: configuration.machines })
+      try {
+        const configuration = z.object({ machines: z.array(z.unknown()) }).parse(await native.invoke("read_machine_configuration"))
+        const machines = configuration.machines.flatMap((machine) => {
+          const parsed = setupMachineConfigurationSchema.safeParse(machine)
+          return parsed.success ? [parsed.data] : []
+        })
+        if (!disposed) publish({ ...snapshot, savedMachines: machines })
+      } catch (cause) {
+        console.error("Silo saved sandboxes:", errorMessage(cause))
+        if (!disposed) publish({ ...snapshot, savedMachines: [] })
+      }
     },
     refresh,
     configureMachines,
@@ -1374,16 +1870,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
+    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
   }
 }
 
 export type ProductionSource = ReturnType<typeof createProductionSource>
 
+/** The current snapshot with its backup controller; the same object until the snapshot changes. */
 export function useProductionSource(source: ProductionSource) {
   const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot)
-  return {
+  return useMemo(() => ({
     ...snapshot,
     backup: { state: snapshot.backup, actions: source.backupActions } satisfies BackupController,
-  }
+  }), [snapshot, source])
 }

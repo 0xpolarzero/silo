@@ -15,8 +15,9 @@ import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOpe
 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
 import type { BackupController } from "../model/backup-source"
-import type { WorkspaceCheckpoint } from "../model/checkpoint-source"
+import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "../model/checkpoint-source"
 
+import { ErrorDetails } from "@/components/error-details"
 import { ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -192,7 +193,7 @@ function ConfigurationDetail({ view }: { view: ConfigurationRowView }) {
       className="grid gap-1.5 py-0.5"
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
-        <p className={failed ? "text-destructive" : "text-muted-foreground"}>{view.message}</p>
+        <ErrorDetails className="flex-1 text-destructive" message={view.message} fallbackSummary="Sandbox changes failed." />
         {progressLabel && <span className="shrink-0 text-[10px] text-muted-foreground">{progressLabel}</span>}
       </div>
       {view.completedSteps !== undefined && (
@@ -296,7 +297,7 @@ export function OverviewPage({ active = true, readOnly = false,
   /** The Fork popover body for a sandbox's ⋯ menu (row or detail page); state lives with that menu. */
   function forkPopovers(workspace: ApplicationWorkspace | undefined): MenuPopovers | undefined {
     if (!workspace || !actions.forkCheckpoint) return undefined
-    return { fork: close => <ForkBody sandboxName={workspace.machine.name} disabled={forkDisabled(workspace)} onFork={name => forkCurrentState(workspace, name)} onClose={close} /> }
+    return { fork: close => <ForkBody sandboxName={workspace.machine.name} disabled={forkDisabled(workspace)} takenNames={sandboxNamesOnComputer(visibleWorkspaces, workspace.computer?.id)} onFork={name => forkCurrentState(workspace, name)} onClose={close} /> }
   }
   const configurationOperation = source.sandboxConfigurationOperation
   const configurationLocked = readOnly || configurationOperation !== null
@@ -400,7 +401,7 @@ export function OverviewPage({ active = true, readOnly = false,
       const guarded = guardedLifecycle(workspace)
       const retry = readOnly ? undefined : () => { if (action === "start") guarded.startWorkspace(target); else if (action === "stop") guarded.stopWorkspace(target); else guarded.restartWorkspace(target) }
       dismissOperationToast(id)
-      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ?? undefined, retry, sandbox: name, native: false })
+      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} /> : undefined, retry, sandbox: name, native: false })
     }
   })
   useEffect(() => { lifecycleToasts(source.workspaces) }, [source.workspaces])
@@ -528,6 +529,7 @@ export function OverviewPage({ active = true, readOnly = false,
       isMachineRunning,
     }
     return {
+      pageActive: active,
       editing,
       onDuplicate: readOnly ? undefined : () => requestDuplicate(machine.id),
       onNavigate,
@@ -569,7 +571,7 @@ export function OverviewPage({ active = true, readOnly = false,
           <>
             {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
             {configurationOperation?.status === "failed" && <div className="mb-3 rounded-md border border-destructive/30 p-3">
-              <p role="alert" className="text-sm text-destructive">{configurationOperation.error.message}</p>
+              <div role="alert" className="text-sm text-destructive"><ErrorDetails message={configurationOperation.error.message} fallbackSummary="Sandbox changes failed." /></div>
               <Button variant="outline" size="sm" className="mt-2" disabled={readOnly} onClick={() => actions.dismissMachineConfigurationError()}>Dismiss configuration error</Button>
             </div>}
             <MachineList

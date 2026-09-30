@@ -21,6 +21,11 @@ The composition lasts 1,792 frames at 60 fps: 29.866667 seconds.
 - `BRIEF.md`: product sources, creative constraints and explicit exclusions.
 - `SOURCES.md`: product and external-reference research provenance.
 
+The rendered media (`audio/silo-film-master.wav`, `final/silo-release.mp4` and its contact sheets) was removed from `main` to keep clones small.
+It is preserved on the `archive/media-and-experiments` branch and in
+[this directory at `df8efdd`](https://github.com/0xpolarzero/silo/tree/df8efdd6ac31b6e5805a58cb2735b9675003a6ba/artifacts/silo-fresh-film/final); the recorded verification files and
+checksums remain here.
+
 `animatic*.py`, `DIRECTION*.md`, `DIRECTOR_REVIEW.md` and `VERIFICATION.md`
 retain the development evidence. The early animatics are not release files.
 

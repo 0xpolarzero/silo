@@ -24,8 +24,8 @@ jobs:
       run:
         working-directory: app/SiloUI
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -33,7 +33,7 @@ jobs:
             app/SiloUI/package-lock.json
             website/package-lock.json
             demo/package-lock.json
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
       - run: node scripts/preflight.mjs
@@ -60,6 +60,32 @@ jobs:
           npm ci
           npm run typecheck
 
+  docs:
+    name: Documentation links
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # lychee checks links; offline mode checks only local files, so web links
+      # never make CI flaky. The download is pinned to the release asset digest.
+      - name: Install lychee
+        env:
+          LYCHEE_RELEASE: lychee-v0.24.2
+          LYCHEE_SHA256: 1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/lychee.tar.gz" "https://github.com/lycheeverse/lychee/releases/download/$LYCHEE_RELEASE/lychee-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$LYCHEE_SHA256  $RUNNER_TEMP/lychee.tar.gz" | sha256sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/lychee"
+          tar -xzf "$RUNNER_TEMP/lychee.tar.gz" -C "$RUNNER_TEMP/lychee"
+          lychee=$(find "$RUNNER_TEMP/lychee" -type f -name lychee | head -n 1)
+          test -x "$lychee"
+          echo "LYCHEE=$lychee" >> "$GITHUB_ENV"
+      - name: Check relative links in Markdown documentation
+        run: >-
+          "$LYCHEE" --offline --no-progress
+          README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' 'app/SiloUI/tests/**/*.md'
+          'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
+
   rust:
     name: Rust tests
     runs-on: ubuntu-24.04
@@ -77,8 +103,8 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -91,11 +117,11 @@ jobs:
           runtime_toolchain=$(node -p "require(process.env.GITHUB_WORKSPACE + '/app/SiloUI/runtime-inputs.json').toolchain")
           rustup toolchain install "$runtime_toolchain" --profile minimal --component rustfmt
           rustup default "$runtime_toolchain"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: app/SiloUI/src-tauri
       - run: npm ci
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.25.x'
           cache: false

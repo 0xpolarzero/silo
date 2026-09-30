@@ -15,3 +15,6 @@ smithers.db-wal
 
 # Generated browser snapshots and console logs
 /.playwright-mcp/
+
+# Vite dependency caches
+.vite/

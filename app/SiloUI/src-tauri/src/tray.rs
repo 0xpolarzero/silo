@@ -91,7 +91,7 @@ mod platform {
     use crate::status_panel;
     use ksni::TrayMethods;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     };
     use tauri::Manager;
@@ -99,6 +99,8 @@ mod platform {
     struct LinuxTray {
         app: AppHandle,
         online: Arc<AtomicBool>,
+        /// Counts watcher disappearances so only the latest one can surface the window.
+        offline_generation: Arc<AtomicU64>,
         tone: Tone,
         label: String,
     }
@@ -132,10 +134,14 @@ mod platform {
         fn activate(&mut self, x: i32, y: i32) {
             let app = self.app.clone();
             status_panel::report(self.app.run_on_main_thread(move || {
-                status_panel::report(status_panel::toggle(
-                    &app,
-                    tauri::PhysicalPosition::new(x as f64, y as f64),
-                ));
+                if super::panel_can_anchor(wayland(), x, y) {
+                    status_panel::report(status_panel::toggle(
+                        &app,
+                        tauri::PhysicalPosition::new(x as f64, y as f64),
+                    ));
+                } else {
+                    status_panel::report(status_panel::open_main(app, None));
+                }
             }));
         }
         fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -161,10 +167,34 @@ mod platform {
         }
         fn watcher_offline(&self, _: ksni::OfflineReason) -> bool {
             self.online.store(false, Ordering::Relaxed);
-            // A desktop without a tray must never strand an invisible app.
-            status_panel::report(status_panel::open_main(self.app.clone(), None));
+            let generation = self.offline_generation.fetch_add(1, Ordering::SeqCst) + 1;
+            // A desktop without a tray must never strand an invisible app, but a
+            // brief watcher restart (plasmashell, GNOME Shell reload) must not
+            // pop the window up either.
+            let (app, online, offline) =
+                (self.app.clone(), self.online.clone(), self.offline_generation.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(super::WATCHER_GRACE);
+                let visible = app
+                    .get_webview_window("main")
+                    .is_some_and(|window| window.is_visible().unwrap_or(false));
+                if super::surface_after_grace(
+                    online.load(Ordering::Relaxed),
+                    offline.load(Ordering::SeqCst) == generation,
+                    visible,
+                ) {
+                    status_panel::report(status_panel::open_main(app, None));
+                }
+            });
             true
         }
+    }
+
+    /// Whether GTK runs on Wayland. Call on the GTK main thread.
+    fn wayland() -> bool {
+        use gtk::glib::prelude::ObjectExt;
+        gtk::gdk::Display::default()
+            .is_some_and(|display| display.type_().name() == "GdkWaylandDisplay")
     }
 
     struct TrayState {
@@ -184,6 +214,7 @@ mod platform {
             match (LinuxTray {
                 app: app.clone(),
                 online,
+                offline_generation: Arc::new(AtomicU64::new(0)),
                 tone: Tone::Neutral,
                 label: "Silo".into(),
             })
@@ -223,6 +254,51 @@ mod platform {
 }
 
 pub use platform::{available, install};
+
+/// How long the StatusNotifierWatcher may be gone before Silo surfaces its
+/// window. Desktop shells restart it briefly (plasmashell restart, GNOME Shell
+/// reload, AppIndicator extension update).
+#[cfg(any(test, target_os = "linux"))]
+const WATCHER_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Surface the main window only if the tray is still gone after the grace
+/// period, no later disappearance owns the decision, and the window is hidden.
+#[cfg(any(test, target_os = "linux"))]
+fn surface_after_grace(online: bool, latest_disappearance: bool, main_visible: bool) -> bool {
+    !online && latest_disappearance && !main_visible
+}
+
+/// The tray panel is a borderless always-on-top window placed at the tray
+/// icon. Wayland ignores client positioning and always-on-top, and KDE on
+/// Wayland reports activation at (0, 0), so there the tray opens the main
+/// window instead of a panel that could appear anywhere and never close.
+#[cfg(any(test, target_os = "linux"))]
+fn panel_can_anchor(wayland: bool, x: i32, y: i32) -> bool {
+    !wayland && (x, y) != (0, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wayland_or_an_unknown_position_opens_the_main_window() {
+        assert!(panel_can_anchor(false, 1880, 12));
+        assert!(!panel_can_anchor(true, 1880, 12));
+        assert!(!panel_can_anchor(false, 0, 0));
+        assert!(!panel_can_anchor(true, 0, 0));
+        assert!(panel_can_anchor(false, 0, 1050), "a panel at the left screen edge is still anchored");
+    }
+
+    #[test]
+    fn brief_tray_restarts_do_not_pop_up_the_window() {
+        assert!(surface_after_grace(false, true, false), "a tray that stays gone surfaces a hidden window");
+        assert!(!surface_after_grace(true, true, false), "the tray came back");
+        assert!(!surface_after_grace(false, false, false), "a later disappearance decides");
+        assert!(!surface_after_grace(false, true, true), "a visible window is left alone");
+        assert!(WATCHER_GRACE >= std::time::Duration::from_secs(3));
+    }
+}
 
 #[tauri::command]
 pub async fn update_tray(app: AppHandle, tone: Tone, label: String) -> Result<(), String> {

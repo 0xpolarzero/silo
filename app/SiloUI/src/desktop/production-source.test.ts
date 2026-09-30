@@ -8,6 +8,8 @@ import type { BackupState } from "@/features/application/model/backup-source"
 import { createProductionSource, isUpdateInProgress, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
 import { siloProgressEventSchema } from "@/contracts/silo"
 
+const pushTarget = { repository: "owner/repo", branch: "main", commit: "a".repeat(40) }
+
 const toasts = vi.hoisted(() => ({ showOperationFailure: vi.fn() }))
 vi.mock("@/lib/operation-toast", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/operation-toast")>(), showOperationFailure: toasts.showOperationFailure }))
 
@@ -26,7 +28,7 @@ function native(overrides: Partial<ProductionBridge> = {}) {
   const invoke = vi.fn(async (command: string, _arguments_?: Record<string, unknown>): Promise<unknown> => {
     if (command === "read_application_state") return structuredClone(source)
     if (command === "read_backup_state") return structuredClone(backup)
-    if (command === "workspace_action" || command === "retry_workspace_start") return structuredClone(source)
+    if (command === "workspace_action") return structuredClone(source)
     return undefined
   })
   const listen = vi.fn(async (_name: string, handler: () => void) => { event = handler; return () => { event = null } })
@@ -101,7 +103,7 @@ describe("production application bridge", () => {
       complete!(updated)
       await retry
       expect(store.getSnapshot().source?.workspaces[0].checkpoints?.[0].id).toBe("point-1")
-      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toBeNull()
+      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation ?? null).toBeNull()
       await store.refresh()
       expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toMatchObject({ status: "running", stage: "Capturing VM state" })
       runningSource.workspaces[0].checkpointOperation = { kind: "capture", status: "failed", stage: "Verification failed", error: "Checkpoint could not be verified." }
@@ -221,6 +223,54 @@ describe("production application bridge", () => {
     expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "restore", checkpointId: "point-id" })
     expect(mock.invoke.mock.calls.some(([command]) => ["create_checkpoint", "fork_checkpoint", "restore_checkpoint"].includes(command as string))).toBe(false)
     store.dispose()
+  })
+
+  it("deletes a local checkpoint by VM ID, reads checkpoint usage, and refuses remote deletes", async () => {
+    const mock = native()
+    const usage = { totalBytes: 4096, checkpoints: [{ id: "point-1", sizeBytes: 4096, usedBy: ["experiment"], deleteBlocker: "Used by experiment." }] }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "delete_checkpoint") return structuredClone(source)
+      if (command === "read_checkpoint_usage") return usage
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await store.applicationActions.deleteCheckpoint!("dev", "point-1")
+      expect(invoke).toHaveBeenCalledWith("delete_checkpoint", { workspaceId: source.workspaces[0].machine.id, checkpointId: "point-1" })
+      expect(await store.applicationActions.readCheckpointUsage!(source.workspaces[0].machine.id)).toEqual(usage)
+      await expect(store.applicationActions.deleteCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-1")).rejects.toThrow("on its own computer")
+      expect(invoke.mock.calls.some(([command, args]) => command === "remote_checkpoint_action" && (args as Record<string, unknown>)?.action === "delete")).toBe(false)
+    } finally { store.dispose() }
+  })
+
+  it("keeps native checkpoint deletion progress and drops malformed unfinished Restore data", () => {
+    const response = structuredClone(source) as unknown as Record<string, unknown>
+    const workspaces = response.workspaces as Array<Record<string, unknown>>
+    const operation = { kind: "delete", status: "running", stage: "Deleting checkpoint…" }
+    workspaces[0].checkpointOperation = operation
+    workspaces[0].unfinishedRestore = { checkpointId: "point-1", phase: "unknown" }
+    workspaces[0].settling = true
+    const workspace = parseApplicationSource(response).workspaces[0]
+    expect(workspace.checkpointOperation).toEqual(operation)
+    expect(workspace.unfinishedRestore).toBeNull()
+    expect(workspace.settling).toBe(true)
+  })
+
+  it("keeps an unfinished Restore in the sandbox view and abandons it by VM ID", async () => {
+    const response = structuredClone(source) as unknown as Record<string, unknown>
+    const workspaces = response.workspaces as Array<Record<string, unknown>>
+    workspaces[0].unfinishedRestore = { checkpointId: "point-1", checkpointName: "Before refactor", phase: "capturing" }
+    expect(parseApplicationSource(response).workspaces[0].unfinishedRestore).toEqual({ checkpointId: "point-1", checkpointName: "Before refactor", phase: "capturing" })
+
+    const mock = native()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "abandon_restore" ? structuredClone(source) : mock.invoke(command, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await store.applicationActions.abandonRestore!("dev")
+      expect(invoke).toHaveBeenCalledWith("abandon_restore", { workspaceId: source.workspaces[0].machine.id })
+    } finally { store.dispose() }
   })
 
   it("recognizes the updating sentinel whether bare or wrapped by a remote bridge", () => {
@@ -444,7 +494,7 @@ describe("production application bridge", () => {
   })
   it("keeps network mappings across application refresh and shares only reachable sites", async () => {
     const mock = native()
-    const state = { workspaces: [{ workspace: "dev", error: null, ports: [{port:3000,hostPort:43000,scheme:"http",state:"reachable",configured:true}] }] }
+    const state = { workspaces: [{ workspace: "dev", error: null, host: "dev-1a2b3c4d.localhost", ports: [{port:3000,hostPort:43000,scheme:"http",state:"reachable",configured:true}] }] }
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "read_network_state" || command === "save_network_port" ? state : mock.invoke(command,args))
     const store = createProductionSource({...mock.bridge,invoke} as ProductionBridge)
     await store.initialize()
@@ -655,13 +705,15 @@ describe("production application bridge", () => {
     { schemaVersion: 1, machines: [{ name: "invalid" }] },
     { schemaVersion: 1, machines: "unreadable" },
     null,
-  ])("rejects malformed saved configuration without publishing sandbox rows: %j", async (configuration) => {
+  ])("publishes no sandbox rows for malformed saved configuration, without failing startup: %j", async (configuration) => {
     const mock = native({ invoke: vi.fn().mockResolvedValue(configuration) })
+    vi.spyOn(console, "error").mockImplementation(() => {})
     const store = createProductionSource(mock.bridge)
 
-    await expect(store.loadConfiguration()).rejects.toThrow()
+    // The list only feeds loading rows (H-10): an unreadable one shows none.
+    await expect(store.loadConfiguration()).resolves.toBeUndefined()
 
-    expect(store.getSnapshot().savedMachines).toBeUndefined()
+    expect(store.getSnapshot().savedMachines).toEqual([])
     expect(store.getSnapshot().source).toBeNull()
     store.dispose()
   })
@@ -678,9 +730,9 @@ describe("production application bridge", () => {
     })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
-    store.applicationActions.pushRepository("dev", "/workspace/repo")
+    store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
     await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toContainEqual({ workspace: "dev", repositoryPath: "/workspace/repo", commitCount: 0, status: "failed", message: "Repository authorization was removed" }))
-    expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String) })
+    expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String), target: pushTarget })
     store.dispose()
   })
 
@@ -698,13 +750,13 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     try {
       await store.initialize()
-      store.applicationActions.pushRepository("dev", "/workspace/repo")
+      store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
       expect(mock.invoke.mock.calls.some(([command]) => command === "start_repository_push")).toBe(false)
       store.applicationActions.dismissRepositoryPush!("dev", "/workspace/repo")
       await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toEqual([]))
       expect(mock.invoke.mock.calls.some(([command]) => command === "start_repository_push")).toBe(false)
-      store.applicationActions.pushRepository("dev", "/workspace/repo")
-      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String) }))
+      store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
+      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String), target: pushTarget }))
     } finally { store.dispose() }
   })
 
@@ -838,7 +890,7 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     const catalog = store.getSnapshot().source?.github.repositoryCatalogStatus
-    await expect(store.applicationActions.saveGitHubConfiguration!({ accessEnabled: true, hostIdentity: null, workspaces: [] })).rejects.toThrow("Invalid Git identity settings.")
+    await expect(store.applicationActions.saveGitHubConfiguration!({ hostIdentity: null, workspaces: [] })).rejects.toThrow("Invalid Git identity settings.")
     expect(store.getSnapshot().source?.github.repositoryCatalogStatus).toEqual(catalog)
     expect(store.getSnapshot().error).toContain("Invalid Git identity settings.")
     store.dispose()
@@ -851,9 +903,9 @@ describe("production application bridge", () => {
     mock.invoke.mockImplementation((command, args) => command === "save_github_configuration" ? new Promise((resolve) => { pending.push(resolve) }) : original(command, args))
     const store = createProductionSource(mock.bridge)
     await store.initialize()
-    const configuration = { accessEnabled: true, hostIdentity: null, workspaces: [] }
+    const configuration = { baseRevision: 0, hostIdentity: null, workspaces: [] }
     store.applicationActions.saveGitHubConfiguration!(configuration)
-    store.applicationActions.saveGitHubConfiguration!({ ...configuration, accessEnabled: false })
+    store.applicationActions.saveGitHubConfiguration!({ ...configuration, baseRevision: 1 })
     pending[1]({ ...source.github, policyRevision: 2, accessEnabled: false })
     await vi.waitFor(() => expect(store.getSnapshot().source?.github.policyRevision).toBe(2))
     pending[0]({ ...source.github, policyRevision: 1, accessEnabled: true })
@@ -865,7 +917,7 @@ describe("production application bridge", () => {
 
   it("keeps all-repository intent and waits for native acknowledgment before showing changed access", async () => {
     let resolveMutation!: (value: unknown) => void
-    const request = { accessEnabled: false, hostIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }
+    const request = { hostIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }
     const mock = native()
     const original = mock.invoke.getMockImplementation()!
     mock.invoke.mockImplementation((command, args) => command === "save_github_configuration" ? new Promise((resolve) => { resolveMutation = resolve }) : original(command, args))
@@ -894,7 +946,7 @@ describe("production application bridge", () => {
       listen: async (event, handler) => { events.set(event, handler); return () => events.delete(event) },
     } as ProductionBridge)
     await store.initialize()
-    store.applicationActions.saveGitHubConfiguration!({ accessEnabled: true, hostIdentity: null, workspaces: [] })
+    store.applicationActions.saveGitHubConfiguration!({ hostIdentity: null, workspaces: [] })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(store.getSnapshot().source?.github.workspaceOperations?.[0].status).toBe("applying")
     github = { ...github, workspaceOperations: [{ workspace: "dev", status: "succeeded", message: "Verified access" }] }
@@ -1212,7 +1264,7 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("keeps a visible failed restore result when native operation state is malformed", async () => {
+  it("keeps the requested restore running and reports malformed native operation state (H-35)", async () => {
     let broken = false
     const mock = native()
     mock.invoke.mockImplementation(async (command: string) => {
@@ -1224,8 +1276,9 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.backupActions.startRestore(backup.archives[0], "restored", "dev")
-    await vi.waitFor(() => expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", operation: "restore", outcome: "failed", targetName: "restored" }))
-    expect(store.getSnapshot().backup.operation).toMatchObject({ message: expect.stringContaining("invalid backup state") })
+    await vi.waitFor(() => expect(store.getSnapshot().backup.availabilityMessage).toContain("invalid backup state"))
+    // A malformed read is not evidence that the restore failed.
+    expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", operation: "restore", targetName: "restored" })
     store.dispose()
   })
 
@@ -1237,6 +1290,11 @@ describe("production application bridge", () => {
       if (command === "read_application_state") return structuredClone(source)
       if (command === "read_backup_state") return structuredClone(current)
       if (command === "start_restore") await new Promise<void>(resolve => { release = resolve })
+      if (command === "dismiss_backup_operation") {
+        if (current.operation?.kind !== "result") return false
+        current = { ...current, operation: null }
+        return true
+      }
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
@@ -1335,7 +1393,7 @@ describe("production application bridge", () => {
     await store.initialize()
     expect(await store.backupActions.chooseDestination()).toBe("/Volumes/Backups")
     await store.backupActions.chooseArchive()
-    expect(mock.invoke).toHaveBeenCalledWith("inspect_backup_archive", { archivePath: "/Volumes/Backups/dev.silo-backup" })
+    expect(mock.invoke).toHaveBeenCalledWith("inspect_backup_archive", { archivePath: "/Volumes/Backups/dev.silo-backup", requestId: expect.any(String) })
     store.backupActions.startRestore(backup.archives[0], "dev-restored")
     await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_restore", { archivePath: "/tmp/dev.silo-backup", newName: "dev-restored" }))
     store.dispose()

@@ -1,9 +1,10 @@
 import "./ssh-access-panel.css"
 import { ConnectionIcon } from "@/components/connection-icon"
 import { ActionsMenu } from "@/components/actions-menu"
+import { ConfirmPopover } from "@/components/confirm-popover"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
 import { useEffect, useId, useState } from "react"
-import { Check, ChevronDown, Download, Pencil, Terminal } from "lucide-react"
+import { Check, ChevronDown, Download, Pencil, Terminal, TriangleAlert } from "lucide-react"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -18,6 +19,8 @@ import type { ApplicationActions, ApplicationWorkspace, SshAccessRequest, SshAcc
 
 const statuses = { disabled: "SSH off", waiting: "SSH waiting", listening: "SSH listening", error: "SSH error" }
 const sshEndpoint = (user: string, host: string, port: number) => `ssh -p ${port} ${user}@${host}`
+/** Which switch is asking before SSH becomes reachable from other computers. */
+type NetworkWarning = "network" | "enable"
 
 export function SshAccessPanel({ workspaces, state, error, actions, active }: { workspaces: ApplicationWorkspace[]; state?: SshAccessState; error?: string | null; actions: ApplicationActions; active: boolean }) {
   useSshAccessRefresh(actions.refreshSshAccess, active)
@@ -42,6 +45,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
   }, [copied])
   const [port, setPort] = useState<string | null>(null)
   const [address, setAddress] = useState<string | null>(null)
+  const [pendingWarning, setWarning] = useState<NetworkWarning | null>(null)
   const external = access?.bindAddress !== "127.0.0.1"
   const blocked = readOnly || busy || !save || stale
   async function change(patch: Partial<SshAccessRequest>) {
@@ -66,7 +70,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
   const badge = stale ? "SSH status unavailable" : access ? statuses[access.state] : "SSH unavailable"
   const header = <div className="flex items-center gap-3 px-3 py-2">
       <WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} />
-      <span className="rounded border border-border px-1.5 py-0.5 text-muted-foreground">{badge}{access?.enabled && external ? " · Network" : ""}</span>
+      <span className={cn("rounded border px-1.5 py-0.5", !stale && access?.state === "error" ? "border-destructive/20 text-destructive" : "border-border text-muted-foreground")}>{badge}{access?.enabled && external ? " · Network" : ""}</span>
       <Tooltip><TooltipTrigger asChild><CollapsibleTrigger asChild><Button variant="ghost" size="icon-xs" className="group ml-auto w-auto gap-0.5 px-1.5 text-[11px]" aria-label={`SSH controls for ${workspace.machine.name}`}>SSH<ChevronDown className="size-2.5 transition-transform group-aria-expanded:rotate-180" /></Button></CollapsibleTrigger></TooltipTrigger><TooltipContent>SSH controls</TooltipContent></Tooltip>
     </div>
 
@@ -96,13 +100,32 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
           // The owner's loopback address is meaningless on another computer.
           const ownerOnly = !network && Boolean(workspace.computer)
           const endpoint = sshEndpoint(access.user ?? "silo", host, access.port)
+          // Exposing SSH beyond the owner computer always asks first: turning on network
+          // access, or turning SSH back on while it is still set to allow other computers.
+          const warning: NetworkWarning = network ? "network" : "enable"
+          const toggle = <Switch aria-label={label} checked={network ? external || address !== null : access.enabled} disabled={blocked || (network && !access.enabled && !external)} onCheckedChange={enabled => {
+            if (!network) {
+              if (enabled && external) setWarning("enable")
+              else void change({ enabled })
+              return
+            }
+            if (!enabled) { setAddress(null); if (external) void change({ bindAddress: "127.0.0.1" }) }
+            else setWarning("network")
+          }} />
+          const exposedAddress = warning === "enable" ? access.bindAddress : networkAddresses.length === 1 ? networkAddresses[0] : null
           return <div key={scope} className="space-y-1" role="group" aria-label={label}>
-            <div className="flex items-center justify-between gap-3"><span className="flex items-center gap-2"><ConnectionIcon kind="ssh" network={network} />{label}</span><Switch aria-label={label} checked={network ? external || address !== null : access.enabled} disabled={blocked || (network && !access.enabled)} onCheckedChange={enabled => {
-              if (!network) { void change({ enabled }); return }
-              if (!enabled) { setAddress(null); if (external) void change({ bindAddress: "127.0.0.1" }) }
-              else if (networkAddresses.length === 1) void change({ bindAddress: networkAddresses[0] })
-              else setAddress(networkAddresses[0] ?? "")
-            }} /></div>
+            <div className="flex items-center justify-between gap-3"><span className="flex items-center gap-2"><ConnectionIcon kind="ssh" network={network} />{label}</span><ConfirmPopover
+              anchor={toggle} open={pendingWarning === warning} onOpenChange={open => { if (!open) setWarning(null) }} align="end"
+              title={warning === "enable" ? "Allow SSH from other computers too?" : "Allow SSH from other computers?"}
+              description={<>{exposedAddress
+                ? `Computers that can reach ${access.computerName} at ${exposedAddress} can connect to ${workspace.machine.name} on port ${access.port}.`
+                : `Computers on the network you choose can connect to ${workspace.machine.name} on port ${access.port}.`} Only authorized keys can sign in.{warning === "enable" ? ` To allow only ${access.computerName}, turn off SSH from other computers first.` : ""}</>}
+              confirmLabel="Allow"
+              onConfirm={() => {
+                if (warning === "enable") void change({ enabled: true })
+                else if (networkAddresses.length === 1) void change({ bindAddress: networkAddresses[0] })
+                else setAddress(networkAddresses[0] ?? "")
+              }} /></div>
             {access.enabled && (!network || external) && <div className="ssh-endpoint grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1 text-muted-foreground">
               <div className="ssh-endpoint-address flex min-w-0 flex-wrap items-center gap-x-3">
                 {ownerOnly ? <span>Only on {access.computerName}</span> : <Tooltip><TooltipTrigger asChild><code tabIndex={0} className="min-w-0 break-all">{endpoint}</code></TooltipTrigger><TooltipContent className="max-w-sm break-all">{access.computerName}{access.fingerprint ? ` · Host key: ${access.fingerprint}` : ""}</TooltipContent></Tooltip>}
@@ -130,10 +153,16 @@ export function SshAccessBadges({ access, stale = false }: { access?: SshAccessW
   if (!access?.enabled) return null
   const network = access.bindAddress !== "127.0.0.1"
   const label = `SSH from ${access.computerName}${network ? " and other computers" : " only"}`
-  const status = stale || access.unavailable ? "Status unavailable" : access.state === "listening" ? "Listening" : access.state === "waiting" ? "Waiting for sandbox" : access.message || "Unavailable"
+  const unknown = stale || Boolean(access.unavailable)
+  const failed = !unknown && access.state === "error"
+  const status = unknown ? "Status unavailable" : access.state === "listening" ? "Listening" : access.state === "waiting" ? "Waiting for sandbox" : access.message || "Unavailable"
+  // Problems show on the badge itself (icon, colour and, for errors, text), not only in its tooltip.
+  const tone = failed ? "border-destructive/20 bg-destructive/10 text-destructive"
+    : unknown ? "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+    : network ? "border-blue-500/15 bg-blue-500/10 text-blue-700 dark:text-blue-300" : "border-border bg-muted text-muted-foreground"
   return <TooltipProvider delayDuration={150}><Tooltip><TooltipTrigger asChild>
-    <span tabIndex={0} aria-label={label} className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ${network ? "border-blue-500/15 bg-blue-500/10 text-blue-700 dark:text-blue-300" : "border-border bg-muted text-muted-foreground"}`}>
-      {network && <ConnectionIcon kind="ssh" network className="size-3" />}SSH
+    <span tabIndex={0} aria-label={access.state === "listening" && !unknown ? label : `${label}: ${status}`} className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ${tone}`}>
+      {failed || unknown ? <TriangleAlert className="size-3" aria-hidden="true" /> : network && <ConnectionIcon kind="ssh" network className="size-3" />}{failed ? "SSH error" : "SSH"}
     </span>
   </TooltipTrigger><TooltipContent>{label} · {status}</TooltipContent></Tooltip></TooltipProvider>
 }

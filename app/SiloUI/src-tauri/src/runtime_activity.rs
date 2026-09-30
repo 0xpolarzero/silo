@@ -137,6 +137,20 @@ pub(super) fn finish(
     store(paths, event)
 }
 
+/// Settle an action that is being retired without running (D-22): an unfinished
+/// entry becomes cancelled; a finished one (for example a failed start kept for
+/// Retry) keeps its recorded outcome.
+pub(super) fn retire(paths: &RuntimePaths, event: &mut Event) -> Result<(), String> {
+    // A saved action holds the entry as it was when saved; the journal has its outcome.
+    let journaled = events(paths).map_err(|error| error.to_string())?
+        .into_iter().find(|entry| entry.id == event.id);
+    if event.completed || journaled.is_some_and(|entry| entry.completed) {
+        return Ok(());
+    }
+    let operation = format!("{} {}", event.action, event.workspace);
+    finish(paths, event, &Err(RuntimeError::Cancelled { operation }))
+}
+
 pub(super) fn failure_message(error: &RuntimeError) -> String {
     let summary = safe_activity_error(error);
     let RuntimeError::Failed { detail, .. } = error else { return summary };

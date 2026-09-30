@@ -1,31 +1,37 @@
-"""Fetch the latest published stable release and its predecessor, checking all bytes."""
+"""Fetch the latest published stable release and its predecessor, checking all bytes.
+
+The release's own SHA256SUMS is editable with the release, so each package must
+also match GitHub's release attestation, which GitHub signs when an immutable
+release is published and which later release edits cannot change.
+"""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
-
-REPOSITORY = '0xpolarzero/silo'
 
 
 def gh(*args):
     return subprocess.check_output(['gh', *args], text=True)
 
 
-def download(output):
-    latest = json.loads(gh('api', f'repos/{REPOSITORY}/releases/latest'))
-    pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{REPOSITORY}/releases'))
+def download(output, repository):
+    latest = json.loads(gh('api', f'repos/{repository}/releases/latest'))
+    pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/releases'))
     stable = [r for page in pages for r in page if not r['draft'] and not r['prerelease'] and re.fullmatch(r'v\d+\.\d+\.\d+', r['tag_name'])]
     stable.sort(key=lambda r: tuple(map(int, r['tag_name'][1:].split('.'))), reverse=True)
     if not stable or stable[0]['tag_name'] != latest['tag_name']:
         raise ValueError('Latest release must be the highest published stable version')
     output.mkdir(parents=True, exist_ok=False)
     for release in stable[:2]:
+        if release.get('immutable') is not True:
+            raise ValueError(f"{release['tag_name']} is not an immutable release; enable release immutability before publishing")
         version = release['tag_name'][1:]
         target = output / version
         target.mkdir()
-        subprocess.run(['gh', 'release', 'download', release['tag_name'], '--repo', REPOSITORY, '--dir', str(target), '--pattern', 'Silo-linux-*.deb', '--pattern', 'SHA256SUMS'], check=True)
+        subprocess.run(['gh', 'release', 'download', release['tag_name'], '--repo', repository, '--dir', str(target), '--pattern', 'Silo-linux-*.deb', '--pattern', 'SHA256SUMS'], check=True)
         hashes = {}
         for line in (target / 'SHA256SUMS').read_text().splitlines():
             digest, name = line.split('  ', 1)
@@ -36,8 +42,11 @@ def download(output):
             package = target / name
             if package.is_symlink() or hashlib.sha256(package.read_bytes()).hexdigest() != hashes.get(name):
                 raise ValueError('Release package checksum mismatch')
+            # Fails unless the bytes match the digest GitHub attested at publication.
+            subprocess.run(['gh', 'release', 'verify-asset', release['tag_name'], str(package), '--repo', repository], check=True)
     (output / 'latest-version').write_text(latest['tag_name'])
 
 
 if __name__ == '__main__':
-    download(Path(sys.argv[1]))
+    # The workflow passes its own repository, so forks publish their own releases.
+    download(Path(sys.argv[1]), os.environ['GH_REPO'])

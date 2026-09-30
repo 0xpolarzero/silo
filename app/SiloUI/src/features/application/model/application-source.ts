@@ -1,6 +1,6 @@
 import type { OperationQueue } from "./operation-queue"
 import type { WorkspaceStorageState } from "./workspace-storage"
-import type { PendingCheckpointRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
+import type { CheckpointUsage, PendingCheckpointRestore, UnfinishedRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
 import type { LogLoader, LogQuery } from "./logs"
 import type { RemoteComputer, RemoteManagement, WorkspaceComputer } from "./remote-computers"
 import type { DirectoryLoader } from "./directory-store"
@@ -62,12 +62,27 @@ export interface ApplicationRepository {
   ahead: number
   behind: number
   dirty: boolean
+  /** GitHub `owner/name` of the `origin` remote; absent when it is not a GitHub repository or the owner predates push binding. */
+  repository?: string | null
+  /** Commit at the tip of `branch`. */
+  head?: string | null
+}
+
+/** The repository, branch and commit the user confirmed; the host pushes exactly these or nothing. */
+export interface RepositoryPushTarget {
+  repository: string
+  branch: string
+  commit: string
 }
 
 export type RepositoryPushOperation = {
+  /** The host-owned push this result belongs to; older hosts may omit it. */
+  operationId?: string
   workspace: string
   repositoryPath: string
   commitCount: number
+  /** What this push publishes, as confirmed by the user. */
+  target?: RepositoryPushTarget
 } & (
   | { status: "pushing"; message?: string }
   | { status: "unknown"; message: string }
@@ -89,7 +104,7 @@ export interface NetworkPort {
   configured: boolean
   message?: string | null
 }
-export interface NetworkState { workspaces: { workspace: string; ports: NetworkPort[]; error: string | null }[] }
+export interface NetworkState { workspaces: { workspace: string; ports: NetworkPort[]; error: string | null; /** Host name published websites open at; absent means 127.0.0.1. */ host?: string | null }[] }
 export interface SshAccessWorkspace {
   unavailable?: string
   workspace: string; enabled: boolean; port: number; bindAddress: string; keys: string[]
@@ -132,6 +147,8 @@ export interface ApplicationActivity {
   workspace?: string
   progress?: number
   progressLabel?: string
+  /** A start, stop or restart the user cancelled: neither a failure nor a success. */
+  cancelled?: boolean
 }
 
 export interface ApplicationWorkspace {
@@ -153,6 +170,8 @@ export interface ApplicationWorkspace {
     level: "warning" | "error"
     message: string
   }
+  /** Keep the last settled reading while a native operation changes this sandbox. */
+  settling?: boolean
   freshness: "fresh" | "stale"
   host: string
   repositories: ApplicationRepository[]
@@ -164,6 +183,7 @@ export interface ApplicationWorkspace {
   checkpoints?: WorkspaceCheckpoint[]
   checkpointOperation?: WorkspaceCheckpointOperation | null
   pendingCheckpointRestore?: PendingCheckpointRestore | null
+  unfinishedRestore?: UnfinishedRestore | null
 }
 
 export interface ApplicationSecret {
@@ -207,8 +227,14 @@ export interface ApplicationGitHubWorkspacePolicy {
   repositories: readonly ApplicationGitHubRepositoryPolicy[]
 }
 
+/**
+ * A save of sandbox GitHub choices. `workspaces` lists only the sandboxes being changed;
+ * other sandboxes keep their saved choices. `baseRevision` is the `policyRevision` the
+ * edit was based on, so a change made meanwhile (such as a fork's copied assignment) is
+ * not overwritten. Access on/off is changed only through `setGitHubAccessEnabled`.
+ */
 export interface ApplicationGitHubConfiguration {
-  accessEnabled: boolean
+  baseRevision?: number
   hostIdentity: ApplicationGitIdentity | null
   workspaces: readonly ApplicationGitHubWorkspacePolicy[]
 }
@@ -230,6 +256,8 @@ export interface ApplicationSource {
   remoteComputers?: RemoteComputer[]
   remoteManagement?: RemoteManagement
   remoteManagementError?: string
+  /** Silo could not read its list of connected computers; the listed ones are the last known. */
+  remoteComputersError?: string
   sshAccess?: SshAccessState
   sshAccessError?: string | null
   network?: NetworkState
@@ -280,6 +308,12 @@ export interface ApplicationActions {
   createCheckpoint?: (workspace: string, name: string) => Promise<void>
   forkCheckpoint?: (workspace: string, checkpointId: string | null, newName: string) => Promise<void>
   restoreCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
+  /** Give up an unfinished Restore of a sandbox on this computer, keeping its current state. */
+  abandonRestore?: (workspace: string) => Promise<void>
+  /** Delete one checkpoint of a sandbox on this computer. */
+  deleteCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
+  /** Checkpoint sizes and Delete availability for a sandbox on this computer, by its ID. */
+  readCheckpointUsage?: (workspaceId: string) => Promise<CheckpointUsage>
   readWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   reclaimWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   refreshRepositories?: () => Promise<void>
@@ -290,7 +324,7 @@ export interface ApplicationActions {
   setRemoteManagement?: (enabled: boolean) => Promise<void>
   setupComputerKey?: (address: string) => Promise<void>
   authorizeComputer?: (address: string) => Promise<void>
-  connectComputer?: (address: string) => Promise<void>
+  connectComputer?: (address: string, options?: { replaceAddress?: boolean }) => Promise<void>
   removeComputer?: (hostId: string) => Promise<void>
   saveRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
   deleteRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration) => Promise<void>
@@ -310,7 +344,8 @@ export interface ApplicationActions {
   dismissMachineConfigurationError: () => void
   retryMachineConfiguration: (workspace: string) => void
   dismissRepositoryPush?: (workspace: string, repositoryPath: string) => void
-  pushRepository: (workspace: string, repositoryPath: string) => void
+  /** Push exactly the confirmed `target`; the host aborts if the sandbox no longer matches it. */
+  pushRepository: (workspace: string, repositoryPath: string, target: RepositoryPushTarget) => void
   startWorkspace: (workspace: string) => void
   stopWorkspace: (workspace: string) => void
   restartWorkspace: (workspace: string) => void

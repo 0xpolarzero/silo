@@ -186,3 +186,12 @@ it("keeps Debian installation disabled while operations are active", async () =>
   expect(await screen.findByRole("button", { name: "Update" })).toBeDisabled()
   expect(screen.getByText("Wait for sandbox operations to finish.")).toBeVisible()
 })
+it("asks for a manual relaunch when an installed update could not restart, without offering a retry", async () => {
+  const { backend } = mount({ packageKind: "debian", phase: "error", retryAction: "relaunch", canInstall: false,
+    error: "Silo was updated but could not restart. Quit and reopen Silo to finish.", errorDetails: "exec failed" })
+  expect(await screen.findByText("Silo was updated but could not restart. Quit and reopen Silo to finish.")).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: /Check for updates|Update|Restart and update/ })).not.toBeInTheDocument()
+  expect(backend.check).not.toHaveBeenCalled()
+  expect(backend.install).not.toHaveBeenCalled()
+})

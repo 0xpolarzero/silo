@@ -3,7 +3,7 @@
 Research date: 2026-09-18. Proposal only; no desktop image was built or booted,
 no agent integration was tested, and no application behavior changed.
 
-The [implementation plan](SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md) is authoritative
+The [implementation plan](archive/SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md) is authoritative
 for the agreed scope: automatic startup by default with a manual-mode setting,
 no removal workflow, and no shipped agent tools or agent-control UI. Earlier
 adapter and coordination proposals below are research history, not commitments.

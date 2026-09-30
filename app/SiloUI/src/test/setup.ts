@@ -4,9 +4,15 @@ import { afterEach, beforeEach, vi } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 import { toast } from "sonner"
 import { collectUnexpectedConsoleErrors, installConsoleErrorGuard } from "./console-error-guard"
+import { gateSonnerStyleSheet, purgeDetachedStyleSheets } from "./stylesheets"
 
 // Sonner keeps its toast store at module scope; clear it so notifications never leak between tests.
 afterEach(() => { toast.dismiss() })
+
+// Keep stylesheets no element can match out of jsdom's style computation: Sonner's
+// sheet while no toast is shown, and sheets jsdom leaks from removed components.
+gateSonnerStyleSheet(window)
+beforeEach(() => { purgeDetachedStyleSheets(document) })
 
 // Without a Tauri webview, the real `invoke`/`listen` throw inside
 // transformCallback and surface only as caught console errors. Install

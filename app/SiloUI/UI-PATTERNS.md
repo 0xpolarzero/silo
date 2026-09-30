@@ -17,12 +17,12 @@ and expanded states. Avoid adding page-specific title or caption sizes.
 
 | Surface | Shared rows |
 | --- | --- |
-| Overview | VM and SSH records through `SandboxListRow`; configuration status uses the same icon tile. |
+| Sandboxes | Sandbox and SSH host records through `SandboxListRow`; configuration status uses the same icon tile. |
 | Files | Repository records; push controls and feedback remain below the header. |
 | Activity | Every event, including progress, success, warning, and failure. |
 | GitHub | Connected, connecting, and disconnected account cards. |
 | Secrets | Secret records, sandbox badges, and restart notices. |
-| Backup | Create backup, restore archive, and recent archives; inline review and results use `ListRowDetails`. |
+| Sandbox page | Checkpoint history and its empty state on the Checkpoints tab, and the Overview tab's secret and port rows. Export and import progress and results are notifications, not rows. |
 | General | Startup, polling, application preferences, and accessibility settings. |
 | Notifications | Main toggle and alert categories. |
 | System issue | Repair header and expanded details; ordered repair steps share the icon tile. |
@@ -33,7 +33,8 @@ and expanded states. Avoid adding page-specific title or caption sizes.
 Logs, Network, and GitHub repository permissions need aligned table columns.
 The file tree needs hierarchy and indentation. Navigation and disclosure
 headings are single-line controls. Configuration editors are forms. Empty
-states are centered explanations. Inline operation feedback and temporary
+states are centered explanations using `EmptyState` from
+`src/components/empty-state.tsx`. Inline operation feedback and temporary
 repair notices remain compact status messages within their owning surface.
 These do not need a two-line record card.
 
@@ -48,8 +49,10 @@ drafts, expanded details, and scroll positions. A descendant that animates inher
 visibility can remain painted after its panel is hidden, as described in
 [MDN’s visibility interpolation](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/visibility#interpolation).
 
-`src/test/transition-styles.test.ts` checks the compiled application CSS for this
-rule, including shared components, variants, and custom styles.
+`src/test/transition-styles.test.ts` builds every stylesheet that application
+modules import through the production Vite and Tailwind pipeline, without
+bundling the application, and checks the compiled CSS for this rule, including
+shared components, variants, and custom styles.
 
 ## Tooltips
 
@@ -68,12 +71,40 @@ render in portals outside `.silo-window`; they read the same context through
 `components/ui/reduce-motion.ts`, carry the `silo-portal` class and
 `data-reduce-motion`, and `index.css` turns off their animations and transitions.
 
+## Fixture preview
+
+`npm --prefix app/SiloUI run dev` serves the browser preview. `/` is the
+production entry and only shows "Open Silo in the desktop app." outside the
+desktop app. Open `/preview.html` instead: it renders deterministic fixtures,
+never Silo services, and is a development-only entry that `vite build` does not
+bundle (the build input is `index.html` alone). URL parameters choose the
+surface and its fixtures; there is no on-page selector, so edit the URL.
+
+| Parameter | Values | Source |
+| --- | --- | --- |
+| `view` | `onboarding` (default), `app`, `status-bar`, `desktop` | `src/fixtures/surfaces.ts` |
+| `scenario` | `running`, `complete`, `dependency-failure`, `bootstrap-failure`, `stress-running`; the app and status bar default to `running`, onboarding to `complete` | `src/fixtures/scenarios.ts` |
+| `github` | `disconnected`, `connecting`, `connected` | `src/fixtures/scenarios.ts` |
+| `status-bar` | `stale`, `empty`, `long-list` | `src/fixtures/status-bar-scenarios.ts` |
+| `sandbox-state`, `sandbox-change`, `system-issue`, `repository-push`, `github-operation` | See each `…FixtureModes` list | `src/fixtures/application-scenarios.ts` |
+| `activity` | See `activityFixtureModes` | `src/fixtures/application-activity.ts` |
+| `backup-operation` | See `backupFixtureModes` | `src/fixtures/application-backup.ts` |
+| `resource-notice` | `create-storage`, `start-memory` | `src/fixtures/application-resources.ts` |
+| `operations` | `running`, `stuck` | `src/fixtures/operation-queue.ts` |
+| `appearance` | `light`, `dark`; otherwise the fixture's theme preference | `src/fixtures/preview.tsx` |
+
+For example, `/preview.html?view=status-bar&status-bar=long-list` or
+`/preview.html?view=app&scenario=complete&system-issue=needed`. Opening Silo
+from finished onboarding or choosing **Open Silo…** in the status bar switches
+the URL to `view=app`. `glass.html` is a separate material study
+(`docs/SiloUI-GLASS-STUDY.md`) that always shows the complete app scenario.
+
 ## Status bar preview
 
-Open `?view=status-bar` or choose **status-bar** in the development View selector.
-State and System fixtures use the app's existing snapshots. The Preview selector
-adds stale status, an empty list, and a long list. Repair and error notices and
-the footer remain visible while only the sandbox list scrolls.
+Open `/preview.html?view=status-bar`. The `scenario` and `system-issue`
+parameters reuse the app's fixture snapshots; `status-bar` adds stale status,
+an empty list, or a long list. Repair and error notices and the footer remain
+visible while only the sandbox list scrolls.
 
 Repositories with outgoing commits add one compact line under their sandbox,
 with the repository's full path (hidden characters revealed) and a **Push N commits** action. Progress and the brief

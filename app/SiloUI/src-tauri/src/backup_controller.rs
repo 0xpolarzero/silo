@@ -28,6 +28,9 @@ struct Archive {
     size: String,
     destination: String,
     sandboxes: Vec<String>,
+    /// The checkpoint an export packages, so titles do not depend on UI memory (E-52).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -55,6 +58,9 @@ enum Operation {
         progress: u8,
         #[serde(skip_serializing_if = "Option::is_none")]
         indeterminate: Option<bool>,
+        /// `Some(false)` once Cancel would no longer be honoured (E-28).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        can_cancel: Option<bool>,
         phases: Vec<Phase>,
     },
     #[serde(rename = "result")]
@@ -81,13 +87,9 @@ pub(crate) struct BackupState {
     availability: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     availability_message: Option<String>,
-    #[serde(rename = "requiredSpaceGB", skip_serializing_if = "Option::is_none")]
-    required_space_gb: Option<f64>,
-    #[serde(rename = "availableSpaceGB", skip_serializing_if = "Option::is_none")]
-    available_space_gb: Option<f64>,
+    /// Always empty: exports are no longer listed (E-45). Kept because the
+    /// frontend contract still requires the field.
     archives: Vec<Archive>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    destination: Option<String>,
     operation: Option<Operation>,
 }
 
@@ -100,46 +102,38 @@ pub(crate) struct ArchiveInspectionResult {
     reason: Option<String>,
 }
 
+/// `backup-history.json`. Older builds also listed completed exports here; no
+/// UI showed them, so only the chosen export folder is kept (E-45). The file is
+/// advisory: a missing, unreadable or newer file only forgets the folder.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BackupHistory {
     schema_version: u32,
     destination: Option<PathBuf>,
-    archives: Vec<Archive>,
+    /// Always written empty; read only so older files still parse.
+    #[serde(default)]
+    archives: Vec<Value>,
 }
 
-fn load_history(path: &Path) -> Result<BackupHistory, String> {
+fn load_destination(path: &Path) -> Option<PathBuf> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(BackupHistory {
-                schema_version: 1,
-                destination: None,
-                archives: Vec::new(),
-            });
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!("Silo ignored its unreadable export folder setting: {error}");
+            return None;
         }
-        Err(error) => return Err(format!("Silo could not read backup history: {error}")),
     };
-    let history: BackupHistory = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Silo could not read backup history: {error}"))?;
-    if history.schema_version != 1
-        || history
-            .destination
-            .as_ref()
-            .is_some_and(|path| !path.is_absolute())
-        || history.archives.iter().any(|archive| {
-            !Path::new(&archive.archive_path).is_absolute()
-                || !Path::new(&archive.destination).is_absolute()
-                || archive.name.is_empty()
-                || archive.sandboxes.is_empty()
-        })
-    {
-        return Err(
-            "Silo backup history has invalid or unsupported data. The saved file was preserved."
-                .into(),
-        );
+    match serde_json::from_slice::<BackupHistory>(&bytes) {
+        Ok(history) if history.schema_version == 1 => {
+            history.destination.filter(|path| path.is_absolute())
+        }
+        Ok(_) => None,
+        Err(error) => {
+            eprintln!("Silo ignored its unreadable export folder setting: {error}");
+            None
+        }
     }
-    Ok(history)
 }
 
 fn write_history(path: &Path, history: &BackupHistory) -> Result<(), String> {
@@ -157,35 +151,55 @@ fn write_history(path: &Path, history: &BackupHistory) -> Result<(), String> {
     write().map_err(|error| format!("Silo could not save backup history: {error}"))
 }
 
-fn record_archive(controller: &Controller, archive: &Archive) -> Result<(), String> {
-    let mut view = controller
-        .view
-        .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?;
-    if let Some(error) = &view.history_error {
-        return Err(error.clone());
-    }
-    let mut archives = view.archives.clone();
-    archives.retain(|existing| existing.archive_path != archive.archive_path);
-    archives.insert(0, archive.clone());
-    write_history(
+/// Use `destination` as the export folder. Saving it for the next launch is
+/// best effort: a failure never blocks this export.
+fn remember_destination(controller: &Controller, destination: PathBuf) {
+    let saved = write_history(
         &controller.history_path,
         &BackupHistory {
             schema_version: 1,
-            destination: view.destination.clone(),
-            archives: archives.clone(),
+            destination: Some(destination.clone()),
+            archives: Vec::new(),
         },
-    )?;
-    view.archives = archives;
-    Ok(())
+    );
+    if let Err(error) = saved {
+        eprintln!("{error} The export folder is used for this session only.");
+    }
+    controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .destination = Some(destination);
+}
+
+/// What `install` restores from the app data folder.
+struct Saved {
+    destination: Option<PathBuf>,
+    journal: Option<recovery::Journal>,
+    /// A saved operation that could not be read. It may describe unfinished
+    /// work, so exports and imports stay unavailable and the file is kept.
+    journal_error: Option<String>,
+}
+
+fn load_saved(history_path: &Path) -> Saved {
+    let (journal, journal_error) = match recovery::load(history_path) {
+        Ok(journal) => (journal, None),
+        Err(error) => (None, Some(error)),
+    };
+    Saved {
+        destination: load_destination(history_path),
+        journal,
+        journal_error,
+    }
 }
 
 struct ViewState {
-    history_error: Option<String>,
+    journal_error: Option<String>,
     destination: Option<PathBuf>,
-    archives: Vec<Archive>,
     operation: Option<Operation>,
     cancellation: Option<backup::Cancellation>,
+    /// The export file check behind the import review, by request id (E-27).
+    inspection: Option<(String, backup::Cancellation)>,
 }
 
 pub(crate) struct Controller {
@@ -209,24 +223,11 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join("backup-history.json");
-    let (history, mut history_error) = match load_history(&history_path) {
-        Ok(history) => (history, None),
-        Err(error) => (
-            BackupHistory {
-                schema_version: 1,
-                destination: None,
-                archives: Vec::new(),
-            },
-            Some(error),
-        ),
-    };
-    let journal = match recovery::load(&history_path) {
-        Ok(journal) => journal,
-        Err(error) => {
-            history_error = Some(error);
-            None
-        }
-    };
+    let Saved {
+        destination,
+        journal,
+        journal_error,
+    } = load_saved(&history_path);
     let controller = Arc::new(Controller {
         journal: Mutex::new(journal.clone()),
         history_path,
@@ -241,26 +242,31 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
             scratch,
         ),
         view: Mutex::new(ViewState {
-            history_error,
-            destination: history.destination,
-            archives: history.archives,
+            journal_error,
+            destination,
             operation: None,
             cancellation: None,
+            inspection: None,
         }),
         busy: AtomicBool::new(false),
         revision: AtomicU64::new(1),
     });
     app.manage(controller.clone());
+    // Settle an interrupted operation even while the runtime migration blocks
+    // sandbox operations: recovery runs no runtime command and only removes
+    // this operation's own output, and the migration refuses to start while
+    // the journal is pending (E-50).
     if let Some(journal) = journal {
-        if !crate::runtime_migration::blocks_operations(app) {
-            recovery::resume(app.clone(), controller, journal)?;
-        }
+        recovery::resume(app.clone(), controller, journal)?;
     }
     Ok(())
 }
 
 /// Startup runs this in its background worker before other recovery or optional
-/// starts. An interrupted backup may own a stopped guest or a half-created VM.
+/// starts. An interrupted import may still own a checkpoint record for a sandbox
+/// whose settings were never saved; its recovery is short and never repeats the
+/// import. An interrupted export's recovery only checks its own files, so
+/// startup does not wait for it (E-31).
 pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
     let controller = app.state::<Arc<Controller>>();
     let pending = controller
@@ -268,7 +274,7 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
         .lock()
         .map_err(|_| "Saved backup progress is unavailable.")?
         .as_ref()
-        .filter(|journal| journal.is_pending())
+        .filter(|journal| journal.is_pending() && journal.blocks_startup())
         .map(|journal| journal.identity().to_string());
     let Some(identity) = pending else {
         return Ok(());
@@ -338,67 +344,45 @@ fn archive_from(path: &Path, inspected: &backup::ArchiveInspection) -> Archive {
             .to_string_lossy()
             .into_owned(),
         sandboxes: inspected.sandboxes.clone(),
+        checkpoint_name: None,
     }
 }
 
-fn free_bytes(path: &Path) -> Result<u64, String> {
-    let path = fs::canonicalize(path)
-        .map_err(|error| format!("Silo could not inspect the selected destination: {error}"))?;
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let encoded = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| "The selected export destination is invalid.".to_string())?;
-    let mut statistics: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: encoded is NUL terminated and statistics is a valid exclusive output pointer.
-    if unsafe { libc::statvfs(encoded.as_ptr(), &mut statistics) } != 0 {
-        return Err(format!(
-            "Silo could not measure the selected destination: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    (statistics.f_bavail as u64)
-        .checked_mul(statistics.f_frsize as u64)
-        .ok_or_else(|| "The selected destination reported an invalid capacity.".into())
-}
-
+/// Read on every refresh, so it runs off the main thread and reads only
+/// in-memory state: no file system access that a stalled or sleeping export
+/// volume could block (E-39).
 #[tauri::command]
-pub(crate) fn read_backup_state(
-    app: AppHandle,
+pub(crate) async fn read_backup_state(
     controller: State<'_, Arc<Controller>>,
 ) -> Result<BackupState, String> {
-    let paths = runtime::runtime_paths(&app)?;
-    let view = controller
-        .view
-        .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?;
-    let available =
-        free_bytes(&paths.home)
-            .ok()
-            .and_then(|managed| match view.destination.as_deref() {
-                Some(destination) => free_bytes(destination)
-                    .ok()
-                    .map(|available| available.min(managed)),
-                None => Some(managed),
-            });
-    let availability_message = view.history_error.clone().or_else(|| {
-        recovery::unresolved(&controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
+    let controller = controller.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || backup_state(&controller))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn backup_state(controller: &Controller) -> Result<BackupState, String> {
+    let (journal_error, operation) = {
+        let view = controller
+            .view
+            .lock()
+            .map_err(|_| "Backup state is unavailable.".to_string())?;
+        (view.journal_error.clone(), view.operation.clone())
+    };
+    let availability_message = journal_error.or_else(|| {
+        recovery::unresolved(controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
     });
     Ok(BackupState {
         snapshot_id: controller.revision.load(Ordering::Relaxed).to_string(),
-        operation_id: recovery::token(&controller)?,
+        operation_id: recovery::token(controller)?,
         availability: if availability_message.is_some() {
             "unavailable"
         } else {
             "available"
         },
         availability_message,
-        required_space_gb: None,
-        available_space_gb: available.map(|bytes| bytes as f64 / GIB as f64),
-        archives: view.archives.clone(),
-        destination: view
-            .destination
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
-        operation: view.operation.clone(),
+        archives: Vec::new(),
+        operation,
     })
 }
 
@@ -431,23 +415,7 @@ pub(crate) async fn choose_backup_destination(
         let path = selected.into_path().map_err(|error| error.to_string())?;
         let path = fs::canonicalize(&path)
             .map_err(|error| format!("Silo could not use the selected destination: {error}"))?;
-        let mut view = controller
-            .view
-            .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
-        if let Some(error) = &view.history_error {
-            return Err(error.clone());
-        }
-        write_history(
-            &controller.history_path,
-            &BackupHistory {
-                schema_version: 1,
-                destination: Some(path.clone()),
-                archives: view.archives.clone(),
-            },
-        )?;
-        view.destination = Some(path.clone());
-        drop(view);
+        remember_destination(&controller, path.clone());
         publish(&app, &controller);
         Ok(Some(path.to_string_lossy().into_owned()))
     })
@@ -478,27 +446,31 @@ pub(crate) async fn choose_backup_archive(
     .map_err(|error| error.to_string())?
 }
 
+/// Checks an export file before the import review. The check can take minutes
+/// for a large file, so it is registered under the caller's request id and
+/// `cancel_backup_inspection` stops it when the review closes. It changes no
+/// state and publishes nothing (E-27).
 #[tauri::command]
 pub(crate) async fn inspect_backup_archive(
-    app: AppHandle,
     window: WebviewWindow,
     controller: State<'_, Arc<Controller>>,
     archive_path: String,
+    request_id: Option<String>,
 ) -> Result<ArchiveInspectionResult, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(archive_path);
-        let cancellation = backup::Cancellation::default();
-        match controller.service.inspect_archive(&path, &cancellation) {
-            Ok(inspection) => {
-                publish(&app, &controller);
-                Ok(ArchiveInspectionResult {
-                    archive: archive_from(&path, &inspection),
-                    valid: true,
-                    reason: None,
-                })
-            }
+        let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let cancellation = register_inspection(&controller, request_id.clone());
+        let inspected = controller.service.inspect_archive(&path, &cancellation);
+        finish_inspection(&controller, &request_id);
+        match inspected {
+            Ok(inspection) => Ok(ArchiveInspectionResult {
+                archive: archive_from(&path, &inspection),
+                valid: true,
+                reason: None,
+            }),
             Err(error) => Ok(ArchiveInspectionResult {
                 archive: Archive {
                     name: path
@@ -515,6 +487,7 @@ pub(crate) async fn inspect_backup_archive(
                         .to_string_lossy()
                         .into_owned(),
                     sandboxes: Vec::new(),
+                    checkpoint_name: None,
                 },
                 valid: false,
                 reason: Some(error.to_string()),
@@ -525,27 +498,70 @@ pub(crate) async fn inspect_backup_archive(
     .map_err(|error| error.to_string())?
 }
 
-/// Authorizes a reveal request against the controller's known archives. A path
-/// may be revealed only when it matches, byte for byte, the `archive_path` of a
-/// saved history entry or of the current completed export (a `Result` operation
-/// whose outcome finished successfully), and the file still exists. Exact-string
-/// matching rejects traversal (`..`) or otherwise non-identical paths, and the
-/// existence check rejects an archive the user has since moved or deleted.
-fn authorize_reveal(
-    operation: Option<&Operation>,
-    archives: &[Archive],
-    requested: &str,
-) -> Result<PathBuf, String> {
+/// Stops the export file check started under `request_id`, if it is still running.
+#[tauri::command]
+pub(crate) fn cancel_backup_inspection(
+    window: WebviewWindow,
+    controller: State<'_, Arc<Controller>>,
+    request_id: String,
+) -> Result<bool, String> {
+    require_main(&window)?;
+    Ok(cancel_inspection(&controller, &request_id))
+}
+
+/// Registers a check; only one runs at a time, so a newer one cancels the older.
+fn register_inspection(controller: &Controller, request_id: String) -> backup::Cancellation {
+    let cancellation = backup::Cancellation::default();
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((_, previous)) = view.inspection.replace((request_id, cancellation.clone())) {
+        previous.cancel();
+    }
+    cancellation
+}
+
+fn finish_inspection(controller: &Controller, request_id: &str) {
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if view.inspection.as_ref().is_some_and(|(id, _)| id == request_id) {
+        view.inspection = None;
+    }
+}
+
+fn cancel_inspection(controller: &Controller, request_id: &str) -> bool {
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match view.inspection.take() {
+        Some((id, cancellation)) if id == request_id => {
+            cancellation.cancel();
+            true
+        }
+        other => {
+            view.inspection = other;
+            false
+        }
+    }
+}
+
+/// Authorizes a reveal request. A path may be revealed only when it matches,
+/// byte for byte, the `archive_path` of the current completed export (a
+/// `Result` operation whose outcome finished successfully), and the file still
+/// exists. Exact-string matching rejects traversal (`..`) or otherwise
+/// non-identical paths, and the existence check rejects an archive the user
+/// has since moved or deleted.
+fn authorize_reveal(operation: Option<&Operation>, requested: &str) -> Result<PathBuf, String> {
     const UNAVAILABLE: &str = "That export file is no longer available.";
-    let known = archives
-        .iter()
-        .any(|archive| archive.archive_path == requested)
-        || matches!(
-            operation,
-            Some(Operation::Result { outcome, archive, .. })
-                if matches!(*outcome, "success" | "restart-required")
-                    && archive.archive_path == requested
-        );
+    let known = matches!(
+        operation,
+        Some(Operation::Result { outcome: "success", archive, .. })
+            if archive.archive_path == requested
+    );
     if !known {
         return Err(UNAVAILABLE.into());
     }
@@ -563,16 +579,16 @@ pub(crate) async fn reveal_backup_archive(
     archive_path: String,
 ) -> Result<(), String> {
     require_main(&window)?;
-    let controller = controller.inner().clone();
-    let path = {
-        let view = controller
-            .view
-            .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
-        authorize_reveal(view.operation.as_ref(), &view.archives, &archive_path)?
-    };
-    // Revealing shells out to the platform file manager, which can block.
+    let operation = controller
+        .view
+        .lock()
+        .map_err(|_| "Backup state is unavailable.".to_string())?
+        .operation
+        .clone();
+    // The file check and the platform file manager can block; neither runs
+    // under the state lock or on an async worker.
     tauri::async_runtime::spawn_blocking(move || {
+        let path = authorize_reveal(operation.as_ref(), &archive_path)?;
         tauri_plugin_opener::reveal_item_in_dir(&path)
             .map_err(|error| format!("Silo could not show the export file: {error}"))
     })
@@ -622,6 +638,9 @@ fn finish(controller: &Controller) {
     controller.busy.store(false, Ordering::Release);
 }
 
+/// Starts an export and returns its operation id: the `operationId` that
+/// `read_backup_state` reports with this export's running state and result, so
+/// a caller can wait for this specific export to finish (E-59).
 #[tauri::command]
 pub(crate) async fn start_backup(
     app: AppHandle,
@@ -630,7 +649,7 @@ pub(crate) async fn start_backup(
     destination: String,
     sandboxes: Vec<String>,
     checkpoint_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     require_main(&window)?;
     // A rejection before the export starts is returned to the caller, which shows it
     // in place; only the background outcome (see `notify_transfer`) reaches the system.
@@ -652,9 +671,25 @@ async fn start_backup_inner(
     destination: String,
     sandboxes: Vec<String>,
     checkpoint_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
+    // Resolving the destination, reading settings and saving the journal all
+    // block on the file system; keep them off the async workers (E-39).
+    tauri::async_runtime::spawn_blocking(move || {
+        begin_export(app, controller, destination, sandboxes, checkpoint_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn begin_export(
+    app: AppHandle,
+    controller: Arc<Controller>,
+    destination: String,
+    sandboxes: Vec<String>,
+    checkpoint_id: Option<String>,
+) -> Result<String, String> {
     let selected_destination = controller
         .view
         .lock()
@@ -693,65 +728,19 @@ async fn start_backup_inner(
     } else {
         None
     };
-    controller
-        .busy
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "Another export or import is running.".to_string())?;
-    let archive_path = unique_archive(&canonical, &sandboxes, checkpoint_id.is_some());
-    let pending_archive = Archive {
-        name: archive_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
-        archive_path: archive_path.to_string_lossy().into_owned(),
-        completed_label: "In progress".into(),
-        size: "Unknown".into(),
-        destination,
-        sandboxes: sandboxes.clone(),
-    };
-    if let Err(error) = recovery::begin(
+    let ClaimedExport {
+        operation_id,
+        archive_path,
+        archive: pending_archive,
+        cancellation,
+    } = claim_export(
         &controller,
-        recovery::Journal::backup(
-            pending_archive.clone(),
-            sandboxes.clone(),
-            checkpoint_id.clone(),
-        ),
-    ) {
-        finish(&controller);
-        return Err(error);
-    }
-    let cancellation = backup::Cancellation::default();
-    {
-        let mut view = controller
-            .view
-            .lock()
-            // `busy` and the journal are already claimed; returning here would
-            // strand them, so recover a poisoned view instead (E-44).
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        view.cancellation = Some(cancellation.clone());
-        let phase = match &checkpoint_name {
-            Some(name) => Phase {
-                title: format!("Using checkpoint \u{201c}{name}\u{201d}"),
-                detail: "Silo is packaging and verifying the selected checkpoint.".into(),
-                tone: "running",
-            },
-            None => Phase {
-                title: "Capture and verify".into(),
-                detail: "Silo is creating verified self-contained snapshots.".into(),
-                tone: "running",
-            },
-        };
-        view.operation = Some(Operation::Running {
-            operation: "backup",
-            archive: pending_archive.clone(),
-            running_names: Vec::new(),
-            target_name: None,
-            progress: 0,
-            indeterminate: Some(true),
-            phases: vec![phase],
-        });
-    }
+        &canonical,
+        destination,
+        &sandboxes,
+        checkpoint_id.clone(),
+        checkpoint_name.as_deref(),
+    )?;
     publish(&app, &controller);
     let failure_archive = pending_archive.clone();
     let (work_app, work_controller) = (app.clone(), controller.clone());
@@ -771,7 +760,89 @@ async fn start_backup_inner(
             publish(&app, &controller);
         }
     });
-    Ok(())
+    Ok(operation_id)
+}
+
+/// An export that owns the transfer slot and a saved journal.
+struct ClaimedExport {
+    /// The journal id, reported as `operationId` until the result is dismissed.
+    operation_id: String,
+    archive_path: PathBuf,
+    archive: Archive,
+    cancellation: backup::Cancellation,
+}
+
+/// Claims the transfer slot, saves the export's journal and publishes it as
+/// running. Everything after this point reports its outcome as this
+/// operation's result, under the returned operation id.
+fn claim_export(
+    controller: &Controller,
+    destination_directory: &Path,
+    destination: String,
+    sandboxes: &[String],
+    checkpoint_id: Option<String>,
+    checkpoint_name: Option<&str>,
+) -> Result<ClaimedExport, String> {
+    controller
+        .busy
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Another export or import is running.".to_string())?;
+    let archive_path = unique_archive(destination_directory, sandboxes, checkpoint_id.is_some());
+    let archive = Archive {
+        name: archive_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        archive_path: archive_path.to_string_lossy().into_owned(),
+        completed_label: "In progress".into(),
+        size: "Unknown".into(),
+        destination,
+        sandboxes: sandboxes.to_vec(),
+        checkpoint_name: checkpoint_name.map(Into::into),
+    };
+    let journal = recovery::Journal::backup(archive.clone(), sandboxes.to_vec(), checkpoint_id);
+    let operation_id = journal.identity().to_string();
+    if let Err(error) = recovery::begin(controller, journal) {
+        finish(controller);
+        return Err(error);
+    }
+    let cancellation = backup::Cancellation::default();
+    let mut view = controller
+        .view
+        .lock()
+        // `busy` and the journal are already claimed; returning here would
+        // strand them, so recover a poisoned view instead (E-44).
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    view.cancellation = Some(cancellation.clone());
+    let phase = match checkpoint_name {
+        Some(name) => Phase {
+            title: format!("Using checkpoint \u{201c}{name}\u{201d}"),
+            detail: "Silo is packaging and verifying the selected checkpoint.".into(),
+            tone: "running",
+        },
+        None => Phase {
+            title: "Capture and verify".into(),
+            detail: "Silo is creating verified self-contained snapshots.".into(),
+            tone: "running",
+        },
+    };
+    view.operation = Some(Operation::Running {
+        operation: "backup",
+        archive: archive.clone(),
+        running_names: Vec::new(),
+        target_name: None,
+        progress: 0,
+        indeterminate: Some(true),
+        can_cancel: None,
+        phases: vec![phase],
+    });
+    Ok(ClaimedExport {
+        operation_id,
+        archive_path,
+        archive,
+        cancellation,
+    })
 }
 
 /// Runs a detached export or import worker. A panic would otherwise leave the
@@ -835,10 +906,13 @@ fn run_backup(
         checkpoint_id.as_deref(),
         &cancellation,
     );
-    let mut operation = match result {
-        Ok((archive, restart_failures)) if restart_failures.is_empty() => Operation::Result {
+    let operation = match result {
+        Ok(archive) => Operation::Result {
             operation: "backup",
-            archive,
+            archive: Archive {
+                checkpoint_name: pending_archive.checkpoint_name,
+                ..archive
+            },
             running_names: Vec::new(),
             target_name: None,
             outcome: "success",
@@ -846,62 +920,8 @@ fn run_backup(
             message: "Sandbox exported.".into(),
             detail: None,
         },
-        Ok((archive, restart_failures)) => {
-            let names = restart_failures
-                .iter()
-                .map(|failure| failure.sandbox.clone())
-                .collect::<Vec<_>>();
-            Operation::Result { operation: "backup", archive, running_names: names, target_name: None, outcome: "restart-required", title: "Export complete; restart failed".into(), message: "The export is complete and verified, but a previously running sandbox did not restart.".into(), detail: Some(restart_failures.into_iter().map(|failure| format!("{}: {}", failure.sandbox, failure.detail)).collect::<Vec<_>>().join("\n")) }
-        }
-        Err(error) => Operation::Result {
-            operation: "backup",
-            archive: pending_archive,
-            running_names: Vec::new(),
-            target_name: None,
-            outcome: if error == "The operation was cancelled." {
-                "cancelled"
-            } else {
-                "failed"
-            },
-            title: if error == "The operation was cancelled." {
-                "Export cancelled".into()
-            } else {
-                "Export failed".into()
-            },
-            message: error,
-            detail: Some(
-                "No completed export was recorded; incomplete files were removed.".into(),
-            ),
-        },
+        Err(error) => failed_transfer("backup", pending_archive, None, error),
     };
-    if let Operation::Result {
-        archive,
-        outcome,
-        title,
-        message,
-        detail,
-        ..
-    } = &mut operation
-    {
-        if matches!(*outcome, "success" | "restart-required") {
-            if let Err(error) = record_archive(&controller, archive) {
-                *outcome = "failed";
-                *title = "Export saved; history update failed".into();
-                *message = format!(
-                    "The verified export remains at {}. {error}",
-                    archive.archive_path
-                );
-                *detail = Some(
-                    format!(
-                        "{} Silo could not save its export records.",
-                        detail.take().unwrap_or_default()
-                    )
-                    .trim()
-                    .into(),
-                );
-            }
-        }
-    }
     let operation = recovery::complete(&controller, operation);
     notify_transfer(&app, &operation, started.elapsed());
     let _ = set_operation(&controller, operation);
@@ -909,31 +929,180 @@ fn run_backup(
     publish(&app, &controller);
 }
 
+/// Why an export or import worker ended without a result. The outcome comes
+/// from `cancelled`, never from the message text (E-42).
+#[derive(Debug)]
+struct TransferError {
+    cancelled: bool,
+    message: String,
+    /// What was left behind, when it differs from the default for the kind.
+    detail: Option<&'static str>,
+}
+
+impl TransferError {
+    fn cancelled() -> Self {
+        Self {
+            cancelled: true,
+            message: String::new(),
+            detail: None,
+        }
+    }
+
+    /// An import that failed after its snapshot started unpacking may leave
+    /// that data in the runtime's snapshot store (see E-23).
+    fn after_unpacking(mut self) -> Self {
+        self.detail = Some("No sandbox was added. Data unpacked for it may still use disk space.");
+        self
+    }
+}
+
+impl From<String> for TransferError {
+    fn from(message: String) -> Self {
+        Self {
+            cancelled: false,
+            message,
+            detail: None,
+        }
+    }
+}
+
+impl From<&str> for TransferError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl From<backup::BackupError> for TransferError {
+    fn from(error: backup::BackupError) -> Self {
+        match error {
+            backup::BackupError::Cancelled => Self::cancelled(),
+            error => error.to_string().into(),
+        }
+    }
+}
+
+impl From<runtime::operation_gate::GateError> for TransferError {
+    fn from(error: runtime::operation_gate::GateError) -> Self {
+        match error {
+            runtime::operation_gate::GateError::Cancelled => Self::cancelled(),
+            error => error.to_string().into(),
+        }
+    }
+}
+
+/// The result for an export (`backup`) or import (`restore`) that did not
+/// finish. Details state only what is always true for that kind and stage.
+fn failed_transfer(
+    operation: &'static str,
+    archive: Archive,
+    target_name: Option<String>,
+    error: TransferError,
+) -> Operation {
+    let export = operation == "backup";
+    let detail = error.detail.unwrap_or(if export {
+        "No export file was saved."
+    } else {
+        "No sandbox was added. The export file was not changed."
+    });
+    let (outcome, title, message) = match (error.cancelled, export) {
+        (true, true) => ("cancelled", "Export cancelled", "The export was cancelled.".to_string()),
+        (true, false) => ("cancelled", "Import cancelled", "The import was cancelled.".to_string()),
+        (false, true) => ("failed", "Export failed", error.message),
+        (false, false) => ("failed", "Import failed", error.message),
+    };
+    Operation::Result {
+        operation,
+        archive,
+        running_names: Vec::new(),
+        target_name,
+        outcome,
+        title: title.into(),
+        message,
+        detail: Some(detail.into()),
+    }
+}
+
+/// Shown while an export or import waits behind other sandbox work (E-52).
+const QUEUED_PHASE: &str = "Waiting for other sandbox work";
+
+/// Marks a running export as queued: a waiting phase leads, its work waits.
+fn show_queued(controller: &Controller) {
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(Operation::Running { phases, .. }) = view.operation.as_mut() {
+        if phases.first().is_some_and(|phase| phase.title == QUEUED_PHASE) {
+            return;
+        }
+        for phase in phases.iter_mut() {
+            phase.tone = "waiting";
+        }
+        phases.insert(
+            0,
+            Phase {
+                title: QUEUED_PHASE.into(),
+                detail: "Starts when earlier sandbox changes finish.".into(),
+                tone: "running",
+            },
+        );
+    }
+}
+
+/// Ends a queued phase once the export's turn came. Returns whether it changed.
+fn show_admitted(controller: &Controller) -> bool {
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(Operation::Running { phases, .. }) = view.operation.as_mut() else {
+        return false;
+    };
+    if !phases
+        .first()
+        .is_some_and(|phase| phase.title == QUEUED_PHASE && phase.tone == "running")
+    {
+        return false;
+    }
+    phases[0].tone = "succeeded";
+    if let Some(work) = phases.get_mut(1) {
+        work.tone = "running";
+    }
+    true
+}
+
+/// Waits for the computer-wide operation turn. `on_queued` runs once if the
+/// turn is not immediate; it runs under the gate's lock, so keep it short.
 fn mutation_guard(
     cancellation: &backup::Cancellation,
     kind: runtime::operation_gate::OperationKind,
     label: &str,
     cancellable: bool,
-) -> Result<runtime::operation_gate::OperationGuard<'static>, String> {
+    on_queued: &dyn Fn(),
+) -> Result<runtime::operation_gate::OperationGuard<'static>, TransferError> {
     // Export and import change shared state and wait their turn (computer scope).
     // A queued export stays cancellable and gives up if the work ahead never ends.
     if cancellation.cancelled() {
-        return Err("The operation was cancelled.".into());
+        return Err(TransferError::cancelled());
     }
     let started = std::time::Instant::now();
+    let queued = std::cell::Cell::new(false);
     let mut guard = runtime::OPERATIONS
         .kind(kind)
         .acquire_while(runtime::operation_gate::Scope::Computer, None, label, &|| {
+            if !queued.replace(true) {
+                on_queued();
+            }
             !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
         })
         .map_err(|error| match error {
             runtime::operation_gate::GateError::Abandoned if cancellation.cancelled() => {
-                "The operation was cancelled.".to_string()
+                TransferError::cancelled()
             }
-            runtime::operation_gate::GateError::Abandoned => {
-                "The previous sandbox operation did not finish. Relaunch Silo to retry.".to_string()
-            }
-            error => error.to_string(),
+            runtime::operation_gate::GateError::Abandoned => TransferError::from(
+                "The previous sandbox operation did not finish. Relaunch Silo to retry.",
+            ),
+            error => error.into(),
         })?;
     // Export capture can be cancelled while running; import cannot. Share the one
     // cancel flag with the gate so the queue's Cancel and the export UI's Cancel agree.
@@ -953,8 +1122,20 @@ fn backup_work(
     names: &[String],
     checkpoint_id: Option<&str>,
     cancellation: &backup::Cancellation,
-) -> Result<(Archive, Vec<backup::RestartFailure>), String> {
-    let _guard = mutation_guard(cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true)?;
+) -> Result<Archive, TransferError> {
+    let _guard = mutation_guard(
+        cancellation,
+        runtime::operation_gate::OperationKind::Export,
+        "Exporting sandbox",
+        true,
+        &|| {
+            show_queued(controller);
+            publish(app, controller);
+        },
+    )?;
+    if show_admitted(controller) {
+        publish(app, controller);
+    }
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if names.is_empty() {
@@ -999,7 +1180,6 @@ fn backup_work(
             existing_member,
         });
     }
-    recovery::save_sources(controller, &sources)?;
     let result = controller.service.create_backup_with_token(
         backup::BackupRequest {
             destination: archive_path.to_path_buf(),
@@ -1007,19 +1187,14 @@ fn backup_work(
         },
         cancellation,
         recovery::token(controller)?.as_deref(),
-    );
-    // Reconcile failed stop or restart attempts once cleanup has settled too.
-    crate::ssh_access::reconcile(&paths);
-    let result = result.map_err(|error| error.to_string())?;
+    )?;
+    // Exports capture running sandboxes in place; they never stop or restart one.
     let inspection = backup::ArchiveInspection {
         created_at_ms: result.created_at_ms,
         size_bytes: result.size_bytes,
         sandboxes: result.sandboxes,
     };
-    Ok((
-        archive_from(&result.destination, &inspection),
-        result.restart_failures,
-    ))
+    Ok(archive_from(&result.destination, &inspection))
 }
 
 fn backup_volumes(
@@ -1152,66 +1327,6 @@ fn inspect(paths: &runtime::RuntimePaths, name: &str) -> Result<runtime::Inspect
         .map_err(|_| format!("The bundled runtime returned invalid state for sandbox '{name}'."))
 }
 
-// Recovery uses this only after verifying the per-restore owner marker. Keep
-// the runtime ownership check here so crash cleanup cannot remove a VM that
-// has since been replaced under the same name.
-fn cleanup_restored(paths: &runtime::RuntimePaths, name: &str, expected_id: &str) -> Result<(), String> {
-    let runtime_exists = match inspect(paths, name) {
-        Ok(sandbox)
-            if sandbox
-                .config
-                .pointer("/labels/silo.machine-id")
-                .and_then(Value::as_str)
-                != Some(expected_id) =>
-        {
-            return Err(format!(
-                "A different VM now owns {name}; Silo preserved it and its storage."
-            ));
-        }
-        Ok(_) => true,
-        Err(error)
-            if error.to_ascii_lowercase().contains("not found")
-                || error.to_ascii_lowercase().contains("does not exist") =>
-        {
-            false
-        }
-        Err(error) => {
-            return Err(format!(
-                "Silo could not verify restored VM ownership for cleanup: {error}"
-            ));
-        }
-    };
-    if runtime_exists {
-        match runtime::run_msb(
-            paths,
-            &[
-                "remove".into(),
-                "--force".into(),
-                "--quiet".into(),
-                name.into(),
-            ],
-            Duration::from_secs(45),
-        ) {
-            Ok(_) => {}
-            Err(error)
-                if error.to_string().to_ascii_lowercase().contains("not found")
-                    || error
-                        .to_string()
-                        .to_ascii_lowercase()
-                        .contains("does not exist") => {}
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-    let disk_path = paths.volumes.join(name);
-    match fs::remove_dir_all(&disk_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "Silo could not remove incomplete restored disks: {error}"
-        )),
-    }
-}
-
 #[tauri::command]
 pub(crate) async fn start_restore(
     app: AppHandle,
@@ -1293,12 +1408,33 @@ async fn start_restore_inner(
     source_name: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
+    let controller = controller.inner().clone();
+    // Saving the journal is an fsynced write; keep it off the async workers (E-39).
+    tauri::async_runtime::spawn_blocking(move || {
+        begin_import(app, controller, archive_path, new_name, source_name)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn begin_import(
+    app: AppHandle,
+    controller: Arc<Controller>,
+    archive_path: String,
+    new_name: String,
+    source_name: Option<String>,
+) -> Result<(), String> {
     runtime::validate_name(&new_name).map_err(|error| error.to_string())?;
+    if let Some(source_name) = &source_name {
+        runtime::validate_name(source_name).map_err(|error| error.to_string())?;
+    }
+    if !Path::new(&archive_path).is_absolute() {
+        return Err("Choose the export file again.".into());
+    }
     controller
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Another export or import is running.".to_string())?;
-    let controller = controller.inner().clone();
     let path = PathBuf::from(&archive_path);
     let cancellation = backup::Cancellation::default();
     let archive = Archive {
@@ -1316,6 +1452,7 @@ async fn start_restore_inner(
             .to_string_lossy()
             .into_owned(),
         sandboxes: source_name.iter().cloned().collect(),
+        checkpoint_name: None,
     };
     if let Err(error) = recovery::begin(
         &controller,
@@ -1339,6 +1476,7 @@ async fn start_restore_inner(
             target_name: Some(new_name.clone()),
             progress: 0,
             indeterminate: Some(true),
+            can_cancel: None,
             phases: vec![Phase {
                 title: "Checking export file".into(),
                 detail: "Verifying the export before importing.".into(),
@@ -1380,10 +1518,7 @@ fn run_restore(
     let started = std::time::Instant::now();
     let mut archive = archive;
     let result = (|| {
-        let inspection = controller
-            .service
-            .inspect_archive(&path, &cancellation)
-            .map_err(|error| error.to_string())?;
+        let inspection = controller.service.inspect_archive(&path, &cancellation)?;
         let selected = select_archive_source(&inspection.sandboxes, source_name.as_deref())?;
         archive = archive_from(&path, &inspection);
         if let Ok(mut view) = controller.view.lock() {
@@ -1402,7 +1537,7 @@ fn run_restore(
             &new_name,
             &cancellation,
         )?;
-        Ok::<_, String>(selected)
+        Ok::<_, TransferError>(selected)
     })();
     let operation = match result {
         Ok(_) => Operation::Result {
@@ -1415,24 +1550,7 @@ fn run_restore(
             message: "Sandbox imported.".into(),
             detail: None,
         },
-        Err(error) => Operation::Result {
-            operation: "restore",
-            archive,
-            running_names: Vec::new(),
-            target_name: Some(new_name),
-            outcome: if error == "The operation was cancelled." {
-                "cancelled"
-            } else {
-                "failed"
-            },
-            title: if error == "The operation was cancelled." {
-                "Import cancelled".into()
-            } else {
-                "Import failed".into()
-            },
-            message: error,
-            detail: Some("No existing sandbox was replaced.".into()),
-        },
+        Err(error) => failed_transfer("restore", archive, Some(new_name), error),
     };
     let operation = recovery::complete(&controller, operation);
     notify_transfer(&app, &operation, started.elapsed());
@@ -1457,7 +1575,7 @@ fn restore_work(
     source_name: &str,
     new_name: &str,
     cancellation: &backup::Cancellation,
-) -> Result<(), String> {
+) -> Result<(), TransferError> {
     let paths = runtime::runtime_paths(app)?;
     restore_at_paths(
         &paths,
@@ -1496,16 +1614,22 @@ fn restore_at_paths(
     new_name: &str,
     cancellation: &backup::Cancellation,
     progress: &dyn Fn(&str),
-) -> Result<(), String> {
+) -> Result<(), TransferError> {
     progress("Preparing import");
-    let _guard = mutation_guard(cancellation, runtime::operation_gate::OperationKind::Import, "Importing sandbox", false)?;
+    let _guard = mutation_guard(
+        cancellation,
+        runtime::operation_gate::OperationKind::Import,
+        "Importing sandbox",
+        false,
+        &|| progress(QUEUED_PHASE),
+    )?;
     let original = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if original
         .machines
         .iter()
         .any(|machine| machine.name().eq_ignore_ascii_case(new_name))
     {
-        return Err(format!("A sandbox named {new_name} already exists."));
+        return Err(format!("A sandbox named {new_name} already exists.").into());
     }
     let listed = runtime::run_msb(
         &paths,
@@ -1521,11 +1645,23 @@ fn restore_at_paths(
             .and_then(Value::as_str)
             .is_some_and(|name| name.eq_ignore_ascii_case(new_name))
     }) {
-        return Err(format!(
-            "A runtime sandbox named {new_name} already exists."
-        ));
+        return Err(format!("A runtime sandbox named {new_name} already exists.").into());
     }
     progress("Unpacking export");
+    unpack_and_save(paths, controller, archive, source_name, new_name, cancellation, progress, original)
+        .map_err(TransferError::after_unpacking)
+}
+
+fn unpack_and_save(
+    paths: &runtime::RuntimePaths,
+    controller: &Controller,
+    archive: &Path,
+    source_name: &str,
+    new_name: &str,
+    cancellation: &backup::Cancellation,
+    progress: &dyn Fn(&str),
+    original: runtime::MachineConfigurationRequest,
+) -> Result<(), TransferError> {
     let prepared = controller
         .service
         .prepare_restore(
@@ -1535,8 +1671,7 @@ fn restore_at_paths(
                 new_name: new_name.into(),
             },
             cancellation,
-        )
-        .map_err(|error| error.to_string())?;
+        )?;
     if prepared.source_name != source_name || prepared.new_name != new_name {
         return Err("The verified backup restore identity changed unexpectedly.".into());
     }
@@ -1555,50 +1690,117 @@ fn restore_at_paths(
     if !matches!(machine, runtime::MachineConfiguration::Vm { .. }) {
         return Err("The archive does not contain a local VM configuration.".into());
     }
+    enter_commit(controller, cancellation)?;
     progress("Saving stopped workspace");
-    runtime::checkpoints::import_pending_restore(
+    commit_import(
         paths,
+        controller,
+        original,
+        machine,
         &id,
         &prepared.snapshot_group,
         &prepared.snapshot_member,
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
+    Ok(())
+}
+
+/// Saves an imported sandbox. Its id and snapshot group are journaled first,
+/// so a relaunch can tell a finished import (settings saved: the commit point)
+/// from one to clean up (E-24). A failure before the commit removes the
+/// checkpoint record; if that cleanup fails, the journal keeps the identity
+/// and the next launch retries it.
+fn commit_import(
+    paths: &runtime::RuntimePaths,
+    controller: &Controller,
+    original: runtime::MachineConfigurationRequest,
+    machine: runtime::MachineConfiguration,
+    id: &str,
+    group: &str,
+    member: &str,
+) -> Result<(), String> {
+    recovery::save_restore_identity(controller, id, group)?;
+    let discard = |error: String| {
+        let _ = recovery::discard_uncommitted_import(paths, controller, id, Some(group));
+        Err(error)
+    };
+    if let Err(error) = runtime::checkpoints::import_pending_restore(paths, id, group, member) {
+        return discard(error.to_string());
+    }
     let mut updated = original;
     updated.machines.push(machine);
     if let Err(error) = runtime::write_metadata(&paths.metadata, &updated) {
-        let _ = runtime::checkpoints::forget_removed(paths, &id);
-        return Err(error.to_string());
+        // A late failure (after the file was replaced) still saved the sandbox.
+        let saved = runtime::read_metadata(&paths.metadata)
+            .is_ok_and(|metadata| metadata.machines.iter().any(|machine| machine.id() == id));
+        return if saved { Ok(()) } else { discard(error.to_string()) };
+    }
+    Ok(())
+}
+
+/// Journal writes are fsynced, so cancel and dismiss run off the main thread (E-39).
+#[tauri::command]
+pub(crate) async fn cancel_backup_operation(
+    window: WebviewWindow,
+    controller: State<'_, Arc<Controller>>,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let controller = controller.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cancel_operation(&controller))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn cancel_operation(controller: &Controller) -> Result<(), String> {
+    {
+        let view = controller
+            .view
+            .lock()
+            .map_err(|_| "Backup state is unavailable.".to_string())?;
+        if matches!(
+            view.operation,
+            Some(Operation::Running {
+                can_cancel: Some(false),
+                ..
+            })
+        ) {
+            return Err("This operation is finishing and can no longer be cancelled.".into());
+        }
+        // Cancel in process first, under the state lock so it is ordered
+        // against `enter_commit`: a journal write failure (full disk,
+        // permissions) must not leave the running operation uncancellable.
+        // The persisted flag only matters for a later relaunch.
+        view.cancellation
+            .as_ref()
+            .ok_or("No export or import is running.")?
+            .cancel();
+    }
+    let _ = recovery::cancel(controller);
+    Ok(())
+}
+
+/// Past this point an import saves its new sandbox and is no longer
+/// cancelled. Marking it under the state lock orders it against
+/// `cancel_operation`: a cancel either lands first and wins, or is refused
+/// and the UI stops offering it (E-28).
+fn enter_commit(
+    controller: &Controller,
+    cancellation: &backup::Cancellation,
+) -> Result<(), TransferError> {
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cancellation.cancelled() {
+        return Err(TransferError::cancelled());
+    }
+    if let Some(Operation::Running { can_cancel, .. }) = view.operation.as_mut() {
+        *can_cancel = Some(false);
     }
     Ok(())
 }
 
 #[tauri::command]
-pub(crate) fn cancel_backup_operation(
-    window: WebviewWindow,
-    controller: State<'_, Arc<Controller>>,
-) -> Result<(), String> {
-    require_main(&window)?;
-    cancel_operation(&controller)
-}
-
-fn cancel_operation(controller: &Controller) -> Result<(), String> {
-    let cancellation = controller
-        .view
-        .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?
-        .cancellation
-        .clone()
-        .ok_or("No export or import is running.")?;
-    // Cancel in process first: a journal write failure (full disk, permissions)
-    // must not leave the running operation uncancellable. The persisted flag
-    // only matters for a later relaunch.
-    cancellation.cancel();
-    let _ = recovery::cancel(controller);
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn dismiss_backup_operation(
+pub(crate) async fn dismiss_backup_operation(
     app: AppHandle,
     window: WebviewWindow,
     controller: State<'_, Arc<Controller>>,
@@ -1606,17 +1808,22 @@ pub(crate) fn dismiss_backup_operation(
     expected_operation_id: Option<String>,
 ) -> Result<bool, String> {
     require_main(&window)?;
-    // Report whether the result was actually dismissed so the caller does not
-    // hide a result the backend still holds (E-49).
-    let dismissed = dismiss_finished_operation(
-        &controller,
-        Some(&expected_operation),
-        expected_operation_id.as_deref(),
-    )?;
-    if dismissed {
-        publish(&app, &controller);
-    }
-    Ok(dismissed)
+    let controller = controller.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Report whether the result was actually dismissed so the caller does not
+        // hide a result the backend still holds (E-49).
+        let dismissed = dismiss_finished_operation(
+            &controller,
+            Some(&expected_operation),
+            expected_operation_id.as_deref(),
+        )?;
+        if dismissed {
+            publish(&app, &controller);
+        }
+        Ok(dismissed)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn dismiss_finished_operation(
@@ -1661,54 +1868,6 @@ fn dismiss_finished_operation(
     Ok(view.operation.take().is_some())
 }
 
-#[tauri::command]
-pub(crate) async fn retry_workspace_start(
-    app: AppHandle,
-    controller: State<'_, Arc<Controller>>,
-    name: String,
-) -> Result<runtime::ApplicationSource, String> {
-    let source = runtime::workspace_action(app.clone(), "start".into(), name.clone(), None).await?;
-    let paths = runtime::runtime_paths(&app)?;
-    if inspect(&paths, &name)?.status != "Running" {
-        return Err(format!(
-            "{name} has not reached Running. The restart failure remains unresolved."
-        ));
-    }
-    {
-        let mut view = controller
-            .view
-            .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
-        if let Some(Operation::Result {
-            operation,
-            running_names,
-            outcome,
-            title,
-            message,
-            detail,
-            ..
-        }) = view.operation.as_mut()
-        {
-            if *operation == "backup" && *outcome == "restart-required" {
-                running_names.retain(|candidate| candidate != &name);
-                if running_names.is_empty() {
-                    *outcome = "success";
-                    *title = "Export complete".into();
-                    *message = "The export is complete and all previously running sandboxes are running again.".into();
-                    *detail = None;
-                } else {
-                    *message = format!(
-                        "The export is complete. {} still require a manual restart.",
-                        running_names.join(", ")
-                    );
-                }
-            }
-        }
-    }
-    publish(&app, &controller);
-    Ok(source)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1728,11 +1887,11 @@ mod tests {
                 PathBuf::from("/unused/scratch"),
             ),
             view: Mutex::new(ViewState {
-                history_error: None,
+                journal_error: None,
                 destination: Some(PathBuf::from("/backups")),
-                archives: Vec::new(),
                 operation: None,
                 cancellation: None,
+                inspection: None,
             }),
             busy: AtomicBool::new(false),
             revision: AtomicU64::new(0),
@@ -1747,6 +1906,7 @@ mod tests {
             size: "1 GB".into(),
             destination: "/backups".into(),
             sandboxes: vec!["dev".into()],
+            checkpoint_name: None,
         }
     }
 
@@ -1905,28 +2065,27 @@ mod tests {
         let mut archive = completed_archive();
         archive.archive_path = path.clone();
 
-        for outcome in ["success", "restart-required"] {
+        let operation = completed_operation(archive.clone(), "success");
+        let resolved = authorize_reveal(Some(&operation), &path).unwrap();
+        assert_eq!(resolved, file);
+        for outcome in ["restart-required", "cancelled"] {
             let operation = completed_operation(archive.clone(), outcome);
-            let resolved = authorize_reveal(Some(&operation), &[], &path).unwrap();
-            assert_eq!(resolved, file);
+            assert!(authorize_reveal(Some(&operation), &path).is_err());
         }
     }
 
     #[test]
-    fn reveal_allows_a_saved_history_entry_when_the_file_exists() {
+    fn reveal_rejects_an_earlier_export_that_is_no_longer_the_current_result() {
         let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("history.silo-backup");
+        let file = directory.path().join("earlier.silo-backup");
         std::fs::write(&file, b"archive").unwrap();
         let path = file.to_string_lossy().into_owned();
-        let mut archive = completed_archive();
-        archive.archive_path = path.clone();
 
-        let resolved = authorize_reveal(None, std::slice::from_ref(&archive), &path).unwrap();
-        assert_eq!(resolved, file);
+        assert!(authorize_reveal(None, &path).is_err());
     }
 
     #[test]
-    fn reveal_rejects_a_path_not_present_in_history_or_the_current_operation() {
+    fn reveal_rejects_a_path_other_than_the_current_export() {
         let directory = tempfile::tempdir().unwrap();
         let stranger = directory.path().join("stranger.silo-backup");
         std::fs::write(&stranger, b"archive").unwrap();
@@ -1939,12 +2098,8 @@ mod tests {
             .into_owned();
         std::fs::write(directory.path().join("known.silo-backup"), b"archive").unwrap();
 
-        let error = authorize_reveal(
-            None,
-            std::slice::from_ref(&archive),
-            &stranger.to_string_lossy(),
-        )
-        .unwrap_err();
+        let operation = completed_operation(archive, "success");
+        let error = authorize_reveal(Some(&operation), &stranger.to_string_lossy()).unwrap_err();
         assert_eq!(error, "That export file is no longer available.");
     }
 
@@ -1966,7 +2121,8 @@ mod tests {
             .into_owned();
         assert_ne!(traversal, archive.archive_path);
 
-        let error = authorize_reveal(None, std::slice::from_ref(&archive), &traversal).unwrap_err();
+        let operation = completed_operation(archive, "success");
+        let error = authorize_reveal(Some(&operation), &traversal).unwrap_err();
         assert_eq!(error, "That export file is no longer available.");
     }
 
@@ -1979,8 +2135,7 @@ mod tests {
         archive.archive_path = path.clone();
         let operation = completed_operation(archive.clone(), "success");
 
-        let error =
-            authorize_reveal(Some(&operation), std::slice::from_ref(&archive), &path).unwrap_err();
+        let error = authorize_reveal(Some(&operation), &path).unwrap_err();
         assert_eq!(error, "That export file is no longer available.");
     }
 
@@ -1994,7 +2149,7 @@ mod tests {
         archive.archive_path = path.clone();
         let operation = completed_operation(archive, "failed");
 
-        let error = authorize_reveal(Some(&operation), &[], &path).unwrap_err();
+        let error = authorize_reveal(Some(&operation), &path).unwrap_err();
         assert_eq!(error, "That export file is no longer available.");
     }
 
@@ -2058,38 +2213,67 @@ mod tests {
     }
 
     #[test]
-    fn completed_backup_history_and_destination_survive_reload() {
+    fn the_chosen_destination_survives_reload_and_exports_are_not_recorded() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
-        let archive = completed_archive();
-        record_archive(&controller, &archive).unwrap();
-        let restored = load_history(&path).unwrap();
-        assert_eq!(restored.archives, vec![archive]);
-        assert_eq!(restored.destination, Some(PathBuf::from("/backups")));
+        remember_destination(&controller, directory.path().to_path_buf());
+        let saved = load_saved(&path);
+        assert_eq!(saved.destination.as_deref(), Some(directory.path()));
+        assert!(saved.journal_error.is_none());
         let bytes = fs::read_to_string(path).unwrap();
-        assert!(!bytes.contains("operation"));
-        assert!(!bytes.contains("running"));
+        assert!(!bytes.contains("silo-backup"), "{bytes}");
     }
 
     #[test]
-    fn failed_history_write_does_not_publish_a_saved_history_entry() {
+    fn a_destination_that_cannot_be_saved_is_still_used_this_session() {
         let directory = tempfile::tempdir().unwrap();
         let blocked = directory.path().join("not-a-directory");
         fs::write(&blocked, b"preserve").unwrap();
         let controller = history_controller(blocked.join("backup-history.json"));
-        assert!(record_archive(&controller, &completed_archive()).is_err());
-        assert!(controller.view.lock().unwrap().archives.is_empty());
+        remember_destination(&controller, PathBuf::from("/Volumes/Exports"));
+        assert_eq!(
+            controller.view.lock().unwrap().destination.as_deref(),
+            Some(Path::new("/Volumes/Exports"))
+        );
         assert_eq!(fs::read(&blocked).unwrap(), b"preserve");
     }
 
     #[test]
-    fn malformed_backup_history_is_preserved_and_reported() {
+    fn unreadable_or_newer_export_history_never_blocks_exports_or_imports() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
-        fs::write(&path, b"broken history").unwrap();
-        assert!(load_history(&path).is_err());
-        assert_eq!(fs::read(path).unwrap(), b"broken history");
+        for saved in [
+            &b"broken history"[..],
+            br#"{"schemaVersion":2,"destination":"/backups","archives":[]}"#,
+        ] {
+            fs::write(&path, saved).unwrap();
+            let loaded = load_saved(&path);
+            assert!(loaded.destination.is_none());
+            assert!(loaded.journal_error.is_none());
+        }
+        // An older build's history with recorded exports still yields its destination.
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "destination": "/backups",
+                "archives": [serde_json::to_value(completed_archive()).unwrap()],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_saved(&path).destination, Some(PathBuf::from("/backups")));
+    }
+
+    #[test]
+    fn an_unreadable_saved_operation_still_blocks_new_transfers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        fs::write(directory.path().join("backup-operation.json"), b"broken").unwrap();
+        let loaded = load_saved(&path);
+        assert!(loaded.journal.is_none());
+        assert!(loaded.journal_error.is_some());
     }
 
     #[test]
@@ -2103,6 +2287,7 @@ mod tests {
                 target_name: Some("restored".into()),
                 progress: 5,
                 indeterminate: None,
+                can_cancel: Some(false),
                 phases: vec![Phase {
                     title: "Restore".into(),
                     detail: "Creating sandbox".into(),
@@ -2139,6 +2324,7 @@ mod tests {
                 target_name: Some("restored".into()),
                 progress: 0,
                 indeterminate: Some(true),
+                can_cancel: None,
                 phases: vec![Phase {
                     title: "Checking export file".into(),
                     detail: String::new(),
@@ -2185,15 +2371,17 @@ mod tests {
         let guard = runtime::OPERATIONS.computer("Contended work").unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = mutation_guard(&backup::Cancellation::default(), runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true).map(|_| ());
+            let result = mutation_guard(&backup::Cancellation::default(), runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {}).map(|_| ());
             sender.send(result).unwrap();
         });
         assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
         let cancellation = backup::Cancellation::default();
         cancellation.cancel();
-        assert_eq!(
-            mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true).unwrap_err(),
-            "The operation was cancelled."
+        assert!(
+            mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {})
+                .err()
+                .expect("a cancelled wait must not acquire the gate")
+                .cancelled
         );
         drop(guard);
         assert!(
@@ -2234,16 +2422,31 @@ mod tests {
             operation_id: None,
             availability: "available",
             availability_message: None,
-            required_space_gb: Some(2.5),
-            available_space_gb: Some(20.0),
             archives: Vec::new(),
-            destination: Some("/backups".into()),
             operation: None,
         };
         let expected: Value =
             serde_json::from_str(include_str!("../../src/test/contracts/backup-state.json"))
                 .unwrap();
         assert_eq!(serde_json::to_value(state).unwrap(), expected);
+    }
+
+    #[test]
+    fn backup_state_reads_only_memory_and_reports_a_saved_operation_error() {
+        // The export folder is on a volume that no longer exists; reading state
+        // must not touch it (a stalled mount would freeze every refresh).
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        controller.view.lock().unwrap().destination = Some(PathBuf::from("/Volumes/Unplugged/Exports"));
+        let state = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
+        assert_eq!(state["availability"], "available");
+        for unused in ["destination", "availableSpaceGB", "requiredSpaceGB"] {
+            assert!(state.get(unused).is_none(), "{unused}: {state}");
+        }
+        controller.view.lock().unwrap().journal_error = Some("Saved operation unreadable.".into());
+        let state = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
+        assert_eq!(state["availability"], "unavailable");
+        assert_eq!(state["availabilityMessage"], "Saved operation unreadable.");
     }
 
     #[test]
@@ -2300,6 +2503,267 @@ mod tests {
             format!("dev-checkpoint-{date}-2.silo-backup")
         );
     }
+    #[test]
+    fn a_claimed_export_reports_the_operation_id_its_result_will_carry() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let claimed = claim_export(
+            &controller,
+            directory.path(),
+            directory.path().to_string_lossy().into_owned(),
+            &["dev".into()],
+            None,
+            None,
+        )
+        .unwrap();
+        uuid::Uuid::parse_str(&claimed.operation_id).unwrap();
+        assert_eq!(recovery::token(&controller).unwrap().as_deref(), Some(claimed.operation_id.as_str()));
+        assert!(claimed.archive_path.starts_with(directory.path()));
+        assert!(matches!(
+            &controller.view.lock().unwrap().operation,
+            Some(Operation::Running { operation: "backup", archive, .. }) if archive.archive_path == claimed.archive_path.to_string_lossy()
+        ));
+        let second = claim_export(
+            &controller,
+            directory.path(),
+            directory.path().to_string_lossy().into_owned(),
+            &["dev".into()],
+            None,
+            None,
+        );
+        assert_eq!(second.err().as_deref(), Some("Another export or import is running."));
+        assert_eq!(recovery::token(&controller).unwrap().as_deref(), Some(claimed.operation_id.as_str()));
+    }
+
+    fn import_paths(directory: &Path) -> runtime::RuntimePaths {
+        runtime::RuntimePaths {
+            guest_image: directory.join("guest-image"),
+            executable: directory.join("missing-msb"),
+            home: directory.join("home"),
+            storage_home: None,
+            library: directory.join("library"),
+            metadata: directory.join("runtime/machines.json"),
+            volumes: directory.join("volumes"),
+        }
+    }
+
+    fn imported_machine(id: &str) -> runtime::MachineConfiguration {
+        serde_json::from_value(serde_json::json!({"kind":"vm","id":id,"name":"copy","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1})).unwrap()
+    }
+
+    const GROUP: &str = "silo-import-0123456789abcdef0123456789abcdef";
+    const MEMBER: &str = "silo-backup-0-1-2";
+
+    #[test]
+    fn an_import_journals_its_identity_before_saving_and_commits_with_its_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = import_paths(directory.path());
+        fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let original = runtime::read_metadata(&paths.metadata).unwrap();
+        commit_import(&paths, &controller, original, imported_machine(&id), &id, GROUP, MEMBER).unwrap();
+        assert!(runtime::read_metadata(&paths.metadata).unwrap().machines.iter().any(|machine| machine.id() == id));
+        let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
+        assert!(saved.contains(&id) && saved.contains(GROUP), "{saved}");
+    }
+
+    #[test]
+    fn an_import_that_cannot_save_its_settings_removes_its_record_and_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = import_paths(directory.path());
+        fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let original = runtime::read_metadata(&paths.metadata).unwrap();
+        // Settings cannot be written where a directory occupies the file.
+        fs::create_dir(&paths.metadata).unwrap();
+        assert!(commit_import(&paths, &controller, original, imported_machine(&id), &id, GROUP, MEMBER).is_err());
+        assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
+        let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
+        assert!(!saved.contains(&id), "{saved}");
+    }
+
+    fn outcome_and_detail(operation: &Operation) -> (&'static str, String) {
+        match operation {
+            Operation::Result { outcome, detail, .. } => (*outcome, detail.clone().unwrap_or_default()),
+            Operation::Running { .. } => panic!("expected a result"),
+        }
+    }
+
+    #[test]
+    fn transfer_outcomes_come_from_the_error_kind_not_its_text() {
+        let cancelled = failed_transfer("backup", completed_archive(), None, backup::BackupError::Cancelled.into());
+        assert_eq!(outcome_and_detail(&cancelled), ("cancelled", "No export file was saved.".into()));
+        // A failure whose text happens to read like a cancellation is still a failure.
+        let failed = failed_transfer(
+            "backup",
+            completed_archive(),
+            None,
+            TransferError::from("The operation was cancelled.".to_string()),
+        );
+        assert_eq!(outcome_and_detail(&failed).0, "failed");
+        let gate = TransferError::from(runtime::operation_gate::GateError::Cancelled);
+        assert!(gate.cancelled);
+
+        let import = failed_transfer("restore", completed_archive(), Some("copy".into()), "Disk full".to_string().into());
+        let (outcome, detail) = outcome_and_detail(&import);
+        assert_eq!(outcome, "failed");
+        assert_eq!(detail, "No sandbox was added. The export file was not changed.");
+        let unpacked = failed_transfer(
+            "restore",
+            completed_archive(),
+            Some("copy".into()),
+            TransferError::from("Disk full".to_string()).after_unpacking(),
+        );
+        assert!(outcome_and_detail(&unpacked).1.contains("may still use disk space"));
+        for operation in [cancelled, failed, import, unpacked] {
+            let detail = outcome_and_detail(&operation).1;
+            assert!(!detail.contains("removed") && !detail.contains("replaced"), "{detail}");
+        }
+    }
+
+    fn running_import(controller: &Controller) -> backup::Cancellation {
+        let cancellation = backup::Cancellation::default();
+        let mut view = controller.view.lock().unwrap();
+        view.cancellation = Some(cancellation.clone());
+        view.operation = Some(Operation::Running {
+            operation: "restore",
+            archive: completed_archive(),
+            running_names: Vec::new(),
+            target_name: Some("copy".into()),
+            progress: 0,
+            indeterminate: Some(true),
+            can_cancel: None,
+            phases: Vec::new(),
+        });
+        cancellation
+    }
+
+    #[test]
+    fn an_import_past_its_commit_point_reports_and_enforces_that_it_cannot_be_cancelled() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let cancellation = running_import(&controller);
+        enter_commit(&controller, &cancellation).unwrap();
+        let serialized = serde_json::to_value(&controller.view.lock().unwrap().operation).unwrap();
+        assert_eq!(serialized["canCancel"], false);
+        assert!(cancel_operation(&controller).is_err());
+        assert!(!cancellation.cancelled());
+
+        // A cancel that arrived before the commit point wins.
+        let cancellation = running_import(&controller);
+        cancel_operation(&controller).unwrap();
+        assert!(enter_commit(&controller, &cancellation).unwrap_err().cancelled);
+    }
+
+    #[test]
+    fn an_export_check_is_cancelled_only_by_its_own_request_or_a_newer_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let first = register_inspection(&controller, "first".into());
+        assert!(!cancel_inspection(&controller, "other"));
+        assert!(!first.cancelled());
+        assert!(cancel_inspection(&controller, "first"));
+        assert!(first.cancelled());
+
+        let second = register_inspection(&controller, "second".into());
+        let third = register_inspection(&controller, "third".into());
+        assert!(second.cancelled(), "a newer check replaces the older one");
+        finish_inspection(&controller, "second");
+        assert!(!third.cancelled());
+        finish_inspection(&controller, "third");
+        assert!(!cancel_inspection(&controller, "third"));
+        assert!(!third.cancelled());
+    }
+
+    #[test]
+    fn a_queued_export_shows_that_it_waits_and_then_its_own_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(directory.path().join("backup-history.json")));
+        let claimed = claim_export(
+            &controller,
+            directory.path(),
+            directory.path().to_string_lossy().into_owned(),
+            &["dev".into()],
+            Some("checkpoint-1".into()),
+            Some("Before upgrade"),
+        )
+        .unwrap();
+        let titles = |controller: &Controller| match &controller.view.lock().unwrap().operation {
+            Some(Operation::Running { phases, .. }) => phases
+                .iter()
+                .map(|phase| (phase.title.clone(), phase.tone))
+                .collect::<Vec<_>>(),
+            _ => panic!("expected a running export"),
+        };
+        let work = vec![("Using checkpoint \u{201c}Before upgrade\u{201d}".to_string(), "running")];
+        assert_eq!(titles(&controller), work);
+
+        let other = runtime::OPERATIONS.computer("Other sandbox work").unwrap();
+        let (queued, admitted) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
+        let (worker_controller, cancellation) = (controller.clone(), claimed.cancellation.clone());
+        let (queued_sender, admitted_sender) = (queued.0, admitted.0);
+        let worker = std::thread::spawn(move || {
+            let guard = mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {
+                show_queued(&worker_controller);
+                queued_sender.send(()).unwrap();
+            })
+            .unwrap();
+            show_admitted(&worker_controller);
+            admitted_sender.send(()).unwrap();
+            drop(guard);
+        });
+        queued.1.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            titles(&controller),
+            vec![
+                ("Waiting for other sandbox work".to_string(), "running"),
+                (work[0].0.clone(), "waiting"),
+            ]
+        );
+        drop(other);
+        admitted.1.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            titles(&controller),
+            vec![
+                ("Waiting for other sandbox work".to_string(), "succeeded"),
+                (work[0].0.clone(), "running"),
+            ]
+        );
+        // The checkpoint's name travels with the export, so titles survive a reload.
+        let archive = serde_json::to_value(&claimed.archive).unwrap();
+        assert_eq!(archive["checkpointName"], "Before upgrade");
+        let journal = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
+        assert!(journal.contains("Before upgrade"), "{journal}");
+    }
+
+    #[test]
+    fn an_export_admitted_at_once_keeps_only_its_work_phase() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let claimed = claim_export(
+            &controller,
+            directory.path(),
+            directory.path().to_string_lossy().into_owned(),
+            &["dev".into()],
+            None,
+            None,
+        )
+        .unwrap();
+        let guard = mutation_guard(&claimed.cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| panic!("not queued")).unwrap();
+        show_admitted(&controller);
+        drop(guard);
+        assert!(matches!(
+            &controller.view.lock().unwrap().operation,
+            Some(Operation::Running { phases, .. }) if phases.len() == 1 && phases[0].tone == "running"
+        ));
+        assert!(serde_json::to_value(&claimed.archive).unwrap().get("checkpointName").is_none());
+    }
+
     #[test]
     fn multi_vm_restore_requires_an_explicit_source() {
         let names = vec!["first".into(), "second".into()];
@@ -2406,11 +2870,11 @@ mod tests {
                 directory.path().join("scratch"),
             ),
             view: Mutex::new(ViewState {
-                history_error: None,
+                journal_error: None,
                 destination: None,
-                archives: Vec::new(),
                 operation: None,
                 cancellation: None,
+                inspection: None,
             }),
             busy: AtomicBool::new(false),
             revision: AtomicU64::new(0),
@@ -2459,47 +2923,21 @@ mod tests {
             ),
         )
         .unwrap();
-        recovery::save_sources(
-            &controller,
-            &[
-                backup::BackupSource {
-                    name: name.into(),
-                    snapshot_group: name.into(),
-                    was_running: true,
-                    runtime_config: inspected.config,
-                    machine_config: serde_json::to_value(&machine).unwrap(),
-                            existing_member: None,
-                },
-                backup::BackupSource {
-                    name: second_name.into(),
-                    snapshot_group: second_name.into(),
-                    was_running: false,
-                    runtime_config: second_inspected.config,
-                    machine_config: serde_json::to_value(&second_machine).unwrap(),
-                            existing_member: None,
-                },
-            ],
-        )
-        .unwrap();
-        // Archive publication succeeded, but app death can precede completion
-        // reporting and restoration of the guest's previous running state.
+        // Archive publication succeeded, but app death preceded the result.
+        // Relaunch verifies the published file and never restarts sandboxes.
         run(&["stop", name]);
         let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &checkpoint,
-                &backup::Cancellation::default()
-            )
-            .unwrap()
-        );
-        assert_eq!(inspect(&paths, name).unwrap().status, "Running");
+        let recovered = recovery::recover_at_paths(
+            &paths,
+            &controller,
+            &checkpoint,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
+        assert!(matches!(recovered, Operation::Result { outcome: "success", .. }));
+        assert_eq!(inspect(&paths, name).unwrap().status, "Stopped");
         assert_eq!(inspect(&paths, second_name).unwrap().status, "Stopped");
-        assert_ne!(
-            load_history(&controller.history_path).unwrap().archives[0].size,
-            "Unknown"
-        );
+        let _ = (inspected, second_inspected, machine, second_machine);
         run(&["remove", "--force", "--quiet", name]);
         run(&["remove", "--force", "--quiet", second_name]);
         fs::remove_dir_all(&paths.home).unwrap();
@@ -2545,48 +2983,24 @@ mod tests {
             ),
         )
         .unwrap();
-        // Emulate process death after the owned disk directory was claimed but
-        // before msb create. Only this operation's partial disk can be removed.
+        // Emulate process death after the import journaled its new sandbox but
+        // before its settings were saved: relaunch forgets it and adds nothing.
         let interrupted_id = uuid::Uuid::new_v4().to_string();
-        recovery::save_restore_identity(&controller, &interrupted_id).unwrap();
-        recovery::claim_disk(&paths.volumes.join(restored_name), &interrupted_id).unwrap();
-        fs::write(
-            runtime::disk_path(&paths, restored_name, "workspace"),
-            b"incomplete disk",
+        recovery::save_restore_identity(
+            &controller,
+            &interrupted_id,
+            "silo-import-0123456789abcdef0123456789abcdef",
         )
         .unwrap();
         let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            !recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &checkpoint,
-                &backup::Cancellation::default()
-            )
-            .unwrap()
-        );
-        assert!(!paths.volumes.join(restored_name).exists());
-        // A durable cancellation cleans owned partial output and does not create
-        // the requested guest when the app reopens.
-        recovery::save_restore_identity(&controller, &interrupted_id).unwrap();
-        recovery::claim_disk(&paths.volumes.join(restored_name), &interrupted_id).unwrap();
-        fs::write(
-            runtime::disk_path(&paths, restored_name, "workspace"),
-            b"cancelled disk",
+        let recovered = recovery::recover_at_paths(
+            &paths,
+            &controller,
+            &checkpoint,
+            &backup::Cancellation::default(),
         )
         .unwrap();
-        recovery::cancel(&controller).unwrap();
-        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &checkpoint,
-                &backup::Cancellation::default()
-            )
-            .unwrap()
-        );
-        assert!(!paths.volumes.join(restored_name).exists());
+        assert!(matches!(recovered, Operation::Result { outcome: "failed", .. }));
         recovery::complete(
             &controller,
             Operation::Result {
@@ -2625,58 +3039,30 @@ mod tests {
             [
                 "Preparing import",
                 "Unpacking export",
-                "Restoring workspace disk",
-                "Creating restored sandbox",
-                "Verifying restored sandbox",
+                "Saving stopped workspace",
             ]
         );
         let restored = inspect(&paths, restored_name).unwrap();
         assert_eq!(restored.status, "Created");
-        // Metadata was committed, but process death could precede marker removal
-        // and delivery of the success event. Relaunch verifies and adopts it.
+        // Settings were saved, but process death preceded the success result.
+        // Relaunch adopts the import under its journaled identity.
         let restored_id = restored.config["labels"]["silo.machine-id"]
             .as_str()
             .unwrap();
-        fs::write(
-            paths
-                .volumes
-                .join(restored_name)
-                .join(".silo-restore-owner"),
-            restored_id,
+        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
+        let recovered = recovery::recover_at_paths(
+            &paths,
+            &controller,
+            &checkpoint,
+            &backup::Cancellation::default(),
         )
         .unwrap();
-        let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &checkpoint,
-                &backup::Cancellation::default()
-            )
+        assert!(matches!(recovered, Operation::Result { outcome: "success", .. }));
+        assert!(runtime::read_metadata(&paths.metadata)
             .unwrap()
-        );
-        assert!(
-            !paths
-                .volumes
-                .join(restored_name)
-                .join(".silo-restore-owner")
-                .exists()
-        );
-        recovery::save_restore_identity(&controller, &uuid::Uuid::new_v4().to_string()).unwrap();
-        let foreign = recovery::load(&controller.history_path).unwrap().unwrap();
-        assert!(
-            recovery::recover_at_paths(
-                &paths,
-                &controller,
-                &foreign,
-                &backup::Cancellation::default()
-            )
-            .unwrap_err()
-            .contains("different sandbox")
-        );
-        assert_eq!(inspect(&paths, restored_name).unwrap().status, "Created");
-        assert!(runtime::disk_path(&paths, restored_name, "workspace").exists());
-        recovery::save_restore_identity(&controller, restored_id).unwrap();
+            .machines
+            .iter()
+            .any(|machine| machine.id() == restored_id));
 
         assert_eq!(
             restored.config.get("pull_policy").and_then(Value::as_str),
@@ -2944,11 +3330,11 @@ mod tests {
                 directory.path().join("scratch"),
             ),
             view: Mutex::new(ViewState {
-                history_error: None,
+                journal_error: None,
                 destination: None,
-                archives: Vec::new(),
                 operation: None,
                 cancellation: None,
+                inspection: None,
             }),
             busy: AtomicBool::new(false),
             revision: AtomicU64::new(0),

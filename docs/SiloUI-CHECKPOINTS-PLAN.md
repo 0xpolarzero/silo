@@ -451,7 +451,7 @@ On Node 24.11.1, frontend typecheck and lint passed; Vitest passed all 941 tests
 across 104 files. Native tests used explicit synthetic GitHub build values. The
 final `cargo test --quiet` run passed 492 tests, failed none, and ignored 12
 opt-in live tests. Its preserved output is
-[`integration-validation-final.txt`](../app/SiloUI/src-tauri/target/verification/integration-validation-final.txt).
+`app/SiloUI/src-tauri/target/verification/integration-validation-final.txt` (untracked local evidence).
 Focused migration, checkpoint, archive, owned-storage and startup tests also
 passed during integration.
 
@@ -480,12 +480,12 @@ gate even though the selected converted metadata contained both source and fork.
 The source stayed stopped until explicit Start, which restored the checkpoint
 sentinel and removed both post-checkpoint files. The fork remained stopped.
 Evidence, exact IDs and hashes are in
-[`packaged-macos-checkpoint-fork-restore-20260925/RESULTS.txt`](../app/SiloUI/src-tauri/target/verification/packaged-macos-checkpoint-fork-restore-20260925/RESULTS.txt).
+`app/SiloUI/src-tauri/target/verification/packaged-macos-checkpoint-fork-restore-20260925/RESULTS.txt` (untracked local evidence).
 
 The final isolated bundle compiled the GitHub current-target profile selection
 and was verified by the local macOS bundle verifier and `codesign --verify`.
 Its identifier and executable/runtime hashes are in
-[`packaged-macos-checkpoint-fork-restore-20260925/final-combined-package.txt`](../app/SiloUI/src-tauri/target/verification/packaged-macos-checkpoint-fork-restore-20260925/final-combined-package.txt).
+`app/SiloUI/src-tauri/target/verification/packaged-macos-checkpoint-fork-restore-20260925/final-combined-package.txt` (untracked local evidence).
 The target-specific selector regression and synthetic signed-runtime restore
 test each passed 1/1. An authorized live GitHub acceptance test passed 1/1 in
 117.47 seconds: the source had write access; before first child execution its
@@ -544,7 +544,7 @@ live current-0.7.2 utility apply on a
 v3 guest passed account, workspace, descriptor-discovery and snapshot
 verification checks; interrupted `--resume` is covered by the focused 11-test
 utility suite, not a live interrupted run. Compact evidence is
-[`linux-account-migration-072-20260925.txt`](../app/SiloUI/src-tauri/target/verification/linux-account-migration-072-20260925.txt).
+`app/SiloUI/src-tauri/target/verification/linux-account-migration-072-20260925.txt` (untracked local evidence).
 The separate earlier 0.7.2 VM staged under the old runtime directory was
 synthetic and is not evidence of legacy migration compatibility. A later
 Ubuntu 24.04.4 ARM64 Lima VM on Apple Silicon passed nested-KVM API and
@@ -573,7 +573,7 @@ Start, the stopped source's original `MSB_HOME` alias and canonical
 allocated backing store remains preserved in task evidence. The imported
 guest's VMDK base, raw managed root, and qcow2 restore overlay all resided in
 the destination cache; `qemu-img` reported 10 GiB virtual root capacity.
-Evidence is in [`arm64-cold-cache-qualification-2026-09-26`](../app/SiloUI/src-tauri/target/verification/arm64-cold-cache-qualification-2026-09-26/).
+Evidence is in `app/SiloUI/src-tauri/target/verification/arm64-cold-cache-qualification-2026-09-26/` (untracked local evidence).
 Saved records, native inspection, and
 physical raw-image sizes agreed at 1 CPU, 1024 MiB RAM, and 4096 MiB root disk
 for all three VMs. The first matrix attempt exposed that the importer
@@ -581,7 +581,7 @@ intentionally preserves deny-all networking while backup eligibility only
 accepted the default policy. Backup validation now accepts exactly the default
 profile or its deny-all policy; custom rule sets remain rejected. Focused
 regressions passed before the final package build. Evidence is in
-[`arm64-final-qualification-2026-09-26`](../app/SiloUI/src-tauri/target/verification/arm64-final-qualification-2026-09-26/)
+`app/SiloUI/src-tauri/target/verification/arm64-final-qualification-2026-09-26/` (untracked local evidence)
 and the separate
 [Linux acceptance record](research/silo-linux-acceptance-2026-09-25.md).
 This guest test does not claim bare-metal Linux ARM64 coverage. The later x86

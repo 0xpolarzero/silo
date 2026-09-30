@@ -31,7 +31,7 @@ for fixes and **minor** for features and incompatible changes. Silo stays below
 1.0.0 until the owner explicitly decides on a stable release, so never use
 **major**: `sync-release.mjs` and `release.mjs` refuse 1.0.0 or later unless
 `--allow-stable` is passed (for example
-`npm run release:sync -- --allow-stable`). Include any migration steps. Commit the generated `.changeset/*.md`
+`npm run release:version -- --allow-stable`). Include any migration steps. Commit the generated `.changeset/*.md`
 file alongside the change. Edit the Markdown freely before release. Internal
 refactors, tests, and documentation do not require a note unless users are affected.
 
@@ -46,8 +46,10 @@ npm run release:status
 npm run release:version
 ```
 
-Changesets chooses the next version, updates `package.json` and `CHANGELOG.md`,
-and consumes the pending notes. Our adapter updates `package-lock.json`,
+`release:version` first asks Changesets for the planned version and checks it:
+below 1.0.0, no existing `docs/releases/VERSION.md`, and version metadata our
+adapter can update. A failed check changes nothing. Changesets then updates
+`package.json` and `CHANGELOG.md` and consumes the pending notes. Our adapter updates `package-lock.json`,
 `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock` to the same version without
 changing dependencies. It exports the new changelog entry to
 `docs/releases/VERSION.md`, which becomes the GitHub release body and app update
@@ -67,8 +69,10 @@ new changelog entry and `docs/releases/VERSION.md` consistent.
 npm run release:draft
 ```
 
-This requires a clean working tree, synchronized versions, release notes, and no
-pending changesets. Changesets creates the `vVERSION` tag; the command pushes
+This requires a clean working tree, synchronized versions, release notes, no
+pending changesets, a commit already on `origin/main`, and no release tag on
+`origin` for a newer version or for this version at another commit. These checks
+run locally, before any tag is pushed. Changesets creates the `vVERSION` tag; the command pushes
 only that tag to `origin`. The tag push automatically runs **Build Silo release**.
 Approve `release-signing` in GitHub Actions if requested. All three platforms
 must pass before the complete draft appears under GitHub Releases. Nothing is
@@ -255,9 +259,31 @@ Run the checks relevant to the change from the repository root:
 npm --prefix app/SiloUI run typecheck
 npm --prefix app/SiloUI run lint
 npm --prefix app/SiloUI test
-cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -- --test-threads=1
 npm --prefix app/SiloUI run test:release
+python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*.py'
 ```
+
+Continuous integration runs the same checks. `.github/workflows/ci.yml` runs on
+every push to `main` and every pull request: frontend, script, website and demo
+checks; the Rust suite with synthetic GitHub configuration; and a relative-link
+check of the Markdown documentation with [lychee](https://github.com/lycheeverse/lychee)
+in offline mode. To run that check locally, install lychee and run from the
+repository root:
+
+```sh
+lychee --offline --no-progress README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' \
+  'app/SiloUI/tests/**/*.md' 'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
+```
+
+`.github/workflows/linux-packaging.yml` builds the Debian package and AppImage
+like a release (without signing), adds the maintainer scripts, installs and
+removes the package on the runner, and checks the AppImage layout. It runs only
+when packaging inputs change, and nightly; its packages are never uploaded.
+
+Every workflow pins third-party actions to a full commit SHA with the release
+version as a comment (`scripts/test_workflow_pins.py` enforces it).
+`.github/dependabot.yml` proposes updated SHAs in one weekly pull request.
 
 Native tests require the configuration described above. Frontend fixtures and
 unit tests do not prove installed-app behavior, live VM health, or two-computer
@@ -502,8 +528,9 @@ test jobs receive no signing credentials. Only the reviewed public release depen
 described above are cached; application and native-test products are excluded.
 
 Artifact-only runs have independent concurrency groups, so they do not queue
-behind or displace a pending publication. Tagged and draft publications retain
-the shared release concurrency group. Optional `benchmark_ref` pins every
+behind or displace a pending publication. Tagged and draft publications of the
+same release tag share one concurrency group per tag, so builds of different
+releases never cancel each other while waiting. Optional `benchmark_ref` pins every
 checkout to a full 40-character source commit while using the dispatched
 workflow definition. It is rejected for publication; validation logs both
 workflow and source commits before checkout. Omit it for normal releases.

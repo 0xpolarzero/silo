@@ -3,6 +3,8 @@ import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
 import { createProductionSource, type ProductionBridge } from "./production-source"
 
+const pushTarget = { repository: "owner/repo", branch: "main", commit: "a".repeat(40) }
+
 describe("remote computer ownership", () => {
   it("keeps same-name VMs distinct and directs a remote lifecycle action to its owner", async () => {
     const local = applicationSourceForScenario("running")
@@ -234,8 +236,8 @@ it("merges remote repository results and activity idempotently without same-name
     expect(source.activities.find(activity => activity.title === "Remote start")).toMatchObject({ workspace: target, detail: expect.stringContaining("Office Mac:") })
     expect(source.github).toMatchObject(local.github)
     expect(source.secrets).toEqual(local.secrets)
-    store.applicationActions.pushRepository(target, "/workspace/repo")
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("start_repository_push", { workspace: target, repositoryPath: "/workspace/repo", operationId: expect.any(String) }))
+    store.applicationActions.pushRepository(target, "/workspace/repo", pushTarget)
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("start_repository_push", { workspace: target, repositoryPath: "/workspace/repo", operationId: expect.any(String), target: pushTarget }))
   } finally { store.dispose() }
 })
 
@@ -262,7 +264,7 @@ it.each(["succeeded", "failed"] as const)("keeps a remote push loading across re
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()
-    store.applicationActions.pushRepository(workspace, repositoryPath)
+    store.applicationActions.pushRepository(workspace, repositoryPath, pushTarget)
     const pushing = { workspace, repositoryPath, commitCount: remote.workspaces[0].repositories[0].ahead, status: "pushing" }
     expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual(pushing)
     const remoteReads = invoke.mock.calls.filter(([command]) => command === "remote_host_snapshot").length
@@ -270,7 +272,7 @@ it.each(["succeeded", "failed"] as const)("keeps a remote push loading across re
     await vi.waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "remote_host_snapshot").length).toBeGreaterThan(remoteReads))
     await store.applicationActions.refreshNetwork!()
     expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual(pushing)
-    store.applicationActions.pushRepository(workspace, repositoryPath)
+    store.applicationActions.pushRepository(workspace, repositoryPath, pushTarget)
     expect(invoke.mock.calls.filter(([command]) => command === "start_repository_push")).toHaveLength(1)
     holdRemoteRead = true
     await store.refresh()
@@ -316,9 +318,9 @@ it.each([true, false])("reconciles a lost start reply without another push (host
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   try {
     await store.initialize()
-    store.applicationActions.pushRepository(workspace, repositoryPath)
+    store.applicationActions.pushRepository(workspace, repositoryPath, pushTarget)
     await vi.waitFor(() => expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual(expect.objectContaining({ status: "pushing", message: expect.stringContaining("Waiting for push status") })))
-    store.applicationActions.pushRepository(workspace, repositoryPath)
+    store.applicationActions.pushRepository(workspace, repositoryPath, pushTarget)
     expect(attempts).toBe(1)
     await vi.waitFor(() => expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual({ workspace, repositoryPath, status: "succeeded", commitCount: 2 }), { timeout: 4_000 })
     expect(attempts).toBe(accepted ? 1 : 2)

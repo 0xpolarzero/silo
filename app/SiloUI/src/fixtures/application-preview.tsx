@@ -66,7 +66,6 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
     source: fixture.source,
     previewMode: backupPreviewMode,
     onRestoreComplete: fixture.onRestoreComplete,
-    onRestartRequired: fixture.onRestartRequired,
   })
 
   return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp
@@ -80,6 +79,7 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
       createCheckpoint: fixture.createCheckpoint,
       forkCheckpoint: fixture.forkCheckpoint,
       restoreCheckpoint: fixture.restoreCheckpoint,
+      deleteCheckpoint: fixture.deleteCheckpoint,
       listWorkspaceDirectory,
       queryLogs,
       ...actions,

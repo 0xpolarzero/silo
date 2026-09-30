@@ -36,6 +36,23 @@ describe("blockingOperations", () => {
     expect(blockers).toEqual(["Backing up sandboxes", "Checkpointing dev"])
   })
 
+  it("blocks a waiter on earlier conflicting waiters, as the FIFO gate does", () => {
+    // "Start b" queued behind a waiting computer-wide update is held by that waiter,
+    // even though the update itself is waiting on something unrelated to b.
+    const queue: OperationQueue = {
+      running: [entry({ id: 1, label: "Checkpointing a", vmId: "a" })],
+      waiting: [
+        entry({ id: 2, label: "Installing update", vmId: null }),
+        entry({ id: 3, label: "Restarting c", vmId: "c" }),
+        entry({ id: 4, label: "Start b", vmId: "b" }),
+      ],
+    }
+    expect(blockingOperations(queue, queue.waiting[2]).map((item) => item.label)).toEqual(["Installing update"])
+    expect(waitingStatusText(queue, queue.waiting[2])).toBe("Waiting for Installing update…")
+    // A later waiter never blocks an earlier one.
+    expect(blockingOperations(queue, queue.waiting[0]).map((item) => item.label)).toEqual(["Checkpointing a"])
+  })
+
   it("blocks a computer-wide operation on every running operation", () => {
     const queue: OperationQueue = {
       running: [entry({ id: 1, vmId: "dev" }), entry({ id: 2, vmId: "playgrounds" })],

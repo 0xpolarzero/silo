@@ -47,6 +47,29 @@ function NavigationLoadingIndicator({ loading, collapsed }: { loading: boolean; 
   return collapsed ? spinner : <span className="grid size-5 shrink-0 place-items-center">{spinner}</span>
 }
 
+/** Sandboxes with an error or a warning; both counts are sandboxes, never individual errors. */
+export interface SidebarAttention { errors: number; warnings: number }
+
+const countLabel = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
+const errorsLabel = (count: number) => countLabel(count, "sandbox has an error", "sandboxes have errors")
+const warningsLabel = (count: number) => countLabel(count, "sandbox has a warning", "sandboxes have warnings")
+const attentionLabel = ({ errors, warnings }: SidebarAttention) => countLabel(errors + warnings, "sandbox needs attention", "sandboxes need attention")
+
+/** The visual part of a collapsed menu's attention signal; its text is announced separately. */
+function AttentionMark({ attention, collapsed }: { attention: SidebarAttention; collapsed: boolean }) {
+  const error = attention.errors > 0
+  return collapsed
+    ? <span data-navigation-attention aria-hidden="true" className={cn("absolute top-1 right-1 size-1.5 rounded-full", error ? "bg-destructive" : "bg-amber-500")} />
+    : <span data-navigation-attention aria-hidden="true" className={cn(
+      "inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full border px-1 text-[10px] leading-none font-semibold tabular-nums",
+      error ? "border-destructive/20 bg-destructive/10 text-destructive" : "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    )}>{attention.errors + attention.warnings}</span>
+}
+
+function hasAttention(attention?: SidebarAttention | null): attention is SidebarAttention {
+  return Boolean(attention && (attention.errors > 0 || attention.warnings > 0))
+}
+
 function NavigationTooltip({ label, collapsed, children, shortcut }: { label: string; collapsed: boolean; children: ReactNode; shortcut?: KeyboardShortcut }) {
   // Hidden content still needs Radix's dismissal handlers to clear its open state.
   return <Tooltip>
@@ -68,6 +91,8 @@ function NavigationButton({
   tone = "default",
   loading = false,
   reserveDisclosure = false,
+  attention,
+  describedBy,
   collapsed,
   onClick,
 }: {
@@ -78,6 +103,9 @@ function NavigationButton({
   tone?: "default" | "danger" | "warning"
   loading?: boolean
   reserveDisclosure?: boolean
+  /** Attention mirrored from a collapsed menu's sections. */
+  attention?: SidebarAttention | null
+  describedBy?: string
   collapsed: boolean
   onClick: () => void
 }) {
@@ -92,6 +120,7 @@ function NavigationButton({
       aria-controls={`application-panel-${id}`}
       aria-keyshortcuts={shortcutFor(id === "workspaces" ? "go-sandboxes" : id === "settings" ? "settings" : `go-${id}`)?.aria}
       aria-busy={loading || undefined}
+      aria-describedby={describedBy}
       onClick={onClick}
       className={cn(
         "group/sidebar-item sidebar-primary relative flex h-10 w-full min-w-0 flex-none items-center gap-2 rounded-md py-2 text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/70",
@@ -113,6 +142,7 @@ function NavigationButton({
         {collapsed && <NavigationLoadingIndicator loading={loading} collapsed />}
       </span>
       <span className="sidebar-label flex-1 text-left">{label}</span>
+      {hasAttention(attention) && <AttentionMark attention={attention} collapsed={collapsed} />}
       {!collapsed && <NavigationLoadingIndicator loading={loading} collapsed={false} />}
       {!collapsed && <SidebarShortcut action={id === "workspaces" ? "go-sandboxes" : id === "settings" ? "settings" : `go-${id}`} />}
     </button>
@@ -127,6 +157,8 @@ function DisclosureNavigationItem({
   active,
   expanded,
   collapsed,
+  attention,
+  loading = false,
   onSelect,
   onToggle,
   children,
@@ -137,16 +169,23 @@ function DisclosureNavigationItem({
   active: boolean
   expanded: boolean
   collapsed: boolean
+  /** Attention reported by the sections; shown on this item while its menu is closed. */
+  attention?: SidebarAttention | null
+  /** Whether any section has work in progress; shown on this item while its menu is closed. */
+  loading?: boolean
   onSelect: () => void
   onToggle: () => void
   children: ReactNode
 }) {
   const menuID = `${id}-sections`
+  const attentionID = `${id}-attention`
+  const mirroredAttention = !expanded && hasAttention(attention) ? attention : null
 
   return (
     <div className="grid w-full grid-cols-1 gap-1">
       <div className="group/sidebar-item relative w-full">
-        <NavigationButton id={id} label={label} icon={icon} active={active} collapsed={collapsed} reserveDisclosure onClick={onSelect} />
+        <NavigationButton id={id} label={label} icon={icon} active={active} collapsed={collapsed} reserveDisclosure attention={mirroredAttention} describedBy={mirroredAttention ? attentionID : undefined} loading={!expanded && loading} onClick={onSelect} />
+        {mirroredAttention && <span id={attentionID} role="status" aria-label={attentionLabel(mirroredAttention)} className="sr-only">{attentionLabel(mirroredAttention)}</span>}
         <button
           type="button"
           aria-label={`${expanded ? "Collapse" : "Expand"} ${label} menu`}
@@ -179,7 +218,7 @@ function SubNavigation<Section extends string>({
   items: ReadonlyArray<{ id: Section; label: string; icon: typeof Boxes }>
   section: Section
   active: boolean
-  attention?: { section: Section; errors: number; warnings: number } | null
+  attention?: SidebarAttention & { section: Section } | null
   loading?: Partial<Record<Section, boolean>>
   collapsed: boolean
   onSelect: (section: Section) => void
@@ -206,7 +245,7 @@ function SubNavigation<Section extends string>({
           <span className="sidebar-label flex-1 text-left">{itemLabel}</span>
           {collapsed && attention?.section === id && <span
             role="status"
-            aria-label={`${attention.errors} sandbox errors, ${attention.warnings} sandbox warnings`}
+            aria-label={attentionLabel(attention)}
             className={cn("absolute top-1 right-1 size-1.5 rounded-full", attention.errors > 0 ? "bg-destructive" : "bg-amber-500")}
           />}
           {!collapsed && attention?.section === id && (
@@ -217,13 +256,13 @@ function SubNavigation<Section extends string>({
                     <TooltipTrigger asChild>
                       <span
                         role="status"
-                        aria-label={`${attention.errors} sandbox ${attention.errors === 1 ? "error" : "errors"}`}
+                        aria-label={errorsLabel(attention.errors)}
                         className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-destructive/20 bg-destructive/10 px-1 text-[10px] leading-none font-semibold tabular-nums text-destructive"
                       >
                         {attention.errors}
                       </span>
                     </TooltipTrigger>
-                    <TooltipContent>{attention.errors} sandbox {attention.errors === 1 ? "error" : "errors"}</TooltipContent>
+                    <TooltipContent>{errorsLabel(attention.errors)}</TooltipContent>
                   </Tooltip>
                 )}
                 {attention.warnings > 0 && (
@@ -231,13 +270,13 @@ function SubNavigation<Section extends string>({
                     <TooltipTrigger asChild>
                       <span
                         role="status"
-                        aria-label={`${attention.warnings} sandbox ${attention.warnings === 1 ? "warning" : "warnings"}`}
+                        aria-label={warningsLabel(attention.warnings)}
                         className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-amber-500/20 bg-amber-500/10 px-1 text-[10px] leading-none font-semibold tabular-nums text-amber-700 dark:text-amber-400"
                       >
                         {attention.warnings}
                       </span>
                     </TooltipTrigger>
-                    <TooltipContent>{attention.warnings} sandbox {attention.warnings === 1 ? "has" : "have"} a warning</TooltipContent>
+                    <TooltipContent>{warningsLabel(attention.warnings)}</TooltipContent>
                   </Tooltip>
                 )}
               </TooltipProvider>
@@ -279,7 +318,7 @@ export function ApplicationShell({
   workspaceSection: WorkspaceSection
   settingsSection: SettingsSection
   systemIssueStatus: ActiveRuntimeRepairPresentation["status"] | null
-  workspaceAttention: { errors: number; warnings: number }
+  workspaceAttention: SidebarAttention
   navigationLoading?: ApplicationNavigationLoading
   navigationDisabled?: boolean
   defaultSettingsMenuOpen?: boolean
@@ -362,6 +401,8 @@ export function ApplicationShell({
                 active={activeTab === "workspaces"}
                 expanded={workspaceMenuOpen}
                 collapsed={collapsed}
+                attention={workspaceAttention}
+                loading={Object.values(navigationLoading?.workspaceSections ?? {}).some(Boolean)}
                 onSelect={() => selectTab("workspaces")}
                 onToggle={() => setWorkspaceMenuOpen((open) => !open)}
               >
@@ -371,9 +412,7 @@ export function ApplicationShell({
                   section={workspaceSection}
                   active={activeTab === "workspaces"}
                   collapsed={collapsed}
-                  attention={workspaceAttention.errors > 0 || workspaceAttention.warnings > 0
-                    ? { section: "overview", ...workspaceAttention }
-                    : null}
+                  attention={hasAttention(workspaceAttention) ? { section: "overview", ...workspaceAttention } : null}
                   loading={navigationLoading?.workspaceSections}
                   onSelect={(section) => {
                     onWorkspaceSectionChange(section)
@@ -406,6 +445,7 @@ export function ApplicationShell({
                 active={activeTab === "settings"}
                 expanded={settingsMenuOpen}
                 collapsed={collapsed}
+                loading={Object.values(navigationLoading?.settingsSections ?? {}).some(Boolean)}
                 onSelect={() => selectTab("settings")}
                 onToggle={() => setSettingsMenuOpen((open) => !open)}
               >

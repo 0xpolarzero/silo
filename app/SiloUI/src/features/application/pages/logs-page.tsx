@@ -3,6 +3,7 @@ import { RefreshCw, Search, ScrollText } from "lucide-react"
 import { LogFilters } from "../components/log-filters"
 import { LogsTable } from "../components/logs-table"
 import { CopyButton } from "@/components/copy-button"
+import { EmptyState } from "@/components/empty-state"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import type { ApplicationActions, ApplicationWorkspace } from "../model/application-source"
@@ -27,13 +28,13 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
     return () => window.clearTimeout(timer)
   }, [query, loader])
   const invalidRange = Boolean(since && until && since > until)
-  const { results, rows, unsupportedNotice, busy, loadingOlder, error, ready, hasOlder, refresh, retry, loadOlder, scrollTop, setScrollTop, expandedRows, setExpandedRows } = useLogHistory({ workspaces, loader, active, query: searchQuery, source, since, until, invalidRange })
+  const { results, rows, unsupportedNotice, busy, loadingOlder, error, ready, hasOlder, refresh, follow, retry, loadOlder, scrollTop, setScrollTop, expandedRows, setExpandedRows } = useLogHistory({ workspaces, loader, active, query: searchQuery, source, since, until, invalidRange })
   useEffect(() => {
     if (!following || !active || busy || invalidRange || error) return
     // Schedule after completion so a slow owner cannot be starved by overlapping scans.
-    const timer = window.setTimeout(() => void refresh(), 3000)
+    const timer = window.setTimeout(() => void follow(), 3000)
     return () => window.clearTimeout(timer)
-  }, [following, active, busy, invalidRange, error, refresh])
+  }, [following, active, busy, invalidRange, error, follow])
   async function exportMatches() {
     if (!actions.exportLogs) return
     const id = "logs-export"
@@ -51,7 +52,7 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
   }
   const total = results.reduce((sum, result) => sum + result.page.totalMatches, 0)
   const copiedLogs = useMemo(() => rows.map(({ entry }) => formatLog(entry)).join("\n"), [rows])
-  if (!workspaces.length) return <p>No sandboxes selected. Select at least one sandbox to see its logs.</p>
+  if (!workspaces.length) return <EmptyState icon={<ScrollText />} title="No matching sandboxes" description="Clear the sandbox filter to see logs from every sandbox." />
   return <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
     <div className="flex shrink-0 flex-wrap items-center gap-2">
       <div className="relative min-w-40 flex-1"><Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" /><Input technical aria-label="Search logs" placeholder="Search logs" value={query} onChange={event => onQueryChange(event.target.value)} className="h-7 pl-8" /></div>
@@ -64,10 +65,10 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
       setSource(filters.source); setSince(filters.since); setUntil(filters.until)
       onWindowChange?.(filters.since || filters.until ? { since: filters.since, until: filters.until } : undefined)
     }} />
-    {invalidRange && <p role="alert">The start must precede the end.</p>}
+    {invalidRange && <p role="alert" className="text-xs text-destructive">The start date is after the end date. Change the date filter to see logs.</p>}
     {error && <div role="alert" className="text-xs text-destructive">Logs unavailable: {error} <Button size="xs" variant="outline" disabled={busy} onClick={() => void retry()}>Retry</Button></div>}
     {unsupportedNotice && <p role="status" className="text-xs text-muted-foreground">{unsupportedNotice}</p>}
-    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 ? `Showing ${rows.length} of ${total} matching records.` : ""}</p>}
+    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 ? `Showing ${rows.length} of ${total} matching records.` : ""}{results.some(result => result.page.unreadableRecords) ? " Some records could not be read and are shown as placeholders or truncated." : ""}</p>}
     {!invalidRange && (rows.length > 0 || !ready && !error) ? <LogsTable
       rows={rows}
       loading={!ready}
@@ -79,8 +80,6 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
       expandedRows={expandedRows}
       onExpandedRowsChange={setExpandedRows}
       onLoadOlder={() => void loadOlder()}
-    /> : !busy && !error && !invalidRange && <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-border px-6 text-center">
-      <div><ScrollText aria-hidden="true" className="mx-auto mb-3 size-5 text-muted-foreground" /><p className="text-sm font-medium">{query || source || since || until ? "No results" : "No logs yet"}</p></div>
-    </div>}
+    /> : !busy && !error && !invalidRange && <EmptyState icon={<ScrollText />} title={query || source || since || until ? "No results" : "No logs yet"} />}
   </div>
 }
