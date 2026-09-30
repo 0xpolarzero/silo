@@ -20,9 +20,14 @@ it.each([
   ["its computer is offline", (workspace: ApplicationWorkspace) => { workspace.computer = { id: "office", vmId: "vm-1", name: "Office", address: "office.test", connected: false }; workspace.freshness = "stale" }],
 ])("keeps the sandbox page reachable while %s, with mutating controls disabled", async (_, change) => {
   const user = userEvent.setup()
-  render(<OverviewPage source={sourceWith(change)} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
+  const source = sourceWith(change)
+  render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
   const row = within(screen.getByText("dev").closest("li")!)
-  expect(row.getByRole("button", { name: "Reorder dev" })).toHaveAttribute("aria-disabled", "true")
+  if (source.workspaces.find(({ machine }) => machine.name === "dev")!.computer) {
+    expect(row.queryByRole("button", { name: "Reorder dev" })).not.toBeInTheDocument()
+  } else {
+    expect(row.getByRole("button", { name: "Reorder dev" })).toHaveAttribute("aria-disabled", "true")
+  }
   await user.click(row.getByRole("button", { name: "More actions for dev" }))
   expect(screen.getByRole("menuitem", { name: "Edit dev" })).toHaveAttribute("data-disabled")
   await user.keyboard("{Escape}")

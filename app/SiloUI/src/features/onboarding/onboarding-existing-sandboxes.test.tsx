@@ -107,7 +107,7 @@ describe("onboarding with sandboxes that already exist", () => {
     const handlers = actions()
     render(onboarding(store, handlers, { machineConfigurations: [real, other], existingMachines: [real, other] }))
     await user.click(screen.getByRole("button", { name: `Delete ${other.name}` }))
-    await user.click(screen.getByRole("button", { name: /^Delete$/ }))
+    await user.click(screen.getByRole("button", { name: "Delete permanently" }))
     expect(screen.queryByRole("alert", { name: "Confirm sandbox deletion" })).not.toBeInTheDocument()
     expect(handlers.saveMachineConfiguration).toHaveBeenCalledWith({ schemaVersion: 1, machines: [real] }, { confirmedDeletions: [other.id] })
   })
