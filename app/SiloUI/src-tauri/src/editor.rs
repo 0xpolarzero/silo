@@ -968,17 +968,28 @@ mod tests {
         fs::write(store.join("config"), b"Host managed\n").unwrap();
         private_directory(&home.path().join(".ssh")).unwrap();
         std::os::unix::fs::symlink(store.join("config"), home.path().join(".ssh/config")).unwrap();
-        // Like a read-only home-manager file in the Nix store.
-        fs::set_permissions(&store, fs::Permissions::from_mode(0o555)).unwrap();
+        // Like a read-only home-manager file in the Nix store: read-only for
+        // this account, or owned by someone else when the tests run as root.
+        let root = unsafe { libc::geteuid() } == 0;
+        let lock = |locked: bool| {
+            if root {
+                let owner = if locked { 65534 } else { 0 };
+                std::os::unix::fs::chown(&store, Some(owner), None).unwrap();
+                std::os::unix::fs::chown(store.join("config"), Some(owner), None).unwrap();
+            } else {
+                fs::set_permissions(&store, fs::Permissions::from_mode(if locked { 0o555 } else { 0o755 })).unwrap();
+            }
+        };
+        lock(true);
         let error = install_include(home.path(), INCLUDE).unwrap_err();
         assert!(error.ends_with(&format!("Add this line at the top of that file, then try again: {INCLUDE}")), "{error}");
         assert_eq!(fs::read(store.join("config")).unwrap(), b"Host managed\n");
         // Once the user adds the line, nothing needs to be written.
-        fs::set_permissions(&store, fs::Permissions::from_mode(0o755)).unwrap();
+        lock(false);
         fs::write(store.join("config"), format!("{INCLUDE}\nHost managed\n")).unwrap();
-        fs::set_permissions(&store, fs::Permissions::from_mode(0o555)).unwrap();
+        lock(true);
         install_include(home.path(), INCLUDE).unwrap();
-        fs::set_permissions(&store, fs::Permissions::from_mode(0o755)).unwrap();
+        lock(false);
     }
 
     #[test]

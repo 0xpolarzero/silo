@@ -690,7 +690,8 @@ class DesktopLifecycle(unittest.TestCase):
             {'name': 'pulse', 'pid': 11},
             {'name': 'xfce', 'pid': 12},
         ]
-        state = {'sessionState': 'running', 'sessionProcesses': records,
+        # Records from this boot; on Linux a missing bootId means a stale state.
+        state = {'bootId': service.current_boot_id(), 'sessionState': 'running', 'sessionProcesses': records,
                  'streamState': 'running', 'streamProcess': {'name': 'selkies', 'pid': 13}}
         with patch.object(service, 'stop_managed_process') as stop_process:
             service.stop_selkies_processes(state)
