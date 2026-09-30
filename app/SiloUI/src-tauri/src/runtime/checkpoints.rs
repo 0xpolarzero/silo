@@ -66,6 +66,10 @@ pub(super) struct Record {
     restore_attempted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restore_attempt_id: Option<String>,
+    /// The attempt's VM ran, so it may hold writes to `/workspace`: a retry keeps and
+    /// starts it rather than recreating it from the checkpoint (E-06).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    restore_attempt_ran: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) desired_network_policy: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1021,6 +1025,7 @@ pub(super) fn start_pending(
             record.pending_checkpoint_restore = None;
             record.checkpoint_operation = None;
             record.restore_attempted = false;
+            record.restore_attempt_ran = false;
             record.restore_attempt_id = None;
             save(paths, machine.id(), &record)?;
             return Ok(());
@@ -1045,6 +1050,18 @@ pub(super) fn start_pending(
             return Err(error(
                 "A previous restore attempt has unverified runtime state. It was preserved for inspection.",
             ));
+        }
+        if record.restore_attempt_ran {
+            // The attempt already ran and may hold changes; recreating it from the
+            // checkpoint would silently discard them. Keep it as the sandbox and start it
+            // like any other; only an explicit, confirmed action (such as Delete) discards it.
+            record.pending_checkpoint_restore = None;
+            record.restore_attempted = false;
+            record.restore_attempt_id = None;
+            record.restore_attempt_ran = false;
+            record.checkpoint_operation = None;
+            save(paths, machine.id(), &record)?;
+            return super::lifecycle_recovery::perform(runner, paths, &host_resources()?, "start", machine.name());
         }
         runner.run(
             paths,
@@ -1105,7 +1122,13 @@ pub(super) fn start_pending(
         ]);
     }
     args.extend(network_args);
-    let result = runner.run(paths, &args, Duration::from_secs(900))
+    let restored = runner.run(paths, &args, Duration::from_secs(900));
+    // A completed restore resumed the VM; after a failure, a running, paused or crashed VM
+    // shows it ran as well. Checked even after a cancel.
+    let ran = restored.is_ok()
+        || super::operation_gate::uncancellable(|| inspect_workspace(runner, paths, machine.name()))
+            .is_ok_and(|vm| matches!(vm.status.as_str(), "Running" | "Paused" | "Crashed"));
+    let result = restored
         .and_then(|_| inspect_workspace(runner, paths, machine.name()))
         .and_then(|observed| if running_child_matches(&observed, machine.id(), &attempt_id, &material, &policy) {
             Ok(observed)
@@ -1115,6 +1138,7 @@ pub(super) fn start_pending(
             record.pending_checkpoint_restore = None;
             record.restore_attempted = false;
             record.restore_attempt_id = None;
+            record.restore_attempt_ran = false;
             record.checkpoint_operation = None;
             save(paths, machine.id(), &record)?;
             let revision = crate::secrets::workspace_revision(machine.name())
@@ -1129,6 +1153,7 @@ pub(super) fn start_pending(
             Ok(())
         }
         Err(failure) => {
+            record.restore_attempt_ran = ran;
             record.checkpoint_operation = Some(Operation {
                 kind: "fork".into(),
                 status: "failed".into(),
@@ -1622,6 +1647,7 @@ fn restore_steps(
             state: target.scope,
         });
         record.restore_attempted = false;
+        record.restore_attempt_ran = false;
         record.restore_attempt_id = None;
         record.checkpoint_operation = None;
         return save(paths, workspace_id, &record);
@@ -1646,6 +1672,7 @@ fn restore_steps(
             });
             record.restore_journal = None;
             record.restore_attempted = false;
+            record.restore_attempt_ran = false;
             record.restore_attempt_id = None;
             record.checkpoint_operation = None;
             save(paths, workspace_id, &record)?;
@@ -1837,6 +1864,7 @@ fn restore_steps(
     });
     record.restore_journal = None;
     record.restore_attempted = false;
+    record.restore_attempt_ran = false;
     record.restore_attempt_id = None;
     record.checkpoint_operation = None;
     save(paths, workspace_id, &record)
@@ -2563,6 +2591,8 @@ mod tests {
                     .to_string(),
                     Some("list") => "[]".into(),
                     Some("restore") => return Err(error("synthetic restore failure")),
+                    // After a failed restore Silo checks whether the attempt ran.
+                    Some("inspect") => return Err(error("sandbox not found: dev")),
                     _ => panic!("unexpected command: {args:?}"),
                 };
                 Ok(CommandOutput {
@@ -2921,6 +2951,7 @@ mod tests {
                     ]).to_string(),
                     "snapshot" if args.get(1).is_some_and(|value| value == "verify") => "{}".into(),
                     "restore" => return Err(error("synthetic restore failure after request capture")),
+                    "inspect" => return Err(error("sandbox not found: dev")),
                     _ => panic!("unexpected runtime command: {args:?}"),
                 };
                 Ok(CommandOutput { stdout, stderr: String::new() })
@@ -3283,6 +3314,8 @@ mod tests {
                     serde_json::json!([{"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}]).to_string()
                 } else if args[0] == "restore" {
                     return Err(error("synthetic restore failure"));
+                } else if args[0] == "inspect" && !self.present {
+                    return Err(error("sandbox not found: dev"));
                 } else {
                     panic!("unexpected runtime command")
                 };
@@ -4485,5 +4518,98 @@ mod tests {
         let runner = journal_runner("Paused", "");
         release_paused_restore(&runner, &paths, &machine());
         assert_eq!(*runner.state.lock().unwrap(), "Paused");
+    }
+
+    /// A restore attempt whose VM runs but never verifies, then is stopped (as Quit does).
+    struct AttemptRunner {
+        state: Mutex<&'static str>,
+        exists: Mutex<bool>,
+        restore_ok: bool,
+        attempt: Mutex<Option<String>>,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+    impl RuntimeRunner for AttemptRunner {
+        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            let ok = |stdout: String| Ok(CommandOutput { stdout, stderr: String::new() });
+            match args[0].as_str() {
+                "snapshot" => ok(serde_json::json!([{"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}]).to_string()),
+                "list" => ok(if *self.exists.lock().unwrap() { r#"[{"name":"dev"}]"#.into() } else { "[]".into() }),
+                "restore" => {
+                    let label = args.iter().find_map(|arg| arg.strip_prefix("silo.restore-attempt=")).unwrap().to_owned();
+                    *self.attempt.lock().unwrap() = Some(label);
+                    *self.exists.lock().unwrap() = true;
+                    *self.state.lock().unwrap() = "Running";
+                    if self.restore_ok { ok(String::new()) } else { Err(RuntimeError::TimedOut { operation: "restore".into() }) }
+                }
+                "inspect" if *self.exists.lock().unwrap() => ok(serde_json::json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{
+                    // No SILO_GITHUB secret: this VM never passes restore verification.
+                    "labels":{"silo.managed":"true","silo.machine-id":ID,"silo.restore-attempt":self.attempt.lock().unwrap().clone(),"silo.working-account":"1"},
+                    "resources":{"max_cpus":1,"max_memory_mib":1024},
+                    "network":{"policy":{"default_egress":"deny","default_ingress":"allow","rules":[]}}
+                }}).to_string()),
+                "inspect" => Err(RuntimeError::Unavailable("sandbox not found: dev".into())),
+                "start" => {
+                    *self.state.lock().unwrap() = "Running";
+                    ok(String::new())
+                }
+                _ => ok(String::new()),
+            }
+        }
+    }
+
+    fn pending_fixture(directory: &tempfile::TempDir) -> RuntimePaths {
+        let paths = paths(directory);
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![machine()] }).unwrap();
+        let mut record = Record::default();
+        record.snapshot_group = Some("dev".into());
+        record.pending_checkpoint_restore = Some(PendingRestore { checkpoint_id: "c000000000000000000000000000000".into(), source_workspace: "dev".into(), state: "full".into() });
+        record.desired_network_policy = Some(serde_json::json!({"default_egress":"deny","default_ingress":"allow","rules":[]}));
+        save(&paths, ID, &record).unwrap();
+        paths
+    }
+
+    #[test]
+    fn a_retried_start_keeps_and_starts_an_attempt_that_already_ran() {
+        for restore_ok in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = pending_fixture(&directory);
+            let runner = AttemptRunner { state: Mutex::new("Stopped"), exists: Mutex::new(false), restore_ok, attempt: Mutex::new(None), calls: Mutex::new(Vec::new()) };
+            start_pending(&runner, &paths, &machine()).unwrap_err();
+            let stored = load(&paths, ID).unwrap();
+            assert!(stored.restore_attempt_ran, "restore_ok={restore_ok}");
+            // Quit stopped the unverified VM; the user then retries Start.
+            *runner.state.lock().unwrap() = "Stopped";
+            runner.calls.lock().unwrap().clear();
+            start_pending(&runner, &paths, &machine()).unwrap();
+            let calls = runner.calls.lock().unwrap();
+            assert!(!calls.iter().any(|call| call[0] == "remove" || call[0] == "restore"), "{calls:?}");
+            assert!(calls.iter().any(|call| call[0] == "start"));
+            assert_eq!(*runner.state.lock().unwrap(), "Running");
+            let stored = load(&paths, ID).unwrap();
+            assert!(stored.pending_checkpoint_restore.is_none());
+            assert!(!stored.restore_attempted && !stored.restore_attempt_ran);
+            assert!(!needs_explicit_start(&paths, ID).unwrap());
+        }
+    }
+
+    #[test]
+    fn an_attempt_that_never_ran_is_recreated_from_the_checkpoint() {
+        struct NeverRan(Mutex<Vec<String>>);
+        impl RuntimeRunner for NeverRan {
+            fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+                self.0.lock().unwrap().push(args[0].clone());
+                match args[0].as_str() {
+                    "snapshot" => Ok(CommandOutput { stdout: serde_json::json!([{"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}]).to_string(), stderr: String::new() }),
+                    "list" => Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() }),
+                    "restore" => Err(RuntimeError::Failed { operation: "restore".into(), detail: "incomplete".into() }),
+                    _ => Err(RuntimeError::Unavailable("sandbox not found: dev".into())),
+                }
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = pending_fixture(&directory);
+        start_pending(&NeverRan(Mutex::new(Vec::new())), &paths, &machine()).unwrap_err();
+        assert!(!load(&paths, ID).unwrap().restore_attempt_ran);
     }
 }
