@@ -320,6 +320,8 @@ pub(crate) enum BackupError {
     /// A stored import group with the same identity already exists.
     ImportGroupConflict(String),
     InvalidArchive(String),
+    /// A volume lacks the space an export or import needs; names both sizes.
+    InsufficientSpace(String),
     UnsupportedStorage(String),
     InvalidRequest(String),
     Io(io::Error),
@@ -342,6 +344,7 @@ impl std::fmt::Display for BackupError {
                 "An earlier import is still stored as {group}. Try the import again."
             ),
             Self::InvalidArchive(detail) => write!(formatter, "Invalid Silo export: {detail}"),
+            Self::InsufficientSpace(detail) => write!(formatter, "{detail}"),
             Self::UnsupportedStorage(detail) => write!(formatter, "{detail}"),
             Self::InvalidRequest(detail) => write!(formatter, "{detail}"),
             Self::Io(error) => write!(formatter, "{error}"),
@@ -695,6 +698,7 @@ impl<R: MsbRunner> BackupService<R> {
             archive_payloads,
             cancellation,
             token,
+            self.free_space,
         )?;
         Ok(BackupResult {
             created_at_ms: manifest.created_at_ms,
@@ -814,10 +818,12 @@ impl<R: MsbRunner> BackupService<R> {
         let stage = tempfile::Builder::new()
             .prefix("restore-")
             .tempdir_in(&self.scratch_root)?;
-        // Everything the payload unpacks to must fit in the runtime store.
-        let unpack_budget = (self.free_space)(self.native_store_root())?
-            .saturating_sub(FREE_SPACE_RESERVE)
-            .min(DEFAULT_MAX_ARCHIVE_BYTES);
+        let store = self.native_store_root();
+        let space = SpaceBudget {
+            stage_free: (self.free_space)(stage.path())?,
+            store_free: (self.free_space)(store)?,
+            shared_volume: same_volume(stage.path(), store),
+        };
         let package = read_and_verify_package(
             &request.archive,
             self.max_archive_bytes,
@@ -825,7 +831,7 @@ impl<R: MsbRunner> BackupService<R> {
             PayloadMode::Extract {
                 dir: stage.path(),
                 source: request.source_name.as_deref(),
-                unpack_budget,
+                space,
             },
         )?;
         let extracted = package.extracted.as_ref().ok_or_else(|| {
@@ -833,6 +839,18 @@ impl<R: MsbRunner> BackupService<R> {
         })?;
         let source = &package.manifest.sandboxes[extracted.index];
         let payload_path = &extracted.path;
+        // The pre-scan measured exactly what the runtime will unpack; check
+        // again now that the private copy is written.
+        let needed = extracted.scan.unpacked_bytes.saturating_add(FREE_SPACE_RESERVE);
+        let available = (self.free_space)(store)?;
+        if available < needed {
+            return Err(BackupError::InsufficientSpace(format!(
+                "Importing {} needs {} of free space in Silo's runtime storage; {} is available.",
+                source.name,
+                format_bytes(needed),
+                format_bytes(available)
+            )));
+        }
         let before = self.snapshot_index("Checking imported checkpoint identity", cancellation)?;
         if before.iter().any(|entry| entry["group"] == import_group) {
             // Never load into, or clean up, a group this attempt did not create.
@@ -1216,6 +1234,17 @@ struct VerifiedPackage {
 struct ExtractedPayload {
     index: usize,
     path: PathBuf,
+    scan: PayloadScan,
+}
+
+/// Free space where an import stages its payload and where the runtime
+/// unpacks it (E-25).
+#[derive(Clone, Copy, Debug)]
+struct SpaceBudget {
+    stage_free: u64,
+    store_free: u64,
+    /// Both on one volume: the staged copy also uses the runtime's space.
+    shared_volume: bool,
 }
 
 enum PayloadMode<'a> {
@@ -1226,8 +1255,7 @@ enum PayloadMode<'a> {
     Extract {
         dir: &'a Path,
         source: Option<&'a str>,
-        /// Most decompressed bytes the runtime store can take for this import.
-        unpack_budget: u64,
+        space: SpaceBudget,
     },
 }
 
@@ -1296,11 +1324,9 @@ fn read_and_verify_package(
 
     let extract = match mode {
         PayloadMode::VerifyAll => None,
-        PayloadMode::Extract {
-            dir,
-            source,
-            unpack_budget,
-        } => Some((dir, select_restore_source(&manifest, source)?, unpack_budget)),
+        PayloadMode::Extract { dir, source, space } => {
+            Some((dir, select_restore_source(&manifest, source)?, space))
+        }
     };
     let mut extracted = None;
     for (index, sandbox) in manifest.sandboxes.iter().enumerate() {
@@ -1316,8 +1342,25 @@ fn read_and_verify_package(
                     cancellation,
                 )?;
             }
-            Some((dir, selected, unpack_budget)) if selected == index => {
-                let (path, _scan) = extract_scanned_payload(
+            Some((dir, selected, space)) if selected == index => {
+                // The private copy of the payload must fit where it is staged,
+                // and when that is the runtime's volume it also shrinks what
+                // the runtime can unpack.
+                let staged = sandbox.payload_size.saturating_add(FREE_SPACE_RESERVE);
+                if space.stage_free < staged {
+                    return Err(BackupError::InsufficientSpace(format!(
+                        "Importing {} needs {} of free space for its private working copy; {} is available.",
+                        sandbox.name,
+                        format_bytes(staged),
+                        format_bytes(space.stage_free)
+                    )));
+                }
+                let unpack_budget = space
+                    .store_free
+                    .saturating_sub(FREE_SPACE_RESERVE)
+                    .saturating_sub(if space.shared_volume { sandbox.payload_size } else { 0 })
+                    .min(DEFAULT_MAX_ARCHIVE_BYTES);
+                let (path, scan) = extract_scanned_payload(
                     &mut file,
                     sandbox.payload_size,
                     &sandbox.payload_sha256,
@@ -1329,8 +1372,17 @@ fn read_and_verify_package(
                         max_sparse_bytes: largest_declared_disk(&sandbox.machine_config),
                     },
                     cancellation,
-                )?;
-                extracted = Some(ExtractedPayload { index, path });
+                )
+                .map_err(|error| match error {
+                    BackupError::InsufficientSpace(_) => BackupError::InsufficientSpace(format!(
+                        "Importing {} needs more than the {} of free space available to Silo's runtime storage (keeping {} free).",
+                        sandbox.name,
+                        format_bytes(unpack_budget),
+                        format_bytes(FREE_SPACE_RESERVE)
+                    )),
+                    error => error,
+                })?;
+                extracted = Some(ExtractedPayload { index, path, scan });
             }
             Some(_) => {
                 let skip = i64::try_from(sandbox.payload_size)
@@ -2140,8 +2192,9 @@ fn extract_scanned_payload(
         Ok(scan) => scan,
         Err(ScanFailure::Cancelled) => return Err(BackupError::Cancelled),
         Err(ScanFailure::TooLarge) => {
-            return Err(BackupError::InvalidArchive(format!(
-                "the {label} unpacks to more than {}, the most this computer can hold for it",
+            // The caller words this with the free space it measured.
+            return Err(BackupError::InsufficientSpace(format!(
+                "the {label} unpacks to more than {}",
                 format_bytes(limits.max_unpacked_bytes)
             )));
         }
@@ -2171,6 +2224,21 @@ fn extract_scanned_payload(
     }
     output.sync_all()?;
     Ok((destination, scan))
+}
+
+/// Whether two paths (or their nearest existing ancestors) share a volume.
+/// Unknown counts as shared, which only makes the space check stricter.
+fn same_volume(left: &Path, right: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let device = |path: &Path| {
+        path.ancestors()
+            .find_map(|candidate| fs::metadata(candidate).ok())
+            .map(|metadata| metadata.dev())
+    };
+    match (device(left), device(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => true,
+    }
 }
 
 /// `statvfs` of the nearest existing ancestor: space available to this
@@ -2306,6 +2374,7 @@ fn write_immutable_package(
     payloads: Vec<File>,
     cancellation: &Cancellation,
     token: Option<&str>,
+    free_space: fn(&Path) -> io::Result<u64>,
 ) -> Result<u64, BackupError> {
     let parent = destination.parent().ok_or_else(|| {
         BackupError::InvalidRequest("The backup destination has no parent directory.".into())
@@ -2324,6 +2393,27 @@ fn write_immutable_package(
         return Err(BackupError::InvalidRequest(
             "Backup metadata exceeds the supported size.".into(),
         ));
+    }
+    // Check the destination before copying possibly hundreds of gigabytes;
+    // an external or nearly full volume would otherwise fail at the end.
+    let archive_size = manifest
+        .sandboxes
+        .iter()
+        .try_fold((MAGIC.len() + 4 + 8 + manifest_bytes.len()) as u64, |sum, sandbox| {
+            sum.checked_add(sandbox.payload_size)
+        })
+        .ok_or_else(|| {
+            BackupError::InvalidRequest("The export size cannot be represented.".into())
+        })?;
+    let needed = archive_size.saturating_add(FREE_SPACE_RESERVE);
+    let available = free_space(parent)?;
+    if available < needed {
+        return Err(BackupError::InsufficientSpace(format!(
+            "This export needs {} of free space in {}; {} is available.",
+            format_bytes(needed),
+            parent.display(),
+            format_bytes(available)
+        )));
     }
     let prefix = token
         .map(|token| format!(".silo-backup-{token}-"))
@@ -2507,7 +2597,7 @@ fn unique_suffix() -> String {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, atomic::AtomicU64};
 
     fn tar_header(path: &str, kind: tar::EntryType, size: u64) -> tar::Header {
         let mut header = tar::Header::new_gnu();
@@ -3828,6 +3918,7 @@ mod tests {
             vec![File::open(&payload_path).unwrap()],
             &Cancellation::default(),
             None,
+            available_bytes,
         )
         .unwrap_err();
         assert!(error.to_string().contains("changed while it was being exported"), "{error}");
@@ -3844,6 +3935,7 @@ mod tests {
             vec![File::open(&payload_path).unwrap()],
             &Cancellation::default(),
             None,
+            available_bytes,
         )
         .unwrap();
         let expected = format!("sha256:{:x}", Sha256::digest(fs::read(&payload_path).unwrap()));
@@ -3954,8 +4046,10 @@ mod tests {
         });
         assert!(payload.len() < 1024 * 1024);
         let (result, calls) = import_crafted(payload, Some(|_| Ok(FREE_SPACE_RESERVE + 8 * 1024 * 1024)));
-        let detail = scan_error(result);
-        assert!(detail.contains("unpacks to more than 8.0 MiB"), "{detail}");
+        let Err(BackupError::InsufficientSpace(detail)) = result else {
+            panic!("the bomb was not stopped at the space budget");
+        };
+        assert!(detail.contains("needs more than the 8.0 MiB"), "{detail}");
         assert!(!loaded(&calls));
     }
 
@@ -4022,6 +4116,71 @@ mod tests {
         let (result, calls) = import_crafted(b"\x28\xb5\x2f\xfdnot really zstd".to_vec(), None);
         assert!(scan_error(result).contains("not a safe snapshot archive"));
         assert!(!loaded(&calls));
+    }
+
+    #[test]
+    fn export_checks_the_destination_space_before_copying() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let mut service = service(&temp, FakeRunner::default());
+        service.free_space = |_| Ok(FREE_SPACE_RESERVE + 16);
+        let error = create_one(&service, destination.clone(), false).unwrap_err();
+        assert!(matches!(error, BackupError::InsufficientSpace(_)));
+        let message = error.to_string();
+        assert!(message.starts_with("This export needs "), "{message}");
+        assert!(message.contains("is available"), "{message}");
+        assert!(!destination.exists());
+        assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+            !entry.unwrap().file_name().to_string_lossy().starts_with(".silo-backup-")
+        }));
+    }
+
+    #[test]
+    fn import_checks_working_and_runtime_space_before_loading() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let mut service = service(&temp, FakeRunner::default());
+        create_one(&service, destination.clone(), false).unwrap();
+
+        // No room for the private working copy.
+        service.free_space = |_| Ok(FREE_SPACE_RESERVE);
+        let error = service
+            .prepare_restore(restore_request(destination.clone()), &Cancellation::default())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("for its private working copy"), "{error}");
+
+        // Room to stage, but the runtime store cannot take the unpacked data.
+        service.free_space = |path| {
+            Ok(if path.ends_with("home") {
+                FREE_SPACE_RESERVE + 100
+            } else {
+                u64::MAX / 2
+            })
+        };
+        let error = service
+            .prepare_restore(restore_request(destination.clone()), &Cancellation::default())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("available to Silo's runtime storage"), "{error}");
+
+        // The runtime store filled up while the payload was being unpacked.
+        static CALLS: AtomicU64 = AtomicU64::new(0);
+        CALLS.store(0, Ordering::SeqCst);
+        service.free_space = |_| {
+            Ok(if CALLS.fetch_add(1, Ordering::SeqCst) < 2 {
+                u64::MAX / 2
+            } else {
+                FREE_SPACE_RESERVE
+            })
+        };
+        let error = service
+            .prepare_restore(restore_request(destination), &Cancellation::default())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("free space in Silo's runtime storage"), "{error}");
+        let calls = service.runner.calls.lock().unwrap();
+        assert!(!calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "load")));
     }
 
     #[test]
