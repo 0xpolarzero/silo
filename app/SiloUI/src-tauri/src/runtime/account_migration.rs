@@ -575,13 +575,68 @@ fn stop(runner: &dyn RuntimeRunner, paths: &RuntimePaths, name: &str) -> Result<
     })
 }
 
+/// MicroSandbox makes each capture the parent of the sandbox's next one, and Silo's
+/// exports carry that ancestry (`snapshot save --with-parents`). A migration backup must
+/// stay out of it: otherwise every later export would include the backup, and deleting
+/// the backup would make those exports fail. MicroSandbox has no capture option for this,
+/// so the ancestry cursor it keeps beside the sandbox is put back after the backup. Silo
+/// holds the VM's lane meanwhile, so no other capture of this VM can run.
+struct Ancestry {
+    path: PathBuf,
+    before: Option<Vec<u8>>,
+}
+
+impl Ancestry {
+    fn read(paths: &RuntimePaths, name: &str) -> Result<Self, RuntimeError> {
+        let path = paths
+            .home
+            .join("sandboxes")
+            .join(name)
+            .join("snapshot-lineage.json");
+        let before = match fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => {
+                return Err(unavailable(
+                    "Silo could not read the sandbox's snapshot history.",
+                ))
+            }
+        };
+        Ok(Self { path, before })
+    }
+
+    fn restore(&self) -> Result<(), RuntimeError> {
+        let failed = || {
+            unavailable("Silo could not keep the backup out of the sandbox's snapshot history. Keep the backup: later exports of this sandbox include it.")
+        };
+        match &self.before {
+            None => match fs::remove_file(&self.path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(failed()),
+                _ => Ok(()),
+            },
+            Some(bytes) => {
+                let directory = self.path.parent().ok_or_else(failed)?;
+                let mut file = tempfile::NamedTempFile::new_in(directory).map_err(|_| failed())?;
+                file.write_all(bytes).map_err(|_| failed())?;
+                file.as_file().sync_all().map_err(|_| failed())?;
+                file.persist(&self.path).map_err(|_| failed())?;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Capture both disks of the stopped VM into the backup folder, outside the sandbox's
+/// snapshot history. Returns the snapshot's path relative to the folder, and whether
+/// the history was put back; a backup whose history could not be put back is still
+/// kept, because later captures now build on it.
 fn back_up(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
     directory: &Path,
     bytes: u64,
-) -> Result<String, RuntimeError> {
+) -> Result<(String, Result<(), RuntimeError>), RuntimeError> {
     remove_snapshot(directory)?;
     let destination = directory.join(SNAPSHOT);
     fs::DirBuilder::new()
@@ -589,8 +644,9 @@ fn back_up(
         .create(&destination)
         .map_err(|_| unavailable("Silo could not create the backup folder."))?;
     let timeout = SNAPSHOT_TIMEOUT + Duration::from_secs(bytes / SNAPSHOT_BYTES_PER_SECOND);
+    let ancestry = Ancestry::read(paths, machine.name())?;
     // Stopped disk capture: the root disk and the owned workspace volume, with integrity.
-    runner.run(
+    let created = runner.run(
         paths,
         &[
             "snapshot".into(),
@@ -603,8 +659,16 @@ fn back_up(
             "--integrity".into(),
         ],
         timeout,
-    )?;
-    find_snapshot(directory)
+    );
+    // Also after a failed or cancelled capture, which may have published before it ended.
+    let kept_out = operation_gate::uncancellable(|| ancestry.restore());
+    match created {
+        Ok(_) => Ok((find_snapshot(directory)?, kept_out)),
+        Err(error) => {
+            kept_out?;
+            Err(error)
+        }
+    }
 }
 
 fn guest(
@@ -826,7 +890,7 @@ fn attempt(
         }
         if !resume {
             enter(Stage::BackingUp);
-            let snapshot = back_up(runner, paths, machine, &directory, bytes)?;
+            let (snapshot, kept_out) = back_up(runner, paths, machine, &directory, bytes)?;
             let inspection = serde_json::json!({
                 "name": inspected.name,
                 "status": inspected.status,
@@ -841,6 +905,7 @@ fn attempt(
             record.snapshot = Some(snapshot);
             record.failure = None;
             save(&directory, &mut record)?;
+            kept_out?;
         }
         enter(Stage::Starting);
         // Past this point the guest changes; a cancel that arrived earlier ends here.
@@ -1218,6 +1283,9 @@ mod tests {
                     fs::create_dir_all(&member).unwrap();
                     fs::write(member.join("snapshot.json"), "{}").unwrap();
                     fs::write(destination.join("dev/group.json"), "{}").unwrap();
+                    // Like MicroSandbox, make the capture the sandbox's next parent.
+                    let home = destination.ancestors().nth(3).unwrap().join("home");
+                    fs::write(home.join("sandboxes/dev/snapshot-lineage.json"), r#"{"snapshot_id":"snap_0123"}"#).unwrap();
                     ok(String::new())
                 }
                 "modify" => {
@@ -1326,6 +1394,30 @@ mod tests {
             .iter()
             .any(|step| step.starts_with("Back up the root and workspace disks")));
         assert!(plan.steps.iter().any(|step| step.contains("/home/silo")));
+    }
+
+    #[test]
+    fn the_backup_stays_out_of_the_sandbox_snapshot_history() {
+        let _state = crate::test_support::global_state();
+        let fixture = fixture();
+        let cursor = fixture
+            .paths
+            .home
+            .join("sandboxes/dev/snapshot-lineage.json");
+        // No earlier capture: the history stays empty.
+        migrate(&Fake::new("Stopped"), &fixture, &RefCell::new(Vec::new())).unwrap();
+        assert!(!cursor.exists());
+
+        // An earlier checkpoint stays the parent of the sandbox's next capture.
+        let fixture = self::fixture();
+        let cursor = fixture
+            .paths
+            .home
+            .join("sandboxes/dev/snapshot-lineage.json");
+        let earlier = br#"{"sandbox_id":7,"snapshot_id":"snap_earlier"}"#;
+        fs::write(&cursor, earlier).unwrap();
+        migrate(&Fake::new("Stopped"), &fixture, &RefCell::new(Vec::new())).unwrap();
+        assert_eq!(fs::read(&cursor).unwrap(), earlier);
     }
 
     #[test]

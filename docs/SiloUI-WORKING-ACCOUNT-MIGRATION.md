@@ -50,6 +50,8 @@ unchanged. In order:
 3. Back up both disks with one MicroSandbox disk snapshot
    (`snapshot create --from-sandbox VM --dest-dir … --integrity`). With the
    owned workspace volume, the snapshot holds the root disk and `/workspace`.
+   The backup is kept out of the sandbox's snapshot history (see
+   [Snapshot history](#snapshot-history)).
 4. Start the VM through Silo's normal runtime path, so its secrets and GitHub
    access profile are supplied as for any start. Install `python3`, `sudo` and
    `openssh-sftp-server` with apt if any is missing; older images need guest
@@ -89,12 +91,43 @@ workspace disks, and requires that plus 2 GiB, because the guest copies the home
 folders on the root disk. On APFS the snapshot is a copy-on-write clone and
 usually takes far less space; on ext4 it is a sparse copy of the allocated data.
 
-Silo keeps the backup after success. Delete the folder yourself once you have
-checked your agents and files. It contains project files and credentials.
+Silo keeps the backup after success. It contains project files and
+credentials; remove it once you have checked your agents and files. Remove it
+with the runtime rather than only deleting the folder, so the runtime's snapshot
+index forgets it too (use the exports and paths from the recovery section below):
+
+```sh
+"$MSB_PATH" snapshot remove "$SNAPSHOT"
+rm -r "$BACKUP"
+```
+
+A stale index entry left by deleting only the folder is harmless to the migrated
+sandbox, but if the sandbox had checkpoints before migration, Silo cannot delete
+the newest of them while that entry names it as a parent.
+
 Silo never reuses a finished backup or a folder it did not create: migrating the
 same sandbox again later writes to the next free `-2`, `-3`… folder. Error
 messages do not name the folder, because Silo removes paths from them; the
 confirmation, the failure on the sandbox page and the result notice show it.
+
+### Snapshot history
+
+MicroSandbox makes each capture of a sandbox the parent of its next capture, and
+Silo's exports include that ancestry (`snapshot save --with-parents`). Left
+alone, the backup would become the parent of every later checkpoint and export:
+exports would carry a second copy of the disks, and removing the backup would
+make them fail with "snapshot not found". This was verified on 2026-09-30 with
+the bundled 0.7.4 CLI. The previous command-line script had the same effect.
+
+MicroSandbox has no capture option that leaves ancestry unchanged, so Silo reads
+the ancestry cursor it keeps beside the sandbox (`snapshot-lineage.json`) before
+the backup and puts it back afterwards, also after a failed or cancelled capture.
+Later captures then name the previous parent, and the backup can be removed
+without affecting them. Silo holds the VM's lane in the operation queue meanwhile,
+so no other capture of that VM runs. The backup itself still records the earlier
+checkpoint as its parent, which is why the index entry above matters. This is a
+workaround for an upstream gap; a MicroSandbox capture option that does not
+advance ancestry would replace it.
 
 Retry of an interrupted migration verifies the snapshot with
 `snapshot verify` before continuing, and runs the payload with `--resume`,
