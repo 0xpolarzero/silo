@@ -655,13 +655,15 @@ describe("production application bridge", () => {
     { schemaVersion: 1, machines: [{ name: "invalid" }] },
     { schemaVersion: 1, machines: "unreadable" },
     null,
-  ])("rejects malformed saved configuration without publishing sandbox rows: %j", async (configuration) => {
+  ])("publishes no sandbox rows for malformed saved configuration, without failing startup: %j", async (configuration) => {
     const mock = native({ invoke: vi.fn().mockResolvedValue(configuration) })
+    vi.spyOn(console, "error").mockImplementation(() => {})
     const store = createProductionSource(mock.bridge)
 
-    await expect(store.loadConfiguration()).rejects.toThrow()
+    // The list only feeds loading rows (H-10): an unreadable one shows none.
+    await expect(store.loadConfiguration()).resolves.toBeUndefined()
 
-    expect(store.getSnapshot().savedMachines).toBeUndefined()
+    expect(store.getSnapshot().savedMachines).toEqual([])
     expect(store.getSnapshot().source).toBeNull()
     store.dispose()
   })

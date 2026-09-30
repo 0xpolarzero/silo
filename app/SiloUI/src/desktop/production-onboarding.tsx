@@ -6,10 +6,10 @@ import { productionMachineDefaults } from "@/features/onboarding/model/machine-c
 
 import type { DependencyRuntime } from "@/desktop/dependencies"
 import { useProductionSource, type ProductionSnapshot, type ProductionSource } from "@/desktop/production-source"
-import type { SetupMachineConfiguration, SiloBootstrapConfiguration } from "@/contracts/silo"
+import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SetupMachineConfigurationRequest, type SiloBootstrapConfiguration } from "@/contracts/silo"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { OnboardingApp } from "@/features/onboarding/onboarding-app"
-import type { OnboardingSource } from "@/features/onboarding/model/onboarding-source"
+import type { OnboardingCompletionRequest, OnboardingSource, OnboardingSubmissionOptions } from "@/features/onboarding/model/onboarding-source"
 import { useSettings } from "@/features/preferences/settings-store"
 
 function bootstrapConfiguration(machines: readonly SetupMachineConfiguration[]): SiloBootstrapConfiguration {
@@ -27,19 +27,69 @@ function bootstrapConfiguration(machines: readonly SetupMachineConfiguration[]):
   }
 }
 
+type Submission = {
+  isFinishing: boolean
+  run: (request?: OnboardingCompletionRequest, options?: OnboardingSubmissionOptions) => Promise<unknown>
+}
+
+/** Sandboxes that exist on this computer, as committed configuration. */
+function existingLocalMachines(application: ApplicationSource | null): SetupMachineConfiguration[] {
+  return (application?.workspaces ?? []).flatMap(({ computer, machine }) => {
+    if (computer) return []
+    const parsed = setupMachineConfigurationSchema.safeParse(machine)
+    return parsed.success ? [parsed.data] : []
+  })
+}
+
+/**
+ * Onboarding never deletes an existing sandbox unless the user confirmed deleting it.
+ * Checked against the source's committed list at submission time, which is what the
+ * production source derives its changes from.
+ */
+function assertConfirmedDeletions(committed: ApplicationSource | null, machines: readonly SetupMachineConfiguration[], options?: OnboardingSubmissionOptions) {
+  const kept = new Set(machines.map(({ id }) => id))
+  const unconfirmed = existingLocalMachines(committed).filter(({ id }) => !kept.has(id) && !options?.confirmedDeletions.includes(id))
+  if (unconfirmed.length === 0) return
+  const names = unconfirmed.map(({ name }) => name).join(", ")
+  throw new Error(`Setup did not delete ${names}. Confirm deleting ${unconfirmed.length === 1 ? "it" : "them"} first, or keep ${unconfirmed.length === 1 ? "it" : "them"} in setup. No sandbox changed.`)
+}
+
 // oxlint-disable-next-line react/only-export-components
 export function productionOnboardingSource(application: ApplicationSource | null, dependencies: DependencyRuntime, applicationPreferences: OnboardingSource["applicationPreferences"], setup?: ProductionSnapshot): OnboardingSource {
   // Setup on this computer must never adopt another computer's VM identities.
   if (application) application = { ...application, workspaces: application.workspaces.filter(workspace => !workspace.computer) }
   const operation = application?.sandboxConfigurationOperation
-  const machines = setup?.setupCandidate?.machines ?? operation?.candidate.machines ?? (application?.workspaces.length ? application.workspaces.map(({ machine }) => machine) : productionMachineDefaults)
+  const existingMachines = existingLocalMachines(application)
+  // Only a real read of this computer's state says which sandboxes exist. Before it, or
+  // while it is replaced by a shell (local state updating, or unreadable), the saved list
+  // or defaults are a placeholder seed that is replaced once the real state loads.
+  const machinesAuthoritative = application !== null && !setup?.localUpdating && !(setup?.error && existingMachines.length === 0)
+  const fallback = !machinesAuthoritative && setup?.savedMachines?.length ? setup.savedMachines : productionMachineDefaults
+  const machines = setup?.setupCandidate?.machines ?? operation?.candidate.machines ?? (existingMachines.length ? existingMachines : fallback)
   const emptyConfigurationVerified = setup?.setupCandidate?.machines.length === 0
     && ["workspaceRun", "workspaceVerify"].every((id) => setup.setupQueue.some((item) => item.id === id && item.status === "succeeded"))
   const configured = !!application && (application.workspaces.length > 0 || emptyConfigurationVerified) && application.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
   const completedPhases = configured ? ["preflight", "toolchain", "hostIntegration", "workspaces"] as const : []
+  const workspaceSetupPending = setup?.setupQueue.some(({ id, status }) => ["workspaceRun", "workspaceVerify"].includes(id) && (status === "running" || status === "queued" || status === "failed")) ?? false
+  // Sandbox setup itself explains running, queued and failed work; otherwise say which
+  // sandbox keeps Finish unavailable and how to resolve it.
+  const settled = !!application && !configured && !workspaceSetupPending && operation?.status !== "applying" && operation?.status !== "failed"
+  const failedWorkspace = settled ? application?.workspaces.find(({ state }) => state === "failed") : undefined
+  const staleWorkspace = settled ? application?.workspaces.find(({ freshness }) => freshness === "stale") : undefined
+  const startingWorkspace = settled ? application?.workspaces.find(({ state }) => state === "starting") : undefined
+  const finishBlocker: OnboardingSource["finishBlocker"] = failedWorkspace
+    ? { workspace: failedWorkspace.machine.name, action: "start", message: `${failedWorkspace.machine.name} is not running: ${failedWorkspace.lifecycleFailure ?? failedWorkspace.stateDetail}. Start it to finish setup.` }
+    : staleWorkspace
+      ? { workspace: staleWorkspace.machine.name, action: "refresh", message: `${staleWorkspace.machine.name}'s status could not be confirmed. Check again to finish setup.` }
+      : startingWorkspace
+        ? { workspace: startingWorkspace.machine.name, action: null, message: `Waiting for ${startingWorkspace.machine.name} to start…` }
+        : null
   return {
     ...(setup && { setupQueue: setup.setupQueue.map((item) => configured && item.status === "idle" && ["workspaceRun", "workspaceVerify"].includes(item.id) ? { ...item, status: "succeeded" as const } : item) }),
-    readyToFinish: configured && !setup?.setupQueue.some(({ id, status }) => ["workspaceRun", "workspaceVerify"].includes(id) && (status === "running" || status === "queued" || status === "failed")),
+    readyToFinish: configured && !workspaceSetupPending,
+    finishBlocker,
+    machinesAuthoritative: machinesAuthoritative || Boolean(setup?.setupCandidate ?? operation),
+    existingMachines,
     machineConfigurations: [...machines],
     bootstrapConfiguration: bootstrapConfiguration(machines),
     bootstrapState: {
@@ -72,7 +122,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     return () => window.clearInterval(timer)
   }, [setupRunning])
   const { settings, onboardingDraft, updateSettings, store } = useSettings()
-  const lastSubmission = useRef<{ operation: () => Promise<unknown>; isFinishing: boolean } | null>(null)
+  const lastSubmission = useRef<Submission | null>(null)
   const [completed, setCompleted] = useState(false)
   const [connectingComputer, setConnectingComputer] = useState(false)
   const submissionSequence = useRef(0)
@@ -111,12 +161,27 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     })
   }, [source, onboardingDraft, application?.github.state, completed])
 
-  function submit(operation: () => Promise<unknown>, isFinishing = false) {
-    lastSubmission.current = { operation, isFinishing }
+  // The committed list the production source derives changes from, read when submitting.
+  const committed = () => source.getSnapshot?.().source ?? application
+  const configurationSubmission = (request: SetupMachineConfigurationRequest, options?: OnboardingSubmissionOptions): Submission => ({
+    isFinishing: false,
+    run: (current, confirmed = options) => {
+      const configuration = current?.machineConfiguration ?? request
+      assertConfirmedDeletions(committed(), configuration.machines, confirmed)
+      return source.configureMachines(configuration)
+    },
+  })
+
+  // A submission remembers how to run again: Retry passes the current draft (and the
+  // deletions confirmed so far) so later edits apply instead of the failed request.
+  function submit(submission: Submission, request?: OnboardingCompletionRequest, options?: OnboardingSubmissionOptions) {
+    lastSubmission.current = submission
     const sequence = ++submissionSequence.current
     setOperationError(null)
-    setFinishing(isFinishing)
-    void operation().then(() => {
+    setFinishing(submission.isFinishing)
+    let operation: Promise<unknown>
+    try { operation = submission.run(request, options) } catch (error) { operation = Promise.reject(error) }
+    void operation.then(() => {
       if (sequence === submissionSequence.current) setOperationError(null)
     }).catch((error: unknown) => {
       if (sequence === submissionSequence.current) setOperationError(error instanceof Error ? error.message : String(error))
@@ -151,34 +216,39 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     repositoryPolicies={application?.github.workspaces}
     onRetryDependencies={dependencies.retry}
     actions={{
-      submitStep: (step, request) => {
-        submit(() => source.submitSetupStep(step, request))
+      submitStep: (step, request, options) => {
+        submit({ isFinishing: false, run: (current = request, confirmed = options) => {
+          assertConfirmedDeletions(committed(), current.machineConfiguration.machines, confirmed)
+          return source.submitSetupStep(step, current)
+        } })
       },
+      startWorkspace: (workspace) => source.applicationActions.startWorkspace(workspace),
+      refreshSetupState: () => { void source.refresh() },
       connectGitHub: () => source.applicationActions.connectGitHub?.(),
       cancelGitHubConnection: () => source.applicationActions.cancelGitHubConnection?.(),
       reopenGitHubAuthorization: () => source.applicationActions.reopenGitHubAuthorization?.(),
-      saveMachineConfiguration: (request) => {
-        submit(() => source.configureMachines(request))
+      saveMachineConfiguration: (request, options) => {
+        submit(configurationSubmission(request, options))
       },
-      retryWorkspaceSetup: () => {
+      retryWorkspaceSetup: (request, options) => {
         if (finishing) return
         const previous = lastSubmission.current
-        if (previous) submit(previous.operation, previous.isFinishing)
+        if (previous) submit(previous, request, options)
         else if (application?.sandboxConfigurationOperation?.status === "failed") {
-          const request = application.sandboxConfigurationOperation.candidate
-          submit(() => source.configureMachines(request))
+          submit(configurationSubmission(application.sandboxConfigurationOperation.candidate), request, options)
         }
       },
-      finishSetup: (request) => {
+      finishSetup: (request, options) => {
         if (finishing) return
-        submit(async () => {
-          await source.finishSetup(request, async () => {
-            await updateSettings({ ...request.applications, onboardingComplete: true })
+        submit({ isFinishing: true, run: async (current = request, confirmed = options) => {
+          assertConfirmedDeletions(committed(), current.machineConfiguration.machines, confirmed)
+          await source.finishSetup(current, async () => {
+            await updateSettings({ ...current.applications, onboardingComplete: true })
             const error = store.getSnapshot().saveError
             if (error) throw new Error(error)
           })
           setCompleted(true)
-        }, true)
+        } })
       },
     }}
   />

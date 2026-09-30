@@ -38,3 +38,51 @@ it("does not show the application when migration status cannot be read", async (
   expect(await screen.findByRole("alert")).toHaveTextContent("migration gate unavailable")
   expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
 })
+
+it("offers Retry that reads migration status again after a failed read", async () => {
+  const read = vi.fn()
+    .mockRejectedValueOnce(new Error("migration gate unavailable"))
+    .mockResolvedValue({ ...failed, status: "not-required", error: undefined })
+  const backend: RuntimeMigrationBackend = { read, retry: vi.fn(), continueAfterFailure: vi.fn(), subscribe: async () => () => {} }
+  render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
+  expect(await screen.findByRole("alert")).toHaveTextContent("migration gate unavailable")
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+  expect(await screen.findByText("Normal application")).toBeVisible()
+  expect(read).toHaveBeenCalledTimes(2)
+})
+
+it("subscribes again on Retry when the first subscription failed", async () => {
+  const stop = vi.fn()
+  const subscribe = vi.fn()
+    .mockRejectedValueOnce(new Error("event bridge unavailable"))
+    .mockResolvedValue(stop)
+  const read = vi.fn().mockResolvedValue({ ...failed, status: "not-required", error: undefined })
+  const backend: RuntimeMigrationBackend = { read, retry: vi.fn(), continueAfterFailure: vi.fn(), subscribe }
+  render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
+  expect(await screen.findByRole("alert")).toHaveTextContent("event bridge unavailable")
+  expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+  expect(await screen.findByText("Normal application")).toBeVisible()
+  expect(subscribe).toHaveBeenCalledTimes(2)
+})
+
+it("does not announce a migration before the first status arrives", async () => {
+  let resolve!: (state: RuntimeMigrationState) => void
+  const read = vi.fn(() => new Promise<RuntimeMigrationState>(done => { resolve = done }))
+  const backend: RuntimeMigrationBackend = { read, retry: vi.fn(), continueAfterFailure: vi.fn(), subscribe: async () => () => {} }
+  render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
+  await vi.waitFor(() => expect(read).toHaveBeenCalled())
+  expect(screen.queryByText("Updating your sandboxes")).not.toBeInTheDocument()
+  expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
+  await act(async () => resolve({ ...failed, status: "not-required", error: undefined }))
+  expect(screen.getByText("Normal application")).toBeVisible()
+})
+
+it("shows migration progress once the first status reports it", async () => {
+  const backend: RuntimeMigrationBackend = {
+    read: vi.fn().mockResolvedValue({ ...failed, status: "running", error: undefined }),
+    retry: vi.fn(), continueAfterFailure: vi.fn(), subscribe: async () => () => {},
+  }
+  render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
+  expect(await screen.findByText("Updating your sandboxes")).toBeVisible()
+})

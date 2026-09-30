@@ -50,8 +50,10 @@ function exceptionalChecks(status: "unavailable" | "timeout", detail: string): S
 
 export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks = invokeDependencyChecks): DependencyStore {
   let snapshot = pendingChecks
+  /** The request whose result may still be published. */
   let activeRequest: string | null = null
-  let invocationActive = false
+  /** The native call in flight; null once it settles or its watchdog abandons it. */
+  let activeInvocation: string | null = null
   let retryQueued = false
   let disposed = false
   let activeTimeout: ReturnType<typeof globalThis.setTimeout> | undefined
@@ -76,8 +78,11 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
     if (disposed) return
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     activeRequest = requestId
-    invocationActive = true
+    activeInvocation = requestId
     armWatchdog(() => {
+      // A call that never settles must not block later checks: abandon it (its late
+      // result is ignored by request id) so the next Retry starts a new request.
+      if (activeInvocation === requestId) activeInvocation = null
       if (activeRequest !== requestId) return
       activeRequest = null
       publish(exceptionalChecks("timeout", "Dependency checks timed out. No successful result was recorded."))
@@ -89,8 +94,10 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
     }).catch(() => {
       if (activeRequest === requestId) publish(exceptionalChecks("unavailable", "Dependency checks are unavailable because the desktop bridge did not respond."))
     }).finally(() => {
+      // An abandoned call settling late owns neither the watchdog nor the queue.
+      if (activeInvocation !== requestId) return
       clearWatchdog()
-      invocationActive = false
+      activeInvocation = null
       if (!disposed && retryQueued) {
         retryQueued = false
         startRequest()
@@ -100,10 +107,12 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
   function retry() {
     if (disposed) return
     publish(pendingChecks.map((check) => ({ ...check })))
-    if (invocationActive) {
+    const inFlight = activeInvocation
+    if (inFlight) {
       activeRequest = null
       retryQueued = true
       armWatchdog(() => {
+        if (activeInvocation === inFlight) activeInvocation = null
         if (!retryQueued) return
         retryQueued = false
         publish(exceptionalChecks("timeout", "Dependency checks timed out. No successful result was recorded."))

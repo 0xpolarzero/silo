@@ -173,11 +173,17 @@ export interface ProductionSnapshot {
   setupActivity?: SiloProgressEvent[]
   setupActivityError?: string
   setupCandidate?: SetupMachineConfigurationRequest
+  /** The setup work Quit is waiting for while it drains setup. */
+  setupDrain?: string
+  /** `source` is a shell for connected computers while this computer's sandboxes update. */
+  localUpdating?: boolean
   source: ApplicationSource | null
   backup: BackupState
   loading: boolean
   error: string | null
 }
+
+export const localUpdatingNotice = "Sandboxes on this computer are updating. They appear here when the update finishes."
 
 /** The runtime's "configuration is updating" sentinel, bare or wrapped by a remote bridge. */
 export function isUpdateInProgress(cause: unknown) {
@@ -494,10 +500,26 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (!snapshot.source && snapshot.error) {
         const source = await unavailableLocalSource(snapshot.error)
         if (!snapshot.source && source) publish({ ...snapshot, source })
+      } else if (!snapshot.source && localStateUpdating) {
+        const source = await updatingLocalSource()
+        if (!snapshot.source && source) publish({ ...snapshot, source, loading: false, localUpdating: true })
       }
       publish({ ...snapshot })
     })().finally(() => { remoteRefresh = undefined })
     return remoteRefresh
+  }
+
+  // While this computer's sandbox state is updating (computer-wide work such as
+  // resuming sandboxes at launch), connected computers stay usable through the shell
+  // source instead of a skeleton for the whole operation. Updating is not a runtime
+  // failure, and local changes wait for it; `localUpdating` marks the shell.
+  let localStateUpdating = false
+  async function updatingLocalSource(): Promise<ApplicationSource | null> {
+    if (!remoteComputers.some(computer => computer.connected && remoteSnapshots.has(computer.id))) return null
+    try {
+      const shell = parseApplicationSource(await native.invoke("read_application_shell", { error: localUpdatingNotice }))
+      return { ...shell, runtimeRepair: null, vmOperationsUnavailable: localUpdatingNotice }
+    } catch { return null }
   }
 
   async function unavailableLocalSource(message: string): Promise<ApplicationSource | null> {
@@ -544,7 +566,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (!configurationUpdating) {
         error = `Silo could not read application state: ${errorMessage(applicationResult.reason)}`
         source = await unavailableLocalSource(error)
-      }
+      } else if (!source) source = await updatingLocalSource()
     }
     if (backupResult.status === "fulfilled") {
       try {
@@ -555,7 +577,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (disposed || sequence !== refreshSequence) return
     if (source && snapshot.source && (githubMutationPending || (source.github.policyRevision ?? 0) < (snapshot.source.github.policyRevision ?? 0))) source = { ...source, github: snapshot.source.github }
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
-    publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error })
+    localStateUpdating = configurationUpdating
+    publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error, localUpdating: configurationUpdating && source !== null && (snapshot.source === null || snapshot.localUpdating === true) })
     void refreshNetwork()
     void refreshComputers()
   }
@@ -569,7 +592,18 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
-  async function initialize() {
+  // Idempotent: Retry after a failed start calls it again. It subscribes only while
+  // not yet subscribed and installs focus, visibility and polling once; later calls
+  // just refresh.
+  let live = false
+  let initialization: Promise<void> | undefined
+  function initialize(): Promise<void> {
+    initialization ??= (live ? refresh() : startLiveUpdates()).finally(() => { initialization = undefined })
+    return initialization
+  }
+
+  async function startLiveUpdates() {
+    if (disposed) return
     try {
       unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
       unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
@@ -577,7 +611,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       unlisten.push(await native.listen("desktop:status-opened", refreshFromEvent))
       // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
       // so setup and sandbox configuration must be accepted again.
-      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => { if (event?.payload === false) acceptingSetup = true }))
+      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => {
+        if (event?.payload !== false) return
+        acceptingSetup = true
+        if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
+      }))
       unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
         const parsed = siloProgressEventSchema.safeParse(event?.payload)
         if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
@@ -592,11 +630,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       publish({ ...snapshot, loading: false, error })
       throw new Error(error)
     }
+    if (disposed) { unlisten.splice(0).forEach((stop) => stop()); return }
+    live = true
     window.addEventListener("focus", onWindowFocus)
     document.addEventListener("visibilitychange", onVisibilityChange)
-    await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
-    if (disposed) return
-    remoteTimer = setInterval(() => {
+    // Poll even if a first load fails; a poll never overlaps a slow read.
+    remoteTimer ??= setInterval(() => {
       // Repository changes inside a VM do not emit application events. A hidden
       // window (the closed main window, the unopened status panel) does no polling,
       // including remote SSH snapshots; slow reads finish before another poll, and
@@ -604,6 +643,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (document.visibilityState === "hidden" || activeRefreshes > 0) return
       void refresh()
     }, 10_000)
+    await Promise.all([refresh(), readSetupActivity(), refreshComputers(), refreshOperationQueue()])
   }
 
   function onVisibilityChange() {
@@ -934,9 +974,36 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return enqueueSetup(["completion"], async () => { await preceding; await markComplete() })
   }
 
+  // Setup waits (GitHub access polling) end early when Quit drains setup.
+  const setupWaits = new Set<() => void>()
+  function setupDelay(ms: number) {
+    return new Promise<void>((resolve) => {
+      const done = () => { window.clearTimeout(timer); setupWaits.delete(done); resolve() }
+      const timer = window.setTimeout(done, ms)
+      setupWaits.add(done)
+    })
+  }
+
+  /** What Quit is waiting for while setup drains, for the shutdown overlay. */
+  function pendingSetupWork(): string | undefined {
+    const pending = new Set(setupJobs.flatMap((job) => job.items.filter(({ status }) => status === "running" || status === "queued").map(({ id }) => id)))
+    const steps = [
+      (pending.has("workspaceRun") || pending.has("workspaceVerify")) && "creating sandboxes",
+      (pending.has("identityRun") || pending.has("identityVerify")) && "applying Git identities",
+      (pending.has("githubRun") || pending.has("githubVerify")) && "verifying GitHub access",
+      pending.has("completion") && "saving setup",
+    ].filter((step): step is string => Boolean(step))
+    return steps.length ? `Finishing setup (${steps.join(", ")})…` : undefined
+  }
+
   async function drainSetup() {
     acceptingSetup = false
-    await setupTail
+    // Accepted setup finishes, but nothing waits minutes for GitHub to confirm access.
+    ;[...setupWaits].forEach((wake) => wake())
+    const pending = pendingSetupWork()
+    if (pending) publish({ ...snapshot, setupDrain: pending })
+    try { await setupTail }
+    finally { if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined }) }
   }
 
   function saveMachineConfiguration(request: SetupMachineConfigurationRequest, baseline?: SetupMachineConfiguration[]): Promise<void> {
@@ -955,15 +1022,18 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     let github = initial
     const revision = initial.policyRevision
     const deadline = Date.now() + 300_000
+    const quitting = () => new Error("Silo is quitting. GitHub access was not verified; Continue after reopening Silo to check again.")
     while (true) {
       if (disposed) throw new Error("Silo closed before GitHub access was verified.")
+      if (!acceptingSetup) throw quitting()
       if (revision !== undefined && (github.policyRevision !== revision || (snapshot.source?.github.policyRevision ?? revision) > revision)) throw new Error("GitHub settings changed during setup. Continue again to verify the latest settings.")
       const operations = workspaces.map((workspace) => github.workspaceOperations?.find((operation) => operation.workspace === workspace))
       const failure = operations.find((operation) => operation?.status === "failed")
       if (failure) throw new Error(failure.message)
       if (operations.every((operation) => operation?.status === "succeeded")) return
       if (Date.now() >= deadline) throw new Error("GitHub access has not been verified in every sandbox. Retry to check again.")
-      await new Promise((resolve) => window.setTimeout(resolve, 500))
+      await setupDelay(500)
+      if (!acceptingSetup) throw quitting()
       github = githubStateShape.parse(await native.invoke("read_github_state"))
       if (!githubMutationPending && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github } })
     }
@@ -1361,9 +1431,20 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener) },
     initialize,
+    // The saved list only draws loading rows before live state arrives, so it never
+    // blocks or fails startup: an unreadable or unexpected list shows no rows.
     async loadConfiguration() {
-      const configuration = z.object({ schemaVersion: z.literal(1), machines: z.array(setupMachineConfigurationSchema).max(64) }).parse(await native.invoke("read_machine_configuration"))
-      publish({ ...snapshot, savedMachines: configuration.machines })
+      try {
+        const configuration = z.object({ machines: z.array(z.unknown()) }).parse(await native.invoke("read_machine_configuration"))
+        const machines = configuration.machines.flatMap((machine) => {
+          const parsed = setupMachineConfigurationSchema.safeParse(machine)
+          return parsed.success ? [parsed.data] : []
+        })
+        if (!disposed) publish({ ...snapshot, savedMachines: machines })
+      } catch (cause) {
+        console.error("Silo saved sandboxes:", errorMessage(cause))
+        if (!disposed) publish({ ...snapshot, savedMachines: [] })
+      }
     },
     refresh,
     configureMachines,

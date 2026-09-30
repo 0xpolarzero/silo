@@ -113,9 +113,15 @@ export function operationsConflict(a: OperationEntry, b: OperationEntry): boolea
   return a.vmId === null || b.vmId === null || a.vmId === b.vmId
 }
 
-/** Running operations that keep `entry` from being admitted, in start order. */
+/**
+ * Operations that keep `entry` from being admitted: conflicting running work, then
+ * conflicting waiters admitted before it. The gate is FIFO, so an earlier waiter holds
+ * `entry` back even while that waiter is itself waiting. Mirrors `State::admissible`.
+ */
 export function blockingOperations(queue: OperationQueue, entry: OperationEntry): OperationEntry[] {
-  return queue.running.filter((running) => operationsConflict(running, entry))
+  const position = queue.waiting.findIndex((waiting) => waiting.id === entry.id)
+  const earlier = position < 0 ? [] : queue.waiting.slice(0, position)
+  return [...queue.running, ...earlier].filter((other) => operationsConflict(other, entry))
 }
 
 /**
