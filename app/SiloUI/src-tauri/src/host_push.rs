@@ -15,8 +15,18 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 
-type DiscoveryCache = HashMap<String, (Instant, Result<Vec<Value>, String>)>;
-static DISCOVERIES: OnceLock<Mutex<DiscoveryCache>> = OnceLock::new();
+/// Repository discovery per VM: the last finished read (with its start time)
+/// and whether a background read is in flight.
+#[derive(Default)]
+struct Discovery {
+    last: Option<(Instant, Result<Vec<Value>, String>)>,
+    running: bool,
+}
+type Discoveries = (Mutex<HashMap<String, Discovery>>, std::sync::Condvar);
+static DISCOVERIES: OnceLock<Discoveries> = OnceLock::new();
+fn discoveries() -> &'static Discoveries {
+    DISCOVERIES.get_or_init(Default::default)
+}
 static RESULTS: OnceLock<Mutex<HashMap<String, (Value, Instant)>>> = OnceLock::new();
 fn results() -> &'static Mutex<HashMap<String, (Value, Instant)>> {
     RESULTS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -71,6 +81,16 @@ pub async fn dismiss_repository_push(
 }
 
 fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Result<String, String> {
+    guest_within(paths, name, script, args, 30)
+}
+/// `seconds` bounds the guest command; the host waits a little longer.
+fn guest_within(
+    paths: &RuntimePaths,
+    name: &str,
+    script: &str,
+    args: &[&str],
+    seconds: u64,
+) -> Result<String, String> {
     let user = crate::working_account::inspect_user(paths, name)?;
     let mut command = vec![
         "exec".into(),
@@ -87,7 +107,7 @@ fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Resul
         "--workdir".into(),
         "/".into(),
         "--timeout".into(),
-        "30s".into(),
+        format!("{seconds}s"),
         "--".into(),
         "sh".into(),
         "-c".into(),
@@ -95,7 +115,7 @@ fn guest(paths: &RuntimePaths, name: &str, script: &str, args: &[&str]) -> Resul
         "silo-host-push".into(),
     ];
     command.extend(args.iter().map(|s| s.to_string()));
-    runtime::run_msb(paths, &command, Duration::from_secs(45))
+    runtime::run_msb(paths, &command, Duration::from_secs(seconds + 15))
         .map(|o| o.stdout)
         .map_err(|_| "Could not read committed repository data from the sandbox.".into())
 }
@@ -174,33 +194,83 @@ impl PushTarget {
 }
 const TARGET_CHANGED: &str =
     "The repository changed after you confirmed the push. Review it and push again.";
+/// Rows at most this old are served without reading the guest again.
+const DISCOVERY_FRESH: Duration = Duration::from_secs(15);
+/// A state refresh waits this long for a VM's first discovery; later refreshes
+/// never wait, so a slow or hostile guest cannot stall them.
+const DISCOVERY_FIRST_WAIT: Duration = Duration::from_secs(3);
+/// Guest time limit for one discovery; an explicit refresh waits for it.
+const DISCOVERY_SECONDS: u64 = 20;
+
+/// Repositories of a running VM. Reads run in the background, one per VM at a
+/// time; callers get the last known rows while a newer read is in flight.
+/// `refresh` (the user's Refresh) waits for a read that started after the call.
 pub(crate) fn discover(
     paths: &RuntimePaths,
     name: &str,
     refresh: bool,
 ) -> Result<Vec<Value>, String> {
+    let requested = Instant::now();
     let key = format!("{}:{name}", paths.home.display());
-    let cache = DISCOVERIES.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some((at, result)) = cache
-        .lock()
-        .map_err(|_| "Repository state unavailable.")?
-        .get(&key)
-    {
-        if !refresh && at.elapsed() < Duration::from_secs(15) {
-            return result.clone();
+    let (lock, changed) = discoveries();
+    let wait_until = requested
+        + if refresh {
+            Duration::from_secs(DISCOVERY_SECONDS + 20)
+        } else {
+            DISCOVERY_FIRST_WAIT
+        };
+    let mut entries = lock.lock().map_err(|_| "Repository state unavailable.")?;
+    loop {
+        let entry = entries.entry(key.clone()).or_default();
+        if let Some((started, result)) = &entry.last {
+            let current = if refresh {
+                *started >= requested
+            } else {
+                started.elapsed() < DISCOVERY_FRESH
+            };
+            if current {
+                return result.clone();
+            }
         }
+        if !entry.running {
+            entry.running = true;
+            let (paths, name, key) = (paths.clone(), name.to_owned(), key.clone());
+            thread::spawn(move || {
+                let started = Instant::now();
+                let result = discover_uncached(&paths, &name);
+                let (lock, changed) = discoveries();
+                let mut entries = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if entries.len() > 64 {
+                    entries.retain(|other, entry| entry.running || *other == key);
+                }
+                let entry = entries.entry(key).or_default();
+                entry.last = Some((started, result));
+                entry.running = false;
+                changed.notify_all();
+            });
+        }
+        if !refresh {
+            if let Some((_, result)) = &entry.last {
+                return result.clone();
+            }
+        }
+        let now = Instant::now();
+        if now >= wait_until {
+            return match &entry.last {
+                Some((_, result)) => result.clone(),
+                None => Ok(Vec::new()),
+            };
+        }
+        entries = changed
+            .wait_timeout(entries, wait_until - now)
+            .map_err(|_| "Repository state unavailable.")?
+            .0;
     }
-    let result = discover_uncached(paths, name);
-    let mut cache = cache.lock().map_err(|_| "Repository state unavailable.")?;
-    if cache.len() > 64 {
-        cache.clear()
-    }
-    cache.insert(key, (Instant::now(), result.clone()));
-    result
 }
 // The guest deadline and runtime output budget bound discovery. An entry-count
 // cutoff discards every result when a workspace contains many Git worktrees.
-const DISCOVER_REPOSITORIES: &str = r#"find "$1" -name .git -prune -print 2>/dev/null | while IFS= read -r directory; do
+// Dependency and cache trees are skipped; they hold no repositories to push.
+const DISCOVER_REPOSITORIES: &str = r#"find "$1" \( -name node_modules -o -name .venv -o -name __pycache__ -o -name .tox -o -name .gradle -o -name .pnpm-store \) -prune -o -name .git -prune -print 2>/dev/null | while IFS= read -r directory; do
 p=${directory%/.git}
 branch=$(git -C "$p" symbolic-ref --quiet --short HEAD) || continue
 counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD) 0"
@@ -212,11 +282,12 @@ done"#;
 const DISCOVERY_FIELDS: usize = 6;
 
 fn discover_uncached(paths: &RuntimePaths, name: &str) -> Result<Vec<Value>, String> {
-    Ok(discovered_rows(&guest(
+    Ok(discovered_rows(&guest_within(
         paths,
         name,
         DISCOVER_REPOSITORIES,
         &["/workspace"],
+        DISCOVERY_SECONDS,
     )?))
 }
 /// Each row names the GitHub repository and head commit a push would publish,
@@ -984,9 +1055,10 @@ printf '%s\n' "$commit"
                 &[path, &format!("refs/remotes/origin/{branch}"), commit],
             )
         });
-        if let Some(cache) = DISCOVERIES.get() {
-            if let Ok(mut cache) = cache.lock() {
-                cache.remove(&format!("{}:{workspace}", paths.home.display()));
+        // The next state refresh reads the repository again.
+        if let Ok(mut entries) = discoveries().0.lock() {
+            if let Some(entry) = entries.get_mut(&format!("{}:{workspace}", paths.home.display())) {
+                entry.last = None;
             }
         }
         Ok(count)
@@ -1050,11 +1122,13 @@ pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_
     runtime::runtime_paths(app)
         .ok()
         .and_then(|paths| {
-            DISCOVERIES
-                .get()?
+            discoveries()
+                .0
                 .lock()
                 .ok()?
                 .get(&format!("{}:{workspace}", paths.home.display()))?
+                .last
+                .as_ref()?
                 .1
                 .as_ref()
                 .ok()?
@@ -1145,18 +1219,20 @@ mod tests {
         };
         let key = format!("{}:test", paths.home.display());
         let cached = vec![json!({"path": "removed-repository"})];
-        DISCOVERIES
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap()
-            .insert(key.clone(), (Instant::now(), Ok(cached.clone())));
+        discoveries().0.lock().unwrap().insert(
+            key.clone(),
+            Discovery {
+                last: Some((Instant::now(), Ok(cached.clone()))),
+                running: false,
+            },
+        );
         assert_eq!(discover(&paths, "test", false).unwrap(), cached);
         // A forced read must reach the missing runtime instead of returning
         // the fresh cached rows. No real VM or runtime is involved.
         let refreshed = discover(&paths, "test", true);
         assert!(refreshed.is_err());
         assert_eq!(discover(&paths, "test", false), refreshed);
-        DISCOVERIES.get().unwrap().lock().unwrap().remove(&key);
+        discoveries().0.lock().unwrap().remove(&key);
     }
 
     #[test]
@@ -1231,6 +1307,133 @@ mod tests {
         assert_eq!(rows.len(), 216);
         assert_eq!(rows[0]["repository"], "Owner/Repo");
         assert_eq!(rows[0]["head"], head.trim());
+    }
+
+    /// A runtime whose guest takes `delay` seconds per discovery and counts them.
+    fn slow_discovery_runtime(root: &Path, delay: &str) -> (RuntimePaths, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let paths = RuntimePaths {
+            executable: root.join("msb"),
+            home: root.join("home"),
+            guest_image: root.join("image"),
+            storage_home: None,
+            // The runtime checks that its library exists; the script stands in.
+            library: root.join("msb"),
+            metadata: root.join("machines.json"),
+            volumes: root.join("volumes"),
+        };
+        let count = root.join("discoveries");
+        let inspected = json!({"name":"dev","status":"Running","config":{"labels":{"silo.managed":"true",crate::working_account::LABEL:"1"}}});
+        fs::write(
+            &paths.executable,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n--silo-working-account-protocol) printf '1\\n' ;;\ninspect) printf '%s\\n' '{inspected}' ;;\nexec) echo run >>'{}'; sleep {delay}; printf '/workspace/repo\\0main\\0001 0\\0\\0{}\\0https://github.com/owner/repo.git\\0' ;;\n*) exit 2 ;;\nesac\n",
+                count.display(),
+                "e".repeat(40),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        (paths, count)
+    }
+    fn runs(count: &Path) -> usize {
+        fs::read_to_string(count).map_or(0, |text| text.lines().count())
+    }
+
+    #[test]
+    fn discovery_reads_each_vm_once_in_the_background_and_serves_known_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, count) = slow_discovery_runtime(root.path(), "1");
+        // Concurrent state refreshes share one guest read.
+        let readers: Vec<_> = (0..3)
+            .map(|_| {
+                let paths = paths.clone();
+                thread::spawn(move || discover(&paths, "dev", false))
+            })
+            .collect();
+        for reader in readers {
+            let rows = reader.join().unwrap().unwrap();
+            assert_eq!(rows[0]["repository"], "owner/repo");
+        }
+        assert_eq!(runs(&count), 1);
+        // Once stale, the known rows are returned at once while a new read runs.
+        let key = format!("{}:dev", paths.home.display());
+        discoveries()
+            .0
+            .lock()
+            .unwrap()
+            .get_mut(&key)
+            .unwrap()
+            .last
+            .as_mut()
+            .unwrap()
+            .0 = Instant::now() - Duration::from_secs(60);
+        let started = Instant::now();
+        assert_eq!(discover(&paths, "dev", false).unwrap().len(), 1);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while discoveries().0.lock().unwrap()[&key].running || runs(&count) < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "background discovery did not finish"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(runs(&count), 2);
+        discoveries().0.lock().unwrap().remove(&key);
+    }
+
+    #[test]
+    fn a_slow_guest_does_not_stall_state_refreshes() {
+        let root = tempfile::tempdir().unwrap();
+        let (paths, count) = slow_discovery_runtime(root.path(), "6");
+        let started = Instant::now();
+        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
+        // Later refreshes do not start another read or wait for this one.
+        let started = Instant::now();
+        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
+        assert_eq!(runs(&count), 1);
+        // An explicit refresh waits for the read to finish.
+        assert_eq!(discover(&paths, "dev", true).unwrap().len(), 1);
+        discoveries()
+            .0
+            .lock()
+            .unwrap()
+            .remove(&format!("{}:dev", paths.home.display()));
+    }
+
+    #[test]
+    fn discovery_skips_dependency_trees() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        for repository in [
+            "app",
+            "app/node_modules/dependency",
+            "tool/.venv/lib/package",
+        ] {
+            let directory = workspace.join(repository);
+            fs::create_dir_all(&directory).unwrap();
+            assert!(Command::new("git")
+                .args(["init", "--quiet", "--initial-branch=main"])
+                .current_dir(&directory)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let output = Command::new("sh")
+            .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
+            .arg(&workspace)
+            .output()
+            .unwrap();
+        let output = String::from_utf8(output.stdout).unwrap();
+        let paths: Vec<_> = output
+            .split('\0')
+            .step_by(DISCOVERY_FIELDS)
+            .filter(|path| !path.is_empty())
+            .collect();
+        assert_eq!(paths, [workspace.join("app").to_str().unwrap()]);
     }
 
     #[test]
