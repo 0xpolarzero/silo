@@ -121,7 +121,10 @@ Silo's patch does not change any of this.
    - Check pins and head.
    - Move the head with `snapshot head` first if needed.
    - Call `snapshot remove`, then drop the record.
-2. `forget_removed` (line 698): remove every member of the group (head last).
+2. `remove_deleted_snapshots`: journal the deleted sandbox's native members,
+   then remove unneeded members in dependency order, moving each group's head
+   when required. Keep fork dependencies journaled before `forget_removed`
+   clears the sandbox's history. Run the same path after interrupted deletion.
 3. On capture or import failure, remove the partial member or `silo-import-*`
    group (shared with E-23 and E-24 journaling).
 4. No age-based sweep. Delete unneeded data at sandbox deletion, retaining exact
