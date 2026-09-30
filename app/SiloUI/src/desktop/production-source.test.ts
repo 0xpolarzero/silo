@@ -499,7 +499,7 @@ describe("production application bridge", () => {
     const store = createProductionSource({...mock.bridge,invoke} as ProductionBridge)
     await store.initialize()
     await store.applicationActions.refreshNetwork?.()
-    expect(store.getSnapshot().source?.workspaces[0].ports).toEqual([{port:3000,hostPort:43000,scheme:"http",configured:true,listening:true}])
+    expect(store.getSnapshot().source?.workspaces[0].ports).toEqual([{port:3000,hostPort:43000,scheme:"http",configured:true,listening:true,host:"dev-1a2b3c4d.localhost"}])
     await store.refresh()
     expect(store.getSnapshot().source?.network).toEqual(state)
     await store.applicationActions.saveNetworkPort?.({workspace:"dev",port:3000,hostPort:null,scheme:"http"})
