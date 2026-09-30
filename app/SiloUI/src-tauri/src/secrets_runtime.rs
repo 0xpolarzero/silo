@@ -507,6 +507,7 @@ mod tests {
 #[ignore = "requires signed MicroSandbox, hypervisor access, bundled image and test HTTPS endpoints"]
 fn live_secret_adapter_uses_refs_and_preserves_boot_for_live_updates() {
     let _test_state = crate::test_support::global_state();
+    crate::test_support::live::require_confirmation();
     let directory = tempfile::Builder::new()
         .prefix("silo-secret-test-")
         .tempdir_in("/tmp")

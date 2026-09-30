@@ -247,6 +247,7 @@ fn starting_vm_does_not_begin_maintenance_during_quit() {
 #[ignore = "requires explicit live VM runtime, home, identity and baseline checksum"]
 fn live_reclaim_preserves_capacity_contents_and_reboots() {
     let _test_state = crate::test_support::global_state();
+    crate::test_support::live::require_confirmation();
     let executable = PathBuf::from(std::env::var("SILO_STORAGE_LIVE_RUNTIME").expect("explicit runtime path required"));
     let home = PathBuf::from(std::env::var("SILO_STORAGE_LIVE_HOME").expect("explicit runtime home required"));
     let id = std::env::var("SILO_STORAGE_LIVE_ID").expect("explicit VM ID required");

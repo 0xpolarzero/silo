@@ -874,6 +874,7 @@ mod tests {
     #[ignore = "child of the explicitly requested disposable lifecycle recovery test"]
     fn lifecycle_recovery_crash_child() {
     let _test_state = crate::test_support::global_state();
+        crate::test_support::live::require_confirmation();
         let root = std::env::var("SILO_TEST_LIFECYCLE_ROOT").expect("missing isolated test root");
         let action =
             std::env::var("SILO_TEST_LIFECYCLE_ACTION").expect("missing isolated test action");
@@ -907,6 +908,7 @@ mod tests {
     #[ignore = "requires signed bundled runtime, guest image and hardware virtualization; uses only a disposable VM"]
     fn lifecycle_recovery_survives_real_worker_exit_without_repeating_restart() {
     let _test_state = crate::test_support::global_state();
+        crate::test_support::live::require_confirmation();
         let directory = tempfile::Builder::new()
             .prefix("silo-lifecycle-live-")
             .tempdir_in("/tmp")

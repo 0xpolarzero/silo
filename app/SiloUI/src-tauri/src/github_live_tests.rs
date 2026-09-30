@@ -20,12 +20,18 @@ fn required(env: &HashMap<String, String>, name: &str) -> Check<String> {
         .cloned()
         .ok_or_else(|| "Missing or invalid regression configuration.".into())
 }
-fn configuration(env: &HashMap<String, String>) -> Check<Fixture> {
+fn authorize_fixtures(env: &HashMap<String, String>) -> Check<()> {
+    crate::test_support::live::validate_confirmation(
+        env.get(crate::test_support::live::CONFIRM_VARIABLE).map(String::as_str),
+    ).map_err(str::to_owned)?;
     ensure(
         env.get("SILO_GITHUB_TEST_CONFIRM").map(String::as_str)
             == Some("private-test-repositories"),
         "Explicit private fixture authorization is required.",
-    )?;
+    )
+}
+fn configuration(env: &HashMap<String, String>) -> Check<Fixture> {
+    authorize_fixtures(env)?;
     let repository = |role: &str| -> Check<Repository> {
         let name = required(env, &format!("SILO_GITHUB_TEST_{role}_REPO"))?;
         let parts: Vec<_> = name.split('/').collect();
@@ -551,15 +557,27 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
     ensure(!cleanup_failed, "Cleanup unconfirmed: inspect only named fixture repository for test issue and revoke remaining test credentials.")?;
     result
 }
+fn guest_regression_command(executable: &std::path::Path) -> std::process::Command {
+    // Reuse the already-built test harness: nested Cargo would share its build
+    // locks and could compile another harness against a changing target directory.
+    let mut command = std::process::Command::new(executable);
+    command.args([
+        "runtime::github_integration_tests::github_authenticated_guest_workflow",
+        "--exact",
+        "--ignored",
+        "--test-threads=1",
+    ]);
+    command
+}
 fn run_vm(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
-    let mut command = std::process::Command::new("cargo");
+    let executable = std::env::current_exe()
+        .map_err(|_| "Cannot locate authenticated guest regression executable.")?;
+    let mut command = guest_regression_command(&executable);
     command.current_dir(env!("CARGO_MANIFEST_DIR")).env_clear();
     for key in [
         "PATH",
         "HOME",
         "TMPDIR",
-        "CARGO_HOME",
-        "RUSTUP_HOME",
         "SDKROOT",
         "DEVELOPER_DIR",
         "SILO_TEST_MSB",
@@ -567,6 +585,7 @@ fn run_vm(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
         "SILO_TEST_GIT",
         "SILO_TEST_GIT_SUPPORT",
         "SILO_GITHUB_TEST_INFLIGHT",
+        crate::test_support::live::CONFIRM_VARIABLE,
     ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
@@ -578,14 +597,6 @@ fn run_vm(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
     let output = command
         .env("SILO_TEST_GITHUB_PROFILE_JSON", profile.to_string())
         .env("SILO_TEST_GITHUB_ISSUE_ID", issue_id)
-        .args([
-            "test",
-            "--offline",
-            "github_authenticated_guest_workflow",
-            "--",
-            "--ignored",
-            "--test-threads=1",
-        ])
         .output()
         .map_err(|_| "Cannot launch authenticated guest regression.")?;
     // Emit only fixed probe diagnoses, never arbitrary child output or credentials.
@@ -607,6 +618,7 @@ fn run_vm(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
 #[ignore = "requires an isolated PKCE callback and explicitly authorized private fixture repositories"]
 fn github_authenticated_browser_workflow() {
     let mut environment: HashMap<String, String> = std::env::vars().collect();
+    authorize_fixtures(&environment).expect("Explicit fixture authorization required before exchange");
     let app = Configuration {
         client_id: required(&environment, "SILO_GITHUB_CLIENT_ID").unwrap(),
         client_secret: required(&environment, "SILO_GITHUB_CLIENT_SECRET").unwrap(),
@@ -655,6 +667,7 @@ fn github_authenticated_native_workflow() {
 #[test]
 fn live_configuration_rejects_missing_confirmation_and_unsafe_fixtures() {
     let mut env: HashMap<String, String> = [
+        (crate::test_support::live::CONFIRM_VARIABLE, crate::test_support::live::CONFIRM_VALUE),
         ("SILO_GITHUB_TEST_CONFIRM", "private-test-repositories"),
         ("SILO_GITHUB_CLIENT_ID", "app"),
         ("SILO_GITHUB_CLIENT_SECRET", "secret"),
@@ -671,6 +684,7 @@ fn live_configuration_rejects_missing_confirmation_and_unsafe_fixtures() {
     .collect();
     assert!(configuration(&env).is_ok());
     for (key, value) in [
+        (crate::test_support::live::CONFIRM_VARIABLE, ""),
         ("SILO_GITHUB_TEST_CONFIRM", ""),
         ("SILO_GITHUB_TEST_READ_REPO", "owner/.."),
         ("SILO_GITHUB_TEST_WRITE_REPO", "other/write"),
@@ -802,4 +816,22 @@ fn live_scoped_parent_refusal_requires_exact_operation_status_and_message() {
             json!({"message":"A scoped token cannot create another scoped credential."})
         )
     ));
+}
+
+#[test]
+fn guest_regression_uses_the_current_test_harness_without_cargo() {
+    let executable = std::env::current_exe().unwrap();
+    let command = guest_regression_command(&executable);
+    assert_eq!(command.get_program(), executable.as_os_str());
+    let args: Vec<_> = command.get_args().map(|arg| arg.to_str().unwrap()).collect();
+    assert_eq!(args, [
+        "runtime::github_integration_tests::github_authenticated_guest_workflow",
+        "--exact", "--ignored", "--test-threads=1",
+    ]);
+    // The exact selector must resolve to a registered test rather than silently
+    // succeeding with zero executed tests. Listing cannot run live regressions.
+    let output = std::process::Command::new(&executable).arg("--list").output().unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8(output.stdout).unwrap().lines()
+        .any(|line| line == format!("{}: test", args[0])));
 }

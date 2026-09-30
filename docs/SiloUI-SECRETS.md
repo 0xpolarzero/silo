@@ -104,9 +104,10 @@ Use disposable values and VMs. Never use a real credential for an echo-service t
 - Linux hardware and Secret Service behavior have not been exercised on this host.
 
 Run the opt-in runtime test with the signed bundled `msb` and library paths in
-`SILO_TEST_MSB` and `SILO_TEST_LIBKRUNFW`:
+`SILO_TEST_MSB` and `SILO_TEST_LIBKRUNFW`, with the explicit confirmation below:
 
 ```sh
+SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures \
 cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml \
   live_secret_adapter_uses_refs_and_preserves_boot_for_live_updates \
   -- --ignored --test-threads=1

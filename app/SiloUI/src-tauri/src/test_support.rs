@@ -1,4 +1,6 @@
 //! Fixtures for native unit tests. Never use product locks to serialize tests.
+pub(crate) mod live;
+
 use std::sync::{Mutex, MutexGuard};
 
 static GLOBAL_STATE: Mutex<()> = Mutex::new(());

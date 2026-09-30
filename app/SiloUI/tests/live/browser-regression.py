@@ -14,6 +14,8 @@ import urllib.parse
 
 root = Path(__file__).resolve().parents[4]
 environment = os.environ.copy()
+if environment.get('SILO_LIVE_TEST_CONFIRM') != 'disposable-test-fixtures':
+    sys.exit('Set SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures before live authorization.')
 configuration = root / 'app/SiloUI/github-build.local.json'
 if configuration.exists():
     for key, value in json.loads(configuration.read_text()).items():

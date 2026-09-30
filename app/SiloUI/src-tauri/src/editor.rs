@@ -1067,8 +1067,11 @@ mod tests {
     #[test]
     #[ignore = "requires an explicitly provided running Silo VM and installs its editor SSH configuration"]
     fn live_editor_transport() {
+        crate::test_support::live::require_confirmation();
         let home =
             PathBuf::from(std::env::var("SILO_EDITOR_USER_HOME").expect("explicit user home"));
+        let real_home = PathBuf::from(std::env::var_os("HOME").expect("explicit real user home"));
+        let home = crate::test_support::live::isolated_editor_home(&home, &real_home).unwrap();
         let runtime_home = PathBuf::from(
             std::env::var("SILO_EDITOR_RUNTIME_HOME").expect("explicit runtime home"),
         );

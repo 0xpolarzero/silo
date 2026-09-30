@@ -93,6 +93,7 @@ fn cleanup_live_checkpoint_fork(
 #[ignore = "requires a signed MicroSandbox binary, hypervisor access, bundled image and GitHub network access"]
 fn github_guest_bootstrap_and_live_identity() {
     let _test_state = crate::test_support::global_state();
+    crate::test_support::live::require_confirmation();
     let executable = PathBuf::from(std::env::var("SILO_TEST_MSB").expect("set SILO_TEST_MSB"));
     let library =
         PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").expect("set SILO_TEST_LIBKRUNFW"));
@@ -391,6 +392,7 @@ fn github_guest_bootstrap_and_live_identity() {
 #[ignore = "requires explicitly authorized private test repositories and live scoped GitHub credentials"]
 fn github_authenticated_guest_workflow() {
     let _test_state = crate::test_support::global_state();
+    crate::test_support::live::require_confirmation();
     let required = |key: &str| std::env::var(key).unwrap_or_else(|_| panic!("set {key}"));
     let raw_profile = required("SILO_TEST_GITHUB_PROFILE_JSON");
     let profile: Value = serde_json::from_str(&raw_profile).expect("invalid test profile");

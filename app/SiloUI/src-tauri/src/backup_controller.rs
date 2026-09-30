@@ -2889,6 +2889,7 @@ mod tests {
     #[test]
     #[ignore = "requires the packaged runtime and hardware virtualization"]
     fn real_backup_restore_preserves_root_and_workspace_without_original_cache() {
+        crate::test_support::live::require_confirmation();
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::Builder::new()
             .prefix("silo-proof-")
@@ -3333,6 +3334,7 @@ mod tests {
     #[test]
     #[ignore = "requires the packaged runtime and hardware virtualization"]
     fn real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk() {
+        crate::test_support::live::require_confirmation();
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::Builder::new()
             .prefix("silo-ckpt-proof-")
