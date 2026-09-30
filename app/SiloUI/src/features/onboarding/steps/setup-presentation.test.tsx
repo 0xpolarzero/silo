@@ -84,7 +84,7 @@ describe("setup progress and review presentation", () => {
     expect(sandboxes[1]).toHaveTextContent("In progress")
     expect(sandboxes[1]).toHaveAttribute("aria-busy", "true")
     expect(sandboxes[2]).toHaveTextContent("Waiting")
-    expect(sandboxes[0]).toHaveTextContent("8 CPU · 32 GB RAM · 120 GB workspace")
+    expect(sandboxes[0]).toHaveTextContent("8 CPU · 32 GiB RAM · 120 GiB workspace")
     expect(screen.getByText("2 repositories selected")).toBeVisible()
     expect(screen.getByText("Alex · alex@example.com")).toBeVisible()
   })

@@ -523,9 +523,9 @@ describe("application", () => {
     const panel = within(appPanel("Sandboxes"))
     await user.click(panel.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    expect(panel.getByRole("combobox", { name: "CPU ceiling" })).toHaveValue("8")
+    expect(panel.getByRole("combobox", { name: "CPUs ceiling" })).toHaveValue("8")
     expect(panel.getByRole("combobox", { name: "Memory ceiling" })).toHaveValue("16")
-    expect(panel.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+    expect(panel.getByRole("combobox", { name: "CPUs limit" })).toHaveValue("4")
   })
 
   it("keeps an unsaved sandbox edit while visiting another section (I-37)", async () => {
@@ -533,11 +533,11 @@ describe("application", () => {
     const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
     await user.click(screen.getByRole("button", { name: "More actions for dev" }))
     await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
-    await user.selectOptions(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.selectOptions(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs limit" }), "4")
     await user.click(sandboxSections.getByRole("button", { name: "Files" }))
-    expect(within(appPanel("Sandboxes")).queryByRole("combobox", { name: "CPU limit" })).not.toBeInTheDocument()
+    expect(within(appPanel("Sandboxes")).queryByRole("combobox", { name: "CPUs limit" })).not.toBeInTheDocument()
     await user.click(sandboxSections.getByRole("button", { name: "Overview" }))
-    expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+    expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs limit" })).toHaveValue("4")
   })
 
   it("uses one global sandbox filter across Files, Logs, Network, and Activity", async () => {
@@ -1199,11 +1199,11 @@ describe("application", () => {
     const name = overview.getByRole("textbox", { name: "Sandbox name" })
     expect(name).toHaveAttribute("readonly")
     expect(overview.getByText("Existing sandboxes cannot be renamed or have their disks resized.")).toBeVisible()
-    expect(overview.getByRole("combobox", { name: "Workspace storage" })).toBeDisabled()
-    expect(overview.getByRole("combobox", { name: "Runtime storage" })).toBeDisabled()
-    await user.hover(overview.getByLabelText(/Workspace storage: .*read-only/))
+    expect(overview.getByRole("combobox", { name: "Workspace disk" })).toBeDisabled()
+    expect(overview.getByRole("combobox", { name: "Runtime disk" })).toBeDisabled()
+    await user.hover(overview.getByLabelText(/Workspace disk: .*read-only/))
     expect(await screen.findByRole("tooltip")).toHaveTextContent("To use a different disk size, create a new sandbox and transfer your data.")
-    await user.selectOptions(overview.getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.selectOptions(overview.getByRole("combobox", { name: "CPUs limit" }), "4")
     await user.click(overview.getByRole("button", { name: "Stop and save…" }))
     await user.click(overview.getByRole("button", { name: "Stop and save" }))
 

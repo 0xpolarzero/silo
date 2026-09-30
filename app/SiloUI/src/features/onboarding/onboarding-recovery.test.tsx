@@ -159,7 +159,7 @@ describe("onboarding restart recovery", () => {
 
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     await user.click(screen.getByRole("button", { name: "Edit dev" }))
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs limit" }), "4")
     await user.click(screen.getByRole("button", { name: "Save" }))
     await user.click(screen.getByRole("button", { name: "Reorder personal" }))
     await user.keyboard("{ArrowUp}{ArrowUp}")

@@ -8,7 +8,7 @@ const small = { logicalCPUs: 8, memoryGiB: 16 }
 
 describe("sandbox resource limits", () => {
   it("fits new-sandbox defaults to a small computer", () => {
-    // 8/12 CPUs and 32/48 GB would be rejected on an 8-core, 16 GB Mac.
+    // 8/12 CPUs and 32/48 GiB would be rejected on an 8-core, 16 GiB Mac.
     expect(fitMachineToCapacity(template, small)).toMatchObject({ cpus: 4, maxCPUs: 8, memoryGiB: 8, maxMemoryGiB: 16 })
     expect(validateMachineResources(fitMachineToCapacity(template, small), small)).toEqual({})
   })
@@ -36,7 +36,7 @@ describe("sandbox resource limits", () => {
     const machine = { ...template, cpus: 4, maxCPUs: 12, memoryGiB: 8, maxMemoryGiB: 48 }
     expect(validateMachineResources(machine, small)).toEqual({
       maxCPUs: "This computer has 8 CPUs. Choose 8 or fewer.",
-      maxMemoryGiB: "This computer has 16 GB of memory. Choose 16 GB or fewer.",
+      maxMemoryGiB: "This computer has 16 GiB of memory. Choose 16 GiB or fewer.",
     })
     expect(validateMachineResources(machine, small, "office-mac").maxCPUs).toBe("office-mac has 8 CPUs. Choose 8 or fewer.")
     // Without a known capacity only the runtime's own limits apply.

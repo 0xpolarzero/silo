@@ -17,7 +17,7 @@ function Surface({ shown, withProvider = true, onMachinesChange }: { shown: bool
 async function editCpuLimit(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Edit ${machine.name}` }))
-  await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs limit" }), "4")
 }
 
 describe("unsaved sandbox edits across navigation", () => {
@@ -28,13 +28,13 @@ describe("unsaved sandbox edits across navigation", () => {
     await editCpuLimit(user)
     rerender(<Surface shown={false} onMachinesChange={onMachinesChange} />)
     rerender(<Surface shown onMachinesChange={onMachinesChange} />)
-    expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+    expect(screen.getByRole("combobox", { name: "CPUs limit" })).toHaveValue("4")
     // The restored edit still saves against the configuration it started from.
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(onMachinesChange).toHaveBeenCalledExactlyOnceWith([{ ...machine, cpus: 4 }], [machine])
     rerender(<Surface shown={false} onMachinesChange={onMachinesChange} />)
     rerender(<Surface shown onMachinesChange={onMachinesChange} />)
-    expect(screen.queryByRole("combobox", { name: "CPU limit" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "CPUs limit" })).not.toBeInTheDocument()
   })
 
   it("forgets a cancelled edit", async () => {
@@ -45,7 +45,7 @@ describe("unsaved sandbox edits across navigation", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     rerender(<Surface shown={false} onMachinesChange={onMachinesChange} />)
     rerender(<Surface shown onMachinesChange={onMachinesChange} />)
-    expect(screen.queryByRole("combobox", { name: "CPU limit" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "CPUs limit" })).not.toBeInTheDocument()
   })
 
   it("keeps nothing outside a provider", async () => {
@@ -55,6 +55,6 @@ describe("unsaved sandbox edits across navigation", () => {
     await editCpuLimit(user)
     rerender(<Surface shown={false} withProvider={false} onMachinesChange={onMachinesChange} />)
     rerender(<Surface shown withProvider={false} onMachinesChange={onMachinesChange} />)
-    expect(screen.queryByRole("combobox", { name: "CPU limit" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("combobox", { name: "CPUs limit" })).not.toBeInTheDocument()
   })
 })

@@ -119,7 +119,7 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
     actions: {
       async chooseDestination() { return source.backup.destination },
       async chooseArchive() {
-        const archive = { ...initialBackupArchive(source), name: "dev.silo-backup", archivePath: "/selected/dev.silo-backup", destination: "Selected file", completedLabel: "Selected export file", size: "12.4 GB" }
+        const archive = { ...initialBackupArchive(source), name: "dev.silo-backup", archivePath: "/selected/dev.silo-backup", destination: "Selected file", completedLabel: "Selected export file", size: "12.4 GiB" }
         return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this export file format is newer than this Silo version." } : { archive, valid: true }
       },
       async inspectArchive(selection) {

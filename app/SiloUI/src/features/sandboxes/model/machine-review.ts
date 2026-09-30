@@ -19,12 +19,12 @@ export interface MachineReview {
 
 const fieldLabels: Record<string, string> = {
   name: "Name",
-  cpus: "CPU limit",
-  maxCPUs: "CPU ceiling",
+  cpus: "CPUs limit",
+  maxCPUs: "CPUs ceiling",
   memoryGiB: "Memory limit",
   maxMemoryGiB: "Memory ceiling",
-  workspaceStorageGiB: "Workspace storage",
-  runtimeStorageGiB: "Runtime storage",
+  workspaceStorageGiB: "Workspace disk",
+  runtimeStorageGiB: "Runtime disk",
   desktop: "Linux desktop",
   host: "SSH host",
   user: "SSH user",
@@ -38,7 +38,7 @@ export function machineFieldLabel(field: string): string {
 
 function fieldValue(field: string, value: unknown): string {
   if (field === "cpus" || field === "maxCPUs") return `${value} ${value === 1 ? "CPU" : "CPUs"}`
-  if (field === "memoryGiB" || field === "maxMemoryGiB" || field === "workspaceStorageGiB" || field === "runtimeStorageGiB") return `${value} GB`
+  if (field === "memoryGiB" || field === "maxMemoryGiB" || field === "workspaceStorageGiB" || field === "runtimeStorageGiB") return `${value} GiB`
   if (field === "desktop") {
     if (!value) return "Not installed"
     return (value as { startWithSandbox?: boolean }).startWithSandbox === false ? "Starts from its viewer" : "Starts with sandbox"

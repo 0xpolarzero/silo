@@ -753,9 +753,9 @@ describe("onboarding", () => {
 
     expect(rows).toHaveLength(3)
     expect(rows.map((row) => within(row).getByText(/^(dev|playgrounds|personal)$/).textContent)).toEqual(["dev", "playgrounds", "personal"])
-    expect(rows[0]).toHaveTextContent("8 CPU · 32 GB RAM · 120 GB workspace")
-    expect(rows[1]).toHaveTextContent("4 CPU · 32 GB RAM · 60 GB workspace")
-    expect(rows[2]).toHaveTextContent("6 CPU · 16 GB RAM · 100 GB workspace")
+    expect(rows[0]).toHaveTextContent("8 CPU · 32 GiB RAM · 120 GiB workspace")
+    expect(rows[1]).toHaveTextContent("4 CPU · 32 GiB RAM · 60 GiB workspace")
+    expect(rows[2]).toHaveTextContent("6 CPU · 16 GiB RAM · 100 GiB workspace")
     expect(within(list).queryByText("docs-build")).not.toBeInTheDocument()
   })
 
@@ -767,7 +767,7 @@ describe("onboarding", () => {
     const draftName = screen.getByRole("textbox", { name: "Sandbox name" })
     expect(draftName).toHaveValue("workspace-4")
     expect(draftName).toHaveFocus()
-    expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveValue("8")
+    expect(screen.getByRole("combobox", { name: "CPUs limit" })).toHaveValue("8")
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(screen.queryByDisplayValue("workspace-4")).not.toBeInTheDocument()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
@@ -776,7 +776,7 @@ describe("onboarding", () => {
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
     await user.clear(screen.getByRole("textbox", { name: "Sandbox name" }))
     await user.type(screen.getByRole("textbox", { name: "Sandbox name" }), "build")
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs limit" }), "4")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     expect(saveMachineConfiguration).toHaveBeenCalledOnce()
@@ -835,8 +835,8 @@ describe("onboarding", () => {
     const name = screen.getByRole("textbox", { name: "Sandbox name" })
     expect(name).toHaveFocus()
     expect(name).toHaveAttribute("readonly")
-    expect(screen.getByRole("combobox", { name: "Workspace storage" })).toBeDisabled()
-    expect(screen.getByRole("combobox", { name: "Runtime storage" })).toBeDisabled()
+    expect(screen.getByRole("combobox", { name: "Workspace disk" })).toBeDisabled()
+    expect(screen.getByRole("combobox", { name: "Runtime disk" })).toBeDisabled()
     await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "16")
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
@@ -898,7 +898,7 @@ describe("onboarding", () => {
 
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     await user.click(screen.getByRole("button", { name: "Edit dev" }))
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs limit" }), "4")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
@@ -1020,7 +1020,7 @@ describe("onboarding", () => {
   it("saves custom CPU and disk values and reopens them", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
     await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
-    for (const [label, unit, value] of [["CPU limit", "CPUs", "3"], ["CPU ceiling", "CPUs", "5"], ["Workspace storage", "GiB", "35"], ["Runtime storage", "GiB", "25"]]) {
+    for (const [label, unit, value] of [["CPUs limit", "CPUs", "3"], ["CPUs ceiling", "CPUs", "5"], ["Workspace disk", "GiB", "35"], ["Runtime disk", "GiB", "25"]]) {
       await user.selectOptions(screen.getByRole("combobox", { name: label }), "custom")
       const input = screen.getByRole("spinbutton", { name: `${label} custom (${unit})` })
       await user.clear(input)
@@ -1031,8 +1031,8 @@ describe("onboarding", () => {
       expect.objectContaining({ name: "dev-copy", cpus: 3, maxCPUs: 5, workspaceStorageGiB: 35, runtimeStorageGiB: 25 }),
     ]))
     await user.click(screen.getByRole("button", { name: "Edit dev-copy" }))
-    expect(screen.getByRole("spinbutton", { name: "CPU limit custom (CPUs)" })).toHaveValue(3)
-    expect(screen.getByRole("spinbutton", { name: "Workspace storage custom (GiB)" })).toHaveValue(35)
+    expect(screen.getByRole("spinbutton", { name: "CPUs limit custom (CPUs)" })).toHaveValue(3)
+    expect(screen.getByRole("spinbutton", { name: "Workspace disk custom (GiB)" })).toHaveValue(35)
   })
 
   it("blocks duplicate names and invalid VM resource ranges", async () => {
@@ -1040,12 +1040,12 @@ describe("onboarding", () => {
     await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
     await user.clear(screen.getByRole("textbox", { name: "Sandbox name" }))
     await user.type(screen.getByRole("textbox", { name: "Sandbox name" }), "personal")
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "12")
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU ceiling" }), "4")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs limit" }), "12")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs ceiling" }), "4")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     expect(screen.getByText("Sandbox names must be unique.")).toBeVisible()
-    expect(screen.getByText("CPU limit cannot exceed its ceiling.")).toBeVisible()
+    expect(screen.getByText("CPUs limit cannot exceed its ceiling.")).toBeVisible()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
   })
 
@@ -1097,9 +1097,9 @@ describe("onboarding", () => {
     const rows = within(review).getAllByRole("listitem")
     const expected = [
       ["remote", "ssh", "ops@remote.example.com:22"],
-      ["dev", "vm", "8 CPU · 32 GB RAM"],
-      ["playgrounds", "vm", "4 CPU · 32 GB RAM"],
-      ["personal", "vm", "6 CPU · 16 GB RAM"],
+      ["dev", "vm", "8 CPU · 32 GiB RAM"],
+      ["playgrounds", "vm", "4 CPU · 32 GiB RAM"],
+      ["personal", "vm", "6 CPU · 16 GiB RAM"],
     ]
     expect(rows).toHaveLength(expected.length)
     expected.forEach(([name, kind, detail], index) => {

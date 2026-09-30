@@ -100,7 +100,7 @@ describe("optional Linux desktop", () => {
   it("still explains the VM stop required by a resource change", async () => {
     const user = userEvent.setup()
     editor({ ...machine, desktop: { startWithSandbox: true } }, true)
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs limit" }), "4")
     expect(screen.getByRole("button", { name: "Stop and save…" })).toBeVisible()
   })
 })

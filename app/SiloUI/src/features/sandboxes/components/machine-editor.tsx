@@ -65,7 +65,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
       </select>
       {isCustom && <Input technical
         type="number" inputMode="numeric" disabled={readOnly} min={1} max={max} step={1}
-        aria-label={`${label} custom (${suffix === "CPU" ? "CPUs" : "GiB"})`}
+        aria-label={`${label} custom (${suffix === "CPUs" ? "CPUs" : "GiB"})`}
         aria-invalid={Boolean(error)}
         aria-describedby={describedBy}
         value={customText}
@@ -259,12 +259,13 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
 
       {draft.kind === "vm" ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
-          <SelectField custom label="CPU limit" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPU" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="CPU ceiling" value={draft.maxCPUs} values={cpuPresets} max={maximums.cpus} suffix="CPU" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory limit" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom readOnly={created} label="Workspace storage" value={draft.workspaceStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom readOnly={created} label="Runtime storage" value={draft.runtimeStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <p className="col-span-full text-[11px] text-muted-foreground">Limits set the CPUs and Memory available at startup; ceilings set the most the sandbox can use. The Workspace disk holds /workspace; the Runtime disk holds the operating system and installed applications.</p>
+          <SelectField custom label="CPUs limit" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="CPUs ceiling" value={draft.maxCPUs} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory limit" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom readOnly={created} label="Workspace disk" value={draft.workspaceStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom readOnly={created} label="Runtime disk" value={draft.runtimeStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
         </div>
       ) : (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem]">

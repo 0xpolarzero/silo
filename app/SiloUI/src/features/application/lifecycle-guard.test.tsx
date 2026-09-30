@@ -27,7 +27,7 @@ it("asks before the palette starts a sandbox under memory pressure, inside the p
 
   const dialog = within(screen.getByRole("dialog", { name: "Commands" }))
   expect(dialog.getByText("Starting dev may slow this computer")).toBeVisible()
-  expect(dialog.getByText(/can use up to 32 GB/)).toBeVisible()
+  expect(dialog.getByText(/can use up to 32 GiB/)).toBeVisible()
   expect(startWorkspace).not.toHaveBeenCalled()
   await user.click(dialog.getByRole("button", { name: "Start anyway" }))
   expect(startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")

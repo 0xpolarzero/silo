@@ -11,7 +11,7 @@ import { OverviewPage } from "./overview-page"
 
 const GiB = 1024 ** 3
 const backup = { state: { availability: "available", operation: null }, actions: {} } as BackupController
-const verified: VerifiedExport = { operationId: "export-dev", archive: { name: "dev", archivePath: "/fixture/dev.silo", completedLabel: "Now", size: "4.2 GB", destination: "/fixture", sandboxes: ["dev"] } }
+const verified: VerifiedExport = { operationId: "export-dev", archive: { name: "dev", archivePath: "/fixture/dev.silo", completedLabel: "Now", size: "4.2 GiB", destination: "/fixture", sandboxes: ["dev"] } }
 
 for (const entry of ["row", "page"] as const) {
   it(`waits for a verified export before deleting from the ${entry}`, async () => {
@@ -87,7 +87,7 @@ function popover() {
 async function expectDeleteDialog() {
   const dialog = popover()
   expect(await dialog.findByText("Delete dev permanently?")).toBeVisible()
-  expect(await dialog.findByText("Its files (4.2 GB) and 2 checkpoints will be deleted. This can't be undone.")).toBeVisible()
+  expect(await dialog.findByText("Its files (4.2 GiB) and 2 checkpoints will be deleted. This can't be undone.")).toBeVisible()
   const remove = dialog.getByRole("button", { name: "Delete permanently" })
   expect(remove.className).toContain("destructive")
   expect(dialog.getByRole("button", { name: "Cancel" })).toBeVisible()

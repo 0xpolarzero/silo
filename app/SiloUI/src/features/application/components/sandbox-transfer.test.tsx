@@ -10,7 +10,7 @@ import { ExportIncompleteError, type BackupController, type BackupOperation } fr
 
 const source = applicationSourceForScenario("running")
 const localVm = source.workspaces.find((w) => !w.computer && w.machine.kind === "vm")!
-const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GB", destination: "/backups", sandboxes: ["dev"] }
+const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GiB", destination: "/backups", sandboxes: ["dev"] }
 
 function controller(overrides: Partial<BackupController["state"]> = {}, actions: Partial<BackupController["actions"]> = {}): BackupController {
   return {
@@ -109,7 +109,7 @@ describe("export notifications", () => {
     const { rerender } = render(<Harness backup={controller()} />)
     rerender(<Harness backup={backup} />)
     expect(await screen.findByText("Exported")).toBeInTheDocument()
-    expect(screen.getByText("dev.silo-backup · 2 GB")).toBeInTheDocument()
+    expect(screen.getByText("dev.silo-backup · 2 GiB")).toBeInTheDocument()
     fireEvent.click(await screen.findByRole("button", { name: /Show in (Finder|folder)/ }))
     expect(backup.actions.revealArchive).toHaveBeenCalledWith(archive)
   })

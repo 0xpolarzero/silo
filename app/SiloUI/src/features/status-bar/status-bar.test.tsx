@@ -33,7 +33,7 @@ describe("status bar", () => {
     } else await user.click(screen.getByRole("button", { name: "Start dev" }))
     expect(actions.startWorkspace).not.toHaveBeenCalled()
     const prompt = screen.getByRole("group", { name: "Starting dev may slow this computer" })
-    expect(prompt).toHaveTextContent("32 GB")
+    expect(prompt).toHaveTextContent("32 GiB")
     await user.click(within(prompt).getByRole("button", { name: "Start anyway" }))
     expect(actions.startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
   })

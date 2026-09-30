@@ -19,7 +19,7 @@ const backup: BackupState = {
   availability: "available",
   requiredSpaceGB: 2,
   availableSpaceGB: 40,
-  archives: [{ name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GB", destination: "/tmp", sandboxes: ["dev"] }],
+  archives: [{ name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GiB", destination: "/tmp", sandboxes: ["dev"] }],
   operation: null,
 }
 

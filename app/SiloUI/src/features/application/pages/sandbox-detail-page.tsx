@@ -265,7 +265,7 @@ function OverviewTab({ workspace, source, actions, active, onEdit, onNavigate }:
   const hasRepositories = repositories.length > 0 || extraGithub.length > 0
 
   const resourceTitle = isVm
-    ? `${machine.cpus} CPU${machine.cpus === 1 ? "" : "s"} · ${machine.memoryGiB} GB memory · ${machine.workspaceStorageGiB} GB disk`
+    ? `CPUs: ${machine.cpus} · Memory: ${machine.memoryGiB} GiB · Disk: ${machine.workspaceStorageGiB} GiB`
     : `${machine.user}@${machine.host}:${machine.port}`
 
   return <div className="grid gap-5">

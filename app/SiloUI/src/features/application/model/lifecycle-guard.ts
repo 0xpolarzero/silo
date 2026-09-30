@@ -38,7 +38,7 @@ export function lifecycleCheck(source: ApplicationSource, workspace: Application
   if (action === "start" && local && notice?.kind === "start-memory" && notice.sandbox === workspace.machine.name) {
     return { kind: "confirm", prompt: {
       title: `Starting ${workspace.machine.name} may slow this computer`,
-      description: `Silo found high memory pressure now. This sandbox can use up to ${notice.memoryGiB} GB. Close memory-heavy apps, or start anyway.`,
+      description: `Silo found high memory pressure now. This sandbox can use up to ${notice.memoryGiB} GiB. Close memory-heavy apps, or start anyway.`,
       confirmLabel: "Start anyway",
       tone: "default",
     } }

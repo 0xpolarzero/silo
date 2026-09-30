@@ -24,7 +24,7 @@ async function enterCustom(user: ReturnType<typeof userEvent.setup>, label: stri
 describe("machine editor resource fields", () => {
   it("caps custom CPU counts at what the runtime accepts", async () => {
     const { user } = await openNewSandbox()
-    const input = await enterCustom(user, "CPU ceiling", "CPUs", "12")
+    const input = await enterCustom(user, "CPUs ceiling", "CPUs", "12")
     expect(input).toHaveAttribute("max", "255")
     expect(input).toHaveAttribute("step", "1")
   })
@@ -36,7 +36,7 @@ describe("machine editor resource fields", () => {
     ["more than the runtime accepts", "300"],
   ])("rejects %s with a readable message instead of saving", async (_case, value) => {
     const { user, onMachinesChange } = await openNewSandbox()
-    const input = await enterCustom(user, "CPU ceiling", "CPUs", value)
+    const input = await enterCustom(user, "CPUs ceiling", "CPUs", value)
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(onMachinesChange).not.toHaveBeenCalled()
     expect(input).toHaveAccessibleDescription("Enter a whole number of CPUs from 1 to 255.")
@@ -49,11 +49,11 @@ describe("machine editor resource fields", () => {
   it("explains memory and storage ranges in the same words", async () => {
     const { user, onMachinesChange } = await openNewSandbox()
     const memory = await enterCustom(user, "Memory limit", "GiB", "0")
-    const storage = await enterCustom(user, "Workspace storage", "GiB", "2.5")
+    const storage = await enterCustom(user, "Workspace disk", "GiB", "2.5")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(onMachinesChange).not.toHaveBeenCalled()
-    expect(memory).toHaveAccessibleDescription(/^Enter a whole number of GB from 1 to [\d,]+\.$/)
-    expect(storage).toHaveAccessibleDescription("Enter a whole number of GB from 1 to 4,194,303.")
+    expect(memory).toHaveAccessibleDescription(/^Enter a whole number of GiB from 1 to [\d,]+\.$/)
+    expect(storage).toHaveAccessibleDescription("Enter a whole number of GiB from 1 to 4,194,303.")
   })
 
   it("fits a new sandbox to a small computer so Save succeeds", async () => {
@@ -62,10 +62,10 @@ describe("machine editor resource fields", () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    expect(screen.getByRole("combobox", { name: "CPU ceiling" })).toHaveValue("8")
+    expect(screen.getByRole("combobox", { name: "CPUs ceiling" })).toHaveValue("8")
     expect(screen.getByRole("combobox", { name: "Memory ceiling" })).toHaveValue("16")
     const options = (label: string) => [...screen.getByRole("combobox", { name: label }).querySelectorAll("option")].map(option => option.value)
-    expect(options("CPU ceiling")).toEqual(["1", "2", "4", "6", "8", "custom"])
+    expect(options("CPUs ceiling")).toEqual(["1", "2", "4", "6", "8", "custom"])
     expect(options("Memory ceiling")).toEqual(["1", "2", "4", "8", "12", "16", "custom"])
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ cpus: 4, maxCPUs: 8, memoryGiB: 8, maxMemoryGiB: 16 })])
@@ -77,7 +77,7 @@ describe("machine editor resource fields", () => {
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    const input = await enterCustom(user, "CPU ceiling", "CPUs", "12")
+    const input = await enterCustom(user, "CPUs ceiling", "CPUs", "12")
     expect(input).toHaveAttribute("max", "8")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(onMachinesChange).not.toHaveBeenCalled()
@@ -86,7 +86,7 @@ describe("machine editor resource fields", () => {
 
   it("saves a valid whole custom value", async () => {
     const { user, onMachinesChange } = await openNewSandbox()
-    await enterCustom(user, "CPU ceiling", "CPUs", "10")
+    await enterCustom(user, "CPUs ceiling", "CPUs", "10")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ maxCPUs: 10 })])
   })

@@ -15,6 +15,6 @@ export function deleteSandboxDescription(kind: string, checkpoints?: number, siz
 /** A sandbox's size on disk, as the storage and resource settings show sizes. */
 export function formatSandboxSize(bytes: number): string {
   const gib = bytes / 1024 ** 3
-  if (gib >= 1) return `${gib.toFixed(1)} GB`
-  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`
+  if (gib >= 1) return `${gib.toFixed(1)} GiB`
+  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MiB`
 }

@@ -442,7 +442,7 @@ export function applicationSourceForScenario(
     backup: {
       lastArchive: "silo-2026-09-02.silo-backup",
       completedLabel: "Yesterday at 22:14",
-      compressedSize: "38.4 GB",
+      compressedSize: "38.4 GiB",
       destination: "External SSD / Silo Exports",
     },
     preferences: {

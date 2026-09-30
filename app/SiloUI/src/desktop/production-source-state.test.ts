@@ -581,7 +581,7 @@ describe("export and import state", () => {
 })
 
 describe("result and job identity", () => {
-  const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GB", destination: "/tmp", sandboxes: ["dev"] }
+  const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GiB", destination: "/tmp", sandboxes: ["dev"] }
   const result = { operation: "backup" as const, archive, runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Export complete", message: "Exported dev." }
 
   it("shows a result again when the runtime refuses to dismiss it (H-33, E-49)", async () => {

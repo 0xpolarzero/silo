@@ -101,19 +101,19 @@ export function validateMachineResources(machine: SetupVirtualMachineConfigurati
   }
   range("cpus", runtimeLimits.cpus, "CPUs")
   range("maxCPUs", runtimeLimits.cpus, "CPUs")
-  range("memoryGiB", runtimeLimits.memoryGiB, "GB")
-  range("maxMemoryGiB", runtimeLimits.memoryGiB, "GB")
-  range("workspaceStorageGiB", runtimeLimits.storageGiB, "GB")
-  range("runtimeStorageGiB", runtimeLimits.storageGiB, "GB")
+  range("memoryGiB", runtimeLimits.memoryGiB, "GiB")
+  range("maxMemoryGiB", runtimeLimits.memoryGiB, "GiB")
+  range("workspaceStorageGiB", runtimeLimits.storageGiB, "GiB")
+  range("runtimeStorageGiB", runtimeLimits.storageGiB, "GiB")
   if (capacity) {
     const { cpus, memoryGiB } = resourceMaximums(capacity)
     if (!errors.maxCPUs && machine.maxCPUs > cpus) errors.maxCPUs = `${computerName} has ${number(cpus)} CPUs. Choose ${number(cpus)} or fewer.`
-    if (!errors.maxMemoryGiB && machine.maxMemoryGiB > memoryGiB) errors.maxMemoryGiB = `${computerName} has ${number(memoryGiB)} GB of memory. Choose ${number(memoryGiB)} GB or fewer.`
+    if (!errors.maxMemoryGiB && machine.maxMemoryGiB > memoryGiB) errors.maxMemoryGiB = `${computerName} has ${number(memoryGiB)} GiB of memory. Choose ${number(memoryGiB)} GiB or fewer.`
   }
-  if (!errors.cpus && !errors.maxCPUs && machine.cpus > machine.maxCPUs) errors.cpus = "CPU limit cannot exceed its ceiling."
+  if (!errors.cpus && !errors.maxCPUs && machine.cpus > machine.maxCPUs) errors.cpus = "CPUs limit cannot exceed its ceiling."
   if (!errors.memoryGiB && !errors.maxMemoryGiB && machine.memoryGiB > machine.maxMemoryGiB) errors.memoryGiB = "Memory limit cannot exceed its ceiling."
   if (!errors.workspaceStorageGiB && !errors.runtimeStorageGiB && machine.workspaceStorageGiB + machine.runtimeStorageGiB > runtimeLimits.storageGiB) {
-    errors.workspaceStorageGiB = `Workspace and runtime storage together can't exceed ${number(runtimeLimits.storageGiB)} GB.`
+    errors.workspaceStorageGiB = `Workspace and runtime storage together can't exceed ${number(runtimeLimits.storageGiB)} GiB.`
   }
   return errors
 }

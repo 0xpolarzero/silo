@@ -11,7 +11,7 @@ describe("rebasing a draft after a stale save", () => {
     const draft = { ...opened, cpus: 4, memoryGiB: 16 }
     const { draft: rebased, review } = rebaseMachineDraft(opened, latest, draft)
     expect(rebased).toEqual({ ...opened, cpus: 4, memoryGiB: 16, maxMemoryGiB: 64, desktop: { startWithSandbox: true } })
-    expect(review.conflicts).toEqual([{ field: "cpus", label: "CPU limit", theirs: "6 CPUs", mine: "4 CPUs" }])
+    expect(review.conflicts).toEqual([{ field: "cpus", label: "CPUs limit", theirs: "6 CPUs", mine: "4 CPUs" }])
     expect(review.adopted).toEqual(["Memory ceiling", "Linux desktop"])
   })
 

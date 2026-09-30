@@ -371,7 +371,7 @@ export function OverviewPage({ active = true, readOnly = false,
     if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
     const notice = source.resourceNotice
     if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
-    return `Not enough storage to create ${machine.name}. About ${notice.requiredGB} GB is needed on ${notice.volume}; ${notice.availableGB} GB is available. No sandbox was created.`
+    return `Not enough storage to create ${machine.name}. About ${notice.requiredGB} GiB is needed on ${notice.volume}; ${notice.availableGB} GiB is available. No sandbox was created.`
   }
   const isMachineCreated = (machine: SetupMachineConfiguration) => committedWorkspaces.has(machine.id)
   const isMachineRunning = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.state === "running"
