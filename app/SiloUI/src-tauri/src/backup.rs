@@ -1450,11 +1450,18 @@ fn compare_loaded_descriptor(
         let Some(volume) = found else {
             return Err("it mounts a volume at an undeclared path".into());
         };
-        for field in ["storage", "options", "stat_virtualization", "host_permissions"] {
-            if let Some(expected) = declared.get(field) {
-                if volume.pointer(&format!("/mount/{field}")) != Some(expected) {
-                    return Err(format!("its {} volume has different {field}", declared["guest"].as_str().unwrap_or("owned")));
-                }
+        // The CLI omits default directory policies in some config output.
+        // OwnedMountSnapshot always records them; compare the actual upstream
+        // defaults as well as fields explicitly present in the manifest.
+        for (field, default) in [
+            ("storage", Value::Null),
+            ("options", serde_json::json!({"readonly":false,"noexec":false,"nosuid":false,"nodev":false})),
+            ("stat_virtualization", serde_json::json!("strict")),
+            ("host_permissions", serde_json::json!("private")),
+        ] {
+            let expected = declared.get(field).unwrap_or(&default);
+            if volume.pointer(&format!("/mount/{field}")) != Some(expected) {
+                return Err(format!("its {} volume has different {field}", declared["guest"].as_str().unwrap_or("owned")));
             }
         }
     }
@@ -3244,8 +3251,8 @@ mod tests {
                         "guest": mount["guest"],
                         "storage": mount["storage"],
                         "options": mount["options"],
-                        "stat_virtualization": "none",
-                        "host_permissions": "preserve"
+                        "stat_virtualization": "strict",
+                        "host_permissions": "private"
                     },
                     "data": {"kind": "disk", "generation": {}}
                 })
@@ -5119,6 +5126,18 @@ mod tests {
             let detail = refused_because(result);
             assert!(detail.contains(expected), "{expected}: {detail}");
             assert_eq!(removed.len(), 2, "{expected}: the loaded group must be removed");
+        }
+    }
+
+    #[test]
+    fn loaded_snapshot_must_preserve_default_owned_mount_policies() {
+        for (field, replacement) in [("stat_virtualization", "relaxed"), ("host_permissions", "mirror")] {
+            let (result, removed) = import_with_descriptor(|descriptor| {
+                descriptor["extensions"][OWNED_VOLUMES_EXTENSION][0]["mount"][field] = replacement.into();
+            });
+            let error = refused_because(result);
+            assert!(error.contains(field), "{error}");
+            assert_eq!(removed.len(), 2);
         }
     }
 
