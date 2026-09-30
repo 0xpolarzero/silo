@@ -48,6 +48,7 @@ mod single_instance;
 mod startup;
 mod status_panel;
 mod system_integrations;
+mod system_shutdown;
 mod tray;
 mod terminal;
 mod updates;
@@ -79,7 +80,7 @@ fn main() {
     // Plugins initialize while the app is built, in registration order, and the
     // setup hook runs only after that. A second launch therefore exits inside
     // the single-instance plugin before any migration, remote-management or VM work.
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(single_instance::plugin())
         .on_page_load(|webview, _| {
             #[cfg(target_os = "macos")]
@@ -217,6 +218,7 @@ fn main() {
             // Tauri panics on a setup error. Explain the failure and exit instead.
             let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             settings::install(app.handle());
+            system_shutdown::install(app.handle());
             let queue_app = app.handle().clone();
             runtime::OPERATIONS.set_listener(move || {
                 let _ = queue_app.emit("silo://operation-queue-changed", ());
@@ -269,24 +271,29 @@ fn main() {
         .unwrap_or_else(|error| {
             eprintln!("Silo could not start: {error}");
             std::process::exit(1);
-        })
-        .run(|_app, _event| {
-            if let tauri::RunEvent::Exit = &_event {
-                ssh_access::close_all();
-                remote_network::close_all();
-            }
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = &_event {
-                settings::prevent_exit_until_saved(_app, api, *code);
-            }
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen {
-                has_visible_windows: false,
-                ..
-            } = _event
-            {
-                status_panel::report(status_panel::open_main(_app.clone(), None));
-            }
         });
+    // tao installs its AppKit delegate while the event loop is created; add the
+    // terminate handler before AppKit finishes launching.
+    #[cfg(target_os = "macos")]
+    system_shutdown::install_terminate_handler(app.handle());
+    app.run(|_app, _event| {
+        if let tauri::RunEvent::Exit = &_event {
+            settings::exit_backstop(_app);
+            ssh_access::close_all();
+            remote_network::close_all();
+        }
+        if let tauri::RunEvent::ExitRequested { api, code, .. } = &_event {
+            settings::prevent_exit_until_saved(_app, api, *code);
+        }
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } = _event
+        {
+            status_panel::report(status_panel::open_main(_app.clone(), None));
+        }
+    });
 }
 
 /// Setup stopped part-way, so some native state the UI relies on is missing. Stop

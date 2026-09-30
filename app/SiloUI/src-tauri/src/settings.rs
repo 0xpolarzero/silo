@@ -8,7 +8,7 @@ use std::{
     sync::{
         Condvar, Mutex, MutexGuard,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
@@ -529,10 +529,19 @@ impl SettingsState {
     }
 }
 
+/// How long Quit waits for the webview to acknowledge its settings flush.
+const FRONTEND_FLUSH_FALLBACK: Duration = Duration::from_secs(2);
+
 #[derive(Default)]
 struct ShutdownState(Mutex<ShutdownProgress>);
 #[derive(Default)]
-struct ShutdownProgress { phase: u8, generation: u64, restarting: bool }
+struct ShutdownProgress {
+    phase: u8,
+    generation: u64,
+    restarting: bool,
+    /// Logout, shutdown or SIGTERM: stop VMs by this time and never cancel the exit.
+    session_deadline: Option<Instant>,
+}
 
 impl ShutdownState {
     const REQUESTED: u8 = 1;
@@ -564,8 +573,15 @@ impl ShutdownState {
     }
     fn claim_exit_for(&self, frontend_completed: bool, generation: Option<u64>) -> bool {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        let expected = if frontend_completed { Self::FLUSHING } else { Self::REQUESTED };
-        if state.phase != expected || generation.is_some_and(|generation| generation != state.generation) { return false; }
+        // When the session ends, the fallback also cuts off a frontend flush that
+        // has not finished in time.
+        let allowed = if frontend_completed {
+            state.phase == Self::FLUSHING
+        } else {
+            state.phase == Self::REQUESTED
+                || (state.session_deadline.is_some() && state.phase == Self::FLUSHING)
+        };
+        if !allowed || generation.is_some_and(|generation| generation != state.generation) { return false; }
         state.phase = Self::FINISHING;
         true
     }
@@ -576,7 +592,17 @@ impl ShutdownState {
         self.0.lock().unwrap_or_else(|error| error.into_inner()).phase == Self::APPROVED
     }
     fn cancel(&self) {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).phase = 0;
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.phase = 0;
+        state.session_deadline = None;
+    }
+    /// Keep the earliest deadline when the session end is reported twice.
+    fn begin_session_end(&self, deadline: Instant) {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.session_deadline = Some(state.session_deadline.map_or(deadline, |current| current.min(deadline)));
+    }
+    fn session_deadline(&self) -> Option<Instant> {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).session_deadline
     }
     fn allow_exit(&self) {
         self.0.lock().unwrap_or_else(|error| error.into_inner()).phase = Self::APPROVED;
@@ -754,14 +780,48 @@ pub async fn flush_settings(app: AppHandle, window: WebviewWindow) -> Result<(),
     result
 }
 
+/// Stop local VMs, bounded by `deadline` when the session is ending.
+fn stop_local_vms(app: &AppHandle, deadline: Option<Instant>) -> Result<(), String> {
+    let Some(deadline) = deadline else {
+        crate::startup::cancel_and_wait(app);
+        return crate::runtime::shutdown::stop_local_vms(app);
+    };
+    let app = app.clone();
+    run_before(deadline, move || {
+        crate::startup::cancel_and_wait(&app);
+        crate::runtime::shutdown::stop_local_vms(&app)
+    })
+}
+
+/// Run `work` on its own thread and stop waiting at `deadline`. The work keeps
+/// running; the process is about to exit.
+fn run_before<T: Send + 'static>(
+    deadline: Instant,
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(work());
+    });
+    receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_else(|_| Err("Local VMs did not finish stopping in time.".into()))
+}
+
 fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64>) {
-    if !app.state::<ShutdownState>().claim_exit_for(frontend_completed, generation) {
+    let state = app.state::<ShutdownState>();
+    if !state.claim_exit_for(frontend_completed, generation) {
         return;
     }
-    crate::startup::cancel_and_wait(app);
-    if let Err(error) = crate::runtime::shutdown::stop_local_vms(app) {
-        cancel_exit(app, format!("Silo stayed open because its local VMs could not shut down safely.\n\n{error}\n\nCheck the affected VMs and choose Quit Silo again. VMs on other computers were not stopped."));
-        return;
+    let stopped = stop_local_vms(app, state.session_deadline());
+    // Read the session state again: logout can begin while a Quit is stopping VMs.
+    let session_end = state.session_deadline().is_some();
+    if let Err(error) = stopped {
+        if !session_end {
+            cancel_exit(app, format!("Silo stayed open because its local VMs could not shut down safely.\n\n{error}\n\nCheck the affected VMs and choose Quit Silo again. VMs on other computers were not stopped."));
+            return;
+        }
+        eprintln!("Silo is exiting because the session ended: {error}");
     }
     // The frontend has drained its invoke queue. Wait for any native write already in progress.
     let saved = app.state::<SettingsState>().store.lock()
@@ -771,17 +831,21 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64
             None => Ok(()),
         });
     if let Err(error) = saved {
-        cancel_exit(app, format!("Local VMs stopped, but Silo could not save its settings.\n\n{error}\n\nResolve the storage issue and choose Quit Silo again."));
-        return;
+        if !session_end {
+            cancel_exit(app, format!("Local VMs stopped, but Silo could not save its settings.\n\n{error}\n\nResolve the storage issue and choose Quit Silo again."));
+            return;
+        }
+        eprintln!("Silo is exiting because the session ended; settings were not saved: {error}");
     }
     crate::remote_network::close_all();
-    app.state::<ShutdownState>().allow_exit();
-    app.exit(0);
+    state.allow_exit();
+    crate::system_shutdown::exit(app);
 }
 
 fn cancel_exit(app: &AppHandle, message: String) {
     crate::runtime::shutdown::cancel();
     app.state::<ShutdownState>().cancel();
+    crate::system_shutdown::cancel(app);
     let _ = app.emit("silo://shutdown-state-changed", false);
     // Startup remains cancelled: a failed Quit must not automatically restart VMs
     // that have already stopped. Manual controls become available again.
@@ -803,6 +867,13 @@ pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi, co
         ExitRequest::Gated => {}
     }
     api.prevent_exit();
+    begin_exit(app);
+}
+
+/// Start the graceful exit: stop admission, ask the frontend to save, and fall
+/// back to finishing natively when it never answers.
+fn begin_exit(app: &AppHandle) {
+    let state = app.state::<ShutdownState>();
     crate::startup::cancel(app);
     let Some(generation) = state.request_generation() else { return; };
     crate::runtime::shutdown::begin();
@@ -814,7 +885,7 @@ pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi, co
     std::thread::spawn(move || {
         // Only a webview that never acknowledges may use the fallback. A responsive
         // frontend can take as long as it needs to drain its pending changes.
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(FRONTEND_FLUSH_FALLBACK);
         finish_exit(&app, false, Some(generation));
     });
 }
@@ -824,6 +895,51 @@ pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi, co
 pub(crate) fn exit_without_shutdown(app: &AppHandle) {
     if let Some(state) = app.try_state::<ShutdownState>() {
         state.allow_exit();
+    }
+}
+
+/// Logout, restart, shutdown or SIGTERM (decision 7): no prompt, local VMs stop
+/// within `budget`, and a failed stop or save never cancels the exit.
+pub(crate) fn end_session(app: &AppHandle, budget: Duration) {
+    let Some(state) = app.try_state::<ShutdownState>() else {
+        // Setup has not started: Silo owns no VMs yet.
+        crate::system_shutdown::exit(app);
+        return;
+    };
+    if state.approved() {
+        crate::system_shutdown::exit(app);
+        return;
+    }
+    state.begin_session_end(Instant::now() + budget);
+    // An open Quit prompt no longer applies; its answer is ignored.
+    app.state::<QuitConfirmation>().close();
+    begin_exit(app);
+    // Also bound a Quit whose frontend flush started before the session ended.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(FRONTEND_FLUSH_FALLBACK);
+        finish_exit(&app, false, None);
+    });
+}
+
+/// Whether AppKit should wait for Silo's Quit path instead of terminating now.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn accepts_terminate_request(app: &AppHandle) -> bool {
+    app.try_state::<ShutdownState>().is_some_and(|state| !state.approved())
+}
+
+/// `RunEvent::Exit` without the graceful path (for example AppKit terminated
+/// Silo without asking): stop local VMs within a bound before the process ends.
+pub(crate) fn exit_backstop(app: &AppHandle) {
+    let Some(state) = app.try_state::<ShutdownState>() else { return };
+    if state.approved() || state.restarting() {
+        return;
+    }
+    crate::startup::cancel(app);
+    crate::runtime::shutdown::begin();
+    let deadline = Instant::now() + crate::system_shutdown::SESSION_END_BUDGET;
+    if let Err(error) = stop_local_vms(app, Some(deadline)) {
+        eprintln!("Silo exited without its Quit path: {error}");
     }
 }
 
@@ -874,6 +990,10 @@ impl QuitConfirmation {
             }
         };
         Some(QuitRequest { request_id, sandboxes })
+    }
+    /// The session is ending: the open prompt no longer applies.
+    fn close(&self) {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).pending = None;
     }
     /// Returns whether Silo should exit.
     fn answer(&self, request_id: u64, confirmed: bool) -> Result<bool, String> {
@@ -933,6 +1053,8 @@ pub fn answer_quit_request(
     require_main(window.label())?;
     if app.state::<QuitConfirmation>().answer(request_id, confirmed)? {
         app.exit(0);
+    } else {
+        crate::system_shutdown::cancel(&app);
     }
     Ok(())
 }
@@ -950,7 +1072,12 @@ pub fn begin_settings_flush(app: AppHandle, window: WebviewWindow) -> Result<(),
 #[tauri::command]
 pub fn cancel_settings_flush(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     require_main(window.label())?;
-    if app.state::<ShutdownState>().claim_exit(true) {
+    let state = app.state::<ShutdownState>();
+    if state.session_deadline().is_some() {
+        // The session is ending: stop VMs and exit without the unsaved changes.
+        let app = app.clone();
+        std::thread::spawn(move || finish_exit(&app, true, None));
+    } else if state.claim_exit(true) {
         cancel_exit(&app, "Silo stayed open because pending changes could not be saved. Check the reported save error, then choose Quit Silo again. Local VMs have not been shut down.".into());
     }
     Ok(())
@@ -1579,6 +1706,57 @@ mod tests {
         state.allow_exit();
         assert!(state.approved());
         assert!(!state.claim_exit(true));
+    }
+
+    #[test]
+    fn session_end_fallback_cuts_off_a_slow_frontend_flush() {
+        let state = ShutdownState::default();
+        assert!(state.request());
+        let generation = state.generation();
+        assert!(state.begin_flush());
+        assert!(!state.claim_exit_for(false, Some(generation)), "a user Quit waits for the frontend");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        state.begin_session_end(deadline);
+        state.begin_session_end(deadline + Duration::from_secs(5));
+        assert_eq!(state.session_deadline(), Some(deadline), "the earliest deadline wins");
+        assert!(state.claim_exit_for(false, Some(generation)));
+        assert!(!state.claim_exit(true), "a late frontend completion cannot finish twice");
+        assert!(!state.claim_exit_for(false, None));
+    }
+
+    #[test]
+    fn session_end_can_start_before_any_quit_and_cancel_clears_it() {
+        let state = ShutdownState::default();
+        state.begin_session_end(Instant::now());
+        assert!(state.request(), "a session end starts the ordinary exit phases");
+        assert!(state.session_deadline().is_some());
+        state.cancel();
+        assert_eq!(state.session_deadline(), None);
+        assert!(!state.active());
+    }
+
+    #[test]
+    fn bounded_stop_returns_the_result_or_gives_up_at_the_deadline() {
+        let soon = Instant::now() + Duration::from_secs(5);
+        assert_eq!(run_before(soon, || Ok(7)), Ok(7));
+        assert_eq!(run_before(soon, || Err::<(), _>("stop failed".to_string())), Err("stop failed".into()));
+        let started = Instant::now();
+        let late = run_before(Instant::now() + Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(())
+        });
+        assert_eq!(late, Err("Local VMs did not finish stopping in time.".into()));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn session_end_closes_an_open_quit_prompt() {
+        let quit = QuitConfirmation::default();
+        quit.0.lock().unwrap().enabled = true;
+        let request = quit.ask(Ok(vec!["dev".into()])).unwrap();
+        quit.close();
+        assert!(quit.answer(request.request_id, false).is_err(), "a late Cancel cannot keep Silo open");
+        assert_ne!(quit.ask(Ok(vec!["dev".into()])).unwrap().request_id, request.request_id);
     }
 
     #[test]

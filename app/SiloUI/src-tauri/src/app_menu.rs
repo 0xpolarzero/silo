@@ -55,7 +55,8 @@ fn enabled(command: &str, state: &MenuState) -> bool {
     }
 }
 /// Quit must enter Tauri's ExitRequested gate even when no frontend is ready.
-/// Native macOS `terminate:` skips that gate and cannot own VM shutdown.
+/// The menu item is Silo's own rather than AppKit's `terminate:`; AppKit quits
+/// (Dock, logout) reach the same path through `system_shutdown`.
 fn request_menu_quit(id: &str, request_exit: impl FnOnce()) -> bool {
     if id != "silo-menu:quit" { return false; }
     request_exit();

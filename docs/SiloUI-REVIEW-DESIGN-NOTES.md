@@ -225,6 +225,34 @@ local method once a tao release that Tauri uses carries it.
   (Debian package only)?
 - Is losing VM state acceptable if logout exceeds the cap?
 
+**Implementation record (F-02, F-20).**
+
+- macOS: `system_shutdown/macos.rs` adds `applicationShouldTerminate:`
+  (encoding `Q@:@`) to the class of `NSApp.delegate()` with
+  `objc2::ffi::class_addMethod`, between `Builder::build` and `App::run`, then
+  assigns the delegate again so AppKit re-reads its optional methods. If a
+  future tao already implements the selector, `class_addMethod` fails and Silo
+  keeps tao's method. The handler replies `NSTerminateLater`; the Quit path
+  answers with `replyToApplicationShouldTerminate:` (YES after VMs stop and
+  settings save, NO when the user cancels or Quit fails). No new crate: `objc2`,
+  `objc2-foundation` and `objc2-app-kit` were already dependencies. The
+  `kAEQuitReason` descriptor is read with `msg_send!`, because the typed
+  accessor needs `objc2-core-services`, which is not in the graph.
+- Linux: `zbus` 5 (already locked through `ksni` and the single-instance
+  plugin) takes a logind `shutdown` delay lock only. Suspend is not inhibited:
+  a `sleep` delay lock without handling `PrepareForSleep` would delay every
+  suspend and sleeping must not stop sandboxes. The stop budget is
+  `InhibitDelayMaxUSec` minus 750 ms (at least 1 s, at most 20 s).
+- SIGTERM (Linux logout, `systemctl stop`, `kill`) is handled on both
+  platforms with Tokio's `signal` feature (Tokio was already a dependency) and
+  enters the same no-prompt path with a 20 s budget.
+- Session end never cancels the exit: a failed or late stop is logged and Silo
+  exits. `RunEvent::Exit` without an approved Quit (and not an update restart)
+  runs a bounded stop as a backstop.
+- Gap: `runtime::shutdown::stop_local_vms` (WP-D) still stops VMs one at a
+  time, so several running VMs may not all stop inside logind's default 5 s
+  delay. Stopping them in parallel is a WP-D follow-up.
+
 ---
 
 ## F-09: single instance

@@ -4547,6 +4547,7 @@ dependencies = [
  "time",
  "tokio",
  "uuid",
+ "zbus 5.19.0",
 ]
 
 [[package]]
