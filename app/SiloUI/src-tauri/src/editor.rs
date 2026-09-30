@@ -34,9 +34,8 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
         let (alias, _) = prepare_remote(app, &host, &vm, path)?;
         let application = applications::selected_editor(app)?;
         let (executable, zed) = applications::editor_command(&application)?;
-        let mut launch = Command::new(executable);
-        if !zed { launch.arg("--folder-uri"); }
-        launch.arg(remote_uri(&alias, path, zed)?);
+        let home = app.path().home_dir().map_err(|_| FAILED)?;
+        let mut launch = editor_launch(&executable, zed, &alias, path, &home)?;
         return run(&mut launch, Duration::from_secs(10));
     }
     require_openssh("open VM folders in your editor")?;
@@ -93,12 +92,7 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     run(&mut probe, Duration::from_secs(10)).map_err(|_| {
         "Could not connect to this VM over SSH. Retry after checking that it is running."
     })?;
-    let uri = remote_uri(&alias, path, zed)?;
-    let mut launch = Command::new(executable);
-    if !zed {
-        launch.arg("--folder-uri");
-    }
-    launch.arg(uri);
+    let mut launch = editor_launch(&executable, zed, &alias, path, &user_home)?;
     run(&mut launch, Duration::from_secs(10)).map_err(|_| {
         "The editor could not be opened. Check its installation and Remote SSH support.".to_string()
     })
@@ -128,6 +122,91 @@ fn validate_path(path: &str) -> Result<(), String> {
         return Err("Choose a folder inside /workspace.".into());
     }
     Ok(())
+}
+
+/// VS Code profile for every Silo sandbox window, so the settings below and
+/// the extensions that can reach the sandbox never mix with the user's own
+/// profile (decision 5, G-19). VS Code creates it empty on first use and
+/// offers to install Remote - SSH into it.
+const VSCODE_PROFILE: &str = "Silo";
+/// Carried by a Silo-owned workspace file on the host. Workspace settings
+/// apply from the first window, whether or not the profile exists yet, and
+/// outrank the "Remote" settings a sandbox can write for itself.
+const VSCODE_SETTINGS: [(&str, bool); 4] = [
+    // Git in the sandbox cannot borrow the host VS Code's GitHub session.
+    ("github.gitAuthentication", false),
+    // Sandbox terminals get no askpass handle back to the host VS Code.
+    ("git.terminalAuthentication", false),
+    // Sandbox ports reach this computer only through Silo's port publishing.
+    ("remote.autoForwardPorts", false),
+    ("remote.forwardOnOpen", false),
+];
+
+/// The editor command for a sandbox folder: Zed receives its SSH URI; VS Code
+/// opens the Silo profile with the folder's Silo workspace file.
+fn editor_launch(
+    executable: &Path,
+    zed: bool,
+    alias: &str,
+    path: &str,
+    user_home: &Path,
+) -> Result<Command, String> {
+    let mut launch = Command::new(executable);
+    if zed {
+        launch.arg(remote_uri(alias, path, true)?);
+    } else {
+        launch
+            .args(["--profile", VSCODE_PROFILE])
+            .arg(vscode_workspace(&user_home.join(".silo"), alias, path)?);
+    }
+    Ok(launch)
+}
+
+/// Writes `~/.silo/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
+/// any other workspace settings the user added and restoring Silo's own.
+fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    validate_path(path)?;
+    if alias.is_empty() || !alias.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
+        return Err(FAILED.into());
+    }
+    runtime::prepare_private_directory(silo_root).map_err(|_| FAILED)?;
+    let mut directory = silo_root.join("editor");
+    private_directory(&directory)?;
+    directory.push(alias);
+    private_directory(&directory)?;
+    directory.push(&format!("{:x}", Sha256::digest(path.as_bytes()))[..12]);
+    private_directory(&directory)?;
+    let folder: String = path
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || " -_.".contains(character) { character } else { '_' }
+        })
+        .take(64)
+        .collect();
+    let folder = folder.trim_start_matches('.').trim();
+    let file = directory.join(format!(
+        "{}.code-workspace",
+        if folder.is_empty() { "workspace" } else { folder }
+    ));
+    let mut document = serde_json::from_slice::<serde_json::Value>(&read_regular(&file)?)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    document["folders"] = serde_json::json!([{ "uri": remote_uri(alias, path, false)? }]);
+    document["remoteAuthority"] = serde_json::json!(format!("ssh-remote+{alias}"));
+    if !document["settings"].is_object() {
+        document["settings"] = serde_json::json!({});
+    }
+    for (key, value) in VSCODE_SETTINGS {
+        document["settings"][key] = serde_json::json!(value);
+    }
+    let bytes = serde_json::to_vec_pretty(&document).map_err(|_| FAILED)?;
+    write_private(&file, &bytes)?;
+    Ok(file)
 }
 
 fn remote_uri(alias: &str, path: &str, zed: bool) -> Result<String, String> {
@@ -573,6 +652,70 @@ mod tests {
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(write_private(&link, b"replace").is_err());
         assert_eq!(fs::read(&file).unwrap(), b"Host existing\n  User user\n");
+    }
+
+    fn launch_args(launch: &Command) -> Vec<String> {
+        launch.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn vscode_opens_the_silo_profile_with_protective_workspace_settings() {
+        let home = tempfile::tempdir().unwrap();
+        let code = Path::new("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
+        let launch = editor_launch(code, false, "silo-abc-dev", "/workspace/my repo", home.path()).unwrap();
+        assert_eq!(launch.get_program(), code);
+        let args = launch_args(&launch);
+        assert_eq!(args[..2], ["--profile", "Silo"]);
+        assert_eq!(args.len(), 3, "no --folder-uri: the workspace file names the folder");
+        let file = PathBuf::from(&args[2]);
+        assert!(file.starts_with(home.path().join(".silo/editor/silo-abc-dev")));
+        assert_eq!(file.file_name().unwrap(), "my repo.code-workspace");
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(file.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        let document: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(
+            document["folders"],
+            serde_json::json!([{ "uri": "vscode-remote://ssh-remote+silo-abc-dev/workspace/my%20repo" }])
+        );
+        assert_eq!(document["remoteAuthority"], "ssh-remote+silo-abc-dev");
+        assert_eq!(
+            document["settings"],
+            serde_json::json!({
+                "github.gitAuthentication": false,
+                "git.terminalAuthentication": false,
+                "remote.autoForwardPorts": false,
+                "remote.forwardOnOpen": false,
+            })
+        );
+        // Another folder of the same sandbox gets its own workspace file.
+        let other = editor_launch(code, false, "silo-abc-dev", "/workspace", home.path()).unwrap();
+        assert_ne!(launch_args(&other)[2], args[2]);
+        assert!(launch_args(&other)[2].ends_with("/workspace.code-workspace"));
+    }
+
+    #[test]
+    fn user_workspace_settings_survive_while_silo_settings_are_restored() {
+        let home = tempfile::tempdir().unwrap();
+        let code = Path::new("/usr/bin/code");
+        let args = launch_args(&editor_launch(code, false, "silo-abc-dev", "/workspace", home.path()).unwrap());
+        fs::write(
+            &args[2],
+            br#"{"folders":[{"uri":"file:///elsewhere"}],"settings":{"editor.fontSize":15,"remote.autoForwardPorts":true}}"#,
+        )
+        .unwrap();
+        editor_launch(code, false, "silo-abc-dev", "/workspace", home.path()).unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&fs::read(&args[2]).unwrap()).unwrap();
+        assert_eq!(document["settings"]["editor.fontSize"], 15);
+        assert_eq!(document["settings"]["remote.autoForwardPorts"], false);
+        assert_eq!(document["folders"][0]["uri"], "vscode-remote://ssh-remote+silo-abc-dev/workspace");
+    }
+
+    #[test]
+    fn zed_keeps_its_ssh_uri_and_no_workspace_file() {
+        let home = tempfile::tempdir().unwrap();
+        let launch = editor_launch(Path::new("/usr/bin/zed"), true, "silo-abc-dev", "/workspace", home.path()).unwrap();
+        assert_eq!(launch_args(&launch), ["ssh://silo-abc-dev/workspace"]);
+        assert!(!home.path().join(".silo").exists());
     }
 
     const INCLUDE: &str = "Include \"/home/user/.silo/abc/ssh/*.conf\"";
