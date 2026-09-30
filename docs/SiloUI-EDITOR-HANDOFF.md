@@ -45,6 +45,17 @@ Checked against Zed's [remote development documentation](https://zed.dev/docs/re
 
 No Zed-specific settings are needed for decision 5; Silo keeps launching Zed with its `ssh://` URI.
 
+### Terminals and the sandbox
+
+Open terminal runs `msb exec --tty` (local sandboxes) or `ssh -t` (remote sandboxes) in the chosen terminal app, so the sandbox's output reaches that terminal byte for byte (G-21). Filtering it would need a terminal emulator between the two and would break full-screen programs, so Silo does not. Escape sequences that sandbox programs can send include:
+
+- **OSC 52** writes this computer's clipboard (and, in terminals that allow it, reads it).
+- **OSC 8** hyperlinks show one text and open another address.
+- **OSC 0/2** set the window or tab title, which can imitate another app or prompt.
+- Report requests (title reporting, some device status queries) make the terminal type a reply into the sandbox program's input.
+
+Recommended settings for a terminal used with Silo, from each terminal's documentation (check the names in your version): Ghostty `clipboard-write = deny` (or `ask`), `clipboard-read = deny` and `title-report = false`; kitty `clipboard_control` without `write-clipboard`/`read-clipboard`; Alacritty `[terminal] osc52 = "Disabled"`; WezTerm and Konsole: disable OSC 52 clipboard access where the version offers it; iTerm2: leave **Applications in terminal may access clipboard** off and **Terminal may report window title** off; xterm: keep `SetSelection` and the title reports in `disallowedWindowOps`. Hover a link to see its real address before opening it. A dedicated terminal profile for Silo sessions keeps these settings away from your other work.
+
 The host needs its standard OpenSSH client (`ssh` and `ssh-keygen`); missing executables produce an explicit error. The bundled runtime SSH session resolves the guest login home once and uses it for both shell commands and SFTP, so editor uploads and remote mkdir commands agree.
 
 The transport is probed before launching. Launch success means the operating system/editor CLI accepted the handoff; editor server installation, extensions and guest network requirements can still fail inside the editor.
