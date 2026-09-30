@@ -39,7 +39,7 @@ Ordered source patch pins:
 | `microsandbox-silo-network-0.7.2.patch` | `36a7d2e5beaf8db3513df7255915ba146580cc5d46281a5371cdeea6eff6fd0c` |
 | `microsandbox-restore-policy-0.7.2.patch` | `8b8d9334d7358a7a985b32df1028d36f502d471d7221dea3e53d0efb85b2d5d9` |
 | `microsandbox-create-stopped-0.7.2.patch` | `c4c49e9d5eba20aec2882184adf3be4e75196071717f17051567f5ef7c70eafc` |
-| `microsandbox-adopt-owned-disk-0.7.2.patch` | `fd0024b0acc4a99e6168fd2d441671980503ab859928407815068d70e246edd3` |
+| `microsandbox-adopt-owned-disk-0.7.2.patch` | `2ba4201ef289c74ace157348f243c19f9c41f913e56055ae6d4a3bb23142eadc` |
 | `microsandbox-log-retention-desktop-start-0.7.2.patch` | `22fa041105496be712eb58659bdcc29e950b2cd38c6bc5fd6182c1cb478f293b` |
 | `microsandbox-restore-root-capacity-0.7.2.patch` | `3cb4f401df48cb4d2382716d6a51bc51af22a4087abdd106680d3338e82ffebe` |
 | `microsandbox-portable-image-cache-0.7.2.patch` | `23b3b8e3cbc9ec20160306fd2aab5b196418efe132ed830e2e18738a89cfff57` |
@@ -255,3 +255,18 @@ For the mapping revision, the focused upstream secret-values test and Silo's
 transport and secret-configuration tests pass. The patched CLI compiled with `net,ssh,embed-binaries`; its five secret-parser
 tests and protocol-probe test passed. The patch applied through the production
 build helper and every manifest patch digest matched. Live VMs remain unverified.
+
+## Inactive-disk migration (review D-25)
+
+The owned-disk adoption patch accepts Created, Stopped and Crashed sandboxes.
+Migration inspects the staged copy first: MicroSandbox reconciles a dead Running
+process to Crashed, then Silo admits that inactive state. Active states remain
+blocked. Adoption copies and verifies the external disk without starting guest
+code or changing lifecycle status. Source files remain intact.
+
+The pinned [MicroSandbox reconciliation source](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/sandbox/mod.rs)
+checks process ownership before marking a stale run Crashed. Its
+`test_reconcile_sandbox_runtime_state_marks_dead_processes_crashed` regression
+and the adoption patch's fixture tests exercise this boundary without a VM.
+Silo's migration regression requires exactly inspect, adopt-disk and inspect.
+These tests do not qualify live migration or a packaged app.

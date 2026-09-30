@@ -1,18 +1,18 @@
 --- a/sdk/rust/lib/sandbox/mod.rs
 +++ b/sdk/rust/lib/sandbox/mod.rs
-@@ -443,6 +443,12 @@
-     pub async fn get(name: &str) -> MicrosandboxResult<SandboxHandle> {
-         let backend = crate::backend::default_backend();
+@@ -445,6 +445,12 @@
          backend.sandboxes().get(backend.clone(), name).await
-+    }
-+
-+    /// Copy a stopped sandbox's external raw ext4 disk into lifecycle-owned
+     }
+ 
++    /// Copy an inactive sandbox's external raw ext4 disk into lifecycle-owned
 +    /// storage without starting guest code. The source image is retained.
 +    pub async fn adopt_disk_as_owned(name: &str, guest: &str, source: Option<&std::path::Path>) -> MicrosandboxResult<()> {
 +        modify::adopt_disk_as_owned(crate::backend::default_backend(), name, guest, source).await
-     }
- 
++    }
++
      /// List the first page of sandboxes using the default page size.
+     pub async fn list() -> MicrosandboxResult<SandboxPage> {
+         Self::list_with(|list| list).await
 --- a/sdk/rust/lib/sandbox/modify.rs
 +++ b/sdk/rust/lib/sandbox/modify.rs
 @@ -1,9 +1,10 @@
@@ -28,13 +28,10 @@
  };
  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::Expr};
  
-@@ -1675,7 +1676,100 @@
-         None => Err(crate::MicrosandboxError::Custom(format!(
-             "secret {name} needs a host-side source or value to rotate"
-         ))),
-+    }
-+}
-+
+@@ -1678,6 +1679,99 @@
+     }
+ }
+ 
 +/// One-time conversion of an external raw ext4 disk into a sandbox-owned disk.
 +/// The caller should run this on an independent copy of any pre-upgrade home.
 +pub(crate) async fn adopt_disk_as_owned(
@@ -54,8 +51,8 @@
 +        &run_dir, name, Duration::from_secs(5),
 +    ).await?;
 +    let handle = backend.sandboxes().get(backend.clone(), name).await?;
-+    if !matches!(handle.status_snapshot(), SandboxStatus::Created | SandboxStatus::Stopped) {
-+        return Err(invalid("disk adoption requires a stopped sandbox"));
++    if !matches!(handle.status_snapshot(), SandboxStatus::Created | SandboxStatus::Stopped | SandboxStatus::Crashed) {
++        return Err(invalid("disk adoption requires a created, stopped, or crashed sandbox"));
 +    }
 +    let mut config = handle.config()?;
 +    let sandbox_dir = local.sandboxes_dir().join(name);
@@ -110,7 +107,7 @@
 +        std::fs::File::open(&staged)?.sync_all()?;
 +        std::fs::rename(stage.path(), backing_dir)?;
 +        std::fs::File::open(owned_root)?.sync_all()?;
-     }
++    }
 +    if !Path::new(&backing).is_file()
 +        || std::fs::metadata(&backing)?.len() != size.len()
 +        || microsandbox_image::checkpoint::sparse_file_integrity(&source)?.root
@@ -126,9 +123,144 @@
 +    crate::runtime::owned_volumes::validate(&sandbox_dir, &config.spec.mounts)?;
 +    persist_config(&backend, &handle, &config).await?;
 +    Ok(())
- }
- 
++}
++
  async fn persist_config(
+     backend: &Arc<dyn Backend>,
+     handle: &super::SandboxHandle,
+@@ -2822,6 +2916,132 @@
+     use crate::backend::LocalBackend;
+     use crate::size::SizeExt;
+ 
++    async fn adopt_disk_fixture(
++        status: SandboxStatus,
++    ) -> (tempfile::TempDir, Arc<dyn Backend>, std::path::PathBuf) {
++        let temp = tempfile::tempdir_in("/tmp").unwrap();
++        let backend: Arc<dyn Backend> = Arc::new(
++            LocalBackend::builder()
++                .home(temp.path())
++                .build()
++                .await
++                .unwrap(),
++        );
++        let source = temp.path().join("workspace.raw");
++        let mut bytes = vec![0_u8; 1024 * 1024];
++        bytes[..9].copy_from_slice(b"workspace");
++        std::fs::write(&source, bytes).unwrap();
++        let mut current = config(1, 256);
++        current.spec.mounts.push(VolumeMount::DiskImage {
++            host: source.clone(),
++            guest: "/workspace".into(),
++            format: microsandbox_types::DiskImageFormat::Raw,
++            fstype: Some("ext4".into()),
++            options: Default::default(),
++        });
++        let local = backend.as_local().unwrap();
++        std::fs::create_dir_all(local.sandboxes_dir().join("api")).unwrap();
++        sandbox_entity::ActiveModel {
++            name: Set("api".into()),
++            config: Set(serde_json::to_string(&current).unwrap()),
++            status: Set(status),
++            ephemeral: Set(false),
++            ..Default::default()
++        }
++        .insert(local.db().await.unwrap().write())
++        .await
++        .unwrap();
++        // No guest image or runtime exists. Adoption must only copy the disk and update config.
++        (temp, backend, source)
++    }
++
++    #[tokio::test]
++    async fn adopt_disk_accepts_inactive_states_without_booting_and_preserves_bytes() {
++        for status in [
++            SandboxStatus::Created,
++            SandboxStatus::Stopped,
++            SandboxStatus::Crashed,
++        ] {
++            let (_temp, backend, source) = adopt_disk_fixture(status).await;
++            let before = std::fs::read(&source).unwrap();
++            let staged = source.with_extension("staged.raw");
++            std::fs::write(&staged, &before).unwrap();
++            adopt_disk_as_owned(backend.clone(), "api", "/workspace", Some(&staged))
++                .await
++                .unwrap();
++            let handle = backend
++                .sandboxes()
++                .get(backend.clone(), "api")
++                .await
++                .unwrap();
++            assert_eq!(handle.status_snapshot(), status);
++            let config = handle.config().unwrap();
++            let VolumeMount::Owned { storage, .. } = &config.spec.mounts[0] else {
++                panic!("workspace was not adopted for {status:?}");
++            };
++            let backing = crate::runtime::owned_volumes::backing_path(
++                &backend.as_local().unwrap().sandboxes_dir().join("api"),
++                "/workspace",
++                storage,
++            );
++            assert_eq!(std::fs::read(backing).unwrap(), before);
++            assert_eq!(std::fs::read(&source).unwrap(), before);
++            assert_eq!(std::fs::read(&staged).unwrap(), before);
++            // A retried conversion remains idempotent without changing lifecycle state.
++            adopt_disk_as_owned(backend.clone(), "api", "/workspace", Some(&staged))
++                .await
++                .unwrap();
++            assert_eq!(
++                backend
++                    .sandboxes()
++                    .get(backend.clone(), "api")
++                    .await
++                    .unwrap()
++                    .status_snapshot(),
++                status
++            );
++        }
++    }
++
++    #[tokio::test]
++    async fn adopt_disk_rejects_active_states_without_changing_the_mount_or_disk() {
++        for status in [
++            SandboxStatus::Running,
++            SandboxStatus::Starting,
++            SandboxStatus::Draining,
++            SandboxStatus::Paused,
++        ] {
++            let (_temp, backend, source) = adopt_disk_fixture(status).await;
++            let before = std::fs::read(&source).unwrap();
++            let error = adopt_disk_as_owned(backend.clone(), "api", "/workspace", None)
++                .await
++                .unwrap_err();
++            assert!(
++                error.to_string().contains("disk adoption requires"),
++                "{status:?}: {error}"
++            );
++            assert_eq!(std::fs::read(&source).unwrap(), before);
++            assert!(
++                !backend
++                    .as_local()
++                    .unwrap()
++                    .sandboxes_dir()
++                    .join("api/owned-volumes")
++                    .exists()
++            );
++            let row = sandbox_entity::Entity::find()
++                .one(backend.as_local().unwrap().db().await.unwrap().read())
++                .await
++                .unwrap()
++                .unwrap();
++            let config: SandboxConfig = serde_json::from_str(&row.config).unwrap();
++            assert!(matches!(
++                config.spec.mounts[0],
++                VolumeMount::DiskImage { .. }
++            ));
++            assert_eq!(row.status, status);
++        }
++    }
+     #[test]
+     fn guest_flush_capability_never_silently_weakens_capture() {
+         use microsandbox_types::GuestFlush::{Auto, Required, Skip};
 --- a/crates/cli/lib/commands/mod.rs
 +++ b/crates/cli/lib/commands/mod.rs
 @@ -8,6 +8,7 @@
@@ -150,16 +282,16 @@
      restart, restore, run, start, stop, touch,
  };
  
-@@ -37,6 +37,9 @@
+@@ -36,6 +36,9 @@
+     /// Modify sandbox configuration.
      #[command(visible_alias = "mod")]
      Modify(modify::ModifyArgs),
- 
-+    /// Convert a stopped external raw /workspace disk to owned storage.
-+    AdoptDisk(adopt_disk::AdoptDiskArgs),
 +
++    /// Convert an inactive external raw /workspace disk to owned storage.
++    AdoptDisk(adopt_disk::AdoptDiskArgs),
+ 
      /// Start a stopped sandbox.
      Start(start::StartArgs),
- 
 @@ -112,6 +115,7 @@
          SandboxCommands::Create(args) => create::run(args, log_level).await,
          SandboxCommands::Restore(args) => restore::run(args, log_level).await,
@@ -171,14 +303,14 @@
 --- /dev/null
 +++ b/crates/cli/lib/commands/adopt_disk.rs
 @@ -0,0 +1,23 @@
-+//! One-time conversion of a stopped external raw disk to sandbox-owned storage.
++//! One-time conversion of an inactive external raw disk to sandbox-owned storage.
 +use clap::Args;
 +use microsandbox::sandbox::Sandbox;
 +
-+/// Arguments for converting one stopped external disk to owned storage.
++/// Arguments for converting one inactive external disk to owned storage.
 +#[derive(Debug, Args)]
 +pub struct AdoptDiskArgs {
-+    /// Existing stopped sandbox.
++    /// Existing created, stopped, or crashed sandbox.
 +    pub name: String,
 +    /// Existing guest mount path. Currently only /workspace is supported.
 +    #[arg(long, default_value = "/workspace")]
