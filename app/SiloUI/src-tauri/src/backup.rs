@@ -399,15 +399,6 @@ pub(crate) struct BackupResult {
     pub(crate) destination: PathBuf,
     pub(crate) size_bytes: u64,
     pub(crate) sandboxes: Vec<String>,
-    /// The archive is valid even when one of these post-capture restarts failed.
-    pub(crate) restart_failures: Vec<RestartFailure>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct RestartFailure {
-    pub(crate) sandbox: String,
-    pub(crate) detail: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -601,7 +592,6 @@ impl<R: MsbRunner> BackupService<R> {
             .tempdir_in(&self.scratch_root)?;
         let mut payloads = Vec::with_capacity(request.sources.len());
         let mut total_payload_bytes = 0_u64;
-        let restart_failures = Vec::new();
 
         for (index, source) in request.sources.iter().enumerate() {
             check_cancelled(cancellation)?;
@@ -741,7 +731,6 @@ impl<R: MsbRunner> BackupService<R> {
                 .into_iter()
                 .map(|source| source.name)
                 .collect(),
-            restart_failures,
         })
     }
 
@@ -3730,7 +3719,6 @@ mod tests {
         let destination = temp.path().join("dev.silo-backup");
         let service = service(&temp, FakeRunner::default());
         let result = create_one(&service, destination.clone(), false).unwrap();
-        assert!(result.restart_failures.is_empty());
         let inspection = service
             .inspect_archive(&destination, &Cancellation::default())
             .unwrap();
@@ -3763,7 +3751,7 @@ mod tests {
             .unwrap()
             .push(("dev".into(), member.into()));
         let service = service(&temp, runner);
-        let result = service
+        service
             .create_backup(
                 BackupRequest {
                     destination: destination.clone(),
@@ -3780,7 +3768,6 @@ mod tests {
                 &Cancellation::default(),
             )
             .unwrap();
-        assert!(result.restart_failures.is_empty());
         assert!(destination.is_file());
         let calls = service.runner.calls.lock().unwrap();
         // No fresh snapshot capture was taken.
@@ -3892,7 +3879,6 @@ mod tests {
         let runner = FakeRunner::default();
         let service = service(&temp, runner);
         let result = create_one(&service, temp.path().join("dev.silo-backup"), true).unwrap();
-        assert!(result.restart_failures.is_empty());
         assert!(result.destination.is_file());
         let calls = service.runner.calls.lock().unwrap();
         let capture = calls
