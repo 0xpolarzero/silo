@@ -1185,22 +1185,75 @@ fn pending_current_fork_point(
     Ok(Some(pending))
 }
 
-fn fork_with(
-    app: &AppHandle,
+/// Host-side settings a fork copies from its source sandbox. Production uses the GitHub and
+/// secret stores; tests inject failures to prove the rollback (E-17).
+pub(super) trait ForkAssignments {
+    fn copy_github(&self, source: &str, target: &str) -> Result<(), String>;
+    fn forget_github(&self, target: &str) -> Result<(), String>;
+    fn copy_secrets(&self, source: &str, target: &str) -> Result<(), String>;
+    fn forget_secrets(&self, target: &str) -> Result<(), String>;
+}
+
+struct AppForkAssignments<'a>(&'a AppHandle);
+
+impl ForkAssignments for AppForkAssignments<'_> {
+    fn copy_github(&self, source: &str, target: &str) -> Result<(), String> {
+        crate::github::fork_assignment(self.0, source, target)
+    }
+    fn forget_github(&self, target: &str) -> Result<(), String> {
+        crate::github::forget_fork_assignment(self.0, target)
+    }
+    fn copy_secrets(&self, source: &str, target: &str) -> Result<(), String> {
+        crate::secrets::fork_assignments(source, target)
+    }
+    fn forget_secrets(&self, target: &str) -> Result<(), String> {
+        crate::secrets::workspace_removed(target)
+    }
+}
+
+/// The native member a fork starts from, resolved while the source's own lane is held.
+pub(super) struct ForkSource {
+    source_id: String,
+    snapshot_group: String,
+    member: String,
+    scope: String,
+    desired_policy: Value,
+}
+
+fn ensure_fork_name_available(
+    metadata: &MachineConfigurationRequest,
+    new_name: &str,
+) -> Result<(), RuntimeError> {
+    if metadata.machines.len() >= MAX_MACHINE_COUNT
+        || metadata.machines.iter().any(|m| m.name() == new_name)
+    {
+        return Err(RuntimeError::Invalid(
+            "The fork name is already in use or the workspace limit was reached.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Phase one of a fork, under the source VM's lane: resolve the checkpoint, capturing a
+/// "Fork point" of the current state when none was chosen. It touches only the source's
+/// own snapshot store and checkpoint record, so other VMs keep working meanwhile (E-09).
+pub(super) fn fork_source(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     workspace_id: &str,
     checkpoint_id: Option<&str>,
     new_name: &str,
-) -> Result<(), RuntimeError> {
+) -> Result<ForkSource, RuntimeError> {
     validate_name(new_name)?;
-    let mut metadata = read_metadata(&paths.metadata)?;
+    let metadata = read_metadata(&paths.metadata)?;
     let source = metadata
         .machines
         .iter()
         .find(|machine| machine.is_vm() && machine.id() == workspace_id)
         .ok_or_else(|| RuntimeError::Invalid("The source workspace is not a local VM.".into()))?
         .clone();
+    // Fail before an expensive capture; the inventory write checks again.
+    ensure_fork_name_available(&metadata, new_name)?;
     let source_record = load(paths, workspace_id)?;
     let snapshot_group = ensure_snapshot_group(paths, workspace_id, source.name())?;
     let pending_current = if checkpoint_id.is_none() {
@@ -1218,14 +1271,7 @@ fn fork_with(
         ensure_no_unfinished_restore(&source_record, "forking its current state")?;
     }
     let desired_policy = fork_source_policy(runner, paths, &source, &source_record)?;
-    if metadata.machines.len() >= MAX_MACHINE_COUNT
-        || metadata.machines.iter().any(|m| m.name() == new_name)
-    {
-        return Err(RuntimeError::Invalid(
-            "The fork name is already in use or the workspace limit was reached.".into(),
-        ));
-    }
-    let (selected_id, selected_scope) = if let Some(pending) = pending_current {
+    let (member, scope) = if let Some(pending) = pending_current {
         (pending.checkpoint_id, pending.state)
     } else {
         let selected_id = match checkpoint_id {
@@ -1255,6 +1301,48 @@ fn fork_with(
         )?;
         (checkpoint.native_id().to_owned(), checkpoint.scope.clone())
     };
+    Ok(ForkSource {
+        source_id: workspace_id.into(),
+        snapshot_group,
+        member,
+        scope,
+        desired_policy,
+    })
+}
+
+/// Append cleanup failures to an error without replacing its message.
+fn with_context(failure: RuntimeError, context: &str) -> RuntimeError {
+    match failure {
+        RuntimeError::Invalid(message) => RuntimeError::Invalid(format!("{message}{context}")),
+        RuntimeError::Unavailable(message) => RuntimeError::Unavailable(format!("{message}{context}")),
+        RuntimeError::Malformed(message) => RuntimeError::Malformed(format!("{message}{context}")),
+        other => other,
+    }
+}
+
+/// Phase two of a fork, under the computer-wide lane: add the stopped fork to the shared
+/// inventory. Every failure removes what this phase added and returns the original error;
+/// a failing cleanup is appended as context instead of replacing it (E-17).
+pub(super) fn fork_commit(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    assignments: &dyn ForkAssignments,
+    fork: &ForkSource,
+    new_name: &str,
+) -> Result<(), RuntimeError> {
+    validate_name(new_name)?;
+    let mut metadata = read_metadata(&paths.metadata)?;
+    // Resolve the source again: it may have been renamed or deleted between the phases.
+    let source = metadata
+        .machines
+        .iter()
+        .find(|machine| machine.is_vm() && machine.id() == fork.source_id)
+        .ok_or_else(|| {
+            RuntimeError::Invalid("The source sandbox no longer exists. No fork was created.".into())
+        })?
+        .clone();
+    ensure_fork_name_available(&metadata, new_name)?;
+    snapshot_ready(runner, paths, &fork.snapshot_group, &fork.member, &fork.scope)?;
     let child_id = uuid::Uuid::new_v4().to_string();
     let mut child = source.clone();
     if let MachineConfiguration::Vm { id, name, .. } = &mut child {
@@ -1262,27 +1350,77 @@ fn fork_with(
         *name = new_name.into();
     }
     let mut child_record = Record::default();
-    child_record.snapshot_group = Some(snapshot_group.clone());
+    child_record.snapshot_group = Some(fork.snapshot_group.clone());
     child_record.pending_checkpoint_restore = Some(PendingRestore {
-        checkpoint_id: selected_id,
-        source_workspace: snapshot_group,
-        state: selected_scope,
+        checkpoint_id: fork.member.clone(),
+        source_workspace: fork.snapshot_group.clone(),
+        state: fork.scope.clone(),
     });
-    child_record.desired_network_policy = Some(desired_policy);
+    child_record.desired_network_policy = Some(fork.desired_policy.clone());
     save(paths, &child_id, &child_record)?;
-    crate::github::fork_assignment(app, source.name(), new_name)
-        .map_err(RuntimeError::Unavailable)?;
-    if let Err(failure) = crate::secrets::fork_assignments(source.name(), new_name) {
-        crate::github::forget_fork_assignment(app, new_name).map_err(RuntimeError::Unavailable)?;
-        return Err(RuntimeError::Unavailable(failure));
+    let mut copied_github = false;
+    let mut copied_secrets = false;
+    let result = (|| {
+        assignments
+            .copy_github(source.name(), new_name)
+            .map_err(RuntimeError::Unavailable)?;
+        copied_github = true;
+        assignments
+            .copy_secrets(source.name(), new_name)
+            .map_err(RuntimeError::Unavailable)?;
+        copied_secrets = true;
+        metadata.machines.push(child);
+        write_metadata(&paths.metadata, &metadata)
+    })();
+    let Err(failure) = result else {
+        return Ok(());
+    };
+    // Undo in reverse order; every step runs even if an earlier one fails.
+    let mut failed = Vec::new();
+    if copied_secrets {
+        failed.extend(assignments.forget_secrets(new_name).err());
     }
-    metadata.machines.push(child);
-    if let Err(failure) = write_metadata(&paths.metadata, &metadata) {
-        crate::secrets::workspace_removed(new_name).map_err(RuntimeError::Unavailable)?;
-        crate::github::forget_fork_assignment(app, new_name).map_err(RuntimeError::Unavailable)?;
+    if copied_github {
+        failed.extend(assignments.forget_github(new_name).err());
+    }
+    failed.extend(forget_removed(paths, &child_id).err().map(|error| error.to_string()));
+    if failed.is_empty() {
         return Err(failure);
     }
-    Ok(())
+    Err(with_context(
+        failure,
+        &format!(" Cleanup was incomplete: {}", failed.join(" ")),
+    ))
+}
+
+/// Both fork phases with their lanes: the source's own lane while its checkpoint is
+/// resolved or captured, then the computer-wide lane only for the inventory write.
+fn fork_in_lanes(
+    gate: &super::operation_gate::OperationGate,
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    assignments: &dyn ForkAssignments,
+    workspace_id: &str,
+    checkpoint_id: Option<&str>,
+    new_name: &str,
+) -> Result<(), RuntimeError> {
+    use super::operation_gate::OperationKind;
+    let vm_name = machine(paths, workspace_id)?.name().to_owned();
+    let fork = {
+        let guard = gate
+            .kind(OperationKind::CheckpointFork)
+            .vm(workspace_id, &vm_name, "Forking checkpoint")?;
+        // Fork is not cancellable; flag it slow after the capture window.
+        guard.expect_within(Duration::from_secs(10 * 60));
+        shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
+        fork_source(runner, paths, workspace_id, checkpoint_id, new_name)?
+    };
+    let guard = gate
+        .kind(OperationKind::CheckpointFork)
+        .computer("Forking checkpoint")?;
+    guard.expect_within(Duration::from_secs(60));
+    shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
+    fork_commit(runner, paths, assignments, &fork, new_name)
 }
 
 #[tauri::command]
@@ -1296,19 +1434,11 @@ pub async fn fork_checkpoint(
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        // Fork creates a new VM and edits the shared inventory; computer scope.
-        let guard = OPERATIONS
-            .kind(super::operation_gate::OperationKind::CheckpointFork)
-            .computer("Forking checkpoint")
-            .map_err(|error| error.to_string())?;
-        // Fork is not cancellable; flag it slow after the default window.
-        guard.expect_within(std::time::Duration::from_secs(10 * 60));
-        let _guard = guard;
-        shutdown::ensure_accepting_operations()?;
-        let result = fork_with(
-            &worker_app,
+        let result = fork_in_lanes(
+            &OPERATIONS,
             &ProcessRunner,
             &paths,
+            &AppForkAssignments(&worker_app),
             &workspace_id,
             checkpoint_id.as_deref(),
             &new_name,
@@ -3102,5 +3232,198 @@ mod tests {
         .to_string();
         assert!(failure.starts_with("No space left on device."), "{failure}");
         assert!(failure.contains("could not be updated"));
+    }
+
+    struct FakeAssignments {
+        fail: &'static [&'static str],
+        github: Mutex<Vec<String>>,
+        secrets: Mutex<Vec<String>>,
+    }
+    impl FakeAssignments {
+        fn new(fail: &'static [&'static str]) -> Self {
+            Self { fail, github: Mutex::new(Vec::new()), secrets: Mutex::new(Vec::new()) }
+        }
+        fn check(&self, step: &str) -> Result<(), String> {
+            if self.fail.contains(&step) { Err(format!("{step} failed.")) } else { Ok(()) }
+        }
+    }
+    impl ForkAssignments for FakeAssignments {
+        fn copy_github(&self, _: &str, target: &str) -> Result<(), String> {
+            self.check("copy_github")?;
+            self.github.lock().unwrap().push(target.into());
+            Ok(())
+        }
+        fn forget_github(&self, target: &str) -> Result<(), String> {
+            self.check("forget_github")?;
+            self.github.lock().unwrap().retain(|name| name != target);
+            Ok(())
+        }
+        fn copy_secrets(&self, _: &str, target: &str) -> Result<(), String> {
+            self.check("copy_secrets")?;
+            self.secrets.lock().unwrap().push(target.into());
+            Ok(())
+        }
+        fn forget_secrets(&self, target: &str) -> Result<(), String> {
+            self.check("forget_secrets")?;
+            self.secrets.lock().unwrap().retain(|name| name != target);
+            Ok(())
+        }
+    }
+
+    fn fork_fixture(directory: &tempfile::TempDir) -> (RuntimePaths, ForkSource) {
+        let paths = restore_fixture(directory, None);
+        let mut record = load(&paths, ID).unwrap();
+        record.snapshot_group = Some("dev".into());
+        save(&paths, ID, &record).unwrap();
+        let fork = ForkSource {
+            source_id: ID.into(),
+            snapshot_group: "dev".into(),
+            member: "c000000000000000000000000000000".into(),
+            scope: "full".into(),
+            desired_policy: serde_json::json!({"default_egress":"deny","default_ingress":"allow","rules":[]}),
+        };
+        (paths, fork)
+    }
+
+    fn record_ids(paths: &RuntimePaths) -> Vec<String> {
+        let mut ids: Vec<String> = fs::read_dir(directory(paths))
+            .unwrap()
+            .filter_map(|entry| entry.unwrap().file_name().to_str()?.strip_suffix(".json").map(str::to_owned))
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn fork_commit_adds_the_stopped_fork_and_its_assignments() {
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&[]);
+        fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "branch").unwrap();
+        let metadata = read_metadata(&paths.metadata).unwrap();
+        let child = metadata.machines.iter().find(|machine| machine.name() == "branch").unwrap();
+        let pending = load(&paths, child.id()).unwrap().pending_checkpoint_restore.unwrap();
+        assert_eq!(pending.checkpoint_id, fork.member);
+        assert_eq!(pending.source_workspace, "dev");
+        assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
+        assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
+    }
+
+    #[test]
+    fn failed_fork_steps_leave_no_record_inventory_or_assignments_and_keep_the_original_error() {
+        for (fail, expected) in [
+            (&["copy_github"][..], "copy_github failed."),
+            (&["copy_secrets"][..], "copy_secrets failed."),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (paths, fork) = fork_fixture(&directory);
+            let assignments = FakeAssignments::new(fail);
+            let failure = fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "branch")
+                .unwrap_err()
+                .to_string();
+            assert_eq!(failure, expected);
+            assert_eq!(record_ids(&paths), [ID]);
+            assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+            assert!(assignments.github.lock().unwrap().is_empty());
+            assert!(assignments.secrets.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_failing_fork_cleanup_is_reported_after_the_original_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&["copy_secrets", "forget_github"]);
+        let failure = fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "branch")
+            .unwrap_err()
+            .to_string();
+        assert!(failure.starts_with("copy_secrets failed."), "{failure}");
+        assert!(failure.contains("Cleanup was incomplete: forget_github failed."), "{failure}");
+        // The record is still removed although the GitHub cleanup failed.
+        assert_eq!(record_ids(&paths), [ID]);
+    }
+
+    #[test]
+    fn a_failed_inventory_write_removes_the_fork_record_and_assignments() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let parent = paths.metadata.parent().unwrap().to_path_buf();
+        // The checkpoint directory already exists, so only the inventory write fails.
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+        let assignments = FakeAssignments::new(&[]);
+        let result = fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "branch");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.unwrap_err().to_string().contains("sandbox settings"));
+        assert_eq!(record_ids(&paths), [ID]);
+        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        assert!(assignments.github.lock().unwrap().is_empty());
+        assert!(assignments.secrets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fork_commit_rechecks_the_name_and_the_checkpoint_after_the_capture() {
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&[]);
+        assert!(fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "dev").is_err());
+        let missing = ForkSource { member: "c999999999999999999999999999999".into(), ..fork };
+        assert!(fork_commit(&journal_runner("Running", ""), &paths, &assignments, &missing, "branch").is_err());
+        assert_eq!(record_ids(&paths), [ID]);
+        assert!(assignments.github.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn current_state_fork_captures_under_the_source_lane_and_writes_under_the_computer_lane() {
+        struct LaneRunner {
+            gate: &'static super::super::operation_gate::OperationGate,
+            created: Mutex<Option<String>>,
+            lanes: Mutex<Vec<(String, Option<String>, bool)>>,
+        }
+        impl RuntimeRunner for LaneRunner {
+            fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+                let running = self.gate.snapshot().running;
+                let lane = running.first().and_then(|entry| entry.vm_id.clone());
+                // Another VM can start while this lane is held only if it is not computer-wide.
+                let other_vm_free = std::thread::scope(|scope| {
+                    scope.spawn(|| self.gate.try_vm("other-vm", "other", "Starting").is_ok()).join().unwrap()
+                });
+                let command = if args[0] == "snapshot" { format!("snapshot {}", args[1]) } else { args[0].clone() };
+                self.lanes.lock().unwrap().push((command.clone(), lane, other_vm_free));
+                let stdout = match command.as_str() {
+                    "inspect" => serde_json::json!({"name":"dev","status":"Running","config":{
+                        "labels":{"silo.managed":"true","silo.machine-id":ID},
+                        "mounts":[{"guest":"/workspace","type":"Owned","storage":{"kind":"disk","capacity_mib":1024}}],
+                        "network":{"policy":{"default_egress":"deny","default_ingress":"allow","rules":[]}}
+                    }}).to_string(),
+                    "snapshot create" => {
+                        *self.created.lock().unwrap() = Some(args[2].clone());
+                        String::new()
+                    }
+                    "snapshot list" => {
+                        let name = self.created.lock().unwrap().clone().unwrap_or_default();
+                        serde_json::json!([{"group":"dev","name":name,"scope":"full","availability":"ready"}]).to_string()
+                    }
+                    _ => String::new(),
+                };
+                Ok(CommandOutput { stdout, stderr: String::new() })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, _) = fork_fixture(&directory);
+        let gate: &'static super::super::operation_gate::OperationGate =
+            Box::leak(Box::new(super::super::operation_gate::OperationGate::new()));
+        let runner = LaneRunner { gate, created: Mutex::new(None), lanes: Mutex::new(Vec::new()) };
+        let assignments = FakeAssignments::new(&[]);
+        fork_in_lanes(gate, &runner, &paths, &assignments, ID, None, "branch").unwrap();
+        let lanes = runner.lanes.lock().unwrap();
+        let create = lanes.iter().find(|(command, ..)| command == "snapshot create").unwrap();
+        assert_eq!(create.1.as_deref(), Some(ID), "the capture holds only the source's lane");
+        assert!(create.2, "other sandboxes are not queued behind the capture");
+        let last = lanes.last().unwrap();
+        assert_eq!(last.0, "snapshot list");
+        assert_eq!(last.1, None, "the inventory write holds the computer-wide lane");
+        assert!(!last.2);
+        assert!(read_metadata(&paths.metadata).unwrap().machines.iter().any(|machine| machine.name() == "branch"));
     }
 }
