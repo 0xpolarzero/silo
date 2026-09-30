@@ -100,6 +100,8 @@ fn stop_local_vms_with(
             continue;
         }
         let result = if committed_vm {
+            // A VM an unfinished Restore left paused cannot take a graceful stop (E-05).
+            checkpoints::release_paused_restore(runner, paths, machine);
             lifecycle_recovery::perform(runner, paths, &host, "stop", machine.name())
         } else {
             stop_uncommitted_vm(runner, paths, machine)

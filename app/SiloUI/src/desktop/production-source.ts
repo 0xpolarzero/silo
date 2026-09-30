@@ -87,6 +87,9 @@ const checkpointOperationShape = z.object({
   kind: z.enum(["capture", "fork", "restore"]), status: z.enum(["running", "failed"]),
   stage: z.string(), error: z.string().optional(),
 })
+const unfinishedRestoreShape = z.object({
+  checkpointId: z.string().min(1), checkpointName: z.string().nullish(), phase: z.enum(["capturing", "secured"]),
+})
 const pendingCheckpointRestoreShape = z.object({
   checkpointId: z.string().min(1), sourceWorkspace: z.string().min(1), state: z.enum(["full", "disk"]),
 })
@@ -107,6 +110,7 @@ const applicationSourceShape = z.object({
     checkpoints: z.array(checkpointShape).optional(),
     checkpointOperation: checkpointOperationShape.nullable().optional(),
     pendingCheckpointRestore: pendingCheckpointRestoreShape.nullable().optional(),
+    unfinishedRestore: unfinishedRestoreShape.nullable().optional(),
   }).passthrough()),
   activities: z.array(z.unknown()),
   sandboxConfigurationOperation: z.unknown().nullable(),
@@ -1009,12 +1013,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (pendingCheckpointOperations.has(checkpointTarget) || ownerWorkspace?.checkpointOperation?.status === "running") {
       throw new Error("A checkpoint operation is already running for this sandbox.")
     }
-    const kind: WorkspaceCheckpointOperation["kind"] = command === "create_checkpoint" ? "capture" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : command === "delete_checkpoint" ? "delete" : (() => { throw new Error("Unsupported checkpoint operation.") })()
+    const kind: WorkspaceCheckpointOperation["kind"] = command === "create_checkpoint" ? "capture" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : command === "delete_checkpoint" ? "delete" : command === "abandon_restore" ? "restore" : (() => { throw new Error("Unsupported checkpoint operation.") })()
     if (remote && kind === "delete") throw new Error("Delete checkpoints of this sandbox in Silo on its own computer.")
+    if (remote && command === "abandon_restore") throw new Error("Abandon this Restore in Silo on the sandbox’s own computer.")
     const operation: WorkspaceCheckpointOperation = {
       kind,
       status: "running",
-      stage: kind === "capture" ? "Creating checkpoint…" : kind === "fork" ? "Creating stopped fork…" : kind === "delete" ? "Deleting checkpoint…" : "Saving recovery checkpoint and restoring…",
+      stage: kind === "capture" ? "Creating checkpoint…" : kind === "fork" ? "Creating stopped fork…" : kind === "delete" ? "Deleting checkpoint…" : command === "abandon_restore" ? "Abandoning Restore…" : "Saving recovery checkpoint and restoring…",
     }
     pendingCheckpointOperations.set(checkpointTarget, operation)
     checkpointOperationBases.set(checkpointTarget, ownerWorkspace?.checkpointOperation)
@@ -1063,6 +1068,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     forkCheckpoint: (workspace, checkpointId, newName) => checkpointAction("fork_checkpoint", workspace, { checkpointId, newName }),
     restoreCheckpoint: (workspace, checkpointId) => checkpointAction("restore_checkpoint", workspace, { checkpointId }),
     deleteCheckpoint: (workspace, checkpointId) => checkpointAction("delete_checkpoint", workspace, { checkpointId }),
+    abandonRestore: workspace => checkpointAction("abandon_restore", workspace, {}),
     readCheckpointUsage: async workspaceId => checkpointUsageSchema.parse(await native.invoke("read_checkpoint_usage", { workspaceId })),
     refreshRepositories: async () => {
       await refresh(true)

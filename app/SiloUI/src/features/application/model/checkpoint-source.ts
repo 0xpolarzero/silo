@@ -17,6 +17,15 @@ export interface WorkspaceCheckpointOperation {
   error?: string
 }
 
+/** A Restore that did not finish (`unfinishedRestore` in the sandbox view). */
+export interface UnfinishedRestore {
+  /** The checkpoint being restored. */
+  checkpointId: string
+  checkpointName?: string | null
+  /** "capturing" until the recovery checkpoint is saved, then "secured". */
+  phase: "capturing" | "secured"
+}
+
 export interface PendingCheckpointRestore {
   checkpointId: string
   sourceWorkspace: string

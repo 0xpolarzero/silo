@@ -474,6 +474,8 @@ struct ApplicationWorkspace {
     pending_checkpoint_restore: Option<checkpoints::PendingRestore>,
     #[serde(skip_serializing_if = "Option::is_none")]
     checkpoint_operation: Option<checkpoints::Operation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unfinished_restore: Option<checkpoints::UnfinishedRestore>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -783,7 +785,7 @@ pub(crate) fn run_msb(
             if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
                 .find(|machine| machine.is_vm() && machine.name() == name) {
                 if checkpoints::needs_explicit_start(paths, machine.id())? {
-                    return Err(RuntimeError::Invalid("This stopped fork requires an explicit Start before other workspace actions.".into()));
+                    return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
                 }
             }
         }
@@ -2959,6 +2961,7 @@ fn read_application_state_with(
                 checkpoints: Vec::new(),
                 pending_checkpoint_restore: None,
                 checkpoint_operation: None,
+                unfinished_restore: None,
             }),
         }
     }
@@ -2985,6 +2988,7 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
             workspace.lifecycle_failure = failures.remove(workspace.machine.id());
             let checkpoint = checkpoints::load(paths, workspace.machine.id())?;
             workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
+            workspace.unfinished_restore = checkpoints::view_unfinished_restore(&checkpoint);
             workspace.checkpoints = checkpoint.checkpoints;
             let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
             workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
@@ -3192,6 +3196,7 @@ fn vm_workspace(
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
+        unfinished_restore: None,
     }
 }
 
@@ -3362,7 +3367,7 @@ fn workspace_action_with(
         if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
             .find(|machine| machine.is_vm() && machine.name() == name) {
             if checkpoints::needs_explicit_start(paths, machine.id())? {
-                return Err(RuntimeError::Invalid("This fork needs its first explicit Start from the workspace view.".into()));
+                return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
             }
         }
     }

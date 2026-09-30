@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useState } from "react"
-import { History, ShieldCheck } from "lucide-react"
+import { History, ShieldCheck, TriangleAlert } from "lucide-react"
 import { ActionsMenu } from "@/components/actions-menu"
 import { ConfirmBody, ConfirmPopover, FormPopover } from "@/components/confirm-popover"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
@@ -143,8 +143,28 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
     }).finally(() => setUsageRequest(request => request + 1))
   }
 
+  function abandon() {
+    if (locked || !actions.abandonRestore) return
+    void run({
+      id: `checkpoint:${target}:restore`,
+      kind: "restore",
+      target,
+      sandbox,
+      noticeSandbox,
+      title: "Abandoning Restore",
+      run: () => actions.abandonRestore!(target),
+      success: { title: "Restore abandoned", description: `${sandbox} keeps its current state.` },
+      failureTitle: "Could not abandon the Restore",
+    })
+  }
+
+  const unfinished = workspace.unfinishedRestore
+  const unfinishedTarget = unfinished ? checkpoints.find(checkpoint => checkpoint.id === unfinished.checkpointId) : undefined
+  // A secured Restore whose original sandbox was already removed finishes on Start.
+  const replaced = Boolean(unfinished && workspace.pendingCheckpointRestore)
+  const unfinishedError = unfinished && operation?.kind === "restore" && operation.status === "failed" ? operation.error ?? operation.stage : null
   // A failure that predates this session is only noted quietly; failures of operations started here are notified.
-  const staleFailure = operation?.status === "failed" && !started ? operation.error ?? operation.stage : null
+  const staleFailure = operation?.status === "failed" && !started && !unfinished ? operation.error ?? operation.stage : null
 
   return <TooltipProvider delayDuration={250}>
     <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="grid gap-1.5 text-xs">
@@ -166,6 +186,35 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       <p className="text-[11px] text-muted-foreground">Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.</p>
 
       {staleFailure && <p className="text-muted-foreground">Last checkpoint operation failed: <span className="text-destructive">{staleFailure}</span></p>}
+
+      {unfinished && <div role="group" aria-label="Unfinished Restore" className="grid gap-2 rounded-md border border-border p-2.5">
+        <div className="flex items-start gap-2">
+          <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="grid gap-1">
+            <p>
+              The Restore to {unfinished.checkpointName ? `“${unfinished.checkpointName}”` : "a checkpoint"} did not finish.{" "}
+              {replaced
+                ? `Start ${sandbox} to finish it.`
+                : unfinished.phase === "capturing"
+                  ? `Silo had not saved its recovery checkpoint yet, so ${sandbox} was not changed.`
+                  : `Its recovery checkpoint was saved, but ${sandbox} was not replaced yet.`}
+            </p>
+            {unfinishedError && <p className="text-muted-foreground">Last error: <span className="text-destructive">{unfinishedError}</span></p>}
+          </div>
+        </div>
+        <div className="flex justify-end gap-1">
+          {!replaced && isLocal && actions.abandonRestore && <ConfirmPopover
+            align="end"
+            title="Abandon this Restore?"
+            description={`${sandbox} keeps its current state and is resumed if the Restore left it paused. A recovery checkpoint that was already saved stays in the list.`}
+            confirmLabel="Abandon"
+            onConfirm={abandon}
+          >
+            <Button size="xs" variant="ghost" disabled={locked}>Abandon Restore…</Button>
+          </ConfirmPopover>}
+          {unfinishedTarget && actions.restoreCheckpoint && <Button size="xs" variant="outline" disabled={locked} onClick={() => restore(unfinishedTarget)}>Retry Restore</Button>}
+        </div>
+      </div>}
 
       {checkpoints.length === 0 ? (
         <ListCard>

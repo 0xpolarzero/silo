@@ -772,6 +772,7 @@ pub(super) fn pending_workspace(
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
+        unfinished_restore: None,
     })
 }
 
@@ -951,9 +952,7 @@ pub(super) fn start_pending(
         let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
             .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
         if listed.iter().any(|entry| entry.name == machine.name()) {
-            return Err(error(
-                "The original VM is still present. Retry Restore before starting its replacement.",
-            ));
+            return Err(error(&unfinished_restore_message(&record, machine.name())));
         }
         let journal = record.restore_journal.clone().unwrap();
         let target = record
@@ -971,7 +970,11 @@ pub(super) fn start_pending(
         save(paths, machine.id(), &record)?;
     }
     let pending = record.pending_checkpoint_restore.clone().ok_or_else(|| {
-        RuntimeError::Invalid("This workspace has no pending checkpoint restore.".into())
+        if record.restore_journal.is_some() {
+            RuntimeError::Invalid(unfinished_restore_message(&record, machine.name()))
+        } else {
+            RuntimeError::Invalid(format!("{} has no checkpoint to start from.", machine.name()))
+        }
     })?;
     if !matches!(pending.state.as_str(), "full" | "disk") {
         return Err(error(
@@ -1511,11 +1514,7 @@ fn abandon_capture(
     let paused = inspect_workspace(runner, paths, vm_name)
         .map(|inspected| inspected.status == "Paused")
         .unwrap_or(assume_paused);
-    if !paused
-        || runner
-            .run(paths, &["resume".into(), vm_name.into()], MUTATION_TIMEOUT)
-            .is_ok()
-    {
+    if !paused || release_paused(runner, paths, vm_name) {
         // The recovery point was never recorded; remove it if the capture published it.
         if let Some(journal) = record.restore_journal.take() {
             let group = record.snapshot_group.clone().unwrap_or_else(|| vm_name.to_owned());
@@ -1684,9 +1683,7 @@ fn restore_steps(
     }
     if let Some(existing) = &record.restore_journal {
         if existing.target_checkpoint_id != checkpoint_id {
-            return Err(RuntimeError::Invalid(
-                "A previous Restore is unfinished. Retry the same checkpoint first.".into(),
-            ));
+            return Err(RuntimeError::Invalid(unfinished_restore_message(&record, machine.name())));
         }
     } else {
         let recovery = Checkpoint {
@@ -1876,6 +1873,151 @@ pub async fn restore_checkpoint(
     })
     .await
     .map_err(|_| "Checkpoint Restore worker failed.".to_string())?
+}
+
+/// Resume a VM an unfinished Restore left paused; if it cannot resume, stop it so it is
+/// not stuck paused (Quit, Start and Stop all need a running or stopped VM). Its disks are
+/// untouched either way. Runs even after a cancel. True once it is no longer paused.
+fn release_paused(runner: &dyn RuntimeRunner, paths: &RuntimePaths, vm_name: &str) -> bool {
+    super::operation_gate::uncancellable(|| {
+        if runner.run(paths, &["resume".into(), vm_name.into()], MUTATION_TIMEOUT).is_ok() {
+            return true;
+        }
+        runner
+            .run(paths, &["stop".into(), "--force".into(), vm_name.into()], STOP_TIMEOUT)
+            .is_ok()
+            && inspect_workspace(runner, paths, vm_name).is_ok_and(|vm| vm.status != "Paused")
+    })
+}
+
+fn restore_target_name(record: &Record, journal: &RestoreJournal) -> String {
+    record
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.id == journal.target_checkpoint_id)
+        .map_or_else(|| "the selected checkpoint".into(), |checkpoint| format!("“{}”", checkpoint.name))
+}
+
+/// Why a sandbox with an unfinished Restore cannot take another action, naming the checkpoint.
+fn unfinished_restore_message(record: &Record, name: &str) -> String {
+    match &record.restore_journal {
+        Some(journal) => {
+            let target = restore_target_name(record, journal);
+            format!("The Restore of {name} to {target} is unfinished. Retry it, or abandon it in Checkpoints, first.")
+        }
+        None => format!("The Restore of {name} is unfinished. Retry it from Checkpoints first."),
+    }
+}
+
+/// The message for Start, Stop or another action refused while a sandbox waits for an
+/// explicit Start from a checkpoint or has an unfinished Restore (E-08).
+pub(super) fn explicit_start_message(paths: &RuntimePaths, id: &str, name: &str) -> String {
+    match load(paths, id) {
+        Ok(record) if record.restore_journal.is_some() => unfinished_restore_message(&record, name),
+        _ => format!("{name} starts from a checkpoint first. Use Start on its page."),
+    }
+}
+
+/// An unfinished Restore, exposed in the sandbox view so it can be retried or abandoned.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UnfinishedRestore {
+    /// Silo id of the checkpoint being restored.
+    checkpoint_id: String,
+    checkpoint_name: Option<String>,
+    /// "capturing" before the recovery checkpoint was saved, then "secured".
+    phase: String,
+}
+
+pub(super) fn view_unfinished_restore(record: &Record) -> Option<UnfinishedRestore> {
+    let journal = record.restore_journal.as_ref()?;
+    Some(UnfinishedRestore {
+        checkpoint_id: journal.target_checkpoint_id.clone(),
+        checkpoint_name: record
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.id == journal.target_checkpoint_id)
+            .map(|checkpoint| checkpoint.name.clone()),
+        phase: journal.phase.clone(),
+    })
+}
+
+/// Give up an unfinished Restore while the original VM still exists: it keeps its current
+/// state and is resumed (or stopped) if the Restore left it paused. A recovery checkpoint
+/// already saved stays in the history; one only partly captured is removed (E-05).
+fn abandon_restore_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+) -> Result<(), RuntimeError> {
+    let machine = machine(paths, workspace_id)?;
+    let mut record = load(paths, workspace_id)?;
+    let Some(journal) = record.restore_journal.clone() else {
+        return Err(RuntimeError::Invalid(format!("{} has no unfinished Restore.", machine.name())));
+    };
+    let listed = runner.run(paths, &["list".into(), "--format".into(), "json".into()], READ_TIMEOUT)?;
+    let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
+        .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
+    if !listed.iter().any(|entry| entry.name == machine.name()) {
+        return Err(RuntimeError::Invalid(format!(
+            "{name} was already replaced by this Restore. Start {name} to finish it, or Restore another checkpoint.",
+            name = machine.name()
+        )));
+    }
+    let inspected = inspect_workspace(runner, paths, machine.name())?;
+    ensure_managed(&inspected)?;
+    if inspected.config.pointer("/labels/silo.machine-id").and_then(Value::as_str) != Some(workspace_id) {
+        return Err(error("The workspace runtime identity changed. The Restore was not abandoned."));
+    }
+    if inspected.status == "Paused" && !release_paused(runner, paths, machine.name()) {
+        return Err(error(&format!(
+            "{} could not be resumed or stopped. The unfinished Restore was kept.",
+            machine.name()
+        )));
+    }
+    if journal.phase == "capturing" {
+        let group = record.snapshot_group.clone().unwrap_or_else(|| machine.name().to_owned());
+        discard_failed_capture(runner, paths, workspace_id, (group, journal.recovery_checkpoint.native_id().to_owned()));
+    }
+    record.restore_journal = None;
+    record.checkpoint_operation = None;
+    save(paths, workspace_id, &record)
+}
+
+#[tauri::command]
+pub async fn abandon_restore(app: AppHandle, workspace_id: String) -> Result<ApplicationSource, String> {
+    crate::runtime_migration::ensure_ready(&app)?;
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&worker_app)?;
+        let vm_name = machine(&paths, &workspace_id)
+            .map_err(|error| error.to_string())?
+            .name()
+            .to_owned();
+        let guard = OPERATIONS
+            .kind(super::operation_gate::OperationKind::CheckpointRestore)
+            .vm(&workspace_id, &vm_name, "Abandoning Restore")
+            .map_err(|error| error.to_string())?;
+        guard.expect_within(std::time::Duration::from_secs(5 * 60));
+        let _guard = guard;
+        shutdown::ensure_accepting_operations()?;
+        let result = abandon_restore_with(&ProcessRunner, &paths, &workspace_id)
+            .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+        let _ = worker_app.emit("silo://application-state-changed", ());
+        result.map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Abandon Restore worker failed.".to_string())?
+}
+
+/// Quit stops VMs gracefully, which a paused VM cannot take. Release a VM an unfinished
+/// Restore left paused; the Restore itself stays unfinished and can be retried (E-05).
+pub(crate) fn release_paused_restore(runner: &dyn RuntimeRunner, paths: &RuntimePaths, machine: &MachineConfiguration) {
+    if load(paths, machine.id()).is_ok_and(|record| record.restore_journal.is_some())
+        && inspect_workspace(runner, paths, machine.name()).is_ok_and(|vm| vm.status == "Paused")
+    {
+        release_paused(runner, paths, machine.name());
+    }
 }
 
 /// Everything a deletion decision reads, gathered once.
@@ -3008,7 +3150,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string()
-        .contains("explicit Start"));
+        .contains("starts from a checkpoint first"));
         let view = pending_workspace(machine()).unwrap();
         assert!(matches!(view.state, WorkspaceState::Stopped));
     }
@@ -3196,7 +3338,7 @@ mod tests {
         assert!(start_pending(&original, &paths, &machine())
             .unwrap_err()
             .to_string()
-            .contains("original VM"));
+            .contains("is unfinished"));
         assert_eq!(original.calls.lock().unwrap().len(), 1);
         assert!(load(&paths, ID)
             .unwrap()
@@ -3424,8 +3566,8 @@ mod tests {
         ) -> Result<CommandOutput, RuntimeError> {
             self.calls.lock().unwrap().push(args.to_vec());
             let command = if args[0] == "snapshot" { args[1].as_str() } else { args[0].as_str() };
-            if command == self.fail {
-                return Err(RuntimeError::Unavailable(format!("{} failed on this host.", self.fail)));
+            if self.fail.split('|').any(|failing| failing == command) {
+                return Err(RuntimeError::Unavailable(format!("{command} failed on this host.")));
             }
             let stdout = match command {
                 "inspect" => serde_json::json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{
@@ -4259,5 +4401,89 @@ mod tests {
         let record = load(&paths, ID).unwrap();
         assert_eq!(record.checkpoint_operation.unwrap().status, "failed");
         assert!(record.inflight_checkpoint.is_none(), "nothing was published, so nothing is left to reconcile");
+    }
+
+    #[test]
+    fn a_vm_that_cannot_resume_after_a_failed_recovery_capture_is_stopped_instead_of_left_paused() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let runner = journal_runner("Running", "create|resume");
+        let failure = restore_with(&runner, &paths, ID, "c000000000000000000000000000000").unwrap_err().to_string();
+        assert_eq!(failure, "create failed on this host.");
+        assert_eq!(*runner.state.lock().unwrap(), "Stopped");
+        let stored = load(&paths, ID).unwrap();
+        assert!(stored.restore_journal.is_none());
+        assert!(!needs_explicit_start(&paths, ID).unwrap(), "Start, Stop and Quit work again");
+    }
+
+    #[test]
+    fn abandoning_an_unfinished_restore_resumes_the_paused_vm_and_keeps_its_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("capturing", true)));
+        let mut runner = journal_runner("Paused", "");
+        runner.listed = true;
+        abandon_restore_with(&runner, &paths, ID).unwrap();
+        assert_eq!(*runner.state.lock().unwrap(), "Running");
+        let stored = load(&paths, ID).unwrap();
+        assert!(stored.restore_journal.is_none());
+        assert!(stored.checkpoint_operation.is_none());
+        assert!(stored.pending_checkpoint_restore.is_none());
+        assert!(!runner.calls.lock().unwrap().iter().any(|call| call[0] == "remove"));
+
+        // A secured Restore whose original VM was already removed cannot be abandoned.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("secured", true)));
+        let runner = journal_runner("Stopped", "");
+        let failure = abandon_restore_with(&runner, &paths, ID).unwrap_err().to_string();
+        assert!(failure.contains("already replaced"), "{failure}");
+        assert!(load(&paths, ID).unwrap().restore_journal.is_some());
+        assert!(abandon_restore_with(&journal_runner("Running", ""), &restore_fixture(&tempfile::tempdir().unwrap(), None), ID).is_err());
+    }
+
+    #[test]
+    fn unfinished_restore_messages_and_view_name_the_checkpoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("capturing", true)));
+        assert_eq!(
+            explicit_start_message(&paths, ID, "dev"),
+            "The Restore of dev to “Selected” is unfinished. Retry it, or abandon it in Checkpoints, first."
+        );
+        let view = serde_json::to_value(view_unfinished_restore(&load(&paths, ID).unwrap()).unwrap()).unwrap();
+        assert_eq!(view, serde_json::json!({"checkpointId": "c000000000000000000000000000000", "checkpointName": "Selected", "phase": "capturing"}));
+        let failure = start_pending(&journal_runner("Running", ""), &paths, &machine()).unwrap_err().to_string();
+        assert!(failure.contains("to “Selected” is unfinished"), "{failure}");
+
+        // Restoring a different checkpoint names the unfinished one.
+        let mut record = load(&paths, ID).unwrap();
+        record.checkpoints.push(Checkpoint { id: "c333333333333333333333333333333".into(), native_id: Some("c000000000000000000000000000000".into()), name: "Other".into(), created_at: 3, scope: "full".into(), reason: "manual".into() });
+        save(&paths, ID, &record).unwrap();
+        let mut runner = journal_runner("Running", "");
+        runner.listed = true;
+        let failure = restore_with(&runner, &paths, ID, "c333333333333333333333333333333").unwrap_err().to_string();
+        assert!(failure.contains("to “Selected” is unfinished"), "{failure}");
+
+        // A fork waiting for its first Start is not described as a Restore.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let mut record = load(&paths, ID).unwrap();
+        record.pending_checkpoint_restore = Some(PendingRestore { checkpoint_id: "c000000000000000000000000000000".into(), source_workspace: "dev".into(), state: "full".into() });
+        save(&paths, ID, &record).unwrap();
+        assert_eq!(explicit_start_message(&paths, ID, "dev"), "dev starts from a checkpoint first. Use Start on its page.");
+        assert!(view_unfinished_restore(&record).is_none());
+    }
+
+    #[test]
+    fn quit_releases_a_vm_an_unfinished_restore_left_paused() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("capturing", true)));
+        let runner = journal_runner("Paused", "");
+        release_paused_restore(&runner, &paths, &machine());
+        assert_eq!(*runner.state.lock().unwrap(), "Running");
+        // Without an unfinished Restore, Quit's own handling applies.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let runner = journal_runner("Paused", "");
+        release_paused_restore(&runner, &paths, &machine());
+        assert_eq!(*runner.state.lock().unwrap(), "Paused");
     }
 }

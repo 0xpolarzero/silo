@@ -242,6 +242,22 @@ describe("production application bridge", () => {
     } finally { store.dispose() }
   })
 
+  it("keeps an unfinished Restore in the sandbox view and abandons it by VM ID", async () => {
+    const response = structuredClone(source) as unknown as Record<string, unknown>
+    const workspaces = response.workspaces as Array<Record<string, unknown>>
+    workspaces[0].unfinishedRestore = { checkpointId: "point-1", checkpointName: "Before refactor", phase: "capturing" }
+    expect(parseApplicationSource(response).workspaces[0].unfinishedRestore).toEqual({ checkpointId: "point-1", checkpointName: "Before refactor", phase: "capturing" })
+
+    const mock = native()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "abandon_restore" ? structuredClone(source) : mock.invoke(command, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await store.applicationActions.abandonRestore!("dev")
+      expect(invoke).toHaveBeenCalledWith("abandon_restore", { workspaceId: source.workspaces[0].machine.id })
+    } finally { store.dispose() }
+  })
+
   it("recognizes the updating sentinel whether bare or wrapped by a remote bridge", () => {
     expect(isUpdateInProgress(new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS"))).toBe(true)
     expect(isUpdateInProgress("remote request failed: SILO_SANDBOX_UPDATE_IN_PROGRESS")).toBe(true)

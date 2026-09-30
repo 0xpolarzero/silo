@@ -96,6 +96,7 @@ fn main() {
             "fork_checkpoint",
             "restore_checkpoint",
             "delete_checkpoint",
+            "abandon_restore",
             "read_checkpoint_usage",
             "remote_checkpoint_action",
             "list_workspace_directory",

@@ -268,6 +268,36 @@ it("reports a refused delete and keeps the checkpoint", async () => {
   expect(screen.getByText("Disk snapshot")).toBeVisible()
 })
 
+it("explains an unfinished Restore, names its checkpoint, and offers Retry and Abandon", async () => {
+  const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
+  const abandonRestore = vi.fn().mockResolvedValue(undefined)
+  const unfinished = { ...workspace, unfinishedRestore: { checkpointId: "point-2", checkpointName: "Disk snapshot", phase: "capturing" }, checkpointOperation: { kind: "restore", status: "failed", stage: "Recovery checkpoint failed", error: "resume failed on this host." } } as ApplicationWorkspace
+  const user = userEvent.setup()
+  render(withToaster(<CheckpointPanel workspace={unfinished} target="dev" actions={{ restoreCheckpoint, abandonRestore } as unknown as ApplicationActions} disabled={false} />))
+  const notice = within(screen.getByRole("group", { name: "Unfinished Restore" }))
+  expect(notice.getByText(/The Restore to “Disk snapshot” did not finish/)).toBeVisible()
+  expect(notice.getByText(/dev was not changed/)).toBeVisible()
+  expect(notice.getByText(/resume failed on this host/)).toBeVisible()
+
+  await user.click(notice.getByRole("button", { name: "Abandon Restore…" }))
+  expect(screen.getByText(/dev keeps its current state/)).toBeVisible()
+  await user.click(confirmButton("Abandon"))
+  await waitFor(() => expect(abandonRestore).toHaveBeenCalledWith("dev"))
+  expect(await screen.findByText("Restore abandoned")).toBeVisible()
+
+  await user.click(notice.getByRole("button", { name: "Retry Restore" }))
+  await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledWith("dev", "point-2"))
+})
+
+it("offers only Retry once the Restore already replaced the sandbox", () => {
+  const replaced = { ...workspace, unfinishedRestore: { checkpointId: "point-2", checkpointName: "Disk snapshot", phase: "secured" }, pendingCheckpointRestore: { checkpointId: "point-2", sourceWorkspace: "dev", state: "disk" } } as ApplicationWorkspace
+  render(<CheckpointPanel workspace={replaced} target="dev" actions={{ restoreCheckpoint: vi.fn(), abandonRestore: vi.fn() } as unknown as ApplicationActions} disabled={false} />)
+  const notice = within(screen.getByRole("group", { name: "Unfinished Restore" }))
+  expect(notice.getByText(/Start dev to finish it/)).toBeVisible()
+  expect(notice.queryByRole("button", { name: "Abandon Restore…" })).toBeNull()
+  expect(notice.getByRole("button", { name: "Retry Restore" })).toBeVisible()
+})
+
 it("offers Delete only for checkpoints on this computer", async () => {
   const remote = { ...workspace, computer: { id: "mac", name: "Ada’s Mac mini", connected: true } } as ApplicationWorkspace
   const readCheckpointUsage = vi.fn()
