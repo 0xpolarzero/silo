@@ -305,6 +305,12 @@ thread_local! {
     static MASKED: Cell<usize> = const { Cell::new(0) };
 }
 
+/// True when the current thread holds an operation guard. Entry points documented
+/// as "the caller holds the operation gate" `debug_assert!` it (D-43).
+pub(crate) fn held() -> bool {
+    HELD.with(Cell::get) > 0
+}
+
 /// Run `work` with cancellation masked: a cancel requested meanwhile is not
 /// observed (children are not killed) until `work` returns, and is then honoured
 /// at the next check. Used for steps such as `msb stop` that must not be cut short.
@@ -1054,6 +1060,19 @@ mod tests {
         );
         drop(running);
         first.join().unwrap();
+    }
+
+    #[test]
+    fn held_reports_whether_this_thread_holds_an_operation() {
+        let gate = leak();
+        assert!(!held());
+        let guard = gate.vm("id-a", "a", "Start a").unwrap();
+        assert!(held());
+        assert!(!elsewhere(held), "holding is per thread");
+        drop(guard);
+        assert!(!held());
+        drop(gate.try_computer_hidden("Reconciling SSH access").unwrap());
+        assert!(!held());
     }
 
     #[test]

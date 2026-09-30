@@ -151,6 +151,7 @@ pub(crate) fn running_names(app: &AppHandle) -> Result<Vec<String>, String> {
 /// Caller holds the operation gate (computer scope) for the whole installation,
 /// including every stop.
 pub(crate) fn prepare(app: &AppHandle, consent: bool) -> Result<(), String> {
+    debug_assert!(operation_gate::held(), "update preparation requires the operation gate");
     let paths = runtime_paths(app)?;
     if load(&paths)?.is_some() {
         return Err(
@@ -188,6 +189,7 @@ fn stop_selected(
 
 /// Caller holds the operation gate. Each success is persisted, making replay idempotent.
 pub(crate) fn restore_locked(app: &AppHandle) -> Result<(), String> {
+    debug_assert!(operation_gate::held(), "update restore requires the operation gate");
     let paths = runtime_paths(app)?;
     let host = host_resources().map_err(|e| e.to_string())?;
     restore_pending(&paths, |machine| {

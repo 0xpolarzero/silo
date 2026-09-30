@@ -2743,6 +2743,7 @@ fn apply_configuration_with_progress(
     request_id: &str,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
+    debug_assert!(operation_gate::held(), "configuration changes require the operation gate");
     let resources = host_resources().map_err(|e| e.to_string())?;
     validate_request(&request).map_err(|e| e.to_string())?;
     validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
@@ -6729,6 +6730,7 @@ pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String])
 
 /// Caller holds the operation gate for this VM and has verified the stable VM identity.
 pub(crate) fn start_for_desktop(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeError> {
+    debug_assert!(operation_gate::held(), "a desktop start requires the VM's operation gate");
     workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", workspace)
 }
 

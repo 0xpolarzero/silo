@@ -34,7 +34,10 @@ pub(super) fn maintenance_budget() -> Duration {
         .unwrap_or(Duration::ZERO)
 }
 
-/// Call after taking the operation gate, so admission cannot race Quit.
+/// Quit-safe only after taking the operation gate: every admitted operation must
+/// call this once its turn arrives, so admission cannot race Quit. Callers may also
+/// call it earlier to fail fast (for example before queueing), which is why it does
+/// not assert `operation_gate::held()` (D-43).
 pub(crate) fn ensure_accepting_operations() -> Result<(), String> {
     if QUITTING.load(Ordering::SeqCst) {
         Err("Silo is quitting and stopping its local VMs. Wait for shutdown to finish.".into())
