@@ -70,4 +70,26 @@ describe("production onboarding", () => {
     expect(source.bootstrapResult).toBeNull()
   })
 
+  it("seeds from real local state, and marks the saved list or defaults as a placeholder before it", () => {
+    const dependencies = { checks: [], retry: vi.fn() }
+    const machines = application.workspaces.map(({ machine }) => machine)
+    const snapshot = (extra: Partial<ProductionSnapshot>) => ({ setupQueue: [], setupEvents: [], error: null, ...extra }) as unknown as ProductionSnapshot
+    const loaded = productionOnboardingSource(application, dependencies, application.preferences, snapshot({}))
+    expect(loaded).toMatchObject({ machinesAuthoritative: true, existingMachines: machines, machineConfigurations: machines })
+
+    const beforeLoad = productionOnboardingSource(null, dependencies, application.preferences, snapshot({ savedMachines: [machines[1]] }))
+    expect(beforeLoad).toMatchObject({ machinesAuthoritative: false, existingMachines: [], machineConfigurations: [machines[1]] })
+
+    // While this computer's sandboxes update, the shell has no local rows: not an empty computer.
+    const shell = { ...application, workspaces: [] }
+    const updating = productionOnboardingSource(shell, dependencies, application.preferences, snapshot({ localUpdating: true }))
+    expect(updating.machinesAuthoritative).toBe(false)
+    const unreadable = productionOnboardingSource(shell, dependencies, application.preferences, snapshot({ error: "Silo could not read application state" }))
+    expect(unreadable.machinesAuthoritative).toBe(false)
+    expect(unreadable.machineConfigurations.map(({ name }) => name)).toEqual(["dev"])
+
+    // A loaded computer with no sandboxes offers the default, as setup of this computer.
+    expect(productionOnboardingSource(shell, dependencies, application.preferences, snapshot({})).machinesAuthoritative).toBe(true)
+  })
+
 })

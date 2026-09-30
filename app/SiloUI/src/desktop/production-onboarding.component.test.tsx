@@ -23,6 +23,8 @@ function deferred() {
 const application = applicationSourceForScenario("running")
 const requestA: SetupMachineConfigurationRequest = { schemaVersion: 1, machines: application.workspaces.map(({ machine }) => machine) }
 const requestB: SetupMachineConfigurationRequest = { ...requestA, machines: [requestA.machines[0]] }
+// requestB drops the other VMs: the list's own Delete confirmation confirmed that.
+const dropped = { confirmedDeletions: requestA.machines.slice(1).map(({ id }) => id) }
 const dependencies = { checks: [], retry: vi.fn() }
 
 describe("production onboarding submission errors", () => {
@@ -41,7 +43,7 @@ describe("production onboarding submission errors", () => {
     const source = { configureMachines, applicationActions: {} } as unknown as ProductionSource
     render(<ProductionOnboarding application={application} dependencies={dependencies} source={source} />)
     act(() => captured.props!.actions.saveMachineConfiguration(requestA))
-    act(() => captured.props!.actions.saveMachineConfiguration(requestB))
+    act(() => captured.props!.actions.saveMachineConfiguration(requestB, dropped))
     await act(async () => { first.reject(new Error("Old failure")); await first.promise.catch(() => {}) })
     expect(screen.getByText("No error")).toBeVisible()
     await act(async () => { second.resolve(); await second.promise })
@@ -54,7 +56,7 @@ describe("production onboarding submission errors", () => {
     const error = { code: "native_bridge_failed", message: "Creation failed", recovery: "Retry", workspace: requestB.machines[0].name, retryable: true }
     const current = { ...application, sandboxConfigurationOperation: { id: "failed", status: "failed", candidate: requestB, progressEvents: [], result: null, error } } as typeof application
     render(<ProductionOnboarding application={current} dependencies={dependencies} source={source} />)
-    act(() => captured.props!.actions.saveMachineConfiguration(requestB))
+    act(() => captured.props!.actions.saveMachineConfiguration(requestB, dropped))
     await act(async () => { failed.reject(new Error("Creation failed")); await failed.promise.catch(() => {}) })
     expect(captured.props!.source.error?.workspace).toBe(requestB.machines[0].name)
     const progress = projectOnboarding({ ...captured.props!.source, progressEvents: [{ ...onboardingScenarios.running.progressEvents[0], workspace: requestB.machines[0].name, step: "workspace-configuration", fraction: 0 }] }, "disconnected").workspaceProgress
@@ -67,7 +69,7 @@ describe("production onboarding submission errors", () => {
     const source = { configureMachines, applicationActions: {} } as unknown as ProductionSource
     const older = { ...application, sandboxConfigurationOperation: { id: "old", status: "applying", candidate: requestA, progressEvents: [], result: null, error: null } } as typeof application
     render(<ProductionOnboarding application={older} dependencies={dependencies} source={source} />)
-    await act(async () => { captured.props!.actions.saveMachineConfiguration(requestB); await Promise.resolve() })
+    await act(async () => { captured.props!.actions.saveMachineConfiguration(requestB, dropped); await Promise.resolve() })
     await act(async () => { captured.props!.actions.retryWorkspaceSetup(); await Promise.resolve() })
     expect(configureMachines).toHaveBeenLastCalledWith(requestB)
   })
@@ -106,6 +108,43 @@ describe("production onboarding submission errors", () => {
     expect(captured.props!.onOpenApp).toBe(onOpenApp)
   })
 
+
+  it("never sends a delete for an existing VM the user did not confirm deleting", async () => {
+    const configureMachines = vi.fn().mockResolvedValue(application)
+    const submitSetupStep = vi.fn().mockResolvedValue(undefined)
+    const finishSetup = vi.fn().mockResolvedValue(undefined)
+    // The committed list is read from the source when submitting, not from a stale prop.
+    const source = { configureMachines, submitSetupStep, finishSetup, getSnapshot: () => ({ source: application }), applicationActions: {} } as unknown as ProductionSource
+    render(<ProductionOnboarding application={null} dependencies={dependencies} source={source} />)
+    const request: OnboardingCompletionRequest = { machineConfiguration: requestB, applications: application.preferences, github: { connectionState: "disconnected", workspaces: [] } }
+    await act(async () => { captured.props!.actions.saveMachineConfiguration(requestB) })
+    expect(screen.getByText(/Setup did not delete .*No sandbox changed\./)).toBeVisible()
+    await act(async () => { captured.props!.actions.submitStep!("workspaces", request) })
+    await act(async () => { captured.props!.actions.finishSetup(request) })
+    await act(async () => { captured.props!.actions.retryWorkspaceSetup(request) })
+    expect(configureMachines).not.toHaveBeenCalled()
+    expect(submitSetupStep).not.toHaveBeenCalled()
+    expect(finishSetup).not.toHaveBeenCalled()
+    await act(async () => { captured.props!.actions.submitStep!("workspaces", request, dropped) })
+    expect(submitSetupStep).toHaveBeenCalledWith("workspaces", request)
+  })
+
+  it("retries a failed step with the current draft instead of the failed request", async () => {
+    const failed: OnboardingCompletionRequest = { machineConfiguration: requestA, applications: application.preferences, github: { connectionState: "disconnected", workspaces: [{ workspace: requestA.machines[0].name, repositories: [], identity: { name: "Old", email: "old@example.invalid", apply: true } }] } }
+    const edited: OnboardingCompletionRequest = { ...failed, github: { ...failed.github, workspaces: [{ ...failed.github.workspaces[0], identity: { name: "New", email: "new@example.invalid", apply: true } }] } }
+    const submitSetupStep = vi.fn().mockRejectedValueOnce(new Error("Identity verification failed")).mockResolvedValue(undefined)
+    const source = { submitSetupStep, applicationActions: {} } as unknown as ProductionSource
+    render(<ProductionOnboarding application={application} dependencies={dependencies} source={source} />)
+    await act(async () => { captured.props!.actions.submitStep!("github", failed) })
+    await act(async () => { captured.props!.actions.retryWorkspaceSetup(edited) })
+    expect(submitSetupStep).toHaveBeenLastCalledWith("github", edited)
+    // A configuration failure retried from the current draft uses its sandboxes.
+    const configureMachines = vi.fn().mockRejectedValueOnce(new Error("Creation failed")).mockResolvedValue(application)
+    Object.assign(source, { configureMachines })
+    await act(async () => { captured.props!.actions.saveMachineConfiguration(requestA) })
+    await act(async () => { captured.props!.actions.retryWorkspaceSetup({ ...edited, machineConfiguration: requestB }, dropped) })
+    expect(configureMachines).toHaveBeenLastCalledWith(requestB)
+  })
 
   it("verifies the saved draft identity when onboarding is restored", async () => {
     const machine = requestB.machines[0]

@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 
 import { TabsContent } from "@/components/ui/tabs"
+import { DeletionConfirmation } from "@/features/onboarding/components/deletion-confirmation"
 import { SetupComplete } from "@/features/onboarding/components/setup-complete"
 import type { ApplicationGitHubWorkspacePolicy } from "@/features/application/model/application-source"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
@@ -10,6 +11,7 @@ import type {
   OnboardingActions,
   OnboardingCompletionRequest,
   OnboardingSource,
+  OnboardingSubmissionOptions,
   WorkspaceGitIdentity,
   WorkspaceRepositorySelection,
 } from "@/features/onboarding/model/onboarding-source"
@@ -37,7 +39,7 @@ export interface OnboardingAppProps {
   onConnectComputer?: () => void
 }
 
-function OnboardingPanel({ step, activeStep, children }: { step: OnboardingStep; activeStep: OnboardingStep; children: ReactNode }) {
+function OnboardingPanel({ step, activeStep, notice, children }: { step: OnboardingStep; activeStep: OnboardingStep; notice?: ReactNode; children: ReactNode }) {
   const active = step === activeStep
   // Retain layout as well as state: display:none restarts disclosure animations
   // and can clamp the panel's scroll offset when the step becomes visible again.
@@ -49,7 +51,7 @@ function OnboardingPanel({ step, activeStep, children }: { step: OnboardingStep;
     style={{ visibility: active ? "visible" : "hidden" }}
     className="absolute inset-0 mt-0 flex h-full min-h-0 flex-col overflow-y-auto outline-none"
   >
-    <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-5 sm:px-6 sm:py-6">{children}</div>
+    <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-5 sm:px-6 sm:py-6">{active && notice}{children}</div>
   </TabsContent>
 }
 
@@ -161,10 +163,15 @@ export function OnboardingApp({
     }
     return completed ? { ...restored, currentStep: "review" } : restored
   })
-  const machinesInitialized = useRef(onboardingDraft !== null || draft.machines.length > 0)
+  // A restored draft is the user's; otherwise the draft is seeded again from this
+  // computer's sandboxes once they load (a fallback seed is only a placeholder).
+  const machinesInitialized = useRef(onboardingDraft !== null || (draft.machines.length > 0 && source.machinesAuthoritative !== false))
   const currentDraft = useRef(draft)
   const editedIdentities = useRef(new Set<string>())
   const recoveryCleared = useRef(false)
+  // Existing sandboxes the user deleted with the list's own Delete confirmation.
+  const confirmedRemovals = useRef(new Set<string>())
+  const [pendingDeletion, setPendingDeletion] = useState<{ machines: SetupMachineConfiguration[]; run: () => void } | null>(null)
   const { currentStep: activeStep, machines, workspaceSelections, workspaceIdentities } = draft
   const viewModel = useMemo(() => {
     const projectedSource = source.setupQueue ? {
@@ -191,11 +198,21 @@ export function OnboardingApp({
   useEffect(() => {
     const current = currentDraft.current
     if (machinesInitialized.current || current.unfinishedMachineEditor || source.machineConfigurations.length === 0) return
-    machinesInitialized.current = true
-    const next = { ...current, machines: source.machineConfigurations.map((machine) => ({ ...machine })), workspaceSelections: initialWorkspaceSelections(source), workspaceIdentities: initialWorkspaceIdentities(source) }
+    const authoritative = source.machinesAuthoritative !== false
+    if (authoritative) machinesInitialized.current = true
+    const machines = source.machineConfigurations.map((machine) => ({ ...machine }))
+    if (JSON.stringify(machines) === JSON.stringify(current.machines)) return
+    // Keep choices already made for sandboxes that remain in the list.
+    const names = new Set(machines.map(({ name }) => name))
+    const kept = <T,>(values: Record<string, T>) => Object.fromEntries(Object.entries(values).filter(([name]) => names.has(name)))
+    const next = { ...current, machines,
+      workspaceSelections: { ...initialWorkspaceSelections(source), ...kept(current.workspaceSelections) },
+      workspaceIdentities: { ...initialWorkspaceIdentities(source), ...kept(current.workspaceIdentities) },
+    }
     currentDraft.current = next
     setDraft(next)
-    void updateOnboardingDraft(next)
+    // A placeholder seed is not saved as the user's draft.
+    if (authoritative) void updateOnboardingDraft(next)
   }, [source, updateOnboardingDraft])
 
   useEffect(() => {
@@ -244,10 +261,64 @@ export function OnboardingApp({
     if (next) setActiveStep(next)
   }
 
+  // Existing sandboxes a submission would delete without the user having deleted them.
+  function unconfirmedDeletions(): SetupMachineConfiguration[] {
+    const kept = new Set(currentDraft.current.machines.map(({ id }) => id))
+    return (source.existingMachines ?? []).filter(({ id }) => !kept.has(id) && !confirmedRemovals.current.has(id))
+  }
+
+  // Trailing submission arguments: the confirmed deletions, when there are any.
+  function submissionOptions(): [] | [OnboardingSubmissionOptions] {
+    return confirmedRemovals.current.size ? [{ confirmedDeletions: [...confirmedRemovals.current] }] : []
+  }
+
+  // Every submission builds its request from the draft when it runs, after any
+  // confirmation below.
+  function submitChecked(run: () => void) {
+    const missing = unconfirmedDeletions()
+    if (missing.length === 0) { setPendingDeletion(null); run(); return }
+    setPendingDeletion({ machines: missing, run })
+  }
+
+  function keepExistingMachines() {
+    const pending = pendingDeletion
+    if (!pending) return
+    setPendingDeletion(null)
+    const existing = source.existingMachines ?? []
+    const existingIds = new Set(existing.map(({ id }) => id))
+    const restoredNames = new Set(pending.machines.map(({ name }) => name.toLowerCase()))
+    const current = currentDraft.current
+    // A new draft sandbox reusing a restored name (typically the default seeded before
+    // the real sandboxes loaded) would collide with it, so it gives way.
+    const machines = current.machines.filter(({ id, name }) => existingIds.has(id) || !restoredNames.has(name.toLowerCase()))
+    for (const machine of pending.machines) {
+      machines.splice(Math.min(existing.findIndex(({ id }) => id === machine.id), machines.length), 0, { ...machine })
+    }
+    const host = { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }
+    updateDraft({
+      machines,
+      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, current.workspaceSelections[name] ?? []])),
+      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, current.workspaceIdentities[name] ?? host])),
+      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => [name, current.workspaceRepositoryAccess?.[name] ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }])),
+    })
+    pending.run()
+  }
+
+  function deleteExistingMachines() {
+    const pending = pendingDeletion
+    if (!pending) return
+    setPendingDeletion(null)
+    for (const { id } of pending.machines) confirmedRemovals.current.add(id)
+    pending.run()
+  }
+
   function saveMachines(updated: SetupMachineConfiguration[]) {
     const request = configurationRequest(updated)
     machinesInitialized.current = true
     const current = currentDraft.current
+    // The list asks before deleting a sandbox; that confirmation covers existing ones.
+    const remaining = new Set(request.machines.map(({ id }) => id))
+    for (const { id } of current.machines) if (!remaining.has(id)) confirmedRemovals.current.add(id)
     const previousNameByID = new Map(current.machines.map(({ id, name }) => [id, name]))
     const selections = Object.fromEntries(request.machines.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
@@ -260,7 +331,7 @@ export function OnboardingApp({
     }))
     const workspaceRepositoryAccess = Object.fromEntries(request.machines.map(({ id, name }) => [name, current.workspaceRepositoryAccess?.[name] ?? current.workspaceRepositoryAccess?.[previousNameByID.get(id) ?? ""] ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
     updateDraft({ machines: request.machines, workspaceRepositoryAccess, workspaceSelections: selections, workspaceIdentities: identities, unfinishedMachineEditor: null })
-    actions.saveMachineConfiguration(request)
+    submitChecked(() => actions.saveMachineConfiguration(configurationRequest(currentDraft.current.machines), ...submissionOptions()))
   }
 
   function updateWorkspaceSelections(workspace: string, selections: WorkspaceRepositorySelection[]) {
@@ -296,11 +367,23 @@ export function OnboardingApp({
   function continueSetup() {
     if (completed) return
     if (activeStep === "review") {
-      if (viewModel.finishEnabled) actions.finishSetup(completionRequest())
+      if (viewModel.finishEnabled) submitChecked(() => actions.finishSetup(completionRequest(), ...submissionOptions()))
       return
     }
-    if (activeStep === "workspaces" || activeStep === "github") actions.submitStep?.(activeStep, completionRequest())
+    if (activeStep === "workspaces" || activeStep === "github") {
+      const step = activeStep
+      const next = onboardingSteps[onboardingSteps.indexOf(step) + 1]
+      submitChecked(() => { actions.submitStep?.(step, completionRequest(), ...submissionOptions()); setActiveStep(next) })
+      return
+    }
     move(1)
+  }
+
+  // Retry rebuilds the request from the current draft, so edits since the failed
+  // attempt (identities, repository choices, sandboxes) apply.
+  function retrySetup() {
+    if (completed) return
+    submitChecked(() => actions.retryWorkspaceSetup(completionRequest(), ...submissionOptions()))
   }
 
   const machineNames = machines.map(({ name }) => name)
@@ -321,6 +404,9 @@ export function OnboardingApp({
     workspaceIdentities,
     machineNames,
   )
+  const deletionNotice = pendingDeletion && !completed
+    ? <DeletionConfirmation machines={pendingDeletion.machines} onKeep={keepExistingMachines} onDelete={deleteExistingMachines} />
+    : null
   const machineWorkspaceViews = machines.map((machine): WorkspaceView => (
     viewModel.workspaceProgress.workspaces.find(({ name }) => name === machine.name)
       ?? { name: machine.name, status: "waiting", detail: machine.kind === "ssh" ? "Remote via SSH" : "Waiting" }
@@ -336,7 +422,7 @@ export function OnboardingApp({
       onOpenApp={onOpenApp}
       reduceMotion={settings.reduceMotion}
     >
-      <OnboardingPanel step="dependencies" activeStep={activeStep}>
+      <OnboardingPanel step="dependencies" activeStep={activeStep} notice={deletionNotice}>
         <DependenciesStep
           groups={viewModel.dependencies}
           applicationPreferences={applicationPreferences}
@@ -347,10 +433,10 @@ export function OnboardingApp({
           onConnectComputer={onConnectComputer}
         />
       </OnboardingPanel>
-      <OnboardingPanel step="workspaces" activeStep={activeStep}>
-        <WorkspacesStep onConnectComputer={onConnectComputer} machines={machines} progress={viewModel.workspaceProgress} onMachinesChange={saveMachines} onRetry={actions.retryWorkspaceSetup} initialEditorDraft={draft.unfinishedMachineEditor} onEditorDraftChange={(unfinishedMachineEditor) => updateDraft({ unfinishedMachineEditor })} />
+      <OnboardingPanel step="workspaces" activeStep={activeStep} notice={deletionNotice}>
+        <WorkspacesStep onConnectComputer={onConnectComputer} machines={machines} progress={viewModel.workspaceProgress} onMachinesChange={saveMachines} onRetry={retrySetup} initialEditorDraft={draft.unfinishedMachineEditor} onEditorDraftChange={(unfinishedMachineEditor) => updateDraft({ unfinishedMachineEditor })} />
       </OnboardingPanel>
-      <OnboardingPanel step="github" activeStep={activeStep}>
+      <OnboardingPanel step="github" activeStep={activeStep} notice={deletionNotice}>
         <GitHubStep
           queueItems={viewModel.queueItems}
           activityEvents={source.activityEvents ?? source.progressEvents}
@@ -371,7 +457,7 @@ export function OnboardingApp({
           onResetWorkspaceIdentity={resetWorkspaceIdentity}
         />
       </OnboardingPanel>
-      <OnboardingPanel step="review" activeStep={activeStep}>
+      <OnboardingPanel step="review" activeStep={activeStep} notice={deletionNotice}>
         {completed ? <SetupComplete machines={machines} githubSummary={githubSummary} /> : <ReviewStep
           onEditStep={setActiveStep}
           workspaceRetryable={viewModel.workspaceProgress.retryable}
@@ -383,7 +469,7 @@ export function OnboardingApp({
           identitySummary={identitySummary}
           errorMessage={viewModel.error?.message}
           errorRecovery={viewModel.error?.recovery ?? undefined}
-          onRetryWorkspaceSetup={actions.retryWorkspaceSetup}
+          onRetryWorkspaceSetup={retrySetup}
         />}
       </OnboardingPanel>
     </OnboardingShell>

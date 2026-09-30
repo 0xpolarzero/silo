@@ -19,6 +19,13 @@ import { applicationPreferenceSelectionSchema, type ApplicationPreferenceSelecti
 // only has to replace the provider.
 export const onboardingSourceSchema = z.object({
   readyToFinish: z.boolean().optional(),
+  /**
+   * False while `machineConfigurations` is a fallback (saved list or defaults) because
+   * this computer's sandboxes have not loaded; the draft is seeded again once they do.
+   */
+  machinesAuthoritative: z.boolean().optional(),
+  /** Sandboxes that already exist on this computer. Dropping one from the draft deletes it. */
+  existingMachines: setupMachineConfigurationRequestSchema.shape.machines.optional(),
   setupQueue: z.array(z.object({ id: setupQueueItemIdSchema, status: z.enum(["idle", "queued", "running", "succeeded", "failed"]), failure: z.string().optional() }).strict()).optional(),
   machineConfigurations: setupMachineConfigurationRequestSchema.shape.machines,
   bootstrapConfiguration: siloBootstrapConfigurationSchema,
@@ -77,14 +84,23 @@ export interface OnboardingCompletionRequest {
   }
 }
 
+/**
+ * Existing sandboxes (machine ids) the user explicitly confirmed deleting in this
+ * session. A submission never deletes an existing sandbox that is not listed here.
+ */
+export interface OnboardingSubmissionOptions {
+  confirmedDeletions: readonly string[]
+}
+
 export interface OnboardingActions {
-  submitStep?: (step: "workspaces" | "github", request: OnboardingCompletionRequest) => void
+  submitStep?: (step: "workspaces" | "github", request: OnboardingCompletionRequest, options?: OnboardingSubmissionOptions) => void
   cancelGitHubConnection?: () => void
   reopenGitHubAuthorization?: () => void
   connectGitHub: () => void
-  saveMachineConfiguration: (request: SetupMachineConfigurationRequest) => void
-  retryWorkspaceSetup: () => void
-  finishSetup: (request: OnboardingCompletionRequest) => void
+  saveMachineConfiguration: (request: SetupMachineConfigurationRequest, options?: OnboardingSubmissionOptions) => void
+  /** Retry the last submission, rebuilt from `request` (the current draft) when given. */
+  retryWorkspaceSetup: (request?: OnboardingCompletionRequest, options?: OnboardingSubmissionOptions) => void
+  finishSetup: (request: OnboardingCompletionRequest, options?: OnboardingSubmissionOptions) => void
 }
 
 export function parseOnboardingSource(input: unknown): OnboardingSource {
