@@ -2463,24 +2463,24 @@ mod tests {
     #[test]
     fn full_snapshot_satisfies_a_disk_only_restore_but_not_the_reverse() {
         let _test_state = crate::test_support::global_state();
-        struct Listing(&'static str);
-        impl RuntimeRunner for Listing {
-            fn run(&self, _: &RuntimePaths, _: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
-                Ok(CommandOutput {
-                    stdout: format!("[{{\"group\":\"g\",\"name\":\"c\",\"scope\":\"{}\",\"availability\":\"ready\"}}]", self.0),
-                    stderr: String::new(),
-                })
-            }
-        }
+        use crate::test_support::runner::{ExpectedCommand, ScriptedRunner};
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        // An imported checkpoint export: a full snapshot restored disk-only.
-        assert!(snapshot_ready(&Listing("full"), &paths, "g", "c", "disk").is_ok());
-        assert!(snapshot_ready(&Listing("full"), &paths, "g", "c", "full").is_ok());
-        assert!(snapshot_ready(&Listing("disk"), &paths, "g", "c", "disk").is_ok());
-        // A disk-only snapshot has no memory, so it can't satisfy a full restore.
-        assert!(snapshot_ready(&Listing("disk"), &paths, "g", "c", "full").is_err());
+        for (available, requested, ready) in [
+            ("full", "disk", true),
+            ("full", "full", true),
+            ("disk", "disk", true),
+            ("disk", "full", false),
+        ] {
+            let runner = ScriptedRunner::new([ExpectedCommand::ok(
+                ["snapshot", "list", "--format", "json"],
+                serde_json::json!([{"group":"g", "name":"c", "scope":available, "availability":"ready"}]).to_string(),
+            ).with_timeout(READ_TIMEOUT)]);
+            assert_eq!(snapshot_ready(&runner, &paths, "g", "c", requested).is_ok(), ready);
+            runner.assert_finished();
+        }
     }
+
     #[test]
     fn imported_snapshot_intent_accepts_native_selectors_but_rejects_paths() {
         let _test_state = crate::test_support::global_state();
@@ -2733,15 +2733,7 @@ mod tests {
         }
     }
     fn paths(directory: &tempfile::TempDir) -> RuntimePaths {
-        RuntimePaths {
-            guest_image: directory.path().join("guest"),
-            executable: directory.path().join("msb"),
-            home: directory.path().join("home"),
-            storage_home: None,
-            library: directory.path().join("lib"),
-            metadata: directory.path().join("machines.json"),
-            volumes: directory.path().join("volumes"),
-        }
+        crate::test_support::paths(directory.path())
     }
     fn machine() -> MachineConfiguration {
         MachineConfiguration::Vm {
@@ -3145,14 +3137,15 @@ mod tests {
         assert_eq!(ports, vec![("waiting", None)]);
 
         // Other runtime failures still surface.
-        struct Broken;
-        impl RuntimeRunner for Broken {
-            fn run(&self, _: &RuntimePaths, _: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
-                Err(RuntimeError::Unavailable("runtime down".into()))
-            }
-        }
+        let broken = crate::test_support::runner::ScriptedRunner::new([
+            crate::test_support::runner::ExpectedCommand::error(
+                ["inspect", "dev", "--format", "json"],
+                RuntimeError::Unavailable("runtime down".into()),
+            ).with_timeout(READ_TIMEOUT),
+        ]);
         delete_record_for_test(&paths);
-        assert!(observe_vm(&Broken, &paths, "dev").is_err());
+        assert!(matches!(observe_vm(&broken, &paths, "dev"), Err(RuntimeError::Unavailable(message)) if message == "runtime down"));
+        broken.assert_finished();
     }
     fn delete_record_for_test(paths: &RuntimePaths) {
         save(paths, ID, &Record::default()).unwrap();

@@ -5381,11 +5381,10 @@ mod tests {
     }
 
     fn fake_lifecycle_msb(paths: &RuntimePaths, block_on: &str) {
-        use std::os::unix::fs::PermissionsExt;
         fs::create_dir_all(&paths.home).unwrap();
         fs::write(&paths.library, b"test").unwrap();
         fs::write(paths.home.join("state"), "Stopped").unwrap();
-        fs::write(&paths.executable, format!(r#"#!/bin/sh
+        crate::test_support::write_shell_script(&paths.executable, format!(r#"#!/bin/sh
 printf '%s\n' "$1" >> "$MSB_HOME/calls"
 case "$1" in
   inspect) state=$(cat "$MSB_HOME/state"); printf '{{"name":"cleanup","status":"%s","config":{{"labels":{{"silo.managed":"true"}}}},"active_config":{{}}}}\n' "$state" ;;
@@ -5393,8 +5392,7 @@ case "$1" in
   stop) printf Stopped > "$MSB_HOME/state" ;;
 esac
 if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
-"#)).unwrap();
-        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+"#));
     }
 
     #[test]
@@ -6058,12 +6056,10 @@ esac
     #[test]
     fn structured_progress_is_drained_on_exit_and_ignores_untrusted_text() {
         let _test_state = crate::test_support::global_state();
-        use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fs::write(&paths.library, "test").unwrap();
-        fs::write(&paths.executable, "#!/bin/sh\nprintf '%s\\n' 'private token=SECRET' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":7,\"totalBytes\":9}' '{\"type\":\"silo-progress\",\"phase\":\"image-ready\"}' >&2\n").unwrap();
-        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        crate::test_support::write_shell_script(&paths.executable, "#!/bin/sh\nprintf '%s\\n' 'private token=SECRET' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":7,\"totalBytes\":9}' '{\"type\":\"silo-progress\",\"phase\":\"image-ready\"}' >&2\n");
         let events = Mutex::new(Vec::new());
         let publish = |event| events.lock().unwrap().push(event);
         SetupRunner {
@@ -6278,12 +6274,10 @@ esac
     #[test]
     fn structured_byte_counts_cannot_change_runtime_error_classification() {
         let _test_state = crate::test_support::global_state();
-        use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fs::write(&paths.library, "test").unwrap();
-        fs::write(&paths.executable, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":40123,\"totalBytes\":40399}' 'DNS lookup failed' >&2\nexit 1\n").unwrap();
-        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        crate::test_support::write_shell_script(&paths.executable, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"silo-progress\",\"phase\":\"image-download\",\"layerIndex\":0,\"downloadedBytes\":40123,\"totalBytes\":40399}' 'DNS lookup failed' >&2\nexit 1\n");
         let error = run_msb(
             &paths,
             &["create".into(), "--progress-json".into()],
@@ -6338,16 +6332,7 @@ esac
     }
 
     pub(super) fn paths(directory: &tempfile::TempDir) -> RuntimePaths {
-        RuntimePaths {
-            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("runtime/guest-image"),
-            storage_home: None,
-            executable: directory.path().join("msb"),
-            home: directory.path().join("home"),
-            library: directory.path().join("libkrunfw"),
-            metadata: directory.path().join("machines.json"),
-            volumes: directory.path().join("volumes"),
-        }
+        crate::test_support::paths(directory.path())
     }
 
     fn vm() -> MachineConfiguration {
@@ -7132,27 +7117,20 @@ esac
     #[test]
     fn application_snapshot_does_not_retry_real_runtime_read_errors() {
         let _test_state = crate::test_support::global_state();
-        struct FailedRead { calls: Mutex<Vec<Vec<String>>> }
-        impl RuntimeRunner for FailedRead {
-            fn run(
-                &self,
-                _paths: &RuntimePaths,
-                args: &[String],
-                _timeout: Duration,
-            ) -> Result<CommandOutput, RuntimeError> {
-                self.calls.lock().unwrap().push(args.to_vec());
-                Err(RuntimeError::Unavailable("synthetic runtime read failure".into()))
-            }
-        }
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let runner = FailedRead { calls: Mutex::new(Vec::new()) };
+        let runner = crate::test_support::runner::ScriptedRunner::new([
+            crate::test_support::runner::ExpectedCommand::error(
+                ["list", "--label", "silo.managed=true", "--format", "json"],
+                RuntimeError::Unavailable("synthetic runtime read failure".into()),
+            ).with_timeout(READ_TIMEOUT),
+        ]);
         assert_eq!(
             read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new()).unwrap_err(),
             "synthetic runtime read failure",
         );
-        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        runner.assert_finished();
     }
 
     #[test]

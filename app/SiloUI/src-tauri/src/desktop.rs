@@ -546,49 +546,46 @@ pub(crate) fn connection_local(app: &AppHandle, workspace: &str) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-    struct Runner {
-        calls: Mutex<Vec<Vec<String>>>,
-        output: String,
+    use crate::test_support::paths;
+    use crate::test_support::runner::{ExpectedCommand, ScriptedRunner};
+
+    fn inspect(status: &str, labels: Value) -> ExpectedCommand {
+        ExpectedCommand::ok(
+            ["inspect", "dev", "--format", "json"],
+            json!({"name":"dev","status":status,"config":{"labels":labels}}).to_string(),
+        )
+        .with_timeout(Duration::from_secs(10))
     }
-    impl RuntimeRunner for Runner {
-        fn run(
-            &self,
-            _: &RuntimePaths,
-            args: &[String],
-            _: Duration,
-        ) -> Result<runtime::CommandOutput, RuntimeError> {
-            self.calls.lock().unwrap().push(args.to_vec());
-            Ok(runtime::CommandOutput {
-                stdout: if args[0] == "inspect" && !self.output.starts_with('{') {
-                    json!({"name":"dev","status":"Stopped","config":{"labels":{"silo.managed":"true","silo.working-account":"1"}}}).to_string()
-                } else { self.output.clone() },
-                stderr: String::new(),
-            })
-        }
+
+    fn managed_vm() -> ExpectedCommand {
+        inspect(
+            "Stopped",
+            json!({"silo.managed":"true","silo.working-account":"1"}),
+        )
     }
-    fn paths(dir: &tempfile::TempDir) -> RuntimePaths {
-        RuntimePaths {
-            guest_image: dir.path().join("image"),
-            executable: dir.path().join("msb"),
-            home: dir.path().join("home"),
-            storage_home: None,
-            library: dir.path().join("library"),
-            metadata: dir.path().join("machines.json"),
-            volumes: dir.path().join("volumes"),
-        }
+
+    fn configure_guest(script: String) -> ExpectedCommand {
+        ExpectedCommand::ok(
+            [
+                "exec", "dev", "--no-tty", "--quiet", "--timeout", "1800s", "--user",
+                "root", "--workdir", "/", "--", "sh", "-c", &script,
+            ],
+            "",
+        )
+        .with_timeout(Duration::from_secs(1860))
     }
     #[test]
     fn install_rejects_runtime_without_boot_hook_before_mutating_guest() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
-        let runner = Runner {
-            calls: Mutex::new(Vec::new()),
-            output: "0".into(),
-        };
+        let runner = ScriptedRunner::new([
+            managed_vm(),
+            ExpectedCommand::ok(["--silo-desktop-protocol"], "0")
+                .with_timeout(Duration::from_secs(10)),
+        ]);
         let error = configure_with(
             &runner,
-            &paths(&dir),
+            &paths(dir.path()),
             "dev",
             None,
             &DesktopConfiguration {
@@ -597,36 +594,30 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("desktop startup"));
-        assert_eq!(
-            *runner.calls.lock().unwrap(),
-            vec![vec!["inspect".to_string(), "dev".to_string(), "--format".to_string(), "json".to_string()], vec!["--silo-desktop-protocol".to_string()]]
-        );
+        runner.assert_finished();
     }
 
     #[test]
     fn working_account_desktop_rejects_old_vm_before_running_guest() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
-        let runner = Runner {
-            calls: Mutex::new(Vec::new()),
-            output: json!({"name":"dev","status":"Running","config":{"labels":{"silo.managed":"true"}}}).to_string(),
-        };
-        let error = configure_with(&runner, &paths(&dir), "dev", Some(&DesktopConfiguration { start_with_sandbox: true }), &DesktopConfiguration { start_with_sandbox: false }).unwrap_err();
+        let runner = ScriptedRunner::new([inspect("Running", json!({"silo.managed":"true"}))]);
+        let error = configure_with(&runner, &paths(dir.path()), "dev", Some(&DesktopConfiguration { start_with_sandbox: true }), &DesktopConfiguration { start_with_sandbox: false }).unwrap_err();
         assert!(error.to_string().contains("Migrate"));
-        assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        runner.assert_finished();
     }
 
     #[test]
     fn changing_startup_policy_does_not_reinstall_or_stop_session() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
-        let runner = Runner {
-            calls: Mutex::new(Vec::new()),
-            output: String::new(),
-        };
+        let runner = ScriptedRunner::new([
+            managed_vm(),
+            configure_guest("/usr/local/bin/silo-desktop autostart false\n".into()),
+        ]);
         configure_with(
             &runner,
-            &paths(&dir),
+            &paths(dir.path()),
             "dev",
             Some(&DesktopConfiguration {
                 start_with_sandbox: true,
@@ -636,20 +627,24 @@ mod tests {
             },
         )
         .unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(
-            calls[1].last().unwrap(),
-            "/usr/local/bin/silo-desktop autostart false\n"
-        );
+        runner.assert_finished();
     }
     #[test]
     fn fresh_install_stages_agent_tools_before_persisting_startup_policy() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
-        let runner = Runner { calls: Mutex::new(Vec::new()), output: "1".into() };
-        configure_with(&runner, &paths(&dir), "dev", None, &DesktopConfiguration { start_with_sandbox: false }).unwrap();
-        let calls = runner.calls.lock().unwrap();
+        let runner = ScriptedRunner::new([
+            managed_vm(),
+            ExpectedCommand::ok(["--silo-desktop-protocol"], "1")
+                .with_timeout(Duration::from_secs(10)),
+            configure_guest(format!(
+                "{}/usr/local/bin/silo-desktop autostart false\n",
+                installer_script("install")
+            )),
+        ]);
+        configure_with(&runner, &paths(dir.path()), "dev", None, &DesktopConfiguration { start_with_sandbox: false }).unwrap();
+        runner.assert_finished();
+        let calls = runner.calls();
         let script = calls.last().unwrap().last().unwrap();
         assert!(script.contains("SILO_LUDA_SETUP_SOURCE"));
         assert!(script.contains("SILO_LUDA_LOCK_SOURCE"));
@@ -792,13 +787,10 @@ mod tests {
     fn stopped_status_never_boots_vm() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
-        let runner = Runner {
-            calls: Mutex::new(Vec::new()),
-            output: json!({"name":"dev","status":"Stopped","config":{}}).to_string(),
-        };
+        let runner = ScriptedRunner::new([inspect("Stopped", json!({}))]);
         let machine: MachineConfiguration = serde_json::from_value(json!({"kind":"vm","id":"id","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":false}})).unwrap();
         assert_eq!(
-            status_with(&runner, &paths(&dir), &machine).unwrap(),
+            status_with(&runner, &paths(dir.path()), &machine).unwrap(),
             json!({"installed":true,"state":"vm-stopped","autoStart":false,
                    "backend":null,"sessionState":"stopped","streamState":"stopped",
                    "updateRequired":false,"streamerVersion":null,
@@ -806,9 +798,7 @@ mod tests {
                    "lcuAppVersion":null,"lcuRuntimeVersion":null,
                    "lcuAgents":null,"lcuReadiness":null})
         );
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0][0], "inspect");
+        runner.assert_finished();
     }
     #[test]
     fn status_projection_does_not_leak_guest_credentials() {

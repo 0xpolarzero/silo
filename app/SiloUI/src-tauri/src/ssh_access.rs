@@ -933,15 +933,7 @@ mod tests {
         }
     }
     fn paths(dir: &tempfile::TempDir) -> RuntimePaths {
-        RuntimePaths {
-            guest_image: dir.path().join("image"),
-            executable: dir.path().join("msb"),
-            home: dir.path().join("home"),
-            storage_home: None,
-            library: dir.path().join("lib"),
-            metadata: dir.path().join("machines.json"),
-            volumes: dir.path().join("volumes"),
-        }
+        crate::test_support::paths(dir.path())
     }
     #[test]
     fn rejects_wildcards_invalid_ports_keys_and_duplicate_key_comments() {
