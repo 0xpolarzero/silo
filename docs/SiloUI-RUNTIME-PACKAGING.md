@@ -47,7 +47,7 @@ Ordered source patch pins:
 | `microsandbox-preserve-basic-auth-0.7.2.patch` | `e1957e2bc8adb2552140a9309d1d26d2721a38113f375328b9def408f5b1b5aa` |
 | `microsandbox-secret-values-stdin-0.7.2.patch` | `32ba747bae584847a39d7727aa2d7a2046574085554e558ead066ad01a266250` |
 | `microsandbox-import-stage-id-0.7.2.patch` | `4728800bc59f1cc3c9e07923c99d8ff18ce1f2aa3469d29e7f7715513dcd456f` |
-| `microsandbox-sftp-user-0.7.2.patch` | `f2d4d947939f6444b959188f2c96c0ed976284fec34d25d2387ee54897e8d343` |
+| `microsandbox-sftp-user-0.7.2.patch` | `7fe75745dff5a686e7bc28f107c4f600d75ba8a80eb0076ae73fc9d45ec287ef` |
 
 The ninth patch restores the independent Basic Auth substitution policy stored by MicroSandbox 0.6.x. Version 0.7.2 removed that field and made Basic Auth follow ordinary headers; its strict persisted-config decoder therefore rejected existing Silo sandbox records before owned-disk conversion. The patch preserves an explicit Basic Auth boolean, keeps the 0.7.2 headers behavior when the field is absent, and normalizes the observed historical `query_params` name to `query` at the persisted-config boundary. It never drops an unknown secret policy.
 
@@ -337,3 +337,7 @@ falling back to root. The guest image already requires this executable.
 stdin/stdout protocol. The [pinned SDK SSH handler](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/ssh.rs)
 shows the original root-agent SFTP path. Live evidence and qualification limits
 are recorded in [the Linux verification session](research/linux-verification-2026-09-30.md).
+
+The same patch sets SSH command `USER` and `LOGNAME` to the effective guest user,
+after client environment requests. The offline Linux account regression found
+these unset even though UID/GID and HOME were correct.
