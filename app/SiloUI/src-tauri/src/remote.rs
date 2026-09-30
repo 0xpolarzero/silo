@@ -1,4 +1,5 @@
 //! App-lifetime remote management. SSH only transports framed requests to the running owner.
+use crate::bridge_error::{BridgeError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -418,6 +419,16 @@ const REPLY_PREAMBLE: &[u8] = b"\0SILO-BRIDGE-REPLY\n";
 /// Shell output skipped before a reply at most.
 const REPLY_SEARCH_LIMIT: usize = 64 * 1024;
 /// The bridge's reply on its standard output: the preamble, then one frame.
+/// Keep the text field readable by older controllers while current peers use the code.
+fn error_reply(error: &BridgeError) -> Value {
+    let legacy = match error.code {
+        ErrorCode::UpdateInProgress => "SILO_SANDBOX_UPDATE_IN_PROGRESS",
+        ErrorCode::UnsupportedRemoteOperation => UNSUPPORTED,
+        _ => &error.message,
+    };
+    json!({"error":legacy,"code":error.code,"message":error.message})
+}
+
 fn write_reply(mut writer: impl Write, value: &Value) -> Result<(), String> {
     writer.write_all(REPLY_PREAMBLE).map_err(|error| error.to_string())?;
     write_frame(&mut writer, value)?;
@@ -784,18 +795,20 @@ const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs
 #[derive(Debug, PartialEq)]
 enum Failure {
     /// The other computer answered with this error.
-    Reported(String),
+    Reported(BridgeError),
     /// The connection was lost; the request may or may not have arrived.
     Lost(String),
     /// Anything else, such as an untrusted host key, failed authentication or a timeout.
     Failed(String),
 }
 impl Failure {
-    fn message(self) -> String {
+    fn error(self) -> BridgeError {
         match self {
-            Self::Reported(message) | Self::Lost(message) | Self::Failed(message) => message,
+            Self::Reported(error) => error,
+            Self::Lost(message) | Self::Failed(message) => message.into(),
         }
     }
+    fn message(self) -> String { self.error().message }
 }
 /// An ssh failure that sending the request again may overcome: the connection dropped or
 /// could not be made, not a host key, authentication, name or refused-connection problem.
@@ -872,17 +885,21 @@ fn run_exchange(mut command: Command, request: &Value, deadline: Instant) -> Res
     let mut stdout = stdout;
     stdout.seek(SeekFrom::Start(0)).map_err(failed)?;
     let response = read_reply(std::io::BufReader::new(stdout)).map_err(Failure::Failed)?;
-    if let Some(error) = response["error"].as_str() {
-        return Err(Failure::Reported(error.into()));
+    if let Some(error) = BridgeError::from_remote_reply(&response) {
+        return Err(Failure::Reported(error));
     }
     Ok(response["result"].clone())
 }
-pub(crate) fn call_remote(
+/// Legacy adapter for callers whose command error contract has not migrated yet.
+pub(crate) fn call_remote(app: &AppHandle, host_id: &str, method: &str, params: Value) -> Result<Value, String> {
+    call_remote_typed(app, host_id, method, params).map_err(|error| error.message)
+}
+pub(crate) fn call_remote_typed(
     _app: &AppHandle,
     host_id: &str,
     method: &str,
     params: Value,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     crate::runtime::shutdown::ensure_accepting_operations()?;
     let host = {
         let _guard = config_lock();
@@ -895,7 +912,7 @@ pub(crate) fn call_remote(
     let mut request = json!({"version":VERSION,"hostId":host.id,"method":method,"params":params});
     let deadline = Instant::now() + request_timeout(&request);
     if access(method) != Some(Access::Change) {
-        return exchange(&host.address, &request, deadline).map_err(Failure::message);
+        return exchange(&host.address, &request, deadline).map_err(Failure::error);
     }
     request["operationId"] = json!(uuid::Uuid::new_v4().to_string());
     send_change(&mut request, deadline, &RETRY_DELAYS, |request| {
@@ -910,7 +927,7 @@ fn send_change(
     deadline: Instant,
     delays: &[Duration],
     mut send: impl FnMut(&Value) -> Result<Value, Failure>,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     let mut delays = delays.iter();
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -922,9 +939,9 @@ fn send_change(
                     thread::sleep(*delay);
                     crate::runtime::shutdown::ensure_accepting_operations()?;
                 }
-                _ => return Err(message),
+                _ => return Err(message.into()),
             },
-            result => return result.map_err(Failure::message),
+            result => return result.map_err(Failure::error),
         }
     }
 }
@@ -955,7 +972,7 @@ pub async fn remote_checkpoint_action(
     name: Option<String>,
     checkpoint_id: Option<String>,
     new_name: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         let (method, params) = checkpoint_remote_request(
             &vm_id,
@@ -964,7 +981,7 @@ pub async fn remote_checkpoint_action(
             checkpoint_id.as_deref(),
             new_name.as_deref(),
         )?;
-        call_remote(&app, &host_id, method, params).map(|_| ())
+        call_remote_typed(&app, &host_id, method, params).map(|_| ())
     })
     .await
     .map_err(|_| "Remote checkpoint worker failed.".to_string())?
@@ -1031,13 +1048,13 @@ fn save_connected_host(dir: &Path, host: RemoteHost, local_name: &str, replace: 
 }
 
 #[tauri::command]
-pub async fn remote_host_snapshot(app: AppHandle, host_id: String, refresh_repositories: Option<bool>) -> Result<Value, String> {
+pub async fn remote_host_snapshot(app: AppHandle, host_id: String, refresh_repositories: Option<bool>) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
-        let result = call_remote(&app, &host_id, "runtime.snapshot", json!({"refreshRepositories": refresh_repositories.unwrap_or(false)}));
+        let result = call_remote_typed(&app, &host_id, "runtime.snapshot", json!({"refreshRepositories": refresh_repositories.unwrap_or(false)}));
         match &result {
             Ok(_) => poll_succeeded(&host_id),
-            Err(error) if error == crate::runtime::SANDBOX_UPDATE_IN_PROGRESS => {}
-            Err(error) => close_after_failed_poll(&host_id, error),
+            Err(error) if error.code == ErrorCode::UpdateInProgress => {}
+            Err(error) => close_after_failed_poll(&host_id, &error.message),
         }
         result
     })
@@ -1131,13 +1148,13 @@ pub async fn remote_workspace_action(
     vm_id: String,
     action: String,
     name: Option<String>,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     // Elapsed time counts from the command, like a local action.
     let started = std::time::Instant::now();
     let notice_app = app.clone();
     let (notice_id, notice_action) = (vm_id.clone(), action.clone());
     let result = tauri::async_runtime::spawn_blocking(move || {
-        call_remote(
+        call_remote_typed(
             &app,
             &host_id,
             "runtime.action",
@@ -1154,7 +1171,9 @@ pub async fn remote_workspace_action(
     let sandbox = crate::notifications::NoticeSandbox { id: notice_id, name: name.clone() };
     let outcome = match &result {
         Ok(_) => crate::notifications::Outcome::Succeeded,
-        Err(message) => crate::notifications::Outcome::Failed(message),
+        Err(error) if error.code == ErrorCode::Cancelled => crate::notifications::Outcome::Cancelled,
+        Err(error) if error.code == ErrorCode::AlreadyQueued => crate::notifications::Outcome::AlreadyQueued,
+        Err(message) => crate::notifications::Outcome::Failed(&message.message),
     };
     if let Some(notice) = crate::notifications::lifecycle_notice(
         &notice_action,
@@ -1183,9 +1202,9 @@ pub async fn remote_upsert_machine(
     host_id: String,
     machine: crate::runtime::MachineConfiguration,
     expected: Option<crate::runtime::MachineConfiguration>,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
-        call_remote(
+        call_remote_typed(
             &app,
             &host_id,
             "runtime.upsert",
@@ -1201,11 +1220,11 @@ pub async fn remote_delete_machine(
     host_id: String,
     vm_id: String,
     expected: crate::runtime::MachineConfiguration,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     let notice_app = app.clone();
     let deleted = vm_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        call_remote(
+        call_remote_typed(
             &app,
             &host_id,
             "runtime.delete",
@@ -1388,7 +1407,7 @@ fn listen(app: AppHandle) -> Result<(), String> {
                 let _permit = permit;
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
                 let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-                let result = read_frame(&mut stream).and_then(|request| {
+                let result = read_frame(&mut stream).map_err(BridgeError::from).and_then(|request| {
                     if request["method"] == "guest.ssh" {
                         authorize(&request)?;
                         let mut child = crate::remote_access::spawn_stream(
@@ -1399,7 +1418,7 @@ fn listen(app: AppHandle) -> Result<(), String> {
                         if let Err(error) = write_frame(&mut stream, &json!({"result":{}})) {
                             let _ = child.kill();
                             let _ = child.wait();
-                            return Err(error);
+                            return Err(error.into());
                         }
                         relay_child(&stream, &mut child, || {
                             REMOTE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
@@ -1415,7 +1434,7 @@ fn listen(app: AppHandle) -> Result<(), String> {
                         let _ = write_frame(&mut stream, &json!({"result":result}));
                     }
                     Err(error) => {
-                        let _ = write_frame(&mut stream, &json!({"error":error}));
+                        let _ = write_frame(&mut stream, &error_reply(&error));
                     }
                     Ok(None) => {}
                 }
@@ -1459,13 +1478,13 @@ fn validate_authorization(config: &Config, request: &Value) -> Result<(), String
     Ok(())
 }
 
-fn dispatch(app: &AppHandle, request: Value, connection: operations::Probe) -> Result<Value, String> {
+fn dispatch(app: &AppHandle, request: Value, connection: operations::Probe) -> Result<Value, BridgeError> {
     handle(&directory()?, &request, connection, Arc::new(changes_allowed), |method, params| {
         execute(app, method, params)
     })
 }
 /// Runs one authorized, classified request against this computer.
-fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
+fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, BridgeError> {
     match method {
         "handshake" => {
             // Earlier versions installed Silo's key without restrictions; tighten it over this session.
@@ -1479,7 +1498,7 @@ fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, Strin
         _ if method.starts_with("runtime.") => {
             crate::runtime::remote_ops::dispatch(app, method, params.clone())
         }
-        _ => crate::remote_access::dispatch(app, method, params),
+        _ => crate::remote_access::dispatch(app, method, params).map_err(BridgeError::from),
     }
 }
 /// The methods this computer serves, reported in the handshake.
@@ -1495,14 +1514,14 @@ fn handle(
     request: &Value,
     connection: operations::Probe,
     allowed: operations::Probe,
-    execute: impl FnOnce(&str, &Value) -> Result<Value, String>,
-) -> Result<Value, String> {
+    execute: impl FnOnce(&str, &Value) -> Result<Value, BridgeError>,
+) -> Result<Value, BridgeError> {
     let config = authorize_in(dir, request)?;
     let method = request["method"].as_str().ok_or("Missing remote method.")?;
     let params = &request["params"];
     match access(method) {
         // Unknown methods are refused before any gate, state event or record.
-        None | Some(Access::Stream) => Err(UNSUPPORTED.into()),
+        None | Some(Access::Stream) => Err(BridgeError::unsupported()),
         Some(Access::Read) if method == "handshake" => {
             execute(method, params)?;
             Ok(json!({"hostId":config.host_id,"name":name(),"version":VERSION,"capabilities":capabilities()}))
@@ -2394,7 +2413,7 @@ mod dispatch_tests {
     ) -> Result<Value, String> {
         let settings = dir.to_owned();
         let allowed = Arc::new(move || read_config_in(&settings).is_ok_and(|config| config.enabled));
-        handle(dir, request, Arc::new(|| true), allowed, execute)
+        handle(dir, request, Arc::new(|| true), allowed, |method, params| execute(method, params).map_err(BridgeError::from)).map_err(|error| error.message)
     }
     fn methods(access: Access) -> Vec<&'static str> {
         METHODS.iter().filter(|(_, a)| *a == access).map(|(m, _)| *m).collect()
@@ -2441,6 +2460,33 @@ mod dispatch_tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), METHODS.len());
+    }
+
+    #[test]
+    fn unknown_methods_and_replayed_failures_preserve_the_wire_error_code() {
+        let (_home, dir, config) = owner();
+        let response = handle(&dir, &request(&config, "runtime.unknown"), Arc::new(|| true), Arc::new(|| true), |_, _| panic!("unknown methods never dispatch"));
+        let error = response.unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedRemoteOperation);
+        assert!(!dir.join("operations").exists());
+        let mut bytes = Vec::new();
+        write_reply(&mut bytes, &error_reply(&error)).unwrap();
+        let reply = read_reply(std::io::Cursor::new(bytes)).unwrap();
+        assert_eq!(reply["error"], error.message);
+        assert_eq!(BridgeError::from_remote_reply(&reply).unwrap(), error);
+        let updating = BridgeError::updating();
+        let reply = error_reply(&updating);
+        assert_eq!(reply["error"], "SILO_SANDBOX_UPDATE_IN_PROGRESS");
+        assert_eq!(BridgeError::from_remote_reply(&reply).unwrap(), updating);
+        assert_eq!(BridgeError::from_remote_reply(&json!({"code":"future_code","error":"SILO_SANDBOX_UPDATE_IN_PROGRESS"})).unwrap().code, ErrorCode::Internal);
+
+
+        let change = request(&config, "runtime.action");
+        let expected = BridgeError::new(ErrorCode::Cancelled, "Stopped at your request.");
+        for _ in 0..2 {
+            let outcome = handle(&dir, &change, Arc::new(|| true), Arc::new(|| true), |_, _| Err(expected.clone()));
+            assert_eq!(outcome, Err(expected.clone()));
+        }
     }
 
     #[test]
@@ -2619,6 +2665,9 @@ mod dispatch_tests {
             });
             assert_eq!(result, Err("no".into()));
         }
+        let reported = BridgeError::new(ErrorCode::AlreadyQueued, "An existing request owns this action.");
+        let outcome = send_change(&mut request, deadline(), &[Duration::ZERO], |_| Err(Failure::Reported(reported.clone())));
+        assert_eq!(outcome, Err(reported));
         assert!(lost_connection(Some(255), "Connection closed by 10.0.0.2 port 22\n"));
         assert!(lost_connection(Some(255), "Timeout, server office not responding.\n"));
         assert!(!lost_connection(Some(255), "Host key verification failed.\n"));

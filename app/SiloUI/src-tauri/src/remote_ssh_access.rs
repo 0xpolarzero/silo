@@ -1,5 +1,6 @@
 //! The controller only exchanges settings. Listeners belong to the remote Silo
 //! application's ssh_access owner, independent of this controller's connection.
+use crate::bridge_error::BridgeError;
 use crate::{remote, ssh_access::Settings};
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -22,15 +23,15 @@ fn project(mut value: Value, host: &str) -> Result<Value, String> {
     }
     Ok(value)
 }
-fn request(app: &AppHandle, host: &str, method: &str, params: Value) -> Result<Value, String> {
+fn request(app: &AppHandle, host: &str, method: &str, params: Value) -> Result<Value, BridgeError> {
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
-    project(remote::call_remote(app, host, method, params)?, host)
+    project(remote::call_remote_typed(app, host, method, params)?, host).map_err(BridgeError::from)
 }
 #[tauri::command]
 pub(crate) async fn remote_ssh_access_state(
     app: AppHandle,
     host_id: String,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         request(&app, &host_id, "ssh.access.state", json!({}))
     })
@@ -46,7 +47,7 @@ pub(crate) async fn remote_save_ssh_access(
     port: u16,
     bind_address: String,
     keys: Vec<String>,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         uuid::Uuid::parse_str(&vm_id).map_err(|_| "Invalid sandbox identity.")?;
         let settings = Settings {

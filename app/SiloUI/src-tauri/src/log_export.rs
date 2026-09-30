@@ -94,7 +94,7 @@ pub(crate) async fn export_workspace_logs(
             write_requests(
                 output,
                 requests,
-                |request| runtime_logs::query(&app, request),
+                |request| runtime_logs::query(&app, request).map_err(|error| error.message),
                 || CANCELLED.load(Ordering::Acquire),
             )
         })

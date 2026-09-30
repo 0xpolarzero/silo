@@ -161,7 +161,7 @@ describe("production application bridge", () => {
       if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
       if (command === "remote_host_snapshot") {
         snapshotReads++
-        if (snapshotReads === 2) throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+        if (snapshotReads === 2) throw { code: "update_in_progress", message: "Please wait for configuration." }
         return structuredClone(source)
       }
       if (command === "remote_workspace_action") return new Promise(resolve => { finishAction = () => resolve(structuredClone(source)) })
@@ -289,9 +289,9 @@ describe("production application bridge", () => {
     } finally { store.dispose() }
   })
 
-  it("recognizes the updating sentinel whether bare or wrapped by a remote bridge", () => {
-    expect(isUpdateInProgress(new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS"))).toBe(true)
-    expect(isUpdateInProgress("remote request failed: SILO_SANDBOX_UPDATE_IN_PROGRESS")).toBe(true)
+  it("recognizes update deferral by code and rejects legacy message text", () => {
+    expect(isUpdateInProgress({ code: "update_in_progress", message: "Please wait." })).toBe(true)
+    expect(isUpdateInProgress("remote request failed: SILO_SANDBOX_UPDATE_IN_PROGRESS")).toBe(false)
     expect(isUpdateInProgress(new Error("runtime unavailable"))).toBe(false)
   })
 
@@ -637,7 +637,7 @@ describe("production application bridge", () => {
     await store.initialize()
     store.applicationActions.stopWorkspace("dev")
     expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBe("stop")
-    reject(new Error("Stopping dev was cancelled."))
+    reject({ code: "cancelled", message: "Stopped at your request." })
     await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].lifecycleFailureCancelled).toBe(true))
     const cancelled = store.getSnapshot().source?.workspaces[0]
     expect(cancelled?.lifecycleFailureAction).toBe("stop")
@@ -1270,7 +1270,7 @@ describe("production application bridge", () => {
     const updating = { ...backup, operation: { kind: "running", operation: "restore", archive: backup.archives[0], runningNames: [], targetName: "copy", progress: 0, indeterminate: true, phases: [{ title: "Creating restored sandbox", detail: "", tone: "running" }] } }
     mock.invoke.mockImplementation(nativeBridgeMock({
       ...initializationHandlers(),
-      read_application_state: async () => { throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS") },
+      read_application_state: async () => { throw { code: "update_in_progress", message: "Please wait for configuration." } },
       read_backup_state: () => updating,
     }))
     await store.refresh()
@@ -1437,7 +1437,7 @@ describe("remote SSH access", () => {
   const row = { ...request, state: "listening", message: null, fingerprint: "SHA256:fixture", computerName: "Office Mac", addresses: ["192.168.1.42"] }
   function fixture() {
     const mock = native()
-    let failOffice: string | undefined
+    let failOffice: unknown
     let failLocal = false
     let officeRead: Promise<unknown> | undefined
     let officeSave: Promise<unknown> | undefined
@@ -1446,7 +1446,7 @@ describe("remote SSH access", () => {
       if (command === "remote_host_snapshot") return { ...source, workspaces: [source.workspaces[0]] }
       if (command === "read_ssh_access_state") { if (failLocal) throw new Error("Local failed"); return { workspaces: [{ ...row, workspace: "dev", computerName: "Laptop" }] } }
       if (command === "remote_ssh_access_state") {
-        if (args?.hostId === "office") { if (failOffice) throw new Error(failOffice); if (officeRead) return officeRead }
+        if (args?.hostId === "office") { if (failOffice) throw failOffice; if (officeRead) return officeRead }
         return { workspaces: [{ ...row, workspace: `silo-remote:${args?.hostId}:${encodeURIComponent(vmId)}`, computerName: args?.hostId === "office" ? "Office Mac" : "Lab Mac" }] }
       }
       if (command === "remote_save_ssh_access") { if (officeSave) return officeSave; const { hostId, vmId: id, ...settings } = args!; return { workspaces: [{ ...row, ...settings, workspace: `silo-remote:${hostId}:${encodeURIComponent(String(id))}` }] } }
@@ -1454,7 +1454,7 @@ describe("remote SSH access", () => {
       return mock.invoke(command, args)
     })
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
-    return { store, invoke, failOffice: (message = "private remote details") => { failOffice = message }, failLocal: () => { failLocal = true }, delayOffice: (promise: Promise<unknown>) => { officeRead = promise }, delaySave: (promise: Promise<unknown>) => { officeSave = promise } }
+    return { store, invoke, failOffice: (message: unknown = new Error("private remote details")) => { failOffice = message }, failLocal: () => { failLocal = true }, delayOffice: (promise: Promise<unknown>) => { officeRead = promise }, delaySave: (promise: Promise<unknown>) => { officeSave = promise } }
   }
   it("routes same-name remote sandboxes by immutable owner and VM IDs and retains other owners", async () => {
     const { store, invoke } = fixture()
@@ -1491,7 +1491,7 @@ describe("remote SSH access", () => {
     const { store, failOffice } = fixture()
     try {
       await store.initialize(); await store.applicationActions.refreshSshAccess!()
-      failOffice("This Silo version does not support that remote operation.")
+      failOffice({ code: "unsupported_remote_operation", message: "Update the owner." })
       await store.applicationActions.refreshSshAccess!()
       const row = store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace === target)
       expect(row?.unavailable).toBe("Update Silo on Office Mac to manage SSH access. That version does not support remote SSH management.")

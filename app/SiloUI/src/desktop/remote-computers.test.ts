@@ -152,7 +152,7 @@ it("keeps a reachable computer connected while its VM configuration is busy", as
       read_application_state: () => local,
       remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
       remote_host_snapshot: async () => {
-      if (busy) throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+      if (busy) throw { code: "update_in_progress", message: "Please wait for configuration." }
       return local
     },
       remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),

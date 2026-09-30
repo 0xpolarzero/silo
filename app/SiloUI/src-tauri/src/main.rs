@@ -3,6 +3,7 @@ mod titlebar;
 #[cfg(target_os = "macos")]
 mod window_material;
 mod applications;
+mod bridge_error;
 mod app_menu;
 mod backup;
 mod bundled_tools;

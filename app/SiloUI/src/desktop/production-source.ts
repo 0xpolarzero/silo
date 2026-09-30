@@ -1,3 +1,4 @@
+import { bridgeErrorMessage, hasBridgeErrorCode } from "@/contracts/bridge-error"
 import { defaultSettings } from "@/features/preferences/model/settings"
 import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
 import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
@@ -277,6 +278,8 @@ export function parseBackupState(input: unknown): BackupState {
 }
 
 function errorMessage(error: unknown): string {
+  const message = bridgeErrorMessage(error)
+  if (message) return message
   if (error instanceof Error && error.message.trim()) return error.message
   const text = String(error).trim()
   return text || "The desktop bridge returned an unknown error."
@@ -331,9 +334,9 @@ const PUSH_STATUS_INTERVAL_MS = 2_000
 const PUSH_STATUS_MAX_INTERVAL_MS = 30_000
 const PUSH_STATUS_ATTEMPTS = 8
 
-/** The runtime's "configuration is updating" sentinel, bare or wrapped by a remote bridge. */
+/** Defers a state read while the owning computer changes sandbox configuration. */
 export function isUpdateInProgress(cause: unknown) {
-  return errorMessage(cause).includes("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+  return hasBridgeErrorCode(cause, "update_in_progress")
 }
 
 export function createProductionSource(native: ProductionBridge = bridge) {
@@ -561,11 +564,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function reportedCancellation(workspace: ApplicationWorkspace, cancelledAction: LifecycleAction | undefined): Partial<ApplicationWorkspace> {
-    if (workspace.lifecycleFailure) {
-      if (!isCancelledError(workspace.lifecycleFailure)) return {}
-      const prefix = /^(Start|Stop|Restart) failed: /.exec(workspace.lifecycleFailure)
-      return { lifecycleFailure: workspace.lifecycleFailure.slice(prefix?.[0].length ?? 0), lifecycleFailureAction: (prefix?.[1].toLowerCase() ?? "start") as LifecycleAction, lifecycleFailureCancelled: true }
-    }
+    if (workspace.lifecycleFailure) return {}
     return cancelledAction ? { lifecycleFailure: "The action was cancelled.", lifecycleFailureAction: cancelledAction, lifecycleFailureCancelled: true } : {}
   }
 
@@ -1030,7 +1029,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const message = errorMessage(cause)
     // A user-requested cancellation is not a failure: record it as a neutral,
     // retryable state so the row shows "<Action> cancelled", not a red error.
-    const cancelled = isCancelledError(message)
+    const cancelled = isCancelledError(cause)
     const label = `${action[0].toUpperCase()}${action.slice(1)}`
     workspaceFailures.set(name, { machineId: workspace.machine.id, action, message: cancelled ? message : `${label} failed: ${message}`, cancelled })
     publish({ ...snapshot, source: snapshot.source ? { ...snapshot.source,
