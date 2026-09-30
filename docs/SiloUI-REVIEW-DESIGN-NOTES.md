@@ -580,6 +580,13 @@ the pinned source (`microsandbox-60d4dc8…`), not through a summary:
   break later checkpoints. Existing checkpoint exports remain available at
   the cap. The cap is conservative product policy; changing it needs no
   archive migration.
+- E-25 export preflight estimates sparse file data from allocated blocks
+  in source disks, native snapshots and the image cache, with headers and
+  compression overhead. The pinned `archive.rs::save_snapshot` includes
+  the parent chain and image-cache files. The estimate includes unrelated
+  native data conservatively, sums copies sharing a volume, and leaves
+  1 GiB free. It is advisory because sources and free space can change;
+  the destination is rechecked with the actual saved payload sizes.
 
 ---
 

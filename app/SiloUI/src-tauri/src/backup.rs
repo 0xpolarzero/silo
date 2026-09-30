@@ -590,6 +590,7 @@ impl<R: MsbRunner> BackupService<R> {
         let _guard = self.begin()?;
         validate_backup_request(&request)?;
         fs::create_dir_all(&self.scratch_root)?;
+        self.check_export_space(&request, cancellation)?;
         let stage = tempfile::Builder::new()
             .prefix("backup-")
             .tempdir_in(&self.scratch_root)?;
@@ -746,6 +747,55 @@ impl<R: MsbRunner> BackupService<R> {
                 .map(|source| source.name)
                 .collect(),
         })
+    }
+
+    /// Estimate the self-contained archive before capture/save writes anything.
+    /// Include the native snapshot store (parents may be in another group) and
+    /// image cache, plus source disks for new captures. Counting unrelated native
+    /// data is conservative; the final destination check uses the actual archive.
+    fn check_export_space(
+        &self,
+        request: &BackupRequest,
+        cancellation: &Cancellation,
+    ) -> Result<(), BackupError> {
+        let store = self.native_store_root();
+        let mut capture_bytes = 0_u64;
+        for source in &request.sources {
+            validate_sandbox_name(&source.name)?;
+            if source.existing_member.is_none() {
+                capture_bytes = capture_bytes.saturating_add(estimated_tree_bytes(
+                    &store.join("sandboxes").join(&source.name), cancellation,
+                )?);
+            }
+        }
+        let existing = estimated_tree_bytes(&store.join("snapshots"), cancellation)?
+            .saturating_add(estimated_tree_bytes(&store.join("cache"), cancellation)?);
+        // Multiple selected sandboxes can include the same ancestors/image.
+        let estimate = existing.saturating_mul(request.sources.len() as u64)
+            .saturating_add(capture_bytes)
+            .saturating_add(MAX_MANIFEST_BYTES);
+        let estimate = estimate.saturating_add(estimate / 100); // tar/zstd overhead
+        let destination = request.destination.parent().ok_or_else(|| {
+            BackupError::InvalidRequest("The backup destination has no parent directory.".into())
+        })?;
+        let writes = [
+            (self.scratch_root.as_path(), estimate, "Silo's export working copy"),
+            (destination, estimate, "the export destination"),
+            (store, capture_bytes, "Silo's native snapshot storage"),
+        ];
+        for (index, (path, _, label)) in writes.iter().enumerate() {
+            let needed = writes.iter().enumerate().filter(|(other, (other_path, _, _))| {
+                *other == index || same_volume(path, other_path)
+            }).fold(FREE_SPACE_RESERVE, |total, (_, (_, bytes, _))| total.saturating_add(*bytes));
+            let available = (self.free_space)(path)?;
+            if available < needed {
+                return Err(BackupError::InsufficientSpace(format!(
+                    "This export needs an estimated {} of free space for {label} and any other export data on the same volume; {} is available.",
+                    format_bytes(needed), format_bytes(available)
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn captured_snapshot_path(
@@ -2693,6 +2743,33 @@ fn extract_scanned_payload(
     }
     output.sync_all()?;
     Ok((destination, scan))
+}
+
+/// Estimate data a sparse-aware archive copies without reading file contents.
+/// Ignore symlinks rather than walking outside the runtime store; MicroSandbox
+/// owns the disk and image paths under these roots. Check Cancel between entries.
+fn estimated_tree_bytes(root: &Path, cancellation: &Cancellation) -> Result<u64, BackupError> {
+    use std::os::unix::fs::MetadataExt;
+    let mut pending = vec![root.to_owned()];
+    let mut total = 0_u64;
+    while let Some(path) = pending.pop() {
+        check_cancelled(cancellation)?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)? {
+                check_cancelled(cancellation)?;
+                pending.push(entry?.path());
+            }
+        } else if metadata.is_file() {
+            total = total.saturating_add(metadata.len().min(metadata.blocks().saturating_mul(512)))
+                .saturating_add(1024); // entry headers and alignment
+        }
+    }
+    Ok(total)
 }
 
 /// Whether two paths (or their nearest existing ancestors) share a volume.
@@ -5142,6 +5219,19 @@ mod tests {
         let denied = |_: &Path, _: &Path| Err(io::Error::from_raw_os_error(libc::EACCES));
         assert!(rename_without_replacing_with(&source, &destination, denied, no_links).is_err());
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn export_checks_working_space_before_runtime_capture_or_save() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut service = service(&temp, FakeRunner::default());
+        service.free_space = |path| Ok(if path.ends_with("scratch") {
+            FREE_SPACE_RESERVE
+        } else { u64::MAX / 2 });
+        let error = create_one(&service, temp.path().join("dev.silo-backup"), false).unwrap_err();
+        assert!(matches!(error, BackupError::InsufficientSpace(_)));
+        assert!(error.to_string().contains("working copy"), "{error}");
+        assert!(service.runner.calls.lock().unwrap().is_empty());
     }
 
     #[test]
