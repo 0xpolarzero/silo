@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
 import type { SetupMachineConfiguration, SetupVirtualMachineConfiguration } from "@/contracts/silo"
 import {
-  maximumMachineCount,
+  machineCapacityError,
   supportedCPUs,
   supportedMemoryGiB,
   supportedStorageGiB,
@@ -194,9 +194,8 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
       for (const field of resourceFields) delete nextErrors[field]
       Object.assign(nextErrors, validateMachineResources(draft, capacity, computerName))
     }
-    if (!editor.originalID && machines.length >= maximumMachineCount) {
-      nextErrors.form = `Configure no more than ${maximumMachineCount} sandboxes.`
-    }
+    const capacityError = machineCapacityError(machines.length, editor.originalID)
+    if (capacityError) nextErrors.form = capacityError
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0) setFailedValidation(count => count + 1)
     // Stopping a running sandbox is always confirmed first (decision 8).

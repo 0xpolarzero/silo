@@ -13,6 +13,13 @@ export const supportedMemoryGiB = [1, 2, 4, 8, 12, 16, 24, 32, 48, 64] as const
 export const supportedStorageGiB = [10, 20, 40, 60, 80, 100, 120, 200] as const
 export const maximumMachineCount = 64
 
+/** Adding uses another slot; editing an existing sandbox keeps its slot. */
+export function machineCapacityError(machineCount: number, originalID?: string): string | undefined {
+  if (!originalID && machineCount >= maximumMachineCount) {
+    return `Configure no more than ${maximumMachineCount} sandboxes.`
+  }
+}
+
 // Fresh onboarding offers one dev VM; creation waits for Continue.
 export const productionMachineDefaults: readonly SetupVirtualMachineConfiguration[] = [
   {
