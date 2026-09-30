@@ -33,9 +33,9 @@ const actions: BackupController['actions'] = {
   chooseArchive: async () => null,
   inspectArchive: async selected => ({ archive: selected, valid: false, reason: 'Release video fixtures do not inspect archives.' }),
   startBackup: noop,
+  exportAndVerify: async () => { throw new Error('Release video fixtures do not export archives.'); },
   startRestore: noop,
   cancelOperation: noop,
-  retryStart: noop,
   dismissOperation: noop,
   revealArchive: async () => undefined,
 };

@@ -102,7 +102,7 @@
     },
     {
       "path": "patches/microsandbox-sftp-user-0.7.4.patch",
-      "sha256": "5dcbe08b5a8ef33bd5b0ca9f0d1ab8ca6cb0c5b10bfa3dbcaaf498c2d05fc9b8"
+      "sha256": "812987f168198e5708b4b6bae1a30e20b65f7c652f4855db5e6e6959cb1e618d"
     }
   ]
 }

@@ -115,6 +115,7 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
   else if (page === "files")
     body = (
       <WorkspacesPage
+        source={source}
         section="files"
         onSectionChange={noop}
         workspaces={[

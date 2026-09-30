@@ -46,7 +46,7 @@ Ordered source patch pins (all `-0.7.4.patch`; "Feature" is a Silo-specific capa
 | `microsandbox-live-public-ports-0.7.4.patch` | `c08b94b705d13d8e2b01008dc5ba7a7d921fe6e6b7ff7ddc320d74fa93119a08` | Feature | Add and remove public port publications on a running sandbox through the runtime control channel. |
 | `microsandbox-secret-values-stdin-0.7.4.patch` | `4411bec2dae797f3c85eaa389e20fcb45a4ffe0b525e719d238a9d9427892312` | Feature | `MSB_SECRET_VALUES_STDIN=1`: secret `env` sources resolve only from a bounded JSON document on stdin; `--silo-secret-values-protocol` probe. |
 | `microsandbox-import-stage-id-0.7.4.patch` | `ccbf71f5b718add94f7b0556b4224a540770484e08a0000e39a9ac25481dafe0` | Feature | `snapshot load --stage-id <32 hex>` so Silo can journal and clean exactly the staging paths of an interrupted import. |
-| `microsandbox-sftp-user-0.7.4.patch` | `5dcbe08b5a8ef33bd5b0ca9f0d1ab8ca6cb0c5b10bfa3dbcaaf498c2d05fc9b8` | Fix | Nonroot SFTP sessions run through the guest `sftp-server` under the SSH user; upstream runs them as root (upstream issue 1623). |
+| `microsandbox-sftp-user-0.7.4.patch` | `812987f168198e5708b4b6bae1a30e20b65f7c652f4855db5e6e6959cb1e618d` | Fix | Nonroot SFTP sessions run through the guest `sftp-server` under the SSH user; upstream runs them as root (upstream issue 1623). |
 
 The former ninth patch (`microsandbox-preserve-basic-auth`, an independent Basic Auth substitution policy plus `query_params` normalization) is dropped for 0.7.4; the rationale is in [MicroSandbox 0.7.4 upgrade](#microsandbox-074-upgrade). Its 2026-09-27 verification (isolated `adopt-disk` on a copied catalog preserving `headers=true`, `basic_auth=true`, `query=false`, `body=false`) applies to the 0.7.2 runtime only.
 
@@ -372,3 +372,7 @@ falling back to root. The guest image already requires this executable.
 stdin/stdout protocol. The [pinned SDK SSH handler](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/ssh.rs)
 shows the original root-agent SFTP path. Live evidence and qualification limits
 are recorded in [the Linux verification session](research/linux-verification-2026-09-30.md).
+
+The same patch sets SSH command `USER` and `LOGNAME` to the effective guest user,
+after client environment requests. The offline Linux account regression found
+these unset even though UID/GID and HOME were correct.
