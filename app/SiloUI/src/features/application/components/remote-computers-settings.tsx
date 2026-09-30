@@ -1,9 +1,11 @@
 import { useState } from "react"
+import { CopyButton } from "@/components/copy-button"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { showActionFailure } from "@/lib/operation-toast"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
+import type { RemoteManagement } from "../model/remote-computers"
 
 export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: { setupKey?: (address: string) => Promise<void>; authorize?: (address: string) => Promise<void>; connect: (address: string) => Promise<void>; onClose: () => void }) {
   const [address, setAddress] = useState("")
@@ -30,10 +32,25 @@ export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: {
   </form>
 }
 
+const addressKinds = { name: "Local network name", tailscale: "Tailscale", network: "Local network" } as const
+
+// A host name alone often does not resolve from another computer, so every candidate is offered.
+function ManagementAddresses({ management }: { management: RemoteManagement }) {
+  const addresses = management.addresses?.length ? management.addresses : [{ address: management.address, kind: "name" as const }]
+  return <div className="grid gap-1">
+    <p className="text-xs text-muted-foreground">Other computers can connect using one of these addresses.</p>
+    <ul aria-label="Addresses for other computers" className="grid gap-1">
+      {addresses.map(entry => <li key={entry.address} className="flex items-center justify-between gap-2">
+        <span className="min-w-0"><code className="select-text break-all text-xs">{entry.address}</code> <span className="text-xs text-muted-foreground">{addressKinds[entry.kind]}</span></span>
+        <CopyButton size="xs" variant="outline" value={entry.address} labels={{ idle: `Copy ${entry.address}`, copied: "Address copied", failed: "Copy failed" }} text={{ idle: "Copy", copied: "Copied", failed: "Copy failed" }} />
+      </li>)}
+    </ul>
+  </div>
+}
+
 export function RemoteComputersSettings({ source, actions }: { source: ApplicationSource; actions: ApplicationActions }) {
   const [connecting, setConnecting] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [copied, setCopied] = useState(false)
   async function perform(operation: () => Promise<void>) {
     setBusy(true)
     try { await operation() } catch (cause) { showActionFailure("Computer setting not changed", cause, () => { void perform(operation) }, { native: false }) }
@@ -46,7 +63,7 @@ export function RemoteComputersSettings({ source, actions }: { source: Applicati
       <div className="flex items-center justify-between gap-4"><div><label htmlFor="remote-management" className="text-xs font-medium">Allow remote management</label><p className="text-xs text-muted-foreground">Let computers with SSH access to your account manage these VMs while Silo is running.</p><p className="text-xs text-muted-foreground">Quit stops local VMs and disconnects remote sessions.</p></div><Switch id="remote-management" checked={source.remoteManagement?.enabled ?? false} disabled={busy || !source.remoteManagement || !actions.setRemoteManagement} onCheckedChange={enabled => { void perform(() => actions.setRemoteManagement!(enabled)) }} /></div>
       {source.remoteManagement?.error && <p role="alert" className="text-xs text-destructive">{source.remoteManagement.error}</p>}
       {source.remoteManagement?.enabled && <p className="text-xs text-muted-foreground">SSH access must be enabled here (Remote Login on macOS).</p>}
-      {source.remoteManagement?.enabled && <div className="flex items-center justify-between gap-2"><code className="select-text break-all text-xs">{source.remoteManagement.address}</code><Button size="xs" variant="outline" onClick={() => { void perform(async () => { await navigator.clipboard.writeText(source.remoteManagement!.address); setCopied(true) }) }}>{copied ? "Copied" : "Copy address"}</Button></div>}
+      {source.remoteManagement?.enabled && <ManagementAddresses management={source.remoteManagement} />}
       {source.remoteComputers?.map(computer => <div key={computer.id} className="flex items-center justify-between gap-3 border-t pt-3"><div className="min-w-0"><p className="truncate text-xs font-medium">{computer.name}</p><p className="text-xs text-muted-foreground">{computer.busy ? "Applying VM changes" : computer.connected ? "Connected" : "Unavailable"} · {computer.address}</p>{computer.error && <p className="text-xs text-destructive">{computer.error}</p>}</div><Button size="xs" variant="ghost" disabled={busy} aria-label={`Remove connection to ${computer.name}`} title="Remove this connection. VMs on that computer are unchanged." onClick={() => { void perform(() => actions.removeComputer!(computer.id)) }}>Remove connection</Button></div>)}
       {!connecting && <Button size="sm" variant="outline" className="justify-self-start" onClick={() => setConnecting(true)}>Connect computer…</Button>}
       {connecting && <ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} />}

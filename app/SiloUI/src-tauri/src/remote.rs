@@ -51,8 +51,41 @@ pub struct ManagementStatus {
     host_id: String,
     name: String,
     address: String,
+    /// Addresses other computers may reach this one at, most likely first.
+    addresses: Vec<ManagementAddress>,
     /// Why remote management does not work on this computer right now, if it does not.
     error: Option<String>,
+}
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagementAddress {
+    address: String,
+    /// `name` (local network name), `tailscale`, or `network` (an interface address).
+    kind: &'static str,
+}
+/// `user@…` candidates: the host name (as `.local` when it has no domain, which Bonjour and
+/// Avahi resolve), then Tailscale addresses, then other interface addresses.
+fn management_addresses(user: &str, name: &str, interfaces: &[String]) -> Vec<ManagementAddress> {
+    let entry = |host: &str, kind| ManagementAddress { address: format!("{user}@{host}"), kind };
+    let mut list = Vec::new();
+    if !name.is_empty() {
+        if name.contains('.') {
+            list.push(entry(name, "name"));
+        } else {
+            list.push(entry(&format!("{name}.local"), "name"));
+            list.push(entry(name, "name"));
+        }
+    }
+    let usable: Vec<std::net::Ipv4Addr> = interfaces
+        .iter()
+        .filter_map(|ip| ip.parse().ok())
+        .filter(|ip: &std::net::Ipv4Addr| !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified())
+        .collect();
+    // Tailscale assigns addresses from the carrier-grade NAT range 100.64.0.0/10.
+    let tailscale = |ip: &std::net::Ipv4Addr| ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64;
+    list.extend(usable.iter().filter(|ip| tailscale(ip)).map(|ip| entry(&ip.to_string(), "tailscale")));
+    list.extend(usable.iter().filter(|ip| !tailscale(ip)).map(|ip| entry(&ip.to_string(), "network")));
+    list
 }
 fn directory() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
@@ -156,10 +189,16 @@ fn name() -> String {
 }
 fn status(config: &Config) -> ManagementStatus {
     let name = name();
+    let user = std::env::var("USER").unwrap_or_default();
+    let addresses = management_addresses(&user, &name, &crate::ssh_access::addresses());
     ManagementStatus {
         enabled: config.enabled,
         host_id: config.host_id.clone(),
-        address: format!("{}@{}", std::env::var("USER").unwrap_or_default(), name),
+        address: addresses
+            .first()
+            .map(|entry| entry.address.clone())
+            .unwrap_or_else(|| format!("{user}@{name}")),
+        addresses,
         name,
         error: START_ERROR
             .lock()
@@ -1942,6 +1981,27 @@ mod bridge_link_tests {
         fs::write(&link, b"mine").unwrap();
         assert!(link_bridge(home.path(), &target).unwrap_err().contains("already exists"));
         assert_eq!(fs::read(&link).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn copyable_addresses_prefer_names_then_tailscale_then_interfaces() {
+        let interfaces = ["192.168.1.4", "100.101.102.103", "169.254.3.4", "10.0.0.2", "100.128.0.1", "not-an-ip"].map(String::from);
+        let list = |name| {
+            management_addresses("ana", name, &interfaces)
+                .into_iter()
+                .map(|entry| (entry.address, entry.kind))
+                .collect::<Vec<_>>()
+        };
+        let expected_ips = [
+            ("ana@100.101.102.103", "tailscale"),
+            ("ana@192.168.1.4", "network"),
+            ("ana@10.0.0.2", "network"),
+            ("ana@100.128.0.1", "network"),
+        ];
+        let owned = |pairs: &[(&str, &'static str)]| pairs.iter().map(|(a, k)| (a.to_string(), *k)).collect::<Vec<_>>();
+        assert_eq!(list("studio"), owned(&[[("ana@studio.local", "name"), ("ana@studio", "name")].as_slice(), &expected_ips].concat()));
+        assert_eq!(list("Anas-Mac.local"), owned(&[[("ana@Anas-Mac.local", "name")].as_slice(), &expected_ips].concat()));
+        assert_eq!(list(""), owned(&expected_ips));
     }
 
     #[test]

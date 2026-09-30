@@ -2,7 +2,7 @@ import { z } from "zod"
 import type { ApplicationWorkspace } from "./application-source"
 
 export const remoteComputerSchema = z.object({ id: z.string().min(1), name: z.string().min(1), address: z.string().min(1) })
-export const remoteManagementSchema = z.object({ enabled: z.boolean(), hostId: z.string(), name: z.string(), address: z.string(), error: z.string().nullish() })
+export const remoteManagementSchema = z.object({ enabled: z.boolean(), hostId: z.string(), name: z.string(), address: z.string(), addresses: z.array(z.object({ address: z.string().min(1), kind: z.enum(["name", "tailscale", "network"]) })).optional(), error: z.string().nullish() })
 export type RemoteComputer = z.infer<typeof remoteComputerSchema> & { connected: boolean; busy?: boolean; error?: string; lastSeen?: number }
 export type RemoteManagement = z.infer<typeof remoteManagementSchema>
 export type WorkspaceComputer = RemoteComputer & { vmId: string }
