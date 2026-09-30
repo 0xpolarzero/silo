@@ -731,8 +731,8 @@ pub(crate) fn bundled_runtime_library(
 
 pub(crate) fn runtime_home_alias(user_home: &Path, storage_home: &Path) -> PathBuf {
     let digest = Sha256::digest(storage_home.as_os_str().as_encoded_bytes());
-    user_home
-        .join(".silo")
+    crate::channel::current()
+        .state_dir(user_home)
         .join(format!("{:x}", digest)[..12].to_string())
 }
 

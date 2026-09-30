@@ -169,7 +169,6 @@ fn validate_path(path: &str) -> Result<(), String> {
 /// the extensions that can reach the sandbox never mix with the user's own
 /// profile (decision 5, G-19). VS Code creates it empty on first use and
 /// offers to install Remote - SSH into it.
-const VSCODE_PROFILE: &str = "Silo";
 /// Carried by a Silo-owned workspace file on the host. Workspace settings
 /// apply from the first window, whether or not the profile exists yet, and
 /// outrank the "Remote" settings a sandbox can write for itself.
@@ -197,8 +196,12 @@ fn editor_launch(
         launch.arg(remote_uri(alias, path, true)?);
     } else {
         launch
-            .args(["--profile", VSCODE_PROFILE])
-            .arg(vscode_workspace(&user_home.join(".silo"), alias, path)?);
+            .args(["--profile", crate::channel::current().vscode_profile()])
+            .arg(vscode_workspace(
+                &crate::channel::current().state_dir(user_home),
+                alias,
+                path,
+            )?);
     }
     Ok(launch)
 }
@@ -634,8 +637,9 @@ pub(crate) fn prepare_remote_private(
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     uuid::Uuid::parse_str(vm).map_err(|_| "Invalid VM identity.")?;
     let home = app.path().home_dir().map_err(|_| FAILED)?;
-    crate::runtime::prepare_private_directory(&home.join(".silo")).map_err(|e| e.to_string())?;
-    let root = home.join(".silo/desktop-remote/ssh");
+    let state = crate::channel::current().state_dir(&home);
+    crate::runtime::prepare_private_directory(&state).map_err(|e| e.to_string())?;
+    let root = state.join("desktop-remote/ssh");
     let client = root.join(format!("{host}.key"));
     let client_public = {
         let _guard = files_lock();
@@ -646,7 +650,10 @@ pub(crate) fn prepare_remote_private(
     // The remote call can take minutes; keep the file lock free meanwhile.
     let (host_public, user) = crate::remote_access::prepare(app, host, vm, &client_public, path)?;
     let _guard = files_lock();
-    let alias = format!("silo-remote-{host}-{vm}");
+    let alias = format!(
+        "{}-{host}-{vm}",
+        crate::channel::current().remote_alias_prefix()
+    );
     let known_hosts = root.join(format!("{host}-{vm}.known_hosts"));
     write_private(&known_hosts, format!("{alias} {host_public}\n").as_bytes())?;
     let proxy = remote_proxy(host, vm)?;
@@ -817,11 +824,16 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
             });
         }
         if let Ok(home) = app.path().home_dir() {
-            refresh_configs(&home.join(".silo/desktop-remote/ssh"), &|stem| {
-                let (host, vm) = (stem.get(..36)?, stem.get(37..)?);
-                (stem.as_bytes().get(36) == Some(&b'-')).then_some(())?;
-                remote_proxy(host, vm).ok()
-            });
+            refresh_configs(
+                &crate::channel::current()
+                    .state_dir(&home)
+                    .join("desktop-remote/ssh"),
+                &|stem| {
+                    let (host, vm) = (stem.get(..36)?, stem.get(37..)?);
+                    (stem.as_bytes().get(36) == Some(&b'-')).then_some(())?;
+                    remote_proxy(host, vm).ok()
+                },
+            );
         }
     });
 }

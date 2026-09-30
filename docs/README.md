@@ -20,7 +20,7 @@ has been exercised.
 
 | Area | Documents |
 | --- | --- |
-| Build and release | [Build from source](SiloUI-BUILD-FROM-SOURCE.md), [release workflow and CI](SiloUI-RELEASES.md), [Linux system updates](SiloUI-LINUX-UPDATES.md), [distribution acceptance](SiloUI-DISTRIBUTION-PLAN.md), [release history](releases/) |
+| Build and release | [Build from source](SiloUI-BUILD-FROM-SOURCE.md), [build channels (production and Dev)](SiloUI-BUILD-CHANNELS.md), [release workflow and CI](SiloUI-RELEASES.md), [Linux system updates](SiloUI-LINUX-UPDATES.md), [distribution acceptance](SiloUI-DISTRIBUTION-PLAN.md), [release history](releases/) |
 | Runtime | [Packaging](SiloUI-RUNTIME-PACKAGING.md), [bundled guest images](SiloUI-GUEST-IMAGES.md), [SSH agent TLS regression](SiloUI-ZCODE-TLS-INVESTIGATION.md), and the dated [runtime and backup decision log](SiloUI-RUNTIME-BACKUP-FINDINGS.md) (validated against MicroSandbox 0.6.17 unless a section says otherwise; Silo now bundles 0.7.2, and the Backup page it describes became per-sandbox Export and Import) |
 | Checkpoints | [Checkpoint implementation plan and qualification](SiloUI-CHECKPOINTS-PLAN.md), [snapshot lineage groups](research/silo-snapshot-lineage-groups-2026-09-26.md) |
 | Native tests | [Rust test support and live-test boundaries](SiloUI-RUST-TEST-SUPPORT.md) |

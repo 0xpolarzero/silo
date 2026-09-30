@@ -329,7 +329,7 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
         .path()
         .home_dir()
         .map_err(|_| "Could not prepare the desktop connection.")?;
-    let directory = socket_directory(&home.join(".silo"))?;
+    let directory = socket_directory(&crate::channel::current().state_dir(&home))?;
     let socket: PathBuf = directory.path().join("desktop.sock");
     let command = forward_command(&config, &alias, &socket, guest)?;
     let mut tunnel = Tunnel::spawn(&command, Some(directory))

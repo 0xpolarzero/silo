@@ -102,7 +102,11 @@ pub struct Request {
     allowed_domains: Vec<String>,
 }
 fn entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new("org.silo.Silo.secrets", "values").map_err(|_| STORE_ERROR.into())
+    keyring::Entry::new(
+        crate::channel::current().keychain_service(crate::channel::Keychain::Secrets),
+        "values",
+    )
+    .map_err(|_| STORE_ERROR.into())
 }
 fn read_vault() -> Result<Vault, String> {
     #[cfg(test)]

@@ -173,7 +173,7 @@ npm --prefix app/SiloUI run desktop:build
 ```
 
 Only run the command needed: `desktop` starts development mode;
-`desktop:build:debug` builds the local macOS app with ad-hoc signing;
+`desktop:build:debug` builds the Silo Dev app with ad-hoc signing (Dev channel);
 `desktop:build` produces a verified optimized local app on macOS and native
 release-mode packages on Linux. macOS DMG and updater artifacts are produced
 by the release workflow, after VM signature finalization. Platform resource
@@ -202,7 +202,9 @@ From the repository root, build a debug app:
 npm --prefix app/SiloUI run desktop:build:debug
 ```
 
-Output: `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`.
+Output: `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app`. Debug
+builds and `npm run desktop` use the separate Silo Dev channel
+(`org.silo.dev`); see [build channels](SiloUI-BUILD-CHANNELS.md).
 For an optimized local app without installer or updater artifacts:
 
 ```sh

@@ -142,7 +142,9 @@ fn notification_authorized(state: &str) -> bool {
 /// main binary (tauri-bundler). Notification servers use the desktop entry to
 /// attribute notices and list Silo in per-app settings (F-24).
 #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
-pub(crate) const NOTIFICATION_DESKTOP_ENTRY: &str = "Silo";
+pub(crate) fn notification_desktop_entry() -> &'static str {
+    crate::channel::current().notification_desktop_entry()
+}
 #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 pub(crate) const NOTIFICATION_ICON: &str = env!("CARGO_PKG_NAME");
 
@@ -232,7 +234,7 @@ mod tests {
     fn notifications_name_the_installed_desktop_entry_and_icon() {
         let config: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        assert_eq!(config["productName"], NOTIFICATION_DESKTOP_ENTRY);
+        assert_eq!(config["productName"], notification_desktop_entry());
         assert!(
             config["mainBinaryName"].is_null(),
             "the icon is named after the Cargo binary"

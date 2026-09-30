@@ -17,8 +17,11 @@ pub(super) fn selected(policy: &Value) -> bool {
     policy["authenticationMethod"] == "token"
 }
 fn entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new("org.silo.Silo.github", "personal-token")
-        .map_err(|_| "The system credential store is unavailable.".into())
+    keyring::Entry::new(
+        crate::channel::current().keychain_service(crate::channel::Keychain::Github),
+        "personal-token",
+    )
+    .map_err(|_| "The system credential store is unavailable.".into())
 }
 fn read() -> Result<Option<PersonalToken>, String> {
     SECRET.read(|| match entry()?.get_password() {

@@ -22,8 +22,15 @@ mod operations;
 /// fish, csh and nushell also pass through unchanged; the script itself has no single quote.
 const INSTALL_PUBLIC_KEY: &str = r#"sh -c 'umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && key=$(cat) && { grep -qxF -- "$key" ~/.ssh/authorized_keys || printf "\n%s\n" "$key" >> ~/.ssh/authorized_keys; }'"#;
 /// Silo's key may only run the bridge and open `-N` tunnels to loopback ports on the owner.
-const AUTHORIZED_KEY_OPTIONS: &str = r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge""#;
-const SILO_KEY_COMMENT: &str = "Silo remote management";
+fn authorized_key_options() -> String {
+    format!(
+        r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="{}""#,
+        crate::channel::current().remote_bridge_command()
+    )
+}
+fn silo_key_comment() -> &'static str {
+    crate::channel::current().remote_key_comment()
+}
 /// Bridge protocol version; both computers must match. 2 adds the method table, capabilities,
 /// changes named by a stable `operationId` that must start within `startWithinMs`, and a
 /// preamble before each bridge reply.
@@ -113,9 +120,9 @@ fn directory() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
     directory_in(Path::new(&home))
 }
-/// `~/.silo/desktop-remote` under `home`, private to this account.
+/// `~/.silo/desktop-remote` (`~/.silo-dev/...` for Silo Dev) under `home`, private to this account.
 fn directory_in(home: &Path) -> Result<PathBuf, String> {
-    let root = home.join(".silo");
+    let root = crate::channel::current().state_dir(home);
     crate::runtime::prepare_private_directory(&root).map_err(|e| e.to_string())?;
     let dir = root.join("desktop-remote");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -270,7 +277,8 @@ fn select_bridge_target(app_image: Option<PathBuf>, current: PathBuf) -> Result<
 /// Silo made earlier: one to an executable with the same name, a Silo AppImage, or a
 /// link whose target is gone (an old AppImage mount or a moved app).
 fn link_bridge(home: &Path, target: &Path) -> Result<(), String> {
-    let path = home.join(".local/bin/silo-remote");
+    let name = crate::channel::current().remote_bridge_name();
+    let path = home.join(".local/bin").join(name);
     fs::create_dir_all(path.parent().ok_or("Home unavailable.")?).map_err(|e| e.to_string())?;
     if let Ok(existing) = fs::symlink_metadata(&path) {
         let previous = fs::read_link(&path).ok();
@@ -285,13 +293,13 @@ fn link_bridge(home: &Path, target: &Path) -> Result<(), String> {
                         .is_some_and(|extension| extension == "AppImage")
             });
         if !ours {
-            return Err("~/.local/bin/silo-remote already exists. Choose a different name for that file before enabling remote management.".into());
+            return Err(format!("~/.local/bin/{name} already exists. Choose a different name for that file before enabling remote management."));
         }
         if previous.as_deref() == Some(target) {
             return Ok(());
         }
     }
-    let temp = path.with_file_name(format!(".silo-remote-{}", uuid::Uuid::new_v4()));
+    let temp = path.with_file_name(format!(".{name}-{}", uuid::Uuid::new_v4()));
     symlink(target, &temp).map_err(|e| e.to_string())?;
     if let Err(error) = fs::rename(&temp, &path) {
         let _ = fs::remove_file(temp);
@@ -660,7 +668,7 @@ fn key_setup_command(dir: &Path, address: &str) -> Result<String, String> {
                 "-N",
                 "",
                 "-C",
-                "Silo remote management",
+                silo_key_comment(),
                 "-f",
             ])
             .arg(&key)
@@ -720,12 +728,14 @@ fn silo_key_blob(public: &str) -> Result<&str, String> {
 fn authorized_key_line(public: &str) -> Result<String, String> {
     let blob = silo_key_blob(public)?;
     Ok(format!(
-        "{AUTHORIZED_KEY_OPTIONS} ssh-ed25519 {blob} {SILO_KEY_COMMENT}"
+        "{} ssh-ed25519 {blob} {}",
+        authorized_key_options(),
+        silo_key_comment()
     ))
 }
 /// Rewrites the unrestricted line earlier Silo versions installed; other lines are untouched.
 fn restrict_authorized_keys(contents: &str, blob: &str) -> Option<String> {
-    let unrestricted = format!("ssh-ed25519 {blob} {SILO_KEY_COMMENT}");
+    let unrestricted = format!("ssh-ed25519 {blob} {}", silo_key_comment());
     let mut changed = false;
     let rewritten = contents
         .split_inclusive('\n')
@@ -733,7 +743,7 @@ fn restrict_authorized_keys(contents: &str, blob: &str) -> Option<String> {
             if line.trim() == unrestricted {
                 changed = true;
                 let ending = if line.ends_with('\n') { "\n" } else { "" };
-                format!("{AUTHORIZED_KEY_OPTIONS} {unrestricted}{ending}")
+                format!("{} {unrestricted}{ending}", authorized_key_options())
             } else {
                 line.to_owned()
             }
@@ -832,13 +842,17 @@ fn connection_failure(code: Option<i32>, stderr: &str) -> String {
     if has("Silo is not running on this computer.") {
         return "Silo is not running on the other computer. Open Silo there with remote management enabled.".into();
     }
-    if code == Some(127) || has("silo-remote: No such file") || has("silo-remote: not found") {
+    if code == Some(127)
+        || has("silo-remote: No such file")
+        || has("silo-remote: not found")
+        || has("silo-remote-dev: No such file")
+        || has("silo-remote-dev: not found")
+    {
         return "Silo's remote bridge is missing on the other computer. Turn remote management off and on again there.".into();
     }
     CONNECTION_HELP.into()
 }
 /// The command the bridge runs on the other computer (also forced by Silo's restricted key).
-const BRIDGE_COMMAND: &str = "exec ~/.local/bin/silo-remote --remote-bridge";
 /// Pauses before sending a change again after its connection was lost.
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
 /// Why an exchange with another computer failed.
@@ -885,7 +899,11 @@ fn exchange(address: &str, request: &Value, deadline: Instant) -> Result<Value, 
     with_identity_fallback(address, key.is_some(), |identity| {
         let mut command =
             ssh_with_identity(address, key.as_deref(), identity).map_err(Failure::Failed)?;
-        command.args(["--", address, BRIDGE_COMMAND]);
+        command.args([
+            "--",
+            address,
+            &crate::channel::current().remote_bridge_command(),
+        ]);
         run_exchange(command, request, deadline)
     })
 }
@@ -1148,7 +1166,7 @@ fn save_connected_host(
         return Err(if host.name == local_name {
             "This address points to this computer. Its VMs are already available locally.".into()
         } else {
-            format!("{} uses this computer's Silo identity, probably because its Silo settings were copied from here. On {}, quit Silo, delete ~/.silo/desktop-remote/config.json, and open Silo again.", host.name, host.name)
+            format!("{} uses this computer's Silo identity, probably because its Silo settings were copied from here. On {}, quit Silo, delete ~/.silo/desktop-remote/config.json (~/.silo-dev/desktop-remote/config.json for Silo Dev), and open Silo again.", host.name, host.name)
         });
     }
     if let Some(saved) = config.hosts.iter().find(|saved| saved.id == host.id) {
@@ -1438,7 +1456,11 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
         .ok_or("Saved computer not found.")?;
     validate_address(&host.address)?;
     let mut child = ssh_for_address(&host.address)?
-        .args(["--", &host.address, BRIDGE_COMMAND])
+        .args([
+            "--",
+            &host.address,
+            &crate::channel::current().remote_bridge_command(),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -2376,7 +2398,7 @@ mod authorized_key_tests {
     fn installed_line_only_allows_the_bridge_and_loopback_tunnels() {
         let _test_state = crate::test_support::global_state();
         let line =
-            authorized_key_line(&format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}\n")).unwrap();
+            authorized_key_line(&format!("ssh-ed25519 {BLOB} Silo remote management\n")).unwrap();
         assert_eq!(
             line,
             format!(
@@ -2398,12 +2420,12 @@ mod authorized_key_tests {
     #[test]
     fn rewrites_only_silos_own_unrestricted_line() {
         let _test_state = crate::test_support::global_state();
-        let own = format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}");
+        let own = format!("ssh-ed25519 {BLOB} Silo remote management");
         let contents = format!(
             "ssh-ed25519 AAAAother user@laptop\n{own}\nfrom=\"10.0.0.1\" {own}\nssh-ed25519 {BLOB} personal\n{own}"
         );
         let rewritten = restrict_authorized_keys(&contents, BLOB).unwrap();
-        let restricted = format!("{AUTHORIZED_KEY_OPTIONS} {own}");
+        let restricted = format!("{} {own}", authorized_key_options());
         assert_eq!(
             rewritten,
             format!(
@@ -2419,13 +2441,16 @@ mod authorized_key_tests {
         let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
         let path = home.path().join("authorized_keys");
-        let public = format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}");
+        let public = format!("ssh-ed25519 {BLOB} Silo remote management");
         fs::write(&path, format!("ssh-ed25519 AAAAother user\n{public}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(restrict_authorized_keys_file(&path, &public).unwrap());
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            format!("ssh-ed25519 AAAAother user\n{AUTHORIZED_KEY_OPTIONS} {public}\n")
+            format!(
+                "ssh-ed25519 AAAAother user\n{} {public}\n",
+                authorized_key_options()
+            )
         );
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,

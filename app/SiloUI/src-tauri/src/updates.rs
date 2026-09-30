@@ -207,7 +207,8 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         .join("update-preferences.json");
     let preference = read_preferences(&path);
     let error = preference.as_ref().err().cloned();
-    let automatic = preference.unwrap_or(false);
+    // Silo Dev is built from source and never replaces itself with a production release.
+    let automatic = preference.unwrap_or(false) && !crate::channel::current().is_development();
     let executable = std::env::current_exe().unwrap_or_default();
     let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
     app.manage(Controller {
@@ -346,6 +347,14 @@ fn settle_check(
     keep
 }
 async fn check(app: AppHandle, automatic: bool) -> Result<Snapshot, String> {
+    if crate::channel::current().is_development() {
+        // No network request: the development channel has no update feed.
+        return modify(&app, |s| {
+            s.snapshot.phase = "idle".into();
+            s.snapshot.error = None;
+            s.snapshot.error_details = None;
+        });
+    }
     let previous_phase = {
         let controller = app.state::<Controller>();
         let mut state = controller

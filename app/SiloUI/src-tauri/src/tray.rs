@@ -39,7 +39,7 @@ mod platform {
         TrayIconBuilder::with_id("silo")
             .icon(icon(Tone::Neutral))
             .icon_as_template(true)
-            .tooltip("Silo")
+            .tooltip(crate::channel::current().tray_title())
             .show_menu_on_left_click(false)
             .on_tray_icon_event(|tray, event| {
                 if let TrayIconEvent::Click {
@@ -76,8 +76,11 @@ mod platform {
         // Replacing the image must preserve native appearance tinting in one redraw.
         tray.set_icon_with_as_template(Some(icon(tone)), true)
             .map_err(|e| e.to_string())?;
-        tray.set_tooltip(Some(format!("Silo · {label}")))
-            .map_err(|e| e.to_string())
+        tray.set_tooltip(Some(format!(
+            "{} · {label}",
+            crate::channel::current().tray_title()
+        )))
+        .map_err(|e| e.to_string())
     }
 
     pub fn available(_: &AppHandle) -> bool {
@@ -107,10 +110,10 @@ mod platform {
 
     impl ksni::Tray for LinuxTray {
         fn id(&self) -> String {
-            "org.silo.preview".into()
+            crate::channel::current().tray_id().into()
         }
         fn title(&self) -> String {
-            "Silo".into()
+            crate::channel::current().tray_title().into()
         }
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
             let image = icon(self.tone);
