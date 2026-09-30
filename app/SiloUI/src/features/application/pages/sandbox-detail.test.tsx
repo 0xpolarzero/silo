@@ -56,7 +56,7 @@ it("opens the Checkpoints tab directly from the row menu", async () => {
   expect(screen.getByRole("region", { name: `Checkpoints for ${workspace.machine.name}` })).toBeVisible()
 })
 
-it("hides Storage and Access tabs for a remote sandbox without those capabilities", async () => {
+it("hides Storage and SSH access tabs for a remote sandbox without those capabilities", async () => {
   const source = localVmSource()
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
   workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
@@ -64,10 +64,7 @@ it("hides Storage and Access tabs for a remote sandbox without those capabilitie
   render(<OverviewPage source={source} actions={{ readWorkspaceStorage: vi.fn(), forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
-  expect(screen.getByRole("tab", { name: "Overview" })).toBeVisible()
-  expect(screen.getByRole("tab", { name: "Checkpoints" })).toBeVisible()
-  expect(screen.queryByRole("tab", { name: "Storage" })).not.toBeInTheDocument()
-  expect(screen.queryByRole("tab", { name: "Access" })).not.toBeInTheDocument()
+  expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Overview", "Checkpoints"])
 })
 
 it("summarizes resources, repositories, and secrets on the Overview tab", async () => {
