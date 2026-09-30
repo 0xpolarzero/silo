@@ -885,7 +885,7 @@ describe("onboarding", () => {
     }
 
     await user.click(screen.getByRole("button", { name: "Delete dev" }))
-    expect(screen.getByText("Delete dev?")).toBeVisible()
+    expect(screen.getByText("Delete dev permanently?")).toBeVisible()
   })
 
   it("preserves GitHub policy and identity settings when VM resources change", async () => {
@@ -941,20 +941,20 @@ describe("onboarding", () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
 
     await user.click(screen.getByRole("button", { name: "Delete dev" }))
-    expect(screen.getByText("Delete dev?")).toBeVisible()
+    expect(screen.getByText("Delete dev permanently?")).toBeVisible()
     expect(screen.getByText("Its files and checkpoints will be deleted. This can't be undone.")).toBeVisible()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
     await user.click(screen.getByRole("button", { name: "Cancel" }))
-    expect(screen.queryByText("Delete dev?")).not.toBeInTheDocument()
+    expect(screen.queryByText("Delete dev permanently?")).not.toBeInTheDocument()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
     await user.click(screen.getByRole("button", { name: "Delete dev" }))
     await user.keyboard("{Escape}")
-    expect(screen.queryByText("Delete dev?")).not.toBeInTheDocument()
+    expect(screen.queryByText("Delete dev permanently?")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Delete dev" })).toBeVisible()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
 
     await user.click(screen.getByRole("button", { name: "Delete dev" }))
-    await user.click(screen.getByRole("button", { name: /^Delete$/ }))
+    await user.click(screen.getByRole("button", { name: /^Delete permanently$/ }))
     expect(saveMachineConfiguration.mock.lastCall?.[0].machines.map(({ name }: { name: string }) => name)).toEqual(["playgrounds", "personal"])
     expect(screen.queryByRole("button", { name: "Edit dev" })).not.toBeInTheDocument()
   })

@@ -82,7 +82,7 @@ it("toasts a restored checkpoint with a Start action that runs the guarded start
   const startWorkspace = vi.fn()
   const actions = { restoreCheckpoint, forkCheckpoint: vi.fn(), startWorkspace, openTerminal: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
-  render(<Harness source={source} actions={actions} />)
+  const view = render(<Harness source={source} actions={actions} />)
 
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Checkpoints for ${workspace.machine.name}` }))
@@ -94,6 +94,8 @@ it("toasts a restored checkpoint with a Start action that runs the guarded start
   expect(await screen.findByText("Restored “Before deploy”")).toBeVisible()
   expect(screen.getByText(new RegExp(`${workspace.machine.name} is stopped\\. A recovery checkpoint was saved first\\.`))).toBeVisible()
 
+  // The snapshot then reports the restored sandbox stopped; Start acts on that state.
+  view.rerender(<Harness source={{ ...source, workspaces: source.workspaces.map(item => item === workspace ? { ...item, state: "stopped" as const } : item) }} actions={actions} />)
   await user.click(screen.getByRole("button", { name: "Start" }))
   expect(startWorkspace).toHaveBeenCalledWith(workspace.machine.name)
 })

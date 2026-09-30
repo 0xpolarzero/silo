@@ -98,16 +98,18 @@ export function OperationQueueToast({ queue, onCancel }: { queue?: OperationQueu
       : `${total} ${total === 1 ? "operation" : "operations"} in progress`
     const cancellable = running.find((entry) => entry.cancellable)
     const primary = running[0]
+    // With several operations under one title, Cancel names the one it stops.
+    const cancelLabel = cancellable && title !== cancellable.label ? `Cancel “${cancellable.label}”` : undefined
     showOperationProgress(OPERATION_QUEUE_TOAST_ID, {
       title,
       step: queueStep(visibleQueue, now, queue),
       startedAt: primary?.sinceMs ?? earliest,
-      cancel: onCancel && cancellable ? { onCancel: () => onCancel(cancellable.id) } : undefined,
+      cancel: onCancel && cancellable ? { label: cancelLabel, onCancel: () => onCancel(cancellable.id) } : undefined,
     })
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [show, queue, now, onCancel])
 
-  // Never let the toast outlive the page that drives it.
+  // Never let the toast outlive the app that drives it.
   useEffect(() => () => { dismissOperationToast(OPERATION_QUEUE_TOAST_ID) }, [])
 
   return null

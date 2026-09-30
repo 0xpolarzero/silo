@@ -130,6 +130,20 @@ describe("operation-queue toast", () => {
     expect(onCancel).toHaveBeenCalledWith(7)
   })
 
+  it("names the operation Cancel stops when several are in progress", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup()
+    const onCancel = vi.fn()
+    const queue: OperationQueue = {
+      running: [entry({ id: 1, label: "Updating" }), entry({ id: 9, label: "Backing up sandboxes", cancellable: true })],
+      waiting: [],
+    }
+    render(<ToastHarness queue={queue} onCancel={onCancel} />)
+    expect(await screen.findByText("2 operations in progress")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Cancel “Backing up sandboxes”" }))
+    expect(onCancel).toHaveBeenCalledWith(9)
+  })
+
   it("does not offer Cancel for a non-cancellable running operation", async () => {
     const queue: OperationQueue = { running: [entry({ id: 8, label: "Applying the sandbox configuration", vmId: "dev", cancellable: false })], waiting: [] }
     render(<ToastHarness queue={queue} onCancel={vi.fn()} />)
