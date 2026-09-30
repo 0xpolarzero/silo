@@ -1,7 +1,8 @@
 diff --git a/sdk/rust/lib/sandbox/ssh.rs b/sdk/rust/lib/sandbox/ssh.rs
+index 507e9d41..5a2314a6 100644
 --- a/sdk/rust/lib/sandbox/ssh.rs
 +++ b/sdk/rust/lib/sandbox/ssh.rs
-@@ -1265,6 +1265,10 @@ impl SshSession {
+@@ -1274,6 +1274,10 @@ impl SshSession {
              .guest_user
              .clone()
              .or_else(|| self.user.clone());
@@ -12,7 +13,7 @@ diff --git a/sdk/rust/lib/sandbox/ssh.rs b/sdk/rust/lib/sandbox/ssh.rs
          let cwd = self.session_home().await?;
          let opts = ExecOptions {
              args,
-@@ -1660,6 +1660,24 @@ impl russh::server::Handler for SshSession {
+@@ -1674,6 +1678,24 @@ impl russh::server::Handler for SshSession {
              return Ok(());
          }
  

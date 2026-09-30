@@ -1,6 +1,82 @@
+diff --git a/crates/cli/lib/commands/adopt_disk.rs b/crates/cli/lib/commands/adopt_disk.rs
+new file mode 100644
+index 00000000..0e559348
+--- /dev/null
++++ b/crates/cli/lib/commands/adopt_disk.rs
+@@ -0,0 +1,23 @@
++//! One-time conversion of an inactive external raw disk to sandbox-owned storage.
++use clap::Args;
++use microsandbox::sandbox::Sandbox;
++
++/// Arguments for converting one inactive external disk to owned storage.
++#[derive(Debug, Args)]
++pub struct AdoptDiskArgs {
++    /// Existing created, stopped, or crashed sandbox.
++    pub name: String,
++    /// Existing guest mount path. Currently only /workspace is supported.
++    #[arg(long, default_value = "/workspace")]
++    pub guest: String,
++    /// Independent staged copy of the configured external disk.
++    #[arg(long)]
++    pub source: Option<std::path::PathBuf>,
++}
++
++/// Copy and verify the disk, then persist the owned mount.
++pub async fn run(args: AdoptDiskArgs) -> anyhow::Result<()> {
++    Sandbox::adopt_disk_as_owned(&args.name, &args.guest, args.source.as_deref()).await?;
++    println!("Adopted {} as sandbox-owned storage", args.guest);
++    Ok(())
++}
+diff --git a/crates/cli/lib/commands/mod.rs b/crates/cli/lib/commands/mod.rs
+index 95255d9e..57bde463 100644
+--- a/crates/cli/lib/commands/mod.rs
++++ b/crates/cli/lib/commands/mod.rs
+@@ -8,6 +8,7 @@ use crate::ui;
+ // Exports
+ //--------------------------------------------------------------------------------------------------
+ 
++pub mod adopt_disk;
+ pub mod branch;
+ pub mod common;
+ pub mod completion;
+diff --git a/crates/cli/lib/commands/sandbox.rs b/crates/cli/lib/commands/sandbox.rs
+index c49ef82b..392e9e34 100644
+--- a/crates/cli/lib/commands/sandbox.rs
++++ b/crates/cli/lib/commands/sandbox.rs
+@@ -4,8 +4,8 @@ use clap::{Args, Subcommand};
+ use microsandbox::LogLevel;
+ 
+ use super::{
+-    branch, copy, create, exec, inspect, list, logs, metrics, modify, pause, ping, ps, remove,
+-    restart, restore, run, start, stop, touch, wait,
++    adopt_disk, branch, copy, create, exec, inspect, list, logs, metrics, modify, pause, ping, ps,
++    remove, restart, restore, run, start, stop, touch, wait,
+ };
+ 
+ //--------------------------------------------------------------------------------------------------
+@@ -37,6 +37,9 @@ pub enum SandboxCommands {
+     #[command(visible_alias = "mod")]
+     Modify(modify::ModifyArgs),
+ 
++    /// Convert an inactive external raw /workspace disk to owned storage.
++    AdoptDisk(adopt_disk::AdoptDiskArgs),
++
+     /// Start a stopped sandbox.
+     Start(start::StartArgs),
+ 
+@@ -115,6 +118,7 @@ pub async fn run(command: SandboxCommands, log_level: Option<LogLevel>) -> anyho
+         SandboxCommands::Create(args) => create::run(args, log_level).await,
+         SandboxCommands::Restore(args) => restore::run(args, log_level).await,
+         SandboxCommands::Modify(args) => modify::run(args).await,
++        SandboxCommands::AdoptDisk(args) => adopt_disk::run(args).await,
+         SandboxCommands::Start(args) => start::run(args).await,
+         SandboxCommands::Stop(args) => stop::run(args).await,
+         SandboxCommands::Pause(args) => pause::run(args, false).await,
+diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
+index f505a1db..ce70d662 100644
 --- a/sdk/rust/lib/sandbox/mod.rs
 +++ b/sdk/rust/lib/sandbox/mod.rs
-@@ -445,6 +445,12 @@
+@@ -445,6 +445,12 @@ impl Sandbox {
          backend.sandboxes().get(backend.clone(), name).await
      }
  
@@ -13,13 +89,15 @@
      /// List the first page of sandboxes using the default page size.
      pub async fn list() -> MicrosandboxResult<SandboxPage> {
          Self::list_with(|list| list).await
+diff --git a/sdk/rust/lib/sandbox/modify.rs b/sdk/rust/lib/sandbox/modify.rs
+index 5558c08e..c27221d1 100644
 --- a/sdk/rust/lib/sandbox/modify.rs
 +++ b/sdk/rust/lib/sandbox/modify.rs
 @@ -1,9 +1,10 @@
  //! Sandbox modification planning.
  
--use std::sync::Arc;
-+use std::{path::Path, sync::Arc, time::Duration};
+-use std::{collections::HashMap, sync::Arc};
++use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
  
  use microsandbox_types::{
 -    EnvVar, RootDisk, RootfsSource, SecretSubstitution, SecretViolationAction,
@@ -28,7 +106,7 @@
  };
  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::Expr};
  
-@@ -1678,6 +1679,99 @@
+@@ -1689,6 +1690,99 @@ fn resolve_secret_source_value(
      }
  }
  
@@ -128,7 +206,7 @@
  async fn persist_config(
      backend: &Arc<dyn Backend>,
      handle: &super::SandboxHandle,
-@@ -2822,6 +2916,132 @@
+@@ -2894,6 +2988,132 @@ mod tests {
      use crate::backend::LocalBackend;
      use crate::size::SizeExt;
  
@@ -261,68 +339,3 @@
      #[test]
      fn guest_flush_capability_never_silently_weakens_capture() {
          use microsandbox_types::GuestFlush::{Auto, Required, Skip};
---- a/crates/cli/lib/commands/mod.rs
-+++ b/crates/cli/lib/commands/mod.rs
-@@ -8,6 +8,7 @@
- // Exports
- //--------------------------------------------------------------------------------------------------
- 
-+pub mod adopt_disk;
- pub mod branch;
- pub mod common;
- pub mod completion;
---- a/crates/cli/lib/commands/sandbox.rs
-+++ b/crates/cli/lib/commands/sandbox.rs
-@@ -4,7 +4,7 @@
- use microsandbox::LogLevel;
- 
- use super::{
--    branch, copy, create, exec, inspect, list, logs, metrics, modify, pause, ping, ps, remove,
-+    adopt_disk, branch, copy, create, exec, inspect, list, logs, metrics, modify, pause, ping, ps, remove,
-     restart, restore, run, start, stop, touch,
- };
- 
-@@ -36,6 +36,9 @@
-     /// Modify sandbox configuration.
-     #[command(visible_alias = "mod")]
-     Modify(modify::ModifyArgs),
-+
-+    /// Convert an inactive external raw /workspace disk to owned storage.
-+    AdoptDisk(adopt_disk::AdoptDiskArgs),
- 
-     /// Start a stopped sandbox.
-     Start(start::StartArgs),
-@@ -112,6 +115,7 @@
-         SandboxCommands::Create(args) => create::run(args, log_level).await,
-         SandboxCommands::Restore(args) => restore::run(args, log_level).await,
-         SandboxCommands::Modify(args) => modify::run(args).await,
-+        SandboxCommands::AdoptDisk(args) => adopt_disk::run(args).await,
-         SandboxCommands::Start(args) => start::run(args).await,
-         SandboxCommands::Stop(args) => stop::run(args).await,
-         SandboxCommands::Pause(args) => pause::run(args, false).await,
---- /dev/null
-+++ b/crates/cli/lib/commands/adopt_disk.rs
-@@ -0,0 +1,23 @@
-+//! One-time conversion of an inactive external raw disk to sandbox-owned storage.
-+use clap::Args;
-+use microsandbox::sandbox::Sandbox;
-+
-+/// Arguments for converting one inactive external disk to owned storage.
-+#[derive(Debug, Args)]
-+pub struct AdoptDiskArgs {
-+    /// Existing created, stopped, or crashed sandbox.
-+    pub name: String,
-+    /// Existing guest mount path. Currently only /workspace is supported.
-+    #[arg(long, default_value = "/workspace")]
-+    pub guest: String,
-+    /// Independent staged copy of the configured external disk.
-+    #[arg(long)]
-+    pub source: Option<std::path::PathBuf>,
-+}
-+
-+/// Copy and verify the disk, then persist the owned mount.
-+pub async fn run(args: AdoptDiskArgs) -> anyhow::Result<()> {
-+    Sandbox::adopt_disk_as_owned(&args.name, &args.guest, args.source.as_deref()).await?;
-+    println!("Adopted {} as sandbox-owned storage", args.guest);
-+    Ok(())
-+}

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
-  "microsandboxVersion": "0.7.2",
+  "microsandboxVersion": "0.7.4",
   "libkrunfwVersion": "5.6.1",
-  "sourceCommit": "60d4dc8a436fb9365491567ec21d073e924e3c6d",
-  "sourceArchiveSha256": "fecd277ccfddbb4a131e4c9dfe056a87a014926c78dd705776d738158c483828",
+  "sourceCommit": "e36ffc0a58b48d70e0e4d66d75f1596994e3865a",
+  "sourceArchiveSha256": "3d01dff5ec195d3163f855f0f754408cb4e4e4935d4b880a9a1e9b74ef7aa077",
   "toolchain": "1.94.0",
   "features": "net,ssh,embed-binaries",
   "libkrunfwCommit": "cf4c22b9f05c680928e6d96a9d198f5845573a87",
@@ -12,9 +12,9 @@
       "platform": "darwin",
       "arch": "aarch64",
       "executableAsset": "msb-darwin-aarch64",
-      "executableSha256": "b7292a901ffc93f84860264c6e0d4636cc9aeeddfb76c952f7c2204ea417ae4b",
+      "executableSha256": "1dc5c7a9b28d85f06307a006394e8693e58fe31f9dc1e1919bf7d06c3706473e",
       "agentdAsset": "agentd-aarch64",
-      "agentdSha256": "ca6dde7a3000d8e93d5dca87fcebf77ebb36ce83377385bae2be70dbead9a5e1",
+      "agentdSha256": "373ce4e86abc9695dbc1da272591f877eb9072e4f9be7fc747178e2b025da386",
       "libraryAsset": "libkrunfw-darwin-aarch64.dylib",
       "libraryName": "libkrunfw.5.dylib",
       "librarySha256": "43e36ee2b1f2a7488c25f34193f657568a7733281d856ad267506ccc02993d59"
@@ -23,9 +23,9 @@
       "platform": "linux",
       "arch": "aarch64",
       "executableAsset": "msb-linux-aarch64",
-      "executableSha256": "33e4f5274b9eefa3a088d0f0c8b80a5e440fd60940c0469f71a389c6998cb714",
+      "executableSha256": "781984850e178801508f8ec1ca12b44703242bc30481945cd9b301b3010acd03",
       "agentdAsset": "agentd-aarch64",
-      "agentdSha256": "ca6dde7a3000d8e93d5dca87fcebf77ebb36ce83377385bae2be70dbead9a5e1",
+      "agentdSha256": "373ce4e86abc9695dbc1da272591f877eb9072e4f9be7fc747178e2b025da386",
       "libraryAsset": "libkrunfw-linux-aarch64.so",
       "libraryName": "libkrunfw.so.5.6.1",
       "librarySha256": "98d01137190de7022a3132c6f55c245ef43d02d67d5d7e697ee19c303fce8769"
@@ -34,9 +34,9 @@
       "platform": "linux",
       "arch": "x86_64",
       "executableAsset": "msb-linux-x86_64",
-      "executableSha256": "bdaa6c6fc58fa3d8e85d52fc299106a013d979edd0a781b4bc6ddd21da0f8b16",
+      "executableSha256": "b75244c1d0d24566009aa94d06f92b957cfd5affdf5550935dedc378cb0691e4",
       "agentdAsset": "agentd-x86_64",
-      "agentdSha256": "4d2b2aac7c4f2c54362f81b083c19715032d4f15468332bc1fa86bea29afe249",
+      "agentdSha256": "e0628a8ff7d00c1a349ee1002c8fec2e510ef118e9e1d4e08e0530e550be5d0c",
       "libraryAsset": "libkrunfw-linux-x86_64.so",
       "libraryName": "libkrunfw.so.5.6.1",
       "librarySha256": "ce9a749e8471e89aa5e2ad88de0c1581c3384c100bcb107a75bb12739a12d590"
@@ -45,7 +45,7 @@
   "licenses": [
     {
       "name": "microsandbox-Apache-2.0.txt",
-      "url": "https://raw.githubusercontent.com/superradcompany/microsandbox/60d4dc8a436fb9365491567ec21d073e924e3c6d/LICENSE",
+      "url": "https://raw.githubusercontent.com/superradcompany/microsandbox/e36ffc0a58b48d70e0e4d66d75f1596994e3865a/LICENSE",
       "sha256": "a276ca3381fefb9cde42fccae847856085c76027557d62eee83f057eb6c53433"
     },
     {
@@ -61,52 +61,48 @@
   ],
   "patches": [
     {
-      "path": "patches/microsandbox-silo-network-0.7.2.patch",
-      "sha256": "36a7d2e5beaf8db3513df7255915ba146580cc5d46281a5371cdeea6eff6fd0c"
+      "path": "patches/microsandbox-silo-network-0.7.4.patch",
+      "sha256": "69d6f39d067f4caf18a84d65fb9bb064fb468153f39133900236e64c2bc1ff0c"
     },
     {
-      "path": "patches/microsandbox-restore-policy-0.7.2.patch",
-      "sha256": "8b8d9334d7358a7a985b32df1028d36f502d471d7221dea3e53d0efb85b2d5d9"
+      "path": "patches/microsandbox-restore-policy-0.7.4.patch",
+      "sha256": "793b7c1950f8dbe455154dd8c060bf23711a63b049914c3a3a5fc685997a32fa"
     },
     {
-      "path": "patches/microsandbox-create-stopped-0.7.2.patch",
-      "sha256": "c4c49e9d5eba20aec2882184adf3be4e75196071717f17051567f5ef7c70eafc"
+      "path": "patches/microsandbox-create-stopped-0.7.4.patch",
+      "sha256": "3bbc8e5d89926685e2d8be576281b45dc17292a959008132f08b5a55afef270a"
     },
     {
-      "path": "patches/microsandbox-adopt-owned-disk-0.7.2.patch",
-      "sha256": "2ba4201ef289c74ace157348f243c19f9c41f913e56055ae6d4a3bb23142eadc"
+      "path": "patches/microsandbox-adopt-owned-disk-0.7.4.patch",
+      "sha256": "58a5084761f76743220220aa7656f227d48998788e255f47912e97f1fe111bae"
     },
     {
-      "path": "patches/microsandbox-log-retention-desktop-start-0.7.2.patch",
-      "sha256": "00e0f10d560e60f70ac2dca83e01200b56eb2155813ed032ad03a32a57953f5a"
+      "path": "patches/microsandbox-log-retention-desktop-start-0.7.4.patch",
+      "sha256": "bef402e7e94c0c382d71db73f6a30e57b01d854de32c28b58e7f8cc80e268f74"
     },
     {
-      "path": "patches/microsandbox-restore-root-capacity-0.7.2.patch",
-      "sha256": "3cb4f401df48cb4d2382716d6a51bc51af22a4087abdd106680d3338e82ffebe"
+      "path": "patches/microsandbox-restore-root-capacity-0.7.4.patch",
+      "sha256": "f873cb36b746d18f80f37076ea1b45ec7852a78e57d66145bdaaa8e43854a92a"
     },
     {
-      "path": "patches/microsandbox-portable-image-cache-0.7.2.patch",
-      "sha256": "23b3b8e3cbc9ec20160306fd2aab5b196418efe132ed830e2e18738a89cfff57"
+      "path": "patches/microsandbox-portable-image-cache-0.7.4.patch",
+      "sha256": "4dcff8f9ea6f25d8c541a1625d7ac8796622c53f7692ce77e8a8442b32e50b9f"
     },
     {
-      "path": "patches/microsandbox-live-public-ports-0.7.2.patch",
-      "sha256": "ad1abf1973c7e542ec7015575ab4ad35b321ac434e2bb9049aef096fa6b2b012"
+      "path": "patches/microsandbox-live-public-ports-0.7.4.patch",
+      "sha256": "c08b94b705d13d8e2b01008dc5ba7a7d921fe6e6b7ff7ddc320d74fa93119a08"
     },
     {
-      "path": "patches/microsandbox-preserve-basic-auth-0.7.2.patch",
-      "sha256": "e1957e2bc8adb2552140a9309d1d26d2721a38113f375328b9def408f5b1b5aa"
+      "path": "patches/microsandbox-secret-values-stdin-0.7.4.patch",
+      "sha256": "4411bec2dae797f3c85eaa389e20fcb45a4ffe0b525e719d238a9d9427892312"
     },
     {
-      "path": "patches/microsandbox-secret-values-stdin-0.7.2.patch",
-      "sha256": "32ba747bae584847a39d7727aa2d7a2046574085554e558ead066ad01a266250"
+      "path": "patches/microsandbox-import-stage-id-0.7.4.patch",
+      "sha256": "ccbf71f5b718add94f7b0556b4224a540770484e08a0000e39a9ac25481dafe0"
     },
     {
-      "path": "patches/microsandbox-import-stage-id-0.7.2.patch",
-      "sha256": "4728800bc59f1cc3c9e07923c99d8ff18ce1f2aa3469d29e7f7715513dcd456f"
-    },
-    {
-      "path": "patches/microsandbox-sftp-user-0.7.2.patch",
-      "sha256": "7fe75745dff5a686e7bc28f107c4f600d75ba8a80eb0076ae73fc9d45ec287ef"
+      "path": "patches/microsandbox-sftp-user-0.7.4.patch",
+      "sha256": "812987f168198e5708b4b6bae1a30e20b65f7c652f4855db5e6e6959cb1e618d"
     }
   ]
 }

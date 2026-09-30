@@ -1,5 +1,5 @@
 diff --git a/crates/runtime/lib/runner/exec_log.rs b/crates/runtime/lib/runner/exec_log.rs
-index 3423dc8..179d633 100644
+index 3423dc84..2886334a 100644
 --- a/crates/runtime/lib/runner/exec_log.rs
 +++ b/crates/runtime/lib/runner/exec_log.rs
 @@ -14,7 +14,7 @@
@@ -12,7 +12,7 @@ index 3423dc8..179d633 100644
  use std::path::Path;
  use std::sync::Mutex;
 diff --git a/crates/runtime/lib/runner/logging.rs b/crates/runtime/lib/runner/logging.rs
-index 31ca858..6cd02da 100644
+index 31ca8581..847c26af 100644
 --- a/crates/runtime/lib/runner/logging.rs
 +++ b/crates/runtime/lib/runner/logging.rs
 @@ -13,7 +13,11 @@ use crate::RuntimeResult;
@@ -207,7 +207,7 @@ index 31ca858..6cd02da 100644
          self.file = OpenOptions::new()
 diff --git a/crates/runtime/lib/runner/logging_retention.rs b/crates/runtime/lib/runner/logging_retention.rs
 new file mode 100644
-index 0000000..74a6eba
+index 00000000..82602efb
 --- /dev/null
 +++ b/crates/runtime/lib/runner/logging_retention.rs
 @@ -0,0 +1,260 @@
@@ -471,97 +471,8 @@ index 0000000..74a6eba
 +        assert!(!is_log("kernel.log."));
 +    }
 +}
-diff --git a/sdk/rust/lib/backend/local/sandbox/create.rs b/sdk/rust/lib/backend/local/sandbox/create.rs
-index 8d6ace2..e5a1174 100644
---- a/sdk/rust/lib/backend/local/sandbox/create.rs
-+++ b/sdk/rust/lib/backend/local/sandbox/create.rs
-@@ -754,7 +754,11 @@ impl LocalBackend {
-             Self::insert_sandbox_record_with_status(
-                 write_db,
-                 &persisted_config,
--                if start { SandboxStatus::Starting } else { SandboxStatus::Created },
-+                if start {
-+                    SandboxStatus::Starting
-+                } else {
-+                    SandboxStatus::Created
-+                },
-                 Some(self.config()),
-             ),
-         )
-@@ -781,22 +785,35 @@ impl LocalBackend {
- 
-         if !start {
-             if let Some(manifest_digest) = pinned_manifest_digest.as_deref()
--                && let Err(error) = Self::persist_oci_manifest_pin(write_db, sandbox_id, manifest_digest).await
-+                && let Err(error) =
-+                    Self::persist_oci_manifest_pin(write_db, sandbox_id, manifest_digest).await
-             {
-                 // No guest owns this storage. Keep cleanup armed until the row and
-                 // private directory are both gone, so cancellation remains safe.
-                 rollback_created_named_volumes(self, &created_named_volumes).await;
--                let cleanup = Self::delete_sandbox_record(write_db, sandbox_id).await
-+                let cleanup = Self::delete_sandbox_record(write_db, sandbox_id)
-+                    .await
-                     .and_then(|_| remove_dir_if_exists(&sandbox_dir));
-                 return Err(match cleanup {
--                    Ok(()) => { creation_cleanup.disarm(); error }
--                    Err(cleanup) => creation_cleanup.finish_owned_failure(
--                        crate::MicrosandboxError::Runtime(format!("{error}; {cleanup}"))
--                    ).await,
-+                    Ok(()) => {
-+                        creation_cleanup.disarm();
-+                        error
-+                    }
-+                    Err(cleanup) => {
-+                        creation_cleanup
-+                            .finish_owned_failure(crate::MicrosandboxError::Runtime(format!(
-+                                "{error}; {cleanup}"
-+                            )))
-+                            .await
-+                    }
-                 });
-             }
-             creation_cleanup.disarm();
--            return Ok(Sandbox::from_local_created(backend, sandbox_id, persisted_config));
-+            return Ok(Sandbox::from_local_created(
-+                backend,
-+                sandbox_id,
-+                persisted_config,
-+            ));
-         }
- 
-         // Spawn the sandbox process and create the bridge. On failure, mark the sandbox
-@@ -1113,6 +1130,28 @@ impl LocalBackend {
-             }
-         };
- 
-+        // Silo's optional guest service starts on every actual boot, including
-+        // boots initiated through the CLI or SSH. A missing service must not
-+        // prevent the VM from becoming usable.
-+        if config.spec.labels.get("silo.managed").map(String::as_str) == Some("true") {
-+            let boot = crate::sandbox::exec::agent::exec(
-+                self,
-+                &config.spec.name,
-+                &config,
-+                "/bin/sh".into(),
-+                crate::sandbox::exec::ExecOptions {
-+                    args: vec!["-c".into(), "if [ -x /usr/local/bin/silo-desktop ]; then /usr/local/bin/silo-desktop boot >/dev/null 2>&1; fi".into()],
-+                    cwd: Some("/".into()),
-+                    user: Some("root".into()),
-+                    timeout: Some(std::time::Duration::from_secs(15)),
-+                    ..Default::default()
-+                },
-+            );
-+            if let Err(error) = boot.await {
-+                tracing::warn!(%error, "optional guest desktop startup failed; sandbox remains available");
-+            }
-+        }
-+
-         if let Ok(ready) = client.ready() {
-             tracing::info!(
-                 sandbox_name = %config.spec.name,
 diff --git a/sdk/rust/lib/logs/mod.rs b/sdk/rust/lib/logs/mod.rs
-index e895f6c..ffbafd3 100644
+index e895f6c3..ffbafd3d 100644
 --- a/sdk/rust/lib/logs/mod.rs
 +++ b/sdk/rust/lib/logs/mod.rs
 @@ -14,7 +14,7 @@
@@ -590,7 +501,7 @@ index e895f6c..ffbafd3 100644
      },
  ];
 diff --git a/sdk/rust/lib/logs/stream.rs b/sdk/rust/lib/logs/stream.rs
-index 01bfa40..0d7495e 100644
+index 01bfa406..0d7495ea 100644
 --- a/sdk/rust/lib/logs/stream.rs
 +++ b/sdk/rust/lib/logs/stream.rs
 @@ -51,7 +51,7 @@ pub(crate) struct LogFileConfig {
