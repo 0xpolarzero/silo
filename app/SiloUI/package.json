@@ -29,9 +29,9 @@
     "test:watch": "vitest",
     "lint": "oxlint",
     "preview": "vite preview",
-    "desktop": "tauri dev",
+    "desktop": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "desktop:build": "python3 scripts/build_desktop.py",
-    "desktop:build:debug": "tauri build --debug --bundles app --config src-tauri/tauri.debug.conf.json",
+    "desktop:build:debug": "python3 scripts/build_desktop.py --debug --bundles app",
     "guest:image:build": "node scripts/build-guest-image.mjs",
     "changeset": "changeset",
     "release:status": "changeset status",
@@ -39,7 +39,8 @@
     "release:sync": "node scripts/sync-release.mjs",
     "release:draft": "node scripts/release.mjs draft",
     "release:publish": "node scripts/release.mjs publish",
-    "test:release": "node --test scripts/preflight.test.mjs scripts/release.test.mjs scripts/lfs-transfer-runtime.test.mjs scripts/build-guest-image.test.mjs scripts/linux-package-tools.test.mjs scripts/zcode-tls.test.mjs"
+    "test:release": "node --test scripts/preflight.test.mjs scripts/release.test.mjs scripts/lfs-transfer-runtime.test.mjs scripts/build-guest-image.test.mjs scripts/linux-package-tools.test.mjs scripts/zcode-tls.test.mjs scripts/import-production-settings.test.mjs",
+    "dev:import-production-settings": "node scripts/import-production-settings.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
