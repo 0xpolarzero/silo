@@ -78,6 +78,74 @@ pub(crate) struct Workspace {
     workspace: String,
     ports: Vec<Port>,
     error: Option<String>,
+    /// Host name this sandbox's published websites open at (see `sandbox_host`), or
+    /// `None` when the browser needs `127.0.0.1`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+}
+
+/// A per-sandbox loopback host name for published websites (C-24). Browsers keep
+/// cookies per host name, not per port, so opening every sandbox at `127.0.0.1`
+/// let one sandbox's page read and overwrite cookies of other local services and
+/// sandboxes. `*.localhost` resolves to loopback (RFC 6761) while the forward still
+/// binds `127.0.0.1` only. The label joins the sanitised sandbox name and the start
+/// of its immutable id, so a recreated sandbox with the same name gets a new host.
+/// Cross-site requests to other loopback services are not prevented by this.
+pub(crate) fn sandbox_host(name: &str, vm_id: &str) -> String {
+    let id: String = vm_id
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(8)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let mut label = String::new();
+    for character in name.chars() {
+        let character = character.to_ascii_lowercase();
+        if character.is_ascii_lowercase() || character.is_ascii_digit() {
+            label.push(character);
+        } else if !label.is_empty() && !label.ends_with('-') {
+            label.push('-');
+        }
+    }
+    // One DNS label is at most 63 bytes, including the "-" and the id suffix.
+    label.truncate(63 - 1 - id.len());
+    let label = label.trim_end_matches('-');
+    let label = if label.is_empty() { "sandbox" } else { label };
+    if id.is_empty() {
+        format!("{label}.localhost")
+    } else {
+        format!("{label}-{id}.localhost")
+    }
+}
+
+/// Whether a browser resolves `*.localhost` names itself. Chromium- and Gecko-based
+/// browsers hard-code them to loopback. Safari and other WebKit browsers rely on
+/// the system resolver, which on macOS does not resolve `*.localhost`, so they (and
+/// any browser Silo cannot identify) open `127.0.0.1` instead, as the owner
+/// required Safari to keep working (C-24 design note). Recheck Safari in the macOS
+/// live session before widening this.
+fn resolves_localhost_names(browser: Option<&str>) -> bool {
+    let Some(browser) = browser.map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    const ENGINES: &[&str] = &[
+        "chrome", "chromium", "edgemac", "microsoft-edge", "brave", "vivaldi", "opera",
+        "thebrowser", "firefox", "mozilla", "librewolf", "waterfox", "floorp", "zen-browser",
+    ];
+    const WEBKIT: &[&str] = &["safari", "epiphany", "orion", "kagi", "duckduckgo"];
+    !WEBKIT.iter().any(|name| browser.contains(name))
+        && ENGINES.iter().any(|name| browser.contains(name))
+}
+
+/// Whether published websites open at their sandbox host names in the browser Silo
+/// uses for them.
+pub(crate) fn uses_sandbox_hosts(app: &AppHandle) -> bool {
+    resolves_localhost_names(crate::applications::browser_identity(app).as_deref())
+}
+
+/// The address a published website opens at.
+pub(crate) fn website_url(scheme: &str, host: Option<&str>, port: u16) -> String {
+    format!("{scheme}://{}:{port}", host.unwrap_or("127.0.0.1"))
 }
 #[derive(Serialize)]
 pub(crate) struct State {
@@ -334,6 +402,7 @@ fn observe(
         workspace: workspace.into(),
         ports: vec![],
         error: None,
+        host: None,
     };
     let state = match configured_vm(paths, workspace) {
         Ok(Some(state)) => state,
@@ -683,32 +752,36 @@ fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
         }
     });
 }
-fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, String> {
+/// Every local VM's observed ports. With `hosts`, each carries its sandbox host name.
+fn state_with(paths: &RuntimePaths, config: &Configuration, hosts: bool) -> Result<State, String> {
     let metadata = runtime::read_metadata(&paths.metadata)
         .map_err(|_| "Could not read sandbox configuration.")?;
     let mut workspaces = vec![];
     let empty = BTreeMap::new();
-    let names: Vec<_> = metadata
+    let machines: Vec<_> = metadata
         .machines
         .iter()
         .filter(|m| m.is_vm())
-        .map(|m| m.name())
+        .map(|m| (m.name(), m.id()))
         .collect();
-    for batch in names.chunks(3) {
+    for batch in machines.chunks(3) {
         std::thread::scope(|scope| {
             let handles: Vec<_> = batch
                 .iter()
-                .map(|name| {
+                .map(|(name, _)| {
                     let empty = &empty;
                     scope.spawn(move || observe(paths, name, config, empty))
                 })
                 .collect();
-            for (name, handle) in batch.iter().zip(handles) {
-                workspaces.push(handle.join().unwrap_or_else(|_| Workspace {
-                    workspace: (**name).into(),
+            for ((name, id), handle) in batch.iter().zip(handles) {
+                let mut workspace = handle.join().unwrap_or_else(|_| Workspace {
+                    workspace: (*name).into(),
                     ports: vec![],
                     error: Some(FAILED.into()),
-                }));
+                    host: None,
+                });
+                workspace.host = hosts.then(|| sandbox_host(name, id));
+                workspaces.push(workspace);
             }
         });
     }
@@ -721,10 +794,11 @@ fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, Str
 fn apply_saved(app: &AppHandle, paths: &RuntimePaths, workspace: &str) -> Result<State, String> {
     let result = reconcile_forwarding(paths, workspace).and_then(|failures| {
         let config = read_config(paths)?;
-        let mut state = state_with(paths, &config)?;
+        let mut state = state_with(paths, &config, uses_sandbox_hosts(app))?;
         if !failures.is_empty() {
-            let repaired = observe(paths, workspace, &config, &failures);
+            let mut repaired = observe(paths, workspace, &config, &failures);
             if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
+                repaired.host = slot.host.take();
                 *slot = repaired;
             }
         }
@@ -742,7 +816,7 @@ pub(crate) async fn read_network_state(app: AppHandle) -> Result<State, String> 
         // forward that drifted from its saved intent is repaired in the background.
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         let config = read_config(&paths)?;
-        let state = state_with(&paths, &config);
+        let state = state_with(&paths, &config, uses_sandbox_hosts(&app));
         schedule_network_reconcile(&app, &config);
         state
     })
@@ -859,13 +933,14 @@ pub(crate) async fn open_network_port(
             .scheme
             .as_deref()
             .ok_or("This TCP service is not configured as a website.")?;
-        crate::applications::open_browser(
-            &app,
-            &format!(
-                "{scheme}://127.0.0.1:{}",
-                endpoint.host_port.ok_or("This service is not reachable.")?
-            ),
-        )
+        let host_port = endpoint.host_port.ok_or("This service is not reachable.")?;
+        let host = if uses_sandbox_hosts(&app) {
+            let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
+            Some(sandbox_host(&workspace, &vm_id))
+        } else {
+            None
+        };
+        crate::applications::open_browser(&app, &website_url(scheme, host.as_deref(), host_port))
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -1027,16 +1102,56 @@ mod tests {
         });
         held_rx.recv().unwrap();
         let start = Instant::now();
-        let state = state_with(&paths, &config);
+        let state = state_with(&paths, &config, true);
         let elapsed = start.elapsed();
         release_tx.send(()).unwrap();
         holder.join().unwrap();
         let state = state.expect("read state");
         assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].host.as_deref(), Some("dev-00000000.localhost"));
         assert!(
             elapsed < Duration::from_secs(5),
             "network read waited for the operation gate: {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn each_sandbox_gets_its_own_valid_localhost_name() {
+        let id = "1A2B3C4D-0000-4000-8000-000000000001";
+        assert_eq!(sandbox_host("dev", id), "dev-1a2b3c4d.localhost");
+        // Same name, different sandbox: a different host, so no shared cookies.
+        assert_ne!(sandbox_host("dev", id), sandbox_host("dev", "99999999-0000-4000-8000-000000000001"));
+        // Names from another computer are sanitised into one DNS label.
+        assert_eq!(sandbox_host("My App_2!", id), "my-app-2-1a2b3c4d.localhost");
+        assert_eq!(sandbox_host("--", id), "sandbox-1a2b3c4d.localhost");
+        assert_eq!(sandbox_host("dev", ""), "dev.localhost");
+        for name in ["a".repeat(80), format!("{}-b", "a".repeat(53)), "ünïcode.évil/../x".into()] {
+            let host = sandbox_host(&name, id);
+            let label = host.strip_suffix(".localhost").unwrap();
+            assert!(label.len() <= 63, "{host}");
+            assert!(!label.starts_with('-') && !label.ends_with('-') && !label.contains("--"), "{host}");
+            assert!(label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'), "{host}");
+        }
+        assert_eq!(website_url("http", Some("dev-1a2b3c4d.localhost"), 43000), "http://dev-1a2b3c4d.localhost:43000");
+        assert_eq!(website_url("https", None, 43000), "https://127.0.0.1:43000");
+    }
+
+    #[test]
+    fn safari_and_unknown_browsers_keep_the_loopback_address() {
+        for browser in [
+            "com.google.Chrome", "com.microsoft.edgemac", "com.brave.Browser", "company.thebrowser.Browser",
+            "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "firefox_firefox.desktop",
+            "google-chrome.desktop", "chromium_chromium.desktop", "org.mozilla.firefox.desktop",
+        ] {
+            assert!(resolves_localhost_names(Some(browser)), "{browser}");
+        }
+        for browser in [
+            "com.apple.Safari", "com.apple.SafariTechnologyPreview", "com.kagi.kagimacOS",
+            "com.duckduckgo.macos.browser", "org.gnome.Epiphany.desktop", "com.example.unknown",
+        ] {
+            assert!(!resolves_localhost_names(Some(browser)), "{browser}");
+        }
+        assert!(!resolves_localhost_names(None));
     }
 
     fn temp_paths(temp: &tempfile::TempDir) -> RuntimePaths {

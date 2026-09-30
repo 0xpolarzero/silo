@@ -219,10 +219,10 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
       {draft && !draft.editing && <div className="border-b border-border">{inlineForm}</div>}
       {useLive
         ? rows.length > 0
-          ? <div className="divide-y divide-border">{rows.map(({ workspace: portWorkspace, port }) => {
+          ? <div className="divide-y divide-border">{rows.map(({ workspace: portWorkspace, port, host }) => {
               const key = `${target}:${port.port}`
               if (draft?.editing && draft.port === String(port.port)) return <div key={key} className="last:*:border-b-0">{inlineForm}</div>
-              const address = networkAddress(port)
+              const address = networkAddress(port, host)
               const stateText = networkPortState(portWorkspace, port, controller.error, controller.errors)
               return <ListRow
                 key={key}
@@ -235,7 +235,7 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
                   {port.message && <span className={port.state === "unknown" ? "text-destructive" : "text-muted-foreground"}>· {port.message}</span>}
                 </span>}
                 actions={<div className="flex shrink-0 items-center gap-0.5 text-muted-foreground">
-                  <NetworkPortRowActions controller={controller} workspace={portWorkspace} port={port} state={stateText} browser={browser} />
+                  <NetworkPortRowActions controller={controller} workspace={portWorkspace} port={port} state={stateText} browser={browser} host={host} />
                 </div>}
               />
             })}</div>

@@ -61,6 +61,23 @@ pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
     }
 }
 
+/// Bundle identifier of the selected browser, or of the system's HTTPS handler.
+pub fn browser_identity(selection: Option<&Path>) -> Option<String> {
+    autoreleasepool(|_| {
+        let application = match selection {
+            Some(path) => NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?)),
+            None => {
+                // Querying the handler does not open the URL or launch an application.
+                let https = NSURL::URLWithString(&NSString::from_str("https://example.invalid"))?;
+                NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&https)?
+            }
+        };
+        NSBundle::bundleWithURL(&application)
+            .and_then(|bundle| bundle.bundleIdentifier())
+            .map(|id| id.to_string())
+    })
+}
+
 // Launch Services also advertises editors for shell scripts. Only known terminal
 // applications enter that list; Choose… can select any valid application bundle.
 const TERMINAL_IDS: &[&str] = &[

@@ -138,7 +138,7 @@ const backupStateShape = z.object({
 const archiveInspectionShape = z.object({ archive: backupArchiveShape, valid: z.boolean(), reason: z.string().optional() }).strict()
 
 const networkStateShape = z.object({ workspaces: z.array(z.object({
-  workspace: z.string(), error: z.string().nullable(), ports: z.array(z.object({
+  workspace: z.string(), error: z.string().nullable(), host: z.string().regex(/^[a-z0-9-]{1,63}\.localhost$/).nullable().optional(), ports: z.array(z.object({
     configuredHostPort: z.number().int().min(1).max(65535).nullable().optional(),
     port: z.number().int().min(1).max(65535), hostPort: z.number().int().min(1).max(65535).nullable(),
     scheme: z.enum(["http", "https"]).nullable(), state: z.enum(["reachable", "waiting", "unpublished", "unknown"]),

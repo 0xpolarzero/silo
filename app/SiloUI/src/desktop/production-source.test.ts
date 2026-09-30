@@ -444,7 +444,7 @@ describe("production application bridge", () => {
   })
   it("keeps network mappings across application refresh and shares only reachable sites", async () => {
     const mock = native()
-    const state = { workspaces: [{ workspace: "dev", error: null, ports: [{port:3000,hostPort:43000,scheme:"http",state:"reachable",configured:true}] }] }
+    const state = { workspaces: [{ workspace: "dev", error: null, host: "dev-1a2b3c4d.localhost", ports: [{port:3000,hostPort:43000,scheme:"http",state:"reachable",configured:true}] }] }
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "read_network_state" || command === "save_network_port" ? state : mock.invoke(command,args))
     const store = createProductionSource({...mock.bridge,invoke} as ProductionBridge)
     await store.initialize()

@@ -89,7 +89,7 @@ export interface NetworkPort {
   configured: boolean
   message?: string | null
 }
-export interface NetworkState { workspaces: { workspace: string; ports: NetworkPort[]; error: string | null }[] }
+export interface NetworkState { workspaces: { workspace: string; ports: NetworkPort[]; error: string | null; /** Host name published websites open at; absent means 127.0.0.1. */ host?: string | null }[] }
 export interface SshAccessWorkspace {
   unavailable?: string
   workspace: string; enabled: boolean; port: number; bindAddress: string; keys: string[]

@@ -1,4 +1,4 @@
-import { Check, ExternalLink, LoaderCircle, Pencil, Plus, Trash2, X } from "lucide-react"
+import { Binary, Check, ExternalLink, LoaderCircle, Pencil, Plus, Trash2, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -7,7 +7,7 @@ import { ConfirmPopover } from "@/components/confirm-popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import type { ApplicationWorkspace, NetworkPort, NetworkPortRequest } from "@/features/application/model/application-source"
-import { networkAddress, type NetworkPortsController } from "./network-ports-state"
+import { networkAddress, networkLoopbackAddress, type NetworkPortsController } from "./network-ports-state"
 
 /** "this Mac" on macOS, otherwise "this computer". */
 const thisComputer = typeof navigator !== "undefined" && /Mac/.test(navigator.platform) ? "this Mac" : "this computer"
@@ -23,7 +23,7 @@ export function NetworkPortForm({ controller, fieldID, hideSandbox = false, clas
 }) {
   const { draft, setDraft, fieldErrors, setFieldErrors, busy, localWorkspaces, actions, run } = controller
   if (!draft) return null
-  const gridClassName = className ?? "grid grid-cols-2 items-center gap-2 bg-muted/30 px-3 py-2 sm:grid-cols-[6rem_minmax(0,1fr)_8rem_7rem_7rem] sm:gap-3"
+  const gridClassName = className ?? "grid grid-cols-2 items-center gap-2 bg-muted/30 px-3 py-2 sm:grid-cols-[6rem_minmax(0,1fr)_8rem_7rem_8.5rem] sm:gap-3"
   return <form noValidate key="port-editor" role="row" aria-label={draft.editing ? "Edit port" : "New port"} className={gridClassName} onKeyDown={event => { if (event.key === "Escape" && !busy) { event.preventDefault(); controller.cancelDraft() } }} onSubmit={event => {
     event.preventDefault()
     const request: NetworkPortRequest = { workspace: draft.workspace, port: Number(draft.port), hostPort: draft.hostPort ? Number(draft.hostPort) : null, scheme: draft.scheme === "tcp" ? null : draft.scheme as "http" | "https" }
@@ -50,19 +50,23 @@ export function NetworkPortForm({ controller, fieldID, hideSandbox = false, clas
 
 /** The per-port action cluster (Open/Copy/Edit/Remove/Connect) with inline removal confirmation,
  * shared so the Network page and a sandbox's Ports section apply identical behaviour. */
-export function NetworkPortRowActions({ controller, workspace, port, state, browser }: {
+export function NetworkPortRowActions({ controller, workspace, port, state, browser, host }: {
   controller: NetworkPortsController
   workspace: ApplicationWorkspace
   port: NetworkPort
   state: string
   browser: string
+  /** The sandbox's website host name, when websites open at one instead of 127.0.0.1. */
+  host?: string | null
 }) {
   const { actions, busy, setDraft, connecting, setConnecting, run, open } = controller
   const key = `${workspaceTarget(workspace)}:${port.port}`
-  const address = networkAddress(port)
+  const address = networkAddress(port, host)
+  const loopback = networkLoopbackAddress(port)
   return <>
       {address && port.scheme && state === "Reachable" && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Open ${address} in ${browser}`} onClick={() => void open(workspaceTarget(workspace), port.port)} disabled={!actions.openNetworkPort}><ExternalLink /></Button></TooltipTrigger><TooltipContent>Open in {browser}</TooltipContent></Tooltip>}
       {address && <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" value={address} labels={{ idle: `Copy ${address}`, copied: "Address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy address</TooltipContent></Tooltip>}
+      {loopback && address !== loopback && <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" icon={Binary} value={loopback} labels={{ idle: `Copy ${loopback}`, copied: "Address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent><span className="block font-medium">Copy 127.0.0.1 address</span><span className="block">For development servers that reject other host names</span></TooltipContent></Tooltip>}
       {port.configured && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Edit port ${port.port} from ${workspace.machine.name}`} disabled={busy || !actions.saveNetworkPort} onClick={() => controller.startEdit(workspace, port)}><Pencil /></Button></TooltipTrigger><TooltipContent>Edit port</TooltipContent></Tooltip>}
       {port.configured ? <ConfirmPopover tooltip="Remove port" align="end" tone="destructive" title={`Remove port ${port.port}?`} description={`It stops forwarding to ${thisComputer}.`} confirmLabel="Remove" onConfirm={() => { setDraft(null); return run(`network-port:${key}:remove`, { loading: `Removing port ${port.port}`, step: `Removing port ${port.port} from ${workspace.machine.name}`, success: `Port ${port.port} removed`, failure: `Could not remove port ${port.port}` }, () => actions.removeNetworkPort!(workspaceTarget(workspace), port.port)).then(() => undefined) }}><Button variant="ghost" size="icon-xs" aria-label={`Remove port ${port.port} from ${workspace.machine.name}`} disabled={busy || !actions.removeNetworkPort}><Trash2 /></Button></ConfirmPopover> : <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-xs" aria-label={`Forward port ${port.port} to ${thisComputer}`} disabled={busy || !actions.saveNetworkPort} onClick={() => { setConnecting(key); void run(`network-port:${key}:add`, { loading: `Forwarding port ${port.port}`, step: `Publishing port ${port.port} on ${workspace.machine.name}`, success: `Port ${port.port} forwarded`, failure: `Could not forward port ${port.port}` }, () => actions.saveNetworkPort!({ workspace: workspaceTarget(workspace), port: port.port, hostPort: null, scheme: "http" })).finally(() => setConnecting(null)) }}>{connecting === key ? <LoaderCircle className="animate-spin" /> : <Plus />}</Button></TooltipTrigger><TooltipContent><span className="block font-medium">Forward to {thisComputer}</span><span className="block">Make this port reachable from this computer</span></TooltipContent></Tooltip>}
   </>
