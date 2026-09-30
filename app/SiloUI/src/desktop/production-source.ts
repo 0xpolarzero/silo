@@ -271,7 +271,7 @@ export function parseBackupState(input: unknown): BackupState {
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
   const text = String(error).trim()
-  return text || "The desktop bridge returned an unknown error."
+  return text || "Silo could not complete the action. Retry; if it fails again, relaunch Silo."
 }
 
 /** A JSON key that does not depend on object property order. */
@@ -1504,7 +1504,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     },
     deleteRemoteMachine: async (hostId, machine) => {
       const vmId = parseRemoteWorkspaceTarget(machine.id)?.vmId
-      if (!vmId) throw new Error("The remote VM identity is missing.")
+      if (!vmId) throw new Error("Silo could not identify the remote sandbox. Refresh its computer and retry.")
       const source = parseMutationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }), remoteSnapshots.get(hostId) ?? null, parseRemoteApplicationSource)
       bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)

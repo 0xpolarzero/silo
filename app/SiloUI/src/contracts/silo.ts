@@ -18,7 +18,7 @@ export const siloBootstrapWorkspaceSchema = z.object({
   memoryCeilingGiB: z.number().int().min(1).max(4_294_967_295),
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
   runtimeStorageGiB: z.number().int().min(1).max(4_194_303),
-}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "Combined storage exceeds the runtime limit", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpu <= workspace.cpuCeiling, {
+}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "The two disks together exceed 4,194,303 GiB. Reduce a disk size.", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpu <= workspace.cpuCeiling, {
   message: "cpu must not exceed cpuCeiling",
 }).refine((workspace) => workspace.memoryGiB <= workspace.memoryCeilingGiB, {
   message: "memoryGiB must not exceed memoryCeilingGiB",
@@ -46,7 +46,7 @@ export const setupWorkspaceConfigurationSchema = z.object({
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
   runtimeStorageGiB: z.number().int().min(1).max(4_194_303),
   desktop: desktopConfigurationSchema.optional(),
-}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "Combined storage exceeds the runtime limit", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpus <= workspace.maxCPUs, {
+}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "The two disks together exceed 4,194,303 GiB. Reduce a disk size.", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpus <= workspace.maxCPUs, {
   message: "cpus must not exceed maxCPUs",
 }).refine((workspace) => workspace.memoryGiB <= workspace.maxMemoryGiB, {
   message: "memoryGiB must not exceed maxMemoryGiB",
