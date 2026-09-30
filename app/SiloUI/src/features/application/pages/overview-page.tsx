@@ -22,6 +22,7 @@ import { ConfirmBody } from "@/components/confirm-popover"
 import type { BackupController, VerifiedExport } from "../model/backup-source"
 import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "../model/checkpoint-source"
 
+import { configurationFailureDiagnostic } from "../model/configuration-failure"
 import { ErrorDetails } from "@/components/error-details"
 import { ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
@@ -64,6 +65,7 @@ const attentionPriority: Record<SandboxIconState, number> = {
 interface ConfigurationRowView {
   status: "running" | "failed"
   message: string
+  diagnostic?: string
   completedSteps?: number
   recovery?: string
   retryable: boolean
@@ -133,6 +135,7 @@ function configurationRowView(
     return {
       status: "failed",
       message: operation.error.message,
+      diagnostic: configurationFailureDiagnostic(operation, candidateName),
       recovery: operation.error.recovery ?? undefined,
       retryable: operation.error.retryable,
     }
@@ -205,7 +208,7 @@ function ConfigurationDetail({ view }: { view: ConfigurationRowView }) {
       className="grid gap-1.5 py-0.5"
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
-        <ErrorDetails className="flex-1 text-destructive" message={view.message} fallbackSummary="Sandbox changes failed." />
+        <ErrorDetails className="flex-1 text-destructive" message={view.message} diagnostic={view.diagnostic} fallbackSummary="Sandbox changes failed." />
         {progressLabel && <span className="shrink-0 text-[10px] text-muted-foreground">{progressLabel}</span>}
       </div>
       {view.completedSteps !== undefined && (
@@ -680,7 +683,7 @@ export function OverviewPage({ active = true, readOnly = false,
           <>
             {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
             {configurationOperation?.status === "failed" && <div className="mb-3 rounded-md border border-destructive/30 p-3">
-              <div role="alert" className="text-sm text-destructive"><ErrorDetails message={configurationOperation.error.message} fallbackSummary="Sandbox changes failed." /></div>
+              <div role="alert" className="text-sm text-destructive"><ErrorDetails message={configurationOperation.error.message} diagnostic={configurationFailureDiagnostic(configurationOperation)} fallbackSummary="Sandbox changes failed." /></div>
               <Button variant="outline" size="sm" className="mt-2" disabled={readOnly} onClick={() => actions.dismissMachineConfigurationError()}>Dismiss configuration error</Button>
             </div>}
             <MachineList

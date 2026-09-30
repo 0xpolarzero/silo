@@ -1114,6 +1114,34 @@ fn takes_worker_lock(args: &[String]) -> bool {
     args.first().is_some_and(|command| matches!(command.as_str(), "create" | "modify" | "remove" | "stop" | "restore" | "adopt-disk"))
 }
 
+thread_local! {
+    // Quit already owns the computer gate and a parent worker flock. Its scoped
+    // workers may share that flock only for independent stop commands.
+    static SHUTDOWN_WORKER_LOCK: std::cell::RefCell<Option<configuration_recovery::CommandLock>> = const { std::cell::RefCell::new(None) };
+}
+
+fn with_shutdown_worker_lock<T>(lock: configuration_recovery::CommandLock, work: impl FnOnce() -> T) -> T {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) { SHUTDOWN_WORKER_LOCK.with(|slot| { slot.borrow_mut().take(); }); }
+    }
+    SHUTDOWN_WORKER_LOCK.with(|slot| {
+        assert!(slot.borrow().is_none(), "shutdown worker lock cannot be nested");
+        *slot.borrow_mut() = Some(lock);
+    });
+    let _clear = Clear;
+    work()
+}
+
+fn runtime_worker_lock(paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<configuration_recovery::CommandLock, RuntimeError> {
+    if args.first().is_some_and(|command| command == "stop") {
+        if let Some(lock) = SHUTDOWN_WORKER_LOCK.with(|slot| slot.borrow().as_ref().map(configuration_recovery::CommandLock::duplicate_for_shutdown)) {
+            return lock;
+        }
+    }
+    configuration_recovery::command_lock(paths, timeout)
+}
+
 fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<CommandOutput, RuntimeError> {
     let RuntimeLaunch { args, timeout, material, github_profile, capture, report } = launch;
     ensure_runtime_files(paths)?;
@@ -1129,7 +1157,7 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
         None
     };
     let mut worker_lock = if takes_worker_lock(args) {
-        Some(configuration_recovery::command_lock(paths, timeout)?)
+        Some(runtime_worker_lock(paths, args, timeout)?)
     } else { None };
     let mut command = Command::new(&paths.executable);
     if let Some(lock) = &worker_lock {
@@ -6528,7 +6556,7 @@ esac
         assert!(output.is_ok());
         assert_eq!(fs::read_to_string(paths.home.join("commands")).unwrap(), "start\ninspect\n");
         let row = vm_workspace(&paths, vm(), &serde_json::from_value(inspect(&paths, "Running")).unwrap());
-        assert_eq!(row.state, WorkspaceState::Running);
+        assert!(matches!(row.state, WorkspaceState::Running));
         assert!(row.attention.unwrap().message.contains("sandbox started"));
     }
 
@@ -6540,6 +6568,41 @@ esac
         assert!(start_refresh_attention(&paths, "dev").unwrap().message.contains("secret status"));
         record_start_refresh(&paths, "dev", || Ok(()));
         assert!(start_refresh_attention(&paths, "dev").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_stops_share_the_worker_flock_without_serializing_children() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test library").unwrap();
+        fs::write(&paths.executable, r#"#!/bin/sh
+cat >/dev/null
+touch "$MSB_HOME/$2-entered"
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if [ -f "$MSB_HOME/first-entered" ] && [ -f "$MSB_HOME/second-entered" ]; then exit 0; fi
+  sleep 0.1
+done
+exit 9
+"#).unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = configuration_recovery::command_lock(&paths, Duration::ZERO).unwrap();
+        thread::scope(|scope| {
+            let workers: Vec<_> = ["first", "second"].into_iter().map(|workspace| {
+                let shared = parent.duplicate_for_shutdown().unwrap();
+                let paths = &paths;
+                scope.spawn(move || with_shutdown_worker_lock(shared, || {
+                    run_msb_process(paths, &["stop".into(), workspace.into()], Duration::from_secs(5), &|_| {})
+                }))
+            }).collect();
+            for worker in workers { worker.join().unwrap().unwrap(); }
+        });
+        // A child that finished first must not unlock the parent's shared flock.
+        assert!(configuration_recovery::command_lock(&paths, Duration::ZERO).is_err());
+        drop(parent);
+        drop(configuration_recovery::command_lock(&paths, Duration::ZERO).unwrap());
     }
 
     #[cfg(unix)]

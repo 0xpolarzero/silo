@@ -92,7 +92,7 @@ fn while_quitting<T>(
 /// Stop every present local VM. `progress` receives each VM that needs a stop with
 /// its one-based position among them, before that VM's stop starts.
 fn stop_local_vms_with(
-    runner: &dyn RuntimeRunner,
+    runner: &(dyn RuntimeRunner + Sync),
     paths: &RuntimePaths,
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<(), RuntimeError> {
@@ -138,24 +138,34 @@ fn stop_local_vms_with(
         }
         targets.push((machine, committed_vm));
     }
-    for (index, (machine, committed_vm)) in targets.iter().enumerate() {
-        progress(machine.name(), index + 1, targets.len());
-        // perform verifies both Silo ownership and the immutable machine ID,
-        // settles an in-flight transition, and verifies the resulting stop.
-        let result = if *committed_vm {
-            // A VM an unfinished Restore left paused must resume before graceful stop.
-            checkpoints::release_paused_restore(runner, paths, machine);
-            lifecycle_recovery::perform(runner, paths, &host, "stop", machine.name())
-        } else {
-            stop_uncommitted_vm(runner, paths, machine)
-        };
-        if let Err(error) = result {
-            failures.push(format!(
-                "{}: {}",
-                machine.name(),
-                safe_activity_error(&error)
-            ));
-        }
+    if !targets.is_empty() {
+        // One cross-process worker flock covers the entire shutdown transaction.
+        // Separate flock acquisitions in the workers would serialize every stop.
+        let worker_lock = configuration_recovery::command_lock(paths, STOP_TIMEOUT)?;
+        let locks = targets.iter().map(|_| worker_lock.duplicate_for_shutdown()).collect::<Result<Vec<_>, _>>()?;
+        let host = &host;
+        thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for (index, ((machine, committed_vm), lock)) in targets.iter().zip(locks).enumerate() {
+                progress(machine.name(), index + 1, targets.len());
+                workers.push((machine.name(), scope.spawn(move || with_shutdown_worker_lock(lock, || {
+                    // Every worker verifies ownership and immutable identity before
+                    // stopping, while the parent retains the computer operation gate.
+                    if *committed_vm {
+                        checkpoints::release_paused_restore(runner, paths, machine);
+                        lifecycle_recovery::perform(runner, paths, host, "stop", machine.name())
+                    } else {
+                        stop_uncommitted_vm(runner, paths, machine)
+                    }
+                }))));
+            }
+            for (name, worker) in workers {
+                let result = worker.join().unwrap_or_else(|_| Err(RuntimeError::Unavailable("The shutdown worker failed unexpectedly.".into())));
+                if let Err(error) = result {
+                    failures.push(format!("{name}: {}", safe_activity_error(&error)));
+                }
+            }
+        });
     }
     if failures.is_empty() {
         Ok(())
@@ -261,6 +271,7 @@ mod tests {
         states: Mutex<HashMap<String, String>>,
         calls: Mutex<Vec<Vec<String>>>,
         fail: Option<String>,
+        stop_barrier: Option<std::sync::Barrier>,
     }
     impl RuntimeRunner for Runner {
         fn run(
@@ -270,6 +281,9 @@ mod tests {
             _: Duration,
         ) -> Result<CommandOutput, RuntimeError> {
             self.calls.lock().unwrap().push(args.to_vec());
+            if args[0] == "stop" {
+                if let Some(barrier) = &self.stop_barrier { barrier.wait(); }
+            }
             let mut states = self.states.lock().unwrap();
             let stdout = match args[0].as_str() {
                 "list" => serde_json::to_string(&states.keys().map(|name| json!({"name":name})).collect::<Vec<_>>()).unwrap(),
@@ -310,6 +324,7 @@ mod tests {
             ])),
             calls: Mutex::new(vec![]),
             fail: fail.map(str::to_owned),
+            stop_barrier: None,
         }
     }
     #[test]
@@ -404,6 +419,24 @@ mod tests {
             2
         );
     }
+    #[test]
+    fn quit_dispatches_all_stops_before_waiting_for_one_to_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = setup(&dir);
+        let mut runner = runner(None);
+        runner.stop_barrier = Some(std::sync::Barrier::new(2));
+        let (done, received) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let result = stop_local_vms_with(&runner, &paths, &|_, _, _| {});
+            done.send((result, runtime_activity::read(&paths).unwrap())).unwrap();
+        });
+        let (result, history) = received.recv_timeout(Duration::from_secs(5))
+            .expect("both stop commands must enter before either finishes");
+        result.unwrap();
+        assert!(history.iter().any(|event| event["workspace"] == "first"));
+        assert!(history.iter().any(|event| event["workspace"] == "second"));
+    }
+
     #[test]
     fn one_failed_stop_preserves_failure_and_still_stops_other_vms() {
         let dir = tempfile::tempdir().unwrap();

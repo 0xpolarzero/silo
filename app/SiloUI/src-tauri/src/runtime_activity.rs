@@ -51,7 +51,12 @@ fn events(paths: &RuntimePaths) -> Result<Vec<Event>, RuntimeError> {
     Ok(events)
 }
 
+static ACTIVITY_WRITES: Mutex<()> = Mutex::new(());
+
 fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
+    // Shutdown stops several VMs concurrently. Keep each read-modify-write atomic
+    // so one completed stop cannot erase another VM's activity entry.
+    let _write = ACTIVITY_WRITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut entries = events(paths).map_err(|error| error.to_string())?;
     entries.retain(|old| old.id != event.id);
     entries.push(event.clone());

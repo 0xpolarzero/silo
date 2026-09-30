@@ -1,3 +1,5 @@
+import { ErrorDetails } from "@/components/error-details"
+import { configurationFailureDiagnostic } from "@/features/application/model/configuration-failure"
 import { lifecycleGuard, type LifecyclePrompt } from "@/features/application/model/lifecycle-guard"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
@@ -24,7 +26,7 @@ import { StatusFolderPicker } from "./status-folder-picker"
 import { QuitConfirmation } from "./quit-confirmation"
 import { sandboxesStoppedByQuit } from "./quit-confirmation-model"
 
-function OperationIssue({ title, detail, actionLabel, actionText = "Details", tone = "error", onReview, retry }: { title: string; detail: string; actionLabel: string; actionText?: string; tone?: "error" | "warning"; onReview: () => void; retry?: ReactNode }) {
+function OperationIssue({ title, detail, actionLabel, actionText = "Details", tone = "error", onReview, retry }: { title: string; detail: ReactNode; actionLabel: string; actionText?: string; tone?: "error" | "warning"; onReview: () => void; retry?: ReactNode }) {
   return (
     <ListCard className="mb-2" role={tone === "error" ? "alert" : "status"} aria-label={title}>
       <ListRow
@@ -159,7 +161,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
         </ListCard>}
         {failedConfiguration && <OperationIssue
           title="Sandbox changes failed"
-          detail={failedConfiguration.error.message}
+          detail={<ErrorDetails message={failedConfiguration.error.message} diagnostic={configurationFailureDiagnostic(failedConfiguration)} fallbackSummary="Sandbox changes failed." />}
           actionLabel="Review sandbox changes"
           onReview={() => actions.openSilo({ workspaceSection: "overview" })}
         />}

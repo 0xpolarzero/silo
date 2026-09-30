@@ -316,6 +316,19 @@ describe("status bar", () => {
     expect(actions.openSilo).toHaveBeenCalledWith({ workspaceSection: "overview" })
   })
 
+  it("keeps setup diagnostics behind the tray's error disclosure", async () => {
+    const fixture = structuredClone(applicationSourceForScenario("running", undefined, undefined, "workspace-error"))
+    const operation = fixture.sandboxConfigurationOperation!
+    operation.progressEvents.push({ schemaVersion: 1, type: "progress", requestId: operation.id, phase: "workspaces", step: "setup-failed", workspace: "scratch", safeForDisplay: true, message: "Setup failed. Retry setup.", diagnostic: "Exit code 13\nPermission denied" })
+    const { user } = setup({ sandboxConfigurationOperation: operation })
+    const issue = screen.getByRole("alert", { name: "Sandbox changes failed" })
+    expect(issue).toHaveTextContent("Networking failed for 'scratch'.")
+    expect(within(issue).queryByText(/Exit code 13/)).not.toBeInTheDocument()
+    await user.click(within(issue).getByRole("button", { name: "Show details" }))
+    expect(within(issue).getByLabelText("Error details")).toHaveTextContent("Exit code 13")
+    expect(within(issue).getByRole("button", { name: "Copy details" })).toBeVisible()
+  })
+
   it("shows a failed push beside its details action and clears it when the source resolves", async () => {
     const operation = { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "failed" as const, message: "The remote branch changed." }
     const { user, actions, source, rerender } = setup({ repositoryPushOperations: [operation] })

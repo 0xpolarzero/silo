@@ -124,9 +124,16 @@ pub(super) fn finish(paths: &RuntimePaths) -> Result<(), RuntimeError> {
 pub(crate) struct CommandLock {
     file: File,
     inherited_by_child: bool,
+    release_on_drop: bool,
 }
 
 impl CommandLock {
+    /// A shutdown worker shares the parent's flock. Only the parent unlocks after
+    /// all workers have joined; each runtime child still inherits its own descriptor.
+    pub(crate) fn duplicate_for_shutdown(&self) -> Result<Self, RuntimeError> {
+        Ok(Self { file: self.file.try_clone().map_err(failure)?, inherited_by_child: false, release_on_drop: false })
+    }
+
     /// Keep the flock until the deliberately inheriting runtime child exits.
     /// Call only after a child with the lock's close-on-exec flag cleared spawned.
     pub(crate) fn mark_inherited_by_child(&mut self) {
@@ -148,7 +155,7 @@ impl AsRawFd for CommandLock {
 
 impl Drop for CommandLock {
     fn drop(&mut self) {
-        if !self.inherited_by_child {
+        if self.release_on_drop && !self.inherited_by_child {
             // SAFETY: this descriptor remains owned by self until after Drop.
             // LOCK_UN also releases copies inherited by unrelated forks.
             unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN); }
@@ -164,7 +171,7 @@ pub(crate) fn command_lock(paths: &RuntimePaths, timeout: Duration) -> Result<Co
     loop {
         // SAFETY: the open file owns this descriptor until the lock is dropped.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(CommandLock { file, inherited_by_child: false });
+            return Ok(CommandLock { file, inherited_by_child: false, release_on_drop: true });
         }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::WouldBlock { return Err(failure(error)); }
