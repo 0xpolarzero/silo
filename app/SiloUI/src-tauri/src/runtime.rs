@@ -2348,7 +2348,9 @@ pub async fn workspace_action(
                 .iter()
                 .find(|machine| machine.id() == vm_id && machine.is_vm())
                 .ok_or_else(|| RuntimeError::Invalid("This VM no longer exists.".into()))?;
-            let _ = app.emit("silo://application-state-changed", ());
+            // No state event while the gate is held: the queue event already shows the
+            // action, and this VM's row keeps its last state until the post-release event
+            // below (D-18), so an in-gate refresh in every window would be wasted.
             let resources = host_resources()?;
             explicit_workspace_action_with(&ProcessRunner, &paths, &resources, &action, machine.name())
         };
