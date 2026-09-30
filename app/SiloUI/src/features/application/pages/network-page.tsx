@@ -9,7 +9,7 @@ import { NetworkPortForm, NetworkPortRowActions } from "@/features/application/c
 import { networkAddress, networkPortState, useNetworkPorts } from "@/features/application/components/network-ports-state"
 import type { ApplicationActions, ApplicationWorkspace, NetworkState } from "../model/application-source"
 
-const grid = "grid grid-cols-[3.5rem_6rem_minmax(0,1fr)_7rem] items-center gap-2 px-3 py-2 sm:grid-cols-[6rem_minmax(0,1fr)_8rem_7rem_7rem] sm:gap-3"
+const grid = "grid grid-cols-[3.5rem_6rem_minmax(0,1fr)_8.5rem] items-center gap-2 px-3 py-2 sm:grid-cols-[6rem_minmax(0,1fr)_8rem_7rem_8.5rem] sm:gap-3"
 
 export function NetworkPage({ workspaces, browser, network, error, actions, active }: {
   workspaces: ApplicationWorkspace[]; browser: string; network?: NetworkState; error?: string | null; actions: ApplicationActions; active: boolean
@@ -29,16 +29,16 @@ export function NetworkPage({ workspaces, browser, network, error, actions, acti
       : rows.length === 0 && !draft ? error || errors.length > 0 ? null : <EmptyState icon={<Network />} title={workspaces.length === 0 ? "No matching sandboxes" : "No configured ports"} />
       : <div className="flex max-h-full min-h-0 self-start w-full flex-col overflow-hidden rounded-lg border border-border"><div role="table" aria-label="Network" className="flex min-h-0 flex-col text-xs">
         <div role="row" className={`${grid} shrink-0 border-b border-border bg-muted/45 font-medium text-muted-foreground`}><span role="columnheader">Port</span><span role="columnheader" className="hidden sm:block">Address</span><span role="columnheader">State</span><span role="columnheader">Sandbox</span><span role="columnheader" className="sr-only">Actions</span></div>
-        <div className="min-h-0 divide-y divide-border overflow-y-auto bg-card" data-table-scroll="network">{draft && !draft.editing && draftRow}{rows.map(({ workspace, port }) => {
+        <div className="min-h-0 divide-y divide-border overflow-y-auto bg-card" data-table-scroll="network">{draft && !draft.editing && draftRow}{rows.map(({ workspace, port, host }) => {
           const key = `${workspaceTarget(workspace)}:${port.port}`
-          if (draft?.editing && draft.workspace === workspaceTarget(workspace) && draft.port === String(port.port)) return draftRow
-          const address = networkAddress(port)
+          if (draft?.editing && draft.workspace === workspaceTarget(workspace) && draft.port === String(port.port)) return <NetworkPortForm key={key} controller={controller} fieldID={fieldID} />
+          const address = networkAddress(port, host)
           const state = networkPortState(workspace, port, error, errors)
           return <div key={key} role="row" className={`${grid} hover:bg-muted/55 focus-within:bg-muted/55`}>
             <span role="cell" className="font-mono font-medium">{port.port}</span><span role="cell" className="hidden min-w-0 font-mono text-muted-foreground sm:block">{address ? <Tooltip><TooltipTrigger asChild><span className="block truncate">{address}</span></TooltipTrigger><TooltipContent>{address}</TooltipContent></Tooltip> : "—"}</span>
             <span role="cell" className={state === "Reachable" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}>{state}</span>
             <span role="cell"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></span>
-            <span role="cell" className="flex justify-end gap-1"><NetworkPortRowActions controller={controller} workspace={workspace} port={port} state={state} browser={browser} /></span>
+            <span role="cell" className="flex justify-end gap-1"><NetworkPortRowActions controller={controller} workspace={workspace} port={port} state={state} browser={browser} host={host} /></span>
             {port.message && workspace.state === "running" && <span role="cell" className={`col-span-full text-xs ${port.state === "unknown" ? "text-destructive" : "text-muted-foreground"}`}>{port.message}</span>}
           </div>
         })}</div>

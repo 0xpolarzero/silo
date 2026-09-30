@@ -14,6 +14,37 @@ use tauri::{AppHandle, Emitter};
 
 static NETWORK_LOCK: Mutex<()> = Mutex::new(());
 const FAILED: &str = "Could not read network services. Try again.";
+
+/// The short data lock around the saved port table. It guards no in-memory state:
+/// every holder re-reads `network.json` (written atomically) and the runtime's live
+/// forwards, so a panic while holding it leaves nothing to repair. Recover instead
+/// of failing every network read and save until restart (C-25, K-24 policy).
+fn network_lock() -> std::sync::MutexGuard<'static, ()> {
+    NETWORK_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Serializes one VM's runtime forwarding calls: a repair's add/remove sequence and
+/// a read's snapshot of that VM's live forwards. Runtime calls can each take up to
+/// their 3 s timeout, so they never run under the shared `network_lock`; other VMs'
+/// reads and saves do not wait behind them (C-26). Lock order: this lock first, then
+/// `network_lock` only briefly for the settings file. Like `network_lock` it guards
+/// no in-memory state, so poisoning is recovered.
+fn forwarding_lock(workspace: &str) -> std::sync::Arc<Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<Mutex<BTreeMap<String, std::sync::Arc<Mutex<()>>>>> =
+        std::sync::OnceLock::new();
+    LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(workspace.to_owned())
+        .or_default()
+        .clone()
+}
+fn hold(lock: &Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 const LIMIT: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -47,6 +78,74 @@ pub(crate) struct Workspace {
     workspace: String,
     ports: Vec<Port>,
     error: Option<String>,
+    /// Host name this sandbox's published websites open at (see `sandbox_host`), or
+    /// `None` when the browser needs `127.0.0.1`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+}
+
+/// A per-sandbox loopback host name for published websites (C-24). Browsers keep
+/// cookies per host name, not per port, so opening every sandbox at `127.0.0.1`
+/// let one sandbox's page read and overwrite cookies of other local services and
+/// sandboxes. `*.localhost` resolves to loopback (RFC 6761) while the forward still
+/// binds `127.0.0.1` only. The label joins the sanitised sandbox name and the start
+/// of its immutable id, so a recreated sandbox with the same name gets a new host.
+/// Cross-site requests to other loopback services are not prevented by this.
+pub(crate) fn sandbox_host(name: &str, vm_id: &str) -> String {
+    let id: String = vm_id
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(8)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let mut label = String::new();
+    for character in name.chars() {
+        let character = character.to_ascii_lowercase();
+        if character.is_ascii_lowercase() || character.is_ascii_digit() {
+            label.push(character);
+        } else if !label.is_empty() && !label.ends_with('-') {
+            label.push('-');
+        }
+    }
+    // One DNS label is at most 63 bytes, including the "-" and the id suffix.
+    label.truncate(63 - 1 - id.len());
+    let label = label.trim_end_matches('-');
+    let label = if label.is_empty() { "sandbox" } else { label };
+    if id.is_empty() {
+        format!("{label}.localhost")
+    } else {
+        format!("{label}-{id}.localhost")
+    }
+}
+
+/// Whether a browser resolves `*.localhost` names itself. Chromium- and Gecko-based
+/// browsers hard-code them to loopback. Safari and other WebKit browsers rely on
+/// the system resolver, which on macOS does not resolve `*.localhost`, so they (and
+/// any browser Silo cannot identify) open `127.0.0.1` instead, as the owner
+/// required Safari to keep working (C-24 design note). Recheck Safari in the macOS
+/// live session before widening this.
+fn resolves_localhost_names(browser: Option<&str>) -> bool {
+    let Some(browser) = browser.map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    const ENGINES: &[&str] = &[
+        "chrome", "chromium", "edgemac", "microsoft-edge", "brave", "vivaldi", "opera",
+        "thebrowser", "firefox", "mozilla", "librewolf", "waterfox", "floorp", "zen-browser",
+    ];
+    const WEBKIT: &[&str] = &["safari", "epiphany", "orion", "kagi", "duckduckgo"];
+    !WEBKIT.iter().any(|name| browser.contains(name))
+        && ENGINES.iter().any(|name| browser.contains(name))
+}
+
+/// Whether published websites open at their sandbox host names in the browser Silo
+/// uses for them.
+pub(crate) fn uses_sandbox_hosts(app: &AppHandle) -> bool {
+    resolves_localhost_names(crate::applications::browser_identity(app).as_deref())
+}
+
+/// The address a published website opens at.
+pub(crate) fn website_url(scheme: &str, host: Option<&str>, port: u16) -> String {
+    format!("{scheme}://{}:{port}", host.unwrap_or("127.0.0.1"))
 }
 #[derive(Serialize)]
 pub(crate) struct State {
@@ -303,6 +402,7 @@ fn observe(
         workspace: workspace.into(),
         ports: vec![],
         error: None,
+        host: None,
     };
     let state = match configured_vm(paths, workspace) {
         Ok(Some(state)) => state,
@@ -331,19 +431,18 @@ fn observe(
             .collect();
         return result;
     }
-    // Hold the short data lock only to read a consistent snapshot of the desired
-    // settings and the live forwards. It is dropped before the slow guest probes,
-    // and this read never mutates the forwarding table or the settings file.
-    let guard = match NETWORK_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            result.error = Some(FAILED.into());
-            return result;
-        }
-    };
-    // Read the current desired revision only after obtaining the data lock.
+    // Hold this VM's forwarding lock only to read a consistent snapshot of the desired
+    // settings and the live forwards, so a repair of this VM is never seen half done.
+    // It is dropped before the slow guest probes, and this read never mutates the
+    // forwarding table or the settings file. Other VMs never wait on it.
+    let forwarding = forwarding_lock(workspace);
+    let guard = hold(&forwarding);
+    // Read the current desired revision only after obtaining the lock.
     // An older refresh must never observe against access removed by another window.
-    let config = match read_config(paths) {
+    let config = match {
+        let _data = network_lock();
+        read_config(paths)
+    } {
         Ok(config) => config,
         Err(e) => {
             result.error = Some(e);
@@ -488,34 +587,35 @@ fn observe(
     result.ports = rows.into_values().collect();
     // Guest probes run without blocking mutations. Never publish their result
     // against settings or endpoints that changed while those probes were running.
-    let latest = NETWORK_LOCK
-        .lock()
-        .map_err(|_| FAILED.to_string())
-        .and_then(|_guard| {
-            let current = read_config(paths)?;
-            let current: Vec<_> = current
-                .mappings
-                .iter()
-                .filter(|m| m.workspace == workspace)
-                .cloned()
-                .collect();
-            let previous: Vec<_> = config
-                .mappings
-                .iter()
-                .filter(|m| {
-                    m.workspace == workspace
-                        && (m.enabled || published.iter().any(|p| p.guest_port == m.port))
-                })
-                .cloned()
-                .collect();
-            if current != previous {
-                return Err("Network settings changed. Refresh to check the current ports.".into());
-            }
-            if control(&socket, json!({"op":"ports_list"}))? != published {
-                return Err("Port forwarding changed. Refresh to check the current ports.".into());
-            }
-            Ok(())
-        });
+    let latest = (|| -> Result<(), String> {
+        let _guard = hold(&forwarding);
+        let current = {
+            let _data = network_lock();
+            read_config(paths)?
+        };
+        let current: Vec<_> = current
+            .mappings
+            .iter()
+            .filter(|m| m.workspace == workspace)
+            .cloned()
+            .collect();
+        let previous: Vec<_> = config
+            .mappings
+            .iter()
+            .filter(|m| {
+                m.workspace == workspace
+                    && (m.enabled || published.iter().any(|p| p.guest_port == m.port))
+            })
+            .cloned()
+            .collect();
+        if current != previous {
+            return Err("Network settings changed. Refresh to check the current ports.".into());
+        }
+        if control(&socket, json!({"op":"ports_list"}))? != published {
+            return Err("Port forwarding changed. Refresh to check the current ports.".into());
+        }
+        Ok(())
+    })();
     if let Err(error) = latest {
         for port in &mut result.ports {
             port.state = "unknown";
@@ -531,29 +631,39 @@ fn observe(
 /// It never takes the gate itself (that would be `GateError::Nested`): the write
 /// commands hold `OPERATIONS.vm`, the background scheduler holds `OPERATIONS.try_vm`,
 /// and `reconcile_started` runs while the VM lifecycle caller holds the VM guard.
-/// Returns per-port failure messages so a write path can surface them. Nothing is
-/// published when the VM is not running; the missing forwards reconcile on retry
-/// or on the next start.
-fn reconcile_forwarding(paths: &RuntimePaths, workspace: &str) -> BTreeMap<u16, String> {
+/// Returns per-port failure messages so a write path can surface them, and an
+/// error when the saved settings cannot be read. When the runtime's controls cannot
+/// be reached every saved port of the VM carries that failure; a write path shows it
+/// only while the VM runs (a stopped VM's ports read as waiting and reconcile on the
+/// next start). Nothing is published when the VM is not running.
+///
+/// The shared `network_lock` is held only to read the settings and to prune them;
+/// the runtime calls run under this VM's `forwarding_lock`, so a slow or hung runtime
+/// never blocks other VMs' reads and saves (C-26).
+fn reconcile_forwarding(
+    paths: &RuntimePaths,
+    workspace: &str,
+) -> Result<BTreeMap<u16, String>, String> {
     let mut failures = BTreeMap::new();
-    let Ok(guard) = NETWORK_LOCK.lock() else {
-        return failures;
+    let forwarding = forwarding_lock(workspace);
+    let _forwarding = hold(&forwarding);
+    let desired: Vec<Mapping> = {
+        let _data = network_lock();
+        read_config(paths)?
+            .mappings
+            .into_iter()
+            .filter(|m| m.workspace == workspace)
+            .collect()
     };
-    let Ok(config) = read_config(paths) else {
-        return failures;
-    };
-    let desired: Vec<_> = config
-        .mappings
-        .iter()
-        .filter(|m| m.workspace == workspace)
-        .collect();
     if desired.is_empty() {
-        return failures;
+        return Ok(failures);
     }
     let socket = socket_path(paths, workspace);
     let mut published = match control(&socket, json!({"op":"ports_list"})) {
         Ok(ports) => ports,
-        Err(_) => return failures,
+        Err(e) => {
+            return Ok(desired.iter().map(|m| (m.port, e.clone())).collect());
+        }
     };
     for mapping in &desired {
         let exists = published.iter().find(|p| p.guest_port == mapping.port);
@@ -582,17 +692,20 @@ fn reconcile_forwarding(paths: &RuntimePaths, workspace: &str) -> BTreeMap<u16, 
         }
     }
     // Remove confirmed tombstones, so repeated add/remove never grows settings forever.
-    let mut cleaned = Configuration {
-        mappings: config.mappings.clone(),
-    };
-    cleaned.mappings.retain(|m| {
-        m.workspace != workspace || m.enabled || published.iter().any(|p| p.guest_port == m.port)
-    });
-    if cleaned.mappings.len() != config.mappings.len() {
-        let _ = write_config(paths, &cleaned);
+    // Other VMs may have saved while the runtime calls ran: prune the current file.
+    let _data = network_lock();
+    if let Ok(mut current) = read_config(paths) {
+        let before = current.mappings.len();
+        current.mappings.retain(|m| {
+            m.workspace != workspace
+                || m.enabled
+                || published.iter().any(|p| p.guest_port == m.port)
+        });
+        if current.mappings.len() != before {
+            let _ = write_config(paths, &current);
+        }
     }
-    drop(guard);
-    failures
+    Ok(failures)
 }
 /// Reconcile the affected VM's forwards on a background thread, skipping it when
 /// that VM is busy, so a read can return immediately while repair converges. Each
@@ -639,36 +752,60 @@ fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
         }
     });
 }
-fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, String> {
+/// Every local VM's observed ports. With `hosts`, each carries its sandbox host name.
+fn state_with(paths: &RuntimePaths, config: &Configuration, hosts: bool) -> Result<State, String> {
     let metadata = runtime::read_metadata(&paths.metadata)
         .map_err(|_| "Could not read sandbox configuration.")?;
     let mut workspaces = vec![];
     let empty = BTreeMap::new();
-    let names: Vec<_> = metadata
+    let machines: Vec<_> = metadata
         .machines
         .iter()
         .filter(|m| m.is_vm())
-        .map(|m| m.name())
+        .map(|m| (m.name(), m.id()))
         .collect();
-    for batch in names.chunks(3) {
+    for batch in machines.chunks(3) {
         std::thread::scope(|scope| {
             let handles: Vec<_> = batch
                 .iter()
-                .map(|name| {
+                .map(|(name, _)| {
                     let empty = &empty;
                     scope.spawn(move || observe(paths, name, config, empty))
                 })
                 .collect();
-            for (name, handle) in batch.iter().zip(handles) {
-                workspaces.push(handle.join().unwrap_or_else(|_| Workspace {
-                    workspace: (**name).into(),
+            for ((name, id), handle) in batch.iter().zip(handles) {
+                let mut workspace = handle.join().unwrap_or_else(|_| Workspace {
+                    workspace: (*name).into(),
                     ports: vec![],
                     error: Some(FAILED.into()),
-                }));
+                    host: None,
+                });
+                workspace.host = hosts.then(|| sandbox_host(name, id));
+                workspaces.push(workspace);
             }
         });
     }
     Ok(State { workspaces })
+}
+
+/// Apply one VM's just-saved intent under the caller's VM gate and return the new
+/// state, with any failure from that repair shown on the VM's ports. Every window is
+/// told to refresh even when the repair could not run, because the intent was saved.
+fn apply_saved(app: &AppHandle, paths: &RuntimePaths, workspace: &str) -> Result<State, String> {
+    let result = reconcile_forwarding(paths, workspace).and_then(|failures| {
+        let config = read_config(paths)?;
+        let mut state = state_with(paths, &config, uses_sandbox_hosts(app))?;
+        if !failures.is_empty() {
+            let mut repaired = observe(paths, workspace, &config, &failures);
+            if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
+                repaired.host = slot.host.take();
+                *slot = repaired;
+            }
+        }
+        Ok(state)
+    });
+    let _ = app.emit("silo://network-state-changed", ());
+    result
 }
 
 #[tauri::command]
@@ -679,7 +816,7 @@ pub(crate) async fn read_network_state(app: AppHandle) -> Result<State, String> 
         // forward that drifted from its saved intent is repaired in the background.
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         let config = read_config(&paths)?;
-        let state = state_with(&paths, &config);
+        let state = state_with(&paths, &config, uses_sandbox_hosts(&app));
         schedule_network_reconcile(&app, &config);
         state
     })
@@ -715,7 +852,7 @@ pub(crate) async fn save_network_port(
         };
         validate(&mapping)?;
         {
-            let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+            let _guard = network_lock();
             let mut config = read_config(&paths)?;
             if config
                 .mappings
@@ -735,19 +872,7 @@ pub(crate) async fn save_network_port(
             }
             write_config(&paths, &config)?;
         }
-        let failures = reconcile_forwarding(&paths, &workspace);
-        let config = read_config(&paths)?;
-        let result = state_with(&paths, &config).map(|mut state| {
-            if !failures.is_empty() {
-                let repaired = observe(&paths, &workspace, &config, &failures);
-                if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
-                    *slot = repaired;
-                }
-            }
-            state
-        });
-        let _ = app.emit("silo://network-state-changed", ());
-        result
+        apply_saved(&app, &paths, &workspace)
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -771,7 +896,7 @@ pub(crate) async fn remove_network_port(
         runtime::shutdown::ensure_accepting_operations()?;
         configured_vm(&paths, &workspace)?;
         {
-            let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+            let _guard = network_lock();
             let mut config = read_config(&paths)?;
             // Persist removal intent before touching the live listener. Failed removals
             // remain visible and reconcile on retry/relaunch, never silently reopen.
@@ -784,19 +909,7 @@ pub(crate) async fn remove_network_port(
             }
             write_config(&paths, &config)?;
         }
-        let failures = reconcile_forwarding(&paths, &workspace);
-        let config = read_config(&paths)?;
-        let result = state_with(&paths, &config).map(|mut state| {
-            if !failures.is_empty() {
-                let repaired = observe(&paths, &workspace, &config, &failures);
-                if let Some(slot) = state.workspaces.iter_mut().find(|w| w.workspace == workspace) {
-                    *slot = repaired;
-                }
-            }
-            state
-        });
-        let _ = app.emit("silo://network-state-changed", ());
-        result
+        apply_saved(&app, &paths, &workspace)
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -820,13 +933,14 @@ pub(crate) async fn open_network_port(
             .scheme
             .as_deref()
             .ok_or("This TCP service is not configured as a website.")?;
-        crate::applications::open_browser(
-            &app,
-            &format!(
-                "{scheme}://127.0.0.1:{}",
-                endpoint.host_port.ok_or("This service is not reachable.")?
-            ),
-        )
+        let host_port = endpoint.host_port.ok_or("This service is not reachable.")?;
+        let host = if uses_sandbox_hosts(&app) {
+            let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
+            Some(sandbox_host(&workspace, &vm_id))
+        } else {
+            None
+        };
+        crate::applications::open_browser(&app, &website_url(scheme, host.as_deref(), host_port))
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -866,25 +980,6 @@ mod tests {
         let result = control(&path, json!({"op":"ports_list"}));
         server.join().unwrap();
         result
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn desktop_reuses_existing_publication_without_changing_its_port() {
-        use std::os::unix::net::UnixListener;
-        let directory = tempfile::tempdir_in("/tmp").unwrap();
-        let path = directory.path().join("control.sock");
-        let listener = UnixListener::bind(&path).unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
-            assert_eq!(serde_json::from_str::<Value>(&request).unwrap()["op"], "ports_list");
-            stream.write_all(b"{\"ok\":true,\"ports\":[{\"guest_port\":6901,\"host_port\":43000,\"host_bind\":\"127.0.0.1\"}]}\n").unwrap();
-            // A second request would fail after this listener closes.
-        });
-        assert_eq!(desktop_port(&path, 6901).unwrap(), 43000);
-        server.join().unwrap();
     }
 
     #[test]
@@ -1007,12 +1102,13 @@ mod tests {
         });
         held_rx.recv().unwrap();
         let start = Instant::now();
-        let state = state_with(&paths, &config);
+        let state = state_with(&paths, &config, true);
         let elapsed = start.elapsed();
         release_tx.send(()).unwrap();
         holder.join().unwrap();
         let state = state.expect("read state");
         assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].host.as_deref(), Some("dev-00000000.localhost"));
         assert!(
             elapsed < Duration::from_secs(5),
             "network read waited for the operation gate: {elapsed:?}"
@@ -1020,27 +1116,187 @@ mod tests {
     }
 
     #[test]
+    fn each_sandbox_gets_its_own_valid_localhost_name() {
+        let id = "1A2B3C4D-0000-4000-8000-000000000001";
+        assert_eq!(sandbox_host("dev", id), "dev-1a2b3c4d.localhost");
+        // Same name, different sandbox: a different host, so no shared cookies.
+        assert_ne!(sandbox_host("dev", id), sandbox_host("dev", "99999999-0000-4000-8000-000000000001"));
+        // Names from another computer are sanitised into one DNS label.
+        assert_eq!(sandbox_host("My App_2!", id), "my-app-2-1a2b3c4d.localhost");
+        assert_eq!(sandbox_host("--", id), "sandbox-1a2b3c4d.localhost");
+        assert_eq!(sandbox_host("dev", ""), "dev.localhost");
+        for name in ["a".repeat(80), format!("{}-b", "a".repeat(53)), "ünïcode.évil/../x".into()] {
+            let host = sandbox_host(&name, id);
+            let label = host.strip_suffix(".localhost").unwrap();
+            assert!(label.len() <= 63, "{host}");
+            assert!(!label.starts_with('-') && !label.ends_with('-') && !label.contains("--"), "{host}");
+            assert!(label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'), "{host}");
+        }
+        assert_eq!(website_url("http", Some("dev-1a2b3c4d.localhost"), 43000), "http://dev-1a2b3c4d.localhost:43000");
+        assert_eq!(website_url("https", None, 43000), "https://127.0.0.1:43000");
+    }
+
+    #[test]
+    fn safari_and_unknown_browsers_keep_the_loopback_address() {
+        for browser in [
+            "com.google.Chrome", "com.microsoft.edgemac", "com.brave.Browser", "company.thebrowser.Browser",
+            "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "firefox_firefox.desktop",
+            "google-chrome.desktop", "chromium_chromium.desktop", "org.mozilla.firefox.desktop",
+        ] {
+            assert!(resolves_localhost_names(Some(browser)), "{browser}");
+        }
+        for browser in [
+            "com.apple.Safari", "com.apple.SafariTechnologyPreview", "com.kagi.kagimacOS",
+            "com.duckduckgo.macos.browser", "org.gnome.Epiphany.desktop", "com.example.unknown",
+        ] {
+            assert!(!resolves_localhost_names(Some(browser)), "{browser}");
+        }
+        assert!(!resolves_localhost_names(None));
+    }
+
+    fn temp_paths(temp: &tempfile::TempDir) -> RuntimePaths {
+        RuntimePaths {
+            guest_image: temp.path().join("image"),
+            executable: temp.path().join("msb"),
+            home: temp.path().into(),
+            storage_home: None,
+            library: temp.path().join("lib"),
+            metadata: temp.path().join("machines.json"),
+            volumes: temp.path().join("volumes"),
+        }
+    }
+
+    fn one_port(workspace: &str, port: u16, enabled: bool) -> Configuration {
+        Configuration {
+            mappings: vec![Mapping {
+                workspace: workspace.into(),
+                port,
+                host_port: None,
+                scheme: Some("http".into()),
+                enabled,
+            }],
+        }
+    }
+
+    #[test]
+    fn poisoned_network_lock_is_recovered_and_reconcile_failures_are_reported() {
+        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let paths = temp_paths(&temp);
+        write_config(&paths, &one_port("dev", 3000, true)).unwrap();
+        let _ = std::thread::spawn(|| {
+            let _guard = NETWORK_LOCK.lock();
+            panic!("poison the network lock for this test");
+        })
+        .join();
+        assert!(NETWORK_LOCK.is_poisoned());
+        // No control socket exists, so the runtime cannot be reached: that is a
+        // failure for every saved port of the VM, never an empty (successful) result.
+        let failures = reconcile_forwarding(&paths, "dev").unwrap();
+        assert!(
+            failures.get(&3000).is_some_and(|e| e.contains("Network controls are unavailable")),
+            "{failures:?}"
+        );
+        // Unreadable settings are an error, not "nothing to repair".
+        fs::write(config_path(&paths), "broken").unwrap();
+        assert!(reconcile_forwarding(&paths, "dev").is_err());
+        NETWORK_LOCK.clear_poison();
+    }
+
+    /// A runtime control socket that answers `ports_list` at once and each
+    /// `port_add` only after `delay`, like a runtime under load. It reports each
+    /// accepted `port_add` on `added` before waiting.
+    #[cfg(unix)]
+    fn slow_runtime(
+        socket: std::path::PathBuf,
+        connections: usize,
+        delay: Duration,
+        added: std::sync::mpsc::Sender<u16>,
+    ) -> std::thread::JoinHandle<()> {
+        use std::os::unix::net::UnixListener;
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            let mut published: Vec<Value> = vec![];
+            for _ in 0..connections {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
+                let request: Value = serde_json::from_str(&request).unwrap();
+                if request["op"] == "port_add" {
+                    let port = request["guest_port"].as_u64().unwrap() as u16;
+                    added.send(port).unwrap();
+                    std::thread::sleep(delay);
+                    published.push(json!({"guest_port":port,"host_port":40000 + port,"host_bind":"127.0.0.1"}));
+                }
+                let reply = json!({"ok":true,"ports":published});
+                stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+            }
+        })
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn repairing_one_vm_never_holds_the_network_lock_across_runtime_calls() {
+        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let paths = temp_paths(&temp);
+        let mut config = one_port("dev", 3000, true);
+        config.mappings.push(Mapping { port: 3001, ..config.mappings[0].clone() });
+        write_config(&paths, &config).unwrap();
+        let (added_tx, added) = std::sync::mpsc::channel();
+        // ports_list, then two slow port_add calls.
+        let runtime = slow_runtime(socket_path(&paths, "dev"), 3, Duration::from_millis(800), added_tx);
+        let repair = {
+            let paths = paths.clone();
+            std::thread::spawn(move || reconcile_forwarding(&paths, "dev"))
+        };
+        assert_eq!(added.recv_timeout(Duration::from_secs(5)).unwrap(), 3000);
+        // Another VM's read or save needs only the short data lock.
+        let started = std::time::Instant::now();
+        drop(network_lock());
+        let waited = started.elapsed();
+        let failures = repair.join().unwrap().unwrap();
+        runtime.join().unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(waited < Duration::from_millis(400), "waited {waited:?} behind runtime calls");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tombstone_cleanup_keeps_settings_saved_during_a_repair() {
+        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let paths = temp_paths(&temp);
+        let mut config = one_port("dev", 3000, true);
+        // A removed port whose forward is already gone is pruned by the repair.
+        config.mappings.push(Mapping { port: 3001, enabled: false, ..config.mappings[0].clone() });
+        write_config(&paths, &config).unwrap();
+        let (added_tx, added) = std::sync::mpsc::channel();
+        let runtime = slow_runtime(socket_path(&paths, "dev"), 2, Duration::from_millis(300), added_tx);
+        let repair = {
+            let paths = paths.clone();
+            std::thread::spawn(move || reconcile_forwarding(&paths, "dev"))
+        };
+        assert_eq!(added.recv_timeout(Duration::from_secs(5)).unwrap(), 3000);
+        // Another VM saves a port while this VM's repair waits on its runtime.
+        {
+            let _guard = network_lock();
+            let mut current = read_config(&paths).unwrap();
+            current.mappings.extend(one_port("other", 8080, true).mappings);
+            write_config(&paths, &current).unwrap();
+        }
+        assert!(repair.join().unwrap().unwrap().is_empty());
+        runtime.join().unwrap();
+        let saved: Vec<_> = read_config(&paths)
+            .unwrap()
+            .mappings
+            .into_iter()
+            .map(|m| (m.workspace, m.port))
+            .collect();
+        assert_eq!(saved, vec![("dev".to_string(), 3000), ("other".to_string(), 8080)]);
+    }
+
+    #[test]
     fn loopback_ipv6_is_not_reported_as_ipv4_reachable() {
         let input="sl local_address rem_address st\n0: 00000000000000000000000001000000:0BB8 00000000:0000 0A\n";
         assert_eq!(parse_listeners(input).unwrap().get(&3000), Some(&false));
     }
-}
-
-/// Internal desktop publications live until the VM stops. Closing one viewer must
-/// not revoke a mapping used by another viewer or an explicit user configuration.
-pub(crate) fn desktop_endpoint(paths: &RuntimePaths, workspace: &str, guest_port: u16) -> Result<u16, String> {
-    if guest_port == 0 { return Err("Invalid desktop port.".into()); }
-    let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
-    let running = configured_vm(paths, workspace)?.is_some_and(|inspected| inspected.status == "Running");
-    if !running { return Err(format!("Start {workspace} first.")); }
-    desktop_port(&socket_path(paths, workspace), guest_port)
-}
-
-fn desktop_port(socket: &Path, guest_port: u16) -> Result<u16, String> {
-    let ports = control(socket, json!({"op":"ports_list"}))?;
-    if let Some(existing) = ports.into_iter().find(|p| p.guest_port == guest_port) {
-        return Ok(existing.host_port);
-    }
-    let ports = control(socket, json!({"op":"port_add","guest_port":guest_port,"host_port":0}))?;
-    ports.into_iter().find(|p| p.guest_port == guest_port).map(|p| p.host_port).ok_or_else(|| "Desktop forwarding is unavailable.".into())
 }
