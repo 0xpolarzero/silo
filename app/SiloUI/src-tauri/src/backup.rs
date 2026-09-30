@@ -26,6 +26,8 @@ const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const WORKER_LOCK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const TERMINATE_GRACE: Duration = Duration::from_secs(10);
+/// Slow external or network storage; below this a transfer is stuck.
+const MIN_TRANSFER_BYTES_PER_SECOND: u64 = 16 * 1024 * 1024;
 /// A snapshot archive holds a handful of descriptors per snapshot, its disk
 /// layers, image blobs and 32 MiB memory packs; a quarter million entries is
 /// far beyond any real sandbox chain.
@@ -526,6 +528,14 @@ impl<R: MsbRunner> BackupService<R> {
         }
     }
 
+    /// A command that reads or writes `bytes` of disk data gets the base
+    /// timeout plus time for that data at a slow-disk rate, so a
+    /// multi-hundred-GB workspace on slow storage is not killed at one hour.
+    fn data_timeout(&self, bytes: u64) -> Duration {
+        self.command_timeout
+            .saturating_add(Duration::from_secs(bytes / MIN_TRANSFER_BYTES_PER_SECOND))
+    }
+
     /// Where MicroSandbox unpacks and keeps snapshots (`cache/tmp` and
     /// `snapshots` under the runtime home, which may alias external storage).
     fn native_store_root(&self) -> &Path {
@@ -596,6 +606,8 @@ impl<R: MsbRunner> BackupService<R> {
             portable_export_network(&source.name, &mut runtime_config)?;
             validate_export_configs(&source.name, &runtime_config, &machine_config)?;
             let snapshot_group = source.snapshot_group.clone();
+            // Capture, verification and saving read the sandbox's disks.
+            let data_timeout = self.data_timeout(declared_storage_bytes(&source.machine_config));
             let flush = if source.was_running {
                 "required"
             } else {
@@ -619,7 +631,7 @@ impl<R: MsbRunner> BackupService<R> {
                     snapshot
                 } else {
                     let snapshot_name = format!("silo-backup-{index}-{}", unique_suffix());
-                    self.require_success(
+                    self.require_success_with(
                         "Capturing VM disk",
                         &[
                             "snapshot".into(),
@@ -634,23 +646,25 @@ impl<R: MsbRunner> BackupService<R> {
                             "--integrity".into(),
                             "--quiet".into(),
                         ],
+                        data_timeout,
                         cancellation,
                     )?;
                     // Capture advances MicroSandbox's source lineage. Its ancestor must
                     // remain in the native snapshot store even if archive writing fails.
                     self.captured_snapshot_path(&snapshot_group, &snapshot_name, cancellation)?
                 };
-                self.require_success(
+                self.require_success_with(
                     "Verifying captured VM disk",
                     &[
                         "snapshot".into(),
                         "verify".into(),
                         snapshot.to_string_lossy().into_owned(),
                     ],
+                    data_timeout,
                     cancellation,
                 )?;
                 let payload_path = stage.path().join(format!("{index}.msb"));
-                self.require_success(
+                self.require_success_with(
                     "Writing self-contained VM snapshot",
                     &[
                         "snapshot".into(),
@@ -660,6 +674,7 @@ impl<R: MsbRunner> BackupService<R> {
                         "--with-parents".into(),
                         "--with-image".into(),
                     ],
+                    data_timeout,
                     cancellation,
                 )?;
                 Ok::<_, BackupError>(payload_path)
@@ -872,7 +887,13 @@ impl<R: MsbRunner> BackupService<R> {
         // From here on the runtime may hold native data for this group. Every
         // failure, including Cancel and a timed-out or killed load, removes the
         // group and the runtime's leftover import staging before returning.
-        match self.load_import_group(payload_path, import_group, &source.runtime_config, cancellation) {
+        match self.load_import_group(
+            payload_path,
+            import_group,
+            &source.runtime_config,
+            extracted.scan.unpacked_bytes,
+            cancellation,
+        ) {
             Ok(snapshot_member) => Ok(PreparedRestore {
                 source_name: source.name.clone(),
                 new_name: request.new_name,
@@ -900,9 +921,11 @@ impl<R: MsbRunner> BackupService<R> {
         payload_path: &Path,
         import_group: &str,
         runtime_config: &Value,
+        unpacked_bytes: u64,
         cancellation: &Cancellation,
     ) -> Result<String, BackupError> {
-        self.require_success(
+        let data_timeout = self.data_timeout(unpacked_bytes);
+        self.require_success_with(
             "Loading VM snapshot",
             &[
                 "snapshot".into(),
@@ -911,6 +934,7 @@ impl<R: MsbRunner> BackupService<R> {
                 "--group".into(),
                 import_group.into(),
             ],
+            data_timeout,
             cancellation,
         )?;
         // The CLI's printed reference is useful for diagnostics only. Resolve
@@ -974,13 +998,14 @@ impl<R: MsbRunner> BackupService<R> {
                 )
             })?
             .to_owned();
-        self.require_success(
+        self.require_success_with(
             "Verifying restored VM disk",
             &[
                 "snapshot".into(),
                 "verify".into(),
                 format!("{import_group}:{snapshot_member}"),
             ],
+            data_timeout,
             cancellation,
         )?;
         // `msb restore` rebuilds the VM from this descriptor, not from the
@@ -1590,6 +1615,16 @@ fn read_and_verify_package(
         extracted,
         size_bytes: metadata.len(),
     })
+}
+
+/// Both disks of a sandbox: an upper bound for the data a capture, check or
+/// save of it reads before compression.
+fn declared_storage_bytes(machine_config: &Value) -> u64 {
+    ["workspaceStorageGiB", "runtimeStorageGiB"]
+        .iter()
+        .filter_map(|field| machine_config.get(*field).and_then(Value::as_u64))
+        .fold(0_u64, u64::saturating_add)
+        .saturating_mul(1024 * 1024 * 1024)
 }
 
 /// Size of the larger of the sandbox's two disks; `validate_machine_config`
@@ -3018,6 +3053,7 @@ mod tests {
         loaded_descriptor: Mutex<Option<Value>>,
         /// Descriptor of the pre-captured `existing_members`, same default.
         member_descriptor: Mutex<Option<Value>>,
+        timeouts: Mutex<Vec<(Vec<String>, Duration)>>,
         fail_load: AtomicBool,
         fail_save: AtomicBool,
         fail_import_verify: AtomicBool,
@@ -3031,11 +3067,12 @@ mod tests {
             &self,
             command: &MsbCommand,
             arguments: &[String],
-            _timeout: Duration,
+            timeout: Duration,
             cancellation: &Cancellation,
         ) -> Result<CommandOutput, BackupError> {
             check_cancelled(cancellation)?;
             self.calls.lock().unwrap().push(arguments.to_vec());
+            self.timeouts.lock().unwrap().push((arguments.to_vec(), timeout));
             let success = || CommandOutput {
                 status: ExitStatus::from_raw(0),
                 stdout: String::new(),
@@ -4784,6 +4821,42 @@ mod tests {
         let (result, removed) = import_with_descriptor(full(4));
         assert!(result.is_ok());
         assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn disk_heavy_commands_get_time_for_the_data_they_move() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let service = service(&temp, FakeRunner::default());
+        create_one(&service, destination.clone(), true).unwrap();
+        service
+            .prepare_restore(restore_request(destination), &Cancellation::default())
+            .unwrap();
+        let timeouts = service.runner.timeouts.lock().unwrap();
+        let timeout = |verb: &str| {
+            timeouts
+                .iter()
+                .filter(|(args, _)| args.first().is_some_and(|arg| arg == "snapshot") && args[1] == verb)
+                .map(|(_, timeout)| *timeout)
+                .collect::<Vec<_>>()
+        };
+        // 60 GiB workspace + 80 GiB runtime at 16 MiB/s is 8960 s on top of the hour.
+        let export = DEFAULT_COMMAND_TIMEOUT + Duration::from_secs(140 * 1024 / 16);
+        assert_eq!(timeout("create"), [export]);
+        assert_eq!(timeout("save"), [export]);
+        assert_eq!(timeout("verify")[0], export);
+        // The import knows exactly what it unpacks: a few KiB here.
+        assert_eq!(timeout("load"), [DEFAULT_COMMAND_TIMEOUT]);
+        assert_eq!(timeout("list")[0], DEFAULT_COMMAND_TIMEOUT);
+        drop(timeouts);
+        let service = BackupService {
+            command_timeout: Duration::from_secs(60),
+            ..service
+        };
+        assert_eq!(
+            service.data_timeout(500 * 1024 * 1024 * 1024),
+            Duration::from_secs(60 + 500 * 1024 / 16)
+        );
     }
 
     #[test]
