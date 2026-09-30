@@ -826,7 +826,7 @@ pub(crate) async fn save_network_port(
     host_port: Option<u16>,
     scheme: Option<String>,
 ) -> Result<State, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    runtime::operation_gate::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         // Publishing a port changes this VM's shared host forwarding; wait its turn
@@ -878,7 +878,7 @@ pub(crate) async fn remove_network_port(
     workspace: String,
     port: u16,
 ) -> Result<State, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    runtime::operation_gate::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         // Removing a port changes this VM's shared host forwarding; wait its turn

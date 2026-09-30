@@ -345,6 +345,77 @@ pub(crate) fn check_cancelled() -> Result<(), GateError> {
     }
 }
 
+thread_local! {
+    /// Condition for work that must start promptly or not at all (see `StartCondition`).
+    static START: RefCell<Option<StartCondition>> = const { RefCell::new(None) };
+}
+
+/// Work that is only wanted if it starts while a condition holds, such as a request from
+/// another computer that must start before its deadline and while its sender is connected.
+/// The first admission under it waits only while the condition holds, and is refused if it
+/// no longer holds when the turn arrives. Once any admission succeeds the work has started,
+/// so later steps and retries of the same work wait normally.
+#[derive(Clone)]
+pub(crate) struct StartCondition(Arc<StartState>);
+
+struct StartState {
+    wanted: Box<dyn Fn() -> bool + Send + Sync>,
+    started: AtomicBool,
+    expired: AtomicBool,
+}
+
+impl StartCondition {
+    pub(crate) fn new(wanted: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(StartState {
+            wanted: Box::new(wanted),
+            started: AtomicBool::new(false),
+            expired: AtomicBool::new(false),
+        }))
+    }
+
+    /// True once work under this condition was admitted.
+    pub(crate) fn started(&self) -> bool {
+        self.0.started.load(Ordering::SeqCst)
+    }
+
+    /// True when the gate turned this work away because the condition stopped holding.
+    pub(crate) fn expired(&self) -> bool {
+        self.0.expired.load(Ordering::SeqCst)
+    }
+
+    /// Run `work` on this thread with `condition` applying to its gate admissions.
+    pub(crate) fn scope<T>(condition: Option<StartCondition>, work: impl FnOnce() -> T) -> T {
+        struct Restore(Option<StartCondition>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                START.with(|start| *start.borrow_mut() = self.0.take());
+            }
+        }
+        let _restore = Restore(START.with(|start| start.replace(condition)));
+        work()
+    }
+
+    /// The condition applying on this thread, to hand to a worker thread.
+    pub(crate) fn current() -> Option<StartCondition> {
+        START.with(|start| start.borrow().clone())
+    }
+
+    /// Still waiting to start, and the condition holds.
+    fn pending(this: &Option<StartCondition>) -> Option<&StartCondition> {
+        this.as_ref().filter(|condition| !condition.started())
+    }
+}
+
+/// `tauri::async_runtime::spawn_blocking` that carries this thread's start condition, so
+/// work handed to a worker thread still starts only while it is wanted.
+pub(crate) fn spawn_blocking<F, R>(work: F) -> tauri::async_runtime::JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let condition = StartCondition::current();
+    tauri::async_runtime::spawn_blocking(move || StartCondition::scope(condition, work))
+}
 /// How long after admission a cancel waits for the work to declare itself
 /// cancellable. Owners do so immediately after acquiring, so this only bounds a race.
 const ADMISSION_GRACE: Duration = Duration::from_millis(250);
@@ -499,7 +570,18 @@ impl OperationGate {
         state.waiting.push_back(entry);
         drop(state);
         self.notify();
+        // Work that must start promptly waits only while it is still wanted.
+        let start = StartCondition::current();
+        let pending = if keep_waiting.is_none() { StartCondition::pending(&start).cloned() } else { None };
+        let still_wanted = pending.clone().map(|condition| move || (condition.0.wanted)());
+        let keep_waiting: Option<&dyn Fn() -> bool> = match (keep_waiting, &still_wanted) {
+            (Some(keep_waiting), _) => Some(keep_waiting),
+            (None, Some(wanted)) => Some(wanted),
+            (None, None) => None,
+        };
         let mut state = self.lock();
+        // Whether a start condition was confirmed since the last wait.
+        let mut confirmed = false;
         let token = loop {
             let index = state
                 .waiting
@@ -514,6 +596,25 @@ impl OperationGate {
                 return Err(GateError::Cancelled);
             }
             if state.admissible(index) {
+                // Work no longer wanted when its turn arrives never starts. The condition is
+                // asked without the state lock held (D-33); the next pass re-checks the turn.
+                if let Some(condition) = pending.as_ref().filter(|_| !confirmed) {
+                    drop(state);
+                    let wanted = (condition.0.wanted)();
+                    state = self.lock();
+                    if !wanted {
+                        condition.0.expired.store(true, Ordering::SeqCst);
+                        state.waiting.retain(|entry| entry.id != id);
+                        drop(state);
+                        self.notify();
+                        return Err(GateError::Abandoned);
+                    }
+                    confirmed = true;
+                    continue;
+                }
+                if let Some(condition) = &start {
+                    condition.0.started.store(true, Ordering::SeqCst);
+                }
                 let mut entry = state.waiting.remove(index).expect("index is in range");
                 entry.since = Instant::now();
                 entry.since_ms = now_ms();
@@ -523,6 +624,7 @@ impl OperationGate {
                 state.running.push(entry);
                 break token;
             }
+            confirmed = false;
             match keep_waiting {
                 None => {
                     state = self
@@ -548,6 +650,10 @@ impl OperationGate {
                     // The turn may have arrived (or a cancel) while the closure ran;
                     // the next loop pass admits or cancels it instead of giving it up.
                     if !keep && !self.admissible_or_cancelled(&state, id) {
+                        // A start condition that stopped holding: the work never starts.
+                        if let Some(condition) = &pending {
+                            condition.0.expired.store(true, Ordering::SeqCst);
+                        }
                         state.waiting.retain(|entry| entry.id != id);
                         drop(state);
                         self.notify();
@@ -1468,5 +1574,110 @@ mod tests {
         let seen = gate.activity();
         drop(gate.try_computer_hidden("Reconciling SSH access").unwrap());
         assert_eq!(gate.activity(), seen);
+    }
+
+    #[test]
+    fn work_that_is_no_longer_wanted_leaves_the_queue_without_starting() {
+        let gate = leak();
+        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let wanted = Arc::new(AtomicBool::new(true));
+        let condition = StartCondition::new({
+            let wanted = wanted.clone();
+            move || wanted.load(Ordering::SeqCst)
+        });
+        let waiter = {
+            let condition = condition.clone();
+            thread::spawn(move || {
+                StartCondition::scope(Some(condition), || gate.vm("id-a", "a", "Remote start").map(drop))
+            })
+        };
+        wait_until(gate, |queue| queue.waiting.len() == 1);
+        wanted.store(false, Ordering::SeqCst);
+        assert_eq!(waiter.join().unwrap(), Err(GateError::Abandoned));
+        assert!(condition.expired() && !condition.started());
+        assert!(gate.snapshot().waiting.is_empty());
+        drop(busy);
+    }
+
+    #[test]
+    fn a_turn_that_arrives_after_the_condition_lapsed_is_refused() {
+        let gate = leak();
+        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let wanted = Arc::new(AtomicBool::new(true));
+        let condition = StartCondition::new({
+            let wanted = wanted.clone();
+            move || wanted.load(Ordering::SeqCst)
+        });
+        let waiter = {
+            let condition = condition.clone();
+            thread::spawn(move || {
+                StartCondition::scope(Some(condition), || gate.vm("id-a", "a", "Remote start").map(drop))
+            })
+        };
+        wait_until(gate, |queue| queue.waiting.len() == 1);
+        // Hold the gate's lock so the release and the lapse land before the waiter looks.
+        {
+            let _state = gate.lock();
+            wanted.store(false, Ordering::SeqCst);
+        }
+        drop(busy);
+        assert_eq!(waiter.join().unwrap(), Err(GateError::Abandoned));
+        assert!(condition.expired() && !condition.started());
+        // An immediately free turn is refused as well.
+        assert_eq!(
+            StartCondition::scope(Some(StartCondition::new(|| false)), || gate.vm("id-b", "b", "Remote start").map(drop)),
+            Err(GateError::Abandoned)
+        );
+    }
+
+    #[test]
+    fn started_work_and_other_threads_wait_normally() {
+        let gate = leak();
+        let wanted = Arc::new(AtomicBool::new(true));
+        let condition = StartCondition::new({
+            let wanted = wanted.clone();
+            move || wanted.load(Ordering::SeqCst)
+        });
+        StartCondition::scope(Some(condition.clone()), || {
+            drop(gate.vm("id-a", "a", "Attempt 1").unwrap());
+            assert!(condition.started());
+            // A later attempt of started work waits its turn even after the condition lapsed.
+            wanted.store(false, Ordering::SeqCst);
+            let (held, release) = (mpsc::channel(), mpsc::channel::<()>());
+            let other = thread::spawn(move || {
+                let guard = gate.vm("id-a", "a", "Other").unwrap();
+                held.0.send(()).unwrap();
+                release.1.recv().unwrap();
+                drop(guard);
+            });
+            held.1.recv().unwrap();
+            let attempt = thread::scope(|scope| {
+                let attempt = scope.spawn(|| StartCondition::scope(Some(condition.clone()), || gate.vm("id-a", "a", "Attempt 2").map(drop)));
+                wait_until(gate, |queue| queue.waiting.len() == 1);
+                release.0.send(()).unwrap();
+                attempt.join().unwrap()
+            });
+            other.join().unwrap();
+            assert_eq!(attempt, Ok(()));
+        });
+        assert!(!condition.expired());
+        // The condition applies only inside its scope.
+        assert!(StartCondition::current().is_none());
+        drop(gate.vm("id-a", "a", "Local work").unwrap());
+    }
+
+    #[test]
+    fn worker_threads_inherit_the_start_condition() {
+        let condition = StartCondition::new(|| true);
+        let original = condition.clone();
+        let inherited = StartCondition::scope(Some(condition), || {
+            tauri::async_runtime::block_on(spawn_blocking(move || {
+                StartCondition::current().map(|current| Arc::ptr_eq(&current.0, &original.0))
+            }))
+            .unwrap()
+        });
+        assert_eq!(inherited, Some(true));
+        let unscoped = tauri::async_runtime::block_on(spawn_blocking(|| StartCondition::current().is_some())).unwrap();
+        assert!(!unscoped);
     }
 }

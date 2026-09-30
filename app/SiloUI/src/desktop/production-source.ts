@@ -1459,8 +1459,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       remoteManagementError = undefined
       publish({ ...snapshot })
     },
-    connectComputer: async address => {
-      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address }))
+    connectComputer: async (address, options) => {
+      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address, replace: options?.replaceAddress ?? false }))
       // A list read that started before the connection is read again, so the new
       // computer is listed when this resolves.
       remoteListRevision++

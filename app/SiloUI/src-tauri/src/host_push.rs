@@ -1130,7 +1130,7 @@ pub(crate) async fn push_repository(
             repository_path.clone(),
             target.clone(),
         );
-        tauri::async_runtime::spawn_blocking(move || {
+        runtime::operation_gate::spawn_blocking(move || {
             perform(&app, &workspace, &repository_path, &target)
         })
     };

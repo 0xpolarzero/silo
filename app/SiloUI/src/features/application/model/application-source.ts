@@ -313,7 +313,7 @@ export interface ApplicationActions {
   setRemoteManagement?: (enabled: boolean) => Promise<void>
   setupComputerKey?: (address: string) => Promise<void>
   authorizeComputer?: (address: string) => Promise<void>
-  connectComputer?: (address: string) => Promise<void>
+  connectComputer?: (address: string, options?: { replaceAddress?: boolean }) => Promise<void>
   removeComputer?: (hostId: string) => Promise<void>
   saveRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
   deleteRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration) => Promise<void>
