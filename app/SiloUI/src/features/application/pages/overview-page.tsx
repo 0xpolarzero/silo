@@ -588,6 +588,7 @@ export function OverviewPage({ active = true, readOnly = false,
               isMachineCreated={isMachineCreated}
               isMachineRunning={isMachineRunning}
               getMachineBusyReason={machineBusyReason}
+              editorDraftKey="sandbox-list"
               onMachinesChange={changeMachines}
               interactionDisabled={configurationLocked}
               validateOperation={validateMachineOperation}

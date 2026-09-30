@@ -344,6 +344,8 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     isMachineRunning: editingContext?.isMachineRunning,
     interactionDisabled: controls.configurationLocked,
     getMachineBusyReason: (item) => item.id === machine.id ? busyReason : undefined,
+    // Leaving the page (⌘1–7, ⌘[, the breadcrumb) and returning restores an unsaved edit.
+    draftKey: `sandbox-detail:${machine.id}`,
   })
   const canEdit = Boolean(editingContext) && !controls.configurationLocked && !busyReason
   const isEditing = Boolean(editing.editor)

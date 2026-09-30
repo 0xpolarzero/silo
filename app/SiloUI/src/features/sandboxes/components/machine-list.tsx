@@ -66,9 +66,11 @@ interface MachineListProps {
   getHostCapacity?: (computerId: string) => HostCapacity | undefined
   /** Why a sandbox cannot be edited or deleted now (it is starting or stopping), if so. */
   getMachineBusyReason?: (machine: SetupMachineConfiguration) => string | undefined
+  /** Keeps an open editor across navigation within a `MachineEditorDraftsProvider`. */
+  editorDraftKey?: string
 }
 
-export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getHostCapacity, getMachineBusyReason }: MachineListProps) {
+export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getHostCapacity, getMachineBusyReason, editorDraftKey }: MachineListProps) {
   const {
     computerId, setComputerId,
     committing,
@@ -80,7 +82,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     baselineRef,
     captureBaseline, beginOperation, dispatchChange,
     startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteWithNotice,
-  } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getHostCapacity, getMachineBusyReason })
+  } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getHostCapacity, getMachineBusyReason, draftKey: editorDraftKey })
 
   const [addOpen, setAddOpen] = useState(false)
   const [draggedID, setDraggedID] = useState<string | null>(null)

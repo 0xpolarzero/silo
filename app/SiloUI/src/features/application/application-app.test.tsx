@@ -517,6 +517,18 @@ describe("application", () => {
     expect(within(appPanel("Settings")).getByRole("heading", { name: "Notifications", level: 2 })).toBeVisible()
   })
 
+  it("keeps an unsaved sandbox edit while visiting another section (I-37)", async () => {
+    const { user } = renderApplication()
+    const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+    await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+    await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
+    await user.selectOptions(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.click(sandboxSections.getByRole("button", { name: "Files" }))
+    expect(within(appPanel("Sandboxes")).queryByRole("combobox", { name: "CPU limit" })).not.toBeInTheDocument()
+    await user.click(sandboxSections.getByRole("button", { name: "Overview" }))
+    expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+  })
+
   it("uses one global sandbox filter across Files, Logs, Network, and Activity", async () => {
     const { actions, user } = renderApplication()
     const navigation = within(appNavigation())

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { showActionFailure, showOperationNotice } from "@/lib/operation-toast"
 
@@ -13,6 +13,7 @@ import { isStaleConfigurationError } from "@/features/application/model/machine-
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 import { fitMachineToCapacity, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
 import { rebaseMachineDraft, type MachineReview } from "@/features/sandboxes/model/machine-review"
+import { useMachineEditorDrafts } from "@/features/sandboxes/model/editor-drafts-context"
 
 export const defaultSaveBlockedReason = "Saving is paused while another sandbox change is in progress or needs review."
 
@@ -33,6 +34,12 @@ export interface MachineEditingOptions {
   getHostCapacity?: (computerId: string) => HostCapacity | undefined
   /** Why a sandbox cannot be edited or deleted now (it is starting or stopping), if so. */
   getMachineBusyReason?: (machine: SetupMachineConfiguration) => string | undefined
+  /**
+   * Keeps an open editor under this key in the nearest `MachineEditorDraftsProvider`, so
+   * leaving the surface and coming back restores the unsaved edit. Ignored when
+   * `initialEditorDraft` is given.
+   */
+  draftKey?: string
 }
 
 /**
@@ -55,12 +62,16 @@ export function useMachineEditing({
   interactionDisabledReason = defaultSaveBlockedReason,
   getHostCapacity,
   getMachineBusyReason,
+  draftKey,
 }: MachineEditingOptions) {
-  const [computerId, setComputerId] = useState("")
+  // Restore an editor left open on this surface earlier (see editor-drafts-context.ts).
+  const drafts = useMachineEditorDrafts()
+  const [stored] = useState(() => !initialEditorDraft && draftKey ? drafts?.get(draftKey) : undefined)
+  const [computerId, setComputerId] = useState(stored?.computerId ?? "")
   const [committing, setCommitting] = useState(false)
   const disabled = interactionDisabled || committing
   const [editorFocusRequest, setEditorFocusRequest] = useState(0)
-  const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
+  const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft ?? stored?.editor ?? null)
   const busyReason = (machine: SetupMachineConfiguration | undefined) => machine ? getMachineBusyReason?.(machine) : undefined
   // An editor can stay open while another change starts (or fails and awaits review), or
   // while its sandbox starts or stops: Save is then disabled with this reason instead of
@@ -71,9 +82,14 @@ export function useMachineEditing({
   // The saved configuration captured when the current operation began. Every local
   // save/delete/reorder carries it as the change's `expected` baseline, so a queued edit
   // applies to fresh state — or is rejected — instead of overwriting concurrent work.
-  const baselineRef = useRef<SetupMachineConfiguration[] | null>(null)
+  const baselineRef = useRef<SetupMachineConfiguration[] | null>(stored?.baseline ?? null)
   // The edited VM's baseline, plus editor conflict state, drive the in-editor notices.
-  const [editorBaseline, setEditorBaseline] = useState<SetupMachineConfiguration | null>(null)
+  const [editorBaseline, setEditorBaseline] = useState<SetupMachineConfiguration | null>(stored?.editorBaseline ?? null)
+  useEffect(() => {
+    if (!draftKey || !drafts) return
+    if (editor) drafts.set(draftKey, { editor, editorBaseline, baseline: baselineRef.current, computerId })
+    else drafts.delete(draftKey)
+  }, [drafts, draftKey, editor, editorBaseline, computerId])
   const [editorConflict, setEditorConflict] = useState(false)
   const [editorReview, setEditorReview] = useState<MachineReview | null>(null)
   const [editorResetToken, setEditorResetToken] = useState(0)
